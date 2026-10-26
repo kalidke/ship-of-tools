@@ -282,14 +282,11 @@ impl State {
         };
         let target = self.preview_png_zoom.max(1.0);
         let have = self.preview_page_raster_zoom;
-        let pending = self
-            .preview_page_raster_pending
-            .map(|(_, z)| z)
-            .unwrap_or(0.0);
+        let pending = self.preview_requests.reraster_zoom();
         if target <= have.max(pending) * 1.2 {
             return;
         }
-        let Some(node_id) = self.preview_node_id_fired.clone() else {
+        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
             return;
         };
         let (Some(fw), Some(fh)) = self.preview_fit_px() else {
@@ -311,7 +308,7 @@ impl State {
             })
             .is_ok()
         {
-            self.preview_page_raster_pending = Some((page, target));
+            self.preview_requests.arm_reraster(page, target);
         }
     }
 

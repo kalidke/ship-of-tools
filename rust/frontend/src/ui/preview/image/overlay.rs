@@ -209,8 +209,8 @@ impl State {
             return clear_and_none(self);
         };
         let is_image = self
-            .preview_node_id_fired
-            .as_deref()
+            .preview_requests
+            .fired_target()
             .map(Self::is_image_node_id)
             .unwrap_or(false);
         if !is_image {
@@ -318,7 +318,7 @@ impl State {
             s.caption_label = None;
             None
         };
-        let Some(node_id) = self.preview_node_id_fired.clone() else {
+        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
             return clear_and_none(self);
         };
         if !Self::is_image_node_id(&node_id) {
@@ -377,7 +377,7 @@ impl State {
     /// Returns false when there's nothing to calibrate, so the caller can leave
     /// the keystroke alone.
     pub(in crate::ui) fn begin_scale_entry(&mut self) -> bool {
-        let Some(node_id) = self.preview_node_id_fired.clone() else {
+        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
             return false;
         };
         if !Self::is_image_node_id(&node_id) {
@@ -430,7 +430,7 @@ impl ScalePromptContext for State {
             workspace_id: self.active_workspace_id.clone(), generation }).map_err(|e| e.to_string())
     }
     fn enable_scalebar(&mut self) { self.scalebar_on = true; }
-    fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.scale_save_pending = Some((node_id, raw)); }
+    fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.preview_requests.arm_scale_save(node_id, raw); }
     fn scale_effect(&mut self, effect: PromptEffect) { self.apply_prompt_effect(effect); }
 }
 

@@ -96,7 +96,7 @@ impl State {
         if self.preview_requests.suppress_follow(&id) {
             return;
         }
-        if self.preview_node_id_fired.as_ref() == Some(&id) {
+        if self.preview_requests.fired_target() == Some(id.as_str()) {
             // Same file already shown — no re-fetch needed. But items within a
             // module share a file, so the cursor moving between them must still
             // re-anchor the (already rendered) code preview to the new item.
@@ -116,7 +116,7 @@ impl State {
         }
         // New target: drop any in-flight zoom re-raster so its reply can't
         // be mistaken for this fetch.
-        self.preview_page_raster_pending = None;
+        self.preview_requests.cancel_reraster();
         let (fit_w, fit_h) = self.preview_fit_px();
         let generation = self.next_preview_gen();
         if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
@@ -132,7 +132,7 @@ impl State {
             tracing::warn!(error = %e, %id, "drop preview.get request — channel closed");
             return;
         }
-        self.preview_node_id_fired = Some(id);
+        self.preview_requests.record_fired(id);
         self.preview_anchor_line = anchor_line;
     }
 }

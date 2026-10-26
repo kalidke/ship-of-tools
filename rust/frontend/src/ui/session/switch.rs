@@ -255,7 +255,7 @@ impl State {
         if !restored {
             // First visit — start from a clean slate.
             self.mode = Mode::Files;
-            self.preview_node_id_fired = None;
+            self.preview_requests.forget_fired();
             self.pinned_preview_node_id = None;
             self.preview_src = None;
             self.preview_src_node_id = None;

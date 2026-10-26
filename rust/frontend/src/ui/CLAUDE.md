@@ -9,7 +9,8 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 `input::LayoutHelp` owns drawer selection, maximize/wide flags, Help browsing, return origin and startup requests.
-`preview::requests::PreviewRequests` owns both request clocks, concept follow commitment and the driven-preview hold.
+`preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page re-raster, concept
+follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
 
 ## Owns
@@ -83,7 +84,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `badge::tests::pending_nav_status_names_workspace_and_path`. The ten-fixture native registry also runs
   `replaced_result_rejects_old_tree_attempt_before_effects`, alongside the badge, retirement/disconnect and
   kept-default controls. Registration alone is not hosted execution evidence.
-- `PreviewRequests` stage A privately owns preview/concept generations, the concept fired target and driven hold,
+- `PreviewRequests` privately owns preview/concept generations, the concept fired target and driven hold,
   including private prepared changes and consumed commit tokens. It never takes State or exposes mutable storage.
   Preview and concept slots advance independently with the existing arithmetic; concept reloads share the concept
   clock without retargeting follow. ResultLedger calls a narrow lazy preview allocator only after serial admission
@@ -102,12 +103,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Portable proofs: `preview::requests::tests` and
   `session::result_ledger::tests::result_attempt_allocates_exactly_once_only_after_admission`; retained admission
   characterizations are `preview::fetch::tests`. These describe existing behavior, not a newly corrected defect.
-- Stage B's preview fired target/page correlation and stage C's crop/save/aim transactions remain pending in this
-  same owner. Crop still takes its host pin before comparing, so a wrong host consumes it and two same-host crops
-  are indistinguishable. Save success still requires current preview admission and target equality; ScaleSetFailed
-  remains unfenced and clears its marker unconditionally. No stronger transaction identity is claimed. The native
-  result fixture observes the current generation through the owner; its ROI assertions and fired-target setup stay
-  intact. Fresh hosted Windows/macOS window_minimized result fixtures, pane_timing and window_close remain required.
+- It also privately owns the fired preview target (the node the latest request asked for, distinct from the installed
+  source's node), the in-flight page re-raster, the crop host pin, the scale-save marker and the one `--roi` aim. A
+  new cursor target and a page turn cancel a pending re-raster; an admitted reply ends it, keeping the view only when
+  it shows the pending page. Crop still takes its host pin before comparing, so a wrong host consumes it and two
+  same-host crops are indistinguishable. Save success still requires current preview admission and target equality;
+  ScaleSetFailed remains unfenced and clears its marker unconditionally. An aim is certified by an installed raster
+  for its row and node, retired by a non-raster install, and consumed by the render pass only while it is still the
+  fired target. No stronger transaction identity is claimed. The native result fixture reaches the fired target and
+  the aim through the owner's operations; its ROI assertions stay intact.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
@@ -295,8 +299,9 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
-- `preview/`: PreviewRequests owns request clocks, concept follow and driven holds; State coordinates preview
-  installation, shaping and transport (fetch, replies, layout, concept, open).
+- `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
+  save and aim transactions; State coordinates preview installation, shaping and transport (fetch, replies, layout,
+  concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
 - `preview/markdown/`: markdown and source text shaped into cosmic-text buffers.
 - `preview/editor/`: the in-pane edit buffer.

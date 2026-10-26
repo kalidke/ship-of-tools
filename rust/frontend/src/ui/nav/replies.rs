@@ -246,7 +246,7 @@ impl State {
                 // the *shown* node) both read it — the root-row
                 // lie made a page turn re-fetch the root preview
                 // and clobber the captured node.
-                self.preview_node_id_fired = Some(node_id);
+                self.preview_requests.record_fired(node_id);
             }
             // #4 fix (cursor-reveal-on-switch): a preview driven via
             // a workspace switch armed a one-shot reveal before this

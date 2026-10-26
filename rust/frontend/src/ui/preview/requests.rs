@@ -1,8 +1,10 @@
-//! Window-wide request clocks, concept follow commitment and driven-preview suppression.
+//! Window-wide request clocks, the fired preview target and its page re-raster, concept follow commitment,
+//! driven-preview suppression, and the crop, scale-save and `--roi` aim transactions.
 
 use crate::net::transport::OutgoingReq;
-use crate::ui::HostKey;
+use crate::ui::{HostKey, WsKey};
 use super::concept::{change_effect, ChangeEffect};
+use super::image::view::RoiAim;
 
 #[derive(Default)]
 pub(in crate::ui) struct PreviewRequests {
@@ -10,6 +12,16 @@ pub(in crate::ui) struct PreviewRequests {
     concept_req_gen: u64,
     concept_target_fired: Option<String>,
     driven_preview_hold_cursor: Option<String>,
+    /// The node the pane's latest preview request asked for; not the installed reply's node.
+    preview_target_fired: Option<String>,
+    /// `(page, zoom)` of an in-flight zoom re-raster of the shown page.
+    page_raster_pending: Option<(u32, f32)>,
+    /// The host a crop was sent to; whichever crop reply lands first takes it.
+    crop_host: Option<HostKey>,
+    /// `(node_id, typed value)` of an in-flight `preview.set_scale`.
+    scale_save: Option<(String, String)>,
+    /// One armed `preview --roi` viewport aim, latest wins.
+    roi_aim: Option<RoiAim>,
 }
 
 /// A prepared change can be committed only by consuming its token after a successful send.
@@ -127,6 +139,120 @@ impl PreviewRequests {
     pub(in crate::ui) fn leave_row(&mut self) {
         self.driven_preview_hold_cursor = None;
     }
+
+    pub(in crate::ui) fn fired_target(&self) -> Option<&str> { self.preview_target_fired.as_deref() }
+
+    /// A preview request for `node_id` went out (or, for a capture, was asked for).
+    pub(in crate::ui) fn record_fired(&mut self, node_id: String) {
+        self.preview_target_fired = Some(node_id);
+    }
+
+    /// Forget the fired target, so the next cursor follow fetches the cursored node again.
+    pub(in crate::ui) fn forget_fired(&mut self) {
+        self.preview_target_fired = None;
+    }
+
+    /// A row's snapshot restores the target it had fired when it was left.
+    pub(in crate::ui) fn restore_fired(&mut self, node_id: Option<String>) {
+        self.preview_target_fired = node_id;
+    }
+
+    /// A fetch of a new target or a page turn: a pending re-raster's reply must not be taken for it.
+    pub(in crate::ui) fn cancel_reraster(&mut self) {
+        self.page_raster_pending = None;
+    }
+
+    /// The zoom an in-flight re-raster asked for, 0.0 when none is.
+    pub(in crate::ui) fn reraster_zoom(&self) -> f32 {
+        self.page_raster_pending.map(|(_, z)| z).unwrap_or(0.0)
+    }
+
+    /// Called after the re-raster request was sent.
+    pub(in crate::ui) fn arm_reraster(&mut self, page: u32, zoom: f32) {
+        self.page_raster_pending = Some((page, zoom));
+    }
+
+    /// An admitted preview reply ends any pending re-raster: its zoom when the reply shows the pending page, else
+    /// `None`, a real navigation that resets the view.
+    pub(in crate::ui) fn settle_page_reply(&mut self, shown_page: Option<u32>) -> Option<f32> {
+        match (self.page_raster_pending.take(), shown_page) {
+            (Some((pending, zoom)), Some(shown)) if pending == shown => Some(zoom),
+            _ => None,
+        }
+    }
+
+    /// Called after the crop request was sent to `host`.
+    pub(in crate::ui) fn arm_crop(&mut self, host: HostKey) {
+        self.crop_host = Some(host);
+    }
+
+    /// A crop reply takes the pin before comparing, so a reply from another host consumes it too.
+    pub(in crate::ui) fn settle_crop(&mut self, event_host: &HostKey) -> bool {
+        self.crop_host.take().as_ref() == Some(event_host)
+    }
+
+    /// Called after the `preview.set_scale` request was sent.
+    pub(in crate::ui) fn arm_scale_save(&mut self, node_id: String, raw: String) {
+        self.scale_save = Some((node_id, raw));
+    }
+
+    /// An admitted preview reply for the save's own target resolves it, returning the typed value.
+    pub(in crate::ui) fn settle_scale_save(&mut self, node_id: Option<&str>) -> Option<String> {
+        match self.scale_save.as_ref() {
+            Some((target, _)) if node_id == Some(target.as_str()) => self.scale_save.take().map(|(_, raw)| raw),
+            _ => None,
+        }
+    }
+
+    /// A rejected save resolves whatever save is pending.
+    pub(in crate::ui) fn fail_scale_save(&mut self) {
+        self.scale_save = None;
+    }
+
+    pub(in crate::ui) fn arm_roi_aim(&mut self, aim: RoiAim) {
+        self.roi_aim = Some(aim);
+    }
+
+    /// A preview without `--roi` for the aimed row and node retires that aim.
+    pub(in crate::ui) fn drop_roi_aim_for(&mut self, row_key: &WsKey, node_id: &str) {
+        if self.roi_aim.as_ref().is_some_and(|aim| &aim.row_key == row_key && aim.node_id == node_id) {
+            self.roi_aim = None;
+        }
+    }
+
+    /// An installed reply for the aim's row and node certifies it when a raster was installed, and otherwise retires
+    /// it, returning the retired aim.
+    pub(in crate::ui) fn certify_roi_aim(
+        &mut self, row_key: Option<&WsKey>, node_id: Option<&str>, raster_installed: bool,
+    ) -> Option<RoiAim> {
+        let drop_aim = match self.roi_aim.as_mut() {
+            Some(aim) if !aim.ready && row_key == Some(&aim.row_key) && node_id == Some(aim.node_id.as_str()) => {
+                if raster_installed {
+                    aim.ready = true;
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        };
+        if drop_aim { self.roi_aim.take() } else { None }
+    }
+
+    /// The render pass consumes a certified aim for the active row that is still the fired target.
+    pub(in crate::ui) fn take_ready_roi_aim(&mut self, row_key: Option<&WsKey>) -> Option<RoiAim> {
+        let fired = self.preview_target_fired.as_deref();
+        if self.roi_aim.as_ref().is_some_and(|a| {
+            a.ready && row_key == Some(&a.row_key) && Some(a.node_id.as_str()) == fired
+        }) {
+            self.roi_aim.take()
+        } else {
+            None
+        }
+    }
+
+    #[cfg(all(test, feature = "test-window-progress"))]
+    pub(in crate::ui) fn roi_aim(&self) -> Option<&RoiAim> { self.roi_aim.as_ref() }
 }
 
 /// The coordinator supplies transport and drift caches; no owner operation takes State.

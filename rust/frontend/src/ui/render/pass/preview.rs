@@ -39,12 +39,7 @@ impl State {
             // exists; the ordinary clamps just below then produce the
             // effective rect echoed back after `preview_roi` recomputes.
             let mut roi_aim: Option<RoiAim> = None;
-            if self.pending_roi_aim.as_ref().is_some_and(|a| {
-                a.ready
-                    && row_key.as_ref() == Some(&a.row_key)
-                    && Some(a.node_id.as_str()) == self.preview_node_id_fired.as_deref()
-            }) {
-                let aim = self.pending_roi_aim.take().expect("checked Some above");
+            if let Some(aim) = self.preview_requests.take_ready_roi_aim(row_key.as_ref()) {
                 let (src_w, src_h) = self.preview_png_dims.unwrap_or(quad.size_px);
                 match solve_roi_view(
                     image_rect.w,
@@ -70,7 +65,7 @@ impl State {
                 // target this install, and the aim is a user/CLI ask.
                 self.pending_roi_restore = None;
             } else if self.pending_roi_restore.as_ref().is_some_and(|(nid, _)| {
-                Some(nid.as_str()) == self.preview_node_id_fired.as_deref()
+                Some(nid.as_str()) == self.preview_requests.fired_target()
             }) {
                 // Same-dir same-size view carry (`preview_png_cache`),
                 // deferred from preview install to here — the first
@@ -137,7 +132,7 @@ impl State {
             // into a local (shared borrows) then field-assigned, so it
             // doesn't fight `quad`'s borrow of `self.preview_png`.
             let new_roi: Option<PreviewRoi> =
-                self.preview_node_id_fired.as_ref().and_then(|nid| {
+                self.preview_requests.fired_target().and_then(|nid| {
                     if !Self::is_image_node_id(nid) {
                         return None;
                     }
@@ -155,7 +150,7 @@ impl State {
                         src_h,
                     )?;
                     Some(PreviewRoi {
-                        node_id: nid.clone(),
+                        node_id: nid.to_string(),
                         path: self.backend_abs_path(nid),
                         x,
                         y,

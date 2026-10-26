@@ -81,7 +81,7 @@ impl State {
         // stray/late reply from a non-owning host (or one
         // that arrives after a second capture_roi already
         // consumed the pin) is dropped.
-        if self.pending_roi_capture_host.take() != Some(event_host.clone()) {
+        if !self.preview_requests.settle_crop(&event_host) {
             tracing::debug!(%event_host, %node_id,
                 "image.cropped from a non-owning/stale host — dropped");
             return;
@@ -144,7 +144,7 @@ impl State {
         // Same owner check as ImageCropped above -- a failure
         // from a non-owning/stale host must not clobber the
         // status line for whatever the user is doing now.
-        if self.pending_roi_capture_host.take() != Some(event_host.clone()) {
+        if !self.preview_requests.settle_crop(&event_host) {
             tracing::debug!(%event_host, %node_id,
                 "image.crop failure from a non-owning/stale host — dropped");
             return;
@@ -174,7 +174,7 @@ impl State {
         // This save resolved (as a failure), so retire the pending
         // marker — otherwise the next unrelated preview would
         // consume it and report a "saved" that never happened.
-        self.scale_save_pending = None;
+        self.preview_requests.fail_scale_save();
         self.status = format!("pixel size failed · {name}: {message}");
         self.window.request_redraw();
     }

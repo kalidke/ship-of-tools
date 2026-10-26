@@ -50,7 +50,7 @@ impl State {
                 "drive_same_ws_open: drop preview.get — channel closed");
             return;
         }
-        self.preview_node_id_fired = Some(node_id.clone());
+        self.preview_requests.record_fired(node_id.clone());
         self.preview_anchor_line = None;
         // The active view IS the active workspace's Files tree by
         // construction (installs route by key; force_files_mode swapped by
@@ -168,7 +168,7 @@ impl State {
         slug: String,
         restored: bool,
     ) {
-        self.preview_node_id_fired = Some(node_id.clone());
+        self.preview_requests.record_fired(node_id.clone());
         self.preview_anchor_line = None;
         self.result_ledger.arm_reveal(attempt.clone());
         // The active view is THIS workspace's Files tree by
@@ -268,7 +268,7 @@ impl State {
             self.preview_requests.finish_reveal();
             self.result_cursor_landed(&target_id);
             // Re-anchor the header/preview onto the landed row. The body was
-            // already fetched (preview_node_id_fired == target_id), so this
+            // already fetched (the fired target is target_id), so this
             // doesn't re-fetch — it just keeps header + body in sync.
             self.maybe_fire_preview();
             self.window.request_redraw();

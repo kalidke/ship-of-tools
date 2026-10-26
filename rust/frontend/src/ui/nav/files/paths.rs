@@ -53,7 +53,7 @@ impl State {
     /// row when the shown preview isn't a files-mode node.
     ///
     /// Deliberately reads `preview_src_node_id` (the node the INSTALLED
-    /// reply answered) alone — not `preview_node_id_fired` (the node the
+    /// reply answered) alone — not the fired target (the node the
     /// most recent REQUEST asked for: field report round 2, a request
     /// racing ahead of its own reply) and not `pinned_preview_node_id`
     /// (a pin is stamped from the cursor row, not from an

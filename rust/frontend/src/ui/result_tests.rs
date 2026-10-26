@@ -258,7 +258,7 @@ impl State {
             w: 320.0,
             h: 240.0,
         };
-        self.preview_node_id_fired = Some("files:same.png".into());
+        self.preview_requests.record_fired("files:same.png".into());
         anyhow::ensure!(
             self.build_caption(rect).is_some()
                 && self.caption_label.as_ref().unwrap().buffer.lines[0].text() == "caption a",
@@ -266,20 +266,20 @@ impl State {
         );
         self.install_result_probe_image(a);
         anyhow::ensure!(
-            self.pending_roi_aim.as_ref().is_some_and(|aim| !aim.ready),
+            self.preview_requests.roi_aim().is_some_and(|aim| !aim.ready),
             "another host's same file certified ROI readiness"
         );
         while a_rx.try_recv().is_ok() {}
         self.paint_result_probe_image(rect)?;
         anyhow::ensure!(
-            self.pending_roi_aim.is_some() && a_rx.try_recv().is_err(),
+            self.preview_requests.roi_aim().is_some() && a_rx.try_recv().is_err(),
             "another host's ROI was consumed or reported by the active renderer"
         );
         self.switch_to_workspace(b.clone(), Some("project".into()), None, false);
         self.dispatch_fe_command(Some(b), command("id-b", "caption b"));
         self.install_result_probe_image(b);
         anyhow::ensure!(
-            self.pending_roi_aim.as_ref().is_some_and(|aim| aim.ready),
+            self.preview_requests.roi_aim().is_some_and(|aim| aim.ready),
             "matching ROI was not certified ready"
         );
         anyhow::ensure!(
@@ -299,7 +299,7 @@ impl State {
             })
             .collect();
         anyhow::ensure!(
-            self.pending_roi_aim.is_none()
+            self.preview_requests.roi_aim().is_none()
                 && reports.len() == 1
                 && reports[0]["evt"] == "preview_roi_applied"
                 && reports[0]["ws"] == "id-b"
@@ -1270,7 +1270,7 @@ impl State {
             vec![node(node_id, "kept-default.rs", false)],
         );
         self.tree.selected = 1;
-        self.preview_node_id_fired = Some(node_id.into());
+        self.preview_requests.record_fired(node_id.into());
         self.preview_src_node_id = Some(node_id.into());
         self.preview_src = Some(preview.clone());
         self.repl_model.edit_draft(DraftEdit::Replace("kept_default_input = 42".into()));

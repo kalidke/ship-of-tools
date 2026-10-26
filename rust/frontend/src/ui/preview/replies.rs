@@ -144,12 +144,7 @@ impl State {
         // Only THIS save's target may resolve it — otherwise
         // navigating away mid-save lets the new file's preview
         // consume the marker and label an unrelated image "saved".
-        let scale_saved = match self.scale_save_pending.as_ref() {
-            Some((target, _)) if node_id.as_deref() == Some(target.as_str()) => {
-                self.scale_save_pending.take().map(|(_, raw)| raw)
-            }
-            _ => None,
-        };
+        let scale_saved = self.preview_requests.settle_scale_save(node_id.as_deref());
         if let Some(raw) = scale_saved {
             self.status = if self.preview_scale.is_some() {
                 format!("pixel size {raw} nm · saved")
@@ -164,19 +159,15 @@ impl State {
         // for the SAME page — a reply for a different page is a
         // real navigation (page turn / cursor move) and resets the
         // view to fit.
-        let is_reraster = matches!(
-            (self.preview_page_raster_pending, self.preview_page),
-            (Some((pend, _)), Some((cur, _))) if pend == cur
-        );
-        if is_reraster {
-            if let Some((_, z)) = self.preview_page_raster_pending.take() {
+        match self.preview_requests.settle_page_reply(self.preview_page.map(|(page, _)| page)) {
+            Some(z) => {
                 self.preview_page_raster_zoom = z;
+                self.preview_reraster_keep_view = true;
             }
-            self.preview_reraster_keep_view = true;
-        } else {
-            self.preview_page_raster_zoom = 1.0;
-            self.preview_page_raster_pending = None;
-            self.preview_reraster_keep_view = false;
+            None => {
+                self.preview_page_raster_zoom = 1.0;
+                self.preview_reraster_keep_view = false;
+            }
         }
         // For markdown previews, also remember which node
         // id + workspace served the buffer — figure URL
@@ -211,27 +202,15 @@ impl State {
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
         let row_key = self.active_result_row_key();
-        let drop_aim = match self.pending_roi_aim.as_mut() {
-            Some(aim)
-                if !aim.ready
-                    && row_key.as_ref() == Some(&aim.row_key)
-                    && node_id.as_deref() == Some(aim.node_id.as_str()) =>
-            {
-                if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
-                    aim.ready = true;
-                    false
-                } else {
-                    true
-                }
-            }
-            _ => false,
-        };
-        if drop_aim {
+        let raster_installed = is_raster_preview_mime(&mime) && self.preview_png.is_some();
+        if let Some(dropped) =
+            self.preview_requests.certify_roi_aim(row_key.as_ref(), node_id.as_deref(), raster_installed)
+        {
             // The aimed file didn't produce a raster (non-raster
             // preview or decode failure): a viewport aim is
             // meaningless — retire it rather than letting it fire
             // on a later unrelated raster.
-            let aim = self.pending_roi_aim.take();
+            let aim = Some(dropped);
             tracing::warn!(node_id = ?aim.map(|a| a.node_id),
                 "preview --roi: target has no raster preview — aim dropped");
         }
@@ -248,7 +227,7 @@ impl State {
                     && mime != "text/markdown"
                     && mime != "text/x-markdown");
             let matches_req =
-                node_id.as_deref() == self.preview_node_id_fired.as_deref();
+                node_id.as_deref() == self.preview_requests.fired_target();
             if def_line > 0 && is_code && matches_req {
                 self.preview_scroll = self
                     .preview_md
@@ -399,12 +378,12 @@ impl State {
         // into place) deliver the SAME logical update as
         // "created" — the old modified-only gate left renamed-in
         // figures stale (the reported same-filename bug).
-        // `preview_node_id_fired` is the source of truth for
+        // The fired target is the source of truth for
         // "what the pane shows right now" (same anchor the
         // reconnect re-fetch uses); hold the current page so a
         // paginated preview doesn't snap back to page 1.
         if (kind == "modified" || kind == "created")
-            && self.preview_node_id_fired.as_deref() == Some(node_id.as_str())
+            && self.preview_requests.fired_target() == Some(node_id.as_str())
         {
             let (fit_w, fit_h) = self.preview_fit_px();
             let generation = self.next_preview_gen();
