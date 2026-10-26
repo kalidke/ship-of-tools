@@ -361,8 +361,9 @@ fault() {
 }
 case "$1:${PG_FAIL_PRODUCER:-}" in
     cat-file:catalog) [ "${2:-}" != --batch-all-objects ] || fault ;;
-    cat-file:read) [ "${2:-}" != commit ] || fault ;;
-    ls-tree:tree) fault ;;
+    # raw() and scan_tree() now read through distinct selected batch rounds.
+    cat-file:read) [ "${2:-}" != --batch ] || fault ;;
+    cat-file:tree) [ "${2:-}" != '--batch=%(objectname) %(objecttype) %(objectsize)' ] || fault ;;
     ls-remote:resolve) [ "${2:-}" != --get-url ] || fault ;;
     ls-remote:advertise) [ "${2:-}" = --get-url ] || fault ;;
 esac

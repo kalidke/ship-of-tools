@@ -267,7 +267,8 @@ integration tests `shell_dial`, `unit_pin`, `same_version`, `window_start`.
 ## Publish guard (landings A and B; B execution evidence pending)
 
 Distribution owns `hooks/pre-push` (the versioned scanner), `hooks/pre-push-shim` (the common-directory entry),
-`hooks/publish-guard-lib.sh` (policy-location and encoding validation), and `setup-publish-guard.sh` (the only enrollment owner).
+`hooks/publish-guard-lib.sh` (policy-location and encoding validation), `hooks/publish-guard-scan.awk` (batch framing,
+raw graph traversal and matching), and `setup-publish-guard.sh` (the only enrollment owner).
 The private list and the private operations archive are never public repository assets.
 
 Guarantees and boundaries:
@@ -311,8 +312,12 @@ Guarantees and boundaries:
   not advertise; new snapshots, ref names and tag objects still receive their normal scans. A retained denied file in a
   new snapshot still refuses after an ancestor was published. Unavailable old OIDs can conservatively recheck history.
   Raw parent traversal refuses missing shallow/promisor objects; local object enumeration precedes reads, so the
-  hook never fetches to complete a scan. No diff, textconv or replacement object changes its inspected bytes. NUL
-  bytes delimit single-line matching, as paths use NUL records.
+  hook never fetches to complete a scan. Commit/tag walks read only their selected frontier, one batch per generation;
+  tree walks read one selected depth level per batch, preserving every path context. Each round checks catalog
+  membership before reading; the catalog supplies types, never additional requests. Distinct selected blobs use one
+  final batch, including published blobs retained in new snapshots. Raw tree mode/name/NUL/binary-OID records retain
+  unquoted path bytes. No diff, textconv or replacement object changes its inspected bytes. NUL bytes delimit
+  single-line matching.
 - On every push, one raw common-clone-local `sot.publishList` value must name an absolute readable regular file outside
   every repository and Git metadata. There is no global, system or command-config fallback. Missing, multiple,
   relative, linked, inside-repository or unresolvable policy paths refuse, including deletion-only pushes. Directory
