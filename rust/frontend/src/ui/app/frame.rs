@@ -166,47 +166,34 @@ impl State {
         // We clear the flag whether or not the expansion request actually
         // queued — a no-op row (leaf or already expanded) doesn't deserve
         // a retry loop.
-        if self.pending_auto_expand
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
+        let ready = self.nav_cursor.initial_selection_done() && !self.nav.tree().rows().is_empty();
+        if self.startup.take_auto_expand(ready) {
             self.try_expand_selected();
-            self.pending_auto_expand = false;
         }
         // `--auto-pin`: drive C2 toggle once the cursor selection has
         // landed. Same gating as `--auto-expand`. Pinning a row whose
         // id doesn't start with `files:` is a `toggle_pin` no-op; the
         // flag still clears so we don't churn.
-        if self.pending_auto_pin
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
+        if self.startup.take_auto_pin(ready) {
             self.toggle_pin();
-            self.pending_auto_pin = false;
         }
         // `--demo-repl-eval`: one-shot self-submit once the workspace is
         // live (same gating as the other harness one-shots). Replaces the
         // draft and submits without moving scroll, then shows the REPL
         // drawer so the capture includes it.
-        if self.pending_demo_repl_eval.is_some()
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
-            if let Some(code) = self.pending_demo_repl_eval.take() {
-                self.submit_demo_repl_input(code);
-                self.layout_help.show_demo_repl();
-            }
+        if let Some(code) = self.startup.take_demo_repl_eval(ready) {
+            self.submit_demo_repl_input(code);
+            self.layout_help.show_demo_repl();
         }
         // `--demo-function-methods` chain: once the target function row
         // appears in the tree (after the col-2 splice has landed),
         // position cursor on it and fire the methods request. Single-fire
         // by clearing the pending tuple.
-        if let Some((module, name)) = self.pending_demo_function_methods.clone() {
-            let target_id = format!("modules:{module}:{name}");
+        if let Some(target_id) = self.startup.demo_function_target() {
             if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
                 self.nav.select(idx);
                 self.try_expand_selected();
-                self.pending_demo_function_methods = None;
+                self.startup.finish_demo_function();
             }
         }
     }
@@ -219,12 +206,11 @@ impl State {
         // fire exactly as they would for a user host-2 — which is the
         // point: `--capture-preview` only fires preview.get, but the
         // concept panel and drift badge key off the cursored row.
-        if let Some(path) = self.pending_start_path.clone() {
+        if let Some(path) = self.startup.start_path().map(str::to_owned) {
             let target_id = format!("files:{path}");
             if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
                 self.nav.select(idx);
-                self.pending_start_path = None;
-                self.start_path_fired = None;
+                self.startup.finish_start_path();
             } else {
                 // Deepest ancestor directory that exists in the tree but is
                 // still collapsed. (Ancestors appear top-down, so the last
@@ -253,17 +239,16 @@ impl State {
                     let anc_id = self.nav.tree().rows()[idx].node.id.clone();
                     // Fire once per frontier; `expanded` flips only when the
                     // children splice lands, so gate re-fires on the memo.
-                    if self.start_path_fired.as_deref() != Some(anc_id.as_str()) {
+                    if self.startup.start_path_fired() != Some(anc_id.as_str()) {
                         self.nav.select(idx);
                         if self.try_expand_selected() {
-                            self.start_path_fired = Some(anc_id);
+                            self.startup.note_frontier_fired(anc_id);
                         } else {
                             // Not expandable (leaf / no children): the path
                             // can't be reached — stop walking rather than
                             // retry every redraw.
                             tracing::warn!(%path, %anc_id, "--start-path dead end — ancestor not expandable");
-                            self.pending_start_path = None;
-                            self.start_path_fired = None;
+                            self.startup.finish_start_path();
                         }
                     }
                 }

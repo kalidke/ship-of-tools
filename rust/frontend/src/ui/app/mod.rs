@@ -6,6 +6,7 @@ mod dialog;
 mod exit;
 mod frame;
 mod handler;
+pub(in crate::ui) mod startup;
 #[cfg(test)]
 #[cfg_attr(feature = "test-window-progress", allow(unused_imports, reason = "the harness=false native targets run none of these tests"))]
 mod exit_process_tests;

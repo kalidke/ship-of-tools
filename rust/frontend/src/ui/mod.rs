@@ -211,36 +211,8 @@ struct State {
     evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
     #[cfg(all(test, feature = "test-window-progress"))]
     native_progress: Option<Arc<std::sync::Mutex<NativeProgressLedger>>>,
-    /// One-shot from `--auto-expand`; consumed after `pending_initial_selection`
-    /// lands. Fires the same outgoing request the Enter/Right key would,
-    /// so capture tests can verify expanded states.
-    pending_auto_expand: bool,
-    /// One-shot from `--auto-pin`. Same trigger conditions as
-    /// `pending_auto_expand`: fires after the initial cursor selection
-    /// has landed and the tree isn't empty. Lets `--capture` exercise
-    /// the C2 pin sigil and `[pinned *]` preview-title chrome.
-    pending_auto_pin: bool,
-    /// `--demo-function-methods <module>:<name>` one-shot. When the row
-    /// `modules:<module>:<name>` appears in the tree (after a prior col-2
-    /// expansion has landed), the chrome moves the cursor onto it and
-    /// fires `function.methods`. Consumed once it triggers.
-    pending_demo_function_methods: Option<(String, String)>,
-    /// `--demo-repl-eval <code>` one-shot: submit through the FE's own
-    /// path once the initial tree has landed, then open the REPL drawer.
-    /// Externally-dispatched evals are dropped by design (frames only
-    /// render for self-created `repl_log` entries), so the harness enters
-    /// by the front door.
-    pending_demo_repl_eval: Option<String>,
-    /// `--start-path <relpath>` walk state (files-mode). While pending, each
-    /// tree update either lands the cursor on the target file's row (done)
-    /// or expands the deepest existing collapsed ancestor directory and
-    /// waits for its children splice. Consumed on arrival or dead end.
-    pending_start_path: Option<String>,
-    /// Ancestor row id we last fired `tree.children` for during the
-    /// `--start-path` walk. Expansion flips `row.expanded` only when the
-    /// reply lands, so without this memo the walk would re-fire the same
-    /// request on every redraw in between.
-    start_path_fired: Option<String>,
+    /// The harness's command-line one-shots: auto-expand, auto-pin, the demo eval and methods, the start-path walk.
+    startup: crate::ui::app::startup::StartupScript,
     /// Harness instance (`--ephemeral`, or any `--capture` run): never the
     /// user's primary FE on this host, so it must not touch the per-host
     /// shared state — no resume-state / `fe-state.json` writes, no state

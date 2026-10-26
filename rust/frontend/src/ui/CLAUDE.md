@@ -39,7 +39,7 @@ owns the page proxy's proxied hosts, listener manager and armed listeners; `host
 connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
 surface, device, queue and surface configuration; `render::canvas::Canvas` owns the glyph text layer, the chrome's
 cell grid and the cell metrics; `render::brushes::Brushes` owns the quad pipeline, the solid brushes, the logos and
-the help peek's backing.
+the help peek's backing; `app::startup::StartupScript` owns the harness's command-line one-shots.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -299,6 +299,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   brushes built once per colour before the pass that paints them, the strip logo and nav wordmark (each drawn only
   when it decoded) and the help peek's backing, rebuilt only when its alpha changes. Painting is its operation over
   the `Gpu`; `Gpu` also holds the surface format's clear colour.
+- `StartupScript` privately owns the harness's one-shots: `--auto-expand`, `--auto-pin` and `--demo-repl-eval` each
+  fire once when the startup selection has landed on a non-empty tree (taken whether or not their action queues),
+  `--demo-function-methods` once its row appears, and the `--start-path` walk's target and frontier memo, ended on
+  arrival or a dead end. The walk itself, which reads the tree and expands, is State's.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
