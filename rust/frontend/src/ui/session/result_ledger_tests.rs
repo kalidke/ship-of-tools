@@ -38,7 +38,7 @@ fn record(
 }
 
 fn start(ledger: &mut ResultLedger, target: &ResolvedWorkspace, generation: u64) -> AttemptStart {
-    ledger.begin_attempt(target, generation).unwrap().unwrap()
+    ledger.begin_attempt(target, || generation + 1).unwrap().unwrap()
 }
 
 fn present(
@@ -83,7 +83,7 @@ fn owed_results_use_canonical_rows_and_listed_badges() {
 fn replacements_and_retries_have_distinct_serials() {
     let (dir, mut ledger, a, _) = setup();
     let target = dir.resolve(&a, "project").unwrap();
-    assert!(ledger.begin_attempt(&target, 40).unwrap().is_none());
+    assert!(ledger.begin_attempt(&target, || 41).unwrap().is_none());
     record(&mut ledger, &dir, &a, "project", "same.rs");
     let first = start(&mut ledger, &target, 40);
     assert_eq!(
@@ -426,4 +426,42 @@ fn badge_projection_tracks_a_renamed_canonical_row() {
         ledger.badged_keys(&dir),
         HashSet::from([renamed.row_key().clone()])
     );
+}
+
+#[test]
+fn result_attempt_allocates_exactly_once_only_after_admission() {
+    use crate::ui::preview::requests::PreviewRequests;
+    use std::cell::Cell;
+    let (dir, mut ledger, host, _) = setup();
+    let target = dir.resolve(&host, "project").unwrap();
+    let mut requests = PreviewRequests::default();
+    let calls = Cell::new(0u64);
+    assert!(ledger.begin_attempt(&target, || {
+        calls.set(calls.get() + 1);
+        requests.issue_preview()
+    }).unwrap().is_none());
+    assert_eq!((calls.get(), requests.preview_generation()), (0, 0));
+    record(&mut ledger, &dir, &host, "project", "owed.rs");
+    for expected in [1, 2] {
+        let attempt = ledger.begin_attempt(&target, || {
+            calls.set(calls.get() + 1);
+            requests.issue_preview()
+        }).unwrap().unwrap();
+        assert_eq!((calls.get(), attempt.preview_gen, requests.preview_generation()), (expected, expected, expected));
+        assert!(ledger.has_badge(target.row_key()));
+        assert_eq!(ledger.path(target.identity()), Some("owed.rs"));
+        ledger.abandon_attempt(&dir, &host, &attempt.id);
+    }
+    // Seed only the ledger's exhausted serial inside its own test module; all request state
+    // is constructed and changed through public operations, with no clock setter.
+    let mut exhausted = ResultLedger { attempt_serial: u64::MAX, ..ResultLedger::default() };
+    for owed in [false, true] {
+        if owed { record(&mut exhausted, &dir, &host, "project", "owed.rs"); }
+        let result = exhausted.begin_attempt(&target, || {
+            calls.set(calls.get() + 1);
+            requests.issue_preview()
+        });
+        assert!(matches!(result, Err("result attempt serial space exhausted")));
+        assert_eq!((calls.get(), requests.preview_generation()), (2, 2));
+    }
 }

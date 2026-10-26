@@ -278,7 +278,7 @@ impl State {
         // is in hand for the current cursor. Three states: no target
         // (None/None), loading (Some/None or mismatched), and ready
         // (Some/Some with the same target).
-        let concept_target = self.concept_target_fired.clone();
+        let concept_target = self.preview_requests.concept_target().map(str::to_owned);
         let concept_status: String = match (&concept_target, &self.concept) {
             (None, _) => "annotation: (no target for this row)".to_string(),
             (Some(t), Some(info)) if info.target == *t => {

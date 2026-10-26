@@ -162,7 +162,7 @@ impl State {
         // its synced_against until the fresh reply lands.
         self.preview_concept = None;
         self.concept = snap.concept;
-        self.concept_target_fired = None;
+        self.preview_requests.reset_concept_follow();
         // Not snapshotted: while this workspace was parked the daemon sent no `preview.changed` for it, so a
         // cached hash may be of bytes since edited. Each file parses again at its next view.
         clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);

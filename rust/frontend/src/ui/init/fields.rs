@@ -105,13 +105,11 @@ impl State {
                 persisted_geom.last_mode.as_deref(),
                 harness,
             ),
-            concept_target_fired: None,
             last_cursor_pos: None,
             cursor_moved_at: None,
             concept: None,
             pending_file_edit: None,
             preview_node_id_fired: None,
-            driven_preview_hold_cursor: None,
             pending_reveal: None,
             restore_nav_after_resume: None,
             reveal_awaiting: None,
@@ -261,8 +259,7 @@ impl State {
             text_scale_mult: 1.0,
             preview_src: None,
             preview_src_node_id: None,
-            preview_req_gen: 0,
-            concept_req_gen: 0,
+            preview_requests: preview::requests::PreviewRequests::default(),
             project_scan_req_gen: HashMap::new(),
         }
     }

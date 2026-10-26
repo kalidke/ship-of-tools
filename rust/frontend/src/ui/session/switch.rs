@@ -233,7 +233,7 @@ impl State {
         // most projects (files:README.md) — left armed, it would suppress
         // the ENTERING workspace's cursor-follow preview until the user
         // moved the cursor (blank preview on switch).
-        self.driven_preview_hold_cursor = None;
+        self.preview_requests.leave_row();
         if let Some(target) = session_name {
             // `self.active_host` was just set to `host` above, before
             // anything in this function fired a request — correct BY
@@ -277,7 +277,7 @@ impl State {
             self.preview_svg = None;
             self.preview_concept = None;
             self.concept = None;
-            self.concept_target_fired = None;
+            self.preview_requests.reset_concept_follow();
             clear_drift(&mut self.file_ast_hashes, &mut self.file_parse_fired, &mut self.file_parse_retry);
             self.edit_state = None;
             self.preview_edit = None;

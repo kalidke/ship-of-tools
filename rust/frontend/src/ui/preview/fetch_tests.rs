@@ -1,9 +1,10 @@
 use super::*;
+use crate::ui::preview::requests::PreviewRequests;
 
 // Switch-latency Phase 1: `reply_is_current` is the whole stale-reply
-// guard for the preview pane and the concept/annotation slot — a
-// single free function shared by both `IncomingEvt` match arms, so one
-// set of cases covers both consumers.
+// guard for the preview pane and the concept/annotation slot. These
+// retained cases characterize the owner's preview admission operation;
+// requests_tests drives all three production reply continuations.
 
 #[test]
 fn reply_is_current_accepts_the_latest_generation_for_the_active_owner() {
@@ -77,4 +78,13 @@ fn reply_is_current_drops_a_non_active_workspace_even_at_the_latest_generation()
         &Some("old-ws".to_string()),
         &Some("active-ws".to_string()),
     ));
+}
+
+fn reply_is_current(
+    generation: u64, latest: u64, event_host: &HostKey, active_host: &HostKey,
+    workspace: &Option<String>, active_workspace: &Option<String>,
+) -> bool {
+    let mut requests = PreviewRequests::default();
+    for _ in 0..latest { requests.issue_preview(); }
+    requests.admits_preview(generation, event_host, active_host, workspace, active_workspace)
 }

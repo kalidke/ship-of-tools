@@ -342,7 +342,7 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
     // already in `state.concept`).
     let mut entered = false;
     if let (Some(target), Some(info)) =
-        (state.concept_target_fired.clone(), state.concept.as_ref())
+        (state.preview_requests.concept_target().map(str::to_owned), state.concept.as_ref())
     {
         if info.target == target && info.exists {
             // Split out frontmatter so the
