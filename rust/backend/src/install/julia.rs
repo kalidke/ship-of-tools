@@ -67,7 +67,8 @@ pub(super) fn version_of(julia: &str, dir: Option<&Path>) -> Option<String> {
     if let Some(d) = dir {
         c.current_dir(d);
     }
-    let ran = cmd::output(&mut c);
+    // A Julia that does not answer within the bound could not be asked: the judgment says so.
+    let ran = cmd::ask(&mut c).ok()?;
     ran.ok().then(|| ran.out.trim().to_string()).filter(|v| !v.is_empty())
 }
 
@@ -235,15 +236,21 @@ pub(super) fn instantiate(checkout: &Path, selected: Option<&str>, scratch: &Pat
     failed
 }
 
+/// Whether git says the environment's manifest is not tracked in `checkout`.
+fn untracked(checkout: &Path, env: &str) -> bool {
+    cmd::ask(cmd::git_in(checkout).args(["ls-files", "--error-unmatch", &format!("julia/{env}/Manifest.toml")])).is_ok_and(|ran| ran.code == Some(1))
+}
+
 /// The untracked manifests a run drops before it instantiates, so a manifest that predates a dependency the tag added
-/// cannot fail it. A repair run keeps them: they are this checkout's own resolution, and a repair moves nothing.
+/// cannot fail it. A repair run keeps them: they are this checkout's own resolution, and a repair moves nothing. Only an
+/// answer that says untracked (`ls-files --error-unmatch` exits 1) drops one; git failing or not answering keeps it.
 pub(super) fn stale_manifests(checkout: &Path, repair: bool) -> Vec<(&'static str, PathBuf)> {
     if repair {
         return Vec::new();
     }
     ENVS.iter()
         .map(|(env, _)| (*env, checkout.join("julia").join(env).join("Manifest.toml")))
-        .filter(|(env, m)| m.is_file() && !cmd::output(cmd::git_in(checkout).args(["ls-files", "--error-unmatch", &format!("julia/{env}/Manifest.toml")])).ok())
+        .filter(|(env, m)| m.is_file() && untracked(checkout, env))
         .collect()
 }
 

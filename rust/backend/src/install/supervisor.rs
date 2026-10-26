@@ -82,21 +82,47 @@ pub(super) enum Way {
     Desk,
     /// Nothing runs and this is a desktop session: the update applies here.
     Here,
-    /// The process listing failed: whether anything runs is unknown, so nothing is stopped and the update stays armed.
-    Unlisted,
+    /// The process listing failed, or this process's logon session could not be read: whether anything runs, or whether
+    /// this is the desk, is unknown, so nothing is stopped and the update stays armed.
+    Unknown,
 }
 
 /// The way for what the process listing showed (`None` when it failed): a resident supervisor's launcher code id
 /// (`None` when no supervisor runs, empty when it logs none) and a window running without one; and this process's logon
-/// session (0 for an ssh logon), asked only when nothing runs.
+/// session (0 for an ssh logon, `None` when it could not be read), asked only when nothing runs.
 #[cfg_attr(not(windows), allow(dead_code, reason = "the Windows install chooses how an update applies"))]
 pub(super) fn way(seen: Option<(Option<&str>, bool)>, session: &dyn Fn() -> Option<u32>) -> Way {
-    let Some((supervisor_code, window_only)) = seen else { return Way::Unlisted };
+    let Some((supervisor_code, window_only)) = seen else { return Way::Unknown };
     match supervisor_code {
         Some(code) if !code.is_empty() => Way::Converge,
         Some(_) => Way::Quit,
         None if window_only => Way::Quit,
-        None if session() == Some(0) => Way::Desk,
-        None => Way::Here,
+        None => match session() {
+            Some(0) => Way::Desk,
+            Some(_) => Way::Here,
+            None => Way::Unknown,
+        },
+    }
+}
+
+/// What the window's supervisor runs against the launcher the install left.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows install checks the window's launcher"))]
+pub(super) enum Launcher {
+    Current,
+    Older,
+    /// The installed launcher's code id could not be read, so nothing can be said (why).
+    Unknown(String),
+}
+
+/// The supervisor's logged launcher code id `logged` against the installed scripts' `installed` (the checkout's own
+/// `Get-SotLauncherCodeId`): an id that could not be read, or printed empty (its hashing failed), is unknown, never current.
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows install checks the window's launcher"))]
+pub(super) fn launcher(logged: &str, installed: Result<String, String>) -> Launcher {
+    match installed {
+        Err(why) => Launcher::Unknown(why),
+        Ok(want) if want.is_empty() => Launcher::Unknown("it printed no launcher code id".into()),
+        Ok(want) if want != logged => Launcher::Older,
+        Ok(_) => Launcher::Current,
     }
 }

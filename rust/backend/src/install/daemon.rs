@@ -69,9 +69,9 @@ fn state_within(sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (St
 pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> (State, String) {
     let deadline = Instant::now() + bound;
     loop {
-        // Every ask ends by the deadline, and none starts after it.
+        // Every ask ends by the deadline or its own bound, the smaller, and none starts after the deadline.
         let left = deadline.saturating_duration_since(Instant::now());
-        let (st, why) = state_within(sotd, endpoint, runs, left.max(Duration::from_millis(1)));
+        let (st, why) = state_within(sotd, endpoint, runs, ask_slice(left));
         let left = deadline.saturating_duration_since(Instant::now());
         if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
             return (st, why);
@@ -81,6 +81,12 @@ pub(super) fn wait_current(sotd: &Path, endpoint: &str, bound: Duration, held_ok
             return (st, why);
         }
     }
+}
+
+/// The bound of one ask in a wait with `left` of its deadline: the smaller of the two, so a long configured wait never
+/// lengthens one observation past [`cmd::ASK_BOUND`].
+fn ask_slice(left: Duration) -> Duration {
+    left.min(cmd::ASK_BOUND).max(Duration::from_millis(1))
 }
 
 /// What a restart of the daemon would end: the rows with a live REPL, whether its Pluto server runs, and, when the
@@ -113,8 +119,10 @@ pub(super) fn work_of(out: &str, err: &str, code: Option<i32>) -> Work {
 /// What a restart would end, asked of the daemon within [`cmd::ASK_BOUND`]; an ask that gave no answer is `unsure` with
 /// its reason, so a caller that cannot be told is asked about, never told "nothing".
 pub(super) fn work(sotd: &Path, endpoint: &str) -> Work {
-    let ran = cmd::ask(Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]));
-    work_of(&ran.out, &ran.err, ran.code)
+    match cmd::ask(Command::new(sotd).args(["update", "repls", "--endpoint", endpoint])) {
+        Ok(ran) => work_of(&ran.out, &ran.err, ran.code),
+        Err(why) => Work { unsure: Some(why), ..Work::default() },
+    }
 }
 
 /// What the daemon processes of the install at `prefix` run for a person, from their own process tree: `Some` with one
@@ -206,6 +214,26 @@ pub(super) struct Asks<'a> {
 /// diagnostic. A 0.7 daemon retires the row layout a 0.6 daemon left, ending each old agent once.
 pub(super) fn retires_agents(state: State, version: &str) -> bool {
     matches!(state, State::Other | State::Held) && version.starts_with("0.6.")
+}
+
+/// What an update does about the daemon before it applies here, once nothing else runs: apply directly when none runs,
+/// stop it first when one does, and hold (stop nothing, leave the update armed) when one runs and cannot be told, since
+/// stopping what is not known is not safe.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows update applies here"))]
+pub(super) enum Apply {
+    Direct,
+    StopFirst,
+    Hold,
+}
+
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows update applies here"))]
+pub(super) fn apply_here(state: State) -> Apply {
+    match state {
+        State::None => Apply::Direct,
+        State::Unknown => Apply::Hold,
+        State::Current | State::Other | State::Held => Apply::StopFirst,
+    }
 }
 
 /// What happens to agents when the daemon is replaced, using the running version, not the install record's.

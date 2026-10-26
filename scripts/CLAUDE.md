@@ -176,25 +176,49 @@ Guarantees, each with the mechanism it rests on. Install:
   `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
   output-completion bound below. Whole-install completion on Windows in an isolated profile remains unproven until the
   release-gate witness completes.
-- Every question the install asks of the machine is bounded and fails closed. A question is a child that reads a
-  fact the install then decides on: the process listing (`ps`; CIM `Win32_Process`), the `--version` of a binary, the
-  installed `sotd`'s socket path, `update direction` and `update repls`, `systemctl --user is-active` and `cat`,
-  and on Windows the logon session, the launcher code id and the Desktop shortcut's target. Each runs through
-  `cmd::ask` under the same group/job ownership as the publish guard's Git reads, 60 s wall clock through exit and
-  complete output (a cold CIM listing takes about 26 s on a hosted Windows runner and misses 15 s in every
-  environment), and at most 5 s more to end it. A question that did not start, was cut or was ended by a signal has
-  not answered, and its output is discarded: it is never read as an empty answer. What each decision does with no
-  answer: a process listing that could not be read is an error, never an empty list, and a daemon is then presumed to
-  run, so one that cannot be told its version is `Unknown` (asked about, never taken for none) and its children are
-  unknown; a Unix run stops before it writes when the listing or `systemctl` gives no answer (exit 1, "nothing was
-  changed"); a Windows update whose listing failed stops nothing, leaves the update armed and ends ONE STEP LEFT; the
-  final checks record FAIL for a `--version`, a unit state, a launcher code or a listing that gave no answer; an
-  installed `sotd` whose `--version` gave none reads as a binary whose version cannot be read, as one that does not
-  run; `update repls` with no answer is the daemon not saying all of its work, which is asked about; a logon session
-  that cannot be read stays "not taken for ssh". Not questions, and so not bounded here: the install's own steps
-  (Git, `sotd update stage`, the scripts, Julia, npm), whose transfers keep their stall bounds, and reads whose only
-  stall is the filesystem, which the installer's own file reads share. The tests are `install::procs`, `install::cmd`
-  and the Unix and Windows decision tests (`running_here`, `way`).
+- Every question the install asks of the machine is bounded and fails closed. A question is a read-only child whose
+  answer the install then decides on, and it runs through `cmd::ask`: the process listing (`ps`; CIM
+  `Win32_Process`), every `--version`, the installed `sotd`'s `session-socket-path`, `update direction`, `update
+  repls`, `topology status` and `topology plan` (Unix), `systemctl --user is-active` and `cat`, the boot-wiring
+  queries, `ldd --version`, `stat -f`, `id -un`, Julia's version, floor and channel probes, the Git fact reads
+  (`rev-parse`, `rev-list`, `merge-base`, `status --porcelain`, `ls-files`, `cat-file`, `tag -l`), and on Windows the
+  logon session, the launcher code id and the Desktop shortcut's target. Each has 60 s wall clock through exit and
+  complete output under the same group/job ownership as the publish guard's Git reads (a cold CIM listing takes about
+  26 s on a hosted Windows runner and misses 15 s in every environment), then at most 5 s to end it; a daemon wait caps
+  each of its asks at the smaller of the wait left and 60 s. A question that did not start, was cut, or was ended by a
+  signal has no answer and its output is discarded; an answer is an exit code the caller then reads. Only those
+  children that change something or transfer are not questions and are not bounded here: clone, fetch, `worktree
+  add` and `remove`, `sotd update stage`, `trust declare`, `topology sync`, the scripts, Julia's instantiate and comm
+  steps, `juliaup`, npm, the `systemctl` actions, `loginctl enable-linger`, the unit and launcher writes and the icon
+  tools; their transfers keep their stall bounds. What each decision does with no answer:
+  - A process listing is valid only if it exits 0 and every row reads (a Unix row that does not parse, or CIM output that
+    is not an array of objects with numeric `ProcessId` and `ParentProcessId`, is an error, never a shorter or empty
+    list). A listing that failed presumes a daemon runs, so one that cannot be told its version is `Unknown` (asked
+    about, never taken for none) and its children are unknown. A Unix run stops before it writes (exit 1, "nothing was
+    changed"). A Windows update leaves the update armed, stops nothing, and ends ONE STEP LEFT with the reason, as it
+    does when the logon session cannot be read (the run is neither the desk nor an ssh logon); a daemon that runs and
+    cannot be told is not stopped before an apply, and the update stays armed.
+  - Before any write, the Unix run also stops (exit 1, or 2 where a gate refuses) when `systemctl` gives no documented
+    state (`active`, `inactive`, `failed`, `activating`, `deactivating`, `reloading`, `refreshing`, `maintenance`; a bus
+    or permission failure prints none), when an active unit's file cannot be read (the ownership gate is not "no
+    owner"), when `topology status` or `ldd` gives no answer, and when the daemon's socket path (Windows: pipe name) is
+    not a usable name. An installed `sotd` whose `--version` is cut, fails or prints none is an install that is there and
+    unreadable: a run that names no target stops (exit 2), a run that names its target goes on without a version, and
+    it is never "no install". Later in the run, a topology plan, a Git fact (`rev-parse`, `status`) or the Julia floor and
+    channel probes with no answer stop the run with the reason (in the final checks, FAIL); a Julia whose version
+    cannot be asked is the ONE STEP LEFT that says so.
+  - Reads of state a step would act on keep that state when they cannot say: a manifest is dropped only when `ls-files`
+    exits 1; an old version folder is pruned only when `status` exits 0 clean; `git merge-base` and `rev-list` that
+    give no answer make the build's direction `unknown: <why>`; `update direction` with no answer is `unknown`;
+    `update repls` with no answer is the daemon not saying all of its work, which is asked about.
+  - Final checks pass only on successful, valid observations: a binary counts only from an exit 0 `--version` that
+    says the version and commit; a Windows launcher code id that could not be read or printed empty is FAIL, as is a
+    window launcher check or a unit state that could not be listed or told; a cut is never PASS without its reason.
+  - Advisory reads say they could not tell: `stat` warns, `id` skips linger with a note, the boot-wiring line says it
+    could not be read.
+  The tests are `install::procs`, `install::cmd`, `install::mod` (installed version, endpoint name), `install::daemon`
+  (`way`, `apply_here`, `launcher`, the ask slice) and the Unix decision tests (`running_here`, the unit state, boot
+  wiring, Git reads).
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable

@@ -39,3 +39,28 @@ fn a_julia_below_the_floor_is_named_with_its_fix() {
     let Judged::Step(line) = judge(&facts(Source::Bin(Some("1.12.0".into())), None)) else { panic!() };
     assert!(line.starts_with("the Julia the comm refresh runs could not be asked") && line.ends_with("ahead of /usr/bin/julia on PATH"), "{line}");
 }
+
+/// A manifest is dropped only on git's answer that it is untracked; a checkout git cannot read keeps its manifests.
+#[test]
+fn a_manifest_is_dropped_only_when_git_says_untracked() {
+    let git = |dir: &Path, args: &[&str]| {
+        let ran = sot_platform::test_wait::run_within(std::process::Command::new("git").arg("-C").arg(dir).args(args), std::time::Duration::from_secs(30));
+        assert_eq!(ran.status.code(), Some(0), "git {args:?}: {ran}");
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    for env in ["kernel", "repl"] {
+        std::fs::create_dir_all(repo.join("julia").join(env)).unwrap();
+        std::fs::write(repo.join("julia").join(env).join("Manifest.toml"), "m").unwrap();
+    }
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "julia/kernel/Manifest.toml"]);
+    let stale: Vec<&str> = stale_manifests(&repo, false).iter().map(|(env, _)| *env).collect();
+    assert_eq!(stale, ["repl"], "tracked is kept, untracked is dropped");
+    assert!(stale_manifests(&repo, true).is_empty(), "a repair keeps them");
+    let plain = dir.path().join("plain");
+    std::fs::create_dir_all(plain.join("julia/kernel")).unwrap();
+    std::fs::write(plain.join("julia/kernel/Manifest.toml"), "m").unwrap();
+    assert!(stale_manifests(&plain, false).is_empty(), "git that cannot tell is no 'untracked'");
+}

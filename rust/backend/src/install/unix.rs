@@ -113,12 +113,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     enrolled.check(&mut found);
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
     if found.fail.is_none() && plan.unit_managed() {
-        let wired = lib(&plan.checkout, "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();
-        if wired {
-            println!("sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file");
-        } else {
-            print!("{}", lib(&plan.checkout, "sot_boot_off_line", &[]).out);
-        }
+        println!("{}", boot_start_note(&plan.checkout, &plan.units().to_string_lossy()));
     }
     Ok((found, pin))
 }
@@ -137,25 +132,87 @@ fn sotd_at(sotd: &Path, args: &[&str]) -> cmd::Ran {
     cmd::output(Command::new(sotd).args(args))
 }
 
-/// A question asked of an installed `sotd` (its `--version`, its socket path), within [`cmd::ASK_BOUND`].
-fn sotd_asks(sotd: &Path, args: &[&str]) -> cmd::Ran {
+/// A question asked of an installed `sotd` (its `--version`, its socket path, the topology), within [`cmd::ASK_BOUND`].
+fn sotd_asks(sotd: &Path, args: &[&str]) -> Result<cmd::Ran, String> {
     cmd::ask(Command::new(sotd).args(args))
 }
 
-/// A question asked of `systemctl --user` within [`cmd::ASK_BOUND`]: its answer (an exit code of any value is one), or
-/// why it gave none, which no caller may read as "the unit is not active".
-fn systemctl_asks(args: &[&str]) -> Result<cmd::Ran, String> {
-    unit_asks("systemctl", args)
+/// A git read in `dir`: its first line when it exits 0, else the `Stop` that names `missing` (git answered with a failure)
+/// or why git could not be asked (no answer within the bound).
+fn git_value(dir: &Path, args: &[&str], missing: impl FnOnce() -> String) -> Result<String, Stop> {
+    match cmd::ask(cmd::git_in(dir).args(args)) {
+        Ok(ran) if ran.ok() => Ok(ran.first_line()),
+        Ok(_) => Err(Stop::new(1, missing())),
+        Err(why) => Err(Stop::new(1, format!("could not ask git in {}: {why}", dir.display()))),
+    }
 }
 
+/// Whether a work tree has local changes, by `git status --porcelain`: `Err` when git could not say.
+fn tree_dirty(dir: &Path) -> Result<bool, String> {
+    cmd::ask_ok(cmd::git_in(dir).args(["status", "--porcelain"])).map(|ran| !ran.out.trim().is_empty())
+}
+
+/// One function of the checkout's library asked as a question (a test of files, a line of text), within
+/// [`cmd::ASK_BOUND`].
+fn lib_asks(checkout: &Path, func: &str, args: &[&str]) -> Result<cmd::Ran, String> {
+    let library = checkout.join("scripts/lib/sot-daemon.sh");
+    cmd::ask(Command::new("bash").arg("-c").arg(". \"$1\" || exit 127; shift; \"$@\"").arg("bash").arg(&library).arg(func).args(args))
+}
+
+/// Whether the unit folder `dir` wires boot start (`sot_boot_wired` exits 0 or 1); why not known, when the question gave
+/// no answer or another exit.
+fn boot_wired(checkout: &Path, dir: &str) -> Result<bool, String> {
+    let ran = lib_asks(checkout, "sot_boot_wired", &[dir])?;
+    match ran.code {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        other => Err(format!("sot_boot_wired ended with exit {}: {}", other.unwrap_or_default(), ran.last_said())),
+    }
+}
+
+/// The line about the daemon's boot start after the run, or why the question had no answer.
+fn boot_start_note(checkout: &Path, dir: &str) -> String {
+    match boot_wired(checkout, dir) {
+        Ok(true) => "sotd.service: stop it on this computer with systemctl --user stop sotd.service; its boot start follows hosts.toml and the unit's host pin, and enable or disable change no file".to_string(),
+        Ok(false) => lib_asks(checkout, "sot_boot_off_line", &[]).map(|ran| ran.out.trim_end().to_string()).unwrap_or_else(|why| format!("sotd.service: whether boot start is on could not be read ({why})")),
+        Err(why) => format!("sotd.service: whether boot start is on could not be read ({why})"),
+    }
+}
+
+/// A question asked of `systemctl --user` within [`cmd::ASK_BOUND`]: its answer (an exit code of any value is one, for the
+/// caller to read), or why it gave none.
 fn unit_asks(systemctl: &str, args: &[&str]) -> Result<cmd::Ran, String> {
-    let ran = cmd::ask(Command::new(systemctl).arg("--user").args(args));
-    if ran.answered() { Ok(ran) } else { Err(format!("systemctl --user {} gave no answer ({})", args.join(" "), ran.last_said())) }
+    unit_asks_within(systemctl, args, cmd::ASK_BOUND)
 }
 
-/// [`systemctl_asks`] before the run has written anything: no answer stops the run.
-fn systemctl_decides(args: &[&str]) -> Result<cmd::Ran, Stop> {
-    systemctl_asks(args).map_err(|why| Stop::new(1, format!("{why}, so whether sotd.service runs is unknown; nothing was changed")))
+fn unit_asks_within(systemctl: &str, args: &[&str], bound: std::time::Duration) -> Result<cmd::Ran, String> {
+    cmd::ask_within(Command::new(systemctl).arg("--user").args(args), bound).map_err(|why| format!("systemctl --user {} gave no answer ({why})", args.join(" ")))
+}
+
+/// What `systemctl --user is-active sotd.service` said. It prints the unit's state and exits 0 only for an active one; a
+/// state it documents as inactive is an answer, and anything else (a bus or permission failure prints no state) is not:
+/// it is never "not active".
+fn unit_active_of(ran: &cmd::Ran) -> Result<bool, String> {
+    let word = ran.first_line();
+    match (ran.code, word.as_str()) {
+        (Some(0), "active" | "reloading" | "refreshing") => Ok(true),
+        (Some(code), "inactive" | "failed" | "activating" | "deactivating" | "maintenance") if code != 0 => Ok(false),
+        _ => Err(format!("systemctl --user is-active said '{word}' (exit {}): {}", ran.code.unwrap_or_default(), ran.last_said())),
+    }
+}
+
+/// Whether `sotd.service` is active for this user here, or why that could not be told.
+fn unit_active(systemctl: &str) -> Result<bool, String> {
+    unit_active_within(systemctl, cmd::ASK_BOUND)
+}
+
+fn unit_active_within(systemctl: &str, bound: std::time::Duration) -> Result<bool, String> {
+    unit_asks_within(systemctl, &["is-active", "sotd.service"], bound).and_then(|ran| unit_active_of(&ran))
+}
+
+/// A unit question that could not be answered, before the run has written anything: it stops the run.
+fn unit_unknown(why: String) -> Stop {
+    Stop::new(1, format!("{why}, so whether sotd.service runs is unknown; nothing was changed. Run this from a full login session, where systemctl --user works"))
 }
 
 /// The daemon and window facts the decisions read from the process listing: whether a daemon process of the install
@@ -199,7 +256,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     step("direction");
     let record_path = prefix.join("install.json");
     let pre_text = record::read(&record_path);
-    let pre_version = super::installed_version(&prefix);
+    let pre_version = super::installed_for(&prefix, implicit, "--version")?;
     let pre_commit = record::string(&pre_text, "commit").unwrap_or_default();
     let new_sotd = pack.exe("sotd");
     if implicit && pre_version.contains('+') {
@@ -238,7 +295,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         }
     }
     let me = sot_platform::host::state_dir::host_name().map_err(|e| Stop::new(1, e))?;
-    let status = sotd_at(&new_sotd, &["topology", "status"]);
+    let status = sotd_asks(&new_sotd, &["topology", "status"]).map_err(|why| Stop::new(1, format!("could not read the topology ({why}); nothing was changed")))?;
     let (mut topo_declared, topo_readable, topo_role) = if status.ok() {
         (true, true, role::from_status(&status.out, &me))
     } else {
@@ -285,7 +342,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         say("WARNING: neither claude nor ccx (the Codex launcher) found on PATH — install and log in a coding agent on this machine before running sessions");
     }
     if !macos && resolved.frontend {
-        let glibc = glibc_version();
+        let glibc = glibc_version().map_err(|why| Stop::new(1, format!("could not read this box's glibc ({why}); nothing was changed")))?;
         if glibc.is_none_or(|g| g < GLIBC_FLOOR_FE) {
             let shown = glibc.map_or("0".to_string(), |(a, b)| format!("{a}.{b}"));
             return Err(Stop::new(1, format!("the frontend binary needs glibc >= {}.{} (this box: {shown}); --be-only installs the backend without it.", GLIBC_FLOOR_FE.0, GLIBC_FLOOR_FE.1)));
@@ -318,10 +375,10 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     }
 
     step("daemon");
-    let socket = sotd_asks(&new_sotd, &["session-socket-path", "sot"]).first_line();
+    let socket = super::endpoint_name(sotd_asks(&new_sotd, &["session-socket-path", "sot"]), |name| !name.is_empty())?;
     let endpoint = format!("unix:{socket}");
     let (own_daemon, windows_before) = running_here(&procs::snapshot(), &prefix)?;
-    let unit_active = !macos && cmd::on_path("systemctl") && systemctl_decides(&["is-active", "sotd.service"])?.ok();
+    let unit_active = !macos && cmd::on_path("systemctl") && unit_active("systemctl").map_err(unit_unknown)?;
     let unit_runs = resolved.daemon && !no_service && unit_active;
     // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
     let retire_stops = !resolved.daemon && unit_active && home.join(".config/systemd/user/sotd.service").is_file();
@@ -383,7 +440,13 @@ fn role_words(r: Role) -> String {
 /// The warning for a folder on a remote filesystem, where the daemon will not keep capsule records (Linux; the names are
 /// GNU `stat -f -c %T`'s for `REMOTE_FS_TYPES` in `rust/platform/src/host/volume.rs`).
 fn warn_remote_fs(label: &str, dir: &Path) {
-    let ran = cmd::output(Command::new("stat").args(["-f", "-c", "%T"]).arg(dir));
+    let ran = match cmd::ask(Command::new("stat").args(["-f", "-c", "%T"]).arg(dir)) {
+        Ok(ran) => ran,
+        Err(why) => {
+            say(&format!("WARNING: could not tell whether {label} ({}) is on a remote filesystem ({why})", dir.display()));
+            return;
+        }
+    };
     let fstype = ran.first_line();
     if ran.ok() && ["nfs", "nfs4", "cifs", "smb2", "fuse.sshfs", "9p"].contains(&fstype.as_str()) {
         say(&format!("WARNING: {label} ({}) is on a remote filesystem ({fstype}).", dir.display()));
@@ -412,16 +475,27 @@ fn heal_old_hosts(config: &Path) {
 /// The program of the `sotd.service` running for this user here, or `None` when none runs: `is-active` is this host's
 /// own state, where the unit file may be another host's on a shared home. Stops the run when `systemctl` gives no answer.
 fn running_daemon_bin() -> Result<Option<String>, Stop> {
-    if !cmd::on_path("systemctl") || !systemctl_decides(&["is-active", "--quiet", "sotd.service"])?.ok() {
+    if !cmd::on_path("systemctl") || !unit_active("systemctl").map_err(unit_unknown)? {
         return Ok(None);
     }
-    Ok(role::unit_owner_path(&systemctl_decides(&["cat", "sotd.service"])?.out))
+    // An active unit whose program cannot be read is not "no running owner": the ownership gate cannot be answered.
+    let unreadable = |why: String| Stop::new(2, format!("sotd.service is active but its unit could not be read ({why}); nothing was changed"));
+    let unit = unit_asks("systemctl", &["cat", "sotd.service"]).map_err(unreadable)?;
+    if !unit.ok() {
+        return Err(unreadable(format!("exit {}: {}", unit.code.unwrap_or_default(), unit.last_said())));
+    }
+    role::unit_owner_path(&unit.out).map(Some).ok_or_else(|| unreadable("it names no program".into()))
 }
 
 /// The glibc this box runs, from `ldd --version`'s first line.
-fn glibc_version() -> Option<(u32, u32)> {
-    let ran = cmd::output(Command::new("ldd").arg("--version"));
-    let line = ran.out.lines().next()?.trim_end().to_string();
+/// `Err` when `ldd` did not answer within the bound; `Ok(None)` when its line names no version.
+fn glibc_version() -> Result<Option<(u32, u32)>, String> {
+    let ran = cmd::ask(Command::new("ldd").arg("--version"))?;
+    Ok(glibc_of(&ran.out))
+}
+
+fn glibc_of(text: &str) -> Option<(u32, u32)> {
+    let line = text.lines().next()?.trim_end().to_string();
     let last = line.rsplit(|c: char| !(c.is_ascii_digit() || c == '.')).next()?;
     let (a, b) = last.split_once('.')?;
     Some((a.parse().ok()?, b.split('.').next()?.parse().ok()?))
@@ -612,24 +686,16 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
     // --force on the tag fetch: a release tag moved upstream would otherwise abort every later fetch.
     let commit_ref = format!("{}^{{commit}}", plan.pack.commit);
     if cmd::shown(cmd::git_in(&base).args(["fetch", "--tags", "--force", "origin"])) != Some(0) {
-        if archive && cmd::output(cmd::git_in(&base).args(["rev-parse", "--verify", &commit_ref])).ok() {
+        if archive && git_value(&base, &["rev-parse", "--verify", &commit_ref], String::new).is_ok() {
             say(&format!("note: could not fetch origin; {} already holds {}", base.display(), plan.pack.short()));
         } else {
             return Err(Stop::new(1, "fetch failed"));
         }
     }
     let want = if archive {
-        let ran = cmd::output(cmd::git_in(&base).args(["rev-parse", "--verify", &commit_ref]));
-        if !ran.ok() {
-            return Err(Stop::new(1, format!("commit {} is not in origin after fetch — push the line first", plan.pack.commit)));
-        }
-        ran.first_line()
+        git_value(&base, &["rev-parse", "--verify", &commit_ref], || format!("commit {} is not in origin after fetch — push the line first", plan.pack.commit))?
     } else {
-        let ran = cmd::output(cmd::git_in(&base).args(["rev-parse", &format!("refs/tags/{tag}^{{commit}}")]));
-        if !ran.ok() {
-            return Err(Stop::new(1, format!("tag {tag} not present after fetch")));
-        }
-        ran.first_line()
+        git_value(&base, &["rev-parse", &format!("refs/tags/{tag}^{{commit}}")], || format!("tag {tag} not present after fetch"))?
     };
     if want != plan.pack.commit {
         return Err(Stop::new(1, format!("{tag} is at {want} in origin, not the pack's {}: refusing", plan.pack.commit)));
@@ -664,11 +730,11 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
     for name in [format!("last-good-{}.json", plan.target), format!("just-applied-{}", plan.target), format!("pending-{}.json", plan.target)] {
         let _ = std::fs::remove_file(updates.join(name));
     }
-    say(&format!("binaries: {}", sotd_asks(&plan.sotd(), &["--version"]).first_line()));
+    say(&format!("binaries: {}", super::pack::version_line(sotd_asks(&plan.sotd(), &["--version"]))));
 
     step("layout");
     if checkout.is_dir() {
-        if !cmd::output(cmd::git_in(&checkout).args(["status", "--porcelain"])).out.trim().is_empty() {
+        if tree_dirty(&checkout).map_err(|why| Stop::new(1, format!("could not read the checkout at {}: {why}", checkout.display())))? {
             return Err(Stop::new(1, format!("the checkout at {} has local changes — commit/stash/revert, then re-run (updates refuse to move a dirty tree)", checkout.display())));
         }
     } else {
@@ -677,7 +743,7 @@ fn lay_out(plan: &Plan) -> Result<(), Stop> {
             return Err(Stop::new(1, "worktree add failed; inspect this version path and its existing registration with git worktree list; registrations for unavailable paths are kept"));
         }
     }
-    let have = cmd::output(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])).first_line();
+    let have = git_value(&checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", checkout.display()))?;
     if have != want {
         return Err(Stop::new(1, format!("checkout HEAD ({have}) != {tag} commit ({want}) — refusing")));
     }
@@ -729,10 +795,8 @@ fn flip_current(repo: &Path, current: &Path, checkout: &Path) -> Result<Option<S
     if let Ok(target) = std::fs::read_link(current) {
         prev = target.file_name().map(|n| n.to_string_lossy().into_owned());
     } else if current.is_dir() {
-        if !cmd::output(cmd::git_in(current).args(["rev-parse", "--git-dir"])).ok() {
-            return Err(Stop::new(1, format!("repo/current exists but is not a readable git checkout — refusing to migrate (inspect {})", current.display())));
-        }
-        if !cmd::output(cmd::git_in(current).args(["status", "--porcelain"])).out.trim().is_empty() {
+        git_value(current, &["rev-parse", "--git-dir"], || format!("repo/current exists but is not a readable git checkout — refusing to migrate (inspect {})", current.display()))?;
+        if tree_dirty(current).map_err(|why| Stop::new(1, format!("could not read the old-layout checkout at {}: {why}", current.display())))? {
             return Err(Stop::new(1, format!("the old-layout checkout at {} has local changes — commit/stash/revert, then re-run", current.display())));
         }
         say("migrating pre-versioned layout (old clone preserved at repo/current.pre-versioned)");
@@ -753,8 +817,11 @@ fn prune_versions(repo: &Path, base: &Path, tag: &str, prev: Option<&str>) {
         if name == tag || Some(name.as_str()) == prev || prev == Some(tag) {
             continue;
         }
-        let status = cmd::output(cmd::git_in(&v).args(["status", "--porcelain"]));
-        let dirty = if status.ok() { status.out.trim().to_string() } else { format!("git status failed: {}", status.last_said()) };
+        // A tree git cannot read is kept, with the reason, as one with changes is.
+        let dirty = match cmd::ask_ok(cmd::git_in(&v).args(["status", "--porcelain"])) {
+            Ok(status) => status.out.trim().to_string(),
+            Err(why) => format!("git status failed: {why}"),
+        };
         if dirty.is_empty() {
             say(&format!("pruning old version dir {name}"));
             if !cmd::output(cmd::git_in(base).args(["worktree", "remove"]).arg(&v)).ok() {
@@ -783,7 +850,7 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
         prepend(&juliaup_bin);
     }
     let fresh_enough = julia::which("julia").is_some()
-        && cmd::output(Command::new("julia").args(["-e", "exit(VERSION >= v\"1.12\" ? 0 : 1)"])).ok();
+        && cmd::ask(Command::new("julia").args(["-e", "exit(VERSION >= v\"1.12\" ? 0 : 1)"])).map_err(|why| Stop::new(1, format!("julia gave no answer to its version check ({why})")))?.ok();
     if !fresh_enough {
         if cmd::on_path("juliaup") {
             say(&format!("installing Julia channel {} with juliaup", julia::CHANNEL));
@@ -799,7 +866,10 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
         return Err(Stop::new(1, "Julia install failed; julia is still not on PATH"));
     }
     // The channel is chosen once, by a probe, never by running a step and rerunning it on failure.
-    let selected = cmd::output(Command::new("julia").args([&format!("+{}", julia::CHANNEL), "-e", "exit(0)"])).ok().then(|| julia::CHANNEL.to_string());
+    let selected = cmd::ask(Command::new("julia").args([&format!("+{}", julia::CHANNEL), "-e", "exit(0)"]))
+        .map_err(|why| Stop::new(1, format!("julia +{} gave no answer to its channel probe ({why})", julia::CHANNEL)))?
+        .ok()
+        .then(|| julia::CHANNEL.to_string());
     let checkout = plan.checkout.clone();
     let facts = julia::facts(&checkout, selected.as_deref()).map_err(|why| Stop::new(1, why))?;
     match julia::judge(&facts) {
@@ -885,7 +955,7 @@ impl Units<'_> {
         cmd::output(Command::new(self.systemctl).arg("--user").args(args).env("HOME", self.home))
     }
     /// [`Units::systemctl`] as a question, within [`cmd::ASK_BOUND`].
-    fn asks(&self, args: &[&str]) -> cmd::Ran {
+    fn asks(&self, args: &[&str]) -> Result<cmd::Ran, String> {
         cmd::ask(Command::new(self.systemctl).arg("--user").args(args).env("HOME", self.home))
     }
     fn has_systemctl(&self) -> bool {
@@ -943,9 +1013,12 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
             say("WARNING: could not move sotd.service's boot start onto its drop-in");
         }
         let _ = u.systemctl(&["stop", "sotd.service"]);
-        if u.lib("sot_boot_wired", &[&ud]).ok() {
+        let wired = boot_wired(u.checkout, &ud);
+        if wired == Ok(true) {
             let claim = pin_args("~/.config/systemd/user", true).join(" ");
             say(&format!("Stopped this computer's sotd. Boot start follows hosts.toml and the unit's host pin, not enable or disable, which change no file for sotd.service, so a hand disable no longer turns it off; to move it, change hosts.toml, or with none run sotd {claim} on the host that should run it. If no other computer shares this home folder, turn boot start off with: rm -f ~/.config/systemd/user/default.target.d/sotd.conf (write that file again, with the two lines [Unit] and Wants=sotd.service, to turn it back on)"));
+        } else if let Err(why) = wired {
+            say(&format!("Stopped this computer's sotd. Whether its boot start is on could not be read ({why}); check ~/.config/systemd/user/default.target.d/sotd.conf"));
         } else {
             say("Stopped this computer's sotd. Its boot start is already off: sotd.service has no boot drop-in, and enable and disable change no file for it; to turn it on, write ~/.config/systemd/user/default.target.d/sotd.conf with the two lines [Unit] and Wants=sotd.service");
         }
@@ -1017,10 +1090,14 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
             return Err(Stop::new(1, format!("systemctl --user {} failed: {}", args.join(" "), ran.last_said())));
         }
     }
-    let user = std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line());
-    let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
-    let active = u.asks(&["is-active", "sotd.service"]);
-    say(&format!("sotd running: {} (socket {socket})", if active.answered() { active.first_line() } else { "no answer".to_string() }));
+    match std::env::var("USER").ok().filter(|u| !u.is_empty()).or_else(|| cmd::ask_ok(Command::new("id").arg("-un")).ok().map(|ran| ran.first_line()).filter(|u| !u.is_empty())) {
+        Some(user) => {
+            let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
+        }
+        None => say("note: could not read the user name, so linger was not enabled; run  loginctl enable-linger <you>  to keep the daemon after logout"),
+    }
+    let active = u.asks(&["is-active", "sotd.service"]).map_or_else(|why| why, |ran| ran.first_line());
+    say(&format!("sotd running: {active} (socket {socket})"));
     Ok(())
 }
 
@@ -1030,7 +1107,8 @@ fn wire_launcher(plan: &Plan) -> Result<(), Stop> {
     let local_bin = plan.home.join(".local/bin");
     std::fs::create_dir_all(&local_bin).map_err(|e| Stop::new(1, format!("creating {}: {e}", local_bin.display())))?;
     let others = plan.be_alias.is_none() && {
-        let ran = sotd_at(&plan.sotd(), &["topology", "plan", "--self", &plan.me]);
+        // A plan that cannot be read stops the run: the wrapper it chooses between would be a guess.
+        let ran = sotd_asks(&plan.sotd(), &["topology", "plan", "--self", &plan.me]).map_err(|why| Stop::new(1, format!("could not read the topology plan ({why})")))?;
         ran.ok() && role::plan_dials_others(&ran.out)
     };
     if others {
@@ -1112,7 +1190,7 @@ fn desktop_entry(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
 /// install.json, last, whole.
 fn write_record(plan: &Plan) -> Result<(), Stop> {
     step("record");
-    let commit = cmd::output(cmd::git_in(&plan.checkout).args(["rev-parse", "HEAD"])).first_line();
+    let commit = git_value(&plan.checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", plan.checkout.display()))?;
     let r = plan.record(if commit.is_empty() { "unknown" } else { &commit });
     let path = plan.prefix.join("install.json");
     record::write_whole(&path, &record::text_for(&record::read(&path), &r, plan.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
@@ -1134,7 +1212,13 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
     step("check");
     let (version, prefix) = (&plan.pack.version, &plan.prefix);
     let checkout = plan.checkout.clone();
-    let commit = cmd::output(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])).first_line();
+    let commit = match cmd::ask_ok(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])) {
+        Ok(ran) => ran.first_line(),
+        Err(why) => {
+            found.fail("checkout", format!("cannot read the commit of {}: {why}", checkout.display()));
+            String::new()
+        }
+    };
     let short = commit.get(..9).unwrap_or("").to_string();
     found.pass = format!("Ship of Tools {version} at {short} on this computer");
     if commit.is_empty() {
@@ -1144,8 +1228,7 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
         if b == "sot" && !plan.role.frontend {
             continue;
         }
-        let ran = sotd_asks(&prefix.join("bin").join(b), &["--version"]);
-        let line = if ran.ok() { ran.first_line() } else { format!("does not run: {}", ran.last_said()) };
+        let line = super::pack::version_line(sotd_asks(&prefix.join("bin").join(b), &["--version"]));
         if !super::pack::binary_says(&line, b, version, &commit) {
             found.fail("binaries", format!("{}/bin/{b} says '{line}', not {version} at {short}", prefix.display()));
         }
@@ -1156,7 +1239,7 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
     }
     let current = prefix.join("repo/current");
     let resolves = std::fs::read_link(&current).ok() == Some(checkout.clone())
-        && cmd::output(cmd::git_in(&current).args(["rev-parse", "HEAD"])).first_line() == commit;
+        && cmd::ask_ok(cmd::git_in(&current).args(["rev-parse", "HEAD"])).is_ok_and(|ran| ran.first_line() == commit);
     if !resolves {
         found.fail("checkout", format!("{} does not resolve to {} at {short}", current.display(), checkout.display()));
     }
@@ -1216,8 +1299,12 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
         if sync.ok() {
         } else if said.contains("does not list this box") {
             found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {} --frontend  (the sotd of its install), then run this installer again", plan.me, plan.me));
-        } else if !sotd_at(&plan.sotd(), &["topology", "plan", "--self", &plan.me]).ok() {
-            found.fail("enroll", format!("could not read the hosts.toml on '{hub}': {}", sync.last_said()));
+        } else {
+            match sotd_asks(&plan.sotd(), &["topology", "plan", "--self", &plan.me]) {
+                Ok(plan_ran) if plan_ran.ok() => {}
+                Ok(_) => found.fail("enroll", format!("could not read the hosts.toml on '{hub}': {}", sync.last_said())),
+                Err(why) => found.fail("enroll", format!("could not read the topology plan ({why})")),
+            }
         }
     }
 }
@@ -1245,8 +1332,8 @@ fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
         return st;
     }
     let held_ok = plan.unit_runs && !restarted;
-    let active = match systemctl_asks(&["is-active", "sotd.service"]) {
-        Ok(ran) => ran.ok(),
+    let active = match unit_active("systemctl") {
+        Ok(active) => active,
         Err(why) => {
             found.fail("daemon", format!("{why}, so whether sotd.service runs is unknown; {journal}"));
             return State::Unknown;

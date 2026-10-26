@@ -29,24 +29,23 @@ pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
     list(Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]), cmd::ASK_BOUND, parse_ps)
 }
 
-/// The listing `command` prints within `bound`, read by `parse`.
-fn list(command: &mut Command, bound: Duration, parse: impl Fn(&str) -> Vec<Proc>) -> Result<Vec<Proc>, String> {
+/// The listing `command` prints within `bound`, read by `parse`: `None` when the text is not a process listing.
+fn list(command: &mut Command, bound: Duration, parse: impl Fn(&str) -> Option<Vec<Proc>>) -> Result<Vec<Proc>, String> {
     let program = command.get_program().to_string_lossy().into_owned();
-    let ran = cmd::output_within(command, bound);
-    if !ran.answered() {
-        return Err(format!("the process listing gave no answer: {}", ran.last_said()));
-    }
+    let ran = cmd::ask_within(command, bound).map_err(|why| format!("the process listing gave no answer: {why}"))?;
     if !ran.ok() {
         return Err(format!("{program} ended with exit {}: {}", ran.code.unwrap_or_default(), ran.last_said()));
     }
-    Some(parse(&ran.out)).filter(|all| !all.is_empty()).ok_or_else(|| format!("{program} printed no process list"))
+    parse(&ran.out).filter(|all| !all.is_empty()).ok_or_else(|| format!("{program} printed no valid process list"))
 }
 
-/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines.
+/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines; `None` when a line is not one, since a listing with a row missing
+/// would say a process is absent.
 #[cfg_attr(windows, allow(dead_code, reason = "Unix reads its processes from ps"))]
-pub(super) fn parse_ps(text: &str) -> Vec<Proc> {
+pub(super) fn parse_ps(text: &str) -> Option<Vec<Proc>> {
     text.lines()
-        .filter_map(|line| {
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
             let mut words = line.split_whitespace();
             let pid = words.next()?.parse().ok()?;
             let ppid = words.next()?.parse().ok()?;
@@ -66,19 +65,21 @@ pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
     list(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]), cmd::ASK_BOUND, parse_cim)
 }
 
-/// CIM's JSON: an array of objects, or one object for a single process; empty when it is not JSON.
+/// CIM's JSON: an array of objects, or one object for a single process, each with a numeric `ProcessId` and
+/// `ParentProcessId`; `None` when it is anything else (`{}`, `null`, a string), which would read as processes that match
+/// nothing.
 #[cfg_attr(not(windows), allow(dead_code, reason = "Windows reads its processes from CIM"))]
-pub(super) fn parse_cim(text: &str) -> Vec<Proc> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return Vec::new() };
+pub(super) fn parse_cim(text: &str) -> Option<Vec<Proc>> {
+    let v = serde_json::from_str::<serde_json::Value>(text.trim()).ok()?;
     let items = match v {
         serde_json::Value::Array(a) => a,
         other => vec![other],
     };
     let s = |o: &serde_json::Value, k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let n = |o: &serde_json::Value, k: &str| o.get(k).and_then(serde_json::Value::as_u64).and_then(|x| u32::try_from(x).ok()).unwrap_or(0);
+    let n = |o: &serde_json::Value, k: &str| o.get(k).and_then(serde_json::Value::as_u64).and_then(|x| u32::try_from(x).ok());
     items
         .iter()
-        .map(|o| Proc { pid: n(o, "ProcessId"), ppid: n(o, "ParentProcessId"), name: s(o, "Name"), exe: s(o, "ExecutablePath"), args: s(o, "CommandLine") })
+        .map(|o| Some(Proc { pid: n(o, "ProcessId")?, ppid: n(o, "ParentProcessId")?, name: s(o, "Name"), exe: s(o, "ExecutablePath"), args: s(o, "CommandLine") }))
         .collect()
 }
 

@@ -76,18 +76,56 @@ pub(super) fn absolute(p: &Path) -> PathBuf {
 }
 
 /// The version an install at `prefix` runs: its record's, else its installed `sotd`'s own (a record cut inside its
-/// version must not hide it from the channel or the never-backwards rule). Empty when neither says: an installed
-/// `sotd` that does not run, or does not answer within [`cmd::ASK_BOUND`], is a binary whose version cannot be read.
-pub(super) fn installed_version(prefix: &Path) -> String {
+/// version must not hide it from the channel or the never-backwards rule). `Ok("")` when there is no install to read; an
+/// installed `sotd` whose version cannot be read (it does not run, prints none, or does not answer within
+/// [`cmd::ASK_BOUND`]) is `Err` with why: an install that is there and unreadable is never taken for none.
+pub(super) fn installed_version(prefix: &Path) -> Result<String, String> {
+    installed_version_within(prefix, cmd::ASK_BOUND)
+}
+
+fn installed_version_within(prefix: &Path, bound: std::time::Duration) -> Result<String, String> {
     if let Some(v) = record::string(&record::read(&prefix.join("install.json")), "version").filter(|v| !v.is_empty()) {
-        return v;
+        return Ok(v);
     }
     let sotd = prefix.join("bin").join(pack::exe_name("sotd"));
     if !sotd.is_file() {
-        return String::new();
+        return Ok(String::new());
     }
-    let ran = cmd::ask(std::process::Command::new(&sotd).arg("--version"));
-    ran.first_line().split_whitespace().nth(1).unwrap_or("").to_string()
+    let ran = cmd::ask_within(std::process::Command::new(&sotd).arg("--version"), bound).map_err(|why| format!("{} gave no answer to --version ({why})", sotd.display()))?;
+    let version = ran.first_line().split_whitespace().nth(1).unwrap_or("").to_string();
+    if ran.ok() && !version.is_empty() { Ok(version) } else { Err(format!("{} --version printed no version (exit {}: {})", sotd.display(), ran.code.unwrap_or_default(), ran.last_said())) }
+}
+
+/// The installed version a run goes on with. An install that is there and unreadable stops a run that names no target
+/// (it never moves an install it cannot compare, `flag` being this system's spelling of `--version`); a run that names its
+/// target moves either way, so it goes on with no version and says so.
+fn installed_for(prefix: &Path, implicit: bool, flag: &str) -> Result<String, verdict::Stop> {
+    installed_for_with(installed_version(prefix), prefix, implicit, flag)
+}
+
+fn installed_for_with(read: Result<String, String>, prefix: &Path, implicit: bool, flag: &str) -> Result<String, verdict::Stop> {
+    match read {
+        Ok(version) => Ok(version),
+        Err(why) if implicit => Err(verdict::Stop::at("direction", 2, format!("the install at {} has a sotd whose version cannot be read ({why}); a run that names no target never moves it unasked: name the version you want with {flag} vX.Y.Z", prefix.display()))),
+        Err(why) => {
+            println!("note: the installed version at {} cannot be read ({why}); this run names its target and goes on", prefix.display());
+            Ok(String::new())
+        }
+    }
+}
+
+/// The name of the daemon's endpoint an installed `sotd` prints for `session-socket-path`, when `valid` accepts it. An ask
+/// with no answer, a failing exit or a name that is not valid stops the run before it writes (so a cut is never "no daemon
+/// here").
+fn endpoint_name(asked: Result<cmd::Ran, String>, valid: impl Fn(&str) -> bool) -> Result<String, verdict::Stop> {
+    let stop = |why: String| verdict::Stop::new(1, format!("sotd session-socket-path gave no usable name ({why}); nothing was changed"));
+    let ran = asked.map_err(stop)?;
+    let name = ran.first_line();
+    if ran.ok() && valid(&name) {
+        Ok(name)
+    } else {
+        Err(stop(format!("exit {}, printed '{name}': {}", ran.code.unwrap_or_default(), ran.last_said())))
+    }
 }
 
 /// Which way `sotd update direction` of the pack says the install at `prefix` moves: `newer`, `same`, `older`, or
@@ -99,10 +137,12 @@ pub(super) fn direction(sotd: &Path, version: &str, prefix: &Path, installed: &s
     if !recorded && !installed.is_empty() {
         c.args(["--installed", installed]);
     }
-    let ran = cmd::ask(&mut c);
-    match ran.first_line().as_str() {
-        w @ ("newer" | "same" | "older") if ran.ok() => w.to_string(),
-        _ => "unknown".to_string(),
+    match cmd::ask(&mut c) {
+        Ok(ran) => match ran.first_line().as_str() {
+            w @ ("newer" | "same" | "older") if ran.ok() => w.to_string(),
+            _ => "unknown".to_string(),
+        },
+        Err(_) => "unknown".to_string(),
     }
 }
 
@@ -123,24 +163,35 @@ pub(super) fn build_direction(prefix: &Path, installed: &str, release_commit: &s
     if !base.join(".git").exists() && !base.join("HEAD").is_file() {
         return format!("unknown: no base clone at {}", base.display());
     }
-    let git = |args: &[&str]| cmd::output(cmd::git_in(&base).args(args)).ok();
     // Read only: the run that asks stops, and a stop writes nothing under the prefix, so a commit the clone lacks is
     // not fetched into it. The clone is blobless, and asking it for an object it lacks fetches that object from its
     // promisor remote; the commits its refs reach are all there, so they are listed and looked up, never asked for.
-    let listed = cmd::output(cmd::git_in(&base).args(["rev-list", "--all"]));
+    let listed = match cmd::ask_ok(cmd::git_in(&base).args(["rev-list", "--all"])) {
+        Ok(ran) => ran,
+        Err(why) => return format!("unknown: {why}"),
+    };
     let has = |c: &str| listed.out.lines().any(|l| l.trim() == c);
-    if !listed.ok() || !has(release_commit) {
+    if !has(release_commit) {
         return format!("unknown: the release's commit is not in {} yet", base.display());
     }
     let Some(built) = listed.out.lines().map(str::trim).find(|l| l.starts_with(built.as_str())).map(String::from) else {
         return format!("unknown: this build's commit {} is not in {}", &built[..built.len().min(9)], base.display());
     };
-    if git(&["merge-base", "--is-ancestor", &built, release_commit]) {
-        "forward".into()
-    } else if git(&["merge-base", "--is-ancestor", release_commit, &built]) {
-        "older".into()
-    } else {
-        "unknown: neither the release nor this build contains the other".into()
+    // `merge-base --is-ancestor`: exit 0 yes, 1 no; any other exit, or no answer, is no fact.
+    let ancestor = |a: &str, b: &str| match cmd::ask(cmd::git_in(&base).args(["merge-base", "--is-ancestor", a, b])) {
+        Ok(ran) if ran.code == Some(0) => Ok(true),
+        Ok(ran) if ran.code == Some(1) => Ok(false),
+        Ok(ran) => Err(format!("git merge-base ended with exit {}: {}", ran.code.unwrap_or_default(), ran.last_said())),
+        Err(why) => Err(why),
+    };
+    match ancestor(&built, release_commit) {
+        Ok(true) => "forward".into(),
+        Ok(false) => match ancestor(release_commit, &built) {
+            Ok(true) => "older".into(),
+            Ok(false) => "unknown: neither the release nor this build contains the other".into(),
+            Err(why) => format!("unknown: {why}"),
+        },
+        Err(why) => format!("unknown: {why}"),
     }
 }
 

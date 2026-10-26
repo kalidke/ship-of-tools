@@ -111,13 +111,28 @@ impl Pack {
     /// Whether the pack's binary `name` runs here and says the pack's version at its commit; why not, when not.
     pub fn check_binary(&self, name: &str) -> Result<(), String> {
         let exe = self.exe(name);
-        let ran = cmd::ask(std::process::Command::new(&exe).arg("--version"));
-        let line = ran.first_line();
-        if ran.ok() && binary_says(&line, name, &self.version, &self.commit) {
+        let line = version_line(cmd::ask(std::process::Command::new(&exe).arg("--version")));
+        if binary_says(&line, name, &self.version, &self.commit) {
             return Ok(());
         }
-        let said = if ran.ok() { format!("says '{line}'") } else { format!("does not run here ({})", ran.last_said()) };
+        let said = match line.strip_prefix(DOES_NOT_RUN) {
+            Some(why) => format!("does not run here ({why})"),
+            None => format!("says '{line}'"),
+        };
         Err(format!("{} {said}, which does not match {} at {} (its SHA256SUMS and COMMIT)", exe.display(), self.version, self.short()))
+    }
+}
+
+const DOES_NOT_RUN: &str = "does not run: ";
+
+/// The line an asked `--version` gave: its first line when the program exited 0, else `does not run: <why>`, which
+/// [`binary_says`] never accepts. A binary that prints the expected version and then exits badly, or does not answer, does
+/// not pass.
+pub(super) fn version_line(asked: Result<cmd::Ran, String>) -> String {
+    match asked {
+        Ok(ran) if ran.ok() => ran.first_line(),
+        Ok(ran) => format!("{DOES_NOT_RUN}{}", ran.last_said()),
+        Err(why) => format!("{DOES_NOT_RUN}{why}"),
     }
 }
 

@@ -50,3 +50,16 @@ fn a_pack_is_verified_before_it_runs() {
         assert!(read(d, "linux-x86_64", None).unwrap_err().contains("COMMIT does not match its SHA256SUMS entry"));
     }
 }
+
+/// A `--version` counts only from a program that exited 0: one that prints the expected line and then exits badly, is
+/// signaled, or does not answer in time does not pass.
+#[test]
+fn a_version_counts_only_from_a_clean_exit() {
+    let c = "0123456789abcdef0123456789abcdef01234567";
+    let said = |code: Option<i32>| cmd::Ran { code, out: "sotd 0.6.7 (012345678 2026-10-20, protocol 9)\n".into(), err: String::new() };
+    assert!(binary_says(&version_line(Ok(said(Some(0)))), "sotd", "0.6.7", c));
+    assert!(!binary_says(&version_line(Ok(said(Some(1)))), "sotd", "0.6.7", c), "the right line with a bad exit");
+    assert!(!binary_says(&version_line(Ok(said(None))), "sotd", "0.6.7", c));
+    let cut = version_line(Err("sotd: did not finish within 60000 ms".into()));
+    assert!(!binary_says(&cut, "sotd", "0.6.7", c) && cut.contains("did not finish"), "{cut}");
+}

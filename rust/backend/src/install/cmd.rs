@@ -190,7 +190,11 @@ impl Steps {
         }
         let mut failures: Vec<String> = failure.into_iter().collect();
         let code = match status {
-            Ok(status) => status.code(),
+            Ok(status) => {
+                // A signal ended it: no exit code, so no answer; its output is discarded with the failure below.
+                if status.code().is_none() && failures.is_empty() { failures.push(format!("{} ended by a signal", program(cmd))); }
+                status.code()
+            }
             Err(error) => { failures.push(format!("cleanup: {error}")); None }
         };
         if bodies.iter().any(|body| !matches!(body, Some(Ok(_)))) { failures.push("output cleanup did not complete within 5 s".into()); }
@@ -275,9 +279,23 @@ impl Drop for BoundedRun<'_> {
 /// takes about 26 s on a hosted Windows runner and misses 15 s in every environment, so the bound is 60 s.
 pub(super) const ASK_BOUND: Duration = Duration::from_secs(60);
 
-/// Ask the machine a question with `cmd`, within [`ASK_BOUND`]: the result is [`Ran::answered`] or says why not.
-pub(super) fn ask(cmd: &mut Command) -> Ran {
-    STEPS.output_within(cmd, ASK_BOUND)
+/// Ask the machine a question with `cmd`, within [`ASK_BOUND`]: `Err` with why when it gave no answer (it did not start,
+/// was cut at its bound or was ended by a signal), its output discarded. An answer of any exit code is `Ok`; the caller
+/// decides which codes it documents, or asks [`ask_ok`].
+pub(super) fn ask(cmd: &mut Command) -> Result<Ran, String> {
+    ask_within(cmd, ASK_BOUND)
+}
+
+/// [`ask`] within `bound`.
+pub(super) fn ask_within(cmd: &mut Command, bound: Duration) -> Result<Ran, String> {
+    let ran = STEPS.output_within(cmd, bound);
+    if ran.answered() { Ok(ran) } else { Err(format!("{}: {}", program(cmd), ran.err.trim())) }
+}
+
+/// [`ask`] where only an exit of 0 is an answer: any other exit is `Err` with the program's last words.
+pub(super) fn ask_ok(cmd: &mut Command) -> Result<Ran, String> {
+    let ran = ask(cmd)?;
+    if ran.ok() { Ok(ran) } else { Err(format!("{} ended with exit {}: {}", program(cmd), ran.code.unwrap_or_default(), ran.last_said())) }
 }
 
 /// Run `cmd` as one of the run's steps; see [`Steps::output`].
@@ -328,4 +346,4 @@ pub(super) fn on_path(name: &str) -> bool {
 
 #[cfg(test)]
 #[path = "cmd_tests.rs"]
-mod tests;
+pub(super) mod tests;

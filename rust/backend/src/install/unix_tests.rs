@@ -302,20 +302,77 @@ fn version_cleanup_keeps_unavailable_registrations_and_refused_worktrees() {
     assert!(registrations.contains(&format!("worktree {}\n", unavailable.display())), "{registrations}");
 }
 
+/// A listing that failed stops the run before it writes; one that shows nothing says so.
 #[test]
-fn a_listing_or_unit_question_with_no_answer_stops_the_run_before_it_writes() {
-    let prefix = Path::new("/p");
+fn a_failed_listing_stops_the_run_before_it_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path();
     let stop = running_here(&Err("the process listing gave no answer: ps did not finish within 60000 ms".into()), prefix).unwrap_err();
     assert!(stop.code == 1 && stop.detail.contains("did not finish within") && stop.detail.contains("nothing was changed"), "{stop:?}");
-    let seen = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n13 1 sot /p/bin/sot --socket s\n");
+    let seen = procs::parse_ps(&format!("10 1 sotd {0}/bin/sotd --label sot\n13 1 sot {0}/bin/sot --socket s\n", prefix.display())).unwrap();
     assert_eq!(running_here(&Ok(seen), prefix).unwrap(), (true, true));
-    assert_eq!(running_here(&Ok(procs::parse_ps("12 1 bash bash -c x\n")), prefix).unwrap(), (false, false), "a listing that shows none says so");
+    assert_eq!(running_here(&Ok(procs::parse_ps("12 1 bash bash -c x\n").unwrap()), prefix).unwrap(), (false, false), "a listing that shows none says so");
+}
 
+/// `systemctl --user is-active` is read by what it prints: its documented inactive states are answers, a failure that
+/// prints no state is not, and a stalled one ends at its bound; none is ever "not active" by silence.
+#[test]
+fn a_unit_question_is_read_by_its_state_and_a_failure_is_no_answer() {
     let dir = tempfile::tempdir().unwrap();
-    let inactive = dir.path().join("systemctl");
-    sot_platform::test_exec::write_executable(&inactive, "#!/bin/sh\nexit 3\n");
-    let answered = unit_asks(&inactive.to_string_lossy(), &["is-active", "sotd.service"]).unwrap();
-    assert!(answered.answered() && !answered.ok(), "an exit of any value is an answer");
-    let why = unit_asks(&dir.path().join("no-systemctl").to_string_lossy(), &["is-active", "sotd.service"]).unwrap_err();
-    assert!(why.contains("gave no answer"), "no answer is an error, never 'inactive': {why}");
+    let stub = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        sot_platform::test_exec::write_executable(&path, format!("#!/bin/sh\n{body}\n"));
+        path.to_string_lossy().into_owned()
+    };
+    let within = std::time::Duration::from_secs(10);
+    assert_eq!(unit_active_within(&stub("active", "echo active"), within), Ok(true));
+    assert_eq!(unit_active_within(&stub("inactive", "echo inactive; exit 3"), within), Ok(false));
+    assert_eq!(unit_active_within(&stub("failed", "echo failed; exit 3"), within), Ok(false));
+    for (name, body) in [("bus", "echo 'Failed to connect to bus: No medium found' >&2; exit 1"), ("odd", "echo mystery; exit 3"), ("lying", "echo inactive")] {
+        let why = unit_active_within(&stub(name, body), within).unwrap_err();
+        assert!(why.contains("is-active said"), "{name}: {why}");
+    }
+    let start = std::time::Instant::now();
+    let why = unit_active_within(&stub("stall", "sleep 30"), std::time::Duration::from_secs(2)).unwrap_err();
+    assert!(why.contains("gave no answer") && why.contains("did not finish within"), "{why}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "the cut took {:?}", start.elapsed());
+    let missing = unit_active_within(&dir.path().join("none").to_string_lossy(), within).unwrap_err();
+    assert!(missing.contains("gave no answer"), "{missing}");
+    // An unrecognized state never reads as an answer, and a stop for it writes nothing.
+    let before = std::fs::read_dir(dir.path()).unwrap().count();
+    let stop = unit_unknown(why);
+    assert!(stop.code == 1 && stop.detail.contains("nothing was changed"), "{stop:?}");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), before);
+}
+
+/// A boot-wiring question answers only by exit 0 or 1; a library that cannot be sourced is no answer.
+#[test]
+fn boot_wiring_is_read_only_from_its_two_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let units = dir.path().join("units");
+    std::fs::create_dir_all(&units).unwrap();
+    let checkout = tree();
+    let unit_dir = units.to_string_lossy().into_owned();
+    assert_eq!(boot_wired(&checkout, &unit_dir), Ok(false));
+    std::fs::create_dir_all(units.join("default.target.d")).unwrap();
+    std::fs::write(units.join("default.target.d/sotd.conf"), "[Unit]\nWants=sotd.service\n").unwrap();
+    assert_eq!(boot_wired(&checkout, &unit_dir), Ok(true));
+    let why = boot_wired(&dir.path().join("no-checkout"), &unit_dir).unwrap_err();
+    assert!(why.contains("exit 127"), "a library that cannot be sourced is not 'not wired': {why}");
+    assert!(boot_start_note(&dir.path().join("no-checkout"), &unit_dir).contains("could not be read"));
+}
+
+/// Git reads that cannot be answered are errors, never a clean tree or a present commit.
+#[test]
+fn a_git_read_that_fails_is_not_a_clean_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = dir.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    assert!(tree_dirty(&plain).is_err(), "a folder git cannot read is not clean");
+    let stop = git_value(&plain, &["rev-parse", "HEAD"], || "missing".into()).unwrap_err();
+    assert!(stop.code == 1 && stop.detail == "missing", "{stop:?}");
+    let gone = git_value(&dir.path().join("gone"), &["rev-parse", "HEAD"], || "missing".into()).unwrap_err();
+    assert!(gone.detail.contains("could not ask git") || gone.detail == "missing", "{gone:?}");
+    assert_eq!(glibc_of("ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35\n"), Some((2, 35)));
+    assert_eq!(glibc_of(""), None);
 }

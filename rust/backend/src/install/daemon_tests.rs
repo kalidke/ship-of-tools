@@ -216,8 +216,19 @@ fn a_live_daemon_is_asked_before_it_ends() {
     assert_eq!(supervisor::way(Some((None, true)), &|| Some(0)), supervisor::Way::Quit);
     assert_eq!(supervisor::way(Some((None, false)), &|| Some(0)), supervisor::Way::Desk);
     assert_eq!(supervisor::way(Some((None, false)), &|| Some(2)), supervisor::Way::Here);
-    assert_eq!(supervisor::way(Some((None, false)), &|| None), supervisor::Way::Here, "a session that cannot be read is not taken for ssh");
-    assert_eq!(supervisor::way(None, &|| panic!("a failed listing asks nothing more")), supervisor::Way::Unlisted, "a listing that failed is not 'nothing runs'");
+    assert_eq!(supervisor::way(None, &|| panic!("a failed listing asks nothing more")), supervisor::Way::Unknown, "a listing that failed is not 'nothing runs'");
+    assert_eq!(supervisor::way(Some((None, false)), &|| None), supervisor::Way::Unknown, "a session that cannot be read is not the desk, and not an ssh logon: nothing is applied");
+    assert_eq!(supervisor::way(Some((Some("AAA-BBB"), false)), &|| None), supervisor::Way::Converge, "a supervisor needs no session");
+    assert_eq!(apply_here(State::None), Apply::Direct);
+    assert_eq!(apply_here(State::Unknown), Apply::Hold, "a daemon that runs and cannot be told is never stopped");
+    for state in [State::Current, State::Other, State::Held] {
+        assert_eq!(apply_here(state), Apply::StopFirst, "{state:?}");
+    }
+    let installed = |text: &str| Ok(text.to_string());
+    assert_eq!(supervisor::launcher("AAA", installed("AAA")), supervisor::Launcher::Current);
+    assert_eq!(supervisor::launcher("", installed("AAA")), supervisor::Launcher::Older);
+    assert!(matches!(supervisor::launcher("AAA", installed("")), supervisor::Launcher::Unknown(_)), "an empty code id (its hashing failed) is not current");
+    assert!(matches!(supervisor::launcher("AAA", Err("did not finish".into())), supervisor::Launcher::Unknown(_)));
 
     // Windows: the converge's wait.
     let dir = tempfile::tempdir().unwrap();
@@ -256,23 +267,16 @@ fn a_live_daemon_is_asked_before_it_ends() {
 
     // The daemon and its children, from the process table.
     {
-        let all = procs::parse_ps("  10     1 sotd     /p/bin/sotd --project-root /h --label sot\n  11    10 julia    /j/julia -e x\nnot a line\n");
+        let all = procs::parse_ps("  10     1 sotd     /p/bin/sotd --project-root /h --label sot\n  11    10 julia    /j/julia -e x\n").unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!((all[0].pid, all[0].ppid, all[0].name.as_str(), all[0].exe.as_str()), (10, 1, "sotd", "/p/bin/sotd"));
         assert_eq!(all[1].args, "/j/julia -e x");
     }
 
-    {
-        let one = procs::parse_cim(r#"{"ProcessId":5,"ParentProcessId":4,"Name":"sotd.exe","ExecutablePath":"C:\\p\\bin\\sotd.exe","CommandLine":"x"}"#);
-        assert_eq!((one.len(), one[0].pid, one[0].exe.as_str()), (1, 5, "C:\\p\\bin\\sotd.exe"));
-        assert_eq!(procs::parse_cim(r#"[{"ProcessId":1},{"ProcessId":2,"ExecutablePath":null}]"#).len(), 2);
-        assert!(procs::parse_cim("not json").is_empty());
-    }
-
     // Unix paths: a Windows program path is never one.
     #[cfg(unix)]
     {
-        let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 1 sotd /q/bin/sotd\n12 1 bash bash -c /p/bin/sotd\n13 1 sot /p/bin/sot --socket s\n");
+        let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 1 sotd /q/bin/sotd\n12 1 bash bash -c /p/bin/sotd\n13 1 sot /p/bin/sot --socket s\n").unwrap();
         assert_eq!(procs::daemon_pids(&all, Path::new("/p")), [10]);
         assert!(procs::window_runs(&all, Path::new("/p")) && !procs::window_runs(&all, Path::new("/q")));
     }
@@ -307,4 +311,13 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
     assert!(why.contains("did not finish within"), "{why}");
+}
+
+/// A configured wait longer than the ask bound never lengthens one ask past it, and an ask never starts with less than a
+/// millisecond.
+#[test]
+fn one_ask_in_a_wait_keeps_the_ask_bound() {
+    assert_eq!(ask_slice(Duration::from_secs(1800)), cmd::ASK_BOUND);
+    assert_eq!(ask_slice(Duration::from_secs(7)), Duration::from_secs(7));
+    assert_eq!(ask_slice(Duration::ZERO), Duration::from_millis(1));
 }

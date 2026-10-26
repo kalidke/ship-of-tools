@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 const FIXTURE: &str = "install::cmd::tests::command_fixture";
 
-fn command(mode: &str, pulse: &Path) -> Command {
+/// A native stand-in (the test binary itself) that prints a partial line and then stalls for seconds, for the decisions
+/// that read an observation: bound it to a second or two.
+pub(in crate::install) fn command(mode: &str, pulse: &Path) -> Command {
     let mut c = Command::new(std::env::current_exe().unwrap());
     c.args(["--exact", FIXTURE, "--nocapture"]).env("SOT_BOUND_FIXTURE", mode).env("SOT_BOUND_PULSE", pulse);
     c
@@ -51,6 +53,21 @@ fn bounded_output_never_accepts_partial_output_before_a_timeout() {
     assert!(!ran.ok() && !ran.answered() && ran.err.contains("within"), "a cut program has not answered: {}", ran.err);
     assert!(ran.out.is_empty(), "partial stdout must be discarded");
     assert!(!std::fs::read(&pulse).expect("stand-in must have printed before the cut").is_empty());
+}
+
+/// A program a signal ended has no exit code and so no answer: whatever it printed first is discarded, and the reason says
+/// a signal ended it.
+#[cfg(unix)]
+#[test]
+fn a_program_ended_by_a_signal_has_not_answered_and_its_output_is_discarded() {
+    let d = tempfile::tempdir().unwrap();
+    let script = d.path().join("killed");
+    sot_platform::test_exec::write_executable(&script, "#!/bin/sh\necho 'sotd 0.7.0 (0123456789abc protocol 9)'\necho partial >&2\nkill -9 $$\n");
+    let why = ask_within(&mut Command::new(&script), Duration::from_secs(20)).unwrap_err();
+    assert!(why.contains("ended by a signal"), "{why}");
+    assert!(!why.contains("0.7.0"), "the output it printed is not carried: {why}");
+    let ran = Steps::new().output_within(&mut Command::new(&script), Duration::from_secs(20));
+    assert!(ran.code.is_none() && ran.out.is_empty() && !ran.answered(), "{ran:?}");
 }
 
 // Finite native stand-ins also run on Windows. PIDs printed here are witnesses only, never cleanup inputs.
