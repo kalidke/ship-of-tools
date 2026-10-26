@@ -312,9 +312,18 @@ Guarantees and boundaries:
   not advertise; new snapshots, ref names and tag objects still receive their normal scans. A retained denied file in a
   new snapshot still refuses after an ancestor was published. Unavailable old OIDs can conservatively recheck history.
   Raw parent traversal refuses missing shallow/promisor objects; local object enumeration precedes reads, so the
-  hook never fetches to complete a scan. Commit/tag walks read only their selected frontier, one batch per generation;
-  tree walks read one selected depth level per batch, preserving every path context. Each round checks catalog
-  membership before reading; the catalog supplies types, never additional requests. Distinct selected blobs use one
+  hook never fetches to complete a scan. In a nonshallow repository with Git 2.43 or newer, locally available
+  old/advertised tags are peeled in raw batches; their commit targets and the locally available old/advertised commits
+  seed one `rev-list` traversal.
+  Replacements stay off, `core.commitGraph=false` disables cached parents, and an owned empty `GIT_GRAFT_FILE` disables
+  grafts, with its selection checked through `rev-parse --git-path`. `--missing=print` disables implicit fetching.
+  `--ignore-missing` leaves unreadable starting revisions to the raw audit. One batch audits the enumerated local
+  commits and all seeds' raw parent headers; any remaining raw edges use the original walk. Shallow repositories,
+  older or unrecognized Git versions, and a graft override that Git does not select use that raw walk throughout;
+  Git/read failures refuse.
+  The new commit/tag walk reads only its selected frontier, one batch per generation; tree walks read one selected
+  depth level per batch, preserving every path context. Each round checks catalog membership before reading; the
+  catalog supplies types, never additional requests. Distinct selected blobs use one
   final batch, including published blobs retained in new snapshots. Raw tree mode/name/NUL/binary-OID records retain
   unquoted path bytes. No diff, textconv or replacement object changes its inspected bytes. NUL bytes delimit
   single-line matching.

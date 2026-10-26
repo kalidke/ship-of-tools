@@ -75,16 +75,21 @@ function tree_context(text,    p) {
     if (!oid_ok(context_id) || context_hex ~ /[^0-9a-f]/ || length(context_hex)%2) fail("scanner failed")
 }
 function prepare(    r,s,t) {
-    if (phase == "old" || phase == "new") load_ids(excluded_file,excluded)
+    if (phase == "old" || phase == "peel" || phase == "new") load_ids(excluded_file,excluded)
+    if (phase == "peel") load_ids(old_commits,seeds)
     if (phase == "new") load_ids(seen_file,seen)
     while ((r=(getline s < frontier)) > 0) {
         if (phase == "trees") {
             tree_context(s)
             s=context_id
             if (object_type(s) != "tree") fail("invalid tree object " s)
-        } else if (phase == "old") {
+        } else if (phase == "old" || phase == "peel") {
             if (!oid_ok(s)) fail("invalid old object id")
             if (excluded[s] || type[s] !~ /^(commit|tag)$/) continue
+            if (phase == "peel" && type[s] == "commit") {
+                if (!seeds[s]++) emit(old_commits,s)
+                continue
+            }
             excluded[s]=1; emit(excluded_file,s)
         } else if (phase == "new") {
             if (!oid_ok(s)) fail("invalid reachable object id")
@@ -100,6 +105,26 @@ function prepare(    r,s,t) {
         if (!batch_seen[s]++) emit(requests,s)
     }
     if (r < 0 || close(frontier) != 0) fail("scanner failed")
+}
+function ancestry_ids(    r,s,missing) {
+    # --missing=print disables fetching and can report either absent commits or
+    # locally present commits Git could not parse. Only catalog members are read.
+    while ((r=(getline s < frontier)) > 0) {
+        missing=(substr(s,1,1) == "?")
+        if (missing) s=substr(s,2)
+        if (!oid_ok(s)) fail("cannot read old parents")
+        if (type[s] == "commit") {
+            if (!listed[s]++) emit(next_frontier,s)
+        } else if (!missing) fail("cannot read old parents")
+    }
+    if (r < 0 || close(frontier) != 0) fail("cannot read old parents")
+    # Always audit the seeds too. Raw parent completion below must not depend
+    # on Git accepting a noncanonical commit as a revision-walk starting point.
+    while ((r=(getline s < old_commits)) > 0) {
+        if (!oid_ok(s) || type[s] != "commit") fail("cannot read old parents")
+        if (!listed[s]++) emit(next_frontier,s)
+    }
+    if (r < 0 || close(old_commits) != 0) fail("cannot read old parents")
 }
 function load_contexts(    r,s) {
     while ((r=(getline s < frontier)) > 0) {
@@ -122,6 +147,7 @@ function header(text,    f) {
         cannot_read(expected)
     id=expected; kind=f[2]; remaining=f[3]+0
     if ((phase == "trees" && kind != "tree") || (phase == "blobs" && kind != "blob") ||
+            (phase == "peel" && kind != "tag") ||
             ((phase == "old" || phase == "new") && kind !~ /^(commit|tag)$/)) cannot_read(id)
     label=(kind == "tag" ? "tag object" : kind) " " id
     state=(remaining ? "body" : "separator")
@@ -239,11 +265,12 @@ function metadata_byte(b) {
 BEGIN {
     policy=dir "/list"; catalog=dir "/objects"; failure=dir "/failure"
     updates=dir "/updates"; excluded_file=dir "/excluded"; seen_file=dir "/seen"; blobs=dir "/blobs"
-    requests=dir "/requests"
-    if (action == "refs" || (action == "read" && phase != "old")) load_policy()
+    requests=dir "/requests"; old_commits=dir "/old-commits"
+    if (action == "refs" || (action == "read" && phase != "old" && phase != "peel")) load_policy()
     if (action != "refs") load_catalog()
     if (action == "refs") { initial_refs(); prepared=1; exit }
     if (action == "prepare") { prepare(); prepared=1; exit }
+    if (action == "ancestry") { ancestry_ids(); prepared=1; exit }
     state="header"
     if (phase != "blobs" || action == "failed") {
         for (i=1;i<=255;i++) { ch[i]=sprintf("%c",i); hex[i]=sprintf("%02x",i) }
@@ -256,7 +283,7 @@ BEGIN {
     for (byte_index=1;byte_index<=NF;byte_index++) {
         # The exclusion walk needs raw headers only; its messages remain unread
         # by the matcher, while framing still accounts for every batch byte.
-        if (state == "body" && (action == "failed" || (phase == "old" &&
+        if (state == "body" && (action == "failed" || ((phase == "old" || phase == "peel") &&
                 ((kind == "commit" && !graph_headers) || (kind == "tag" && !first_line))))) {
             skipped=NF-byte_index+1
             if (skipped > remaining) skipped=remaining
