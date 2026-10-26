@@ -224,7 +224,7 @@ impl State {
                     (q, pw_f, ph_f)
                 }
                 crate::ui::preview::markdown::MediaBlock::Figure { url, .. } => {
-                    let Some(entry) = self.figure_cache.get(url) else {
+                    let Some(entry) = self.figures.get(url) else {
                         continue;
                     };
                     let pw = entry.natural_w_px as f32;

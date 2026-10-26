@@ -132,7 +132,7 @@ impl State {
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
-                figure_failed: self.figure_failed.clone(),
+                figure_failed: self.figures.park_failed(),
                 concept: self.concept.park(),
                 edit_state: self.editor.park(),
             },
@@ -192,7 +192,7 @@ impl State {
         // figure_failed is restored first too, since that branch reads it
         // (via figure_already_handled).
         self.preview_source = snap.source.clone();
-        self.figure_failed = snap.figure_failed.clone();
+        self.figures.restore_failed(snap.figure_failed.clone());
         if let Some((mime, bytes)) = self.preview_source.source_copy() {
             self.render_preview_source(&mime, &bytes);
         }

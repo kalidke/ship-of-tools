@@ -14,7 +14,7 @@ impl State {
         // — without it the FFFC stays at the
         // FIGURE_BLOCK_H_DEFAULT fallback even after the
         // bytes land.
-        self.figure_pending.remove(&url);
+        self.figures.settle(&url);
         match decode_figure_bytes(
             &self.device,
             &self.queue,
@@ -30,7 +30,7 @@ impl State {
                     h = entry.natural_h_px,
                     "figure decoded"
                 );
-                self.figure_cache.insert(url, entry);
+                self.figures.install(url, entry);
                 self.needs_md_reflow = true;
                 self.window.request_redraw();
             }
@@ -40,7 +40,7 @@ impl State {
                 // compact fallback on the next reflow rather
                 // than leaving an empty box that will never
                 // be painted over.
-                fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
+                self.figures.fail(url);
                 self.needs_md_reflow = true;
                 self.window.request_redraw();
             }
@@ -57,7 +57,7 @@ impl State {
         // already pending). Same terminal collapse as a
         // decode failure above.
         tracing::warn!(%url, "figure.get failed — collapsing to compact fallback");
-        fail_figure(&mut self.figure_pending, &mut self.figure_failed, url);
+        self.figures.fail(url);
         self.needs_md_reflow = true;
         self.window.request_redraw();
     }

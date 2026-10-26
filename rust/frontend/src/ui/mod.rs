@@ -32,7 +32,7 @@ use crate::ui::input::keybindings::{Action, KeyBindings, Modifiers};
 use crate::ui::input::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use crate::ui::preview::markdown::{
-    FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
+    FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
     BODY_SIZE as MD_BODY_SIZE,
 };
 use crate::ui::preview::image::png::quad_from_png_bytes;
@@ -57,7 +57,7 @@ use sot_protocol::{ReplFrame, TreeNode};
 mod app;
 use app::*;
 pub(crate) use app::{App, MainWake};
-use preview::image::figures::{decode_figure_bytes, fail_figure, FigureCacheEntry};
+use preview::image::figures::decode_figure_bytes;
 #[cfg(test)]
 use preview::image::overlay::CAPTION_MAX_CHARS;
 use preview::image::overlay::{
@@ -623,24 +623,8 @@ struct State {
     pages: PageView,
     /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.
     overlays: FigureOverlays,
-    /// Cache of fetched markdown-figure bitmaps keyed by the literal
-    /// URL string that appeared in the source (`![](url)`). Populated
-    /// by `IncomingEvt::FigureLoaded`; consumed by the markdown render
-    /// path to paint quads over the FFFC placeholders the walk
-    /// reserves for each figure. Survives navigation so re-opening a
-    /// doc with the same figure doesn't re-roundtrip.
-    figure_cache: std::collections::HashMap<String, FigureCacheEntry>,
-    /// In-flight figure.get requests, keyed by the same URL string.
-    /// Prevents duplicate dispatch when a markdown doc references the
-    /// same figure multiple times or when the user re-loads a
-    /// partially-fetched doc.
-    figure_pending: std::collections::HashSet<String>,
-    /// URLs whose figure fetch/decode terminally failed (bad bytes,
-    /// unresolvable local path). Reported to the markdown walk as 0-size
-    /// metrics so the layout collapses their reservation to the compact
-    /// text fallback instead of holding an empty FIGURE_BLOCK_H_DEFAULT
-    /// box forever.
-    figure_failed: std::collections::HashSet<String>,
+    /// The markdown figures: fetched bitmaps, requests in flight and terminal failures.
+    figures: FigureStore,
     // ui/preview/markdown: tables, math and token caches, and reflow.
     /// Horizontal scroll for wide markdown tables. Shared across every
     /// `MediaBlock::Table` on the current preview — Windows's (e) work
@@ -852,6 +836,7 @@ use self::preview::shaped::ShapedPreview;
 use self::preview::image::raster::RasterView;
 use self::preview::image::pages::PageView;
 use self::preview::image::figure_overlays::FigureOverlays;
+use self::preview::image::figure_store::FigureStore;
 use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,

@@ -143,7 +143,7 @@ pub(in crate::ui) fn fail_figure(
 /// a terminal failure actually terminal instead of refiring on every
 /// cached-bytes reflow (field report round 2 — see the note in
 /// `render_preview_source`).
-fn figure_already_handled(
+pub(super) fn figure_already_handled(
     cache_hit: bool,
     pending: &std::collections::HashSet<String>,
     failed: &std::collections::HashSet<String>,
@@ -153,35 +153,6 @@ fn figure_already_handled(
 }
 
 impl State {
-    /// Translate `figure_cache` into the per-figure pixel metrics map
-    /// the markdown walk consumes. Walk uses these to size each
-    /// `![](url)` placeholder's reserved line height so the layout
-    /// doesn't reshape when the figure finishes loading. Natural
-    /// dimensions are scale-1 pixels — the walk applies `Ctx::scale`
-    /// itself.
-    pub(in crate::ui) fn build_figure_metrics(&self) -> FigureMetricsMap {
-        let mut out = FigureMetricsMap::new();
-        for (url, entry) in self.figure_cache.iter() {
-            out.insert(
-                url.clone(),
-                FigureMetrics {
-                    width_px: entry.natural_w_px as f32,
-                    height_px: entry.natural_h_px as f32,
-                },
-            );
-        }
-        // Terminal failures report as 0-size: the markdown walk reads
-        // height_px <= 0 as "will never paint" and collapses the
-        // reservation to its compact text fallback.
-        for url in self.figure_failed.iter() {
-            out.entry(url.clone()).or_insert(FigureMetrics {
-                width_px: 0.0,
-                height_px: 0.0,
-            });
-        }
-        out
-    }
-
     /// Fire `figure.get` for every `MediaBlock::Figure` in the latest
     /// markdown preview that isn't already cached or in flight.
     /// Resolves the literal URL against the current markdown file's
@@ -199,12 +170,7 @@ impl State {
             let crate::ui::preview::markdown::MediaBlock::Figure { url, .. } = block else {
                 continue;
             };
-            if figure_already_handled(
-                self.figure_cache.contains_key(&url),
-                &self.figure_pending,
-                &self.figure_failed,
-                &url,
-            ) {
+            if self.figures.handled(&url) {
                 continue;
             }
             let Some(node_id) = resolve_figure_node_id(&md_node_id, &url) else {
@@ -214,7 +180,7 @@ impl State {
                 // (Remote URLs never get this far: the walk renders them as
                 // the compact fallback and pushes no MediaBlock.)
                 tracing::debug!(%url, "figure unresolvable — collapsing to compact fallback");
-                self.figure_failed.insert(url);
+                self.figures.mark_unresolvable(url);
                 self.needs_md_reflow = true;
                 continue;
             };
@@ -226,7 +192,7 @@ impl State {
                 tracing::warn!(error = %e, %url, "drop figure.get request — channel closed");
                 continue;
             }
-            self.figure_pending.insert(url);
+            self.figures.mark_pending(url);
         }
     }
 }

@@ -365,7 +365,7 @@ impl State {
                 // the `IncomingEvt::Preview` handler, right before it
                 // calls this function.
                 let math_metrics = self.build_math_metrics();
-                let figure_metrics = self.build_figure_metrics();
+                let figure_metrics = self.figures.metrics();
                 let rect = self.shaped.rect();
                 let md = MarkdownPreview::new(
                     self.text.font_system_mut(),

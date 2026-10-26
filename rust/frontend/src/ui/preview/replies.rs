@@ -160,7 +160,7 @@ impl State {
             // gets a clean shot at every `![](url)` via
             // dispatch_pending_figures. figure_cache hits and
             // in-flight figure_pending entries are untouched.
-            self.figure_failed.clear();
+            self.figures.clear_failed();
         }
         self.render_preview_source(&mime, &bytes);
         self.result_preview_installed(generation, node_id.as_deref());

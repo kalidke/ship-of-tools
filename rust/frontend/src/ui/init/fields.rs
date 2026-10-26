@@ -195,9 +195,7 @@ impl State {
             math_pending: std::collections::HashSet::new(),
             markdown_token_cache: std::collections::HashMap::new(),
             markdown_token_pending: std::collections::HashSet::new(),
-            figure_cache: std::collections::HashMap::new(),
-            figure_pending: std::collections::HashSet::new(),
-            figure_failed: std::collections::HashSet::new(),
+            figures: FigureStore::default(),
             needs_md_reflow: false,
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
