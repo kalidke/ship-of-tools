@@ -134,13 +134,13 @@ impl State {
                     tracing::warn!(error = %e, "drop post-create tree.children refresh");
                 }
                 let name = node_id.rsplit(['/', ':']).next().unwrap_or(node_id);
-                self.status = format!("created · {name}");
+                self.status.set(format!("created · {name}"));
             }
             CreateOutcome::AlreadyExists => {
-                self.status = "new · already exists on disk".to_string();
+                self.status.set("new · already exists on disk".to_string());
             }
             CreateOutcome::Error(message) => {
-                self.status = format!("new failed · {message}");
+                self.status.set(format!("new failed · {message}"));
             }
         }
         self.window.request_redraw();
@@ -160,7 +160,7 @@ impl State {
             return false;
         }
         if is_directory_row(&row.node) {
-            self.status = "delete: directories not supported yet".to_string();
+            self.status.set("delete: directories not supported yet".to_string());
             self.window.request_redraw();
             return false;
         }

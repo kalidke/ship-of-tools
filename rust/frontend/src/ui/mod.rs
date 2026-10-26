@@ -370,29 +370,15 @@ struct State {
     /// Set once the window is on its way out and waiting for the daemons' acks.
     leaving: Option<crate::lease::Leaving>,
     // ui/chrome: the status line, focus, pane rects, maximize and nav spill.
-    /// One-line status string for the chrome.
-    status: String,
-    /// While `Some(t)` and `now < t`, the status line is holding a pushed
-    /// notify (op::FE_COMMAND `notify`) and `rebuild_connection_status` won't
-    /// clobber it — so a toast survives a workspace switch for a few seconds
-    /// instead of being overwritten instantly (which otherwise made a pushed
-    /// notify un-seeable while the user roamed workspaces). Cleared + the
-    /// status rebuilt once elapsed (in `about_to_wait`, on the idle tick).
-    notify_sticky_until: Option<std::time::Instant>,
+    /// One-line status string for the chrome, and the hold a pushed notify keeps on it.
+    status: StatusLine,
     /// Selected-session contrast lever (`--contrast-mode`, ADR 0023). `false`
     /// = "bright" (default): the selected/active row pops by going brighter +
     /// bold. `true` = "dim": non-selected rows are dimmed so the selection
     /// pops by contrast. Applied in both the nav rows and the bottom strip.
     contrast_dim: bool,
-    /// Cached battery readout for the top-right chrome (e.g. `85%` or `+72%`
-    /// while charging). `None` means no battery present / query failed — we
-    /// render nothing in that case (never a fake `0%`). The OS query is not
-    /// free, so it's refreshed at most once per `BATTERY_QUERY_INTERVAL`; the
-    /// clock ticking every second reuses this cached value in between.
-    battery_label: Option<String>,
-    /// When the cached `battery_label` was last (re)computed. `None` forces a
-    /// query on the first paint.
-    last_battery_query: Option<std::time::Instant>,
+    /// The battery readout's cache.
+    battery: BatteryGauge,
     /// Window-wide focus, prompt editing and close notices; runtime state only.
     focus_prompts: FocusPrompts,
     /// The four pane content rects from the most recent redraw, cached
@@ -411,16 +397,8 @@ struct State {
     /// the user hits a key; modes-mode + tree navigation hang off the same
     /// keyboard input plumbing once they land.
     last_key: Option<String>,
-    /// Latest cursor position in physical pixels — winit only
-    /// delivers `CursorMoved` on motion, so a click immediately after
-    /// focus would otherwise have no position to anchor to.
-    cursor_px: (f32, f32),
-    /// Fractional wheel-row accumulator. Precision touchpads and smooth
-    /// wheels emit small sub-row deltas; truncating each event to i32
-    /// drops everything until the user flicks hard. Accumulating here
-    /// and only applying whole rows lets gentle scroll work the way the
-    /// user expects.
-    wheel_residue_y: f32,
+    /// The pointer's last position and the wheel's sub-row residue.
+    pointer: crate::ui::input::pointer::Pointer,
     /// Resolved keybindings (defaults overlaid with the user's
     /// `keybindings.toml` if present). See `ui/input/keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the

@@ -187,7 +187,7 @@ impl State {
         // scroll hides what Enter would confirm. A text prompt is the
         // input field the user types into; a block cursor (▏) marks the
         // insertion point.
-        let status = self.status.clone();
+        let status = self.status.text().to_string();
         let nav_prompt_line = match self.focus_prompts.prompt() {
             Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
             Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
@@ -219,8 +219,7 @@ impl State {
         // free, so refresh the cache at most once per `BATTERY_QUERY_INTERVAL`
         // (the clock repaints ~1×/s and reuses the cached value between
         // refreshes). `None` => no battery / query failed => paint nothing.
-        self.refresh_battery_label();
-        let battery = self.battery_label.clone();
+        let battery = self.battery.label();
         let last_key = self.last_key.clone();
         // FE/BE version stamp for the bottom chrome edge. Snapshotted here
         // with the other draw locals because the draw closure can't borrow

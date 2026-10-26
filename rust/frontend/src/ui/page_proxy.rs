@@ -146,7 +146,7 @@ impl State {
             ProxyTarget::NotNeeded => return Some(url.to_string()),
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
-                self.status = reason;
+                self.status.set(reason);
                 self.window.request_redraw();
                 return None;
             }
@@ -174,20 +174,20 @@ impl State {
                     "proxy: port already bound by an UNKNOWN local listener — not ours; not opening"
                 );
                 let ours = self.proxy_ensured.iter().find(|(_, (local, _))| *local == daemon_port);
-                self.status = match ours {
+                self.status.set(match ours {
                     Some(((other, _), _)) => format!(
                         "port {daemon_port} is held by this window's page from '{other}' — not opening (it would show that page)"
                     ),
                     None => format!(
                         "port {daemon_port} is held by another local process — not opening (could be the wrong page)"
                     ),
-                };
+                });
                 self.window.request_redraw();
                 return None;
             }
             Err(e) => {
                 tracing::warn!(daemon_port, error = %e, "proxy: bind failed; not opening");
-                self.status = format!("page proxy: could not bind a local port · {e}");
+                self.status.set(format!("page proxy: could not bind a local port · {e}"));
                 self.window.request_redraw();
                 return None;
             }

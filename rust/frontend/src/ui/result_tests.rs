@@ -125,7 +125,7 @@ impl State {
                     self.selected.workspace_id().clone(),
                     self.result_ledger.clone()
                 )
-                && self.status.starts_with("result refused"),
+                && self.status.text().starts_with("result refused"),
             "unknown urgent target mutated result state"
         );
         for command in [
@@ -671,7 +671,7 @@ impl State {
                 .map(|row| row.node.id.clone())
                 .collect(),
             self.nav.tree().selected(),
-            self.status.clone(),
+            self.status.text().to_string(),
             self.reveal.target().is_some(),
             self.reveal.root_target().is_some(),
             self.reveal.awaiting().map(str::to_owned),
@@ -838,13 +838,13 @@ impl State {
             let before = (
                 self.parked_project_rows(&a),
                 self.nav.tree().rows().len(),
-                self.status.clone(),
+                self.status.text().to_string(),
             );
             self.deliver_old_reply(&mut wire, &old, case, &paths);
             let after = (
                 self.parked_project_rows(&a),
                 self.nav.tree().rows().len(),
-                self.status.clone(),
+                self.status.text().to_string(),
             );
             anyhow::ensure!(before == after, "{REJECTED}");
         }
@@ -1339,11 +1339,11 @@ impl State {
     pub(in crate::ui) fn a_wheel_step_reports_presence(&mut self) -> Result<()> {
         self.presence = PresenceClock::default();
         self.set_focus(PaneFocus::Llm);
-        self.wheel_residue_y = 0.0;
+        self.pointer.clear_residue();
         let fresh = self.presence;
         input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 0.05));
         anyhow::ensure!(self.presence != fresh, "fractional wheel step did not advance presence");
-        anyhow::ensure!(self.wheel_residue_y > 0.0 && self.wheel_residue_y < 1.0, "fractional control scrolled a whole row");
+        anyhow::ensure!(self.pointer.residue() > 0.0 && self.pointer.residue() < 1.0, "fractional control scrolled a whole row");
         let first = self.presence;
         input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 1.0));
         anyhow::ensure!(self.presence != first, "whole wheel step did not advance presence");

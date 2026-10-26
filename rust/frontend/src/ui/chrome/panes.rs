@@ -150,7 +150,7 @@ impl State {
     }
 
     pub(in crate::ui) fn apply_prompt_effect(&mut self, effect: PromptEffect) {
-        if let Some(status) = effect.status { self.status = status; }
+        if let Some(status) = effect.status { self.status.set(status); }
         if effect.redraw { self.window.request_redraw(); }
     }
 

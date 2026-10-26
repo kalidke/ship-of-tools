@@ -39,17 +39,17 @@ impl State {
                         .rsplit(['/', ':'])
                         .next()
                         .unwrap_or(node_id.as_str());
-                    self.status = match trash_path {
+                    self.status.set(match trash_path {
                         Some(tp) => format!("deleted · {name} → {tp}"),
                         None => format!("deleted · {name}"),
-                    };
+                    });
                     self.window.request_redraw();
                 }
             }
             crate::net::transport::FileDeleteResult::Error { code, message } => {
                 tracing::error!(%node_id, %code, %message, "file.delete failed");
                 if matches_delete {
-                    self.status = format!("delete failed · {code}: {message}");
+                    self.status.set(format!("delete failed · {code}: {message}"));
                     self.window.request_redraw();
                 }
             }
@@ -93,9 +93,9 @@ impl State {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| dest.display().to_string());
         if eof {
-            self.status = format!("downloaded · {name} ({written} bytes)");
+            self.status.set(format!("downloaded · {name} ({written} bytes)"));
         } else {
-            self.status = format!("download · {name} {written}/{total}");
+            self.status.set(format!("download · {name} {written}/{total}"));
         }
         self.window.request_redraw();
     }
@@ -162,7 +162,7 @@ impl State {
             // an ambiguous state.
             self.file_ops.abort_upload();
         }
-        self.status = format!("{op} failed · {message}");
+        self.status.set(format!("{op} failed · {message}"));
         self.window.request_redraw();
     }
 }

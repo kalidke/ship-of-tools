@@ -27,7 +27,7 @@ impl State {
         // the header/body mismatch the maintainer hit (preview · circles.png over
         // KNOWLEDGE_BASE.md content).
         self.drive_same_ws_open(&env.path);
-        self.status = format!("nav ← agent · {}", env.path);
+        self.status.set(format!("nav ← agent · {}", env.path));
         self.window.request_redraw();
         tracing::info!(node_id = %format!("files:{}", env.path), ws = %env.workspace,
             "nav.preview driven by agent");

@@ -56,7 +56,7 @@ impl State {
                         .rsplit(['/', ':'])
                         .next()
                         .unwrap_or(node_id.as_str());
-                    self.status = format!("saved · {name}");
+                    self.status.set(format!("saved · {name}"));
                     self.window.request_redraw();
                 }
                 // Ctrl+N new-file round-trip: does nothing unless
@@ -74,9 +74,7 @@ impl State {
                     // nothing here scheduled a paint for it — pair
                     // it with a status line and an explicit redraw
                     // so the refusal is visible immediately.
-                    self.status =
-                        "save refused · file changed on disk (reload to update)"
-                            .to_string();
+                    self.status.set("save refused · file changed on disk (reload to update)");
                     self.window.request_redraw();
                 }
                 // A conflicting write means the name collided on
@@ -93,8 +91,7 @@ impl State {
                     // user walks away believing it saved). The
                     // edit buffer stays as-is so nothing is lost;
                     // say so.
-                    self.status =
-                        format!("SAVE FAILED · {message} (edit kept in buffer)");
+                    self.status.set(format!("SAVE FAILED · {message} (edit kept in buffer)"));
                     self.window.request_redraw();
                 }
                 self.finish_pending_create(&node_id, CreateOutcome::Error(&message));

@@ -57,7 +57,7 @@ impl State {
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch quarto.open");
                 } else {
-                    self.status = "quarto · rendering (quick)…".to_string();
+                    self.status.set("quarto · rendering (quick)…".to_string());
                 }
             } else {
                 tracing::debug!(path = %abs, "`o` ignored — no handler for this file type");
@@ -72,7 +72,7 @@ impl State {
         if let Err(e) = self.send_to(host, crate::net::transport::OutgoingReq::DocsOpen { path }) {
             tracing::warn!(error = %e, "failed to dispatch docs.open");
         } else {
-            self.status = "docs · opening…".to_string();
+            self.status.set("docs · opening…".to_string());
         }
     }
 
@@ -86,7 +86,7 @@ impl State {
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch quarto.open (execute)");
                 } else {
-                    self.status = "quarto · rendering (run chunks)…".to_string();
+                    self.status.set("quarto · rendering (run chunks)…".to_string());
                 }
             }
         }

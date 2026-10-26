@@ -39,7 +39,7 @@ impl State {
     pub(crate) fn on_pty_open_failed(&mut self, event_host: HostKey, target: Option<String>, error: String) {
         if let Some(status) = self.agent_pane.open_failed(&event_host, self.selected.host(), target.as_deref(), &error) {
             tracing::warn!(?target, %error, "pty.open reply surfaced as a pane reason");
-            self.status = status;
+            self.status.set(status);
         }
         self.window.request_redraw();
     }

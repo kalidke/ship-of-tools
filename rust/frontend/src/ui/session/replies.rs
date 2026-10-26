@@ -118,10 +118,8 @@ impl State {
                 },
             );
             if self.file_ops.interrupt() {
-                self.status =
-                    format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload));
-                self.notify_sticky_until =
-                    Some(std::time::Instant::now() + NOTIFY_STICKY);
+                self.status.set(format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload)));
+                self.status.hold();
             }
             self.rebuild_connection_status();
             // B5 resume: the transport's hello-time TreeRoot always
@@ -245,7 +243,7 @@ impl State {
             self.clear_hello_refused(event_host.clone());
         }
         if event_host == *self.selected.host() {
-            self.status = format!("disconnected · {reason}");
+            self.status.set(format!("disconnected · {reason}"));
         } else {
             // (S9, finding S14): `host_label`,
             // not the bare dial key, so a log line names a
@@ -291,10 +289,10 @@ impl State {
         match result {
             Ok(info) => {
                 self.workspace_picker = None;
-                self.status = format!(
+                self.status.set(format!(
                     "workspace created · '{}' @ {}",
                     info.label, info.project_root
-                );
+                ));
                 // The reply arrived over the same connection the
                 // `workspace.create` request targeted (ADR 0042
                 // L2a) — `event_host` IS the new workspace's host.
@@ -336,7 +334,7 @@ impl State {
                 self.window.request_redraw();
             }
             Err(msg) => {
-                self.status = format!("workspace.create failed · {msg}");
+                self.status.set(format!("workspace.create failed · {msg}"));
                 tracing::warn!(error = %msg, "workspace.create failed");
                 self.window.request_redraw();
             }
@@ -371,7 +369,7 @@ impl State {
                 // restores FROM the snapshot), and
                 // `pane_feed`.
                 let detail = info.kept.as_deref().unwrap_or("");
-                self.status = format!("{detail} (default row kept)");
+                self.status.set(format!("{detail} (default row kept)"));
                 if *self.selected.host() == event_host
                     && self
                         .selected
@@ -455,10 +453,10 @@ impl State {
                 } else {
                     " (toml remove failed)"
                 };
-                self.status = format!(
+                self.status.set(format!(
                     "workspace destroyed · '{}'{}{}",
                     info.label, tmux_note, toml_note
-                );
+                ));
                 // Refresh the Sessions tree so the row drops —
                 // this host's list specifically (ADR 0042 L2a),
                 // not necessarily whatever's active.
@@ -469,7 +467,7 @@ impl State {
                 }
             }
             Err(msg) => {
-                self.status = format!("workspace.destroy failed · {msg}");
+                self.status.set(format!("workspace.destroy failed · {msg}"));
                 tracing::warn!(error = %msg, "workspace.destroy failed");
                 self.window.request_redraw();
             }

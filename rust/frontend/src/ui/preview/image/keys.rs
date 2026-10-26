@@ -82,7 +82,7 @@ pub(in crate::ui) fn png_key(state: &mut State, key: KeyPress<'_>, label: String
             if state.preview_source.scale().is_some() {
                 state.overlays.toggle_scalebar();
             } else if !state.begin_scale_entry() {
-                state.status = "scalebar · no image previewed".to_string();
+                state.status.set("scalebar · no image previewed".to_string());
             }
         } else {
             handled = false;

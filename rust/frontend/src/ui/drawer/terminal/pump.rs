@@ -26,7 +26,7 @@ impl State {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "failed to spawn local terminal");
-                        self.status = format!("terminal spawn failed: {e}");
+                        self.status.set(format!("terminal spawn failed: {e}"));
                         // Fall back to closing the drawer so the user isn't
                         // staring at an empty pane with no explanation.
                         self.layout_help.terminal_spawn_failed();
@@ -42,9 +42,9 @@ impl State {
             // (connection line, pin/unpin, ADR-0019 `notify`).
             if let Some(PumpReport { processed, dead, has_content, cols: scols, rows: srows }) = self.term_drawer.pump() {
                 if dead || !has_content {
-                    self.status = format!(
+                    self.status.set(format!(
                         "term: {scols}x{srows} content={has_content} dead={dead} pumped={processed}"
-                    );
+                    ));
                 }
             }
         }

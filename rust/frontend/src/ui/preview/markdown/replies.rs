@@ -7,7 +7,7 @@ impl State {
     /// removed key cannot loop; the next rebuild of the preview asks for the equation again.
     pub(crate) fn on_math_render_failed(&mut self, latex: String, display: bool, message: String) {
         self.md_media.math_failed(&(latex, display));
-        self.status = format!("math · {message}");
+        self.status.set(format!("math · {message}"));
     }
 
     pub(crate) fn on_math_rendered(

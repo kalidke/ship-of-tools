@@ -229,7 +229,7 @@ impl State {
         if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == host_row_id) {
             self.nav.select(idx);
         }
-        self.status = format!("host · {name}");
+        self.status.set(format!("host · {name}"));
         self.window.request_redraw();
     }
 

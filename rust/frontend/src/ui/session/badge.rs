@@ -20,7 +20,7 @@ impl State {
         {
             return self.refuse_result(&reason);
         }
-        self.status = status;
+        self.status.set(status);
         self.refresh_badge_index();
         self.resort_strip();
         self.window.request_redraw();

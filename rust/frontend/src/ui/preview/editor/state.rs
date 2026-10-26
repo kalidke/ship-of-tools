@@ -419,10 +419,12 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
                     .and_then(|mut cb| cb.set_text(text.clone()))
                 {
                     Ok(()) => tracing::info!(
+                        target: "sot::ui::preview::editor::keys",
                         bytes = text.len(),
                         "editor.copy → clipboard"
                     ),
                     Err(e) => tracing::warn!(
+                        target: "sot::ui::preview::editor::keys",
                         error = %e,
                         "clipboard write failed; editor copy dropped"
                     ),
@@ -440,6 +442,7 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
                     .and_then(|mut cb| cb.set_text(text))
                 {
                     tracing::warn!(
+                        target: "sot::ui::preview::editor::keys",
                         error = %e,
                         "clipboard write failed; editor cut still deletes"
                     );
@@ -549,19 +552,4 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
         _ => {}
     }
     buf_changed
-}
-
-impl State {
-    /// Re-shape the edit preview from the active edit buffer. Called
-    /// whenever a key mutates the buffer; cheap enough for a
-    /// few-KB annotation. Without an edit it clears the shaped
-    /// buffer so the next render falls back to the read-only path.
-    pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
-        let width = self.concept.rect().w.max(1.0);
-        let scale = self.scale * self.text_scale_mult;
-        let text = &mut self.text;
-        self.editor.reshape(&self.bindings, |spans| {
-            MarkdownPreview::new_plain_spans(text.font_system_mut(), spans, width, scale)
-        });
-    }
 }

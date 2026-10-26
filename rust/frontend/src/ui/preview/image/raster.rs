@@ -257,7 +257,7 @@ impl RasterView {
                     self.pan_px = pan;
                     roi_aim = Some(aim);
                 }
-                None => tracing::warn!(node_id = %aim.node_id,
+                None => tracing::warn!(target: "sot::ui::render::pass::preview", node_id = %aim.node_id,
                     "preview --roi: degenerate geometry — aim dropped"),
             }
         }
@@ -292,7 +292,7 @@ impl RasterView {
                 // (debug, not the aim path's warn: no user asked for
                 // this rect) so a mysteriously-not-carried view is
                 // diagnosable.
-                None => tracing::debug!(node_id = %nid,
+                None => tracing::debug!(target: "sot::ui::render::pass::preview", node_id = %nid,
                     "view carry: degenerate geometry — restore dropped"),
             }
         }

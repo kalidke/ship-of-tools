@@ -68,11 +68,8 @@ impl State {
         // Don't clobber a fresh notify toast: hold it on the status line until
         // its sticky window elapses (a workspace switch would otherwise rebuild
         // over it immediately). Once elapsed, clear the flag and rebuild.
-        if let Some(until) = self.notify_sticky_until {
-            if std::time::Instant::now() < until {
-                return;
-            }
-            self.notify_sticky_until = None;
+        if self.status.held() {
+            return;
         }
         let Some(host) = self.host.clone() else {
             return;
@@ -80,7 +77,7 @@ impl State {
         let label = self
             .active_workspace_label()
             .unwrap_or_else(|| "default".to_string());
-        self.status = format!("connected · {host}:{label} · rev {}", self.last_revision);
+        self.status.set(format!("connected · {host}:{label} · rev {}", self.last_revision));
     }
 
     /// Display label for the active workspace: the per-workspace name from

@@ -73,8 +73,8 @@ impl State {
         // arm below writes - no separate renderer.
         if let Ok(notice) = std::env::var("SOT_LAUNCH_NOTICE") {
             if !notice.is_empty() {
-                state.status = notice;
-                state.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                state.status.set(notice);
+                state.status.hold();
             }
         }
         apply_harness_flags(&mut state, cli);

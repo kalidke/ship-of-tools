@@ -217,7 +217,7 @@ impl State {
                 self.abandon_result_attempt(&attempt);
             }
         }
-        self.status = format!("nav ← agent (pending) · {path}");
+        self.status.set(format!("nav ← agent (pending) · {path}"));
         tracing::info!(%node_id, ws = %slug,
             "pending nav.preview driven on workspace switch");
     }

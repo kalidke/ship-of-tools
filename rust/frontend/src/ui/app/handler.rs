@@ -228,12 +228,9 @@ impl ApplicationHandler for App {
         // Notify toast expiry: once the sticky window elapses, restore the
         // normal connection status so the toast doesn't linger until the next
         // event. The idle/flash tick below brings us back here within ~1s.
-        if let Some(until) = state.notify_sticky_until {
-            if std::time::Instant::now() >= until {
-                state.notify_sticky_until = None;
-                state.rebuild_connection_status();
-                state.window.request_redraw();
-            }
+        if state.status.expire_hold() {
+            state.rebuild_connection_status();
+            state.window.request_redraw();
         }
         // The not-ended line's own expiry, same pattern as the toast.
         if let Some((_, until)) = state.not_ended_shown {

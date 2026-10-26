@@ -1,4 +1,4 @@
-//! The editor's keys, and entering edit mode from the preview.
+//! The editor's keys, entering edit mode from the preview, and re-shaping the edit buffer.
 
 use crate::ui::*;
 use std::ops::ControlFlow::{self, Break, Continue};
@@ -131,6 +131,21 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
                 }
             }
         }
+    }
+}
+
+impl State {
+    /// Re-shape the edit preview from the active edit buffer. Called
+    /// whenever a key mutates the buffer; cheap enough for a
+    /// few-KB annotation. Without an edit it clears the shaped
+    /// buffer so the next render falls back to the read-only path.
+    pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
+        let width = self.concept.rect().w.max(1.0);
+        let scale = self.scale * self.text_scale_mult;
+        let text = &mut self.text;
+        self.editor.reshape(&self.bindings, |spans| {
+            MarkdownPreview::new_plain_spans(text.font_system_mut(), spans, width, scale)
+        });
     }
 }
 

@@ -9,11 +9,12 @@ mod prompt;
 mod replies;
 mod reveal;
 mod reveal_walk;
+mod file_ops;
 mod transfer;
 
 pub(in crate::ui) use paths::*;
 pub(in crate::ui) use prompt::*;
 pub(in crate::ui) use reveal_walk::RevealWalk;
-pub(in crate::ui) use transfer::*;
+pub(in crate::ui) use file_ops::*;
 
 pub(crate) mod download;
