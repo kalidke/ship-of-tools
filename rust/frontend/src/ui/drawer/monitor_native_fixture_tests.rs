@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::drawer::monitor::{clocks, MonitorPane};
+use sot_protocol::{HostSeries, MonitorSample};
 use crate::net::transport::{IncomingEvt, ResolvedDial};
 
 impl State {
@@ -32,7 +34,7 @@ impl State {
         let (other_tx, mut other_rx) = tokio::sync::mpsc::unbounded_channel();
         // The hub sorts second: only the declared hub, not the first connection, makes it the monitor host.
         self.conns = vec![(other.clone(), other_tx), (hub.clone(), hub_tx)];
-        self.monitor_hub = Some(hub.clone());
+        let original_hub = self.monitor.hub().map(str::to_owned);
         self.selected.select(other.clone(), self.selected.workspace_id().clone());
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
@@ -45,7 +47,12 @@ impl State {
         let mut seen = Vec::new();
         for (label, drawer, held, host) in rows {
             self.select_monitor_fixture_drawer(drawer);
-            self.monitor_view.subscribed = held;
+            // The held subscription, set independently of the drawer as before: a fresh pane for the hub,
+            // holding the subscription as `--start-monitor` does.
+            self.monitor = MonitorPane::new(Some(hub.clone()));
+            if held {
+                self.monitor.hold_subscription();
+            }
             let connected = IncomingEvt::Connected {
                 session_id: "session".into(),
                 revision: 0,
@@ -63,8 +70,7 @@ impl State {
             seen.push((label, monitor_ops(&mut hub_rx), monitor_ops(&mut other_rx)));
         }
         self.select_monitor_fixture_drawer(DrawerContent::Closed);
-        self.monitor_view.subscribed = false;
-        self.monitor_hub = None;
+        self.monitor = MonitorPane::new(original_hub);
         self.set_focus(original_focus);
         println!("monitor-resubscribe: {seen:?}");
         let resent = |i: usize| seen[i].1 == ["subscribe", "history"];
@@ -92,9 +98,10 @@ impl State {
             gpus: Vec::new(),
             top_procs: Vec::new(),
         };
-        self.monitor_view = MonitorView::new();
+        let hub = self.monitor.hub().map(str::to_owned);
+        self.monitor = MonitorPane::new(hub.clone());
         let series = HostSeries { host: "gpu-box".into(), step_s: 1.0, stale: true, samples: vec![reading] };
-        self.monitor_view.apply_history(vec![series]);
+        self.monitor.apply_history(vec![series]);
         let rect = |w: f32, h: f32| move |_: ratatui::layout::Rect| ScreenRect { x: 0.0, y: 0.0, w, h };
         let cells = ratatui::layout::Rect::default();
         let rows = [
@@ -107,11 +114,10 @@ impl State {
         for (label, drawer, (w, h)) in rows {
             self.select_monitor_fixture_drawer(drawer);
             self.layout_drawer_px(rect(w, h), cells, (0, 0), cells);
-            seen.push((label, self.monitor_quad.as_ref().map(|q| q.size_px)));
+            seen.push((label, self.monitor.quad().map(|q| q.size_px)));
         }
         self.select_monitor_fixture_drawer(DrawerContent::Closed);
-        self.monitor_quad = None;
-        self.monitor_view = MonitorView::new();
+        self.monitor = MonitorPane::new(hub);
         self.set_focus(original_focus);
         println!("monitor-redraw: {seen:?}");
         let right = seen[0].1 == Some((640, 240))

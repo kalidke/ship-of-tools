@@ -190,14 +190,14 @@ pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: 
     // focus (where most Ctrl+letter bytes forward to the pty).
     if !event.repeat {
         if action == Some(Action::FontScaleUp) {
-            state.apply_text_scale(state.text_scale_mult + 0.1);
+            state.apply_text_scale(state.canvas.text_scale_mult() + 0.1);
             state.persist_resume_state();
             state.last_key = Some(label);
             state.window.request_redraw();
             return Break(());
         }
         if action == Some(Action::FontScaleDown) {
-            state.apply_text_scale(state.text_scale_mult - 0.1);
+            state.apply_text_scale(state.canvas.text_scale_mult() - 0.1);
             state.persist_resume_state();
             state.last_key = Some(label);
             state.window.request_redraw();
@@ -301,7 +301,7 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
     // render loop on the next frame (request_redraw below).
     if action == Some(Action::Selfie)
     {
-        state.selfie_pending = Some(selfie_path());
+        state.capture.request_selfie(selfie_path());
         state.last_key = Some(label);
         state.window.request_redraw();
         return Break(());

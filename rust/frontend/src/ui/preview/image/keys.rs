@@ -43,8 +43,8 @@ pub(in crate::ui) fn png_key(state: &mut State, key: KeyPress<'_>, label: String
                 state.pane_rects.preview.width,
                 state.pane_rects.preview.height,
             ),
-            state.cell_w,
-            state.cell_h,
+            state.canvas.cell_w(),
+            state.canvas.cell_h(),
             state.overlays.caption_band_px(),
         );
         let (pane_w, pane_h) = (pane_rect.w, pane_rect.h);

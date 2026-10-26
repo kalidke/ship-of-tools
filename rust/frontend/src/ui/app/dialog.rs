@@ -133,7 +133,7 @@ pub(in crate::ui) fn quit_prompt_click(answers: Option<[Rect; 2]>, left_at: Opti
 impl State {
     /// The close dialog this frame shows, on the chrome's grid (`close_dialog_text`).
     pub(in crate::ui) fn close_dialog(&self) -> Option<CloseDialog> {
-        let size = self.terminal.size().ok()?;
+        let size = self.canvas.grid_size().ok()?;
         let line = self.leaving.as_ref().and_then(crate::lease::Leaving::line);
         let text = close_dialog_text(self.focus_prompts.prompt(), self.leases.notice(), line.as_deref(),
             self.focus_prompts.stayed().then(|| self.leases.stay_notice()).flatten(), self.focus_prompts.hint())?;

@@ -534,9 +534,8 @@ impl State {
         // (Shift+ArrowRight; negative = Shift+ArrowLeft) on the first workspace.list
         // reply. Consumed once so a re-fetch from a later
         // switch doesn't re-cycle.
-        if self.capture_cycle != 0 {
-            let steps = self.capture_cycle;
-            self.capture_cycle = 0;
+        let steps = self.capture.take_cycle();
+        if steps != 0 {
             let dir = if steps > 0 { 1 } else { -1 };
             for _ in 0..steps.abs() {
                 // Simulated cycling (--capture-cycle), not a person.

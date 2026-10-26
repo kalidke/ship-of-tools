@@ -31,12 +31,17 @@ owns the scalebar toggle and label, the caption store and label, and the caption
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
 last `fe-state.json` signature; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
-pty size and its starting folder; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
+pty size and its starting folder; `drawer::monitor::MonitorPane` owns the Monitor drawer; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
 owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
-connection's hello facts and `host_view::HelloRefusals` each host's refused hello.
+connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
+surface, device, queue and surface configuration; `render::canvas::Canvas` owns the glyph text layer, the chrome's
+cell grid and the cell metrics; `render::brushes::Brushes` owns the quad pipeline, the solid brushes, the logos and
+the help peek's backing; `app::startup::StartupScript` owns the harness's command-line one-shots;
+`render::capture_run::CaptureRun` owns the capture harness's run; `app::pacing::FramePacer` owns the frame-rate cap
+and the first frame's focus.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
 convention, keeps the window's code out of its fields.
 The remaining concepts below still reach shared fields through `impl State` blocks and free functions using `use super::*`.
@@ -249,8 +254,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
-  live tail; a wheel the shell's app tracks is forwarded as is. The Monitor tenant stays on State: its native
-  fixture sets the subscription and hub directly, and moving it needs that fixture's own design.
+  live tail; a wheel the shell's app tracks is forwarded as is.
+- `MonitorPane` privately owns the Monitor drawer (ADR 0020): its chart model, the raster, the drawer rect, the
+  readings' dirty mark, the subscription this window holds and the declared hub it asks. Each reply marks the
+  readings dirty; the layout pass plans a chart when they changed or it was drawn for another size, text scale or set
+  of marks, State rasterizes it and installs the result (a failed raster still records what it was drawn for, so it
+  is not retried every frame), and another tenant drops it. The subscription's lifecycle (toggle, `--start-monitor`,
+  resubscribe on a hub connection) is State's in `drawer/monitor_drive.rs`; the native fixture there sets up a fresh
+  pane through its constructor and reads the raster through `quad()`.
 - `StripMotion` privately owns the session strip's motion: the scroll snaps to the active session on the first
   paint and then eases toward it, and a workspace cycle flicks the wheels (clamped), which spin down; both step on
   one frame clock and report whether they still move, so the frame loop stays alive only until they settle.
@@ -273,6 +284,36 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   project root and its basename, backend version, revision), set only by the active host's own `Connected` and
   relabelled by a switch to an already connected host. `HelloRefusals` privately owns each host's refused hello,
   lifted only by that host's own clean hello; the active host's is the blocking overlay.
+- `Gpu` privately owns the window's GPU (the render resources' first stage): the surface, device, queue and the
+  surface's configuration, dropped in their original order. The size changes only by `resize`; `acquire_frame`
+  reconfigures a lost or outdated surface once and asks again. Device, queue and configuration are lent immutably to
+  the drawing code.
+- `Canvas` privately owns the render resources' text stage: the glyph text layer, the ratatui terminal over the cell
+  backend, the startup scale, the text-scale multiplier (clamped to 0.5..=3) and the cell metrics derived from them
+  (the cell width measured from the monospace advance). A text-scale change or a resize re-derives the chrome grid
+  from the surface size in the same operation, so the cell count never disagrees with the cell size. Shaping
+  (`shape`, which lends the font system to one buffer build or resize), the chrome draw (`draw_chrome`), text and
+  overlay preparation and their paint, and the atlas trim are its operations; the cell backend is read through
+  `chrome()`. The native pane-mapping fixture checks rejection and clamping against the window's own metrics, with
+  points outside any geometry.
+- `Brushes` privately owns the render resources' quad stage: the pipeline (lent immutably to whoever builds a quad of
+  its own), one solid brush per colour drawn in a pass (a paint rewrites its brush's vertex buffer), the border
+  brushes built once per colour before the pass that paints them, the strip logo and nav wordmark (each drawn only
+  when it decoded) and the help peek's backing, rebuilt only when its alpha changes. Painting is its operation over
+  the `Gpu`; `Gpu` also holds the surface format's clear colour.
+- `StartupScript` privately owns the harness's one-shots: `--auto-expand`, `--auto-pin` and `--demo-repl-eval` each
+  fire once when the startup selection has landed on a non-empty tree (taken whether or not their action queues),
+  `--demo-function-methods` once its row appears, and the `--start-path` walk's target and frontier memo, ended on
+  arrival or a dead end. The walk itself, which reads the tree and expands, is State's.
+- `CaptureRun` privately owns the capture harness's run: the `--capture` PNG, a pending selfie, the
+  `--capture-preview` one-shot (and that it was given, which keeps the cursor's own preview standing down), the
+  `--capture-cycle` steps (taken once) and the frame count. Each frame asks it for its shot: the harness shot at its
+  target frame (`--capture-delay-ms`, else four times `CAPTURE_FRAME` with a capture preview, else `CAPTURE_FRAME`)
+  beats a selfie on the same frame; the readback and the exit are State's. The native fixtures read the frame count
+  through a reader compiled only for them.
+- `FramePacer` privately owns the frame-rate cap: a redraw inside `FRAME_BUDGET` of the last frame is deferred
+  (dirty) and drawn at the boundary, so a burst collapses into one frame (the capture harness draws every redraw);
+  animations and debounces mark it dirty; the first drawn frame takes the window's focus once.
 - `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations

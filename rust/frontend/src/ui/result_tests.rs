@@ -321,23 +321,23 @@ impl State {
     }
 
     fn paint_result_probe_image(&mut self, rect: ScreenRect) -> Result<()> {
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        let texture = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("result fixture"),
             size: wgpu::Extent3d {
-                width: self.config.width,
-                height: self.config.height,
+                width: self.gpu.config().width,
+                height: self.gpu.config().height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.config.format,
+            format: self.gpu.config().format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
-            .device
+            .gpu.device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("result fixture"),
             });
@@ -358,7 +358,7 @@ impl State {
             });
             self.paint_preview_png(&mut pass, Some(rect), rect)?;
         }
-        self.queue.submit([encoder.finish()]);
+        self.gpu.queue().submit([encoder.finish()]);
         Ok(())
     }
 }
@@ -1349,20 +1349,18 @@ impl State {
         anyhow::ensure!(self.presence != first, "whole wheel step did not advance presence");
 
         // Geometry stays with State: zero area refuses both a press and a clamped drag.
-        let saved = (self.pane_rects.llm, self.cell_w, self.cell_h, self.chrome_origin_x, self.chrome_origin_y);
+        let saved = self.pane_rects.llm;
         self.pane_rects.llm = ratatui::layout::Rect::new(0, 0, 0, 3);
         let empty = self.llm_cell_at_px((0.0, 0.0), true);
         anyhow::ensure!(empty.is_none() && self.llm_cell_at_px((0.0, 0.0), false).is_none(), "zero-area pane mapped a cell");
         self.agent_pane.press(empty);
         anyhow::ensure!(self.agent_pane.selection().is_none(), "zero-area press began a selection");
         self.pane_rects.llm = ratatui::layout::Rect::new(3, 4, 8, 3);
-        self.cell_w = 1.0;
-        self.cell_h = 1.0;
-        self.chrome_origin_x = 0.0;
-        self.chrome_origin_y = 0.0;
+        // The window's own cell metrics: a point above and left of the chrome origin is outside any pane, and a
+        // drag far past the pane's bottom right clamps to its last cell.
         anyhow::ensure!(self.llm_cell_at_px((-1.0, -1.0), true).is_none()
-            && self.llm_cell_at_px((100.0, 100.0), false) == Some((2, 7)), "pane press/drag mapping lost rejection or clamping");
-        (self.pane_rects.llm, self.cell_w, self.cell_h, self.chrome_origin_x, self.chrome_origin_y) = saved;
+            && self.llm_cell_at_px((1.0e6, 1.0e6), false) == Some((2, 7)), "pane press/drag mapping lost rejection or clamping");
+        self.pane_rects.llm = saved;
         Ok(())
     }
 }

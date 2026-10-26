@@ -253,14 +253,13 @@ impl State {
             return clear_and_none(self);
         }
         // Shape the label OUTSIDE the render pass (a persistent buffer on self).
-        let scale_f = self.scale;
+        let scale_f = self.canvas.scale();
         let label = fmt_scale_label(nice, &scale.unit);
-        let label_buf = crate::ui::preview::markdown::MarkdownPreview::new_plain(
-            self.text.font_system_mut(),
+        let label_buf = self.canvas.shape(|fs| crate::ui::preview::markdown::MarkdownPreview::new_plain(fs,
             &label,
             (400.0 * scale_f).max(1.0),
             scale_f,
-        );
+        ));
         let label_w = label_buf
             .buffer
             .layout_runs()
@@ -327,18 +326,17 @@ impl State {
         let Some(text) = self.overlays.captions().get(&ws_key, &node_id).cloned() else {
             return clear_and_none(self);
         };
-        let scale_f = self.scale;
+        let scale_f = self.canvas.scale();
         let pad = 6.0 * scale_f;
         let text_w = preview_rect.w - 2.0 * pad;
         if text_w <= 1.0 || preview_rect.h <= 1.0 {
             return clear_and_none(self);
         }
-        let buf = crate::ui::preview::markdown::MarkdownPreview::new_plain(
-            self.text.font_system_mut(),
+        let buf = self.canvas.shape(|fs| crate::ui::preview::markdown::MarkdownPreview::new_plain(fs,
             &text,
             text_w,
             scale_f,
-        );
+        ));
         let line_h = buf.buffer.metrics().line_height;
         let lines = buf.buffer.layout_runs().count().max(1);
         self.overlays.show_caption_label(buf);

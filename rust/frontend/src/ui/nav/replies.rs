@@ -190,7 +190,7 @@ impl State {
         // below only holds while the cursor stays on row 0.
         let ws_key = self.active_ws_key();
         let readme_default = matches!(self.nav.mode(), Mode::Files)
-            && self.capture_preview.is_none()
+            && !self.capture.preview_pending()
             && self.nav_cursor.first_root_for(ws_key);
         if !resume_landed && readme_default {
             if let Some(idx) = self
@@ -214,7 +214,7 @@ impl State {
             if let Some(n) = self.nav_cursor.take_initial_selection() {
                 self.nav.select_clamped(n);
             }
-            if let Some(rel) = self.capture_preview.take() {
+            if let Some(rel) = self.capture.take_preview() {
                 let node_id = format!("files:{rel}");
                 tracing::info!(%node_id, "firing --capture-preview");
                 let (fit_w, fit_h) = self.preview_fit_px();
@@ -233,7 +233,7 @@ impl State {
                 // driven auto-fire race this used to paper over
                 // (by pretending the root row was fired) is now
                 // killed at the source — maybe_fire_preview
-                // stands down while capture_preview_armed. The
+                // stands down while the capture preview is armed. The
                 // honest id matters: the pane title and the
                 // ADR-0021 page transport (PgDn/PgUp/n/p re-fire
                 // the *shown* node) both read it — the root-row

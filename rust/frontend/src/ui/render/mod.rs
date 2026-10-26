@@ -4,9 +4,13 @@
 use super::*;
 
 pub(crate) mod cells;
+pub(in crate::ui) mod brushes;
+pub(in crate::ui) mod canvas;
+pub(in crate::ui) mod gpu;
 pub(crate) mod quad;
 pub(crate) mod text;
 mod capture;
+pub(in crate::ui) mod capture_run;
 mod pass;
 pub(in crate::ui) mod surface;
 

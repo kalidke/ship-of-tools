@@ -85,9 +85,9 @@ impl State {
                 }
             };
             match quad_from_svg_bytes(
-                &self.device,
-                &self.queue,
-                &self.quad_pipeline,
+                self.gpu.device(),
+                self.gpu.queue(),
+                self.brushes.pipeline(),
                 &entry.svg_bytes,
                 target_w,
                 target_h,
@@ -275,14 +275,7 @@ impl State {
             }
         }
 
-        self.text.prepare(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
-            &lines,
-            &extras,
-        )?;
+        self.canvas.prepare_text(&self.gpu, &lines, &extras)?;
         Ok((scalebar_draw, media_paint_targets))
     }
 }

@@ -6,11 +6,11 @@ impl State {
     pub(in crate::ui) fn project_chrome(
         &mut self,
     ) -> Result<(Vec<crate::ui::render::text::Line>, HashMap<(u8, u8, u8), Vec<ScreenRect>>, Vec<ScreenRect>)> {
-        let mut lines = self.terminal.backend().project_lines(
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-            self.cell_w,
-            self.cell_h,
+        let mut lines = self.canvas.chrome().project_lines(
+            self.canvas.origin_x(),
+            self.canvas.origin_y(),
+            self.canvas.cell_w(),
+            self.canvas.cell_h(),
         );
 
         let mut border_rects_by_color = self.project_border_quads()?;
@@ -29,12 +29,12 @@ impl State {
         //
         // Thickness ≈ 9% of cell height → a thin ~1–2px light-border weight that
         // scales with DPI (cell_h is BASE_CELL_H * scale).
-        let border_thickness = border_thickness_px(self.cell_h);
-        let border_quads_raw = self.terminal.backend().project_border_quads(
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-            self.cell_w,
-            self.cell_h,
+        let border_thickness = border_thickness_px(self.canvas.cell_h());
+        let border_quads_raw = self.canvas.chrome().project_border_quads(
+            self.canvas.origin_x(),
+            self.canvas.origin_y(),
+            self.canvas.cell_w(),
+            self.canvas.cell_h(),
             border_thickness,
         );
         // Group rects by colour (1–2 colours typical): `Quad::render_many` is
@@ -57,19 +57,7 @@ impl State {
         // self.border_quads while the pass already holds other &self borrows.
         // Doing it here keeps the pass to pure iter_mut + render_many.
         for color in border_rects_by_color.keys() {
-            if !self.border_quads.contains_key(color) {
-                let (r, g, b) = *color;
-                let quad = Quad::from_rgba8(
-                    &self.device,
-                    &self.queue,
-                    &self.quad_pipeline,
-                    &[r, g, b, 255],
-                    1,
-                    1,
-                )
-                .context("failed to build border-colour quad")?;
-                self.border_quads.insert(*color, quad);
-            }
+            self.brushes.ensure_border(*color, &self.gpu, "failed to build border-colour quad")?;
         }
         Ok(border_rects_by_color)
     }
@@ -106,21 +94,18 @@ impl State {
             help_opacity = overlay.opacity;
             let content = overlay.lines;
             let px = ScreenRect {
-                x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
-                y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
-                w: rect.width as f32 * self.cell_w,
-                h: (content.len() as f32 + 2.0) * self.cell_h,
+                x: self.canvas.origin_x() + rect.x as f32 * self.canvas.cell_w(),
+                y: self.canvas.origin_y() + rect.y as f32 * self.canvas.cell_h(),
+                w: rect.width as f32 * self.canvas.cell_w(),
+                h: (content.len() as f32 + 2.0) * self.canvas.cell_h(),
             };
             help_overlay_rect = Some(px);
             help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::ui::render::text::Line {
-                text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
+                text, x: px.x + 2.0 * self.canvas.cell_w(), y: px.y + (i as f32 + 1.0) * self.canvas.cell_h(),
                 color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
             }).collect();
             let alpha = (help_opacity * 245.0).round() as u8;
-            if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
-                self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
-                    &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
-            }
+            self.brushes.ensure_help_back(alpha, &self.gpu)?;
         }
 
         // Nav-spill overlay text: the segments the draw closure just
@@ -135,15 +120,15 @@ impl State {
             .iter()
             .map(|seg| crate::ui::render::text::Line {
                 text: seg.text.clone(),
-                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
-                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
+                x: self.canvas.origin_x() + seg.x as f32 * self.canvas.cell_w(),
+                y: self.canvas.origin_y() + seg.row as f32 * self.canvas.cell_h(),
                 color: seg.color,
                 bold: seg.bold,
                 italic: false,
                 dim: seg.dim,
             })
             .collect();
-        let (ox, oy, cw, ch) = (self.chrome_origin_x, self.chrome_origin_y, self.cell_w, self.cell_h);
+        let (ox, oy, cw, ch) = (self.canvas.origin_x(), self.canvas.origin_y(), self.canvas.cell_w(), self.canvas.cell_h());
         let dialog_rect = dialog.map(|d| {
             overlay_lines.extend(d.rows.into_iter().map(|(x, y, text, style)| crate::ui::render::text::Line {
                 text, x: ox + x as f32 * cw, y: oy + y as f32 * ch,
@@ -155,14 +140,7 @@ impl State {
         });
         let fade_start = overlay_lines.len();
         overlay_lines.extend(help_overlay_lines);
-        self.text.prepare_overlay(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
-            &overlay_lines,
-            Some((fade_start, help_opacity)),
-        )?;
+        self.canvas.prepare_overlay(&self.gpu, &overlay_lines, Some((fade_start, help_opacity)))?;
         Ok((help_overlay_rect, dialog_rect, overlay_lines))
     }
 }

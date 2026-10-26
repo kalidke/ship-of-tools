@@ -66,7 +66,7 @@ impl State {
         // per-frame decay + redraw live in the bottom-strip block; nudge the
         // event loop so the spin animates even if nothing else is dirty.
         self.strip_motion.flick(direction);
-        self.dirty = true;
+        self.pacer.mark_dirty();
         self.window.request_redraw();
         self.switch_to_resolved_workspace(target, person_driven);
     }

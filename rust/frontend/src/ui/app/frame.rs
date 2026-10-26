@@ -12,10 +12,10 @@ impl State {
         let (lines, border_rects_by_color, strip_logo_rects) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
-        let cell_w = self.cell_w;
-        let cell_h = self.cell_h;
-        let ox = self.chrome_origin_x;
-        let oy = self.chrome_origin_y;
+        let cell_w = self.canvas.cell_w();
+        let cell_h = self.canvas.cell_h();
+        let ox = self.canvas.origin_x();
+        let oy = self.canvas.origin_y();
         let cells_to_px = move |cells: ratatui::layout::Rect| ScreenRect {
             x: ox + cells.x as f32 * cell_w,
             y: oy + cells.y as f32 * cell_h,
@@ -42,14 +42,7 @@ impl State {
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;
         let prepared = std::time::Instant::now();
-        let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
-                self.surface.get_current_texture()?
-            }
-            Err(e) => return Err(e.into()),
-        };
+        let frame = self.gpu.acquire_frame()?;
         let drawable = std::time::Instant::now();
 
         let view = frame
@@ -57,7 +50,7 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
-            .device
+            .gpu.device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("sot-frame"),
             });
@@ -69,7 +62,7 @@ impl State {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.background),
+                        load: wgpu::LoadOp::Clear(self.gpu.clear_color()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -95,7 +88,7 @@ impl State {
         }
         let (readback, capture_target, capture_now, selfie_target) = self.stage_frame_capture(&mut encoder, &frame);
         let encoded = std::time::Instant::now();
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.gpu.queue().submit(std::iter::once(encoder.finish()));
         let submitted = std::time::Instant::now();
         frame.present();
         if let Some(candidate) = presentation_candidate {
@@ -103,10 +96,10 @@ impl State {
         }
         self.acknowledge_presented_result();
         self.ack_presented_lines(owed_drawn, owed, owed_line, leaving_drawn);
-        self.text.trim();
+        self.canvas.trim();
         self.finish_frame_capture(readback, capture_target, capture_now, selfie_target);
-        self.frame_counter += 1;
-        self.last_frame_at = Some(std::time::Instant::now());
+        self.capture.count_frame();
+        self.pacer.drawn(std::time::Instant::now());
         Ok(())
     }
 
@@ -119,7 +112,7 @@ impl State {
         // mark dirty so the frame loop keeps animating it (the fast-repaint
         // cadence is armed in `about_to_wait`).
         if self.prune_expired_flashes(std::time::Instant::now()) {
-            self.dirty = true;
+            self.pacer.mark_dirty();
         }
         self.reflow_markdown_preview();
         self.fire_settled_cursor();
@@ -160,7 +153,7 @@ impl State {
             // check passes once the user settles, then the fires go
             // through. ~10 cheap no-op redraws per settle, which is
             // dwarfed by the per-row backend traffic we're skipping.
-            self.dirty = true;
+            self.pacer.mark_dirty();
         } else {
             self.maybe_fire_concept_read();
             self.maybe_fire_preview();
@@ -173,47 +166,34 @@ impl State {
         // We clear the flag whether or not the expansion request actually
         // queued — a no-op row (leaf or already expanded) doesn't deserve
         // a retry loop.
-        if self.pending_auto_expand
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
+        let ready = self.nav_cursor.initial_selection_done() && !self.nav.tree().rows().is_empty();
+        if self.startup.take_auto_expand(ready) {
             self.try_expand_selected();
-            self.pending_auto_expand = false;
         }
         // `--auto-pin`: drive C2 toggle once the cursor selection has
         // landed. Same gating as `--auto-expand`. Pinning a row whose
         // id doesn't start with `files:` is a `toggle_pin` no-op; the
         // flag still clears so we don't churn.
-        if self.pending_auto_pin
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
+        if self.startup.take_auto_pin(ready) {
             self.toggle_pin();
-            self.pending_auto_pin = false;
         }
         // `--demo-repl-eval`: one-shot self-submit once the workspace is
         // live (same gating as the other harness one-shots). Replaces the
         // draft and submits without moving scroll, then shows the REPL
         // drawer so the capture includes it.
-        if self.pending_demo_repl_eval.is_some()
-            && self.nav_cursor.initial_selection_done()
-            && !self.nav.tree().rows().is_empty()
-        {
-            if let Some(code) = self.pending_demo_repl_eval.take() {
-                self.submit_demo_repl_input(code);
-                self.layout_help.show_demo_repl();
-            }
+        if let Some(code) = self.startup.take_demo_repl_eval(ready) {
+            self.submit_demo_repl_input(code);
+            self.layout_help.show_demo_repl();
         }
         // `--demo-function-methods` chain: once the target function row
         // appears in the tree (after the col-2 splice has landed),
         // position cursor on it and fire the methods request. Single-fire
         // by clearing the pending tuple.
-        if let Some((module, name)) = self.pending_demo_function_methods.clone() {
-            let target_id = format!("modules:{module}:{name}");
+        if let Some(target_id) = self.startup.demo_function_target() {
             if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
                 self.nav.select(idx);
                 self.try_expand_selected();
-                self.pending_demo_function_methods = None;
+                self.startup.finish_demo_function();
             }
         }
     }
@@ -226,12 +206,11 @@ impl State {
         // fire exactly as they would for a user host-2 — which is the
         // point: `--capture-preview` only fires preview.get, but the
         // concept panel and drift badge key off the cursored row.
-        if let Some(path) = self.pending_start_path.clone() {
+        if let Some(path) = self.startup.start_path().map(str::to_owned) {
             let target_id = format!("files:{path}");
             if let Some(idx) = self.nav.tree().rows().iter().position(|r| r.node.id == target_id) {
                 self.nav.select(idx);
-                self.pending_start_path = None;
-                self.start_path_fired = None;
+                self.startup.finish_start_path();
             } else {
                 // Deepest ancestor directory that exists in the tree but is
                 // still collapsed. (Ancestors appear top-down, so the last
@@ -260,17 +239,16 @@ impl State {
                     let anc_id = self.nav.tree().rows()[idx].node.id.clone();
                     // Fire once per frontier; `expanded` flips only when the
                     // children splice lands, so gate re-fires on the memo.
-                    if self.start_path_fired.as_deref() != Some(anc_id.as_str()) {
+                    if self.startup.start_path_fired() != Some(anc_id.as_str()) {
                         self.nav.select(idx);
                         if self.try_expand_selected() {
-                            self.start_path_fired = Some(anc_id);
+                            self.startup.note_frontier_fired(anc_id);
                         } else {
                             // Not expandable (leaf / no children): the path
                             // can't be reached — stop walking rather than
                             // retry every redraw.
                             tracing::warn!(%path, %anc_id, "--start-path dead end — ancestor not expandable");
-                            self.pending_start_path = None;
-                            self.start_path_fired = None;
+                            self.startup.finish_start_path();
                         }
                     }
                 }

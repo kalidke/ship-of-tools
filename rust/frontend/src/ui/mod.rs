@@ -173,154 +173,22 @@ struct State {
     window: MainWindow,
     /// What another thread holds to ask this window for a redraw.
     wake: MainWake,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    text: TextLayer,
-    background: wgpu::Color,
-    terminal: Terminal<WgpuBackend>,
-    quad_pipeline: QuadPipeline,
-    /// A 1×1 pastel-yellow RGBA texture used as the LLM-pane selection
-    /// highlight. Rendered as a per-row stretched quad before text.render
-    /// so glyphs sit on top — gives a "highlighter" look that doesn't
-    /// invert the text colour (REVERSED inverts both fg and bg, which
-    /// hurt readability per user feedback). Solid colour with full alpha
-    /// — the chrome's near-black bg shows around glyph antialias edges.
-    selection_bg_quad: Quad,
-    /// A 1×1 near-opaque surface-navy RGBA texture: the backing strip
-    /// under nav-spill overlay rows. Rendered AFTER the main text pass
-    /// (so it covers preview glyphs and images alike), then the overlay
-    /// text layer draws the row text on top. Alpha slightly under full
-    /// so an image preview barely ghosts through — reads as "floating
-    /// above", not "hole cut into the preview".
-    overlay_back_quad: Quad,
-    /// A 1×1 dark slate RGBA texture used as the markdown-preview code
-    /// bg — both inline `<code>` and fenced code blocks render against
-    /// it so `Vec<u8>` doesn't look like prose. Paint pass walks
-    /// `MarkdownPreview::code_glyph_rects` and stretches this quad
-    /// behind each contiguous code-run, slightly lifted from the
-    /// chrome bg toward VS-Code Dark+'s `#1e1e1e` so the panel reads
-    /// clearly against the deep-navy surface.
-    code_bg_quad: Quad,
-    /// 1×1 lighter-slate RGBA tile for the 1-px border around fenced
-    /// code blocks. Four thin quads per block (top/bottom/left/right)
-    /// give the panel an outline so it reads as a discrete block
-    /// instead of "a stripe of slate behind the text" — matches the
-    /// GitHub / VS Code code-block treatment.
-    code_border_quad: Quad,
-    /// 1×1 light-gray RGBA tile painted as a thin horizontal quad
-    /// through every `STRIKE_GLYPH_FLAG` run in the markdown preview.
-    /// Replaces the U+0335 / U+0336 combining-mark fallback that
-    /// rasterised inconsistently across fontdb's font picks (Segoe UI
-    /// rendered it as an underline, Consolas barely at all).
-    strike_line_quad: Quad,
-    /// Lazily-built solid-colour quads for pane-border box-drawing chars,
-    /// keyed by RGB. `chrome::project_border_quads` emits arm-from-centre
-    /// rects sized to the exact cell so stacked `│` borders tile without the
-    /// sub-cell font-leading gaps cosmic-text leaves (the resolved monospace
-    /// font doesn't fill the 18px cell). Cached rather than built per frame
-    /// because `Quad::from_rgba8` allocates a GPU texture + bind group; pane
-    /// borders use only 1–2 colours so the map stays tiny.
-    border_quads: HashMap<(u8, u8, u8), Quad>,
-    /// Solid quads for the ADR-0034 scalebar overlay: a white `bar` over a
-    /// black `back`ing box. Dedicated fields (not `border_quads`) because each
-    /// `render_many` mutably borrows its quad for the whole render-pass
-    /// lifetime, so the two colours must live in disjoint fields.
-    scalebar_bar_quad: Quad,
-    scalebar_back_quad: Quad,
-    /// Backing box for the figure-caption overlay. A dedicated field, not a
-    /// reuse of `scalebar_back_quad`: `render_many` mutably borrows its quad for
-    /// the whole render-pass lifetime, so two draws in one pass need two
-    /// disjoint fields (the same aliasing rule the scalebar's own two quads
-    /// document below).
-    caption_back_quad: Quad,
-    /// Miniature dark logo (from `LOGO_DARK_PNG`) flanking each session badge
-    /// in the bottom strip, plus its native `(w, h)` for aspect-ratio sizing.
-    /// `None` when the embedded PNG fails to decode — purely cosmetic, the
-    /// strip renders unchanged without it.
-    logo_quad: Option<(Quad, u32, u32)>,
-    /// Small wordmark logo (from `LOGO_WORDMARK_PNG`) drawn at the top of the
-    /// nav pane, plus its native `(w, h)` for aspect-ratio sizing. `None` when
-    /// the embedded PNG fails to decode.
-    wordmark_quad: Option<(Quad, u32, u32)>,
-    /// Combined multiplier (`cli.scale * window.scale_factor()`) applied to
-    /// all text + cell metrics. Captured once at startup; ScaleFactorChanged
-    /// is currently ignored.
-    scale: f32,
-    cell_w: f32,
-    cell_h: f32,
-    chrome_origin_x: f32,
-    chrome_origin_y: f32,
-    /// `--capture <path>`: render to PNG and exit. Set means we keep
-    /// requesting redraws until `frame_counter == CAPTURE_FRAME` so the
-    /// transport task has time to push events.
-    capture_path: Option<PathBuf>,
-    /// Ctrl+Shift+S selfie: a pending whole-window capture target. Set by the
-    /// keybind, consumed by the render loop on the next frame — unlike
-    /// `capture_path`, the FE does NOT exit after (it's a live screenshot).
-    selfie_pending: Option<PathBuf>,
-    /// `--capture-preview <relpath>`: project-relative path to fire
-    /// `preview.get` for as soon as the first Files-mode `tree.root` lands.
-    /// One-shot — consumed on first dispatch.
-    capture_preview: Option<String>,
-    /// True when `--capture-preview` was supplied. Persists past the
-    /// one-shot `capture_preview` consumption so the readback frame
-    /// delay knows to wait for the extra round-trip + MathJax.
-    capture_preview_armed: bool,
-    /// Explicit `--capture-delay-ms` override (0 = auto). When non-zero,
-    /// the readback frame is `delay_ms * 60 / 1000` regardless of
-    /// `capture_preview_armed`.
-    capture_delay_ms: u32,
-    /// `--capture-cycle <N>`: simulate N presses of Shift+ArrowRight (or
-    /// `|N|` of Shift+ArrowLeft when negative) on the first `workspace.list`
-    /// reply. One-shot — consumed on first application so a re-fetch
-    /// later doesn't re-cycle. Zero leaves the active workspace alone.
-    capture_cycle: i32,
-    frame_counter: u32,
-    /// Runtime multiplier on top of the startup `scale`. `1.0` = no
-    /// change; `>1.0` = bigger fonts and cells; `<1.0` = smaller.
-    /// Bumped via `Ctrl+=` / `Ctrl+-` (reset by `Ctrl+0`). Affects
-    /// chrome cell metrics, the TextLayer's per-line metrics, and the
-    /// preview's flowed-text buffer simultaneously (user picked
-    /// "Global only" — same change applies to every pane).
-    text_scale_mult: f32,
+    /// The GPU: surface, device, queue and the surface's configuration.
+    gpu: crate::ui::render::gpu::Gpu,
+    /// The text canvas: the glyph text layer, the chrome's cell grid and the cell metrics both are laid out with.
+    canvas: crate::ui::render::canvas::Canvas,
+    /// The quad pipeline, the solid brushes, the logos and the help peek's backing.
+    brushes: crate::ui::render::brushes::Brushes,
+    /// The capture harness's run: its PNG, a pending selfie, the capture one-shots and the frame count.
+    capture: crate::ui::render::capture_run::CaptureRun,
     // ui/app: the event fan-in, frame pacing, the exit flag and the harness's startup actions.
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
     evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
     #[cfg(all(test, feature = "test-window-progress"))]
     native_progress: Option<Arc<std::sync::Mutex<NativeProgressLedger>>>,
-    /// One-shot from `--auto-expand`; consumed after `pending_initial_selection`
-    /// lands. Fires the same outgoing request the Enter/Right key would,
-    /// so capture tests can verify expanded states.
-    pending_auto_expand: bool,
-    /// One-shot from `--auto-pin`. Same trigger conditions as
-    /// `pending_auto_expand`: fires after the initial cursor selection
-    /// has landed and the tree isn't empty. Lets `--capture` exercise
-    /// the C2 pin sigil and `[pinned *]` preview-title chrome.
-    pending_auto_pin: bool,
-    /// `--demo-function-methods <module>:<name>` one-shot. When the row
-    /// `modules:<module>:<name>` appears in the tree (after a prior col-2
-    /// expansion has landed), the chrome moves the cursor onto it and
-    /// fires `function.methods`. Consumed once it triggers.
-    pending_demo_function_methods: Option<(String, String)>,
-    /// `--demo-repl-eval <code>` one-shot: submit through the FE's own
-    /// path once the initial tree has landed, then open the REPL drawer.
-    /// Externally-dispatched evals are dropped by design (frames only
-    /// render for self-created `repl_log` entries), so the harness enters
-    /// by the front door.
-    pending_demo_repl_eval: Option<String>,
-    /// `--start-path <relpath>` walk state (files-mode). While pending, each
-    /// tree update either lands the cursor on the target file's row (done)
-    /// or expands the deepest existing collapsed ancestor directory and
-    /// waits for its children splice. Consumed on arrival or dead end.
-    pending_start_path: Option<String>,
-    /// Ancestor row id we last fired `tree.children` for during the
-    /// `--start-path` walk. Expansion flips `row.expanded` only when the
-    /// reply lands, so without this memo the walk would re-fire the same
-    /// request on every redraw in between.
-    start_path_fired: Option<String>,
+    /// The harness's command-line one-shots: auto-expand, auto-pin, the demo eval and methods, the start-path walk.
+    startup: crate::ui::app::startup::StartupScript,
     /// Harness instance (`--ephemeral`, or any `--capture` run): never the
     /// user's primary FE on this host, so it must not touch the per-host
     /// shared state — no resume-state / `fe-state.json` writes, no state
@@ -334,22 +202,8 @@ struct State {
     should_exit: bool,
     /// The App's one process backstop, shared so the final decision arms it.
     exit_deadline: ExitDeadline,
-    /// Frame-rate cap state. `request_redraw` from event handlers and the
-    /// transport task queue `RedrawRequested`; if we'd draw twice within
-    /// `FRAME_BUDGET`, the second one sets `dirty` and `about_to_wait`
-    /// reschedules at the next frame boundary so a burst (paste, PTY echo
-    /// storm, LLM token stream) collapses into one frame.
-    dirty: bool,
-    last_frame_at: Option<std::time::Instant>,
-    /// One-shot: focus + raise the window on the first rendered frame.
-    /// A focus request made at window-creation time (before the window
-    /// is shown / before the first paint) is widely ignored by window
-    /// managers — Windows' foreground-lock and macOS both restrict it.
-    /// Deferring to the first frame is the portable way to land focused
-    /// on launch / after an ADR-0017 self-relaunch. When the OS blocks
-    /// focus-stealing outright we fall back to `request_user_attention`
-    /// (taskbar flash / dock bounce / urgent hint). Cleared after use.
-    focus_on_first_frame: bool,
+    /// The frame pacer: the cap's deferred frame and clock, and the first frame's focus.
+    pacer: crate::ui::app::pacing::FramePacer,
     // ui: the per-host request senders that send and send_to route through.
     /// Push-side of every host's GPU→transport channel, in connection
     /// (display) order — ADR 0042 L2a's generalisation of the old single
@@ -406,7 +260,6 @@ struct State {
     /// file format and discovery order. Read-only once loaded — the
     /// chrome doesn't reload mid-session.
     bindings: KeyBindings,
-    help_back_quad: Option<(u8, Quad)>,
     // ui/control: the fe-commands queue and the fe-state.json signature.
     /// The fe-commands queue the watcher fills and the last fe-state.json signature.
     control: ControlChannel,
@@ -468,23 +321,8 @@ struct State {
     /// the fan-out to every connected daemon, and idle input sends nothing at all (no timer, no heartbeat).
     presence: PresenceClock,
     // ui/drawer: the monitor drawer.
-    /// Ctrl+M server-monitor drawer (ADR 0020): per-host metric ring + SVG
-    /// chart renderer. `monitor_quad` is the rasterised chart painted into
-    /// the drawer rect via the resvg→wgpu-quad path (same as MathJax);
-    /// `monitor_rect_px` is the drawer's pixel rect from the last layout
-    /// pass; `monitor_dirty` requests a re-render when the readings change
-    /// (a change of size, text scale or mark redraws by itself:
-    /// `MonitorView`'s `drawn`).
-    monitor_view: crate::ui::drawer::monitor::MonitorView,
-    monitor_quad: Option<Quad>,
-    monitor_rect_px: ScreenRect,
-    monitor_dirty: bool,
-    /// The declared hub's name (topology `hub = "<host>"`), loaded once at
-    /// startup the same way `selfupdate.rs` reads the topology. `None` when
-    /// no `hosts.toml` declares one. Names the monitor drawer's subscribe
-    /// target (`monitor_host`) — the drawer means "the fleet's record", so
-    /// it asks the hub, not whichever connection sorts first.
-    monitor_hub: Option<String>,
+    /// Ctrl+M server-monitor drawer (ADR 0020): its chart, raster, rect, subscription and hub.
+    monitor: crate::ui::drawer::monitor::MonitorPane,
     /// Primary monitor aspect ratio captured at startup (width /
     /// height). Used to resolve `settings.preset = "auto"` to a named
     /// preset. Locked for the session — resizing the window doesn't

@@ -64,7 +64,7 @@ impl State {
         // row, top-left -- right-aligned on the first tree row it collided with
         // text on every non-ultrawide. Snapshotted here: the draw closure must
         // not borrow `self`.
-        let nav_logo_row = self.wordmark_quad.is_some();
+        let nav_logo_row = self.brushes.wordmark_size().is_some();
         self.decode_repl_images();
         let repl_lines;
         (repl_lines, new_repl_scroll) = self.build_repl_view(new_repl_scroll);
@@ -154,8 +154,8 @@ impl State {
             repl_cells, new_pane_rects, new_repl_scroll, repl_scrollback_cells, repl_window,
             pty_size_observed, term_size_observed,
         };
-        self.terminal
-            .draw(|frame| {
+        self.canvas
+            .draw_chrome(|frame| {
                 view.paint(frame, tree_lines, &mut nav_spill_segs_out);
             })
             .context("ratatui draw failed")?;

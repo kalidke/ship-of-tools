@@ -148,10 +148,10 @@ impl State {
         if rect.width == 0 || rect.height == 0 {
             return None;
         }
-        let cell_w = self.cell_w.max(1.0);
-        let cell_h = self.cell_h.max(1.0);
-        let origin_x = self.chrome_origin_x + rect.x as f32 * cell_w;
-        let origin_y = self.chrome_origin_y + rect.y as f32 * cell_h;
+        let cell_w = self.canvas.cell_w().max(1.0);
+        let cell_h = self.canvas.cell_h().max(1.0);
+        let origin_x = self.canvas.origin_x() + rect.x as f32 * cell_w;
+        let origin_y = self.canvas.origin_y() + rect.y as f32 * cell_h;
         let dx = px.0 - origin_x;
         let dy = px.1 - origin_y;
         let pane_w_px = rect.width as f32 * cell_w;

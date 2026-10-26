@@ -81,7 +81,7 @@ impl State {
             w: (preview_rect.w - 2.0 * pad_x).max(1.0),
             h: (preview_rect.h - 2.0 * pad_y).max(1.0),
         };
-        self.shaped.layout(md_rect, self.text.font_system_mut());
+        self.canvas.shape(|fs| self.shaped.layout(md_rect, fs));
         md_rect
     }
 
@@ -96,7 +96,7 @@ impl State {
     pub(in crate::ui) fn layout_concept(&mut self, preview_rect: ScreenRect) {
         // Same dance for the concept pane. Shares the same rect now that
         // it's a single preview slot.
-        self.concept.layout(preview_rect, self.text.font_system_mut());
+        self.canvas.shape(|fs| self.concept.layout(preview_rect, fs));
     }
 
     pub(in crate::ui) fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {
