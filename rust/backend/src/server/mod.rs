@@ -218,6 +218,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // Page verbs receive only the facts and command route they use, after the roster and bus exist.
     let states_rows = workspaces.clone();
     let handle_rows = workspaces.clone();
+    let reply_rows = workspaces.clone();
     let page_windows = clients.clone();
     start_page_servers(Arc::new(crate::pages::site::verbs::PageVerbs::new(
         Arc::new(move || {
@@ -230,6 +231,15 @@ pub async fn run(opts: Opts) -> Result<()> {
         }),
         Arc::new(move |owner| page_windows.window_connection(owner)),
         fe_command_tx.clone(),
+    ).with_direct(
+        Arc::new(move |workspace_id: String, handle: String, line: String, request_id: String| -> crate::pages::site::verbs::DirectReply {
+            let rows = reply_rows.clone();
+            Box::pin(async move {
+                let receipt = crate::rows::ops::page_reply::submit(rows, request_id, workspace_id, handle, line).await?;
+                Ok(serde_json::to_value(receipt)?)
+            })
+        }),
+        Arc::new(|| serde_json::to_value(crate::rows::ops::page_reply::receipts()).unwrap_or_else(|_| serde_json::json!([]))),
     ))).await;
 
     // Auto-updater (ADR 0030 §4, Phase C): daily check that, on a newer

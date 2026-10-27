@@ -2,16 +2,21 @@
 
 use super::*;
 
-/// The window sends this only after the person confirms its page reply bar.
+/// The window sends this only after the person confirms its page reply bar. A direct reply (a page grant with a reply
+/// scope, or any client of this account) sets `hold`: a busy row keeps the line in memory, one per row, and types it
+/// when its prompt frees.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageReplyReq {
     pub workspace_id: String,
     pub handle: String,
     pub line: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hold: bool,
 }
 
-/// Delivery is never retried. `sent` means the marked line and Enter were recorded;
-/// `typed_not_sent` leaves text in the pane, and `unknown` may have delivered it.
+/// A reply without `hold` is never retried. `sent` means the marked line and Enter were recorded;
+/// `typed_not_sent` leaves text in the pane, and `unknown` may have delivered it. With `hold` the outcome is `sent`,
+/// `held`, `refused` (with its reason in `detail`) or `unknown`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageReplyRes {
     pub outcome: String,
@@ -50,13 +55,22 @@ pub struct VideoOpenRes {
     pub url: String,
 }
 
-/// Open the project's built Documenter site in the OS browser. `path` is the
-/// cursored file's absolute backend-side path — when it points at a built page
-/// under `docs/build`, the response deep-links to it; otherwise (empty or
-/// elsewhere) the docs index is opened.
+/// Authority requested by an opener for one page entry. The daemon canonicalizes a row id before granting it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum ReplyScope {
+    #[default]
+    None,
+    Row { workspace_id: String },
+    All,
+}
+
+/// Open a local page or a folder's index in the OS browser. Missing authority is always ordinary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocsOpenReq {
     pub path: String,
+    #[serde(default)]
+    pub direct: ReplyScope,
 }
 
 /// `docs.open` response — the loopback HTTP URL the frontend hands to the OS
@@ -119,3 +133,7 @@ pub struct ProxyConnectReq {
 pub struct ProxyConnectRes {
     pub ok: bool,
 }
+
+#[cfg(test)]
+#[path = "pages_tests.rs"]
+mod tests;

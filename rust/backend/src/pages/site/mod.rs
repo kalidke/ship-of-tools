@@ -64,6 +64,10 @@ use tokio::net::TcpStream;
 
 use super::random_token;
 use crate::pages::http::{content_type, read_request, serve_file, write_simple, Request};
+use sot_protocol::ReplyScope;
+
+mod grant;
+use grant::Grant;
 
 /// Per-owner site roots, keyed by an unguessable per-open NONCE — not
 /// the owner. (Security review: the old scheme put the raw,
@@ -78,7 +82,7 @@ use crate::pages::http::{content_type, read_request, serve_file, write_simple, R
 /// past `SITES_PER_WINDOW`, and `ClientGuard::drop` can reap
 /// the right one when its owner ends. Empty until the first open. `RwLock::new`
 /// and `BTreeMap::new` are both const, so this initializes without lazy init.
-static SITE_ROOTS: RwLock<BTreeMap<String, (u64, Arc<Site>)>> = RwLock::new(BTreeMap::new());
+static SITE_ROOTS: RwLock<BTreeMap<String, (u64, Arc<Grant>)>> = RwLock::new(BTreeMap::new());
 static OWNER_NONCE: RwLock<BTreeMap<u64, std::collections::VecDeque<String>>> = RwLock::new(BTreeMap::new());
 pub(crate) const SITES_PER_WINDOW: usize = 8;
 
@@ -102,7 +106,7 @@ use verbs::PageVerbs;
 /// a window away (`assign_pool_port`). The range is fixed and contiguous
 /// (`site_port()+1 ..= site_port()+POOL_SIZE`).
 pub const POOL_SIZE: u16 = 4;
-static POOL: RwLock<BTreeMap<u16, (u64, Arc<Site>, String)>> = RwLock::new(BTreeMap::new());
+static POOL: RwLock<BTreeMap<u16, (u64, Arc<Grant>, String)>> = RwLock::new(BTreeMap::new());
 
 /// The pool ports THIS daemon successfully bound at `spawn_pool` — the ports
 /// it actually serves. `assign_pool_port` picks only from here (not the full
@@ -137,7 +141,11 @@ pub fn pool_ports() -> std::ops::RangeInclusive<u16> {
 /// surfaces "slots busy"; the two cases share one message since the RNG
 /// failure should never actually happen).
 pub fn assign_pool_port(owner: u64, site: Site, away: impl FnOnce() -> Vec<u64>) -> Option<(u16, String)> {
-    let root = Arc::new(site);
+    assign_pool_port_scoped(owner, site, "", ReplyScope::None, away)
+}
+
+pub(super) fn assign_pool_port_scoped(owner: u64, site: Site, entry: &str, scope: ReplyScope, away: impl FnOnce() -> Vec<u64>) -> Option<(u16, String)> {
+    let root = Arc::new(Grant::new(site, entry, scope)?);
     let secret = random_token()?;
     let mut g = POOL.write().unwrap_or_else(|p| p.into_inner());
     if let Some(port) = g
@@ -197,7 +205,7 @@ pub fn pool_assigned_ports() -> Vec<u16> {
 
 /// Owner, root and secret for a pool port — what `serve_request`'s `ServeMode::Pool`
 /// arm needs to authenticate a request (security review; see `assign_pool_port`).
-fn pool_entry_for(port: u16) -> Option<(u64, Arc<Site>, String)> {
+fn pool_entry_for(port: u16) -> Option<(u64, Arc<Grant>, String)> {
     POOL.read()
         .unwrap_or_else(|p| p.into_inner())
         .get(&port)
@@ -234,6 +242,15 @@ pub fn bound_site_port() -> Option<u16> {
 /// guessable nonce (security review). Ignores lock poisoning (a panicked
 /// reader can't corrupt the map).
 pub fn set_root(owner: u64, site: Site) -> Option<String> {
+    set_grant(owner, Grant::ordinary(Arc::new(site)))
+}
+
+pub(super) fn set_root_scoped(owner: u64, site: Site, entry: &str, scope: ReplyScope) -> Option<String> {
+    if scope == ReplyScope::None { return set_root(owner, site); }
+    set_grant(owner, Grant::new(site, entry, scope)?)
+}
+
+fn set_grant(owner: u64, grant: Grant) -> Option<String> {
     let nonce = random_token()?;
     let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
     let nonces = sn.entry(owner).or_default();
@@ -243,7 +260,7 @@ pub fn set_root(owner: u64, site: Site) -> Option<String> {
         let old = nonces.pop_front().expect("past the bound");
         g.remove(&old);
     }
-    g.insert(nonce.clone(), (owner, Arc::new(site)));
+    g.insert(nonce.clone(), (owner, Arc::new(grant)));
     Some(nonce)
 }
 
@@ -262,7 +279,7 @@ pub fn remove_root(owner: u64) {
     p.retain(|_, (s, _, _)| *s != owner);
 }
 
-fn root_for(nonce: &str) -> Option<(u64, Arc<Site>)> {
+fn root_for(nonce: &str) -> Option<(u64, Arc<Grant>)> {
     SITE_ROOTS
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -378,14 +395,15 @@ impl Capability {
         match self {
             Self::Prefix { owner, nonce } => root_for(nonce).is_some_and(|(current, _)| current == *owner),
             Self::Pool { owner, port, secret } => pool_entry_for(*port)
-                .is_some_and(|(current, _, key)| current == *owner && ct_eq(key.as_bytes(), secret.as_bytes())),
+                .is_some_and(|(current, grant, key)| current == *owner
+                    && (ct_eq(key.as_bytes(), secret.as_bytes()) || grant.is_navigation_secret(secret))),
         }
     }
 }
 
 /// Pass an already-confined page through the existing docs command/reply route, which arms remote proxies.
-pub(super) fn page_grant_path(owner: u64, site: Site, relative: &str) -> Option<String> {
-    let nonce = set_root(owner, site)?;
+pub(super) fn page_grant_path(owner: u64, site: Site, relative: &str, workspace_id: String) -> Option<String> {
+    let nonce = set_root_scoped(owner, site, relative, ReplyScope::Row { workspace_id })?;
     Some(format!("sot-page:{nonce}/{}", encode_url_path(relative)))
 }
 
@@ -543,9 +561,9 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
     // root-relative links resolve on that origin. `set_cookie`, if `Some`, is
     // a `Set-Cookie` header value the eventual 200 response must include.
     let raw_path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
-    let (capability, site, rest, set_cookie) = match mode {
+    let (capability, grant, rest, set_cookie, ordinary) = match mode {
         ServeMode::Pool(port) => {
-            let Some((owner, site, secret)) = pool_entry_for(port) else {
+            let Some((owner, grant, secret)) = pool_entry_for(port) else {
                 return write_simple(
                     stream,
                     method,
@@ -589,7 +607,7 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
                     .unwrap_or(false)
             };
             let (ok, by_query) = match query_secret {
-                Some(v) => (ct_eq(v.as_bytes(), secret.as_bytes()), true),
+                Some(v) => (ct_eq(v.as_bytes(), secret.as_bytes()) || grant.is_navigation_secret(v), true),
                 None => (method != "POST" && cookie_ok(), false),
             };
             if !ok {
@@ -608,7 +626,9 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
             // A slow verb from an earlier grant must not replace a newer document's cookie when it finishes.
             let set_cookie =
                 (by_query && method != "POST").then(|| format!("{cookie_name}={secret}; HttpOnly; SameSite=Strict; Path=/"));
-            (Capability::Pool { owner, port, secret }, site, raw_path.trim_start_matches('/').to_string(), set_cookie)
+            let presented = query_secret.unwrap_or("").to_string();
+            let ordinary = grant.is_navigation_secret(&presented);
+            (Capability::Pool { owner, port, secret: presented }, grant, raw_path.trim_start_matches('/').to_string(), set_cookie, ordinary)
         }
         ServeMode::Prefix => {
             let trimmed = raw_path.trim_start_matches('/');
@@ -616,7 +636,7 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
                 Some((t, r)) => (t, r),
                 None => (trimmed, ""),
             };
-            let Some((owner, site)) = root_for(token) else {
+            let Some((owner, grant)) = root_for(token) else {
                 // Either a stale/disconnected nonce, or a root-relative asset
                 // (`/assets/…`) that landed here — `docs.open` routes sites
                 // with root-relative links to the pool instead, so this is
@@ -632,25 +652,42 @@ async fn serve_request(stream: &mut TcpStream, buf: &mut Vec<u8>, request: &Requ
                 )
                 .await;
             };
-            (Capability::Prefix { owner, nonce: token.into() }, site, rest.to_string(), None)
+            (Capability::Prefix { owner, nonce: token.into() }, grant, rest.to_string(), None, false)
         }
     };
 
+    let decoded = percent_decode(&rest);
+    let cookie_only = matches!(&capability, Capability::Pool { secret, .. } if secret.is_empty());
+    let scope = if ordinary || cookie_only { ReplyScope::None } else { grant.scope_at(&decoded) };
     if method == "POST" {
-        return verbs.serve(stream, buf, request, &capability, set_cookie.as_deref()).await;
+        return verbs.serve(stream, buf, request, &capability, &scope, set_cookie.as_deref()).await;
     }
 
     // Percent-decode the per-root path and resolve it. `resolve_and_open` does
     // blocking filesystem work (a stalled share must not stall the runtime).
-    let decoded = percent_decode(&rest);
     let opened = {
-        let site = site.clone();
+        let site = grant.site.clone();
+        let decoded = decoded.clone();
         tokio::task::spawn_blocking(move || resolve_and_open(&site, &decoded)).await?
     };
     let (file, resolved) = match opened {
         Ok(f) => f,
         Err(r) => return write_simple(stream, method, r.status, &r.body, keep).await,
     };
+
+    if grant.is_direct() && scope == ReplyScope::None && !ordinary && content_type(&resolved).starts_with("text/html") {
+        let location = match mode {
+            ServeMode::Prefix => {
+                let Some(nonce) = set_grant(capability.owner(), Grant::ordinary(grant.site.clone())) else {
+                    return write_simple(stream, method, "503 Service Unavailable", "could not mint a navigation grant", keep).await;
+                };
+                let suffix = target.strip_prefix(raw_path).unwrap_or("");
+                format!("/{nonce}/{}{suffix}", encode_url_path(&decoded))
+            }
+            ServeMode::Pool(_) => grant::navigation_target(target, grant.navigation_secret().expect("direct grant")),
+        };
+        return crate::pages::http::write_redirect(stream, &location, keep).await;
+    }
 
     // no-cache so a rebuilt site is picked up without a hard browser refresh.
     let mut extra = String::from("Cache-Control: no-cache\r\n");

@@ -50,6 +50,7 @@ pub(crate) async fn send_docs_open<W: AsyncWrite + Unpin>(
     pending: &mut HashMap<u64, PendingKind>,
     id: u64,
     path: String,
+    direct: sot_protocol::ReplyScope,
 ) -> Result<()> {
     tracing::info!(%path, id, "→ docs.open");
     codec::write_frame(
@@ -57,7 +58,7 @@ pub(crate) async fn send_docs_open<W: AsyncWrite + Unpin>(
         &Frame::req(
             id,
             op::DOCS_OPEN,
-            serde_json::to_value(DocsOpenReq { path })?,
+            serde_json::to_value(DocsOpenReq { path, direct })?,
         ),
         None,
     )
@@ -80,7 +81,7 @@ pub(crate) async fn send_page_reply<W: AsyncWrite + Unpin>(
         &Frame::req(
             id,
             op::PAGE_REPLY,
-            serde_json::to_value(PageReplyReq { workspace_id, handle: handle.clone(), line })?,
+            serde_json::to_value(PageReplyReq { workspace_id, handle: handle.clone(), line, hold: false })?,
         ),
         None,
     )

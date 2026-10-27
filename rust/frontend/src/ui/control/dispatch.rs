@@ -265,16 +265,15 @@ impl State {
                 Some(host) => self.offer_page_reply(host, &workspace, handle, line),
                 None => tracing::warn!("fe-command page_reply: no daemon sent it, dropped"),
             },
-            FeCommand::Docs { workspace, path } => {
-                // No workspace switch: docs.open confines the absolute path to
-                // ANY registered workspace on the backend, so the active FE
-                // workspace is irrelevant. This is exactly what the `W` key does,
-                // minus the keypress — the FE's own long-lived connection mints
+            FeCommand::Docs { workspace, path, direct } => {
+                // No workspace switch: docs.open confines the path on the sending
+                // daemon, to the named row when scoped to one. The active FE
+                // workspace is irrelevant. The FE's own long-lived connection mints
                 // the site_serve nonce, so the URL outlives the send (a backend
                 // one-shot docs.open would have its nonce reaped on disconnect).
                 tracing::info!(%workspace, %path, "fe-command: docs");
                 let host = from_host.unwrap_or(self.selected.host()).clone();
-                self.docs_open_external(&host, path);
+                self.docs_open_with_scope(&host, path, direct);
             }
         }
     }

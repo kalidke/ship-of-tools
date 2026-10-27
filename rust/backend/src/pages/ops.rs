@@ -8,6 +8,7 @@ use sot_protocol::op;
 use sot_protocol::BlobDescriptor;
 use sot_protocol::DocsOpenReq;
 use sot_protocol::DocsOpenRes;
+use sot_protocol::ReplyScope;
 use sot_protocol::Frame;
 use sot_protocol::QuartoOpenReq;
 use sot_protocol::QuartoOpenRes;
@@ -217,21 +218,36 @@ pub async fn handle_docs_open(
     // the raw `p` still got read/scanned as `entry` below (exfil via e.g. a
     // symlinked `page.html -> /home/victim/secret.html`, or a DoS via one
     // pointed at `/dev/zero` — `tokio::fs::read` never sees EOF on that).
-    // Canonicalize `p` itself here, ONCE, under ANY currently-registered
-    // workspace (not just the default — same check as `pluto.open`'s), and
+    // Canonicalize `p` itself here, under the requested row for a row scope,
+    // else under ANY registered workspace (as `pluto.open` does), and
     // derive (root, rel, entry) from THIS canonical path for everything
     // downstream. The raw `p`/`req.path` is never read or scanned again below.
     // Also keep that workspace's own canonical root (`ws_root`): the
     // site-root walk below (v0.6.6) needs a bound it cannot climb past, and
     // this is the SAME confinement check's own root, not a second lookup
     // that could disagree with it.
-    let (canon_p, ws_root) = match canonicalize_and_workspace_root(p, workspaces) {
-        Some(c) => c,
-        None => {
-            return Ok(err(
-                format!("{} is outside every known workspace root", req.path),
-                "outside_workspace",
-            ));
+    let (canon_p, ws_root, direct) = if let ReplyScope::Row { workspace_id } = &req.direct {
+        let Some(row) = workspaces.resolve(Some(workspace_id)).filter(|_| !workspace_id.is_empty()) else {
+            return Ok(err("the direct-reply workspace is not registered".into(), "unknown_workspace"));
+        };
+        let confined = p.canonicalize().ok().zip(row.project_root.canonicalize().ok())
+            .filter(|(page, root)| p.is_absolute() && page.starts_with(root));
+        let Some((page, root)) = confined else {
+            return Ok(err("a direct-reply page must resolve under its row's project folder".into(), "page_outside"));
+        };
+        if crate::pages::home_folder().is_some_and(|home| home.starts_with(&root)) {
+            return Ok(err("a direct-reply row's project folder must not hold the home folder".into(), "page_outside"));
+        }
+        (page, root, ReplyScope::Row { workspace_id: row.workspace_id.clone() })
+    } else {
+        match canonicalize_and_workspace_root(p, workspaces) {
+            Some((page, root)) => (page, root, req.direct),
+            None => {
+                return Ok(err(
+                    format!("{} is outside every known workspace root", req.path),
+                    "outside_workspace",
+                ));
+            }
         }
     };
 
@@ -275,6 +291,9 @@ pub async fn handle_docs_open(
                 "no_index",
             ));
         }
+        if matches!(direct, ReplyScope::Row { .. }) && !entry.canonicalize().is_ok_and(|page| page.starts_with(&ws_root)) {
+            return Ok(err("the index page must resolve under its row's project folder".into(), "page_outside"));
+        }
     }
 
     // Root-relative detection is a ROUTER, not a refusal (ADR 0029 Option B,
@@ -301,7 +320,13 @@ pub async fn handle_docs_open(
     let mut pool_port: Option<(u16, String)> = None;
     let mut site = Some(site);
     if root_relative {
-        match crate::pages::site::assign_pool_port(owner, site.take().expect("site"), away_sites) {
+        let site = site.take().expect("site");
+        let assigned = if direct == ReplyScope::None {
+            crate::pages::site::assign_pool_port(owner, site, away_sites)
+        } else {
+            crate::pages::site::assign_pool_port_scoped(owner, site, &rel, direct.clone(), away_sites)
+        };
+        match assigned {
             Some(assigned) => pool_port = Some(assigned),
             None => {
                 return Ok(err(
@@ -339,7 +364,7 @@ pub async fn handle_docs_open(
         // nonce `set_root` minted (security review — not the raw serial).
         // `None` means the CSPRNG read failed — fail closed rather than mint
         // a guessable nonce.
-        let Some(nonce) = crate::pages::site::set_root(owner, site.take().expect("site")) else {
+        let Some(nonce) = crate::pages::site::set_root_scoped(owner, site.take().expect("site"), &rel, direct) else {
             return Ok(err(
                 "could not mint a secure site token (system RNG unavailable) — try again".into(),
                 "rng_unavailable",

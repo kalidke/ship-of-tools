@@ -234,6 +234,8 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 settle(&mut woken, &mut streaks, handle, step, Instant::now());
             }
         }
+        // A direct page reply a busy row holds gets the same tick, through the same gate and its per-row exclusion.
+        crate::rows::ops::page_reply::release(&workspaces).await;
     }
 }
 

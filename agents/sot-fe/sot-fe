@@ -19,7 +19,7 @@
 #   sot-fe mode    <mode>             [--fe <host>]
 #   sot-fe notify  <text> [--level <l>] [--ws <workspace>] [--fe <host>]
 #   sot-fe open-url <http(s)-url>                  [--fe <host>]
-#   sot-fe docs    <workspace> <abs-path>          [--fe <host>]
+#   sot-fe docs    <workspace> <abs-path> [--direct | --direct-all] [--fe <host>]
 #   sot-fe relaunch [--fe <host>] [--converge]
 #   sot-fe repl run  <workspace> <path>            [--fresh] [--timeout <s>] [--origin <who>]
 #   sot-fe repl eval <workspace> (--code <c> | --stdin) [--timeout <s>] [--origin <who>]
@@ -55,6 +55,11 @@
 #              port and opens it — runs JS/WebGL, no preview size caps. For a
 #              built site or a self-contained figure export. NOT an http URL
 #              (use open-url for those); path is confined to a workspace root.
+#              --direct grants replies for <workspace> to this entry only and
+#              refuses a page outside that row's canonical project folder.
+#              --direct-all grants replies for all rows to this entry (list
+#              pages). Other HTML navigation is ordinary. The page reads its
+#              scope from states; replies still use the window's bar in landing A.
 #   relaunch — ask ONE frontend to respawn itself (ADR 0017): plain (exit 75,
 #              re-stage + respawn) or --converge (exit 76: pull, rebuild,
 #              daemon-pair re-ensure, respawn). With no --fe, the daemon
@@ -238,6 +243,7 @@ CMD="${1:-}"; [ -n "$CMD" ] && shift || usage 1
 ENDPOINT=""
 FE=""          # --fe <host> → wire `target` fe@<host>
 URGENT=false
+DIRECT=none   # docs: one entry's reply scope; never inferred from page contents
 CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 75
 LEVEL=""
 NOTIFY_WS=""
@@ -258,6 +264,11 @@ while [ $# -gt 0 ]; do
         --converge) CONVERGE=true; shift ;;
         --endpoint) ENDPOINT="$2"; shift 2 ;;
         --urgent)   URGENT=true; shift ;;
+        --direct|--direct-all)
+                    [ "$CMD" = docs ] || { echo "ERROR: $1 is only for docs" >&2; exit 1; }
+                    [ "$DIRECT" = none ] || { echo "ERROR: choose only one of --direct and --direct-all" >&2; exit 1; }
+                    case "$1" in --direct) DIRECT=row ;; --direct-all) DIRECT=all ;; esac
+                    shift ;;
         --fresh)    FRESH=true; shift ;;
         --force)    FORCE=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
@@ -373,7 +384,7 @@ case "$CMD" in
         ;;
     docs)
         WS="${POS[0]:-}"; PATH_ARG="${POS[1]:-}"
-        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe docs <workspace> <abs-path> [--fe <host>]" >&2; exit 1; }
+        [ -n "$WS" ] && [ -n "$PATH_ARG" ] || { echo "usage: sot-fe docs <workspace> <abs-path> [--direct | --direct-all] [--fe <host>]" >&2; exit 1; }
         # docs.open (the FE `W` key, backend-triggered) serves a LOCAL .html/site
         # from backend disk over the forwarded site_serve port and opens it in the
         # FE's real browser (runs JS/WebGL, no preview size caps). Unlike
@@ -400,7 +411,8 @@ case "$CMD" in
             || { echo "ERROR: cannot give the path in the spelling of the daemon at $ENDPOINT (cygpath failed)" >&2; exit 1; }
         # PATH_ARG is absolute here (the case above enforced it): it reaches jq on stdin
         # (comm-lib-base.sh, free text and jq).
-        ARGS="$(printf '%s' "$PATH_ARG" | jq -Rsc --arg w "$WS" '{workspace:$w, path:.}')"
+        ARGS="$(printf '%s' "$PATH_ARG" | jq -Rsc --arg w "$WS" --arg scope "$DIRECT" \
+            '{workspace:$w, path:., direct: (if $scope == "row" then {scope:$scope, workspace_id:$w} else {scope:$scope} end)}')"
         send_fe_command docs "$ARGS"
         ;;
     goto)

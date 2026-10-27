@@ -17,6 +17,7 @@ use super::{Capability, links::Site};
 
 const MAX_IN_FLIGHT: usize = 4;
 const HANDLER_BOUND: Duration = Duration::from_secs(5);
+const DIRECT_BOUND: Duration = Duration::from_secs(15);
 
 /// The queue's view of an answer named in a question line.
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -59,10 +60,16 @@ pub(crate) struct PageVerbs {
     /// The page owner's newest named, live frontend connection.
     pub window: Arc<dyn Fn(u64) -> Option<ActiveFrontend> + Send + Sync>,
     pub fe: broadcast::Sender<FeCommandEvt>,
+    /// Rows' direct delivery of a page reply (workspace, handle, marked line, request id): its receipt.
+    direct: Arc<dyn Fn(String, String, String, String) -> DirectReply + Send + Sync>,
+    /// Rows' receipts of direct replies, newest last.
+    receipts: Arc<dyn Fn() -> Value + Send + Sync>,
     bodies: Arc<Semaphore>,
     states_in_flight: Arc<Semaphore>,
     actions_in_flight: Arc<Semaphore>,
 }
+
+pub(crate) type DirectReply = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>;
 
 impl PageVerbs {
     pub(crate) fn new(
@@ -73,10 +80,25 @@ impl PageVerbs {
     ) -> Self {
         Self {
             states, row_of, window, fe,
+            direct: Arc::new(|_: String, _: String, _: String, _: String| -> DirectReply {
+                Box::pin(async { anyhow::bail!("no direct reply delivery") })
+            }),
+            receipts: Arc::new(|| json!([])),
             bodies: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             states_in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             actions_in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
         }
+    }
+
+    /// Rows' direct delivery and its receipts, for pages whose grant carries a reply scope.
+    pub(crate) fn with_direct(
+        mut self,
+        direct: Arc<dyn Fn(String, String, String, String) -> DirectReply + Send + Sync>,
+        receipts: Arc<dyn Fn() -> Value + Send + Sync>,
+    ) -> Self {
+        self.direct = direct;
+        self.receipts = receipts;
+        self
     }
 
     #[cfg(test)]
@@ -92,6 +114,7 @@ impl PageVerbs {
         buf: &mut Vec<u8>,
         request: &Request,
         capability: &Capability,
+        reply_scope: &sot_protocol::ReplyScope,
         set_cookie: Option<&str>,
     ) -> Result<bool> {
         let own_origin = request.host.as_ref().map(|host| format!("http://{host}"));
@@ -120,25 +143,29 @@ impl PageVerbs {
             return refuse(stream, "503 Service Unavailable", "server_busy", "all four handlers for this verb class are busy; try again", request.keep).await;
         };
         let permit = Arc::new(permit);
-        let (status, answer) = match tokio::time::timeout(HANDLER_BOUND, self.dispatch(capability, &body, permit.clone())).await {
+        // A direct reply types under the wake's gate (a still-screen hold and bounded input steps): it gets longer, and a
+        // page that sees its deadline reads the outcome from `states`' receipts by its request id.
+        let bound = if *reply_scope == sot_protocol::ReplyScope::None { HANDLER_BOUND } else { DIRECT_BOUND };
+        let (status, answer) = match tokio::time::timeout(bound, self.dispatch(capability, reply_scope, &body, permit.clone())).await {
             Ok(Ok(answer)) => answer,
             Ok(Err(cause)) => {
                 tracing::warn!(error = %cause, "page verb failed");
                 ("500 Internal Server Error", error("handler_error", "the page request could not be completed; check the daemon log"))
             }
-            Err(_) => ("503 Service Unavailable", error("handler_timeout", "the page handler exceeded its 5 s deadline; try again")),
+            Err(_) => ("503 Service Unavailable", error("handler_timeout", &format!(
+                "the page handler exceeded its {} s deadline; a direct reply's outcome is in states' replies", bound.as_secs())))
         };
         write_json(stream, status, &answer, set_cookie, request.keep).await
     }
 
-    async fn dispatch(&self, capability: &Capability, body: &Value, permit: Arc<OwnedSemaphorePermit>) -> Result<(&'static str, Value)> {
+    async fn dispatch(&self, capability: &Capability, reply_scope: &sot_protocol::ReplyScope, body: &Value, permit: Arc<OwnedSemaphorePermit>) -> Result<(&'static str, Value)> {
         if !capability.live() { return Ok(grant_gone()); }
         let verb = body.get("verb").and_then(Value::as_str).unwrap_or("");
         if verb == "states" {
             let states = self.states.clone();
             let rows = tokio::task::spawn_blocking(move || { let _permit = permit; states() }).await??;
             if !capability.live() { return Ok(grant_gone()); }
-            return Ok(("200 OK", json!({"ok": true, "rows": rows})));
+            return Ok(("200 OK", json!({"ok": true, "rows": rows, "reply_scope": reply_scope, "replies": (self.receipts)()})));
         }
         // No HTTP verb confirms or types a reply.
         if !matches!(verb, "goto" | "open" | "reply") {
@@ -165,6 +192,21 @@ impl PageVerbs {
                 Ok(line) => line,
                 Err(reason) => return Ok(("400 Bad Request", error("bad_text", &reason.to_string()))),
             };
+            // A grant with a reply scope types without the window's bar: a row scope answers only its own row.
+            if *reply_scope != sot_protocol::ReplyScope::None {
+                if let sot_protocol::ReplyScope::Row { workspace_id } = reply_scope {
+                    if *workspace_id != row.workspace_id {
+                        return Ok(("403 Forbidden", error("out_of_scope", "this page answers only its own row's question")));
+                    }
+                }
+                let request_id = body.get("request_id").and_then(Value::as_str)
+                    .filter(|id| !id.is_empty() && id.len() <= 64
+                        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+                    .unwrap_or_default().to_string();
+                if !capability.live() { return Ok(grant_gone()); }
+                let receipt = (self.direct)(row.workspace_id, handle.to_string(), line, request_id).await?;
+                return Ok(("200 OK", json!({"ok": true, "receipt": receipt})));
+            }
             ("page_reply", json!({"workspace": row.workspace_id, "handle": handle, "line": line}))
         } else {
             if row.page.is_empty() {
@@ -187,7 +229,8 @@ impl PageVerbs {
             return Ok(window_gone());
         };
         if let Some((site, relative)) = page {
-            let Some(path) = super::page_grant_path(capability.owner(), site, &relative) else {
+            let workspace = args["workspace"].as_str().expect("resolved row").to_string();
+            let Some(path) = super::page_grant_path(capability.owner(), site, &relative, workspace) else {
                 anyhow::bail!("could not mint a secure page grant");
             };
             args["path"] = path.into();

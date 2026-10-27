@@ -167,6 +167,17 @@ pub(crate) async fn write_json<S: AsyncWrite + Unpin>(
     Ok(keep)
 }
 
+/// Navigation to another document exchanges entry authority for an ordinary capability.
+pub(crate) async fn write_redirect<S: AsyncWrite + Unpin>(stream: &mut S, location: &str, keep: bool) -> Result<bool> {
+    let head = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nCache-Control: no-store\r\nContent-Length: 0\r\n{}\r\n",
+        connection_line(keep),
+    );
+    send(stream, head.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(keep)
+}
+
 /// The `Connection` line of a reply: none while the connection stays open (HTTP/1.1's default), else `close`.
 fn connection_line(keep: bool) -> &'static str {
     if keep {

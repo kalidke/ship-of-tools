@@ -334,7 +334,7 @@ pub enum OutgoingReq {
     /// from `docs/build` + SSH-forwarded). `path` is the cursored file's
     /// absolute backend path (deep-links to a built page when applicable, else
     /// the index). Response surfaces as `IncomingEvt::DocsOpened`. ADR 0024.
-    DocsOpen { path: String },
+    DocsOpen { path: String, direct: sot_protocol::ReplyScope },
     /// Type the reply a person confirmed on the reply bar into the row's prompt, marked as from a page. Sent only by
     /// the bar's Enter. Response surfaces as `IncomingEvt::PageReplied`.
     PageReply { workspace_id: String, handle: String, line: String },
@@ -454,7 +454,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::WorkspaceDestroy { workspace_id } => send_workspace_destroy(&mut tx, pending, id, workspace_id).await?,
         OutgoingReq::PlutoOpen { path } => send_pluto_open(&mut tx, pending, id, path).await?,
         OutgoingReq::VideoOpen { path } => send_video_open(&mut tx, pending, id, path).await?,
-        OutgoingReq::DocsOpen { path } => send_docs_open(&mut tx, pending, id, path).await?,
+        OutgoingReq::DocsOpen { path, direct } => send_docs_open(&mut tx, pending, id, path, direct).await?,
         OutgoingReq::PageReply { workspace_id, handle, line } => send_page_reply(&mut tx, pending, id, workspace_id, handle, line).await?,
         OutgoingReq::QuartoOpen { path, execute } => send_quarto_open(&mut tx, pending, id, path, execute).await?,
         OutgoingReq::ReplRunFile { eval_id, path, fresh, workspace_id } => send_repl_run_file(&mut tx, pending, id, eval_id, path, fresh, workspace_id).await?,

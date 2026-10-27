@@ -137,7 +137,9 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
             // serves a confined local file over the site_serve port.
             let workspace = str_arg("workspace")?;
             let path = str_arg("path")?;
-            Some(FeCommand::Docs { workspace, path })
+            let direct = args.get("direct").map(|v| serde_json::from_value(v.clone()))
+                .transpose().ok()?.unwrap_or_default();
+            Some(FeCommand::Docs { workspace, path, direct })
         }
         "page_reply" => {
             // A page's reply is offered to one window for its person's word; a broadcast would offer it to every
@@ -257,9 +259,14 @@ pub(in crate::ui) enum FeCommand {
     /// serve a local `.html`/site from backend disk over the forwarded
     /// site_serve port and open it in the FE's real browser. `path` is an
     /// ABSOLUTE backend-side fs path — `docs.open` stats it raw and confines it
-    /// to ANY registered workspace, so no workspace switch is needed and
-    /// `workspace` is carried for parity/logging only (the backend ignores it).
-    Docs { workspace: String, path: String },
+    /// to a registered workspace. A row scope is confined to its named row;
+    /// ordinary opens need no workspace switch.
+    Docs {
+        workspace: String,
+        path: String,
+        #[serde(default)]
+        direct: sot_protocol::ReplyScope,
+    },
     /// ADR 0017 self-relaunch, requested over the command channel: exit 75
     /// (plain respawn) or 76 (`converge`: pull + rebuild + daemon-pair
     /// re-ensure, then respawn). DIRECTED only -- a broadcast would bounce

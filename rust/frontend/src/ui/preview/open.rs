@@ -69,7 +69,11 @@ impl State {
     /// (ADR 0024), deep-linking `path` when it's a built docs page. `host` is the daemon that knows the path: the
     /// viewed one for a key, the sender for a `docs` command.
     pub(in crate::ui) fn docs_open_external(&mut self, host: &HostKey, path: String) {
-        if let Err(e) = self.send_to(host, crate::net::transport::OutgoingReq::DocsOpen { path }) {
+        self.docs_open_with_scope(host, path, sot_protocol::ReplyScope::None);
+    }
+
+    pub(in crate::ui) fn docs_open_with_scope(&mut self, host: &HostKey, path: String, direct: sot_protocol::ReplyScope) {
+        if let Err(e) = self.send_to(host, crate::net::transport::OutgoingReq::DocsOpen { path, direct }) {
             tracing::warn!(error = %e, "failed to dispatch docs.open");
         } else {
             self.status.set("docs · opening…".to_string());
