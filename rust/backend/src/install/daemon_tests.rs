@@ -255,23 +255,23 @@ fn a_live_daemon_is_asked_before_it_ends() {
 
     // The daemon and its children, from the process table.
     {
-        let all = procs::parse_ps("  10     1 sotd     /p/bin/sotd --project-root /h --label sot\n  11    10 julia    /j/julia -e x\nnot a line\n");
+        let all = procs::parse_ps("  10     1 sotd     /p/bin/sotd --project-root /h --label sot\n  11    10 julia    /j/julia -e x\n\n").unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!((all[0].pid, all[0].ppid, all[0].name.as_str(), all[0].exe.as_str()), (10, 1, "sotd", "/p/bin/sotd"));
         assert_eq!(all[1].args, "/j/julia -e x");
     }
 
     {
-        let one = procs::parse_cim(r#"{"ProcessId":5,"ParentProcessId":4,"Name":"sotd.exe","ExecutablePath":"C:\\p\\bin\\sotd.exe","CommandLine":"x"}"#);
+        let one = procs::parse_cim(r#"{"ProcessId":5,"ParentProcessId":4,"Name":"sotd.exe","ExecutablePath":"C:\\p\\bin\\sotd.exe","CommandLine":"x"}"#).unwrap();
         assert_eq!((one.len(), one[0].pid, one[0].exe.as_str()), (1, 5, "C:\\p\\bin\\sotd.exe"));
-        assert_eq!(procs::parse_cim(r#"[{"ProcessId":1},{"ProcessId":2,"ExecutablePath":null}]"#).len(), 2);
-        assert!(procs::parse_cim("not json").is_empty());
+        assert_eq!(procs::parse_cim(r#"[{"ProcessId":1,"ParentProcessId":0},{"ProcessId":2,"ParentProcessId":1,"ExecutablePath":null}]"#).map(|a| a.len()), Ok(2));
+        assert!(procs::parse_cim("not json").is_err());
     }
 
     // Unix paths: a Windows program path is never one.
     #[cfg(unix)]
     {
-        let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 1 sotd /q/bin/sotd\n12 1 bash bash -c /p/bin/sotd\n13 1 sot /p/bin/sot --socket s\n");
+        let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 1 sotd /q/bin/sotd\n12 1 bash bash -c /p/bin/sotd\n13 1 sot /p/bin/sot --socket s\n").unwrap();
         assert_eq!(procs::daemon_pids(&all, Path::new("/p")), [10]);
         assert!(procs::window_runs(&all, Path::new("/p")) && !procs::window_runs(&all, Path::new("/q")));
     }
@@ -313,6 +313,6 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
 #[test]
 fn children_from_a_listing_with_no_answer_rule_nothing_out() {
     assert_eq!(children_in(Err("`ps` gave no answer: ps did not finish within 60000 ms".into()), Path::new("/p")), None);
-    let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 10 julia /j/julia -e ShipToolsRepl.run_shim()\n");
+    let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 10 julia /j/julia -e ShipToolsRepl.run_shim()\n").unwrap();
     assert_eq!(children_in(Ok(all), Path::new("/p")), Some(vec!["repl"]));
 }

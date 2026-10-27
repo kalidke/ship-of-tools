@@ -11,6 +11,25 @@ pub(in crate::install) fn command(mode: &str, pulse: &Path) -> Command {
     c
 }
 
+/// A native program that prints `text` exactly on stdout and exits 0 (the test binary's own harness prints lines of its
+/// own): `sh` on Unix, Windows PowerShell on Windows.
+fn printing(text: &str) -> Command {
+    #[cfg(unix)]
+    let mut c = {
+        let mut c = Command::new("sh");
+        c.args(["-c", "printf '%s' \"$SOT_BOUND_TEXT\""]);
+        c
+    };
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = Command::new("powershell.exe");
+        c.args(["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($env:SOT_BOUND_TEXT)"]);
+        c
+    };
+    c.env("SOT_BOUND_TEXT", text);
+    c
+}
+
 fn isolated(name: &str) -> bool {
     sot_platform::test_isolated::run_isolated_until(name, Instant::now() + Duration::from_secs(15)).unwrap()
 }
@@ -65,11 +84,6 @@ fn command_fixture() {
         return;
     }
     match mode.as_str() {
-        "empty" => return,
-        "garbage" => {
-            println!("not a process listing");
-            return;
-        }
         "fail" => {
             eprintln!("the listing failed");
             std::process::exit(2);
@@ -95,8 +109,8 @@ fn command_fixture() {
 }
 
 /// A process listing is an answer or says why it is not one, through the real bounded runner: one that stalls past its
-/// bound is cut and named so, one that exits nonzero, prints nothing or prints no process line is `Err` with its reason,
-/// never an empty list.
+/// bound is cut and named so, one that exits nonzero, prints nothing or prints what is no process row is `Err` with its
+/// reason, never an empty list.
 #[test]
 fn a_listing_with_no_answer_is_never_an_empty_list() {
     if !isolated("install::cmd::tests::a_listing_with_no_answer_is_never_an_empty_list") { return; }
@@ -106,10 +120,46 @@ fn a_listing_with_no_answer_is_never_an_empty_list() {
     let cut = super::super::procs::listed(&mut command("stall", &pulse), Duration::from_secs(1), super::super::procs::parse_ps).unwrap_err();
     assert!(cut.contains("did not finish within 1000 ms"), "{cut}");
     assert!(start.elapsed() < Duration::from_secs(7), "the cut took {:?}", start.elapsed());
-    for (mode, says) in [("empty", "printed no process list"), ("garbage", "printed no process list"), ("fail", "ended with exit 2: the listing failed")] {
-        let why = super::super::procs::listed(&mut command(mode, &pulse), Duration::from_secs(10), super::super::procs::parse_ps).unwrap_err();
-        assert!(why.contains(says), "{mode}: {why}");
+    let why = super::super::procs::listed(&mut command("fail", &pulse), Duration::from_secs(10), super::super::procs::parse_ps).unwrap_err();
+    assert!(why.contains("ended with exit 2: the listing failed"), "{why}");
+    for (text, says) in [("", "printed no process list"), ("not a process listing\n", "printed an unreadable process list: a row that is not `pid ppid name args`")] {
+        let why = super::super::procs::listed(&mut printing(text), Duration::from_secs(20), super::super::procs::parse_ps).unwrap_err();
+        assert!(why.contains(says), "{text:?}: {why}");
     }
     let missing = super::super::procs::listed(&mut Command::new("sot-no-such-listing-program"), Duration::from_secs(10), super::super::procs::parse_ps).unwrap_err();
     assert!(missing.contains("gave no answer"), "{missing}");
+}
+
+/// A listing reads only in the shape its program prints, through the real runner on every system: CIM's JSON of one
+/// object or an array of objects with integer pids and string or null texts, and `ps` rows that each parse. `null`,
+/// `{}`, `[null]`, a string, an object missing its pid, a text that is no string, and a `ps` row that does not parse are
+/// each `Err` "unreadable" naming what was wrong; a healthy object, array and `ps` listing read.
+#[test]
+fn a_listing_reads_only_in_its_programs_shape() {
+    if !isolated("install::cmd::tests::a_listing_reads_only_in_its_programs_shape") { return; }
+    use super::super::procs::{listed, parse_cim, parse_ps, Proc};
+    let printed = |text: &str, parse: fn(&str) -> Result<Vec<Proc>, String>| listed(&mut printing(text), Duration::from_secs(20), parse);
+    for (text, wrong) in [
+        ("null", "neither an object nor an array"),
+        ("{}", "no integer ProcessId"),
+        ("[null]", "an element that is no object"),
+        ("\"a string\"", "neither an object nor an array"),
+        (r#"{"ParentProcessId":1,"Name":"x.exe"}"#, "no integer ProcessId"),
+        (r#"[{"ProcessId":1,"ParentProcessId":0},{"ProcessId":2}]"#, "no integer ParentProcessId"),
+        (r#"{"ProcessId":1,"ParentProcessId":0,"Name":7}"#, "Name is no string"),
+        ("not json", "not JSON"),
+    ] {
+        let why = printed(text, parse_cim).unwrap_err();
+        assert!(why.contains("printed an unreadable process list") && why.contains(wrong), "{text}: {why}");
+    }
+    let one = printed(r#"{"ProcessId":5,"ParentProcessId":4,"Name":"sotd.exe","ExecutablePath":null,"CommandLine":"x"}"#, parse_cim).unwrap();
+    assert_eq!((one.len(), one[0].pid, one[0].ppid, one[0].exe.as_str()), (1, 5, 4, ""));
+    let two = printed(r#"[{"ProcessId":1,"ParentProcessId":0,"Name":"a.exe","ExecutablePath":"C:\\a.exe","CommandLine":"a"},{"ProcessId":2,"ParentProcessId":1,"Name":null,"ExecutablePath":null,"CommandLine":null}]"#, parse_cim).unwrap();
+    assert_eq!(two.iter().map(|p| p.pid).collect::<Vec<_>>(), [1, 2]);
+    for text in ["10 1 sotd /p/bin/sotd\nnot a row\n", "x 1 sotd\n", "10 1\n"] {
+        let why = printed(text, parse_ps).unwrap_err();
+        assert!(why.contains("printed an unreadable process list: a row that is not"), "{text:?}: {why}");
+    }
+    let ps = printed("  10     1 sotd     /p/bin/sotd --label sot\n  11    10 julia    /j/julia -e x\n", parse_ps).unwrap();
+    assert_eq!(ps.iter().map(|p| (p.pid, p.ppid)).collect::<Vec<_>>(), [(10, 1), (11, 10)]);
 }

@@ -33,13 +33,17 @@ pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
 }
 
 /// The listing `cmd` prints within `bound` (through the run's bounded runner, which ends what it started), read by
-/// `parse`. One that was cut at its bound, did not start, was ended by a signal, exited nonzero, or printed no process
-/// that reads is `Err` with its reason.
-pub(super) fn listed(cmd: &mut Command, bound: Duration, parse: fn(&str) -> Vec<Proc>) -> Result<Vec<Proc>, String> {
+/// `parse`. One that was cut at its bound, did not start, was ended by a signal, exited nonzero, printed what is not a
+/// process listing, or listed no process is `Err` with its reason.
+pub(super) fn listed(cmd: &mut Command, bound: Duration, parse: fn(&str) -> Result<Vec<Proc>, String>) -> Result<Vec<Proc>, String> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     let ran = cmd::output_within(cmd, bound);
     match ran.code {
-        Some(0) => Some(parse(&ran.out)).filter(|all| !all.is_empty()).ok_or_else(|| format!("`{program}` printed no process list")),
+        Some(0) => match parse(&ran.out) {
+            Ok(all) if all.is_empty() => Err(format!("`{program}` printed no process list")),
+            Ok(all) => Ok(all),
+            Err(why) => Err(format!("`{program}` printed an unreadable process list: {why}")),
+        },
         Some(code) => Err(format!("`{program}` ended with exit {code}: {}", ran.last_said())),
         None if ran.err.trim().is_empty() => Err(format!("`{program}` was ended by a signal")),
         None => Err(format!("`{program}` gave no answer: {}", ran.err.trim())),
@@ -61,17 +65,20 @@ fn listing() -> Command {
     c
 }
 
-/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines; a line that is not one is skipped.
+/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines. Every nonblank line must be one (a pid, a parent pid, a name), or
+/// the listing does not read: a listing with a row missing would say a process is absent.
 #[cfg_attr(windows, allow(dead_code, reason = "Unix reads its processes from ps"))]
-pub(super) fn parse_ps(text: &str) -> Vec<Proc> {
+pub(super) fn parse_ps(text: &str) -> Result<Vec<Proc>, String> {
     text.lines()
-        .filter_map(|line| {
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
             let mut words = line.split_whitespace();
-            let pid = words.next()?.parse().ok()?;
-            let ppid = words.next()?.parse().ok()?;
-            let name = words.next()?.to_string();
+            let row = || format!("a row that is not `pid ppid name args` ('{}')", line.trim());
+            let pid = words.next().and_then(|w| w.parse().ok()).ok_or_else(row)?;
+            let ppid = words.next().and_then(|w| w.parse().ok()).ok_or_else(row)?;
+            let name = words.next().ok_or_else(row)?.to_string();
             let args: Vec<&str> = words.collect();
-            Some(Proc { pid, ppid, name, exe: args.first().map(|s| (*s).to_string()).unwrap_or_default(), args: args.join(" ") })
+            Ok(Proc { pid, ppid, name, exe: args.first().map(|s| (*s).to_string()).unwrap_or_default(), args: args.join(" ") })
         })
         .collect()
 }
@@ -86,19 +93,30 @@ fn listing() -> Command {
     c
 }
 
-/// CIM's JSON: an array of objects, or one object for a single process.
+/// CIM's JSON as `ConvertTo-Json` gives it: one object for a single process, or an array of objects. Each object has an
+/// integer `ProcessId` and `ParentProcessId`, and a `Name`, `ExecutablePath` and `CommandLine` that are each a string
+/// or null (null for what this account may not read). Anything else (`null`, `{}`, `[null]`, a string, an object
+/// missing a pid) does not read, saying what was wrong: it would read as processes that match nothing.
 #[cfg_attr(not(windows), allow(dead_code, reason = "Windows reads its processes from CIM"))]
-pub(super) fn parse_cim(text: &str) -> Vec<Proc> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return Vec::new() };
+pub(super) fn parse_cim(text: &str) -> Result<Vec<Proc>, String> {
+    let v = serde_json::from_str::<serde_json::Value>(text.trim()).map_err(|e| format!("not JSON ({e})"))?;
     let items = match v {
         serde_json::Value::Array(a) => a,
-        other => vec![other],
+        one @ serde_json::Value::Object(_) => vec![one],
+        other => return Err(format!("neither an object nor an array ('{other}')")),
     };
-    let s = |o: &serde_json::Value, k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-    let n = |o: &serde_json::Value, k: &str| o.get(k).and_then(serde_json::Value::as_u64).and_then(|x| u32::try_from(x).ok()).unwrap_or(0);
     items
         .iter()
-        .map(|o| Proc { pid: n(o, "ProcessId"), ppid: n(o, "ParentProcessId"), name: s(o, "Name"), exe: s(o, "ExecutablePath"), args: s(o, "CommandLine") })
+        .map(|item| {
+            let o = item.as_object().ok_or_else(|| format!("an element that is no object ('{item}')"))?;
+            let n = |k: &str| o.get(k).and_then(serde_json::Value::as_u64).and_then(|x| u32::try_from(x).ok()).ok_or_else(|| format!("an object with no integer {k} ('{item}')"));
+            let s = |k: &str| match o.get(k) {
+                Some(serde_json::Value::String(text)) => Ok(text.clone()),
+                Some(serde_json::Value::Null) | None => Ok(String::new()),
+                Some(other) => Err(format!("an object whose {k} is no string ('{other}')")),
+            };
+            Ok(Proc { pid: n("ProcessId")?, ppid: n("ParentProcessId")?, name: s("Name")?, exe: s("ExecutablePath")?, args: s("CommandLine")? })
+        })
         .collect()
 }
 

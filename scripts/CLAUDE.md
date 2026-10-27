@@ -177,11 +177,16 @@ Guarantees, each with the mechanism it rests on. Install:
   output-completion bound below. The installer's own process listing (`procs::snapshot`: `ps` on Unix, CIM's
   `Win32_Process` on Windows) runs through the same bounded runner at 60 s, and so do the Windows end-state check's
   `--version` asks of the installed binaries. A listing that was cut, did not start, was ended by a signal, exited
-  nonzero, or printed no process is never an empty list: whether a daemon of the install runs is then presumed yes,
-  so it is asked about (a daemon's children it cannot list rule nothing out); Unix decide stops before any write
+  nonzero, printed no process, or printed what its program never prints is never an empty list: `ps` must give a
+  `pid ppid name args` row on every nonblank line, and CIM one object or an array of objects, each with an integer
+  `ProcessId` and `ParentProcessId` and a `Name`, `ExecutablePath` and `CommandLine` each a string or null, so `null`,
+  `{}`, `[null]`, a string or an object missing a pid is unreadable. Whether a daemon of the install runs is then
+  presumed yes, so it is asked about (a daemon's children it cannot list rule nothing out); Unix decide stops before any write
   (FAIL, exit 1, naming why); a Windows update after its stage stops nothing and stays armed (ONE STEP LEFT naming
   why); and the final checks are FAIL with the reason. A `--version` that was cut or gave no answer is FAIL with its
-  reason. Every other observation keeps its own wait. Whole-install completion on Windows in an isolated profile
+  reason. Every other observation keeps its own wait. The tests read each listing shape through the real runner on
+  every system, and each caller's meaning through its own function; tests that drive decide, the update and the
+  checks with a cut listing wait for 0.7.1's fake-machine seam. Whole-install completion on Windows in an isolated profile
   remains unproven until the release-gate witness completes.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
