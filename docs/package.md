@@ -247,9 +247,10 @@ read-only check 300 s) and comes back a fact no caller reads without saying what
 stops the run, but for the stated steps and clauses; after the first write it is FAIL, a step, an update left armed or
 state kept. Its reason is in the one verdict line, which leads with the first failure in time and drops no reason the
 run collected (a person's interrupt is the stated exception: it names the step it stopped in), and a listing with no
-answer is never "none runs". Text our own programs print is read only by the one parser its printer's owner keeps
-beside the printer (topology's status and plan, `same-version`, `update repls`); other programs' text (`systemctl
-cat`, `ldd`, Git's commit ids) is read in its documented shapes, anything else stopping the run. The tables that cut
+answer is never "none runs". What our own subcommands answer it (topology's status and plan, `same-version`,
+`update repls`) is asked with `--json`: one JSON value of the type the printer serializes and the installer
+deserializes, so it reads back equal whatever it holds; other programs' text (the unit's ExecStart, `ldd`, Git's
+commit ids) is read in its documented shapes, anything else stopping the run. The tables that cut
 each question run on Linux before a merge, and on macOS and Windows first in hosted CI after it (scripts/CLAUDE.md,
 Installers). A push scans only commits the
 destination does not hold: since 2026-10-25 the guard bounds its history scan by the push's old ids and by what the

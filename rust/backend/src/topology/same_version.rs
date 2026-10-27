@@ -8,12 +8,13 @@
 //! another, printed on stdout, and no window holds its lease. Exit 4: it runs another, printed on stdout, and a window
 //! holds a lease (the daemon's own record, `held.json`, names a holder) or the record cannot be read: the caller keeps
 //! it until no window does, and says so. Any other exit (2 here, 1 from a `sotd` that predates this command) means it cannot be
-//! told, with one stderr line saying why, and the caller keeps the daemon.
+//! told, with one stderr line saying why, and the caller keeps the daemon. With `--json` the answer is one JSON
+//! [`Answer`] on stdout instead, with the same exit codes: the installer's one reading of it.
 
 use std::time::Duration;
 
 /// The usage line, printed on a bad argument and for `--help`.
-pub(crate) const USAGE: &str = "Usage: sotd same-version --endpoint <unix:PATH|pipe:PATH>";
+pub(crate) const USAGE: &str = "Usage: sotd same-version --endpoint <unix:PATH|pipe:PATH> [--json]";
 
 /// How long the hello reply may take: a daemon whose endpoint accepts answers a hello at once.
 const REPLY_BOUND: Duration = Duration::from_secs(5);
@@ -29,36 +30,40 @@ pub fn run(args: &[String]) -> i32 {
 
 /// `run` against the daemon whose state root is `state_root`, where its lease record lives.
 fn run_in(args: &[String], state_root: Option<&std::path::Path>) -> i32 {
-    let endpoint = match args {
-        [flag, ep] if flag == "--endpoint" && (ep.starts_with("unix:") || ep.starts_with("pipe:")) => ep,
+    let (endpoint, json) = match args {
+        [flag, ep] if flag == "--endpoint" && (ep.starts_with("unix:") || ep.starts_with("pipe:")) => (ep, false),
+        [flag, ep, j] if flag == "--endpoint" && j == "--json" && (ep.starts_with("unix:") || ep.starts_with("pipe:")) => (ep, true),
         _ => {
             eprintln!("{USAGE}");
             return UNKNOWN;
         }
     };
-    let me = match sot_platform::host::state_dir::host_name() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("sotd same-version: {e}");
-            return UNKNOWN;
-        }
+    let answer = match sot_platform::host::state_dir::host_name() {
+        Err(e) => Answer::Untold(e),
+        Ok(me) => match crate::topology::dial::hello_reply(endpoint, &me, REPLY_BOUND)
+            .and_then(|r| verdict(&r, &sot_protocol::app_version()).map_err(|why| format!("{endpoint}: {why}")))
+        {
+            Ok(None) => Answer::Same,
+            Ok(Some(theirs)) if lease_held(state_root) => Answer::OtherHeld(theirs),
+            Ok(Some(theirs)) => Answer::Other(theirs),
+            Err(why) => Answer::Untold(why),
+        },
     };
-    let reply = crate::topology::dial::hello_reply(endpoint, &me, REPLY_BOUND);
-    let answer = match reply.and_then(|r| verdict(&r, &sot_protocol::app_version()).map_err(|why| format!("{endpoint}: {why}"))) {
-        Ok(None) => Answer::Same,
-        Ok(Some(theirs)) if lease_held(state_root) => Answer::OtherHeld(theirs),
-        Ok(Some(theirs)) => Answer::Other(theirs),
-        Err(why) => Answer::Untold(why),
-    };
+    if json {
+        let (code, out) = json_answer(&answer);
+        print!("{out}");
+        return code;
+    }
     let printed = print(&answer);
     print!("{}", printed.out);
     eprint!("{}", printed.err);
     printed.code
 }
 
-/// What `sotd same-version` answers, as a value: [`print`] writes it as an exit code and two streams, and [`parse`],
-/// the one reader of that answer (the installer's included), reads it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What `sotd same-version` answers, as a value: [`print`] writes it as text (an exit code and two streams, the
+/// launchers' reading), and [`json_answer`] as one JSON value (the installer's, which deserializes this same type).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Answer {
     /// It runs this binary's version.
     Same,
@@ -78,29 +83,29 @@ pub(crate) struct Printed {
     pub err: String,
 }
 
-pub(crate) fn print(answer: &Answer) -> Printed {
-    let (code, out, err) = match answer {
-        Answer::Same => (SAME, String::new(), String::new()),
-        Answer::Other(v) => (OTHER, format!("{v}\n"), String::new()),
-        Answer::OtherHeld(v) => (OTHER_LEASED, format!("{v}\n"), String::new()),
-        Answer::Untold(why) => (UNKNOWN, String::new(), format!("sotd same-version: {why}\n")),
-    };
-    Printed { code, out, err }
+/// The exit code that goes with an answer.
+pub(crate) fn code(answer: &Answer) -> i32 {
+    match answer {
+        Answer::Same => SAME,
+        Answer::Other(_) => OTHER,
+        Answer::OtherHeld(_) => OTHER_LEASED,
+        Answer::Untold(_) => UNKNOWN,
+    }
 }
 
-/// [`print`]'s answer read back: exit 0 with nothing printed; exit 3 or 4 with one stdout line naming the version;
-/// exit 2 with one stderr line saying why. Anything else (another exit, an extra line, an empty or blank value, a
-/// stream the answer leaves empty that is not) is refused, saying what was read.
-pub(crate) fn parse(code: i32, out: &str, err: &str) -> Result<Answer, String> {
-    let line = |text: &str| text.strip_suffix('\n').filter(|l| !l.contains('\n') && !l.trim().is_empty()).map(str::to_string);
-    let answer = match (code, out.is_empty(), err.is_empty()) {
-        (SAME, true, true) => Some(Answer::Same),
-        (OTHER, false, true) => line(out).map(Answer::Other),
-        (OTHER_LEASED, false, true) => line(out).map(Answer::OtherHeld),
-        (UNKNOWN, true, false) => line(err).and_then(|l| l.strip_prefix("sotd same-version: ").filter(|w| !w.trim().is_empty()).map(str::to_string)).map(Answer::Untold),
-        _ => None,
+pub(crate) fn print(answer: &Answer) -> Printed {
+    let (out, err) = match answer {
+        Answer::Same => (String::new(), String::new()),
+        Answer::Other(v) | Answer::OtherHeld(v) => (format!("{v}\n"), String::new()),
+        Answer::Untold(why) => (String::new(), format!("sotd same-version: {why}\n")),
     };
-    answer.ok_or_else(|| format!("no answer of sotd same-version (exit {code}, stdout '{}', stderr '{}')", out.trim_end(), err.trim_end()))
+    Printed { code: code(answer), out, err }
+}
+
+/// An answer as `--json` gives it: its exit code and its one line of stdout.
+pub(crate) fn json_answer(answer: &Answer) -> (i32, String) {
+    let line = serde_json::to_string(answer).unwrap_or_else(|e| format!("{{\"untold\":\"the answer could not be written: {e}\"}}"));
+    (code(answer), format!("{line}\n"))
 }
 
 /// Whether a window holds a lease on the daemon whose state root is `state_root`, from its own record: a holder in
@@ -118,7 +123,7 @@ fn lease_held(state_root: Option<&std::path::Path>) -> bool {
 /// What the daemon's hello reply says against `ours`: `None` when it runs `ours`, its version when it runs another,
 /// and why not when it does not say. A refusal for another protocol is another version whatever it names.
 fn verdict(reply: &serde_json::Value, ours: &str) -> Result<Option<String>, String> {
-    let field = |k: &str| reply.get(k).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty() && !s.contains('\n'));
+    let field = |k: &str| reply.get(k).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
     if field("code") == Some("protocol_mismatch") {
         return Ok(Some(field("backend_version").unwrap_or("a version it does not name").to_string()));
     }

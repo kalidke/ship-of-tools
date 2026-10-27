@@ -179,19 +179,22 @@ Guarantees, each with the mechanism it rests on. Install:
 - Every question the install asks of the machine is bounded, and its unknown has one stated meaning. A question is a
   read-only child whose answer the run decides on. Each runs through `observe::ask` and comes back an
   `observe::Fact`, its value or why there is none: it did not start, was cut at its bound, was ended by a signal, ended
-  with an exit its reader does not document, or printed what its reader cannot read. Text our own programs print is
-  read only by the one parser its printer's owner keeps beside the printer, tested by reading back every answer the
-  printer gives; the installer keeps no grammar of its own: `topology status` and `plan` by `sot_topology::parse_status`
-  and `parse_plan`, a `sotd topology` refusal (no hosts.toml, or one it cannot read) by `topology::cli::refusal`,
-  `same-version` by `topology::same_version::parse`, and `update repls` by `update::cli::parse_repls` (below, Update).
-  Text of other programs is read in its documented shapes, anything else does not read and stops the run naming what
-  was read: `systemctl --user cat`'s one ExecStart in the two shapes an install wrote (`deploy/sotd.service` as the
-  library renders it, and an older bare `ExecStart=<bin>/sotd`), refusing no ExecStart, more than one (a drop-in that
-  resets or replaces it), an unbalanced quote and a program that is not an absolute path (limit: a unit that runs sotd
-  another way is refused, never read; the library's shell `sot_unit_owner_path` reads the same file more loosely);
-  `ldd --version`'s first line as glibc prints it, `ldd (` text naming glibc or GNU libc in any case `) <version>`
-  (glibc's `elf/ldd.bash.in`); a Git commit read as exactly one line of 40 or 64 lowercase hex digits, the one
-  helper (`is_commit`, `commit_line`) the pack's `COMMIT` is checked by too. No caller reaches the
+  with an exit its reader does not document, or printed what its reader cannot read. What our own subcommands answer
+  the installer is asked with `--json` and is one JSON value of the type the printer serializes and the installer
+  deserializes (`observe::json`), with the exit that value goes with; an answer that does not deserialize, or whose exit
+  is not its value's, does not read, and stderr is never read: `topology status` and `plan` as `topology::cli::Answer`
+  of `sot_topology::StatusRow`s or a `Plan` (a refusal and no hosts.toml are its variants), `same-version` as
+  `topology::same_version::Answer` ("cannot be told" its `untold` variant), and `update repls` as `update::cli::Repls`
+  (below, Update). Each type reads back equal whatever its values hold (a line break, a line-like start, spaces,
+  nothing), by construction. Text of other programs is read in its documented shapes, anything else does not read and
+  stops the run naming what was read: `systemctl --user cat`'s one ExecStart in the two shapes an install wrote
+  (`deploy/sotd.service` as the library renders it, and an older bare `ExecStart=<bin>/sotd`), refusing no ExecStart,
+  more than one (a drop-in that resets or replaces it), an unbalanced quote and a program that is not an absolute path
+  (limit: a unit that runs sotd another way is refused, never read; the library's shell `sot_unit_owner_path` reads the
+  same file more loosely); `ldd --version`'s first line as glibc prints it, `ldd (` text naming glibc or GNU libc in
+  any case `) <version>`, the version numbers joined by single dots (glibc's `elf/ldd.bash.in`); a Git commit read as
+  exactly one line of 40 or 64 lowercase hex digits, the one helper (`is_commit`, `commit_line`) the pack's `COMMIT` is
+  checked by too. No caller reaches the
   value without writing what the unknown means: a `Fact` left unused or bound to `let _` is refused in `install/`
   (`unused_must_use` by the compiler, `clippy::let_underscore_must_use` by the gate's clippy runs). The bound is 60 s
   through exit and complete output, under the same group or job ownership as the publish guard's reads, then at most
@@ -252,8 +255,10 @@ Guarantees, each with the mechanism it rests on. Install:
   (decide, the check, Julia, the retire on Linux, the record, the layout on a scratch origin; each row on the systems
   its code runs on) and `install::windows::observe_tests` (the pack, endpoint and direction gates, the layout's Git
   reads, the shortcut, the update and the final state). The tables run on Linux before a merge; macOS's and Windows'
-  first run in hosted CI after it (they are compiled for both before it). The parsers' read-back tests are their
-  owners' (`sot_topology`'s, `topology::same_version`'s, `topology::cli`'s and `update::cli`'s). The publish guard's
+  first run in hosted CI after it (they are compiled for both before it). The JSON answers' read-back tests are
+  `install::unix::observe_tests::every_answer_the_topology_verbs_print_reads_back_equal` and
+  `install::daemon::tests::every_answer_the_daemon_subcommands_print_reads_back_equal`, each through the printer's own
+  `--json` function and the installer's own reader. The publish guard's
   reads are cut by its own suite (`install::publish`), which names the FAIL line, on Linux and macOS only: on Windows
   the guard runs `git.exe` and Git's `bash.exe` as programs, a stand-in for them needs a binary of its own, and the cut
   through the same runner is `install::observe`'s, which runs there. The console's own reading of a person's answer is
@@ -264,12 +269,12 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   install, or an install on a host the topology names with neither key. `sotd update stage` is the operator's and may
   arm at or below. A stage verifies the sums and digests and prepares the checkout at the tag's commit, clean, under
   the stage lock, before it arms.
-- `sotd update repls` answers in one grammar with one reader beside its printer (`update/cli.rs`: `print_repls` and
-  `parse_repls`, tested by `parse_repls_reads_back_every_answer_print_repls_gives`): exit 0 and nothing printed when
-  nothing is live; `repl <label>` lines then a `pluto server` line, exit 3; exit 1 and one `sotd update repls: <why>`
-  line on stderr when the daemon could not say all of it, the rows it read printed first. The parser refuses anything
-  else, exit 0 with an error on stderr included. A row label's line break is printed as a space, so every live row
-  stays one line.
+- `sotd update repls` answers in two forms of one value, `update::cli::Repls` (the live rows, the Pluto server, what
+  the daemon could not say), with one exit code each (`repls_code`: 0 nothing live, 3 something, 1 not all of it
+  said). As text (`print_repls`): nothing when nothing is live, `repl <label>` lines then a `pluto server` line, and
+  one `sotd update repls: <why>` stderr line when not all of it was said. With `--json` (`repls_json`): one JSON
+  `Repls` on stdout, which the installer deserializes. A row label's line break is printed as a space, so every live
+  row stays one text line.
 
 Apply (`sot-apply.sh`, `sot-apply.ps1`):
 - It verifies the whole stage before it mutates, restores on a failure after mutation and exits 0 (fail-open); a
@@ -318,10 +323,12 @@ shortcut. The interfaces that do not move: the entry paths and the option names 
 never renamed), the verdict words, `$PREFIX`'s layout, `install.json`, the unit names, `SOT_INSTALL_REPO`,
 `SOT_INSTALL_TAG`.
 
-Calls out: `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`,
+Calls out: `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`
+(`repls`, `same-version`, `status` and `plan` asked with `--json` and read as `update::cli::Repls`,
+`topology::same_version::Answer` and `topology::cli::Answer` of `sot_topology::StatusRow`s or a `sot_topology::Plan`),
 `sotd trust declare`, `sotd session-socket-path`, `sotd stdio-bridge`, run as programs (the command line is the seam:
-`sotd install` names no other subsystem's module but platform's `host_name` and `kernel_host_name` and topology's
-`SSH_OPTS`); git, curl, tar, julia and juliaup, npm, systemctl and loginctl,
+`sotd install` names no other subsystem's module but platform's `host_name` and `kernel_host_name`, topology's
+`SSH_OPTS`, and the four answer types above with their exit-code functions); git, curl, tar, julia and juliaup, npm, systemctl and loginctl,
 ps; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
 (`sot-local-daemon.ps1 -Stop`) and the apply.
 

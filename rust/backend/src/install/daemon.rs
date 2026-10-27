@@ -41,7 +41,7 @@ impl State {
     }
 }
 
-/// What `sotd same-version` answered, read by its one parser (`topology::same_version::parse`).
+/// What `sotd same-version --json` answered: the value its printer serializes (`topology::same_version::Answer`).
 pub(super) type Said = crate::topology::same_version::Answer;
 
 /// Whether a daemon may run, asked within the bound it is given.
@@ -86,12 +86,15 @@ pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs) ->
 
 /// [`state`] with the ask itself held to `bound` by the clock, and a listing it needs to the bound `left` gives once
 /// the ask has ended (zero past the deadline of a wait of `wait`): an ask cut at its bound could not tell. The answer
-/// is read by same-version's one parser.
+/// is `--json`'s, deserialized as the printer's own type.
 fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs, bound: Duration, left: impl Fn() -> Duration, wait: Duration) -> (State, String) {
-    let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| {
-        crate::topology::same_version::parse(a.exit, &a.out, &a.err).map_err(observe::Why::Malformed)
-    });
+    let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint, "--json"]), bound, said_of);
     state_of(said, runs, left(), wait)
+}
+
+/// `sotd same-version --json`'s answer, deserialized as the printer's own type with its exit code.
+pub(super) fn said_of(a: &observe::Answer) -> Result<Said, observe::Why> {
+    observe::json(a, crate::topology::same_version::code)
 }
 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
@@ -122,18 +125,18 @@ fn ask_slice(left: Duration) -> Duration {
 }
 
 /// What a restart of the daemon would end: the rows with a live REPL, whether its Pluto server runs, and, when the
-/// daemon could not say all of it, why; `sotd update repls`' answer, read by its one parser.
+/// daemon could not say all of it, why; `sotd update repls --json`'s answer, the value its printer serializes.
 pub(super) type Work = crate::update::cli::Repls;
 
-/// `sotd update repls`' answer through its one parser (`update::cli::parse_repls`); one it refuses does not read.
+/// `sotd update repls --json`'s answer, deserialized as the printer's own type with its exit code.
 pub(super) fn work_of(a: &observe::Answer) -> Result<Work, observe::Why> {
-    crate::update::cli::parse_repls(a.exit, &a.out, &a.err).map_err(observe::Why::Malformed)
+    observe::json(a, crate::update::cli::repls_code)
 }
 
 /// What a restart would end, asked of the daemon within [`observe::ASK_BOUND`]; an ask that gave no answer, or one that
 /// does not read, is `unsure` with its reason, so a caller that cannot be told is asked about, never told "nothing".
 pub(super) fn work(m: &dyn Machine, sotd: &Path, endpoint: &str) -> Work {
-    observe::ask(m, Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]), observe::ASK_BOUND, work_of)
+    observe::ask(m, Command::new(sotd).args(["update", "repls", "--endpoint", endpoint, "--json"]), observe::ASK_BOUND, work_of)
         .read(|w| w, |why| Work { unsure: Some(why.to_string()), ..Work::default() })
 }
 

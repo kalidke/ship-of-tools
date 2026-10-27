@@ -3,7 +3,10 @@
 //! in a child process of its own, since the verdict's step is the process's.
 
 use super::*;
-use crate::install::observe::tests::{says, says_err, stall_after, tree, Canned, Fake};
+use crate::install::observe::tests::{host, repls, same_version, says, says_err, stall_after, topology, tree, Canned, Fake};
+use crate::topology::cli::Answer as Topology;
+use crate::topology::same_version::Answer as Said;
+use crate::update::cli::Repls;
 use sot_platform::host::env::Env;
 
 const VERSION: &str = "0.7.0";
@@ -64,14 +67,14 @@ impl Computer {
         fake.answer("stat -f", says(0, "ext2/ext3\n"))
             .answer("/sotd --version", says(0, &format!("sotd {VERSION} ({short} 2026-10-26, protocol 9)\n")))
             .answer("/sot --version", says(0, &format!("sot {VERSION} ({short} 2026-10-26, protocol 9)\n")))
-            .answer("topology status", says_err(2, "sotd topology: no hosts.toml at /h/.config/sot/hosts.toml (run `sotd topology sync --hub <alias>`)"))
-            .answer("topology plan", says(0, "self me\nhub me\nrelay-endpoint unix:/run/sot.sock\ndial me unix:/run/sot.sock\n"))
+            .answer("topology status", topology(Topology::<Vec<sot_topology::StatusRow>>::NoHosts("/h/.config/sot/hosts.toml".into())))
+            .answer("topology plan", topology(Topology::Answer(plan("me", "me", "unix:/run/sot.sock", &[("me", "unix:/run/sot.sock")]))))
             .answer("ldd --version", says(0, "ldd (GNU libc) 2.35\n"))
             .answer("is-active sotd.service", says(3, "inactive\n"))
             .answer("session-socket-path", says(0, "/run/sot.sock\n"))
             .answer("ps -u", says(0, "1 0 init /sbin/init\n"))
-            .answer("same-version", says_err(2, "sotd same-version: no hello on unix:/run/sot.sock"))
-            .answer("update repls", says(0, ""))
+            .answer("same-version", same_version(Said::Untold("unix:/run/sot.sock: no hello".into())))
+            .answer("update repls", repls(Repls::default()))
             .answer("update direction", says(0, "newer\n"))
             .answer("--user cat sotd.service", says(0, &format!("[Service]\nExecStart={}/bin/sotd --label sot\n", root.join("prefix").display())));
         Self { dir, fake, commit: commit.to_string() }
@@ -170,6 +173,21 @@ fn row(name: &'static str, setup: fn(&Computer), cut: Cut, flags: &'static [&'st
 
 fn none(_: &Computer) {}
 
+/// A hosts.toml that declares this computer a frontend.
+fn declared(c: &Computer) {
+    c.fake.answer("topology status", topology(Topology::Answer(vec![host("me", false, false, true)])));
+}
+
+/// A plan for `me`, as `plan_of` makes one.
+fn plan(me: &str, hub: &str, relay: &str, dials: &[(&str, &str)]) -> sot_topology::Plan {
+    sot_topology::Plan { self_host: me.into(), hub: hub.into(), relay_endpoint: relay.into(), dials: dials.iter().map(|(h, e)| ((*h).into(), (*e).into())).collect() }
+}
+
+/// A topology answer printed by its own printer with another exit code than its value's.
+fn answers_with<T: serde::Serialize>(code: i32, answer: Topology<T>) -> Canned {
+    Canned::Says(code, crate::topology::cli::json(&answer).1, String::new())
+}
+
 /// One cut question, through the phase to the verdict: the line's word, its check, its exit code, the reason and, for
 /// a stop, nothing written under the prefix or the home.
 fn walk(c: &Computer, r: &Row, run: impl FnOnce(&Computer, &mut Found) -> Result<(), Stop>) -> String {
@@ -215,12 +233,12 @@ fn a_cut_question_in_decide_stops_before_any_write() {
     {
         // A declared frontend whose plan dials another daemon host gets the dialing launcher; one whose plan dials only
         // itself does not.
-        for (dials, others) in [("dial h ssh:h\n", true), ("dial me unix:/run/user dir/sot.sock\n", false)] {
+        for (dials, others) in [(&[("h", "ssh:h")][..], true), (&[("me", "unix:/run/user dir/sot.sock")][..], false)] {
             let c = Computer::new();
-            c.fake.answer("topology status", says(0, "HOST DECLARED\nh hub,daemon\nme frontend\n"))
-                .answer("topology plan", says(0, &format!("self me\nhub h\nrelay-endpoint ssh:h\n{dials}")));
+            c.fake.answer("topology status", topology(Topology::Answer(vec![host("h", true, true, false), host("me", false, false, true)])))
+                .answer("topology plan", topology(Topology::Answer(plan("me", "h", "ssh:h", dials))));
             let plan = c.decide(&[], &mut Found::default()).expect("a declared frontend decides");
-            assert_eq!(plan.others, others, "{dials}");
+            assert_eq!(plan.others, others, "{dials:?}");
         }
     }
     for flags in [&["--local", "--no-service"][..], &["--be-only", "--no-service"][..]] {
@@ -252,10 +270,10 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         row("pack sotd", none, Cut::Line("pack/sot-0.7.0"), &["--local"], Then::Stop("unpack", 1), false),
         row("pack sot", none, Cut::Line("/sot --version"), &["--local"], Then::Stop("role", 1), false),
         row("topology status", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false),
-        Row { how: says(0, "garbage\n"), reason: "no `HOST DECLARED` header", ..row("topology status, unreadable", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
-        Row { how: says(0, "HOST DECLARED\nme nonsense\n"), reason: "`me nonsense` is not a status line", ..row("topology status, a declaration outside the grammar", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
-        row("topology plan, declared", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false),
-        Row { how: says(0, "nonsense\n"), reason: "no `self` line", ..row("topology plan, unreadable", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: says(0, "HOST DECLARED\nme frontend\n"), reason: "no JSON answer", ..row("topology status, unreadable", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: answers_with(2, Topology::Answer(vec![host("me", false, false, true)])), reason: "goes with exit 0, with exit 2", ..row("topology status, an exit not its answer's", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
+        row("topology plan, declared", declared, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false),
+        Row { how: says(0, "self me\nhub me\n"), reason: "no JSON answer", ..row("topology plan, unreadable", declared, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false) },
         row("ldd", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true),
         Row { how: says(0, "musl libc\n"), reason: "printed no glibc version", ..row("ldd, unreadable", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true) },
         Row { how: says(0, "something else 99.99\n"), reason: "printed no glibc version ('something else 99.99')", ..row("ldd, another program's version", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true) },
@@ -276,11 +294,11 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         }, Cut::Line("ps -u"), &["--local"], Then::Stop("daemon", 2), true) },
         row("update repls, unit on another version", |c| {
             c.unit_runs();
-            c.fake.answer("same-version", says(3, "0.6.9\n"));
+            c.fake.answer("same-version", same_version(Said::Other("0.6.9".into())));
         }, Cut::Line("update repls"), &["--local"], Then::Stop("daemon", 2), true),
-        Row { how: says(3, ""), reason: "no answer of sotd update repls (exit 3", ..row("update repls, unreadable", |c| {
+        Row { how: says(3, "repl a\n"), reason: "no JSON answer", ..row("update repls, unreadable", |c| {
             c.unit_runs();
-            c.fake.answer("same-version", says(3, "0.6.9\n"));
+            c.fake.answer("same-version", same_version(Said::Other("0.6.9".into())));
         }, Cut::Line("update repls"), &["--local"], Then::Stop("daemon", 2), true) },
         row("restart asked for over a daemon that cannot be told", |c| { c.unit_runs(); }, Cut::Line("same-version"), &["--local", "--restart-daemon"], Then::Clause, true),
         row("installed sotd, implicit", |c| {
@@ -341,7 +359,7 @@ fn laid(c: &Computer, flags: &[&str]) -> Plan {
     std::fs::write(c.root().join("comm/VERSION"), format!("{}\n", &c.commit[..9])).unwrap();
     c.fake.answer("rev-parse HEAD", says(0, &format!("{}\n", c.commit)))
         .answer("is-active sotd.service", says(0, "active\n"))
-        .answer("same-version", says(0, ""))
+        .answer("same-version", same_version(Said::Same))
         .answer("sot_boot_wired", says(0, ""))
         .answer("sot_boot_off_line", says(0, "sotd.service: boot start is off\n"));
     plan
@@ -371,7 +389,7 @@ fn a_cut_question_in_the_check_is_never_pass() {
         row("bin/sot", none, Cut::Under("bin/sot --version"), &["--local"], Then::Fail("binaries"), false),
         row("unit state", none, Cut::Line("is-active sotd.service"), &["--local"], Then::Fail("daemon"), true),
         row("daemon's answer", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true),
-        Row { how: says(3, ""), reason: "no answer of sotd same-version (exit 3", ..row("daemon's answer, unreadable", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true) },
+        Row { how: says(3, "0.6.9\n"), reason: "no JSON answer", ..row("daemon's answer, unreadable", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true) },
         row("boot wiring", none, Cut::Line("sot_boot_wired"), &["--local"], Then::Step, true),
         row("boot-off line", |c| { c.fake.answer("sot_boot_wired", says(1, "")); }, Cut::Line("sot_boot_off_line"), &["--local"], Then::Step, true),
         row("listing, no unit, the daemon current", none, Cut::Line("ps -u"), &["--be-only", "--no-service"], Then::Fail("daemon"), false),
@@ -580,4 +598,38 @@ fn a_cut_question_in_the_layout_keeps_what_is_there() {
     let plan = c.decide(&["--local"], &mut Found::default()).unwrap();
     let line = walk(&c, &row("an old version folder", none, Cut::Under("repo/versions/v0.0.0 status --porcelain"), &[], Then::Clause, false), |c, found| lay_out(&c.fake, &plan, found));
     assert!(c.prefix().join("repo/versions/v0.0.0").is_dir() && line.contains("kept old version folder v0.0.0"), "{line}");
+}
+
+/// Each answer `sotd topology status --json` and `plan --json` print reads back equal through the installer's own
+/// readers, whatever their values hold: a monitor label that starts like the divergence line or a warning, an empty
+/// label, a target of only spaces, a warning and an endpoint with line breaks, a refusal of two lines. An answer that is
+/// no JSON, or whose exit is not its value's, does not read.
+#[test]
+fn every_answer_the_topology_verbs_print_reads_back_equal() {
+    use sot_topology::StatusRow;
+    let as_asked = |(exit, out): (i32, String)| crate::install::observe::Answer { exit, out, err: String::new() };
+    let rows = vec![
+        host("me", false, false, true),
+        StatusRow::Host { name: "h".into(), hub: true, daemon: true, frontend: false, sampled: true },
+        StatusRow::MonitorOnly { label: "cache diverged: this box's hosts.toml (x".into(), target: "gpu-box".into() },
+        StatusRow::MonitorOnly { label: "WARNING".into(), target: "  ".into() },
+        StatusRow::MonitorOnly { label: String::new(), target: "gpu-box".into() },
+        StatusRow::Warning("line 3: unknown key `x`\nHOST DECLARED".into()),
+        StatusRow::Diverged { local: "0123456789abcdef".into(), hub: "fedcba9876543210".into() },
+    ];
+    assert_eq!(status_of(&as_asked(crate::topology::cli::json(&Topology::Answer(rows.clone())))), Ok(Topo::Table(rows)));
+    assert_eq!(status_of(&as_asked(crate::topology::cli::json(&Topology::<Vec<StatusRow>>::NoHosts("/h/a\nb/hosts.toml".into())))), Ok(Topo::Missing));
+    assert_eq!(
+        status_of(&as_asked(crate::topology::cli::json(&Topology::<Vec<StatusRow>>::Refused("line 2: bad\nline 3: worse".into())))),
+        Ok(Topo::Unreadable("line 2: bad\nline 3: worse".into()))
+    );
+    let p = plan("me", "h", "unix:/run/user dir/\n\nsot-relay.sock", &[("h", "ssh:h"), ("me", "pipe:\\\\.\\pipe\\sot-a user-local")]);
+    assert_eq!(plan_of(&as_asked(crate::topology::cli::json(&Topology::Answer(p.clone()))), "me"), Ok(Some(p.clone())));
+    assert_eq!(plan_of(&as_asked(crate::topology::cli::json(&Topology::<sot_topology::Plan>::NoHosts(String::new()))), "me"), Ok(None));
+    assert!(plan_of(&as_asked(crate::topology::cli::json(&Topology::Answer(p.clone()))), "other").is_err(), "a plan for another host");
+    let (_, line) = crate::topology::cli::json(&Topology::Answer(p));
+    for (exit, out) in [(2, line), (0, "self me\nhub h\n".to_string()), (0, String::new())] {
+        assert!(plan_of(&as_asked((exit, out.clone())), "me").is_err(), "exit {exit} {out:?}");
+        assert!(status_of(&as_asked((exit, out.clone()))).is_err(), "exit {exit} {out:?}");
+    }
 }

@@ -218,6 +218,15 @@ pub(super) fn on_path(m: &dyn Machine, name: &str) -> bool {
     which(m, name).is_some()
 }
 
+/// The answer of one of our own subcommands asked with `--json`: one JSON value of the type its printer serializes,
+/// with the exit code that value goes with (`code`, the printer's own). An answer that does not deserialize, or whose
+/// exit is not its value's, does not read; stderr is never read.
+pub(super) fn json<T: serde::de::DeserializeOwned>(a: &Answer, code: impl FnOnce(&T) -> i32) -> Result<T, Why> {
+    let value: T = serde_json::from_str(&a.out).map_err(|e| Why::Malformed(format!("no JSON answer ({e}; exit {}, '{}')", a.exit, a.out.trim_end())))?;
+    let want = code(&value);
+    if a.exit == want { Ok(value) } else { Err(Why::Malformed(format!("an answer that goes with exit {want}, with exit {} ('{}')", a.exit, a.out.trim_end()))) }
+}
+
 /// A program's path on the machine's PATH.
 pub(super) fn which(m: &dyn Machine, name: &str) -> Option<std::path::PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ""] } else { &[""] };

@@ -15,7 +15,7 @@ fn the_role_is_declared() {
     {
         let hosts = "hub = \"h\"\n[host.h]\ndaemon = true\n[host.d]\ndaemon = true\n[host.f]\nfrontend = true\n[host.df]\ndaemon = true\nfrontend = true\n[host.s]\n";
         let topo = sot_topology::parse(hosts).unwrap();
-        let table = sot_topology::parse_status(&sot_topology::status_table(&topo)).unwrap();
+        let table = sot_topology::status_rows(&topo);
         let pinned = sot_topology::sotd_hosts(&topo);
         for h in ["h", "d", "f", "df", "s"] {
             let role = from_status(&table, h).unwrap();

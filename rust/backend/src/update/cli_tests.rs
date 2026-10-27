@@ -339,10 +339,6 @@ fn direction_over_an_unreadable_record_reads_the_version_text_or_says_unknown() 
     assert_eq!(direction_cli(&["--prefix".into(), dir.path().display().to_string(), "v0.6.6".into()]), 0);
 }
 
-fn repls_code(work: &Repls) -> i32 {
-    print_repls(work).0
-}
-
 #[test]
 fn a_live_repl_is_one_the_daemon_says_is_ready() {
     let reply = serde_json::json!({ "pluto_server_up": false, "workspaces": [
@@ -398,44 +394,11 @@ fn a_reply_with_no_rows_is_not_an_answer() {
     assert!(live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": "yes" })).unsure.is_some(), "a flag that is no bool is no answer");
 }
 
-/// The answer has one reader, `parse_repls`, and it reads back every answer `print_repls` gives (labels with spaces,
-/// one of only a space, the Pluto server, a partial answer); what `print_repls` cannot give is refused: exit 0 with an
-/// error on stderr is not "nothing live".
-#[test]
-fn parse_repls_reads_back_every_answer_print_repls_gives() {
-    for work in [
-        Repls::default(),
-        Repls { rows: vec!["Rig PC".into(), " ".into(), "scan".into()], pluto: false, unsure: None },
-        Repls { rows: vec![], pluto: true, unsure: None },
-        Repls { rows: vec!["pluto server".into()], pluto: true, unsure: None },
-        Repls { rows: vec!["Rig PC".into()], pluto: false, unsure: Some("the daemon's reply says nothing of its Pluto server".into()) },
-        Repls { rows: vec![], pluto: false, unsure: Some("unix:/run/user dir/sot.sock: connection refused".into()) },
-    ] {
-        let (c, out, err) = print_repls(&work);
-        assert_eq!(parse_repls(c, &out, &err), Ok(work));
-    }
-    for (c, out, err) in [
-        (0, "", "sotd update repls: the daemon cannot be asked\n"),
-        (0, "repl a\n", ""),
-        (3, "", ""),
-        (3, "repl a\n", "noise\n"),
-        (3, "garbage\n", ""),
-        (3, "repl \n", ""),
-        (3, "pluto server\nrepl a\n", ""),
-        (3, "pluto server\npluto server\n", ""),
-        (3, "repl a", ""),
-        (1, "", ""),
-        (1, "", "sotd update repls:  \n"),
-        (2, "", "usage\n"),
-    ] {
-        assert!(parse_repls(c, out, err).is_err(), "exit {c} {out:?} {err:?}");
-    }
-}
-
 #[test]
 fn repls_takes_one_endpoint_and_a_daemon_that_does_not_answer_is_exit_1() {
-    assert_eq!(parse_repls_args(&argv("--endpoint unix:/x")), Ok("unix:/x".to_string()));
-    for bad in ["", "--endpoint", "--endpoint /x", "unix:/x", "--endpoint unix:/x y"] {
+    assert_eq!(parse_repls_args(&argv("--endpoint unix:/x")), Ok(("unix:/x".to_string(), false)));
+    assert_eq!(parse_repls_args(&argv("--endpoint unix:/x --json")), Ok(("unix:/x".to_string(), true)));
+    for bad in ["", "--endpoint", "--endpoint /x", "unix:/x", "--endpoint unix:/x y", "--json --endpoint unix:/x"] {
         assert!(parse_repls_args(&argv(bad)).is_err(), "{bad:?}");
         assert_eq!(repls_cli(&argv(bad)), 2, "{bad:?}");
     }

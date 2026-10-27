@@ -105,34 +105,3 @@ fn same_version_of_another_version_under_a_lease_exits_4() {
     assert_eq!(code, OTHER_LEASED);
 }
 
-/// The answer has one reader, `parse`, and it reads back every answer `print` gives; what `print` cannot give (exit 0
-/// with an error, exit 0 with a line, exit 3 with two lines or none, a blank version, exit 2 with no reason, another
-/// exit) is refused.
-#[test]
-fn parse_reads_back_every_answer_print_gives() {
-    for answer in [
-        Answer::Same,
-        Answer::Other("0.6.9".into()),
-        Answer::OtherHeld("0.7.0-dev+abc1234".into()),
-        Answer::Other("a version it does not name".into()),
-        Answer::Untold("unix:/run/user dir/sot.sock: connection refused".into()),
-    ] {
-        let p = print(&answer);
-        assert_eq!(parse(p.code, &p.out, &p.err), Ok(answer));
-    }
-    for (code, out, err) in [
-        (0, "", "sotd same-version: no hello\n"),
-        (0, "0.6.9\n", ""),
-        (3, "", ""),
-        (3, "0.6.9\nmore\n", ""),
-        (3, "  \n", ""),
-        (4, "0.6.9", ""),
-        (2, "", ""),
-        (2, "", "sotd same-version:  \n"),
-        (2, "", "another program's line\n"),
-        (1, "", "sotd same-version: old\n"),
-        (9, "", ""),
-    ] {
-        assert!(parse(code, out, err).is_err(), "exit {code} {out:?} {err:?}");
-    }
-}

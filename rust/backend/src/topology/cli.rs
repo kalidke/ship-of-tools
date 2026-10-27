@@ -3,6 +3,8 @@
 //! parser). A pure query arm of `main` (no startup side effects). Output is
 //! line-oriented so a shell or PowerShell launcher reads it with `split`;
 //! the `plan` line set is documented on `topology::plan` and nowhere else.
+//! `plan` and `status` also answer `--json`: one [`Answer`] on stdout, the
+//! installer's one reading of them.
 
 use super::relay_units::{apply, pin_daemon, refresh_cmd};
 use sot_topology::{self as topology, Topology};
@@ -10,15 +12,19 @@ use sot_topology::{self as topology, Topology};
 pub(crate) const USAGE: &str = "\
 Usage: sotd topology <subcommand>
 
-  plan [--self <host>]  this box's derived facts, one per line: self, hub,
+  plan [--self <host>] [--json]
+                        this box's derived facts, one per line: self, hub,
                         relay-endpoint, dial <host> <endpoint> (every daemon
                         host — unix:/pipe: for itself and, on the hub, for
                         any other host; ssh:<hub> or ssh:<hub>/<host>
                         everywhere else)
-  status                the declared table (HOST DECLARED), plus a
+  status [--json]       the declared table (HOST DECLARED), plus a
                         \"cache diverged\" line when this box's file hash
                         disagrees with the hub's (skipped ON the hub, and
-                        best-effort — silent if the hub can't be reached)
+                        best-effort — silent if the hub can't be reached);
+                        --json prints plan's or status's answer as one JSON
+                        value (the installer's reading), exit 2 for no
+                        hosts.toml or a refusal
   relay-endpoint        where this box's comm relay sends go
   relay-sockets         hub only: `<host> <path>` for each host the hub
                         serves a socket for (every daemon host but the hub
@@ -82,14 +88,22 @@ The file: $SOT_HOSTS, else <config dir>/hosts.toml (~/.config/sot).";
 pub fn run(args: &[String]) -> i32 {
     let sub = args.first().map(String::as_str).unwrap_or("");
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let json = args.iter().any(|a| a == "--json");
     match sub {
+        "plan" if json => print_answer(&answer(|t| {
+            let me = match flag("--self") { Some(h) => Ok(h), None => self_host() };
+            me.and_then(|me| topology::plan_of(t, &me))
+        })),
         "plan" => with_topology(|t| {
             let me = match flag("--self") { Some(h) => Ok(h), None => self_host() };
             me.and_then(|me| topology::plan(t, &me)).map(|s| print!("{s}"))
         }),
+        "status" if json => print_answer(&answer(|t| Ok(topology::status_rows(t).into_iter().chain(cache_divergence(t)).collect::<Vec<_>>()))),
         "status" => with_topology(|t| {
             print!("{}", topology::status_table(t));
-            report_cache_divergence(t);
+            if let Some(row) = cache_divergence(t) {
+                println!("{}", topology::status_line(&row));
+            }
             Ok(())
         }),
         // NOT `with_topology`: the rule (isolation-plan.md §3 C10's
@@ -130,7 +144,7 @@ fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
         Ok(Some(x)) => x,
         Ok(None) => {
             let looked = topology::locate().map(|p| p.display().to_string()).unwrap_or_default();
-            return report(Err(format!("{NO_HOSTS}{looked} (run `sotd topology sync --hub <alias>`)")));
+            return report(Err(format!("no hosts.toml at {looked} (run `sotd topology sync --hub <alias>`)")));
         }
         Err(e) => return report(Err(e)),
     };
@@ -158,25 +172,51 @@ fn report(r: Result<(), String>) -> i32 {
     match r {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("{}", refusal_line(&e));
+            eprintln!("sotd topology: {e}");
             2
         }
     }
 }
 
-/// How a verb's refusal begins on stderr (exit 2), and how the one with no hosts.toml continues.
-const REFUSED: &str = "sotd topology: ";
-const NO_HOSTS: &str = "no hosts.toml at ";
-
-fn refusal_line(why: &str) -> String {
-    format!("{REFUSED}{why}")
+/// What `sotd topology plan --json` and `status --json` answer, one JSON value on stdout: the value, or no hosts.toml
+/// (where it was looked for), or a refusal (why). The installer deserializes this same type.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Answer<T> {
+    Answer(T),
+    NoHosts(String),
+    Refused(String),
 }
 
-/// A verb's refusal read back (the installer's one reader of it): exit 2 and its `sotd topology: <why>` line, and
-/// whether it is the refusal for a missing hosts.toml. `None` for any other answer.
-pub(crate) fn refusal(code: i32, err: &str) -> Option<(String, bool)> {
-    let why = err.lines().rev().find_map(|l| l.strip_prefix(REFUSED)).filter(|w| code == 2 && !w.trim().is_empty())?;
-    Some((why.to_string(), why.starts_with(NO_HOSTS)))
+impl<T> Answer<T> {
+    /// The exit code that goes with the answer: 0 for a value, 2 for no hosts.toml or a refusal.
+    pub(crate) fn code(&self) -> i32 {
+        match self {
+            Self::Answer(_) => 0,
+            Self::NoHosts(_) | Self::Refused(_) => 2,
+        }
+    }
+}
+
+/// The answer `f` gives on the loaded hosts.toml.
+fn answer<T>(f: impl FnOnce(&Topology) -> Result<T, String>) -> Answer<T> {
+    match topology::load() {
+        Ok(Some((_, t))) => f(&t).map_or_else(Answer::Refused, Answer::Answer),
+        Ok(None) => Answer::NoHosts(topology::locate().map(|p| p.display().to_string()).unwrap_or_default()),
+        Err(e) => Answer::Refused(e),
+    }
+}
+
+/// An answer as `--json` gives it: its exit code and its one line of stdout.
+pub(crate) fn json<T: serde::Serialize>(answer: &Answer<T>) -> (i32, String) {
+    let line = serde_json::to_string(answer).unwrap_or_else(|e| format!("{{\"refused\":\"the answer could not be written: {e}\"}}"));
+    (answer.code(), format!("{line}\n"))
+}
+
+fn print_answer<T: serde::Serialize>(answer: &Answer<T>) -> i32 {
+    let (code, out) = json(answer);
+    print!("{out}");
+    code
 }
 
 /// The longest `topology set` waits on the hub's daemon, and its local running-rows check on this box's own.
@@ -359,24 +399,17 @@ fn local_has_running_rows(me: &str) -> bool {
 /// file IS the canonical copy, trivially current); best-effort elsewhere —
 /// a hub that can't be reached prints nothing rather than an error, since
 /// `status` is meant to work offline too.
-fn report_cache_divergence(topo: &Topology) {
-    let Ok(me) = self_host() else { return };
+fn cache_divergence(topo: &Topology) -> Option<topology::StatusRow> {
+    let me = self_host().ok()?;
     if self_is_hub(&me, &topo.hub) {
-        return;
+        return None;
     }
-    let Some(path) = topology::locate() else { return };
-    let Ok(local_text) = std::fs::read_to_string(&path) else { return };
+    let local_text = std::fs::read_to_string(topology::locate()?).ok()?;
     let local_hash = topology::hash_text(&local_text);
     let endpoint = hub_endpoint(topo, &me);
-    let Ok(res) = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), super::status::PROBE_TIMEOUT) else {
-        return;
-    };
-    let Some(hub_hash) = res.get("daemon").and_then(|d| d.get("hosts_toml_hash")).and_then(|v| v.as_str()) else {
-        return;
-    };
-    if !hub_hash.is_empty() && hub_hash != local_hash {
-        println!("{}", topology::status_line(&topology::StatusRow::Diverged { local: local_hash, hub: hub_hash.to_string() }));
-    }
+    let res = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), super::status::PROBE_TIMEOUT).ok()?;
+    let hub_hash = res.get("daemon").and_then(|d| d.get("hosts_toml_hash")).and_then(|v| v.as_str())?;
+    (!hub_hash.is_empty() && hub_hash != local_hash).then(|| topology::StatusRow::Diverged { local: local_hash, hub: hub_hash.to_string() })
 }
 
 /// Parse `sotd topology set <words...>` into one [`topology::TopologyEdit`]

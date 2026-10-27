@@ -227,12 +227,8 @@ pub fn parse(text: &str) -> Result<Topology, String> {
 }
 
 /// A `[monitor]` target (an empty one is its label) becomes an argument of ssh, which reads one that begins with `-` as an option (`-oProxyCommand=...`
-/// runs a command on this box). One of only spaces names nothing. Anything else is allowed: it may be an alias or `user@host`,
-/// and ssh gets it as one argument.
+/// runs a command on this box). Anything else is allowed: it may be an alias or `user@host`, and ssh gets it as one argument.
 fn check_monitor_target(target: &str) -> Result<(), String> {
-    if !target.is_empty() && target.trim().is_empty() {
-        return Err("a monitor target of only spaces names no ssh target".to_string());
-    }
     match target.starts_with('-') {
         true => Err(format!("monitor target `{target}` would be read by ssh as an ssh option")),
         false => Ok(()),
@@ -376,9 +372,9 @@ pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
     plan_of(topo, self_host).map(|p| print_plan(&p))
 }
 
-/// What `sotd topology plan --self <host>` says, as a value: [`plan`] prints it with [`print_plan`], and
-/// [`parse_plan`], the one reader of that text (the installer's included), reads it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What `sotd topology plan --self <host>` says, as a value: [`plan`] prints it as text with [`print_plan`] (the
+/// launchers' lines), and `sotd topology plan --json` prints it as one JSON value, the installer's one reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
     pub self_host: String,
     pub hub: String,
@@ -404,32 +400,6 @@ pub fn print_plan(p: &Plan) -> String {
         out.push_str(&format!("dial {name} {endpoint}\n"));
     }
     out
-}
-
-/// [`print_plan`]'s text read back: exactly one `self`, `hub` and `relay-endpoint` line and any `dial` lines, each host
-/// a plain host name and each endpoint the rest of its line, neither empty nor only spaces; a line whose first word
-/// is another is ignored (a later release's fact). Anything else is refused, naming the line.
-pub fn parse_plan(text: &str) -> Result<Plan, String> {
-    let (mut self_host, mut hub, mut relay, mut dials) = (None, None, None, Vec::new());
-    let host = |line: &str, h: &str| if endpoint::is_plain_host_name(h) { Ok(h.to_string()) } else { Err(format!("`{line}`: `{h}` is not a plain host name")) };
-    let value = |line: &str, v: &str| if v.trim().is_empty() { Err(format!("`{line}` has no value")) } else { Ok(v.to_string()) };
-    let once = |slot: &mut Option<String>, line: &str, v: String| if slot.replace(v).is_some() { Err(format!("`{line}` is given twice")) } else { Ok(()) };
-    for line in text.lines() {
-        let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
-        match word {
-            "self" => once(&mut self_host, line, host(line, rest)?)?,
-            "hub" => once(&mut hub, line, host(line, rest)?)?,
-            "relay-endpoint" => once(&mut relay, line, value(line, rest)?)?,
-            "dial" => {
-                let (h, e) = rest.split_once(' ').ok_or_else(|| format!("`{line}` names no endpoint"))?;
-                dials.push((host(line, h)?, value(line, e)?));
-            }
-            "" => return Err("an empty line".to_string()),
-            _ => {}
-        }
-    }
-    let missing = |what: &str| format!("no `{what}` line");
-    Ok(Plan { self_host: self_host.ok_or_else(|| missing("self"))?, hub: hub.ok_or_else(|| missing("hub"))?, relay_endpoint: relay.ok_or_else(|| missing("relay-endpoint"))?, dials })
 }
 
 /// Every "dialable" host — every box declaring `daemon` — in file order.
@@ -685,9 +655,10 @@ fn words(hub: bool, daemon: bool, frontend: bool, sampled: bool) -> Vec<&'static
     words
 }
 
-/// One line of `sotd topology status` after its `HOST DECLARED` header: [`status_line`] prints it and
-/// [`parse_status`], the one reader of the table (the installer's included), reads it back.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One row of `sotd topology status`: [`status_line`] prints it as a line of the text table, and `sotd topology status
+/// --json` prints the rows as one JSON value, the installer's one reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StatusRow {
     /// A listed host and its declared words.
     Host { name: String, hub: bool, daemon: bool, frontend: bool, sampled: bool },
@@ -742,37 +713,4 @@ pub fn status_table(topo: &Topology) -> String {
         out.push('\n');
     }
     out
-}
-
-/// A `sotd topology status` table read back: its `HOST DECLARED` header, then lines [`status_line`] can print. A
-/// host's words are exactly the ones [`declared_words`] would give (`hub` only with `daemon`, `shell` alone, `sampled`
-/// last), so `me sampled`, `me shell,daemon` and a reordering are refused; a value that is only spaces is refused.
-/// Limit: a monitor label that itself holds ` monitor-only ` is read at its first one.
-pub fn parse_status(text: &str) -> Result<Vec<StatusRow>, String> {
-    let mut lines = text.lines();
-    if lines.next() != Some("HOST DECLARED") {
-        return Err("no `HOST DECLARED` header".to_string());
-    }
-    lines.map(|line| status_row(line).ok_or_else(|| format!("`{line}` is not a status line"))).collect()
-}
-
-fn status_row(line: &str) -> Option<StatusRow> {
-    let blank = |v: &str| !v.is_empty() && v.trim().is_empty();
-    if let Some(w) = line.strip_prefix("WARNING ") {
-        return (!w.trim().is_empty()).then(|| StatusRow::Warning(w.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("cache diverged: this box's hosts.toml (") {
-        let (local, rest) = rest.split_once(") != the hub's (")?;
-        let hub = rest.strip_suffix("); run `sotd topology sync`")?;
-        return (!local.trim().is_empty() && !hub.trim().is_empty()).then(|| StatusRow::Diverged { local: local.to_string(), hub: hub.to_string() });
-    }
-    if let Some((label, target)) = line.split_once(" monitor-only ") {
-        return (!blank(label) && !blank(target)).then(|| StatusRow::MonitorOnly { label: label.to_string(), target: target.to_string() });
-    }
-    let (name, declared) = line.split_once(' ')?;
-    let declared: Vec<&str> = declared.split(',').collect();
-    let has = |w: &str| declared.contains(&w);
-    let (hub, daemon, frontend, sampled) = (has("hub"), has("daemon"), has("frontend"), has("sampled"));
-    let printed = words(hub, daemon, frontend, sampled);
-    (endpoint::is_plain_host_name(name) && (daemon || !hub) && printed == declared).then(|| StatusRow::Host { name: name.to_string(), hub, daemon, frontend, sampled })
 }

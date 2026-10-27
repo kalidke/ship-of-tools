@@ -133,16 +133,10 @@ fn a_live_daemon_is_asked_before_it_ends() {
     let (st, why) = state_of(told(), &|_| panic!("no listing starts past the deadline"), Duration::ZERO, Duration::from_secs(30));
     assert!(st == State::Unknown && why.starts_with("`the process listing` did not answer within 30 s; "), "{why}");
 
-    // The answer is read by `update repls`' one parser, whose own suite reads back every answer it prints.
-    let answer = |exit: i32, out: &str, err: &str| super::super::observe::Answer { exit, out: out.into(), err: err.into() };
-    let w = work_of(&answer(3, "repl alpha\nrepl beta\npluto server\n", "")).unwrap();
-    assert_eq!(w, Work { rows: vec!["alpha".into(), "beta".into()], pluto: true, unsure: None });
-    assert_eq!(work_of(&answer(0, "", "")).unwrap(), Work::default());
-    for (exit, out, err) in [(3, "", ""), (3, "garbage\n", ""), (0, "repl alpha\n", ""), (0, "", "sotd update repls: no daemon\n"), (2, "", "")] {
-        assert!(matches!(work_of(&answer(exit, out, err)), Err(Why::Malformed(_))), "exit {exit} {out:?} {err:?} is no reading of live work");
-    }
-    let w = work_of(&answer(1, "repl alpha\n", "sotd update repls: the daemon's reply says nothing of its Pluto server\n")).unwrap();
-    assert_eq!((w.rows.len(), w.unsure.as_deref()), (1, Some("the daemon's reply says nothing of its Pluto server")));
+    // The live work is `update repls --json`'s answer (every_answer_the_daemon_subcommands_print_reads_back_equal).
+    let answer = |(exit, out): (i32, String)| super::super::observe::Answer { exit, out, err: String::new() };
+    let live = Work { rows: vec!["alpha".into(), "beta".into()], pluto: true, unsure: None };
+    assert_eq!(work_of(&answer(crate::update::cli::repls_json(&live))), Ok(live));
 
     assert_eq!(child_kind("/j/julia --project=/c/julia/repl -e using ShipToolsRepl; ShipToolsRepl.run_shim()"), Some("repl"));
     assert_eq!(child_kind("/j/julia --project=/c/julia/pluto /c/julia/pluto/start.jl 1234"), Some("pluto"));
@@ -357,4 +351,40 @@ fn one_ask_in_a_wait_keeps_the_ask_bound() {
     assert_eq!(ask_slice(Duration::from_secs(1800)), observe::ASK_BOUND);
     assert_eq!(ask_slice(Duration::from_secs(7)), Duration::from_secs(7));
     assert_eq!(ask_slice(Duration::ZERO), Duration::from_millis(1));
+}
+
+/// Each answer our own daemon subcommands give the installer reads back equal, by construction: the printer's `--json`
+/// line, through the installer's own reader, is the value printed, whatever its text holds (line breaks, a line-like
+/// start, spaces, nothing); an answer that is no JSON, or whose exit is not its value's, does not read.
+#[test]
+fn every_answer_the_daemon_subcommands_print_reads_back_equal() {
+    use crate::topology::same_version::{json_answer, Answer};
+    use crate::update::cli::repls_json;
+    let as_asked = |(exit, out): (i32, String)| super::super::observe::Answer { exit, out, err: String::new() };
+    for said in [
+        Answer::Same,
+        Answer::Other("0.6.9".into()),
+        Answer::Other("0.6.9\nrepl a".into()),
+        Answer::OtherHeld("  ".into()),
+        Answer::Untold("unix:/run/a\nb.sock: hello refused: first line\nsecond line".into()),
+        Answer::Untold(String::new()),
+    ] {
+        assert_eq!(said_of(&as_asked(json_answer(&said))), Ok(said));
+    }
+    for work in [
+        Work::default(),
+        Work { rows: vec!["Rig PC".into(), " ".into(), String::new(), "pluto server".into(), "a\nrepl b".into()], pluto: true, unsure: None },
+        Work { rows: vec!["Rig PC".into()], pluto: false, unsure: Some("the daemon answered without a workspace list: line one\nline two".into()) },
+        Work { rows: vec![], pluto: true, unsure: None },
+    ] {
+        assert_eq!(work_of(&as_asked(repls_json(&work))), Ok(work));
+    }
+    let (_, line) = json_answer(&Answer::Same);
+    for (exit, out) in [(3, line.clone()), (0, String::new()), (0, "0.6.9\n".to_string()), (2, "sotd same-version: no hello\n".to_string())] {
+        assert!(matches!(said_of(&as_asked((exit, out.clone()))), Err(Why::Malformed(_))), "exit {exit} {out:?}");
+    }
+    let (_, line) = repls_json(&Work { rows: vec!["a".into()], ..Work::default() });
+    for (exit, out) in [(0, line), (3, "repl a\n".to_string()), (0, String::new())] {
+        assert!(matches!(work_of(&as_asked((exit, out.clone()))), Err(Why::Malformed(_))), "exit {exit} {out:?}");
+    }
 }

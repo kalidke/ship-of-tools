@@ -3,7 +3,7 @@
 //! process of their own, since the verdict's step and tail are the process's.
 
 use super::*;
-use crate::install::observe::tests::{says, says_err, stall_after, tree, Canned, Fake};
+use crate::install::observe::tests::{repls, same_version, says, stall_after, tree, Canned, Fake};
 
 const CUT: &str = "did not answer within";
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -20,8 +20,8 @@ fn computer(root: &Path) -> Fake {
     std::fs::create_dir_all(root.join("logs")).unwrap();
     let fake = Fake::new(Env::empty().with("USERPROFILE", root.join("home")).with("LOCALAPPDATA", root.join("local")).with("SOT_INSTALL_DAEMON_WAIT_S", "2"));
     fake.answer("Win32_Process", says(0, LISTING))
-        .answer("same-version", says_err(2, "sotd same-version: no hello"))
-        .answer("update repls", says(0, ""))
+        .answer("same-version", same_version(crate::topology::same_version::Answer::Untold("no hello".into())))
+        .answer("update repls", repls(crate::update::cli::Repls::default()))
         .answer("update stage", says(0, "staged"))
         .answer("GetCurrentProcess().SessionId", says(0, "2\n"))
         .answer("cat-file -e", says(0, ""))
@@ -272,12 +272,19 @@ fn a_cut_question_before_a_windows_run_writes_stops_it() {
         std::fs::write(r.join("prefix\\install.json"), "{\n  \"version\": \"0.7.0-dev+abcdef1\"\n}\n").unwrap();
         f.set_env("SOT_INSTALL_IMPLICIT", "1");
     };
+    let build_listed: Setup = |f, r| {
+        std::fs::write(r.join("prefix\\install.json"), "{\n  \"version\": \"0.7.0-dev+abcdef1\"\n}\n").unwrap();
+        f.set_env("SOT_INSTALL_IMPLICIT", "1");
+        f.answer("rev-list --all", says(0, &format!("{COMMIT}\nabcdef1{}\n", "0".repeat(33))));
+    };
     for (name, setup, pattern, check, code) in [
+        ("the pack's own sotd", none, "pack\\sot-0.7.0-windows-x86_64\\sotd.exe --version", "fetch", 1),
         ("the pack's own sot", none, "pack\\sot-0.7.0-windows-x86_64\\sot.exe --version", "fetch", 1),
         ("the daemon's endpoint", none, "session-socket-path", "fetch", 1),
         ("installed sotd, implicit", installed, "prefix\\bin\\sotd.exe --version", "direction", 2),
         ("direction, implicit", recorded_implicit, "update direction", "direction", 2),
         ("a build of the line", build, "rev-list --all", "target", 2),
+        ("a build of the line, merge-base", build_listed, "merge-base --is-ancestor", "target", 2),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let (fake, opts) = machine(dir.path());

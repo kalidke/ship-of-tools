@@ -59,14 +59,14 @@ Usage: sotd update direction <version> --prefix <install prefix> [--installed <v
   (or is absent).
   Starts no daemon and writes nothing.
 
-Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH>
+Usage: sotd update repls --endpoint <unix:PATH|pipe:PATH> [--json]
 
   What would a restart of the daemon answering there end? A live REPL (the row's `repl_state` is `ready`: a Julia
   process holding the row's variables) or the Pluto server, when it is running (every notebook open in it ends with
   it). Asks the daemon's `workspace.list`; starts nothing and writes nothing. Prints nothing and exits 0 when there is
   none; prints one line each, `repl <row label>` or `pluto server`, and exits 3 when there are some; exits 1, naming
   why on stderr, when the daemon cannot be asked or cannot say whether its Pluto server is running (the `repl` lines
-  it could read are printed first).";
+  it could read are printed first). With --json the answer is one JSON value on stdout, with the same exit codes.";
 
 /// `sotd update stage <folder> --prefix <prefix>`: the folder and prefix, or the reason the arguments are not those.
 fn parse_stage_args(args: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
@@ -366,9 +366,9 @@ fn live_work(reply: &serde_json::Value) -> Repls {
     Repls { rows, pluto, unsure }
 }
 
-/// What `sotd update repls` answers, as a value: [`print_repls`] writes it as an exit code and two streams, and
-/// [`parse_repls`], the one reader of that answer (the installer's included), reads it back.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What `sotd update repls` answers, as a value: [`print_repls`] writes it as text (an exit code and two streams), and
+/// [`repls_json`] as one JSON value (the installer's one reading, which deserializes this same type).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Repls {
     /// The labels of the rows with a live REPL.
     pub rows: Vec<String>,
@@ -386,51 +386,41 @@ pub(crate) fn print_repls(work: &Repls) -> (i32, String, String) {
     if work.pluto {
         out.push_str("pluto server\n");
     }
+    let err = work.unsure.as_ref().map_or_else(String::new, |why| format!("sotd update repls: {why}\n"));
+    (repls_code(work), out, err)
+}
+
+/// The exit code that goes with an answer: 1 when the daemon could not say all of it, else 0 for nothing live and
+/// `REPLS_LIVE` for something.
+pub(crate) fn repls_code(work: &Repls) -> i32 {
     match &work.unsure {
-        Some(why) => (1, out, format!("sotd update repls: {why}\n")),
-        None if out.is_empty() => (0, out, String::new()),
-        None => (REPLS_LIVE, out, String::new()),
+        Some(_) => 1,
+        None if work.rows.is_empty() && !work.pluto => 0,
+        None => REPLS_LIVE,
     }
 }
 
-/// [`print_repls`]'s answer read back. Anything it cannot give is refused, saying what was read: exit 0 with a line or
-/// a stderr line (an error is not "nothing live"), exit 3 with no line or a stderr line, a line that is neither `repl
-/// <label>` nor a last `pluto server`, exit 1 with no reason, another exit.
-pub(crate) fn parse_repls(code: i32, out: &str, err: &str) -> Result<Repls, String> {
-    let refused = || format!("no answer of sotd update repls (exit {code}, stdout '{}', stderr '{}')", out.trim_end(), err.trim_end());
-    if !out.is_empty() && !out.ends_with('\n') {
-        return Err(refused());
-    }
-    let mut work = Repls::default();
-    for line in out.lines() {
-        match line.strip_prefix("repl ") {
-            Some(label) if !label.is_empty() && !work.pluto => work.rows.push(label.to_string()),
-            _ if line == "pluto server" && !work.pluto => work.pluto = true,
-            _ => return Err(refused()),
-        }
-    }
-    let reason = || err.strip_suffix('\n').filter(|l| !l.contains('\n')).and_then(|l| l.strip_prefix("sotd update repls: ")).filter(|w| !w.trim().is_empty());
-    match code {
-        0 if out.is_empty() && err.is_empty() => Ok(work),
-        REPLS_LIVE if !out.is_empty() && err.is_empty() => Ok(work),
-        1 => reason().map(|why| Repls { unsure: Some(why.to_string()), ..work }).ok_or_else(refused),
-        _ => Err(refused()),
-    }
+/// An answer as `--json` gives it: its exit code and its one line of stdout.
+pub(crate) fn repls_json(work: &Repls) -> (i32, String) {
+    let line = serde_json::to_string(work).unwrap_or_else(|e| format!("{{\"rows\":[],\"pluto\":false,\"unsure\":\"the answer could not be written: {e}\"}}"));
+    (repls_code(work), format!("{line}\n"))
 }
 
-/// `--endpoint <unix:PATH|pipe:PATH>`, or the reason the arguments are not that.
-fn parse_repls_args(args: &[String]) -> Result<String, String> {
+/// `--endpoint <unix:PATH|pipe:PATH>` and whether `--json` follows, or the reason the arguments are not that.
+fn parse_repls_args(args: &[String]) -> Result<(String, bool), String> {
+    let endpoint = |ep: &String| ep.starts_with("unix:") || ep.starts_with("pipe:");
     match args {
-        [flag, ep] if flag == "--endpoint" && (ep.starts_with("unix:") || ep.starts_with("pipe:")) => Ok(ep.clone()),
-        _ => Err("expected --endpoint <unix:PATH|pipe:PATH>".into()),
+        [flag, ep] if flag == "--endpoint" && endpoint(ep) => Ok((ep.clone(), false)),
+        [flag, ep, json] if flag == "--endpoint" && json == "--json" && endpoint(ep) => Ok((ep.clone(), true)),
+        _ => Err("expected --endpoint <unix:PATH|pipe:PATH> [--json]".into()),
     }
 }
 
 /// `sotd update repls ...`: 0 (none live), `REPLS_LIVE` (the `repl` and `pluto` lines on stdout), 1 (the daemon cannot be
 /// asked) or 2 (bad arguments).
 fn repls_cli(args: &[String]) -> i32 {
-    let endpoint = match parse_repls_args(args) {
-        Ok(ep) => ep,
+    let (endpoint, json) = match parse_repls_args(args) {
+        Ok(asked) => asked,
         Err(why) => {
             eprintln!("sotd update: {why}\n{USAGE}");
             return 2;
@@ -443,6 +433,11 @@ fn repls_cli(args: &[String]) -> i32 {
         Ok(reply) => live_work(&reply),
         Err(why) => Repls { unsure: Some(why.replace('\n', " ")), ..Repls::default() },
     };
+    if json {
+        let (code, out) = repls_json(&work);
+        print!("{out}");
+        return code;
+    }
     let (code, out, err) = print_repls(&work);
     print!("{out}");
     eprint!("{err}");

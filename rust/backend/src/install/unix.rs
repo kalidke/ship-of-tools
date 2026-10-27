@@ -221,9 +221,9 @@ fn running_here(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Result<(bool, boo
     Ok((!procs::daemon_pids(&all, prefix).is_empty(), procs::window_runs(&all, prefix)))
 }
 
-/// What `sotd topology status` says: its table, read by topology's one parser; no hosts.toml; or a hosts.toml it
-/// cannot read (why), the CLI's refusal read by its one reader. Any other answer, or a table the parser refuses, is
-/// unknown.
+/// What `sotd topology status` says: its table, no hosts.toml, or a hosts.toml it cannot read (why), as `--json`'s
+/// one value of the CLI's own type (`topology::cli::Answer`). An answer that does not deserialize, or whose exit is
+/// not its value's, is unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Topo {
     Table(Vec<sot_topology::StatusRow>),
@@ -232,26 +232,32 @@ enum Topo {
 }
 
 fn topology_status(m: &dyn Machine, sotd: &Path) -> Fact<Topo> {
-    observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
-        (0, _) => sot_topology::parse_status(&a.out).map(Topo::Table).map_err(Why::Malformed),
-        (_, Some((_, true))) => Ok(Topo::Missing),
-        (_, Some((why, false))) => Ok(Topo::Unreadable(why)),
-        _ => Err(a.failed()),
+    observe::ask(m, Command::new(sotd).args(["topology", "status", "--json"]), ASK_BOUND, status_of)
+}
+
+fn status_of(a: &observe::Answer) -> Result<Topo, Why> {
+    use crate::topology::cli::Answer;
+    observe::json(a, Answer::code).map(|answer| match answer {
+        Answer::Answer(rows) => Topo::Table(rows),
+        Answer::NoHosts(_) => Topo::Missing,
+        Answer::Refused(why) => Topo::Unreadable(why),
     })
 }
 
-/// `sotd topology plan --self <me>`, read by topology's one parser: the plan, `None` when there is no hosts.toml, or
-/// no answer (another exit, a plan the parser refuses, or one for another host).
+/// `sotd topology plan --self <me> --json`: the plan, `None` when there is no hosts.toml, or no answer (a refusal, an
+/// answer that does not deserialize, or a plan for another host).
 fn topology_plan(m: &dyn Machine, sotd: &Path, me: &str) -> Fact<Option<sot_topology::Plan>> {
-    observe::ask(m, Command::new(sotd).args(["topology", "plan", "--self", me]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
-        (0, _) => match sot_topology::parse_plan(&a.out) {
-            Ok(plan) if plan.self_host == me => Ok(Some(plan)),
-            Ok(plan) => Err(Why::Malformed(format!("a plan for {}, not {me}", plan.self_host))),
-            Err(why) => Err(Why::Malformed(why)),
-        },
-        (_, Some((_, true))) => Ok(None),
-        _ => Err(a.failed()),
-    })
+    observe::ask(m, Command::new(sotd).args(["topology", "plan", "--self", me, "--json"]), ASK_BOUND, |a| plan_of(a, me))
+}
+
+fn plan_of(a: &observe::Answer, me: &str) -> Result<Option<sot_topology::Plan>, Why> {
+    use crate::topology::cli::Answer;
+    match observe::json(a, Answer::<sot_topology::Plan>::code)? {
+        Answer::Answer(plan) if plan.self_host == me => Ok(Some(plan)),
+        Answer::Answer(plan) => Err(Why::Malformed(format!("a plan for {}, not {me}", plan.self_host))),
+        Answer::NoHosts(_) => Ok(None),
+        Answer::Refused(why) => Err(Why::Failed(format!("refused: {why}"))),
+    }
 }
 
 /// Whether the topology plan dials a daemon host other than this one (`me`); no hosts.toml is none.
@@ -544,8 +550,9 @@ fn unit_owner(m: &dyn Machine) -> Result<String, Stop> {
 
 /// The glibc this box runs, from an exit-0 `ldd --version`'s first line, which glibc's ldd prints as `ldd
 /// (<package version>) <version>` (glibc's `elf/ldd.bash.in`: `ldd (@PKGVERSION@) @VERSION@`): the parenthesis names
-/// glibc or GNU libc in any case (`GNU libc`, `Ubuntu GLIBC 2.35-0ubuntu3.8`), and the version is digits and dots. Any
-/// other first line (musl's ldd, another program) does not read, and the run stops naming what it read.
+/// glibc or GNU libc in any case (`GNU libc`, `Ubuntu GLIBC 2.35-0ubuntu3.8`), and the version is numbers joined by
+/// single dots. Any other first line (musl's ldd, another program) does not read, and the run stops naming what it
+/// read.
 fn glibc_version(m: &dyn Machine) -> Fact<(u32, u32)> {
     observe::ask(m, Command::new("ldd").arg("--version"), ASK_BOUND, |a| glibc_of(&a.zero()?.out).ok_or_else(|| Why::Malformed(format!("no glibc version ('{}')", a.first_line()))))
 }
@@ -553,7 +560,7 @@ fn glibc_version(m: &dyn Machine) -> Fact<(u32, u32)> {
 fn glibc_of(text: &str) -> Option<(u32, u32)> {
     let (package, version) = text.lines().next()?.trim_end().strip_prefix("ldd (")?.rsplit_once(") ")?;
     let names = package.to_ascii_lowercase();
-    if !(names.contains("glibc") || names.contains("gnu libc")) || version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+    if !(names.contains("glibc") || names.contains("gnu libc")) || !version.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())) {
         return None;
     }
     let mut parts = version.split('.');
@@ -1380,11 +1387,9 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
         } else if said.contains("does not list this box") {
             found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {} --frontend  (the sotd of its install), then run this installer again", plan.me, plan.me));
         } else {
-            // The plan is read by topology's one parser; a refusal (no hosts.toml, or one it cannot read) is the sync's.
-            let readable = observe::ask(m, Command::new(plan.sotd()).args(["topology", "plan", "--self", &plan.me]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
-                (0, _) => sot_topology::parse_plan(&a.out).map(|_| true).map_err(Why::Malformed),
-                (_, Some(_)) => Ok(false),
-                _ => Err(a.failed()),
+            // The plan's `--json` answer; no hosts.toml or a refusal says the sync left none it can read.
+            let readable = observe::ask(m, Command::new(plan.sotd()).args(["topology", "plan", "--self", &plan.me, "--json"]), ASK_BOUND, |a| {
+                observe::json(a, crate::topology::cli::Answer::<sot_topology::Plan>::code).map(|answer| matches!(answer, crate::topology::cli::Answer::Answer(_)))
             });
             let readable = readable.read(Some, |why| {
                 found.fail("enroll", format!("could not read the topology plan ({why})"));

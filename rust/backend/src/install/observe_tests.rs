@@ -30,6 +30,33 @@ pub(in crate::install) fn says(exit: i32, out: &str) -> Canned {
     Canned::Says(exit, out.into(), String::new())
 }
 
+/// One of our own subcommands' `--json` answers as its own printer gives it: the exit code and the one stdout line.
+pub(in crate::install) fn answers((code, out): (i32, String)) -> Canned {
+    Canned::Says(code, out, String::new())
+}
+
+/// `sotd topology status|plan --json`'s answer.
+#[cfg_attr(windows, allow(dead_code, reason = "the Unix tables ask the topology verbs"))]
+pub(in crate::install) fn topology<T: serde::Serialize>(answer: crate::topology::cli::Answer<T>) -> Canned {
+    answers(crate::topology::cli::json(&answer))
+}
+
+/// `sotd same-version --json`'s answer.
+pub(in crate::install) fn same_version(answer: crate::topology::same_version::Answer) -> Canned {
+    answers(crate::topology::same_version::json_answer(&answer))
+}
+
+/// `sotd update repls --json`'s answer.
+pub(in crate::install) fn repls(work: crate::update::cli::Repls) -> Canned {
+    answers(crate::update::cli::repls_json(&work))
+}
+
+/// A declared host's row of the status table.
+#[cfg_attr(windows, allow(dead_code, reason = "the Unix tables ask the topology verbs"))]
+pub(in crate::install) fn host(name: &str, hub: bool, daemon: bool, frontend: bool) -> sot_topology::StatusRow {
+    sot_topology::StatusRow::Host { name: name.into(), hub, daemon, frontend, sampled: false }
+}
+
 /// An answer on stderr, one line ending as a program's line does.
 pub(in crate::install) fn says_err(exit: i32, err: &str) -> Canned {
     Canned::Says(exit, String::new(), if err.is_empty() || err.ends_with('\n') { err.into() } else { format!("{err}\n") })
