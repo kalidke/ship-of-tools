@@ -76,7 +76,7 @@ impl Computer {
             .answer("same-version", same_version(Said::Untold("unix:/run/sot.sock: no hello".into())))
             .answer("update repls", repls(Repls::default()))
             .answer("update direction", says(0, "newer\n"))
-            .answer("--user cat sotd.service", says(0, &format!("[Service]\nExecStart={}/bin/sotd --label sot\n", root.join("prefix").display())));
+            .answer("show -p ExecStart", says(0, &shown_unit(&format!("{}/bin/sotd", root.join("prefix").display()))));
         Self { dir, fake, commit: commit.to_string() }
     }
 
@@ -173,6 +173,11 @@ fn row(name: &'static str, setup: fn(&Computer), cut: Cut, flags: &'static [&'st
 
 fn none(_: &Computer) {}
 
+/// `systemctl show -p ExecStart --value`'s record of the shipped unit rendered for `sotd`.
+fn shown_unit(sotd: &str) -> String {
+    format!("{{ path=/bin/bash ; argv[]=/bin/bash -c [ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"; exec \"{sotd}\" --project-root \"/h\" --label sot ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}\n")
+}
+
 /// A hosts.toml that declares this computer a frontend.
 fn declared(c: &Computer) {
     c.fake.answer("topology status", topology(Topology::Answer(vec![host("me", false, false, true)])));
@@ -228,7 +233,7 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         let mut found = Found::default();
         let plan = c.decide(&["--local"], &mut found).expect("a healthy computer decides");
         assert!(found.steps.is_empty() && found.checked.is_empty() && !plan.others, "{found:?}");
-        assert!(!c.fake.was_asked("is-active") && !c.fake.was_asked("--user cat"), "no unit file: the user manager is never asked: {:?}", c.fake.asked());
+        assert!(!c.fake.was_asked("is-active") && !c.fake.was_asked("show -p ExecStart"), "no unit file: the user manager is never asked: {:?}", c.fake.asked());
     }
     {
         // A declared frontend whose plan dials another daemon host gets the dialing launcher; one whose plan dials only
@@ -254,12 +259,13 @@ fn a_cut_question_in_decide_stops_before_any_write() {
             let units = c.root().join("home/.config/systemd/user");
             std::fs::create_dir_all(&units).unwrap();
             std::fs::write(units.join("sotd.service"), "[Service]\nExecStart=/other/bin/sotd --label sot\n").unwrap();
-            c.fake.answer("--user cat sotd.service", says(0, "[Service]\nExecStart=/other/bin/sotd --label sot\n"));
+            c.fake.answer("show -p ExecStart", says(0, &shown_unit("/other/bin/sotd")));
         };
         let c = Computer::new();
         other(&c);
         c.decide(&["--local", "--no-service"], &mut Found::default()).expect("an inactive unit of another install, left alone");
-        assert!(c.fake.was_asked("is-active") && c.fake.was_asked("--user cat"), "{:?}", c.fake.asked());
+        assert!(c.fake.was_asked("is-active") && c.fake.was_asked("show -p ExecStart"), "{:?}", c.fake.asked());
+        assert!(!c.fake.was_asked("--user cat"), "cat is no longer asked");
         let c = Computer::new();
         other(&c);
         let Err(stop) = c.decide(&["--local"], &mut Found::default()) else { panic!("a run that would write over another install's unit went on") };
@@ -280,11 +286,11 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         row("is-active", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local"], Then::Stop("gate", 1), true),
         row("is-active, --no-service", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local", "--no-service"], Then::Stop("gate", 1), true),
         Row { how: Canned::Missing, reason: "could not start", ..row("systemctl missing", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local", "--no-service"], Then::Stop("gate", 1), true) },
-        row("systemctl cat, active", |c| { c.unit_runs(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true),
-        row("systemctl cat, inactive", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--be-only", "--no-service"], Then::Stop("gate", 2), true),
-        Row { how: says(0, "[Unit]\n"), reason: "names no ExecStart", ..row("systemctl cat, unreadable", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
-        Row { how: says(0, "# /h/.config/systemd/user/sotd.service\n[Service]\nExecStart=/p/bin/sotd\n# /h/.config/systemd/user/sotd.service.d/x.conf\n[Service]\nExecStart=\nExecStart=/q/bin/sotd\n"), reason: "holds 3 ExecStart lines", ..row("systemctl cat, a drop-in replaces ExecStart", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
-        Row { how: says(0, "[Service]\nExecStart=/p/bin/sotd\"unterminated\n"), reason: "an unbalanced quote", ..row("systemctl cat, an unbalanced quote", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
+        row("systemctl show, active", |c| { c.unit_runs(); }, Cut::Line("show -p ExecStart"), &["--local"], Then::Stop("gate", 2), true),
+        row("systemctl show, inactive", |c| { c.unit_file(); }, Cut::Line("show -p ExecStart"), &["--be-only", "--no-service"], Then::Stop("gate", 2), true),
+        Row { how: says(0, ""), reason: "runs no command", ..row("systemctl show, no command", |c| { c.unit_file(); }, Cut::Line("show -p ExecStart"), &["--local"], Then::Stop("gate", 2), true) },
+        Row { how: says(0, "{ path=/p/bin/sotd ; argv[]=/p/bin/sotd ; ignore_errors=no ; pid=0 }\n{ path=/q/bin/sotd ; argv[]=/q/bin/sotd ; ignore_errors=no ; pid=0 }\n"), reason: "runs more than one command", ..row("systemctl show, a drop-in adds a command", |c| { c.unit_file(); }, Cut::Line("show -p ExecStart"), &["--local"], Then::Stop("gate", 2), true) },
+        Row { how: says(0, "{ path=/usr/bin/printf ; argv[]=/usr/bin/printf exec \"/p/bin/sotd\" ; ignore_errors=no ; pid=0 }\n"), reason: "as no shipped sotd.service does", ..row("systemctl show, printf naming sotd", |c| { c.unit_file(); }, Cut::Line("show -p ExecStart"), &["--local"], Then::Stop("gate", 2), true) },
         row("socket path", none, Cut::Line("session-socket-path"), &["--local"], Then::Stop("daemon", 1), false),
         row("ps", none, Cut::Line("ps -u"), &["--local"], Then::Stop("daemon", 1), false),
         row("same-version, unit running", |c| { c.unit_runs(); }, Cut::Line("same-version"), &["--local"], Then::Stop("daemon", 2), true),

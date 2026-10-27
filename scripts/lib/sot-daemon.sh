@@ -10,9 +10,10 @@ SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes 
 # under /bin/sh (dash) and macOS ships bash 3.2, so this file is POSIX shell
 # plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
 
-# ExecStart's binary path from a unit's text (stdin -> stdout), in the same
-# two shapes sotd install's ownership gate reads (rust/backend/src/install/
-# role.rs `unit_owner_path`, which runs before any checkout exists).
+# ExecStart's binary path from a unit's text (stdin -> stdout), in the bare and
+# bash -c shapes a release shipped. sotd install's ownership gate reads the
+# same shapes from systemd's own record instead (rust/backend/src/install/
+# role.rs `unit_owner_shown`), more strictly.
 sot_unit_owner_path() {
     sed -n -E 's/^ExecStart=(.*exec ")?([^ "]+)"?.*/\2/p' | sed -n 1p
 }

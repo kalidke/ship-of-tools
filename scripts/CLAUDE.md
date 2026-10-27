@@ -187,11 +187,15 @@ Guarantees, each with the mechanism it rests on. Install:
   `topology::same_version::Answer` ("cannot be told" its `untold` variant), and `update repls` as `update::cli::Repls`
   (below, Update). Each type reads back equal whatever its values hold (a line break, a line-like start, spaces,
   nothing), by construction. Text of other programs is read in its documented shapes, anything else does not read and
-  stops the run naming what was read: `systemctl --user cat`'s one ExecStart in the two shapes an install wrote
-  (`deploy/sotd.service` as the library renders it, and an older bare `ExecStart=<bin>/sotd`), refusing no ExecStart,
-  more than one (a drop-in that resets or replaces it), an unbalanced quote and a program that is not an absolute path
-  (limit: a unit that runs sotd another way is refused, never read; the library's shell `sot_unit_owner_path` reads the
-  same file more loosely); `ldd --version`'s first line as glibc prints it, `ldd (` text naming glibc or GNU libc in
+  stops the run naming what was read: the unit's owner from `systemctl --user show -p ExecStart --value
+  sotd.service`, systemd's own record of the unit and its drop-ins (`{ path=... ; argv[]=... ; ... }` per command;
+  `cat` is no longer asked), in each ExecStart form a release shipped: v0.3.0's and v0.3.2's bare `@SOT_BIN@ ...`,
+  whose owner is `path=` when it is `argv[0]` and its file name is `sotd`, flags unread, and v0.6.0 on's `/bin/bash
+  -c '...; exec "@SOT_BIN@" --project-root "@SOT_PROJECT_ROOT@" --label sot'`, whose `argv[]` must equal the rendered
+  command exactly, the program and the root holding no quote, and whose owner is the program it execs. Any other
+  command, or more than one, stops the run (exit 2, never waived) naming the unit file (limits: systemd's record is of
+  the unit as last loaded; the library's shell `sot_unit_owner_path` reads the file more loosely); `ldd --version`'s
+  first line as glibc prints it, `ldd (` text naming glibc or GNU libc in
   any case `) <version>`, the version numbers joined by single dots (glibc's `elf/ldd.bash.in`); a Git commit read as
   exactly one line of 40 or 64 lowercase hex digits, the one helper (`is_commit`, `commit_line`) the pack's `COMMIT` is
   checked by too. No caller reaches the
@@ -203,12 +207,14 @@ Guarantees, each with the mechanism it rests on. Install:
   no listing starts: it is unknown, cut at the wait's bound), the console's ssh check 30 s, the publish guard's Git
   reads 60 s and `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`; CIM
   `Win32_Process`), every `--version`, `session-socket-path`, `update direction` and `repls`, `same-version`,
-  `topology status` and `plan`, `systemctl --user is-active` and `cat`, `sot_boot_wired` and `sot_boot_off_line`,
+  `topology status` and `plan`, `systemctl --user is-active` and `show -p ExecStart`, `sot_boot_wired` and
+  `sot_boot_off_line`,
   `ldd --version`, `stat -f`, the console's `ssh -n <alias> true`, Julia's version, gate and channel probes, the Git
   reads (`rev-parse`, `rev-list`, `merge-base`, `status`, `ls-files`, `cat-file`, `tag -l`, the publish guard's), and
   on Windows the logon session, the launcher code id and the Desktop shortcut's target. On Linux, whenever
   `~/.config/systemd/user/sotd.service` exists, whatever the options, `is-active` is always asked and an unknown answer
-  stops the run; `cat` is asked whenever `is-active` answers. A run that finds no unit file never reads the user
+  stops the run; `show -p ExecStart` (the unit's owner) is asked whenever `is-active` answers, and it works for an
+  inactive unit. A run that finds no unit file never reads the user
   manager, and macOS, with no systemd, asks neither. The ownership rule they serve: a run never replaces another
   install's unit and never works beside one another install runs here, so an active unit of another install is
   refused (`--force-role-change` consents), and an inactive one is refused only by a run that would write over it (the

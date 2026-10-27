@@ -37,21 +37,31 @@ fn the_role_is_declared() {
     }
 
     {
-        let unit = "[Service]\nExecStartPre=-/bin/bash -c 'x; exec \"/p/bin/sot-apply\"'\nExecStart=/bin/bash -c '[ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"; exec \"/p/bin/sotd\" --project-root \"/h\" --label sot'\n";
-        assert_eq!(unit_owner_path(unit).as_deref(), Ok("/p/bin/sotd"));
-        assert_eq!(unit_owner_path("ExecStart=/old/bin/sotd --label sot\n").as_deref(), Ok("/old/bin/sotd"));
-        // The shipped template, rendered as the library renders it, is read.
-        let template = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/sotd.service")).unwrap();
-        let rendered = template.replace("@SOT_BIN@", "/p/bin/sotd").replace("@SOT_APPLY@", "/p/bin/sot-apply").replace("@SOT_PROJECT_ROOT@", "/h");
-        assert_eq!(unit_owner_path(&format!("# /h/.config/systemd/user/sotd.service\n{rendered}")).as_deref(), Ok("/p/bin/sotd"));
-        for bad in [
-            "[Service]\n",
-            "ExecStart=/p/bin/sotd\"unterminated\n",
-            "ExecStart=/bin/bash -c 'exec \"/p/bin/sotd\" --label sot\n",
-            "ExecStart=/p/bin/sotd\n# /h/.config/systemd/user/sotd.service.d/x.conf\n[Service]\nExecStart=\nExecStart=/q/bin/sotd\n",
-            "ExecStart=sotd --label sot\n",
+        // Every ExecStart a release shipped, rendered as its installer rendered it (`sed` of `@SOT_BIN@` to
+        // `<prefix>/bin/sotd`, `@SOT_PORT@` and `@SOT_PROJECT_ROOT@`), read through `systemctl show`'s record.
+        let current = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/sotd.service")).unwrap();
+        let current = current.lines().find_map(|l| l.strip_prefix("ExecStart=")).unwrap().to_string();
+        for (tag, template) in [
+            ("v0.3.0", "@SOT_BIN@ --tcp 127.0.0.1:@SOT_PORT@ --project-root @SOT_PROJECT_ROOT@ --label sot"),
+            ("v0.3.2", "@SOT_BIN@ --project-root @SOT_PROJECT_ROOT@ --label sot"),
+            ("v0.6.0 on (deploy/sotd.service)", current.as_str()),
         ] {
-            assert!(unit_owner_path(bad).is_err(), "{bad:?}");
+            let rendered = template.replace("@SOT_BIN@", "/p/bin/sotd").replace("@SOT_PORT@", "7777").replace("@SOT_PROJECT_ROOT@", "/h");
+            assert_eq!(unit_owner_shown(&shown(&rendered)).as_deref(), Ok("/p/bin/sotd"), "{tag}: {rendered}");
+        }
+        let record = |path: &str, argv: &str| format!("{{ path={path} ; argv[]={argv} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}\n");
+        for (why, bad) in [
+            ("printf naming sotd in its argument", record("/usr/bin/printf", "/usr/bin/printf exec \"/p/bin/sotd\"")),
+            ("bash running another script", record("/bin/bash", "/bin/bash -c exec \"/p/bin/sotd\" --label sot")),
+            ("bash form with a quote in the root", record("/bin/bash", "/bin/bash -c [ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"; exec \"/p/bin/sotd\" --project-root \"/h\"x\" --label sot")),
+            ("a program not named sotd", record("/p/bin/other", "/p/bin/other --label sot")),
+            ("argv[0] not the program", record("/p/bin/sotd", "/q/bin/sotd --label sot")),
+            ("a relative program", record("sotd", "sotd --label sot")),
+            ("two commands (a drop-in adds one)", format!("{}{}", record("/p/bin/sotd", "/p/bin/sotd"), record("/q/bin/sotd", "/q/bin/sotd"))),
+            ("no command", String::new()),
+            ("no record", "/p/bin/sotd --label sot\n".to_string()),
+        ] {
+            assert!(unit_owner_shown(&bad).is_err(), "{why}: {bad:?}");
         }
         assert_eq!(wrapper_owner_prefix("#!/bin/bash\nPENDING=\"/p/updates/pending-linux-x86_64.json\"\n").as_deref(), Some("/p"));
         assert_eq!(wrapper_owner_prefix("export SOT_FRONTEND_BIN=\"/p/bin/sot\"\n").as_deref(), Some("/p"));
@@ -70,11 +80,11 @@ fn the_role_is_declared() {
         let bin = home.path().join(".local/bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("sot-launch"), "PENDING=\"/q/updates/pending-x.json\"\n").unwrap();
-        assert!(matches!(ownership(None, home.path(), "/p", false, true, false, false), Gate::Refuse(_)));
-        assert_eq!(ownership(None, home.path(), "/p", false, true, false, true), Gate::Allow);
-        assert_eq!(ownership(None, home.path(), "/p", false, false, false, false), Gate::Allow);
+        assert!(matches!(ownership(None, None, home.path(), "/p", false, true, false, false), Gate::Refuse(_)));
+        assert_eq!(ownership(None, None, home.path(), "/p", false, true, false, true), Gate::Allow);
+        assert_eq!(ownership(None, None, home.path(), "/p", false, false, false, false), Gate::Allow);
         std::fs::write(bin.join("sot-launch"), "something else\n").unwrap();
-        assert!(matches!(ownership(None, home.path(), "/p", false, true, false, true), Gate::Unresolvable(_)));
+        assert!(matches!(ownership(None, None, home.path(), "/p", false, true, false, true), Gate::Unresolvable(_)));
     }
 
     {
@@ -95,17 +105,24 @@ fn the_role_is_declared() {
     }
 
     {
+        // The unit's owner is systemd's reading of it (a unit whose owner cannot be read stops the run before the gate).
         let home = tempfile::tempdir().unwrap();
-        let units = home.path().join(".config/systemd/user");
-        std::fs::create_dir_all(&units).unwrap();
-        std::fs::write(units.join("sotd.service"), "[Service]\nExecStart=/q/bin/sotd --label sot\n").unwrap();
-        assert!(matches!(ownership(None, home.path(), "/p", false, false, true, false), Gate::Refuse(_)));
-        assert_eq!(ownership(None, home.path(), "/p", false, false, true, true), Gate::Allow, "--force-role-change consents");
-        assert_eq!(ownership(None, home.path(), "/p", false, false, false, false), Gate::Allow, "a run that wires no unit leaves it");
-        std::fs::write(units.join("sotd.service"), "[Service]\nExecStart=/p/bin/sotd --label sot\n").unwrap();
-        assert_eq!(ownership(None, home.path(), "/p", false, false, true, false), Gate::Allow, "this install's own unit");
-        std::fs::write(units.join("sotd.service"), "[Unit]\nDescription=x\n").unwrap();
-        assert!(matches!(ownership(None, home.path(), "/p", false, false, true, true), Gate::Unresolvable(_)), "a unit with no program is never taken");
+        let other = Some("/q/bin/sotd");
+        assert!(matches!(ownership(None, other, home.path(), "/p", false, false, true, false), Gate::Refuse(_)));
+        assert_eq!(ownership(None, other, home.path(), "/p", false, false, true, true), Gate::Allow, "--force-role-change consents");
+        assert_eq!(ownership(None, other, home.path(), "/p", false, false, false, false), Gate::Allow, "a run that wires no unit leaves it");
+        assert_eq!(ownership(None, Some("/p/bin/sotd"), home.path(), "/p", false, false, true, false), Gate::Allow, "this install's own unit");
     }
 }
 
+
+/// `systemctl show -p ExecStart --value`'s record of a rendered ExecStart line, as systemd prints it: the program, then
+/// the arguments joined by spaces with the single quotes of a `-c '...'` script removed.
+fn shown(exec_start: &str) -> String {
+    let path = exec_start.split(' ').next().unwrap();
+    let argv = match exec_start.split_once(" -c '") {
+        Some((head, script)) => format!("{head} -c {}", script.strip_suffix('\'').unwrap()),
+        None => exec_start.to_string(),
+    };
+    format!("{{ path={path} ; argv[]={argv} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}\n")
+}

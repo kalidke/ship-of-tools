@@ -61,28 +61,44 @@ pub(super) fn service_record(linux: bool, daemon: bool, no_service: bool) -> &'s
     if linux && daemon && !no_service { "systemd" } else { "none" }
 }
 
-/// ExecStart's program from a unit's text, in the two shapes an install wrote: the `bash -c '...; exec "<bin>/sotd"
-/// ...'` of `deploy/sotd.service`'s ExecStart (as `scripts/lib/sot-daemon.sh` `render_sotd_unit` renders it), and an
-/// older `ExecStart=<bin>/sotd ...`. A text whose program cannot be read so is refused, saying why: no ExecStart, more
-/// than one (a drop-in that resets or replaces it shows as a second in `systemctl cat`), an unbalanced quote, or a
-/// program that is not an absolute path. Limit: a unit whose one ExecStart runs the program another way is refused,
-/// never read.
-pub(super) fn unit_owner_path(unit: &str) -> Result<String, String> {
-    let starts: Vec<&str> = unit.lines().filter_map(|l| l.strip_prefix("ExecStart=")).collect();
-    let line = match starts.as_slice() {
-        [one] => *one,
-        [] => return Err("names no ExecStart".to_string()),
-        many => return Err(format!("holds {} ExecStart lines (a drop-in resets or replaces it)", many.len())),
+/// The command the shipped template's ExecStart gives systemd, up to the program it execs (`deploy/sotd.service`, v0.6.0
+/// on), as `systemctl show` prints its arguments: joined by spaces, the single quotes systemd removed.
+const BASH_FORM: &str = "/bin/bash -c [ -r \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"; exec \"";
+
+/// The program `sotd.service` runs, from `systemctl --user show -p ExecStart --value sotd.service`: systemd's own reading
+/// of the unit and its drop-ins, one `{ path=<program> ; argv[]=<arguments joined by spaces> ; ignore_errors=... }` per
+/// command. It reads in each form a release shipped:
+/// - v0.3.0 and v0.3.2 (`ExecStart=@SOT_BIN@ ...`): the owner is `path=` when it is `argv[0]` and its file name is
+///   `sotd`, whatever the flags;
+/// - v0.6.0 on (`ExecStart=/bin/bash -c '...; exec "@SOT_BIN@" --project-root "@SOT_PROJECT_ROOT@" --label sot'`):
+///   `path=/bin/bash` and `argv[]` exactly that command as the library renders it, the program and the project root
+///   holding no quote; the owner is the program it execs.
+/// Anything else, and more than one command, is refused, saying why. Limit: systemd's reading is of the unit as last
+/// loaded, so an edit not yet reloaded is read as it was.
+pub(super) fn unit_owner_shown(record: &str) -> Result<String, String> {
+    let commands: Vec<&str> = record.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let command = match commands.as_slice() {
+        [one] if one.matches("{ path=").count() == 1 => *one,
+        [] => return Err("runs no command".to_string()),
+        _ => return Err(format!("runs more than one command ('{}')", commands.join("; "))),
     };
-    if line.matches('"').count() % 2 != 0 || line.matches('\'').count() % 2 != 0 {
-        return Err(format!("has an unbalanced quote in ExecStart={line}"));
+    let fields = command.strip_prefix("{ path=").and_then(|f| f.strip_suffix(" }")).ok_or_else(|| format!("is no command record ('{command}')"))?;
+    let (path, rest) = fields.split_once(" ; argv[]=").ok_or_else(|| format!("names no arguments ('{command}')"))?;
+    let argv = rest.rsplit_once(" ; ignore_errors=").map(|(argv, _)| argv).ok_or_else(|| format!("is no command record ('{command}')"))?;
+    let sotd = |p: &str| p.starts_with('/') && Path::new(p).file_name().is_some_and(|n| n == "sotd");
+    if sotd(path) && (argv == path || argv.starts_with(&format!("{path} "))) {
+        return Ok(path.to_string());
     }
-    let path = match line.rfind("exec \"") {
-        Some(at) => line[at + "exec \"".len()..].split('"').next().unwrap_or(""),
-        None if !line.contains(['"', '\'']) => line.split(' ').next().unwrap_or(""),
-        None => "",
-    };
-    if path.starts_with('/') { Ok(path.to_string()) } else { Err(format!("runs no absolute program it can name in ExecStart={line}")) }
+    if path == "/bin/bash" {
+        let shipped = argv.strip_prefix(BASH_FORM).and_then(|exec| exec.split_once('"')).and_then(|(program, rest)| {
+            let root = rest.strip_prefix(" --project-root \"")?.strip_suffix("\" --label sot")?;
+            (sotd(program) && !root.contains('"')).then(|| program.to_string())
+        });
+        if let Some(program) = shipped {
+            return Ok(program);
+        }
+    }
+    Err(format!("runs {path} as no shipped sotd.service does ('{argv}')"))
 }
 
 /// The prefix a `sot-launch` wrapper's text names, in its three known shapes (the all-in-one's `PENDING=`, the remote
@@ -127,23 +143,20 @@ pub(super) fn running_daemon(running: Option<&str>, prefix: &str, force: bool) -
     }
 }
 
-/// The ownership gate over the files an install writes: the unit (when it wires one), the wrapper, and the desktop entry
-/// (Linux) or app bundle (macOS), each this install's, another's (consent), or no one's that can be named (never
-/// overwritten).
-pub(super) fn ownership(running: Option<&str>, home: &Path, prefix: &str, macos: bool, frontend: bool, wires_unit: bool, force: bool) -> Gate {
+/// The ownership gate over the files an install writes: the unit (when it wires one; `unit_owner` is the program
+/// systemd reads it to run, asked whenever its file exists), the wrapper, and the desktop entry (Linux) or app bundle
+/// (macOS), each this install's, another's (consent), or no one's that can be named (never overwritten).
+pub(super) fn ownership(running: Option<&str>, unit_owner: Option<&str>, home: &Path, prefix: &str, macos: bool, frontend: bool, wires_unit: bool, force: bool) -> Gate {
     let gate = running_daemon(running, prefix, force);
     if gate != Gate::Allow {
         return gate;
     }
-    // The unit file, running here or not: on a home several hosts share it is what they start.
-    let unit = home.join(".config/systemd/user/sotd.service");
-    if let (true, Ok(text)) = (wires_unit, std::fs::read_to_string(&unit)) {
-        match unit_owner_path(&text) {
-            Err(why) => return Gate::Unresolvable(format!("{} exists but {why} — move it aside and re-run", unit.display())),
-            Ok(owner) if !force && !owner.starts_with(&format!("{prefix}/")) => {
-                return Gate::Refuse(format!("{} runs {owner}, another install's sotd; this install targets {prefix}/bin/sotd", unit.display()));
-            }
-            Ok(_) => {}
+    // The unit, running here or not (its owner as systemd reads it, [`unit_owner_shown`]): on a home several hosts
+    // share it is what they start.
+    if let (true, Some(owner)) = (wires_unit, unit_owner) {
+        if !force && !owner.starts_with(&format!("{prefix}/")) {
+            let unit = home.join(".config/systemd/user/sotd.service");
+            return Gate::Refuse(format!("{} runs {owner}, another install's sotd; this install targets {prefix}/bin/sotd", unit.display()));
         }
     }
     if !frontend {

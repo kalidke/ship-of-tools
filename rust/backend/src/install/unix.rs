@@ -402,7 +402,7 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();
     // `sotd.service`, wherever its unit file is in the user's unit folder (Linux), whatever the options: whether it
-    // runs (`is-active`) and the program it runs (`cat`), both asked every time. The ownership rule: a run never
+    // runs (`is-active`) and the program it runs (`show -p ExecStart`, systemd's own reading), both asked every time. The ownership rule: a run never
     // replaces another install's unit and never works beside one another install runs here, so an active unit of
     // another install is refused (consent: --force-role-change), and an inactive one is refused only by a run that
     // would write over it (the unit file's own owner, below) and left alone by one that does not. A question with no
@@ -410,14 +410,14 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     // a container, macOS) never reads the user manager.
     let wires_unit = !macos && resolved.daemon && !no_service;
     let unit_file = home.join(".config/systemd/user/sotd.service").is_file();
-    let (unit_active, running) = if !macos && unit_file {
+    let (unit_active, owner) = if !macos && unit_file {
         let active = unit_active(m, "systemctl").or(unit_unknown)?;
-        let owner = unit_owner(m)?;
-        (active, active.then_some(owner))
+        (active, Some(unit_owner(m)?))
     } else {
         (false, None)
     };
-    match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
+    let running = owner.as_deref().filter(|_| unit_active);
+    match role::ownership(running, owner.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
         Gate::Allow => {}
         Gate::Refuse(why) => {
             println!("       Installing here would replace or disable another install's files. Re-run with --force-role-change if that is what you want.");
@@ -538,12 +538,13 @@ fn heal_old_hosts(config: &Path) {
     }
 }
 
-/// The program `sotd.service` runs for this user here, as systemd reads the unit (`is-active` is this host's own state,
-/// where the unit file may be another host's on a shared home). A unit whose program cannot be read is not "no owner":
-/// the ownership gate cannot be answered, and the run stops.
+/// The program `sotd.service` runs for this user here, as systemd reads the unit and its drop-ins (`is-active` is this
+/// host's own state, where the unit file may be another host's on a shared home), in a form a release shipped
+/// ([`role::unit_owner_shown`]). A unit whose program cannot be read so is not "no owner": the ownership gate cannot be
+/// answered, and the run stops, whatever the options.
 fn unit_owner(m: &dyn Machine) -> Result<String, Stop> {
-    let unit = observe::ask(m, Command::new("systemctl").args(["--user", "cat", "sotd.service"]), ASK_BOUND, |a| {
-        role::unit_owner_path(&a.zero()?.out).map_err(|why| Why::Malformed(format!("a sotd.service (~/.config/systemd/user/sotd.service and its drop-ins) that {why}")))
+    let unit = observe::ask(m, Command::new("systemctl").args(["--user", "show", "-p", "ExecStart", "--value", "sotd.service"]), ASK_BOUND, |a| {
+        role::unit_owner_shown(&a.zero()?.out).map_err(|why| Why::Malformed(format!("a sotd.service (~/.config/systemd/user/sotd.service with its drop-ins) that {why}")))
     });
     unit.or(|why| Stop::new(2, format!("{why}, so the owner of sotd.service is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set), or move ~/.config/systemd/user/sotd.service aside if no sotd runs from it")))
 }
