@@ -328,7 +328,9 @@ Guarantees and boundaries:
   catalog supplies types, never additional requests. Distinct selected blobs use one
   final batch, including published blobs retained in new snapshots. Raw tree mode/name/NUL/binary-OID records retain
   unquoted path bytes. No diff, textconv or replacement object changes its inspected bytes. NUL bytes delimit
-  single-line matching.
+  single-line matching. A CR in a blob reaches the matcher as `\001`, another byte that is no letter or digit, so a
+  match is unchanged; Git for Windows' awk drops a CR before a line's end, which miscounted a CRLF blob against its
+  size and refused every push that carried one (red on Windows from 2026-10-26 16:20 to this fix).
 - On every push, one raw common-clone-local `sot.publishList` value must name an absolute readable regular file outside
   every repository and Git metadata. There is no global, system or command-config fallback. Missing, multiple,
   relative, linked, inside-repository or unresolvable policy paths refuse, including deletion-only pushes. Directory

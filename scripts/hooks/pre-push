@@ -81,7 +81,9 @@ read_round() {
         pg_fail "cannot read object $id"
     fi
     if [ "$phase" = blobs ]; then
-        tr '\000' '\n' < "$pg_tmp/round-bytes" > "$pg_tmp/round-text" 2>/dev/null || pg_fail 'cannot normalize object bytes'
+        # A CR becomes \001, another byte that is no letter or digit, so a match is unchanged and Git for Windows'
+        # awk, which drops a CR before a line's end, cannot shorten a line the scanner counts against the blob's size.
+        tr '\000\r' '\n\001' < "$pg_tmp/round-bytes" > "$pg_tmp/round-text" 2>/dev/null || pg_fail 'cannot normalize object bytes'
     else
         od -An -v -tu1 < "$pg_tmp/round-bytes" > "$pg_tmp/round-text" 2>/dev/null || pg_fail 'cannot normalize object bytes'
     fi
