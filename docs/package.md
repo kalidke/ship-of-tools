@@ -83,7 +83,10 @@ tree is checked against `[a-z0-9][a-z0-9._-]*`, and no shell runs on this end; e
 sharing off (the shell bridge is a named exception); a login the window or the lane client starts is admitted through
 the link gate, whose close ends the login a dial waits on (an established login ends when its stream closes); one
 remote attach is one dial and one login (the spare login went in 6c-1a2); a lane dial is bounded and typed; endpoints are derived by one function each; a unit sotd writes starts only where hosts.toml gives
-it; every `systemctl` call has a wait budget; `sotd stdio-bridge` adds nothing to the stream. Owns: the hub's
+it; every `systemctl` call has a wait budget; `sotd stdio-bridge` adds nothing to the stream unless its first frame
+is `link.hello`, which makes it the far router of a window's link (since 2026-10-26: per-channel credit, so a stalled
+channel never stops another; a dropped link ends every channel; each channel is admitted by the daemon as its own
+connection, so the router adds no path between accounts; no shipped window speaks the link yet). Owns: the hub's
 hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections (fe-net and the
 daemon's link do).
 
@@ -485,5 +488,10 @@ again), keys follow what is drawn on top, nothing reaches a pane under a covered
 lost reads unknown; the change about 100 minutes in all and the push 16 seconds, a miss: a fresh agent read its
 200k read set cold, then three findings rounds on presentation, covering layers and the status line, which an agent
 holding the window would have known (the captain's rule since: a change to a subsystem's behavior goes to an agent
-holding that subsystem whole). Nothing is half-done on main.
+holding that subsystem whole). The crossing words and the core types' removal took 7 and 6 minutes of change, 37
+minutes each from launch to main, and one push of 199 seconds, before the guard's speed. The link's first two
+commits landed 2026-10-26: wire's link family and topology's link runtime, and `sotd stdio-bridge` as the far router
+of a window's link; the change 26 minutes (18 and 8), the local gate 9, the push about 20 seconds, with 11 minutes
+lost because the first commit's ready line went unwatched. The window on the link is the third commit; until it lands,
+no shipped window speaks the link, and that is the one thing half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
