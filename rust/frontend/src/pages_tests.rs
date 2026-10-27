@@ -381,6 +381,81 @@ async fn a_page_handshake_in_flight_ends_when_the_link_ends() {
     );
 }
 
+/// The link's end ends an established page whatever its copies wait on: a browser that stopped reading, so the copy to
+/// it blocks in its write and the copy from it waits for bytes that never come, has its connection closed and its
+/// task ended within 5 s of the link's end. The stand-in daemon answers the handoff, then writes without end.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_end_closes_a_page_whose_browser_stopped_reading() {
+    use sot_protocol::{codec, op, Frame};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let path = relay_stand_in_path("stall");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let daemon = tokio::spawn(async move {
+        let (conn, _) = listener.accept().await.unwrap();
+        let (rd, mut wr) = conn.into_split();
+        let mut rd = tokio::io::BufReader::new(rd);
+        let (hello, _) = codec::read_frame(&mut rd).await.unwrap();
+        let (req, _) = codec::read_frame(&mut rd).await.unwrap();
+        let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
+        codec::write_frame(&mut wr, &Frame::res(hello.id, op::HELLO, accepted), None).await.unwrap();
+        codec::write_frame(&mut wr, &Frame::res(req.id, op::PROXY_CONNECT, serde_json::json!({ "ok": true })), None).await.unwrap();
+        let page = vec![b'p'; 64 * 1024];
+        while wr.write_all(&page).await.is_ok() {}
+    });
+    let made = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (link, handle) = crate::net::link_fixture::link_to(path.clone(), made).await;
+    let (browser, mut client) = browser_pair().await;
+    let dial = tokio::spawn(async move { super::pipe_one(browser, &handle, 7000, None).await });
+    // Long enough for the page to fill the browser's socket and the channel's window behind it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!dial.is_finished(), "the page is established and stalled");
+    drop(link);
+    let answer = tokio::time::timeout(Duration::from_secs(5), dial).await.expect("the page's task ends with its link").unwrap();
+    assert!(matches!(answer, Ok(super::Answer::LinkDown)), "got {answer:?}");
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut rest)).await.expect("the browser's connection closes").ok();
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// A page's open is bounded: a router that keeps its link up but never answers the open ends the page with
+/// `OpenError::TimedOut` at the bound, and the answer that comes late opens nothing: the window closes that channel.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_page_open_the_router_never_answers_times_out_and_its_late_answer_is_closed() {
+    use sot_protocol::{codec, op, Frame};
+    use sot_topology::link::{Link, LinkHandle, OpenError};
+    use std::time::{Duration, Instant};
+    let (near, far) = tokio::io::duplex(1 << 20);
+    let (prx, mut ptx) = tokio::io::split(far);
+    let mut prx = tokio::io::BufReader::new(prx);
+    let (wrx, wtx) = tokio::io::split(near);
+    let start = tokio::spawn(Link::over(wrx, wtx));
+    let (hello, _) = codec::read_frame(&mut prx).await.unwrap();
+    let answer = serde_json::json!({ "link": sot_protocol::ops::link::LINK, "build": "stand-in" });
+    codec::write_frame(&mut ptx, &Frame::res(hello.id, op::LINK_HELLO, answer), None).await.unwrap();
+    let link = start.await.unwrap().expect("the link starts");
+    let handle = LinkHandle::default();
+    handle.set_up(&link);
+    let (browser, _client) = browser_pair().await;
+    let started = Instant::now();
+    let bound = Duration::from_millis(300);
+    let dial = tokio::spawn(async move { super::pipe_one_within(browser, &handle, 7000, None, bound).await });
+    let (open, _) = tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut prx)).await.expect("the page's open").unwrap();
+    assert_eq!(open.op, op::LINK_OPEN);
+    let answer = tokio::time::timeout(Duration::from_secs(5), dial).await.expect("the page ends at its open's bound").unwrap();
+    let after = started.elapsed();
+    let error = answer.expect_err("an unanswered open is the page's error");
+    assert_eq!(error.downcast_ref::<OpenError>(), Some(&OpenError::TimedOut), "{error:#}");
+    assert!(after >= bound && after < bound + Duration::from_secs(2), "the open ended {after:?} after it began");
+    codec::write_frame(&mut ptx, &Frame::res(open.id, op::LINK_OPEN, serde_json::json!({ "ch": open.payload["ch"], "ok": true })), None).await.unwrap();
+    let (close, _) = tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut prx)).await.expect("the late channel's close").unwrap();
+    assert_eq!((close.op.as_str(), &close.payload["ch"], close.payload["reason"].as_str()), (op::LINK_CLOSE, &open.payload["ch"], Some("reset")));
+    drop(link);
+}
+
 #[test]
 fn a_refusal_older_than_the_last_open_does_not_park() {
     let arm = super::Arm::default();

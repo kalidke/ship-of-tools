@@ -258,6 +258,15 @@ fn first_line() -> Result<Vec<u8>, String> {
     rx.recv_timeout(FIRST_LINE_BOUND).unwrap_or_else(|_| Err(format!("no first line within {FIRST_LINE_BOUND:?}")))
 }
 
+/// How long the router waits for a byte from the window before it ends the link. `SOT_TEST_LINK_SILENCE_MS` overrides
+/// `SILENCE_BOUND` for tests, read once; unset in every real deployment.
+fn silence_bound() -> std::time::Duration {
+    std::env::var("SOT_TEST_LINK_SILENCE_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(sot_topology::link::SILENCE_BOUND, std::time::Duration::from_millis)
+}
+
 /// The far end of a window's link: `client`, the connection already made, is channel 0, and each channel the window
 /// opens is one more connection to `path` through `connect_own`. Exits 0 when the window closed the link or channel 0
 /// ended, else 1 with the reason on one stderr line.
@@ -284,8 +293,12 @@ fn route(hello: sot_protocol::Frame, client: Bridged, path: std::path::PathBuf) 
             let path = path.clone();
             Box::pin(async move { sot_topology::link::connect_local(&path).await.map(|s| Box::new(s) as Box<dyn Duplex>) })
         });
-        sot_topology::link::router::serve(hello, tokio::io::stdin(), stdout, Box::new(control), connect).await
+        sot_topology::link::router::serve_within(hello, tokio::io::stdin(), stdout, Box::new(control), connect, silence_bound()).await
     });
+    // Tokio's stdin reads on a blocking thread no one can cancel, and dropping the runtime would wait for that read: a
+    // link that ended while its window's input stayed open and silent would leave the router running. The runtime is
+    // let go without waiting, and the process exits on return.
+    runtime.shutdown_background();
     match served {
         Ok(()) => 0,
         Err(why) => {

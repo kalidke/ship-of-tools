@@ -136,7 +136,6 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `sotd stdio-bridge` (a shuttle, or a window's link's router at a first `link.hello`) | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect`, `route`; `rust/topology/src/link/router.rs` `serve` |
 | relay-unit ssh per relayed connection | process | topology | `rust/topology/src/relay_units.rs` `relay_command_line`; `rust/topology/src/ssh_bridge.rs` `SshRecipe` |
 | the window's link login (one per remote host) | process | topology | `rust/topology/src/link/window.rs` `Link::start`; owned by `rust/frontend/src/net/transport/mod.rs` `connect_and_run` |
-| page-proxy ssh per browser connection | process | pages | `rust/frontend/src/pages.rs` `pipe_one`, `dial` |
 | browser opener | process | pages | `rust/frontend/src/pages.rs` `open_url_in_browser`, `open_html_in_browser` |
 | drawer shell (portable-pty) | process | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `LocalTerminal`, `spawn` |
 | updater children (curl, gh, tar, zipinfo, unzip, PowerShell, git, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs`; daemon lifetime through `rust/backend/src/update.rs` `UpdaterSpawner`, window lifetime through `rust/frontend/src/selfupdate.rs` `WindowSpawner` |

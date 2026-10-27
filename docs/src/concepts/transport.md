@@ -129,7 +129,11 @@ handshake ends at once, not at its bound.
 far bridge reads the end of its input, closes every connection it made for
 the link and exits, and the daemon sees each of those connections end as it
 would any client's. Either end also ends a link that has carried no byte for
-90 s; the control connection's 30 s ping keeps a live one inside that.
+90 s; the control connection's 30 s ping keeps a live one inside that. A
+link's end closes everything that rode it, even a connection stuck because
+its reader stopped reading (a browser tab that hung, a daemon connection that
+stalled), and the far bridge exits even when the window's side of the login
+stays open but silent.
 
 **Versions.** The link has its own number, beside the wire's protocol number
 and the row's, and a far end that speaks another refuses the link by name. A

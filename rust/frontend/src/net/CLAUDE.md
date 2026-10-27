@@ -31,7 +31,8 @@ through the channel types below.
   refuses the link itself (a bridge from before the link, another link number) is shown as a hello refusal is.
 - Pages and rows open channels, never logins: the page proxy's `pipe_one` opens a channel on the host's handle and runs
   `pipe_one_over` over it; the attach endpoint's `LaneDial::Link` opens one per dial. A link that is down closes a
-  browser connection at once and makes a lane dial fail `LinkDown`; one that ends mid-handshake ends it the same way.
+  browser connection at once and makes a lane dial fail `LinkDown`; one that ends mid-handshake or mid-page ends it
+  the same way, whatever the page's copies wait on. A page's open waits at most `LINK_REPLY_BOUND`.
   Tests `a_remote_host_costs_one_login_for_control_pages_and_rows` (transport/tests.rs, one relay connection for
   control, two pages and three lane dials) and `pages::tests::a_down_link_closes_a_browser_connection_at_once`.
 - The link's start waits `SSH_LOGIN_BOUND` (30 s) for its `link.hello` answer, and each reply on the connect path (the

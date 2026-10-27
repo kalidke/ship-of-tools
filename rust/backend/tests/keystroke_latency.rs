@@ -364,7 +364,8 @@ async fn k5_cold_switch_over_ssh() {
     local.arg("-c").arg(&remote);
     let (_, reply) = bridge_hello_dial(local, &hello_frame("k5"), &guard).expect("local private bridge hello");
     assert_eq!(&reply.payload["session_id"], private_sid, "local bridge reached another daemon");
-    let link = private_ssh_link(&remote, wrapper_dir.path(), &guard).await;
+    let mut link = private_ssh_link(&remote, wrapper_dir.path(), &guard).await;
+    let control = say_hello_on_channel_zero(&mut link, "k5-control").await;
     let handle = sot_topology::link::LinkHandle::default();
     handle.set_up(&link);
     let (mut logins, mut locals, mut ssh_times, mut excess) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -387,6 +388,7 @@ async fn k5_cold_switch_over_ssh() {
     println!("k5 excess p50={excess_p50:.1}ms ratio={:.2}", excess_p50 / login_p50);
     let pass = excess_p50 <= 1.5 * login_p50;
     println!("k5 {}", if pass { "PASS" } else { "FAIL" });
+    drop(control);
     drop(link);
     env.kill_daemon_bounded().await;
     guard.finish();

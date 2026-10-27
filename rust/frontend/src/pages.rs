@@ -154,20 +154,37 @@ where
 /// Pipe one browser connection to the daemon that owns `port`'s page (C3 as amended §3): open a channel on the host's
 /// link, do the `proxy.connect` handshake behind a handoff hello as its first bytes (`server/conn.rs` `hand_off`),
 /// then splice bytes both ways until either side closes (carrying a WebSocket upgrade verbatim). While the host's link
-/// is down nothing is opened and the browser connection closes at once; a link that ends during the handshake ends it
-/// the same way.
+/// is down nothing is opened and the browser connection closes at once; a link that ends during the handshake or the
+/// splice ends it the same way, whatever either copy is waiting on. The open waits at most `LINK_REPLY_BOUND`
+/// (`OpenError::TimedOut`), and an open given up closes the channel its late answer opens.
 pub(crate) async fn pipe_one(browser: tokio::net::TcpStream, link: &LinkHandle, port: u16, token: Option<&str>) -> anyhow::Result<Answer> {
-    let channel = match link.open().await {
+    pipe_one_within(browser, link, port, token, sot_topology::link::LINK_REPLY_BOUND).await
+}
+
+async fn pipe_one_within(
+    browser: tokio::net::TcpStream,
+    link: &LinkHandle,
+    port: u16,
+    token: Option<&str>,
+    open_bound: std::time::Duration,
+) -> anyhow::Result<Answer> {
+    let opened = tokio::time::timeout(open_bound, link.open()).await.unwrap_or(Err(OpenError::TimedOut));
+    let channel = match opened {
         Ok(channel) => channel,
         Err(OpenError::LinkDown) => return Ok(Answer::LinkDown),
         Err(e) => return Err(anyhow::Error::new(e).context(format!("open a channel for port {port}"))),
     };
+    let link_ended = channel.link_ended();
     let (rx, mut tx) = channel.into_split();
     // The handshake reads through a BufReader and the splice copies FROM that same BufReader, so bytes it buffered
     // past the reply (the daemon may start streaming right after `{ok}`) are not lost.
     let mut rx = BufReader::new(rx);
     let _ = browser.set_nodelay(true);
-    match pipe_one_over(&mut tx, &mut rx, browser, port, token).await {
+    let answer = tokio::select! {
+        answer = pipe_one_over(&mut tx, &mut rx, browser, port, token) => answer,
+        () = link_ended => return Ok(Answer::LinkDown),
+    };
+    match answer {
         Err(_) if !link.is_up() => Ok(Answer::LinkDown),
         answer => answer,
     }

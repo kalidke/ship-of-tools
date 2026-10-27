@@ -32,7 +32,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   cannot be sent whole, or after 30 s with no whole request head or POST body, or with a 64 KiB reply write the client takes more than 30 s over (`read_request`, `read_body`, `IDLE_BOUND`, `WRITE_BOUND`).
 - A window's page channel ends when its host's link ends before the daemon's replies: the browser connection closes
   as on a down link (`pipe_one`, `Answer::LinkDown`), and while the link is down nothing is opened. A page already
-  piped ends with the link too, as its channel does.
+  piped ends with the link too, even one whose browser stopped reading: its copies select on the link's end. The
+  channel's open waits at most `LINK_REPLY_BOUND` (10 s), then fails `OpenError::TimedOut`, and the channel a late
+  answer opens is closed.
 - `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection
   (`dial_upstream`, `a_proxy_dial_is_not_inheritable`).
 - A window's sites outlive its connections: `docs.open` keys them to the window, its hello's host and `instance`

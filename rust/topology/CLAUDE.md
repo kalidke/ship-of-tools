@@ -142,8 +142,9 @@ of each.
     consumer, and its one writer (`io.rs`) serves the link ops first and then the channels with data and credit in
     turn, one chunk each. A consumer that stops reading holds at most `WINDOW` bytes of its channel at each end; its
     producer then waits. A peer that sends beyond its credit, a blob over `CHUNK` (refused on its declared length, before
-    a byte of it is read), credit beyond the window or a frame for a channel never opened ends the link (logged once); a
-    frame for a channel already closed is dropped; the open past `MAX_CHANNELS` (channel 0 counted) is refused
+    a byte of it is read), credit beyond the window, an open out of order (the window numbers its opens one after
+    another, so every number up to the highest opened was opened) or a frame for a channel never opened ends the link
+    (logged once); a frame for a channel already closed is dropped; the open past `MAX_CHANNELS` (channel 0 counted) is refused
     `too_many_channels`. Limits: the bound on another channel's wait is not one chunk but the bytes already in flight
     inside ssh and TCP, at most the sum of the open channels' credit (n x 256 KiB), so on a 1 MB/s link with two bulk
     channels a keystroke can wait about half a second; `MAX_CHANNELS` bounds the queues at 64 MiB per link in the worst
@@ -153,7 +154,10 @@ of each.
     every channel and every local connection it made, and exits 0, and the daemon sees each channel's connection end
     as it would any client's. A window killed outright leaves its ssh login with its input closed, which ends the same
     way. Either end also ends a link that brought it no byte for `SILENCE_BOUND` (90 s); channel 0's 30 s ping keeps a
-    live link inside it. Limits: on a live network the end takes about one round trip; on a dead network it takes up
+    live link inside it. Whatever ends a link ends every copy over it, whatever the copy waits on: the router's
+    channels are tasks its reader owns, dropped with it, and a page's copies select on the link's end, so a local
+    connection or a browser that stopped reading is closed too. The router exits when its link ends even while its
+    input stays open and silent (it lets its runtime go without waiting for stdin's read, which nothing can cancel). Limits: on a live network the end takes about one round trip; on a dead network it takes up
     to 90 s at the far end (the router's silence rule) and up to ssh's `ServerAlive` 45 s at the window's; sshd's own
     session cleanup is the far system's.
 15. **Users stay separate by their own ssh identities; the router adds no path between accounts.** The far sshd
@@ -218,9 +222,9 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 9 | endpoints derived once | `tests.rs`: `plan_lines_are_stable`, `relay_socket_path_is_a_sibling_of_the_relay_socket`, `only_the_complete_generated_path_is_a_hub_relay`, `a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not`; `endpoint_tests.rs`: `session_socket_path_honours_xdg_runtime_dir` (the launcher's label has no behavior test here); `rust/backend/tests/stdio_bridge.rs`: `stdio_bridge_refuses_a_host_outside_the_grammar` |
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
 | 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |
-| 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there; the first-line rule: `a_link_hello_makes_the_bridge_a_router`, `a_plain_first_frame_is_forwarded_byte_for_byte`, `dash_dash_host_carries_a_link_hello_unchanged`) |
-| 13 | per-channel flow control | `link/tests.rs`: `a_stalled_channel_never_delays_another_channel`, `data_beyond_its_credit_ends_the_link`, `a_blob_over_the_chunk_ends_the_link`, `a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_link`, `the_open_past_the_cap_is_refused` |
-| 14 | a closed window ends its link | `rust/backend/tests/stdio_bridge.rs`: `a_dropped_link_ends_its_router_and_every_daemon_connection`; `link/tests.rs`: `a_silent_link_ends_at_its_bound` (both ends, the bound injected) |
+| 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there; the first-line rule: `a_link_hello_makes_the_bridge_a_router`, `a_plain_first_frame_is_forwarded_byte_for_byte`, `dash_dash_host_carries_a_link_hello_unchanged`, `a_first_line_past_the_bound_unterminated_or_crlf_is_forwarded_unchanged`, `no_first_line_within_its_bound_ends_the_bridge`) |
+| 13 | per-channel flow control | `link/tests.rs`: `a_stalled_channel_never_delays_another_channel`, `data_beyond_its_credit_ends_the_link`, `a_blob_over_the_chunk_ends_the_link`, `a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_link`, `a_skipped_channel_number_ends_the_link_at_the_router`, `credit_returned_beyond_the_window_ends_the_link`, `the_open_past_the_cap_is_refused` |
+| 14 | a closed window ends its link | `rust/backend/tests/stdio_bridge.rs`: `a_dropped_link_ends_its_router_and_every_daemon_connection`, `a_silent_window_ends_its_router_with_its_input_still_open` (the bound injected by `SOT_TEST_LINK_SILENCE_MS`); `link/tests.rs`: `a_silent_link_ends_at_its_bound` (both ends, the bound injected), `the_links_end_closes_a_local_connection_that_stopped_reading`; the window's `pages_tests.rs`: `a_link_end_closes_a_page_whose_browser_stopped_reading` |
 | 15 | no path between accounts | `rust/backend/tests/stdio_bridge.rs`: `each_channel_is_admitted_as_its_own_connection`, `a_channel_to_another_accounts_daemon_is_refused` (Linux, root: skipped where `sudo -n` fails, run by the hosted Linux job) |
 
 Windows- and macOS-specific arms run on the hosted runner of their OS (`endpoint_windows_tests.rs`, the Windows arms of

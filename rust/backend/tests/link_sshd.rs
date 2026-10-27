@@ -6,7 +6,8 @@
 //! `sot-capsule` into the same target folder.
 //!
 //! The login is the recipe's own argv with its remote command aimed at a private daemon: `sotd stdio-bridge
-//! --endpoint <its socket or pipe>`, the router form a private daemon is reached by. A wrapper counts the logins.
+//! --endpoint <its socket or pipe>`, the router form a private daemon is reached by. The remote command counts the
+//! logins first.
 
 mod support;
 use support::*;
@@ -17,29 +18,21 @@ use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_topology::link::{Link, LinkHandle, LinkRoute};
 use std::time::{Duration, Instant};
 
-/// The recipe's argv to `localhost` with its remote command replaced by the private daemon's router, its program
-/// `ssh`, and every start counted in `count`'s file.
+/// The recipe's argv to `localhost`, its program `ssh`, with its remote command replaced: append a line to `count`,
+/// then run the private daemon's router. The far shell runs it once per login (sh on Linux, cmd.exe under Windows'
+/// sshd), so the file's lines are the logins, and nothing on this end needs a shell: ssh takes the remote command as
+/// one argument, as it takes the recipe's own.
 fn private_login(env: &Env, count: &std::path::Path) -> sot_topology::ssh_bridge::SshRecipe {
-    let scheme = if cfg!(windows) { "pipe:" } else { "unix:" };
-    let remote = format!("\"{}\" stdio-bridge --endpoint {scheme}{}", sotd_program().display(), env.socket_path.display());
+    let (sotd, socket, count) = (sotd_program(), env.socket_path.display().to_string(), count.display().to_string());
+    #[cfg(unix)]
+    let remote = format!("echo login >> '{count}'; exec '{}' stdio-bridge --endpoint 'unix:{socket}'", sotd.display());
+    #[cfg(windows)]
+    let remote = format!("echo login>>\"{count}\" && \"{}\" stdio-bridge --endpoint \"pipe:{socket}\"", sotd.display());
     let plain = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
     let mut argv: Vec<std::ffi::OsString> = plain.command().get_args().map(|a| a.to_owned()).collect();
     argv.pop().expect("the remote command");
     argv.push(remote.into());
-    // Each start of the login appends a line before it runs ssh, so the file's lines are the logins.
-    #[cfg(unix)]
-    let (program, args) = {
-        let mut args: Vec<std::ffi::OsString> = vec!["-c".into(), format!("echo login >> '{}'; exec ssh \"$@\"", count.display()).into(), "ssh".into()];
-        args.extend(argv);
-        (std::path::PathBuf::from("sh"), args)
-    };
-    #[cfg(windows)]
-    let (program, args) = {
-        let mut args: Vec<std::ffi::OsString> = vec!["/c".into(), format!("echo login>>\"{}\" && ssh", count.display()).into()];
-        args.extend(argv);
-        (std::path::PathBuf::from("cmd"), args)
-    };
-    plain.with_test_command(program, args)
+    plain.with_test_command("ssh", argv)
 }
 
 fn logins(count: &std::path::Path) -> usize {
