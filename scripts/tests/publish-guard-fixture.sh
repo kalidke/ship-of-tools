@@ -160,7 +160,7 @@ fixture() {
         fi
         fixture_executable "$R/.git/hooks/pre-push"
     fi
-    git -C "$R" push -q origin main > "$T/push.out" 2>&1 || fail 'clean fixture push failed'
+    git -C "$R" push -q origin main > "$T/push.out" 2>&1 || refused 'clean fixture push failed'
     BASE=$(git -C "$R" rev-parse HEAD)
 }
 commit() { git -C "$R" add -A; git -C "$R" commit -q --allow-empty -m "${1:-clean change}"; }
@@ -168,6 +168,10 @@ reset_case() { git -C "$R" reset -q --hard "$BASE"; }
 refs() { git -C "$B" for-each-ref --format='%(refname) %(objectname)' | LC_ALL=C sort; }
 audit_stderr() {
     if grep -iE 'glimmerdeny|otherdeny' "$1" > /dev/null; then fail "$2 leaked a policy entry"; fi
+}
+refused() { # a push that should have passed: show what the guard said, its synthetic entries masked
+    sed -E 's/glimmerdeny|otherdeny/<entry>/g' "$T/push.out" >&2
+    fail "$1"
 }
 not_ready() { # readiness must reject for the intended reason, with sanitized stderr
     local label=$1 reason=$2 status=0
@@ -206,7 +210,7 @@ accept() {
         before=$(git -C "$B" rev-parse --verify -q "$destination" 2> /dev/null || true)
         [ "$before" != "$expected" ] || fail "$label destination already held the update"
     done
-    git -C "$R" push -q "$@" > "$T/push.out" 2>&1 || fail "$label refused"
+    git -C "$R" push -q "$@" > "$T/push.out" 2>&1 || refused "$label refused"
     # Every accepted explicit update must actually appear at the destination (not an up-to-date no-op).
     for arg in "$@"; do
         case "$arg" in -*|origin|/*|file://*) continue ;; esac
