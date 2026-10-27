@@ -92,12 +92,6 @@ pub(super) fn runs(p: &Proc, prefix: &Path, bin: &str) -> bool {
     p.name == bin && p.exe == prefix.join("bin").join(bin).to_string_lossy()
 }
 
-/// Whether a daemon process of the install may run: it does when the listing shows one, and it is presumed to when the
-/// listing failed, since absence is never concluded from a listing that could not be read.
-pub(super) fn daemon_may_run(all: &Fact<Vec<Proc>>, prefix: &Path) -> bool {
-    all.as_ref().read(|all| !daemon_pids(all, prefix).is_empty(), |_| true)
-}
-
 /// The pids of the install's daemon processes.
 pub(super) fn daemon_pids(all: &[Proc], prefix: &Path) -> Vec<u32> {
     all.iter().filter(|p| runs(p, prefix, "sotd")).map(|p| p.pid).collect()

@@ -135,7 +135,7 @@ fn install_on(m: &dyn Machine, opts: Options) -> Result<(Found, String), Stop> {
     })?;
     let publish = super::publish::Plan::capture()?;
     let pending = match way {
-        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, dir)?,
+        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, dir, &mut found)?,
         super::Meet::Fresh => {
             fresh(&ctx)?;
             None
@@ -194,7 +194,7 @@ fn init_base(ctx: &Ctx) -> Result<(), Stop> {
     step("checkout");
     let origin = super::origin(&ctx.env);
     if !ctx.base.join(".git").exists() {
-        let _ = std::fs::create_dir_all(ctx.base.parent().unwrap_or(&ctx.base));
+        std::fs::create_dir_all(ctx.base.parent().unwrap_or(&ctx.base)).ok();
         let ran = ctx.m.act(super::cmd::git().args(["clone", "--quiet", "--filter=blob:none", "--no-checkout", &origin]).arg(&ctx.base));
         if !ran.ok() {
             return Err(Stop::new(1, format!("could not clone {origin} into {}: {}", ctx.base.display(), ran.last_said())));
@@ -239,16 +239,17 @@ fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
 
 /// An install already here: never backwards unasked, a repair run when nothing moves, else the update. The step of an
 /// update left armed for a start, when it is.
-fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option<super::Direction>) -> Result<Option<String>, Stop> {
-    // A repair changes nothing in the record but its pin: a new -Hub is an install over the same build.
+fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option<super::Direction>, found: &mut Found) -> Result<Option<String>, Stop> {
+    // A repair changes nothing in the record but its pin: a new -Hub is an install over the same build. A daemon that
+    // cannot be told is no repair: the update asks about it, with its reason.
     let keeps = record::keeps(&record::read(&ctx.record_path()), &record_of(ctx));
-    let (state, _) = daemon_state(ctx, new_sotd);
-    if dir == Some(super::Direction::Same) && keeps && matches!(state, State::None | State::Current) {
+    let before = daemon_state(ctx, new_sotd);
+    if dir == Some(super::Direction::Same) && keeps && matches!(before.0, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
         ctx.repair = true;
         // The pin first, then the pointer armed over the install: no arm lands between.
         write_pin(ctx, ctx.named)?;
-        let _ = std::fs::remove_file(ctx.pointer());
+        std::fs::remove_file(ctx.pointer()).ok();
         return Ok(None);
     }
     let from = if installed.is_empty() { "a version that cannot be read" } else { installed };
@@ -259,32 +260,24 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option
         None => " (which way could not be told)",
     };
     println!("this run moves the install from {from} to {}{how}", ctx.pack.version);
-    update(ctx, new_sotd, installed)
+    update(ctx, new_sotd, installed, before, found)
 }
 
 /// The daemon's state: its pipe asked; a daemon whose pipe exists or whose program runs and cannot be told is
-/// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it. A process
-/// listing that failed presumes a daemon runs, so one that cannot be told is `Unknown`, never `None`, and its reason
-/// leads `why`.
+/// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it. Whether one
+/// runs is asked only when it could not be told; a process listing that failed then presumes one does, so it is
+/// `Unknown`, never `None`, and the listing's reason leads `why`.
 fn daemon_state(ctx: &Ctx, sotd: &Path) -> (State, String) {
-    let (runs, listing) = daemon_runs(ctx);
-    let said = |why: String| match &listing {
-        Some(l) => format!("{l}; {why}"),
-        None => why,
-    };
-    let (st, why) = daemon::state(ctx.m, sotd, &ctx.endpoint(), runs);
-    (if st == State::Held { State::Other } else { st }, said(why))
+    let (st, why) = daemon::state(ctx.m, sotd, &ctx.endpoint(), &|| daemon_runs(ctx));
+    (if st == State::Held { State::Other } else { st }, why)
 }
 
-/// Whether a daemon may run: its pipe is listed, or its program runs. A process listing that failed (its reason is the
-/// second value) presumes one does.
-fn daemon_runs(ctx: &Ctx) -> (bool, Option<String>) {
+/// Whether a daemon may run: its pipe is listed, or its program runs.
+fn daemon_runs(ctx: &Ctx) -> Fact<bool> {
     if pipe_listed(&ctx.pipe) {
-        return (true, None);
+        return Fact::known(true);
     }
-    let all = procs::snapshot(ctx.m);
-    let runs = procs::daemon_may_run(&all, &ctx.prefix);
-    (runs, all.read(|_| None, |why| Some(why.to_string())))
+    procs::snapshot(ctx.m).map(|all| !procs::daemon_pids(&all, &ctx.prefix).is_empty())
 }
 
 /// Whether the pipe is listed (never opened: a probe must not take an instance).
@@ -301,17 +294,23 @@ fn write_pin(ctx: &Ctx, pinned: bool) -> Result<(), Stop> {
 
 /// Stage with the pack's own sotd, then apply one way, by what runs here; the step when the update stays armed.
 #[allow(clippy::too_many_lines, reason = "install.ps1's update in its order: the question, the stage, then the one way it applies")]
-fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<String>, Stop> {
+fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str, before: (State, String), found: &mut Found) -> Result<Option<String>, Stop> {
     step("daemon");
     // Every path below that stops or restarts a daemon asks first, whatever its version.
-    let (state, why) = daemon_state(ctx, new_sotd);
+    let (state, why) = before;
+    let clauses = std::cell::RefCell::new(Vec::new());
     let asks = daemon::Asks {
         live: &|| daemon::work(ctx.m, new_sotd, &ctx.endpoint()),
         kids: &|| daemon::children(ctx.m, &ctx.prefix),
         ask: &|work| daemon::ask_restart(&ctx.env, work),
         note: &|t| println!("{t}"),
+        clause: &|c| clauses.borrow_mut().push(c),
     };
-    let live = daemon::ask_before_update(state, &ctx.pipe, &why, ctx.opts.restart_daemon, &asks)?;
+    let asked = daemon::ask_before_update(state, &ctx.pipe, &why, ctx.opts.restart_daemon, &asks);
+    for c in clauses.into_inner() {
+        found.checked(c);
+    }
+    let live = asked?;
     step("stage");
     if !ctx.base.join(".git").exists() {
         init_base(ctx)?;
@@ -468,7 +467,7 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     environments(ctx, found, &|checkout, scratch, repair, found| julia::instantiate(ctx.m, checkout, None, scratch, repair, &|t| println!("  {t}"), found));
     step("comm");
     let scratch = ctx.pack.dir.join("tmp");
-    let _ = std::fs::create_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).ok();
     if !julia::update_comm(ctx.m, &ctx.version_dir, None, &scratch) {
         return Err(Stop::new(1, "ShipTools.update_comm() failed"));
     }
@@ -482,7 +481,7 @@ pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&P
         return;
     }
     let scratch = ctx.pack.dir.join("tmp");
-    let _ = std::fs::create_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).ok();
     instantiate(&ctx.version_dir, &scratch, ctx.repair, found);
 }
 
@@ -555,7 +554,7 @@ fn write_record(ctx: &Ctx) -> Result<(), Stop> {
     let r = record_of(ctx);
     // A new install is a new transaction: a pointer armed over the one it replaces would apply onto it.
     if record::string(&before, "version").as_deref() != Some(&ctx.pack.version) || record::string(&before, "commit").as_deref() != Some(&ctx.pack.commit) {
-        let _ = std::fs::remove_file(ctx.pointer());
+        std::fs::remove_file(ctx.pointer()).ok();
     }
     record::write_whole(&path, &record::text_for(&before, &r, ctx.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
     verdict::set_tail(if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
@@ -627,14 +626,9 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
     let (st, why) = if ctx.expect_daemon {
         let bound = super::secs_env(&ctx.env, "SOT_INSTALL_DAEMON_WAIT_S", 60);
-        let (runs, listing) = daemon_runs(ctx);
-        let (st, why) = daemon::wait_current(ctx.m, &sotd, &ctx.endpoint(), bound, false, runs);
-        let why = match listing {
-            Some(l) => format!("{l}; {why}"),
-            None => why,
-        };
+        let (st, why) = daemon::wait_current(ctx.m, &sotd, &ctx.endpoint(), bound, false, &|| daemon_runs(ctx));
         if st != State::Current {
-            found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}')", ctx.pipe, bound.as_secs(), st.word()));
+            found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}': {why})", ctx.pipe, bound.as_secs(), st.word()));
         }
         (st, why)
     } else {

@@ -186,6 +186,19 @@ pub(super) fn record_gate(record_path: &Path, declared: bool, daemon: bool, serv
     Gate::Allow
 }
 
+/// Whether a `sotd topology plan`'s text reads: its `self` line names `me`, and every line is `self`, `hub`,
+/// `relay-endpoint` or `dial <host> <endpoint>`.
+pub(super) fn plan_reads(plan: &str, me: &str) -> bool {
+    let lines: Vec<Vec<&str>> = plan.lines().map(|l| l.split_whitespace().collect()).filter(|w: &Vec<&str>| !w.is_empty()).collect();
+    lines.iter().any(|w| w.as_slice() == ["self", me])
+        && lines.iter().all(|w| match w[0] {
+            "self" => w.len() == 2,
+            "hub" | "relay-endpoint" => w.len() <= 2,
+            "dial" => w.len() == 3,
+            _ => false,
+        })
+}
+
 /// Whether a `sotd topology plan` dials a daemon host other than its own `self` line.
 pub(super) fn plan_dials_others(plan: &str) -> bool {
     let me = plan.lines().find_map(|l| l.strip_prefix("self ")).map(str::trim).unwrap_or("");

@@ -46,28 +46,32 @@ impl State {
 pub(super) type Said = (i32, String);
 
 /// The state `sotd same-version`'s answer says, and its line or why it gave none. A daemon that gave no answer, or
-/// said it cannot tell, is `Unknown` when one may run (`runs`) and `None` when none does.
-pub(super) fn state_of(said: Fact<Said>, runs: bool) -> (State, String) {
+/// said it cannot tell, is `Unknown` when one may run and `None` when none does; whether one runs is asked only then
+/// (`runs`), and a `runs` that cannot say presumes one does, its reason kept.
+pub(super) fn state_of(said: Fact<Said>, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
     said.read(
         |(code, line)| match code {
             0 => (State::Current, line),
             3 => (State::Other, line),
             _ => (State::Held, line),
         },
-        |why| (if runs { State::Unknown } else { State::None }, why.to_string()),
+        |why| runs().read(|runs| (if runs { State::Unknown } else { State::None }, why.to_string()), |listing| (State::Unknown, format!("{listing}; {why}"))),
     )
 }
 
 /// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and its version when different, else
 /// why it could not tell.
-pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: bool) -> (State, String) {
+pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
     state_within(m, sotd, endpoint, runs, Duration::from_secs(30))
 }
 
-/// [`state`] with the ask itself held to `bound` by the clock: an ask cut at its bound could not tell.
-fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: bool, bound: Duration) -> (State, String) {
+/// [`state`] with the ask itself held to `bound` by the clock: an ask cut at its bound could not tell. Another
+/// version's answer names it on stdout; one that names none does not read.
+fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: &dyn Fn() -> Fact<bool>, bound: Duration) -> (State, String) {
     let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| match a.exit {
-        0 | 3 | 4 => Ok((a.exit, a.last_said())),
+        0 => Ok((0, a.last_said())),
+        3 | 4 if !a.first_line().is_empty() => Ok((a.exit, a.first_line())),
+        3 | 4 => Err(observe::Why::Malformed(format!("another version with no version named (exit {})", a.exit))),
         _ => Err(a.failed()),
     });
     state_of(said, runs)
@@ -76,7 +80,7 @@ fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: bool, bound:
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
 /// else what the last ask said, with its reason, so no caller asks again past the bound. `held_ok` also ends the wait
 /// at `Held`.
-pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: bool) -> (State, String) {
+pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
     let deadline = Instant::now() + bound;
     loop {
         // Every ask ends by the deadline or its own bound, the smaller, and none starts after the deadline.
@@ -108,47 +112,51 @@ pub(super) struct Work {
     pub unsure: Option<String>,
 }
 
-/// `sotd update repls`' answer: its `repl <row>` and `pluto server` lines, and its exit code (0 none, 3 some, else it
-/// could not say, with its reason on stderr).
-pub(super) fn work_of(out: &str, err: &str, code: Option<i32>) -> Work {
-    let rows = out.lines().filter_map(|l| l.strip_prefix("repl ")).map(|r| r.trim().to_string()).collect();
-    let pluto = out.lines().any(|l| l.trim() == "pluto server");
-    let unsure = match code {
-        Some(0 | 3) => None,
-        other => Some(
-            err.lines()
-                .chain(out.lines())
-                .map(str::trim)
-                .find(|l| !l.is_empty() && !l.starts_with("repl ") && *l != "pluto server")
-                .map_or_else(|| format!("sotd update repls gave no reason (exit {})", other.map_or("none".into(), |c| c.to_string())), String::from),
-        ),
-    };
-    Work { rows, pluto, unsure }
+/// `sotd update repls`' answer: exit 0 with no line (nothing live), exit 3 with its `repl <row>` and `pluto server`
+/// lines and nothing else, or another exit (it could not say all of it, its reason on stderr, the lines it gave kept).
+/// Exit 0 with lines, or exit 3 with no line or a line that is neither, does not read.
+pub(super) fn work_of(a: &observe::Answer) -> Result<Work, observe::Why> {
+    let lines: Vec<&str> = a.out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let rows: Vec<String> = lines.iter().filter_map(|l| l.strip_prefix("repl ")).map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
+    let pluto = lines.contains(&"pluto server");
+    let read = rows.len() + usize::from(pluto) == lines.len();
+    match a.exit {
+        0 if lines.is_empty() => Ok(Work::default()),
+        3 if read && !lines.is_empty() => Ok(Work { rows, pluto, unsure: None }),
+        0 | 3 => Err(observe::Why::Malformed(format!("no reading of its live work (exit {}: '{}')", a.exit, lines.join("; ")))),
+        exit => {
+            let said = a.err.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("sotd update repls gave no reason (exit {exit})"), String::from);
+            Ok(Work { rows, pluto, unsure: Some(said) })
+        }
+    }
 }
 
-/// What a restart would end, asked of the daemon within [`observe::ASK_BOUND`]; an ask that gave no answer is `unsure`
-/// with its reason, so a caller that cannot be told is asked about, never told "nothing".
+/// What a restart would end, asked of the daemon within [`observe::ASK_BOUND`]; an ask that gave no answer, or one that
+/// does not read, is `unsure` with its reason, so a caller that cannot be told is asked about, never told "nothing".
 pub(super) fn work(m: &dyn Machine, sotd: &Path, endpoint: &str) -> Work {
-    observe::ask(m, Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]), observe::ASK_BOUND, |a| Ok(a.clone()))
-        .read(|a| work_of(&a.out, &a.err, Some(a.exit)), |why| Work { unsure: Some(why.to_string()), ..Work::default() })
+    observe::ask(m, Command::new(sotd).args(["update", "repls", "--endpoint", endpoint]), observe::ASK_BOUND, work_of)
+        .read(|w| w, |why| Work { unsure: Some(why.to_string()), ..Work::default() })
 }
 
 /// What the daemon processes of the install at `prefix` run for a person, from their own process tree: `Some` with one
 /// entry per direct child that is a REPL (`repl`) or the Pluto server (`pluto`), `None` when no daemon process of the
-/// install is found, so nothing can be ruled out; a process listing that failed is the same `None`. The daemon is its
-/// program path, the sidecars its children by parent id.
-pub(super) fn children(m: &dyn Machine, prefix: &Path) -> Option<Vec<&'static str>> {
+/// install is found, so nothing can be ruled out; unknown, with its reason, when the listing gave none. The daemon is
+/// its program path, the sidecars its children by parent id.
+pub(super) fn children(m: &dyn Machine, prefix: &Path) -> Fact<Option<Vec<&'static str>>> {
     children_in(procs::snapshot(m), prefix)
 }
 
-pub(super) fn children_in(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Option<Vec<&'static str>> {
-    all.read(
-        |all| {
-            let daemon = procs::daemon_pids(&all, prefix);
-            (!daemon.is_empty()).then(|| all.iter().filter(|p| daemon.contains(&p.ppid)).filter_map(|p| child_kind(&p.args)).collect())
-        },
-        |_| None,
-    )
+pub(super) fn children_in(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Fact<Option<Vec<&'static str>>> {
+    all.map(|all| {
+        let daemon = procs::daemon_pids(&all, prefix);
+        (!daemon.is_empty()).then(|| all.iter().filter(|p| daemon.contains(&p.ppid)).filter_map(|p| child_kind(&p.args)).collect())
+    })
+}
+
+/// A children reading as the questions use it: the kinds, or nothing ruled out, and why not when the listing gave no
+/// answer.
+pub(super) fn kids_of(kids: Fact<Option<Vec<&'static str>>>) -> (Option<Vec<&'static str>>, Option<String>) {
+    kids.read(|k| (k, None), |why| (None, Some(why.to_string())))
 }
 
 /// A daemon child's kind from its command line: the REPL sidecar runs ShipToolsRepl's shim, the Pluto server the
@@ -211,12 +219,14 @@ pub(super) fn rows_note(rows: &[String], pluto: bool, unknown: bool) -> String {
     }
 }
 
-/// How a question asks: the daemon's live work, its child processes, the person at the console, and a note.
+/// How a question asks: the daemon's live work, its child processes, the person at the console, a note, and a clause
+/// of the verdict for each unknown the run goes past.
 pub(super) struct Asks<'a> {
     pub live: &'a dyn Fn() -> Work,
-    pub kids: &'a dyn Fn() -> Option<Vec<&'static str>>,
+    pub kids: &'a dyn Fn() -> Fact<Option<Vec<&'static str>>>,
     pub ask: &'a dyn Fn(&str) -> bool,
     pub note: &'a dyn Fn(&str),
+    pub clause: &'a dyn Fn(String),
 }
 
 /// `same-version` prints the running daemon's version only when it differs (Other or Held); otherwise its line is a
@@ -269,19 +279,31 @@ pub(super) fn ask_before_update(state: State, pipe: &str, why: &str, restart_fla
     }
     let work = (a.live)();
     let unsure = work.unsure.is_some() || state == State::Unknown;
-    let kids = if unsure { (a.kids)() } else { None };
+    let (kids, kids_why) = if unsure { kids_of((a.kids)()) } else { (None, None) };
+    // What the run could not be told, for the verdict when it goes on.
+    let untold = [(state == State::Unknown).then(|| why.to_string()), work.unsure.clone(), kids_why.clone()].into_iter().flatten().collect::<Vec<_>>().join("; ");
     if unsure && kids.as_ref().is_some_and(Vec::is_empty) && work.rows.is_empty() && !work.pluto {
         let ends = if retires { "no live REPL or Pluto notebook" } else { "nothing live" };
-        (a.note)(&format!("note: could not ask the daemon on {pipe} in full ({}); it has no REPL or Pluto child, so restarting it ends {ends}", work.unsure.as_deref().unwrap_or(why)));
+        (a.note)(&format!("note: could not ask the daemon on {pipe} in full ({untold}); it has no REPL or Pluto child, so restarting it ends {ends}"));
+        (a.clause)(format!("the daemon on {pipe} could not be asked in full ({untold}); its own children showed nothing live"));
         return Ok(String::new());
     }
-    let live = live_text(state, pipe, &work, why);
+    let mut live = live_text(state, pipe, &work, why);
+    if let Some(listing) = &kids_why {
+        live = format!("{live}; its children could not be listed ({listing})");
+    }
     if live.is_empty() || restart_flag {
+        if unsure && restart_flag {
+            (a.clause)(format!("the daemon on {pipe} could not be asked in full ({untold}); restarted as -RestartDaemon asks"));
+        }
         return Ok(live);
     }
     let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
     if (a.ask)(&ask_words(&work.rows, repl, work.pluto || pluto, unsure)) {
         (a.note)("note: restarting the daemon as answered");
+        if unsure {
+            (a.clause)(format!("the daemon on {pipe} could not be asked in full ({untold}); restarted as answered at the console"));
+        }
         return Ok(live);
     }
     let agents = agents_note(state, why);
@@ -335,7 +357,7 @@ pub(super) fn read_answer(_env: &Env, question: &str) -> Option<String> {
         return None;
     }
     print!("{question}");
-    let _ = std::io::stdout().flush();
+    std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin().read_line(&mut line).ok()?;
     Some(line)

@@ -107,7 +107,7 @@ fn print_once(text: &str) -> bool {
     }
     println!("{text}");
     use std::io::Write as _;
-    let _ = std::io::stdout().flush();
+    std::io::stdout().flush().ok();
     true
 }
 

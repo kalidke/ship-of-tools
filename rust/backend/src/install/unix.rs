@@ -149,6 +149,12 @@ fn git_value(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() 
         .ok_or_else(|| Stop::new(1, missing()))
 }
 
+/// A git read in `dir` that names a commit: [`git_value`] whose line is a 40-digit commit id, or does not read.
+fn git_commit(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() -> String) -> Result<String, Stop> {
+    let line = git_value(m, dir, args, missing)?;
+    if super::is_commit(&line) { Ok(line) } else { Err(Stop::new(1, format!("`git -C {} {}` printed no commit id ('{line}')", dir.display(), args.join(" ")))) }
+}
+
 /// Whether a work tree has local changes, by `git status --porcelain`.
 fn tree_dirty(m: &dyn Machine, dir: &Path) -> Fact<bool> {
     observe::ask(m, cmd::git_in(dir).args(["status", "--porcelain"]), ASK_BOUND, |a| Ok(!a.zero()?.out.trim().is_empty()))
@@ -200,7 +206,7 @@ fn unit_active(m: &dyn Machine, systemctl: &str) -> Fact<bool> {
 
 /// A unit question that could not be answered, before the run has written anything: it stops the run.
 fn unit_unknown(why: Unknown) -> Stop {
-    Stop::new(1, format!("{why}, so whether sotd.service runs is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set)"))
+    Stop::new(1, format!("{why}, so whether sotd.service runs is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set), or move ~/.config/systemd/user/sotd.service aside if no sotd runs from it"))
 }
 
 /// The daemon and window facts the decisions read from the process listing: whether a daemon process of the install
@@ -220,12 +226,11 @@ enum Topo {
 }
 
 fn topology_status(m: &dyn Machine, sotd: &Path) -> Fact<Topo> {
-    observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| {
-        Ok(match a.exit {
-            0 => Topo::Table(a.out.clone()),
-            _ if a.err.contains("no hosts.toml at") => Topo::Missing,
-            _ => Topo::Unreadable(a.last_said()),
-        })
+    observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| match a.exit {
+        0 if a.first_line() == "HOST DECLARED" => Ok(Topo::Table(a.out.clone())),
+        0 => Err(Why::Malformed(format!("no table ('{}')", a.first_line()))),
+        _ if a.err.contains("no hosts.toml at") => Ok(Topo::Missing),
+        _ => Ok(Topo::Unreadable(a.last_said())),
     })
 }
 
@@ -233,7 +238,8 @@ fn topology_status(m: &dyn Machine, sotd: &Path) -> Fact<Topo> {
 /// no hosts.toml is none; any other exit is no answer.
 fn plan_dials(m: &dyn Machine, sotd: &Path, me: &str) -> Fact<bool> {
     observe::ask(m, Command::new(sotd).args(["topology", "plan", "--self", me]), ASK_BOUND, |a| match a.exit {
-        0 => Ok(role::plan_dials_others(&a.out)),
+        0 if role::plan_reads(&a.out, me) => Ok(role::plan_dials_others(&a.out)),
+        0 => Err(Why::Malformed(format!("no plan for {me} ('{}')", a.first_line()))),
         _ if a.err.contains("no hosts.toml at") => Ok(false),
         _ => Err(a.failed()),
     })
@@ -271,7 +277,7 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     let named = opts.named() || (super::bootstrap_tag(&env).is_some() && !implicit);
     say(&format!("installing Ship of Tools {} into {}", pack.tag(), prefix.display()));
     let scratch = pack.dir.join("tmp");
-    let _ = std::fs::create_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).ok();
 
     step("direction");
     let record_path = prefix.join("install.json");
@@ -375,13 +381,22 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
 
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();
-    // `sotd.service` is asked about wherever its unit file is in the user's unit folder, whatever the options: a run
-    // never replaces another install's unit or works under one it does not own, and the retire stops it. A run that
-    // finds no unit file (a fresh box, a container, macOS) never reads the user manager.
+    // `sotd.service`, wherever its unit file is in the user's unit folder (Linux), whatever the options: whether it
+    // runs (`is-active`) and the program it runs (`cat`), both asked every time. The ownership rule: a run never
+    // replaces another install's unit and never works beside one another install runs here, so an active unit of
+    // another install is refused (consent: --force-role-change), and an inactive one is refused only by a run that
+    // would write over it (the unit file's own owner, below) and left alone by one that does not. A question with no
+    // answer, systemctl missing included, stops the run before it writes. A run that finds no unit file (a fresh box,
+    // a container, macOS) never reads the user manager.
     let wires_unit = !macos && resolved.daemon && !no_service;
     let unit_file = home.join(".config/systemd/user/sotd.service").is_file();
-    let unit_active = !macos && unit_file && observe::on_path(m, "systemctl") && unit_active(m, "systemctl").or(unit_unknown)?;
-    let running = if unit_active { Some(running_unit_program(m)?) } else { None };
+    let (unit_active, running) = if !macos && unit_file {
+        let active = unit_active(m, "systemctl").or(unit_unknown)?;
+        let owner = unit_owner(m)?;
+        (active, active.then_some(owner))
+    } else {
+        (false, None)
+    };
     match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
         Gate::Allow => {}
         Gate::Refuse(why) => {
@@ -447,7 +462,7 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     if plan.repair {
         say("a repair run: nothing moves, and the record gets its pin");
     }
-    ask_daemon(m, &mut plan, &new_sotd, &why)?;
+    ask_daemon(m, &mut plan, &new_sotd, &why, found)?;
     Ok(plan)
 }
 
@@ -500,14 +515,14 @@ fn heal_old_hosts(config: &Path) {
     }
 }
 
-/// The program of the active `sotd.service` for this user here (`is-active` is this host's own state, where the unit
-/// file may be another host's on a shared home). An active unit whose program cannot be read is not "no running owner":
+/// The program `sotd.service` runs for this user here, as systemd reads the unit (`is-active` is this host's own state,
+/// where the unit file may be another host's on a shared home). A unit whose program cannot be read is not "no owner":
 /// the ownership gate cannot be answered, and the run stops.
-fn running_unit_program(m: &dyn Machine) -> Result<String, Stop> {
+fn unit_owner(m: &dyn Machine) -> Result<String, Stop> {
     let unit = observe::ask(m, Command::new("systemctl").args(["--user", "cat", "sotd.service"]), ASK_BOUND, |a| {
         role::unit_owner_path(&a.zero()?.out).ok_or_else(|| Why::Malformed("a unit that names no program".into()))
     });
-    unit.or(|why| Stop::new(2, format!("sotd.service is active but its unit could not be read ({why}); nothing was changed")))
+    unit.or(|why| Stop::new(2, format!("{why}, so the owner of sotd.service is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set), or move ~/.config/systemd/user/sotd.service aside if no sotd runs from it")))
 }
 
 /// The glibc this box runs, from an exit-0 `ldd --version`'s first line.
@@ -540,17 +555,23 @@ fn ask_role(m: &dyn Machine, me: &str) -> Result<RoleFlag, Stop> {
             if alias.is_empty() {
                 return Err(Stop::new(1, "backend host is required for the remote layout"));
             }
-            let mut ssh = Command::new("ssh");
-            ssh.args(sot_topology::ssh_bridge::SSH_OPTS).args(["-n", &alias, "true"]);
-            let works = observe::ask(m, &mut ssh, sot_topology::ssh_bridge::SSH_LOGIN_BOUND, |a| Ok(a.exit == 0))
-                .or(|why| Stop::new(1, format!("ssh to '{alias}' gave no answer ({why}: a network, sshd or remote login that stopped answering)")))?;
-            if works {
-                Ok(RoleFlag::Remote(alias))
-            } else {
-                Err(Stop::new(1, format!("key-based ssh to '{alias}' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)")))
-            }
+            remote_role(m, alias)
         }
         other => Err(Stop::new(1, format!("no such choice: '{other}'"))),
+    }
+}
+
+/// The remote role a person chose at the console, once key-based ssh to `alias` works: exit 0 is a login, any other
+/// exit a refusal; an ssh that gives no answer within its bound stops the run with why.
+fn remote_role(m: &dyn Machine, alias: String) -> Result<RoleFlag, Stop> {
+    let mut ssh = Command::new("ssh");
+    ssh.args(sot_topology::ssh_bridge::SSH_OPTS).args(["-n", &alias, "true"]);
+    let works = observe::ask(m, &mut ssh, sot_topology::ssh_bridge::SSH_LOGIN_BOUND, |a| Ok(a.exit == 0))
+        .or(|why| Stop::new(1, format!("ssh to '{alias}' gave no answer ({why}: a network, sshd or remote login that stopped answering)")))?;
+    if works {
+        Ok(RoleFlag::Remote(alias))
+    } else {
+        Err(Stop::new(1, format!("key-based ssh to '{alias}' doesn't work (ssh-copy-id first, or fix ~/.ssh/config)")))
     }
 }
 
@@ -578,14 +599,19 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
     let ends_unit = q.unit_runs || q.retire_stops;
     let (acting, act) = if q.retire_stops { ("stopping", "stopping it would end") } else { ("restarting", "restarting it would end") };
     if q.before == State::Unknown {
-        let kids = (a.kids)();
+        let (kids, kids_why) = daemon::kids_of((a.kids)());
         let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
+        let children = kids_why.as_ref().map_or_else(String::new, |listing| format!("; its children could not be listed ({listing})"));
+        let gone_past = |how: &str| (a.clause)(format!("the daemon on {socket} could not be told its version ({why}{children}); sotd.service was restarted {how}"));
         if ends_unit && q.restart_flag {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service ends any live REPL or Pluto notebook (--restart-daemon)"));
+            gone_past("as --restart-daemon asks");
         } else if ends_unit && kids.as_ref().is_some_and(Vec::is_empty) {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); it has no REPL or Pluto child, so restarting sotd.service ends nothing live"));
+            gone_past("since it has no REPL or Pluto child");
         } else if ends_unit && (a.ask)(&daemon::ask_words(&[], repl, pluto, true)) {
             (a.note)(&format!("note: the daemon on {socket} could not be told its version ({why}); restarting sotd.service as answered"));
+            gone_past("as answered at the console");
         } else {
             let hint = if ends_unit {
                 "Restarting the daemon ends every live REPL and Pluto notebook (their variables are lost); ask whoever uses this computer, then re-run with --restart-daemon."
@@ -593,7 +619,7 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
                 "Find why it does not answer, or stop it, then run this again."
             };
             println!("       Nothing under the install was changed. {hint}");
-            return Err(Stop::new(2, format!("a daemon runs on {socket} and could not be told its version ({why})")));
+            return Err(Stop::new(2, format!("a daemon runs on {socket} and could not be told its version ({why}{children})")));
         }
     }
     if !(matches!(q.before, State::Other | State::Held) || (q.retire_stops && q.before == State::Current)) {
@@ -622,25 +648,31 @@ pub(super) fn question(q: &Question, a: &Asks) -> Result<(daemon::Work, bool), S
         Some(reason) => {
             // The daemon could not say; its own children can: with none that is a REPL or the Pluto server, none of
             // that work is left to end.
-            let kids = (a.kids)();
+            let (kids, kids_why) = daemon::kids_of((a.kids)());
             let (repl, pluto) = kids.as_ref().map_or((false, false), |k| (k.contains(&"repl"), k.contains(&"pluto")));
+            let untold = kids_why.as_ref().map_or_else(|| reason.clone(), |listing| format!("{reason}; its children could not be listed ({listing})"));
+            let gone_past = |how: &str| (a.clause)(format!("the daemon on {socket} could not be asked in full ({untold}); {how}"));
             if kids.as_ref().is_some_and(Vec::is_empty) && live.rows.is_empty() && !live.pluto {
                 if will_restart {
                     let ends = if retires { "no live REPL or Pluto notebook" } else { "nothing live" };
                     (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); it has no REPL or Pluto child, so restarting it ends {ends}"));
                 }
+                gone_past("its own children showed nothing live");
             } else if !will_restart {
                 unknown = true;
+                gone_past("this run left it running");
             } else if q.restart_flag {
                 unknown = true;
                 (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it ends any REPL or Pluto notebook that is live (--restart-daemon)"));
+                gone_past("restarted as --restart-daemon asks");
             } else if (a.ask)(&daemon::ask_words(&live.rows, repl, live.pluto || pluto, true)) {
                 unknown = true;
                 (a.note)(&format!("note: could not ask the daemon on {socket} in full ({reason}); restarting it as answered"));
+                gone_past("restarted as answered at the console");
             } else {
                 println!("       {refuse_hint}");
                 let rows = if live.rows.is_empty() { String::new() } else { format!(", and restarting it would end the REPLs of: {}", live.rows.join(", ")) };
-                return Err(Stop::new(2, format!("could not ask the daemon on {socket} in full: it runs another version{rows}; {reason}")));
+                return Err(Stop::new(2, format!("could not ask the daemon on {socket} in full: it runs another version{rows}; {untold}")));
             }
         }
     }
@@ -664,24 +696,30 @@ fn ends_daemon(unit_runs: bool, retire_stops: bool, before: State) -> bool {
 /// is never read as none.
 pub(super) fn discover(m: &dyn Machine, sotd: &Path, endpoint: &str, daemon_here: bool, retire_stops: bool, unit_runs: bool, own_pids: bool) -> (State, String) {
     if daemon_here || retire_stops {
-        daemon::state(m, sotd, endpoint, unit_runs || retire_stops || own_pids)
+        daemon::state(m, sotd, endpoint, &|| Fact::known(unit_runs || retire_stops || own_pids))
     } else {
         (State::None, String::new())
     }
 }
 
-fn ask_daemon(m: &dyn Machine, plan: &mut Plan, new_sotd: &Path, why: &str) -> Result<(), Stop> {
+fn ask_daemon(m: &dyn Machine, plan: &mut Plan, new_sotd: &Path, why: &str, found: &mut Found) -> Result<(), Stop> {
     let endpoint = format!("unix:{}", plan.socket);
     let prefix = plan.prefix.clone();
     let env = m.env();
+    let clauses = std::cell::RefCell::new(Vec::new());
     let q = Question { before: plan.before, unit_runs: plan.unit_runs, retire_stops: plan.retire_stops, restart_flag: plan.opts.restart_daemon, socket: &plan.socket, why };
     let asks = Asks {
         live: &|| daemon::work(m, new_sotd, &endpoint),
         kids: &|| daemon::children(m, &prefix),
         ask: &|work| daemon::ask_restart(&env, work),
         note: &|t| say(t),
+        clause: &|c| clauses.borrow_mut().push(c),
     };
-    let (live, unknown) = question(&q, &asks)?;
+    let asked = question(&q, &asks);
+    for c in clauses.into_inner() {
+        found.checked(c);
+    }
+    let (live, unknown) = asked?;
     plan.live = live;
     plan.rows_unknown = unknown;
     Ok(())
@@ -710,16 +748,18 @@ fn lay_out(m: &dyn Machine, plan: &Plan, found: &mut Found) -> Result<(), Stop> 
     // --force on the tag fetch: a release tag moved upstream would otherwise abort every later fetch.
     let commit_ref = format!("{}^{{commit}}", plan.pack.commit);
     if m.show(cmd::git_in(&base).args(["fetch", "--tags", "--force", "origin"])) != Some(0) {
-        if archive && git_value(m, &base, &["rev-parse", "--verify", &commit_ref], String::new).is_ok() {
-            say(&format!("note: could not fetch origin; {} already holds {}", base.display(), plan.pack.short()));
-        } else {
+        if !archive {
             return Err(Stop::new(1, "fetch failed"));
         }
+        // A pack of the line installs from a clone that already holds its commit; whether it does is asked, and a
+        // question with no answer is said.
+        git_commit(m, &base, &["rev-parse", "--verify", &commit_ref], || format!("fetch failed, and {} does not hold {}", base.display(), plan.pack.short()))?;
+        say(&format!("note: could not fetch origin; {} already holds {}", base.display(), plan.pack.short()));
     }
     let want = if archive {
-        git_value(m, &base, &["rev-parse", "--verify", &commit_ref], || format!("commit {} is not in origin after fetch — push the line first", plan.pack.commit))?
+        git_commit(m, &base, &["rev-parse", "--verify", &commit_ref], || format!("commit {} is not in origin after fetch — push the line first", plan.pack.commit))?
     } else {
-        git_value(m, &base, &["rev-parse", &format!("refs/tags/{tag}^{{commit}}")], || format!("tag {tag} not present after fetch"))?
+        git_commit(m, &base, &["rev-parse", &format!("refs/tags/{tag}^{{commit}}")], || format!("tag {tag} not present after fetch"))?
     };
     if want != plan.pack.commit {
         return Err(Stop::new(1, format!("{tag} is at {want} in origin, not the pack's {}: refusing", plan.pack.commit)));
@@ -752,7 +792,7 @@ fn lay_out(m: &dyn Machine, plan: &Plan, found: &mut Found) -> Result<(), Stop> 
     // pointer armed over the install this one replaces would apply onto it. Only this target's: a shared home serves others.
     let updates = plan.prefix.join("updates");
     for name in [format!("last-good-{}.json", plan.target), format!("just-applied-{}", plan.target), format!("pending-{}.json", plan.target)] {
-        let _ = std::fs::remove_file(updates.join(name));
+        std::fs::remove_file(updates.join(name)).ok();
     }
     step("layout");
     if checkout.is_dir() {
@@ -765,7 +805,7 @@ fn lay_out(m: &dyn Machine, plan: &Plan, found: &mut Found) -> Result<(), Stop> 
             return Err(Stop::new(1, "worktree add failed; inspect this version path and its existing registration with git worktree list; registrations for unavailable paths are kept"));
         }
     }
-    let have = git_value(m, &checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", checkout.display()))?;
+    let have = git_commit(m, &checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", checkout.display()))?;
     if have != want {
         return Err(Stop::new(1, format!("checkout HEAD ({have}) != {tag} commit ({want}) — refusing")));
     }
@@ -774,10 +814,10 @@ fn lay_out(m: &dyn Machine, plan: &Plan, found: &mut Found) -> Result<(), Stop> 
     }
     let prev = flip_current(m, &repo, &current, &checkout)?;
     let compat = plan.prefix.join("julia");
-    let _ = std::fs::create_dir_all(&compat);
-    let _ = replace_link(&checkout, &compat.join("current"));
+    std::fs::create_dir_all(&compat).ok();
+    replace_link(&checkout, &compat.join("current")).ok();
     if !bin.join("sot-apply").is_file() {
-        let _ = copy_whole(&checkout.join("scripts/sot-apply.sh"), &bin.join("sot-apply"), Some(0o755));
+        copy_whole(&checkout.join("scripts/sot-apply.sh"), &bin.join("sot-apply"), Some(0o755)).ok();
     }
     prune_versions(m, &repo, &base, &tag, prev.as_deref(), found);
     Ok(())
@@ -795,7 +835,7 @@ fn copy_whole(src: &Path, dst: &Path, mode: Option<u32>) -> std::io::Result<()> 
         })
         .and_then(|()| std::fs::rename(&tmp, dst));
     if done.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        std::fs::remove_file(&tmp).ok();
     }
     done
 }
@@ -803,10 +843,10 @@ fn copy_whole(src: &Path, dst: &Path, mode: Option<u32>) -> std::io::Result<()> 
 /// Point the symlink `link` at `target`, replacing what is there (`ln -sfn`).
 fn replace_link(target: &Path, link: &Path) -> std::io::Result<()> {
     let tmp = link.with_file_name(format!(".{}.new.{}", link.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
+    std::fs::remove_file(&tmp).ok();
     std::os::unix::fs::symlink(target, &tmp)?;
     std::fs::rename(&tmp, link).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
+        std::fs::remove_file(&tmp).ok();
     })
 }
 
@@ -823,7 +863,7 @@ fn flip_current(m: &dyn Machine, repo: &Path, current: &Path, checkout: &Path) -
         }
         say("migrating pre-versioned layout (old clone preserved at repo/current.pre-versioned)");
         let aside = repo.join("current.pre-versioned");
-        let _ = std::fs::remove_dir_all(&aside);
+        std::fs::remove_dir_all(&aside).ok();
         std::fs::rename(current, &aside).map_err(|e| Stop::new(1, format!("moving {} aside: {e}", current.display())))?;
     }
     replace_link(checkout, current).map_err(|e| Stop::new(1, format!("flipping {}: {e}", current.display())))?;
@@ -1085,7 +1125,7 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
     let tmux = units.join("sot-tmux.service");
     if tmux.is_file() {
         let _ = u.systemctl(&["disable", "--now", "sot-tmux.service"]);
-        let _ = std::fs::remove_file(&tmux);
+        std::fs::remove_file(&tmux).ok();
     }
     let unit = units.join("sotd.service");
     let fresh = !unit.is_file();
@@ -1146,7 +1186,7 @@ fn wire_launcher(m: &dyn Machine, plan: &Plan) -> Result<(), Stop> {
 fn app_bundle(m: &dyn Machine, plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     let app = plan.home.join("Applications/Ship of Tools.app/Contents");
     for d in ["MacOS", "Resources"] {
-        let _ = std::fs::create_dir_all(app.join(d));
+        std::fs::create_dir_all(app.join(d)).ok();
     }
     let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n    <key>CFBundlePackageType</key><string>APPL</string>\n    <key>CFBundleName</key><string>Ship of Tools</string>\n    <key>CFBundleIdentifier</key><string>dev.ship-of-tools.sot</string>\n    <key>CFBundleExecutable</key><string>sot-launch</string>\n    <key>CFBundleIconFile</key><string>sot</string>\n    <key>NSHighResolutionCapable</key><true/>\n</dict></plist>\n";
     let write = |name: &str, text: &str, mode: u32| -> Result<(), Stop> {
@@ -1158,7 +1198,7 @@ fn app_bundle(m: &dyn Machine, plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     let logo = plan.checkout.clone().join("logo.png");
     if logo.is_file() && observe::on_path(m, "sips") && observe::on_path(m, "iconutil") {
         let iconset = plan.scratch.join("sot.iconset");
-        let _ = std::fs::create_dir_all(&iconset);
+        std::fs::create_dir_all(&iconset).ok();
         for sz in [16, 32, 128, 256, 512] {
             for (scale, suffix) in [(1, ""), (2, "@2x")] {
                 let px = (sz * scale).to_string();
@@ -1176,12 +1216,12 @@ fn app_bundle(m: &dyn Machine, plan: &Plan, wrapper: &str) -> Result<(), Stop> {
 /// path (the prefix does not move; the checkout does).
 fn desktop_entry(m: &dyn Machine, plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     let apps = plan.home.join(".local/share/applications");
-    let _ = std::fs::create_dir_all(&apps);
+    std::fs::create_dir_all(&apps).ok();
     let logo = plan.checkout.clone().join("logo.png");
     let fallback = plan.prefix.join("logo.png").to_string_lossy().into_owned();
     let mut icon = fallback.clone();
     if logo.is_file() {
-        let _ = copy_whole(&logo, &plan.prefix.join("logo.png"), None);
+        copy_whole(&logo, &plan.prefix.join("logo.png"), None).ok();
         let theme = plan.home.join(".local/share/icons/hicolor");
         let dir = theme.join("256x256/apps");
         if std::fs::create_dir_all(&dir).is_ok() && copy_whole(&logo, &dir.join("ship-of-tools.png"), None).is_ok() {
@@ -1203,7 +1243,7 @@ fn desktop_entry(m: &dyn Machine, plan: &Plan, wrapper: &str) -> Result<(), Stop
 /// install.json, last, whole.
 fn write_record(m: &dyn Machine, plan: &Plan) -> Result<(), Stop> {
     step("record");
-    let commit = git_value(m, &plan.checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", plan.checkout.display()))?;
+    let commit = git_commit(m, &plan.checkout, &["rev-parse", "HEAD"], || format!("cannot read HEAD of {}", plan.checkout.display()))?;
     let r = plan.record(if commit.is_empty() { "unknown" } else { &commit });
     let path = plan.prefix.join("install.json");
     record::write_whole(&path, &record::text_for(&record::read(&path), &r, plan.repair)).map_err(|e| Stop::new(1, format!("writing {}: {e}", path.display())))?;
@@ -1225,7 +1265,7 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
     step("check");
     let (version, prefix) = (&plan.pack.version, &plan.prefix);
     let checkout = plan.checkout.clone();
-    let head = |dir: &Path| observe::ask(m, cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| Ok(a.zero()?.first_line()));
+    let head = |dir: &Path| observe::ask(m, cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| Some(a.zero()?.first_line()).filter(|c| super::is_commit(c)).ok_or_else(|| Why::Malformed(format!("no commit id ('{}')", a.first_line()))));
     let commit = head(&checkout).read(
         |commit| commit,
         |why| {
@@ -1346,10 +1386,15 @@ fn daemon_after(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found
     let socket = &plan.socket;
     let journal = "see journalctl --user -u sotd.service";
     if !plan.unit_managed() {
-        let all = procs::snapshot(m);
-        let runs = procs::daemon_may_run(&all, &plan.prefix);
-        let (st, why) = daemon::state(m, &plan.sotd(), &endpoint, runs);
-        let why = all.read(|_| why.clone(), |listing| format!("{listing}; {why}"));
+        // A listing with no answer is FAIL whatever the daemon says: what runs under the install is not known.
+        let Some(all) = procs::snapshot(m).read(Some, |why| {
+            found.fail("daemon", format!("could not list this account's processes ({why}), so what runs under the install is unknown"));
+            None
+        }) else {
+            return State::Unknown;
+        };
+        let runs = !procs::daemon_pids(&all, &plan.prefix).is_empty();
+        let (st, why) = daemon::state(m, &plan.sotd(), &endpoint, &|| Fact::known(runs));
         if st == State::Unknown {
             found.fail("daemon", format!("a daemon runs on {socket} and could not be told its version ({why})"));
         }
@@ -1363,7 +1408,7 @@ fn daemon_after(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found
         return State::Unknown;
     };
     if active {
-        let (st, why) = daemon::wait_current(m, &plan.sotd(), &endpoint, super::secs_env(&m.env(), "SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, true);
+        let (st, why) = daemon::wait_current(m, &plan.sotd(), &endpoint, super::secs_env(&m.env(), "SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, &|| Fact::known(true));
         match st {
             State::Current => {}
             State::Held if held_ok => {}

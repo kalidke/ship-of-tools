@@ -90,7 +90,7 @@ pub(super) fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
     ));
     let written = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        std::fs::remove_file(&tmp).ok();
     }
     written
 }

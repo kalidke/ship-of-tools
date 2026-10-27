@@ -316,6 +316,7 @@ fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
         let error = match result { Ok(_) => panic!("stalled discovery was accepted"), Err(error) => error };
         assert_eq!(error.code, 1);
         assert!(error.detail.contains("within"), "{error:?}");
+        assert!(super::super::verdict::stop_line(&error, "").0.starts_with("FAIL: publish guard: "), "{error:?}");
         assert!(start.elapsed() < Duration::from_secs(9));
     } else {
         let cwd = if selector == "--check-only" { &f.base } else { &f.caller };
@@ -328,6 +329,7 @@ fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
             let start = Instant::now();
             enrolled.check(&mut found);
             assert!(found.fail.as_deref().is_some_and(|s| s.contains("within")), "{found:?}");
+            assert!(super::super::verdict::line(&found, "").0.starts_with("FAIL: publish guard: "), "{found:?}");
             assert!(found.steps.is_empty(), "a cut check is not a provisioning/conflict step: {found:?}");
             start
         } else {
@@ -338,6 +340,7 @@ fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
             };
             assert_eq!(error.code, 1);
             assert!(error.detail.contains("within"), "{error:?}");
+            assert!(super::super::verdict::stop_line(&error, "").0.starts_with("FAIL: publish guard: "), "after the layout's writes it is FAIL: {error:?}");
             assert!(found.steps.is_empty(), "a cut child is not status 3 or 4: {found:?}");
             start
         };

@@ -14,6 +14,16 @@ pub(in crate::install) enum Canned {
     /// It runs on this computer: Git, bash and the checkout's library, in a test's scratch folders.
     #[cfg_attr(windows, allow(dead_code, reason = "the Unix layout table runs Git live"))]
     Live,
+    /// Its program is not there to start.
+    #[cfg_attr(windows, allow(dead_code, reason = "the Unix gate's table removes systemctl"))]
+    Missing,
+    /// The first `n` commands this pattern names get the first answer, every later one the second.
+    After(usize, Box<Canned>, Box<Canned>),
+}
+
+/// Answered the first `n` times by `first`, then stalled.
+pub(in crate::install) fn stall_after(n: usize, first: Canned) -> Canned {
+    Canned::After(n, Box::new(first), Box::new(Canned::Stall))
 }
 
 pub(in crate::install) fn says(exit: i32, out: &str) -> Canned {
@@ -32,7 +42,7 @@ pub(in crate::install) const STALL_BOUND: Duration = Duration::from_secs(1);
 /// reaches the real `systemctl`, daemon or comm home.
 pub(in crate::install) struct Fake {
     env: RefCell<Env>,
-    answers: RefCell<Vec<(String, Canned)>>,
+    answers: RefCell<Vec<(String, Canned, usize)>>,
     asked: RefCell<Vec<String>>,
     pulse: tempfile::TempDir,
 }
@@ -44,7 +54,7 @@ impl Fake {
 
     /// Answer every command whose line holds `pattern` with `canned`; a later answer wins.
     pub fn answer(&self, pattern: impl Into<String>, canned: Canned) -> &Self {
-        self.answers.borrow_mut().push((pattern.into(), canned));
+        self.answers.borrow_mut().push((pattern.into(), canned, 0));
         self
     }
 
@@ -68,11 +78,16 @@ impl Fake {
     fn canned(&self, cmd: &Command) -> (String, Canned) {
         let line = std::iter::once(cmd.get_program()).chain(cmd.get_args()).map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>().join(" ");
         self.asked.borrow_mut().push(line.clone());
-        let found = self.answers.borrow().iter().rev().find(|(p, _)| line.contains(p.as_str())).map(|(_, c)| c.clone());
-        match found {
-            Some(c) => (line, c),
-            None => panic!("the fake computer was asked `{line}`, which no answer names"),
+        let mut answers = self.answers.borrow_mut();
+        let Some((_, canned, seen)) = answers.iter_mut().rev().find(|(p, _, _)| line.contains(p.as_str())) else {
+            panic!("the fake computer was asked `{line}`, which no answer names")
+        };
+        *seen += 1;
+        let mut canned = canned.clone();
+        while let Canned::After(n, first, then) = canned {
+            canned = if *seen <= n { *first } else { *then };
         }
+        (line, canned)
     }
 }
 
@@ -86,13 +101,15 @@ impl Machine for Fake {
             (_, Canned::Says(exit, out, err)) => Ok(Answer { exit, out, err }),
             (_, Canned::Stall) => cmd::output_within(&mut command("stall", &self.pulse.path().join("pulse")), bound.min(STALL_BOUND)),
             (_, Canned::Live) => cmd::output_within(cmd, bound),
+            (_, Canned::Missing) => Err(Why::NotStarted("No such file or directory (os error 2)".into())),
+            (_, Canned::After(..)) => unreachable!("an After is resolved to its answer"),
         }
     }
 
     fn act(&self, cmd: &mut Command) -> Ran {
         match self.canned(cmd) {
             (_, Canned::Says(exit, out, err)) => Ran { code: Some(exit), out, err },
-            (line, Canned::Stall) => panic!("a step that changes something is never stalled: `{line}`"),
+            (line, Canned::Stall | Canned::Missing | Canned::After(..)) => panic!("a step that changes something is never stalled: `{line}`"),
             (_, Canned::Live) => cmd::output(cmd),
         }
     }
@@ -100,7 +117,7 @@ impl Machine for Fake {
     fn show(&self, cmd: &mut Command) -> Option<i32> {
         match self.canned(cmd) {
             (_, Canned::Says(exit, ..)) => Some(exit),
-            (line, Canned::Stall) => panic!("a step that changes something is never stalled: `{line}`"),
+            (line, Canned::Stall | Canned::Missing | Canned::After(..)) => panic!("a step that changes something is never stalled: `{line}`"),
             (_, Canned::Live) => cmd::shown(cmd),
         }
     }
@@ -157,7 +174,7 @@ fn a_question_is_answered_or_says_why_not() {
     // The question as a person reads it: no git `-c` settings, no shell script text.
     let mut git = cmd::git_in(Path::new("/r"));
     git.args(["rev-parse", "HEAD"]);
-    assert_eq!(spelled(&git), "git -C /r rev-parse HEAD");
+    assert_eq!(spelled(&git), format!("{} -C /r rev-parse HEAD", if cfg!(windows) { "git.exe" } else { "git" }));
     assert_eq!(spelled(Command::new("/x/bash").args(["-c", ". lib", "bash", "/c/lib.sh", "sot_boot_wired", "/u"])), "bash /c/lib.sh sot_boot_wired /u");
 }
 

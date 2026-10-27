@@ -67,7 +67,7 @@ pub(super) fn wait_converge(log: &Path, start: u64, sentinel: &Path, tag: &str, 
         }
         std::thread::sleep(left.min(Duration::from_secs(1)));
     };
-    let _ = std::fs::remove_file(sentinel);
+    std::fs::remove_file(sentinel).ok();
     outcome
 }
 

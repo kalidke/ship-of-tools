@@ -152,7 +152,7 @@ impl Steps {
             std::thread::spawn(move || {
                 let mut bytes = Vec::new();
                 let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
-                let _ = sent.send((index, result));
+                sent.send((index, result)).ok();
             });
         }
         drop(sent);
@@ -245,7 +245,7 @@ fn signal_groups(groups: &[u32], signal: i32) {
 #[allow(clippy::disallowed_methods, reason = "the stop's last act: no step may start now, so the kill runs outside the steps and is waited for here")]
 fn kill_trees(pids: &[u32]) {
     for pid in pids {
-        let _ = Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().ok();
     }
 }
 
@@ -255,7 +255,7 @@ fn end_group(mut child: sot_containment::ContainedStd, deadline: Instant) -> std
     std::thread::spawn(move || {
         let result = child.kill();
         drop(child);
-        let _ = sent.send(result);
+        sent.send(result).ok();
     });
     done.recv_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "owned group/job did not end and reap within 5 s"))?

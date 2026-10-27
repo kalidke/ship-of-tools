@@ -18,12 +18,13 @@ fn ask(q: &unix::Question, live: Work, kids: Option<Vec<&'static str>>, answer: 
     let asked = std::cell::RefCell::new(false);
     let asks = Asks {
         live: &|| live.clone(),
-        kids: &|| kids.clone(),
+        kids: &|| Fact::known(kids.clone()),
         ask: &|_| {
             *asked.borrow_mut() = true;
             answer
         },
         note: &|_| {},
+        clause: &|_| {},
     };
     let got = unix::question(q, &asks);
     (got, asked.into_inner())
@@ -40,12 +41,13 @@ fn ask_update(state: State, live: Work, kids: Option<Vec<&'static str>>, flag: b
     let asked = std::cell::RefCell::new(None);
     let asks = Asks {
         live: &|| live.clone(),
-        kids: &|| kids.clone(),
+        kids: &|| Fact::known(kids.clone()),
         ask: &|words| {
             *asked.borrow_mut() = Some(words.to_string());
             answer
         },
         note: &|_| {},
+        clause: &|_| {},
     };
     let got = ask_before_update(state, "P", "no answer", flag, &asks);
     (got, asked.into_inner())
@@ -73,9 +75,10 @@ fn agent_update_words_distinguish_06_retirement_from_07_restart() {
         let notes = std::cell::RefCell::new(Vec::new());
         let asks = Asks {
             live: &Work::default,
-            kids: &|| None,
+            kids: &|| Fact::known(None),
             ask: &|_| panic!("no REPL or Pluto server needs an answer"),
             note: &|text| notes.borrow_mut().push(text.to_string()),
+            clause: &|_| {},
         };
         assert!(ask_before_update(State::Other, "P", version, false, &asks).is_ok());
         assert_eq!(*notes.borrow(), expected, "Windows: {version}");
@@ -103,21 +106,28 @@ fn agent_update_words_distinguish_06_retirement_from_07_restart() {
 #[test]
 fn a_live_daemon_is_asked_before_it_ends() {
     let said = |code: i32| Fact::known((code, String::new()));
-    assert_eq!(state_of(said(0), true).0, State::Current);
-    assert_eq!(state_of(said(3), false).0, State::Other);
-    assert_eq!(state_of(said(4), true).0, State::Held);
+    let runs = |r: bool| move || Fact::known(r);
+    assert_eq!(state_of(said(0), &|| panic!("an answer asks nothing more")).0, State::Current);
+    assert_eq!(state_of(said(3), &runs(false)).0, State::Other);
+    assert_eq!(state_of(said(4), &runs(true)).0, State::Held);
     for why in [Why::Failed("ended with exit 2: no hello".into()), Why::Cut(Duration::from_secs(30)), Why::Signal] {
         let no_answer = || Fact::unknown(Unknown::new("sotd same-version", why.clone()));
-        assert_eq!(state_of(no_answer(), true), (State::Unknown, format!("`sotd same-version` {why}")), "one that may run is never none");
-        assert_eq!(state_of(no_answer(), false).0, State::None);
+        assert_eq!(state_of(no_answer(), &runs(true)), (State::Unknown, format!("`sotd same-version` {why}")), "one that may run is never none");
+        assert_eq!(state_of(no_answer(), &runs(false)).0, State::None);
+        let (st, said) = state_of(no_answer(), &|| Fact::unknown(Unknown::new("ps", Why::Cut(Duration::from_secs(60)))));
+        assert!(st == State::Unknown && said.starts_with("`ps` did not answer within 60 s; "), "a listing with no answer presumes one runs, its reason kept: {said}");
     }
 
-    let w = work_of("repl alpha\nrepl beta\npluto server\n", "", Some(3));
+    let answer = |exit: i32, out: &str, err: &str| super::super::observe::Answer { exit, out: out.into(), err: err.into() };
+    let w = work_of(&answer(3, "repl alpha\nrepl beta\npluto server\n", "")).unwrap();
     assert_eq!(w, Work { rows: vec!["alpha".into(), "beta".into()], pluto: true, unsure: None });
-    assert_eq!(work_of("", "", Some(0)), Work::default());
-    let w = work_of("repl alpha\n", "sotd update repls: the daemon's reply says nothing of its Pluto server\n", Some(1));
+    assert_eq!(work_of(&answer(0, "", "")).unwrap(), Work::default());
+    for (exit, out) in [(3, ""), (3, "garbage\n"), (3, "repl alpha\nnoise\n"), (0, "repl alpha\n"), (3, "repl \n")] {
+        assert!(matches!(work_of(&answer(exit, out, "")), Err(Why::Malformed(_))), "exit {exit} '{out}' is no reading of live work");
+    }
+    let w = work_of(&answer(1, "repl alpha\n", "sotd update repls: the daemon's reply says nothing of its Pluto server\n")).unwrap();
     assert_eq!((w.rows.len(), w.unsure.as_deref()), (1, Some("sotd update repls: the daemon's reply says nothing of its Pluto server")));
-    assert_eq!(work_of("", "", None).unsure.as_deref(), Some("sotd update repls gave no reason (exit none)"));
+    assert_eq!(work_of(&answer(2, "", "")).unwrap().unsure.as_deref(), Some("sotd update repls gave no reason (exit 2)"));
 
     assert_eq!(child_kind("/j/julia --project=/c/julia/repl -e using ShipToolsRepl; ShipToolsRepl.run_shim()"), Some("repl"));
     assert_eq!(child_kind("/j/julia --project=/c/julia/pluto /c/julia/pluto/start.jl 1234"), Some("pluto"));
@@ -312,7 +322,7 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     let sotd = dir.path().join("sotd");
     sot_platform::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
     let t0 = Instant::now();
-    let (st, why) = wait_current(&Live, &sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, true);
+    let (st, why) = wait_current(&Live, &sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, &|| Fact::known(true));
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
     assert!(why.contains("did not answer within"), "{why}");

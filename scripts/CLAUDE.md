@@ -178,37 +178,48 @@ Guarantees, each with the mechanism it rests on. Install:
   release-gate witness completes.
 - Every question the install asks of the machine is bounded, and its unknown has one stated meaning. A question is a
   read-only child whose answer the run decides on. Each runs through `observe::ask` and comes back an
-  `observe::Fact`, its value or why there is none (it did not start, was cut at its bound, was ended by a signal, ended
-  with an exit its reader does not document, or printed what does not read), which no caller reaches without writing
-  what the unknown means: a dropped fact does not compile (`unused_must_use` is denied in `install/`), and an explicit
-  discard is visible in the code. The bound is 60 s through exit and complete output, under the same group or job
-  ownership as the publish guard's reads, then at most 5 s to end it (a cold CIM listing takes about 26 s on a hosted
-  Windows runner and misses 15 s); `same-version` has 30 s, a daemon wait's ask the smaller of the wait left and 60 s,
-  the console's ssh check 30 s, `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`;
-  CIM `Win32_Process`), every `--version`, `session-socket-path`, `update direction` and `repls`, `same-version`,
+  `observe::Fact`, its value or why there is none: it did not start, was cut at its bound, was ended by a signal, ended
+  with an exit its reader does not document, or printed what its reader cannot read (a reader builds a value only from
+  an answer it documents: `topology status` and `plan` from a table and a plan, `update repls` exit 3 only with its
+  lines, `same-version` exit 3 or 4 only with a version, a Git commit read only with a commit id). No caller reaches the
+  value without writing what the unknown means: a `Fact` left unused or bound to `let _` is refused in `install/`
+  (`unused_must_use` by the compiler, `clippy::let_underscore_must_use` by the gate's clippy runs). The bound is 60 s
+  through exit and complete output, under the same group or job ownership as the publish guard's reads, then at most
+  5 s to end it (a cold CIM listing takes about 26 s on a hosted Windows runner and misses 15 s); `same-version` has
+  30 s, a daemon wait's ask the smaller of the wait left and 60 s, the console's ssh check 30 s, the publish guard's
+  Git reads 60 s and `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`; CIM
+  `Win32_Process`), every `--version`, `session-socket-path`, `update direction` and `repls`, `same-version`,
   `topology status` and `plan`, `systemctl --user is-active` and `cat`, `sot_boot_wired` and `sot_boot_off_line`,
-  `ldd --version`, `stat -f`, Julia's version, gate and channel probes, the Git reads (`rev-parse`, `rev-list`,
-  `merge-base`, `status`, `ls-files`, `cat-file`, `tag -l`, the publish guard's), and on Windows the logon session, the
-  launcher code id and the Desktop shortcut's target. `systemctl --user` is asked wherever a `sotd.service` unit file
-  is in the user's unit folder, whatever the options (the ownership gate and the retire read it); a run that finds none
-  (a fresh box, a container, macOS) never reads the user manager.
-  What each unknown means:
-  - Before any write (the direction, role, gate and daemon steps) every unknown stops the run with its reason: exit 1,
-    exit 2 where a gate or the never-backwards rule refuses, nothing written under the prefix, `~/.local/bin`, the unit
-    folder or the comm home. A listing that gave no answer is never "none runs"; a daemon that may run and gives no
-    answer is `Unknown`, asked about, and with no yes the run refuses. An installed `sotd` whose version cannot be read
-    stops a run that names no target (exit 2); a named run goes on and its verdict says why. A direction that cannot be
-    told refuses an implicit move over a readable version and is never a repair. `topology plan` is read here (an exit
-    naming no hosts.toml is the local launcher; under a hosts.toml status cannot read, it is not asked).
-  - After the first write, the checkout's Git reads and Julia's gate and channel probes stop the run (FAIL; the record,
-    written last, is not); an old version folder git cannot read is kept, and a manifest git cannot place is kept, each
-    named in the verdict; a Julia whose version cannot be asked is ONE STEP LEFT.
-  - A Windows update whose listing, logon session or daemon cannot be told stops nothing and stays armed (ONE STEP
-    LEFT, with the reason); a daemon a Windows update cannot tell, judged by its own children, is asked about.
+  `ldd --version`, `stat -f`, the console's `ssh -n <alias> true`, Julia's version, gate and channel probes, the Git
+  reads (`rev-parse`, `rev-list`, `merge-base`, `status`, `ls-files`, `cat-file`, `tag -l`, the publish guard's), and
+  on Windows the logon session, the launcher code id and the Desktop shortcut's target. On Linux, whenever
+  `~/.config/systemd/user/sotd.service` exists, whatever the options, both `is-active` and `cat` are asked; a run that
+  finds no unit file never reads the user manager. The ownership rule they serve: a run never replaces another
+  install's unit and never works beside one another install runs here, so an active unit of another install is
+  refused (`--force-role-change` consents), and an inactive one is refused only by a run that would write over it (the
+  unit file's own owner) and left alone by one that does not. What each unknown means, and where its reason shows:
+  - Before any write (the direction, role, gate and daemon steps) an unknown stops the run with its reason (FAIL, exit
+    1, or 2 where a gate or the never-backwards rule refuses), nothing written under the prefix, `~/.local/bin`, the
+    unit folder or the comm home; `systemctl` missing while a unit file exists is such an unknown, and the stop names
+    the fix (a full login session, or the unit file moved aside). A listing that gave no answer is never "none runs"; a
+    daemon that may run and gives no answer is `Unknown`, asked about, and with no yes the run refuses. The exceptions,
+    which go on with the reason in the verdict: a filesystem type `stat` cannot read is ONE STEP LEFT; a named run over
+    an installed `sotd` whose version cannot be read, or a direction that cannot be told, is a clause of the PASS (an
+    implicit run refuses both, exit 2, and an unknown direction is never a repair); a restart that `--restart-daemon`
+    or a console yes allows over a daemon that cannot be told or cannot say its work, and one whose children show
+    nothing live, is a clause too.
+  - After the first write, an unknown in the layout's Git reads, Julia's gate and channel probes, the record's commit
+    read or the publish guard's enrollment reads (they need the base clone and the checkout the layout made) is FAIL
+    with its reason; the record, written last, is the one that was there, byte for byte. An old version folder git
+    cannot read is kept, and a manifest git cannot place is kept, each a clause; a Julia whose version cannot be asked
+    is ONE STEP LEFT.
+  - A Windows update whose listing after the stage, logon session or daemon before an apply here cannot be told stops
+    nothing and stays armed (ONE STEP LEFT, with the reason); a daemon an update cannot tell before it stages, judged
+    by its own children, is asked about, and with no yes the run refuses (exit 2) and stages nothing.
   - The final checks pass only on answers: a binary counts only from an exit 0 `--version` that says the version and
-    commit; a unit state, a daemon's answer, a listing, a launcher code id (empty included) or a plan that could not be
-    read is FAIL. A filesystem type (`stat`), a boot start (`sot_boot_wired`, after the run or in a retire) and the
-    Desktop shortcut that cannot be read are ONE STEP LEFT naming what to check.
+    commit; a checkout's commit, a unit state, a daemon's answer (after a converge too), a listing (with or without a
+    unit), a launcher code id (empty included) or a plan that could not be read is FAIL. A boot start (after the run or
+    in a retire) and the Desktop shortcut that cannot be read are ONE STEP LEFT naming what to check.
   - Not asked at all: the user name (linger is enabled by the numeric uid).
   Children that change something or transfer are not questions and are not bounded here: clone, fetch, `worktree add`
   and `remove`, `sotd update stage`, `trust declare`, `topology sync` and `pin`, the library's renders and boot writes,
@@ -216,8 +227,13 @@ Guarantees, each with the mechanism it rests on. Install:
   `xattr`, the icon and desktop tools, the Windows scripts (stop, apply, shortcut, converge) and the junction; transfers
   keep their stall bounds. Every child goes through `observe::Machine`, which a test stands in for. The tests are
   `install::observe` (each reason from a real child), the decision tests of each module, and one table per phase that
-  cuts each question in turn on a fake computer and reads the verdict line, its reason, its exit code and the untouched
-  prefix: `install::unix::observe_tests` (Linux and macOS) and `install::windows::observe_tests` (Windows, hosted CI).
+  cuts each question in turn on a fake computer, and gives each reader an answer it cannot read, and reads the verdict
+  line, its reason, its exit code and the protected state (the prefix and home byte for byte before any write, the
+  record byte for byte after): `install::unix::observe_tests` (decide, the check, Julia, the retire and the record, the
+  layout on a scratch origin; Linux and macOS, each row on the systems its code runs on) and
+  `install::windows::observe_tests` (the layout's Git reads, the shortcut, the update and the final state; Windows, in
+  hosted CI). The publish guard's reads are cut by its own suite (`install::publish`), which names the FAIL line. The
+  console's own reading of a person's answer is a person's, not a fake's: the role question's ssh check is cut by itself.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable

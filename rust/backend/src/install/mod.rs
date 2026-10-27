@@ -5,8 +5,9 @@
 //! daemon's live work), then lays the release out, wires it, records it, checks what it left, and ends with the one
 //! verdict line. It runs the other subsystems' commands (`sotd update`, `same-version`, `topology`, `trust`) as programs.
 
-// A question's answer (`observe::Fact`) is never dropped unread.
-#![deny(unused_must_use)]
+// A question's answer (`observe::Fact`) is never dropped unread: not as a statement (`unused_must_use`), not by
+// `let _ =` (clippy, which the gate runs; a deliberate `let _ = fact` fails it).
+#![deny(unused_must_use, clippy::let_underscore_must_use)]
 
 mod cmd;
 mod daemon;

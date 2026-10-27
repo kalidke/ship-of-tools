@@ -160,7 +160,8 @@ pub(super) fn judge(f: &Facts) -> Judged {
         _ => format!("put a Julia {floor} or later ahead of {} on PATH", if f.path_julia.is_empty() { "julia" } else { &f.path_julia }),
     };
     let line = format!("{bad}, below the {floor} the kernel needs: run  {fix}");
-    // Steps that run on the PATH julia cannot pass below the floor, so the run ends before one runs.
+    // Steps that run on the PATH julia cannot pass below the floor, so the run ends before one runs. A PATH julia
+    // whose version could not be asked is not known to be below it: its reason is already in `line`, a step.
     if !f.selected && f.refresh.as_ref().read(|v| !at_floor(v, floor), |_| false) {
         return Judged::Stop(line);
     }
@@ -221,7 +222,7 @@ pub(super) const ENVS: [(&str, &str); 3] = [
 pub(super) fn instantiate(m: &dyn Machine, checkout: &Path, selected: Option<&str>, scratch: &Path, repair: bool, say: &dyn Fn(&str), found: &mut Found) {
     for (env, manifest) in stale_manifests(m, checkout, repair, found) {
         say(&format!("dropping stale julia/{env}/Manifest.toml (fresh resolve at this tag)"));
-        let _ = std::fs::remove_file(&manifest);
+        std::fs::remove_file(&manifest).ok();
     }
     say("instantiating julia envs (first run takes a few minutes)");
     for (env, code) in ENVS {

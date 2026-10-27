@@ -69,15 +69,16 @@ fn a_listing_must_be_structurally_one() {
 
 #[test]
 fn a_failed_listing_never_says_no_daemon_runs() {
+    // Whether a daemon runs, when its listing gave no answer, is the daemon's `state_of` (it presumes one, with why).
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path();
     let seen = Fact::known(vec![proc_of(prefix, "sotd", 10, 1), Proc { pid: 11, ppid: 10, name: "julia".into(), exe: "julia".into(), args: "julia -e x".into() }]);
     let cut = || Fact::unknown(Unknown::new("ps", Why::Cut(Duration::from_secs(60))));
-    assert!(daemon_may_run(&seen, prefix));
-    assert!(!daemon_may_run(&Fact::known(vec![proc_of(Path::new("/elsewhere"), "sotd", 12, 1)]), prefix), "a listing that shows none says so");
-    assert!(daemon_may_run(&cut(), prefix), "a listing that could not be read presumes one");
-    assert_eq!(super::super::daemon::children_in(seen, prefix), Some(vec![]), "its children are those the listing shows");
-    assert_eq!(super::super::daemon::children_in(cut(), prefix), None, "nothing can be ruled out");
+    assert_eq!(daemon_pids(&[proc_of(Path::new("/elsewhere"), "sotd", 12, 1)], prefix), Vec::<u32>::new(), "a listing that shows none says so");
+    assert_eq!(super::super::daemon::children_in(seen, prefix), Fact::known(Some(vec![])), "its children are those the listing shows");
+    assert_eq!(super::super::daemon::children_in(Fact::known(vec![]), prefix), Fact::known(None), "no daemon process: nothing can be ruled out");
+    let why = super::super::daemon::children_in(cut(), prefix).read(|k| panic!("a cut listing named children {k:?}"), |u| u);
+    assert_eq!(why.to_string(), "`ps` did not answer within 60 s", "the cut keeps its reason");
 }
 
 // Finite stand-ins for the listing program; they run on every system.
