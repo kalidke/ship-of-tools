@@ -88,7 +88,7 @@ impl State {
                 // each host's transport task — empty here only briefly.
                 host_transports: HashMap::new(),
                 host_resolved_dial: HashMap::new(),
-                link_gates: HashMap::new(),
+                links: HashMap::new(),
                 declared_host: HashMap::new(),
                 reconnect_now: Arc::new(tokio::sync::Notify::new()),
             },

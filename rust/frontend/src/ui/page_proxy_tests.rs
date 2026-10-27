@@ -3,7 +3,7 @@ use super::*;
 /// Cross-host figure defect (topology plan step 7): `resolve_proxy_target`
 /// must open the proxy against the daemon that OWNS the announcing row,
 /// not only a single default host. A row on a non-default host with a
-/// resolved ssh dial must proxy through ITS OWN recipe — this fails
+/// resolved remote dial must proxy over ITS OWN link, with its own token — this fails
 /// against the old `proxy_host == Some(default_host)`-only gate, which
 /// left every non-default host's `Dial` case unreachable.
 #[test]
@@ -26,10 +26,7 @@ fn resolve_proxy_target_dials_a_non_default_hosts_own_resolved_address() {
     );
     match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
     {
-        ProxyTarget::Dial(got, token) => {
-            assert_eq!(got, crate::pages::PageDial::Ssh(recipe));
-            assert_eq!(token.as_deref(), Some("tok-gpu"));
-        }
+        ProxyTarget::Dial(token) => assert_eq!(token.as_deref(), Some("tok-gpu")),
         other => panic!("expected Dial for a proxy-capable host with a resolved ssh recipe, got {other:?}"),
     }
 }
@@ -47,10 +44,7 @@ fn resolve_proxy_target_still_dials_the_default_host() {
     let host_transports = HashMap::new();
     match State::resolve_proxy_target(&host, &proxy_capable_hosts, &host_resolved_dial, &host_transports)
     {
-        ProxyTarget::Dial(got, token) => {
-            assert_eq!(got, crate::pages::PageDial::Ssh(recipe));
-            assert_eq!(token, None);
-        }
+        ProxyTarget::Dial(token) => assert_eq!(token, None),
         other => panic!("expected Dial for the default host, got {other:?}"),
     }
 }
@@ -74,8 +68,8 @@ fn resolve_proxy_target_refuses_visibly_when_no_dial_is_held() {
     }
 }
 
-/// A generated hub relay is a remote page target: the proxy dials the exact path the control connection
-/// resolved, with the host's token, and a `Local` resolution still refuses.
+/// A generated hub relay is a remote page target: the proxy goes over the host's link, with the host's token, and a
+/// `Local` resolution still refuses.
 #[test]
 fn a_resolved_relay_is_a_remote_page_target() {
     let host = "gpu-box".to_string();
@@ -91,7 +85,7 @@ fn a_resolved_relay_is_a_remote_page_target() {
     )]);
     assert_eq!(
         State::resolve_proxy_target(&host, &capable, &resolved, &transports),
-        ProxyTarget::Dial(crate::pages::PageDial::Relay(path), Some("tok".to_string()))
+        ProxyTarget::Dial(Some("tok".to_string()))
     );
     let local = HashMap::from([(host.clone(), ResolvedDial::Local)]);
     assert!(matches!(

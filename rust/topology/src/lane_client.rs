@@ -23,24 +23,23 @@
 //! # One bounded, cancellable dial+handshake, one stream adapter
 //!
 //! [`LaneStream`] is the ONE adapter every transport (`Unix`/`Pipe`/
-//! `Bridged`) goes through, implementing `sot_platform::transport::Client`
+//! `Link`) goes through, implementing `sot_platform::transport::Client`
 //! directly — [`DaemonLaneClient`] is just `{stream: LaneStream, peer}`,
 //! delegating every `Client` call straight to `stream`. `Unix` reuses
 //! `sot_platform::transport::socket_unix::SocketClient` and `Pipe` reuses
 //! `sot_platform::transport::pipe_win::PipeClient` verbatim (both already bounded, cancellable
-//! connectors with real `cancel()`s); `Bridged` is the ssh child.
+//! connectors with real `cancel()`s); `Link` is a channel of the host's link (`crate::link`), whose blocking face
+//! is a `Client` with a real `cancel()` too.
 //! [`DaemonLaneEndpoint::dial`] then runs in two ABSOLUTE-deadline phases sharing this one
-//! adapter: connect (2 s, each transport's own bounded connector — never
+//! adapter: connect (each transport's own bounded connector, or the channel's open — never
 //! a blocking call an external deadline merely gives up ON without
 //! actually stopping), then [`run_handshake`] (a SEPARATE bound
 //! covering the whole write+read round trip as ONE operation, not a
 //! per-read socket timeout a trickle of bytes could extend indefinitely
 //! — `shutdown`/`cancel` on expiry, the same mechanism every transport's
 //! own `Client::cancel` already provides). That bound is 2 s on a local
-//! route and `SSH_LOGIN_BOUND` on an ssh or relay route, whose handshake
-//! holds a whole ssh login: this window's, or the hub relay's to the far host.
-//! The host's link gate watches such a login from the moment it starts until its
-//! reply (`LinkWatch`): a close of the gate cancels it, and the dial is `LinkDown`.
+//! route; a link route's open and handshake share one `LINK_REPLY_BOUND` (10 s), which holds no login: the link's
+//! login came before it. The link's end ends a dial in flight: the channel reads `LinkDown`.
 //!
 //! # Refusals and uncertainty are typed
 //!
@@ -61,9 +60,6 @@
 
 use std::path::PathBuf;
 
-#[path = "lane_child.rs"]
-mod lane_child;
-use lane_child::BridgedClient;
 use std::time::Instant;
 
 use sot_platform::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
@@ -76,18 +72,15 @@ use sot_protocol::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
 /// How to reach a row's daemon — a local Unix socket / Windows named
 /// pipe (`Local`, matching the platform endpoints' own transport for
-/// this host's daemon), or an ssh child (`Ssh`, C3 as amended — the
-/// transport for every OTHER host, since the daemon has no TCP listener
+/// this host's daemon), or a channel of the host's link (`Link`, the
+/// transport for every OTHER host, over ssh or a hub relay, since the daemon has no TCP listener
 /// and the control plane dials no TCP port, ADR 0049 `## User isolation`).
 /// Carries no row: the row rides `Endpoint`'s own `lane` argument, named
 /// exactly once — never duplicated onto the dial value itself.
 pub enum LaneDial {
     Local(PathBuf),
-    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
-    Relay(PathBuf, crate::ssh_bridge::LinkGate),
-    /// The recipe and its host's link gate: a down gate makes the dial
-    /// fail with `TransportError::LinkDown` and start no ssh.
-    Ssh(crate::ssh_bridge::SshRecipe, crate::ssh_bridge::LinkGate),
+    /// The host's link: a down link makes the dial fail with `TransportError::LinkDown` at once, and starts no login.
+    Link(crate::link::LinkHandle),
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
@@ -127,13 +120,8 @@ pub struct DaemonLaneEndpoint {
     dial: LaneDial,
     pub token: Option<String>,
     #[cfg(any(test, feature = "test-handshake-bound"))]
-    test_ssh_spawner: Option<TestSshSpawner>,
-    #[cfg(any(test, feature = "test-handshake-bound"))]
     test_handshake_bound: Option<std::time::Duration>,
 }
-
-#[cfg(any(test, feature = "test-handshake-bound"))]
-type TestSshSpawner = std::sync::Arc<dyn Fn(std::process::Command) -> std::io::Result<std::process::Child> + Send + Sync>;
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
 /// it — deliberately the same two fields as `sot_platform::identity::challenge::
@@ -158,8 +146,7 @@ impl PeerIdentity for BridgedPeer {
 /// The ONE stream adapter every transport this endpoint dials goes
 /// through — `Unix`/`Pipe` reuse platform's own hardened clients
 /// verbatim (real bounded connectors, real `cancel()`s) rather than
-/// reimplementing either; `Bridged` needed a wrapper of its own (platform
-/// has no ssh-child client). `DaemonLaneClient` below is nothing more than
+/// reimplementing either; `Link` is a channel's blocking face. `DaemonLaneClient` below is nothing more than
 /// `{stream: LaneStream, peer}` — every `Client` call delegates straight
 /// through.
 enum LaneStream {
@@ -167,7 +154,7 @@ enum LaneStream {
     Unix(sot_platform::transport::socket_unix::SocketClient),
     #[cfg(windows)]
     Pipe(sot_platform::transport::pipe_win::PipeClient),
-    Bridged(BridgedClient),
+    Link(crate::link::Channel),
 }
 
 
@@ -178,7 +165,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.write_all(bytes),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.write_all(bytes),
-            LaneStream::Bridged(c) => c.write_all(bytes),
+            LaneStream::Link(c) => c.write_all(bytes),
         }
     }
     fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
@@ -187,7 +174,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.read(buf),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.read(buf),
-            LaneStream::Bridged(c) => c.read(buf),
+            LaneStream::Link(c) => c.read(buf),
         }
     }
     fn cancel(&self) {
@@ -196,7 +183,7 @@ impl Client for LaneStream {
             LaneStream::Unix(c) => c.cancel(),
             #[cfg(windows)]
             LaneStream::Pipe(c) => c.cancel(),
-            LaneStream::Bridged(c) => c.cancel(),
+            LaneStream::Link(c) => c.cancel(),
         }
     }
 }
@@ -260,10 +247,10 @@ impl Endpoint for DaemonLaneEndpoint {
         PeerAuthOutcome::Authenticated(conn.peer)
     }
 
-    /// The host's link gate for an ssh dial; every other dial is local.
+    /// The host's link for a link dial; every other dial is local.
     fn link_up(&self) -> bool {
         match &self.dial {
-            LaneDial::Relay(_, gate) | LaneDial::Ssh(_, gate) => gate.is_up(),
+            LaneDial::Link(link) => link.is_up(),
             LaneDial::Local(_) => true,
         }
     }
@@ -339,7 +326,7 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
     }
 }
 
-/// `PipeClient`/`SocketClient`/`BridgedClient`'s `write_all`/`read` are
+/// `PipeClient`/`SocketClient`/`Channel`'s `write_all`/`read` are
 /// `&self` methods returning `Result<_, TransportError>`
 /// (`sot_platform::transport::Client`'s own shape), not `std::io::{Read,
 /// Write}` — this is the ONE adapter that lets `write_frame_blocking`/
@@ -349,16 +336,31 @@ struct ClientIo<'a>(&'a dyn Client);
 
 impl<'a> std::io::Read for ClientIo<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf).map_err(|e| std::io::Error::other(e.to_string()))
+        self.0.read(buf).map_err(client_io_error)
     }
 }
 
 impl<'a> std::io::Write for ClientIo<'a> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write_all(buf).map(|()| buf.len()).map_err(|e| std::io::Error::other(e.to_string()))
+        self.0.write_all(buf).map(|()| buf.len()).map_err(client_io_error)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// A client's error as the codec's io error: a link's end keeps its own kind, so the handshake can say `LinkDown`.
+fn client_io_error(e: TransportError) -> std::io::Error {
+    let kind = if matches!(e, TransportError::LinkDown) { std::io::ErrorKind::NotConnected } else { std::io::ErrorKind::Other };
+    std::io::Error::new(kind, e.to_string())
+}
+
+/// The io error of a handshake that failed: `LinkDown` when the link ended under it, else `Unreachable`.
+fn handshake_error(e: std::io::Error) -> TransportError {
+    if e.kind() == std::io::ErrorKind::NotConnected {
+        TransportError::LinkDown
+    } else {
+        TransportError::Unreachable(e)
     }
 }
 
@@ -400,63 +402,33 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
         let mut both = Vec::new();
         sot_protocol::codec::write_frame_blocking(&mut both, hello).map_err(|e| unreachable(&e))?;
         sot_protocol::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
-        ClientIo(stream).write_all(&both).map_err(TransportError::Unreachable)?;
+        ClientIo(stream).write_all(&both).map_err(handshake_error)?;
         let mut r = std::io::BufReader::new(ClientIo(stream));
-        let hello_reply = read_reply(stream, &mut r)?;
+        let hello_reply = read_reply(&mut r)?;
         classify_hello_reply(hello_reply)?;
-        read_reply(stream, &mut r)
+        read_reply(&mut r)
     });
-    // A refused hello and every reply's own classification are the daemon's answer and are returned as it gave them
-    // (BLOCKER 2 of round 1: a stderr line used to replace them). The ssh child's last stderr line is added once: by
-    // `diagnose` to the client's own write or read error, by `read_reply` to a reply that ended early, ran over the cap
-    // or did not parse, and here to the bound.
+    // A refused hello and every reply's own classification are the daemon's answer and are returned as it gave them.
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
         Some(Err(e)) => Err(e),
-        None => Err(TransportError::Unreachable(with_ssh_line(
-            stream,
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"),
-        ))),
+        None => Err(TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"))),
     }
 }
 
-/// One reply of the handshake. A read the client failed is its own io error, whose text names the ssh child's line
-/// already (`diagnose`); a read that ended before a whole frame (the child's stdout closed, an over-long or unparsable
-/// line) went through no client error, so the line is added here. The error's whole chain is kept (`{:#}`).
-fn read_reply(stream: &LaneStream, r: &mut std::io::BufReader<ClientIo<'_>>) -> Result<Frame, TransportError> {
+/// One reply of the handshake. A read that failed or ended before a whole frame is `Unreachable`; a link that ended
+/// meanwhile is `LinkDown`. The error's whole chain is kept (`{:#}`).
+fn read_reply(r: &mut std::io::BufReader<ClientIo<'_>>) -> Result<Frame, TransportError> {
     sot_protocol::codec::read_frame_blocking(r).map_err(|e| {
-        let text = std::io::Error::other(format!("{e:#}"));
-        if e.downcast_ref::<std::io::Error>().is_some() {
-            TransportError::Unreachable(text)
-        } else {
-            TransportError::Unreachable(with_ssh_line(stream, text))
-        }
+        let kind = e.downcast_ref::<std::io::Error>().map_or(std::io::ErrorKind::Other, std::io::Error::kind);
+        handshake_error(std::io::Error::new(kind, format!("{e:#}")))
     })
 }
 
-/// `e`, with the ssh child's last stderr line after it when `stream` is one: a dying child's stdout closes as a clean
-/// `Ok(0)` EOF that the codec turns into its own generic text, so the child's own complaint is the diagnosis to add.
-fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
-    if let LaneStream::Bridged(bridged) = stream {
-        if let Some(line) = bridged.poll_last_stderr() {
-            return std::io::Error::new(e.kind(), format!("{e}: {line}"));
-        }
-    }
-    e
-}
-
-/// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
-/// client that holds the stream and the peer the daemon reported. A login its host's link gate watches (`link`) ends
-/// when the gate closes before its reply: the stream's cancel ends the handshake, and the dial is `LinkDown`.
-fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration, link: Option<crate::ssh_bridge::LinkWatch>) -> Result<DaemonLaneClient, TransportError> {
-    let deadline = Instant::now() + bound;
-    let (pid, created) = match link {
-        None => run_handshake(&stream, hello, req, deadline)?,
-        Some(link) => match link.run(|| stream.cancel(), || run_handshake(&stream, hello, req, deadline)) {
-            (_, true) => return Err(TransportError::LinkDown),
-            (replied, false) => replied?,
-        },
-    };
+/// The handshake over a connected stream, by `deadline`: the hello and the `lane.connect` request, the replies
+/// classified, and the client that holds the stream and the peer the daemon reported.
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, deadline: Instant) -> Result<DaemonLaneClient, TransportError> {
+    let (pid, created) = run_handshake(&stream, hello, req, deadline)?;
     Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
@@ -466,39 +438,14 @@ impl DaemonLaneEndpoint {
             dial,
             token,
             #[cfg(any(test, feature = "test-handshake-bound"))]
-            test_ssh_spawner: None,
-            #[cfg(any(test, feature = "test-handshake-bound"))]
             test_handshake_bound: None,
         }
-    }
-
-    #[cfg(any(test, feature = "test-handshake-bound"))]
-    pub fn with_test_ssh_spawner(mut self, spawner: TestSshSpawner) -> Self {
-        self.test_ssh_spawner = Some(spawner);
-        self
     }
 
     #[cfg(any(test, feature = "test-handshake-bound"))]
     pub fn with_test_handshake_bound(mut self, bound: std::time::Duration) -> Self {
         self.test_handshake_bound = Some(bound);
         self
-    }
-
-    /// One ssh login, watched by its gate from the moment it starts (`LinkGate::admit`).
-    fn spawn_ssh(&self, recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<(BridgedClient, crate::ssh_bridge::LinkWatch), TransportError> {
-        #[cfg(any(test, feature = "test-handshake-bound"))]
-        if let Some(spawn) = &self.test_ssh_spawner {
-            let command = gate.command(recipe).map_err(|error| match error {
-                crate::ssh_bridge::SpawnError::LinkDown => TransportError::LinkDown,
-                crate::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
-            })?;
-            return match gate.admit(command, |command| spawn(command)) {
-                Ok((child, link)) => Ok((BridgedClient::wrap(child).map_err(TransportError::Unreachable)?, link)),
-                Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
-                Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
-            };
-        }
-        BridgedClient::spawn(recipe, gate)
     }
 
     // Complete the lane handshake according to `handshake`'s contract.
@@ -512,24 +459,20 @@ impl DaemonLaneEndpoint {
         let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
         let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
-        // The host's link gate watches a relay or ssh login from its start until its reply: a down link starts
-        // none, and a close ends the one in flight.
-        let mut link = match &self.dial {
-            LaneDial::Relay(_, gate) => Some(gate.watch().ok_or(TransportError::LinkDown)?),
-            LaneDial::Ssh(..) | LaneDial::Local(_) => None,
-        };
-        // An ssh or relay route's handshake holds a whole ssh login; a local route's only the two replies.
+        // A link route's open and handshake share one bound, which holds no login; a local route's handshake has its
+        // own, after the connector's.
         let production = match &self.dial {
-            LaneDial::Ssh(..) | LaneDial::Relay(..) => crate::ssh_bridge::SSH_LOGIN_BOUND,
+            LaneDial::Link(_) => crate::link::LINK_REPLY_BOUND,
             LaneDial::Local(_) => CONNECT_BOUND,
         };
         #[cfg(any(test, feature = "test-handshake-bound"))]
         let bound = self.test_handshake_bound.unwrap_or(production);
         #[cfg(not(any(test, feature = "test-handshake-bound")))]
         let bound = production;
+        let opened = Instant::now();
         let stream = match &self.dial {
             #[cfg(unix)]
-            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
+            LaneDial::Local(path) => {
                 // `connect_own` uses platform's non-blocking connector and
                 // fixed `CONNECT_BOUND` retry budget, then checks the
                 // listener's cached account before client I/O (ADR 0049,
@@ -540,21 +483,29 @@ impl DaemonLaneEndpoint {
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
-            LaneDial::Local(path) | LaneDial::Relay(path, _) => {
+            LaneDial::Local(path) => {
                 // `connect_own`: `sot_platform::transport::pipe_win`'s bounded pipe
                 // connector, then the check that this OS account serves the
                 // pipe (ADR 0049, User isolation), before the first byte.
                 let client = sot_platform::transport::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
-            LaneDial::Ssh(recipe, gate) => {
-                let (client, watch) = self.spawn_ssh(recipe, gate)?;
-                link = Some(watch);
-                LaneStream::Bridged(client)
-            }
+            LaneDial::Link(link) => LaneStream::Link(link.open_blocking(bound).map_err(open_error)?),
         };
+        let deadline = match &self.dial {
+            LaneDial::Link(_) => opened + bound,
+            LaneDial::Local(_) => Instant::now() + bound,
+        };
+        handshake(stream, &hello, &frame, deadline)
+    }
+}
 
-        handshake(stream, &hello, &frame, bound, link)
+/// A channel that did not open: a down link is `LinkDown` (the caller waits for `link_up`); a refusal or no answer is
+/// `Unreachable`, retried on the caller's pace.
+fn open_error(e: crate::link::OpenError) -> TransportError {
+    match e {
+        crate::link::OpenError::LinkDown => TransportError::LinkDown,
+        other => TransportError::Unreachable(std::io::Error::other(other.to_string())),
     }
 }
 

@@ -52,7 +52,8 @@ pub(super) struct Table {
     /// Why the link ended; `None` while it is up.
     down: Option<End>,
     chans: BTreeMap<u32, Chan>,
-    /// The highest channel number opened on this link: a frame for one above it names a channel never opened.
+    /// The highest channel number opened on this link. Opens are numbered one after another, so a frame for a number
+    /// above it names a channel never opened.
     highest: u32,
     /// The link ops waiting for the writer, sent before any channel's data.
     ops: VecDeque<Op>,
@@ -330,8 +331,10 @@ impl Table {
         if self.side != Side::Router {
             return Err("a link.open sent to the window".to_string());
         }
-        if ch <= self.highest {
-            return Err(format!("channel {ch} opened again or out of order (highest {})", self.highest));
+        // Opens are numbered one after another, so every number up to the highest was opened: a number skipped would
+        // read as a closed channel, not as one never opened.
+        if ch != self.highest + 1 {
+            return Err(format!("channel {ch} opened out of order (the next is {})", self.highest + 1));
         }
         self.highest = ch;
         if self.chans.len() >= MAX_CHANNELS {

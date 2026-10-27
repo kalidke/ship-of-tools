@@ -617,8 +617,14 @@ impl EchoListener {
 
 /// The bridge with `args`, its stdio piped, and a window's link over them; the child is killed on drop.
 fn bridge_link(rt: &tokio::runtime::Runtime, args: &[&str]) -> (tokio::process::Child, sot_topology::link::Link) {
+    bridge_link_with(rt, args, &[])
+}
+
+/// [`bridge_link`] with `envs` set for the bridge.
+fn bridge_link_with(rt: &tokio::runtime::Runtime, args: &[&str], envs: &[(&str, &str)]) -> (tokio::process::Child, sot_topology::link::Link) {
     let mut cmd = support::sotd_command();
     cmd.arg("stdio-bridge").args(args).env("XDG_RUNTIME_DIR", runtime_root());
+    cmd.envs(envs.iter().copied());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     rt.block_on(async {
         let mut child = tokio::process::Command::from(cmd).kill_on_drop(true).spawn().expect("spawn sotd stdio-bridge");
@@ -775,6 +781,84 @@ fn dash_dash_host_carries_a_link_hello_unchanged() {
     let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "{stderr}");
     echo.join().unwrap();
+}
+
+/// Topology 14: a router whose window stays silent ends at its silence bound and exits, though the window holds its
+/// input open: the read of that input, which nothing can cancel, does not hold the process.
+#[test]
+fn a_silent_window_ends_its_router_with_its_input_still_open() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("link-silent.sock");
+    let echo = EchoListener::bind(&socket);
+    let endpoint = format!("unix:{}", socket.display());
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (mut child, link) = bridge_link_with(&rt, &["--endpoint", &endpoint], &[("SOT_TEST_LINK_SILENCE_MS", "500")]);
+    let started = Instant::now();
+    let exited = rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), child.wait()).await });
+    let status = exited.expect("the router exits within 5 s of a 500 ms silence").expect("wait for the bridge");
+    assert_eq!(status.code(), Some(1), "silence is a failure");
+    println!("silent window: the router exited {:?} after the link started", started.elapsed());
+    wait_for("channel 0's connection ends", Duration::from_secs(2), || echo.ends() == 1);
+    drop(link);
+}
+
+/// A listener that takes one connection and reports every byte it read until that connection's end.
+fn record_one(socket: &Path) -> Receiver<Vec<u8>> {
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket).expect("bind the recorder");
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept");
+        let mut got = Vec::new();
+        let _ = conn.read_to_end(&mut got);
+        let _ = tx.send(got);
+    });
+    rx
+}
+
+/// Topology 12, the first line's bounds: a first line longer than an envelope is read only to the bound and, being no
+/// `link.hello`, forwarded whole with what follows; a first line with no newline before the end of input is forwarded
+/// as it came; a first line that ends in CRLF is forwarded with both bytes.
+#[test]
+fn a_first_line_past_the_bound_unterminated_or_crlf_is_forwarded_unchanged() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let hello = sot_protocol::HelloReq::this_process("bridge-crlf", "fe", Some("plain-host".to_string())).expect("this process's account");
+    let mut crlf = serde_json::to_vec(&sot_protocol::Frame::req(1, sot_protocol::op::HELLO, serde_json::to_value(&hello).unwrap())).unwrap();
+    crlf.extend_from_slice(b"\r\nafter the line\r\n");
+    let mut long = vec![b'x'; sot_protocol::codec::MAX_ENVELOPE_BYTES + 4096];
+    long.extend_from_slice(b"\nafter the long line");
+    for (tag, bytes) in [("long", long), ("crlf", crlf), ("open", b"no newline before the end".to_vec())] {
+        let socket = runtime_root().join(format!("first-{tag}.sock"));
+        let recorded = record_one(&socket);
+        let endpoint = format!("unix:{}", socket.display());
+        let mut child = spawn_bridge(&["--endpoint", &endpoint]);
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(&bytes).unwrap();
+        drop(stdin);
+        let got = recorded.recv_timeout(BOUND).unwrap_or_else(|_| panic!("{tag}: the daemon's side ended within {BOUND:?}"));
+        assert!(got == bytes, "{tag}: the daemon read {} bytes, not the {} sent unchanged", got.len(), bytes.len());
+        let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
+        assert_eq!(status.code(), Some(0), "{tag}: {stderr}");
+    }
+}
+
+/// Topology 12: no first line within its 10 s bound ends the bridge with one line naming it, though its input stays
+/// open.
+#[test]
+fn no_first_line_within_its_bound_ends_the_bridge() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("first-none.sock");
+    let _recorded = record_one(&socket);
+    let endpoint = format!("unix:{}", socket.display());
+    let mut child = spawn_bridge(&["--endpoint", &endpoint]);
+    let _held = child.stdin.take().unwrap();
+    let started = Instant::now();
+    let (status, stdout, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
+    let after = started.elapsed();
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("no first line within"), "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(after >= Duration::from_secs(9) && after < Duration::from_secs(15), "the bridge ended {after:?} after its start");
 }
 
 /// One request on a channel that carries the wire's frames, its reply read past any event.

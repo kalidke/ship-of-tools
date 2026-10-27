@@ -14,38 +14,27 @@ fn lane_dial_matches_the_resolved_control_transport_selection() {
             assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
             assert_eq!(token.as_deref(), Some("tok"));
         }
-        Some((
-            sot_topology::lane_client::LaneDial::Ssh(..)
-            | sot_topology::lane_client::LaneDial::Relay(..),
-            _,
-        )) => {
-            panic!("must follow the resolved Local selection, not guess ssh")
+        Some((sot_topology::lane_client::LaneDial::Link(_), _)) => {
+            panic!("must follow the resolved Local selection, not guess the link")
         }
         None => panic!("a resolved+configured pipe must dial, got None"),
     }
     // An ssh-configured host whose control connection resolved SSH —
-    // the lane dial follows, carrying the resolved recipe verbatim
-    // (never a second, independent read of `config.dial`).
+    // the lane dial follows, over the host's link (never a second,
+    // independent read of `config.dial`, and never a login of its own).
     let ssh_config = crate::net::transport::TransportConfig {
         dial: crate::net::transport::Dial::Ssh(recipe.clone()),
         token: Some("tok".to_string()),
     };
     match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone()), &Default::default()) {
-        Some((sot_topology::lane_client::LaneDial::Ssh(got, _), token)) => {
-            assert_eq!(got, recipe);
-            assert_eq!(token.as_deref(), Some("tok"));
-        }
-        Some((
-            sot_topology::lane_client::LaneDial::Local(_)
-            | sot_topology::lane_client::LaneDial::Relay(..),
-            _,
-        )) => {
+        Some((sot_topology::lane_client::LaneDial::Link(_), token)) => assert_eq!(token.as_deref(), Some("tok")),
+        Some((sot_topology::lane_client::LaneDial::Local(_), _)) => {
             panic!("must follow the resolved Ssh selection, not guess local")
         }
         None => panic!("a resolved ssh connection must dial, got None"),
     }
-    // A generated hub relay: the lane dial follows the control connection's exact relay path behind the
-    // host's gate, and a relay-configured host whose control connection resolved Local dials nothing.
+    // A generated hub relay: the lane dial follows the control connection over the host's link, and a
+    // relay-configured host whose control connection resolved Local dials nothing.
     let relay_path = std::path::PathBuf::from("/run/user/1000/sot-host-far.sock");
     let relay_config = crate::net::transport::TransportConfig {
         dial: crate::net::transport::Dial::Relay(relay_path.clone()),
@@ -56,11 +45,8 @@ fn lane_dial_matches_the_resolved_control_transport_selection() {
         ResolvedDial::Relay(relay_path.clone()),
         &Default::default(),
     ) {
-        Some((sot_topology::lane_client::LaneDial::Relay(got, _), token)) => {
-            assert_eq!(got, relay_path);
-            assert_eq!(token.as_deref(), Some("tok"));
-        }
-        _ => panic!("a resolved relay must dial the relay path"),
+        Some((sot_topology::lane_client::LaneDial::Link(_), token)) => assert_eq!(token.as_deref(), Some("tok")),
+        _ => panic!("a resolved relay must dial over the host's link"),
     }
     assert!(lane_dial(&relay_config, ResolvedDial::Local, &Default::default()).is_none());
     // Resolved Local but `config.dial` holds Ssh (shouldn't happen —

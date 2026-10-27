@@ -104,7 +104,7 @@ fn ssh_endpoint_dispatches_to_a_stub_on_path_never_the_network() {
     // own parsing, C3) -- connect() delegates to it rather than
     // inventing a second check, so a value SshRecipe rejects must
     // fail HERE too, not just at the frontend. Neither call reaches
-    // spawn_sync (the grammar check runs first), so PATH/the stub
+    // a start (the grammar check runs first), so PATH/the stub
     // above are irrelevant to these two.
     assert!(connect("ssh:-oProxyCommand=x", sot_containment::process()).is_err(), "a leading-dash target must be refused");
     assert!(connect("ssh:Hub", sot_containment::process()).is_err(), "an uppercase target must be refused (not a plain host name)");

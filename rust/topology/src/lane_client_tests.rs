@@ -173,52 +173,130 @@ fn a_refused_hello_is_refused_with_its_code_and_message() {
     }
 }
 
-/// ADR 0045 decision 4: a lane dial over ssh while the host's link is
-/// down fails at once with `LinkDown` and starts no child.
+/// A window's link whose far router connects every channel to `daemon` (a fake daemon's socket), in this process on
+/// `rt`, with the handle the link's session would hold up. The router's channel 0 goes to a daemon that says nothing;
+/// `made` counts the channels' connections.
+pub(super) fn link_to(rt: &tokio::runtime::Runtime, daemon: std::path::PathBuf, made: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> (crate::link::Link, crate::link::LinkHandle) {
+    use crate::link::router::{Connector, Duplex};
+    let connect: Connector = std::sync::Arc::new(move || {
+        let (daemon, made) = (daemon.clone(), made.clone());
+        Box::pin(async move {
+            made.fetch_add(1, Ordering::SeqCst);
+            crate::link::connect_local(&daemon).await.map(|s| Box::new(s) as Box<dyn Duplex>)
+        })
+    });
+    rt.block_on(async move {
+        let (near, far) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let (rx, tx) = tokio::io::split(far);
+            let mut rx = tokio::io::BufReader::new(rx);
+            let first = sot_protocol::codec::read_envelope(&mut rx).await.expect("the link's hello");
+            let (control, _silent) = tokio::io::duplex(1 << 16);
+            let _ = crate::link::router::serve(first, rx, tx, Box::new(control), connect).await;
+        });
+        let (rx, tx) = tokio::io::split(near);
+        let link = crate::link::Link::over(rx, tx).await.expect("the link starts");
+        let handle = crate::link::LinkHandle::default();
+        handle.set_up(&link);
+        (link, handle)
+    })
+}
+
+pub(super) fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap()
+}
+
+/// Topology 6 and 7: a lane dial over a host's link that is down fails at once with `LinkDown` and sends nothing.
 #[test]
-fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
-    let gate = crate::ssh_bridge::LinkGate::default();
-    gate.set_up(false);
-    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate), None);
+fn a_link_dial_on_a_down_link_is_link_down_at_once() {
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(crate::link::LinkHandle::default()), None);
+    assert!(!endpoint.link_up());
     let t0 = Instant::now();
     let result = endpoint.dial("row");
     assert!(matches!(result, Err(TransportError::LinkDown)), "got {:?}", result.err());
     assert!(t0.elapsed() < Duration::from_millis(50));
 }
 
-/// A generated hub relay is dialed through the same protected local connector as a local socket, behind its host's
-/// gate: the stub daemon sees the handoff hello and the `lane.connect` once the gate is up, and a down gate dials nothing.
+/// Topology 7: a link dial opens a channel, and the daemon behind the router sees the handoff hello and the
+/// `lane.connect` on it; the identity is the daemon's report.
 #[test]
-fn a_relay_dial_waits_for_its_gate_then_uses_the_local_connector() {
+fn a_link_dial_opens_a_channel_and_reaches_the_daemon() {
     let daemon = FakeDaemon::new();
-    let gate = crate::ssh_bridge::LinkGate::default();
-    gate.set_up(false);
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
-    assert!(!endpoint.link_up());
-    let result = endpoint.dial("row-1");
-    assert!(
-        matches!(result, Err(TransportError::LinkDown)),
-        "got {:?}",
-        result.err()
-    );
-    // Nothing connected: the listener has no pending connection to accept.
-    gate.set_up(true);
+    let rt = runtime();
+    let made = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_link, handle) = link_to(&rt, daemon.path.clone(), made.clone());
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None);
     assert!(endpoint.link_up());
-    let handle = std::thread::spawn(move || {
+    let served = std::thread::spawn(move || {
         let mut conn = daemon.accept();
-        let (_, request) = serve_hello(&mut conn);
-        assert_eq!(request.op, op::LANE_CONNECT);
+        let (hello, request) = serve_hello(&mut conn);
         let ok = serde_json::json!({ "ok": true, "pid": 41, "created": 7 });
         let mut line = serde_json::to_vec(&Frame::res(2, op::LANE_CONNECT, ok)).unwrap();
         line.push(b'\n');
         conn.write_all(&line).unwrap();
+        (hello.payload["role"].clone(), request.op)
     });
-    let client = endpoint
-        .dial("row-1")
-        .expect("an up gate dials the relay path");
+    let client = endpoint.dial("row-1").expect("a link dial reaches the daemon");
     assert_eq!((client.peer.pid, client.peer.created), (41, 7));
-    within(BOUND, "the fake daemon", move || handle.join()).unwrap();
+    let (role, op_name) = within(BOUND, "the fake daemon", move || served.join()).unwrap();
+    assert_eq!((role, op_name.as_str()), (serde_json::json!(sot_protocol::HANDOFF_ROLE), op::LANE_CONNECT));
+    assert_eq!(made.load(Ordering::SeqCst), 1, "one dial, one channel");
+}
+
+/// Topology 6: a dial in flight when its link ends is `LinkDown` at once, not at its bound: the attach worker then
+/// waits for the link (`link_up`) and dials over the next one.
+#[test]
+fn a_link_dial_in_flight_ends_when_its_link_ends() {
+    let daemon = FakeDaemon::new();
+    let rt = runtime();
+    let made = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (link, handle) = link_to(&rt, daemon.path.clone(), made);
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None);
+    let (accepted, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let (taken, released) = (accepted.0, release.1);
+    let held = std::thread::spawn(move || {
+        let conn = daemon.accept();
+        taken.send(()).unwrap();
+        let _ = released.recv_timeout(BOUND);
+        drop(conn);
+    });
+    let dial = std::thread::spawn(move || {
+        let result = endpoint.dial("row-1").map(|_| ());
+        (result, Instant::now())
+    });
+    accepted.1.recv_timeout(BOUND).expect("the dial's channel reached the daemon");
+    let ended = Instant::now();
+    drop(link);
+    let (result, at) = within(BOUND, "the dial", move || dial.join()).unwrap();
+    let _ = release.0.send(());
+    within(BOUND, "the fake daemon", move || held.join()).unwrap();
+    let after = at.duration_since(ended);
+    println!("lane dial in flight at a link's end: result={result:?} after_end_ms={}", after.as_millis());
+    assert!(matches!(result, Err(TransportError::LinkDown)) && after < Duration::from_secs(5), "{result:?} {after:?} after the end");
+}
+
+/// Topology 7: a link dial is bounded: a daemon that takes the channel and says nothing is `Unreachable` at the bound
+/// (here one second, a test build's), the open and the handshake counted together.
+#[test]
+fn a_silent_daemon_over_a_link_is_unreachable_at_its_bound() {
+    let daemon = FakeDaemon::new();
+    let rt = runtime();
+    let made = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (_link, handle) = link_to(&rt, daemon.path.clone(), made);
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None).with_test_handshake_bound(Duration::from_secs(1));
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let held = std::thread::spawn(move || {
+        let conn = daemon.accept();
+        let _ = release_rx.recv_timeout(BOUND);
+        drop(conn);
+    });
+    let started = Instant::now();
+    let result = endpoint.dial("row-1").map(|_| ());
+    let took = started.elapsed();
+    let _ = release_tx.send(());
+    within(BOUND, "the fake daemon", move || held.join()).unwrap();
+    assert!(matches!(result, Err(TransportError::Unreachable(_))), "got {result:?}");
+    assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(3), "the dial ended after {took:?}");
 }
 
 /// `dial_failed` is the daemon's OWN dial/authenticate step failing
@@ -393,19 +471,6 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
     assert!(matches!(outcome, ChallengeOutcome::Foreign), "a mismatched pid must never be Proven");
 }
 
-/// A portable stand-in for the real `ssh` child: `cat` echoes stdin
-/// back on stdout and outlives its parent until killed, exactly the
-/// two properties `BridgedClient::cancel()`'s kill→EOF mechanism
-/// needs (C3 as amended §2; §7's test table, "Linux + Windows").
-#[test]
-fn a_local_dial_starts_no_ssh_child() {
-    let daemon = FakeDaemon::new();
-    let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
-    let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
-    drop(ep.dial("row-local").unwrap());
-    within(BOUND, "the fake daemon", move || peer.join()).unwrap();
-}
-
 /// ADR 0049, User isolation: a lane dial refuses a socket another OS account listens on, and that listener gets no
 /// byte.
 #[cfg(unix)]
@@ -464,219 +529,4 @@ fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
         0,
         "the lane dial sent another account's listener bytes"
     );
-}
-
-/// An ssh login stood in for by `sh`: it writes one line to stderr, reads the hello and the request, and answers with
-/// the given reply lines (none at all for a login that dies first).
-#[cfg(unix)]
-fn ssh_stand_in(replies: &[serde_json::Value]) -> std::process::Child {
-    let lines: Vec<String> = replies.iter().map(|v| serde_json::to_string(v).unwrap()).collect();
-    let mut script = String::from("echo 'a line ssh wrote to stderr' >&2; read a; read b;");
-    for i in 0..lines.len() {
-        script.push_str(&format!(" printf '%s\\n' \"$REPLY_{i}\";"));
-    }
-    let mut cmd = std::process::Command::new("sh");
-    cmd.arg("-c").arg(script).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    for (i, line) in lines.iter().enumerate() {
-        cmd.env(format!("REPLY_{i}"), line);
-    }
-    cmd.spawn().expect("`sh` must be on PATH for this test")
-}
-
-#[cfg(unix)]
-fn handshake_over_ssh_stand_in(replies: &[serde_json::Value]) -> Result<DaemonLaneClient, TransportError> {
-    let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
-    let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request, CONNECT_BOUND, None)
-}
-
-/// Over an ssh login a daemon's answer is returned as the daemon gave it, never replaced by the login's stderr (BLOCKER 2
-/// of review round 1: a stderr line used to turn a refused hello into a line of ssh's own); only a failure in which the
-/// daemon sent nothing takes the login's last line, after the error's own words.
-#[cfg(unix)]
-#[test]
-fn a_daemons_answer_over_ssh_is_never_replaced_by_its_stderr() {
-    let refused_hello = Frame::res(1, op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
-    match handshake_over_ssh_stand_in(&[serde_json::to_value(&refused_hello).unwrap()]) {
-        Err(TransportError::Refused { code, detail }) => assert_eq!((code.as_str(), detail.as_str()), ("os_user_conflict", "no thanks")),
-        other => panic!("a refused hello must stay Refused, got {:?}", other.map(|_| ())),
-    }
-
-    let accepted_hello = Frame::res(1, op::HELLO, serde_json::json!({ "ok": true }));
-    let refused_lane = Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "error": "no such row", "code": "unknown_workspace" }));
-    match handshake_over_ssh_stand_in(&[serde_json::to_value(&accepted_hello).unwrap(), serde_json::to_value(&refused_lane).unwrap()]) {
-        Err(TransportError::Refused { code, .. }) => assert_eq!(code, "unknown_workspace"),
-        other => panic!("a refused lane.connect must stay Refused, got {:?}", other.map(|_| ())),
-    }
-
-    match handshake_over_ssh_stand_in(&[]) {
-        Err(TransportError::Unreachable(e)) => {
-            assert!(e.to_string().ends_with(": a line ssh wrote to stderr"), "the login's line follows the error's own words: {e}");
-        }
-        other => panic!("a login that died without a word is Unreachable, got {:?}", other.map(|_| ())),
-    }
-}
-
-/// A burst of lane dials over ssh logins that take 3 s each, longer than the local handshake bound: every dial waits
-/// for its login and gets the daemon's answer, none is killed and redone (a hub slowed by many logins at once).
-#[cfg(unix)]
-#[test]
-fn a_burst_of_ssh_logins_slower_than_the_local_bound_all_answer() {
-    let hello = serde_json::to_string(&Frame::res(1, op::HELLO, serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false }))).unwrap();
-    let lane = serde_json::to_string(&Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 41, "created": 7 }))).unwrap();
-    // The slow login holds no pipe of the dial's, so a killed stand-in leaves nothing open behind it.
-    let login = format!("sleep 3 </dev/null >/dev/null 2>&1; read a; read b; printf '%s\\n' '{hello}' '{lane}'; exec cat >/dev/null");
-    let gate = crate::ssh_bridge::LinkGate::default();
-    let started = Instant::now();
-    let dials: Vec<_> = (0..8)
-        .map(|i| {
-            let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", login.as_str()]);
-            let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None);
-            std::thread::spawn(move || endpoint.dial(&format!("row-{i}")).map(|c| (c.peer.pid, c.peer.created)))
-        })
-        .collect();
-    let results: Vec<_> = dials.into_iter().map(|dial| within(BOUND, "a slow ssh login", move || dial.join()).unwrap()).collect();
-    let answered = results.iter().filter(|r| matches!(r, Ok((41, 7)))).count();
-    println!("ssh burst: dials=8 answered={answered} elapsed_ms={}", started.elapsed().as_millis());
-    assert_eq!(answered, 8, "every slow login must be waited for, not killed: {:?}", results.iter().filter_map(|r| r.as_ref().err()).map(|e| e.to_string()).collect::<Vec<_>>());
-}
-
-/// A failed write over an ssh login names the error's own words and the login's last line, each once (review round 2,
-/// NOTE 3: the line used to replace the error's words and then be added a second time).
-#[cfg(unix)]
-#[test]
-fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
-    // The stand-in closes its stdin, then writes its line and exits: the handshake's write finds no reader.
-    let child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("exec 0<&-; echo 'a line ssh wrote to stderr' >&2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("`sh` must be on PATH for this test");
-    let client = BridgedClient::wrap(child).expect("wrap");
-    client.child.lock().unwrap().wait().expect("the stand-in exits");
-    let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
-    let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    match handshake(LaneStream::Bridged(client), &hello, &request, CONNECT_BOUND, None) {
-        Err(TransportError::Unreachable(e)) => {
-            // Normally the write fails (`lane write: <the io error>: <the line>`). A test running beside others can
-            // have the pipe's read end held for an instant by a sibling's forked child, so the write succeeds and the
-            // read ends before a frame instead (`<the read's words>: <the line>`): either way the error keeps its
-            // words and the line follows them, once.
-            let text = e.to_string();
-            let line = "a line ssh wrote to stderr";
-            assert_eq!(text.matches(line).count(), 1, "the login's line is named once: {text}");
-            let words = text.strip_prefix("lane write: ").unwrap_or(&text).strip_suffix(&format!(": {line}"));
-            assert!(words.is_some_and(|w| !w.is_empty()), "want `<the error's words>: <the line>`, got: {text}");
-        }
-        other => panic!("a write to a login that has gone is Unreachable, got {:?}", other.map(|_| ())),
-    }
-}
-
-/// `diagnose` puts the ssh child's last line after the io error's own words, never in their place (review round 3,
-/// NOTE 1: the handshake test above may take its read path, where `diagnose` is not called).
-#[cfg(unix)]
-#[test]
-fn diagnose_appends_the_ssh_line_to_the_error() {
-    let child = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("echo 'a line ssh wrote to stderr' >&2")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("`sh` must be on PATH for this test");
-    let client = BridgedClient::wrap(child).expect("wrap");
-    client.child.lock().unwrap().wait().expect("the stand-in exits");
-    // The drainer has the line before `diagnose` looks (a hang guard, not a speed bound).
-    let guard = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while client.last_stderr.lock().unwrap().is_none() {
-        assert!(std::time::Instant::now() < guard, "the stderr drainer never took the line");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let source = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
-    let want = format!("{source}: a line ssh wrote to stderr");
-    let got = client.diagnose(source);
-    assert_eq!(got.to_string(), want);
-    assert_eq!(got.kind(), std::io::ErrorKind::BrokenPipe, "the error keeps its kind");
-}
-
-/// A login on a dead connection: it reads what the dial sends and answers nothing, as an ssh child does whose
-/// connection died during its login. `python3`, as the ownership tests' peers, so it runs on every platform.
-pub(super) fn silent_login() -> std::io::Result<std::process::Child> {
-    std::process::Command::new("python3")
-        .args(["-c", "import sys; sys.stdin.buffer.read()"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-}
-
-/// The host's link closes while a lane dial's login is in flight (`admitted` has fired) and reopens a second later, as
-/// the transport's probe reopens it. Returns the dial's result and how long after the close it came; the wait runs past
-/// `SSH_LOGIN_BOUND`, so a login the close did not end reads as the time it outlived its link.
-fn dial_across_a_link_close(
-    endpoint: DaemonLaneEndpoint,
-    gate: &crate::ssh_bridge::LinkGate,
-    admitted: std::sync::mpsc::Receiver<()>,
-) -> (Result<(), TransportError>, Duration) {
-    let (sent, ended) = std::sync::mpsc::channel();
-    let dial = std::thread::spawn(move || {
-        let result = endpoint.dial("row-1").map(|_| ());
-        sent.send((result, Instant::now())).unwrap();
-    });
-    admitted.recv_timeout(BOUND).expect("the login started");
-    let closed = Instant::now();
-    gate.set_up(false);
-    std::thread::sleep(Duration::from_secs(1));
-    gate.set_up(true);
-    let (result, at) = ended.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + BOUND).expect("the dial ended");
-    within(BOUND, "the dial thread", move || dial.join()).unwrap();
-    (result, at.duration_since(closed))
-}
-
-/// What the attach worker needs of a dial whose login is in flight when its host's link closes: `LinkDown` at once, so
-/// it waits for the link (`pause_for_link`) and dials within a tick of its return, not after `SSH_LOGIN_BOUND`.
-fn assert_ended_by_the_close(route: &str, (result, after): (Result<(), TransportError>, Duration)) {
-    println!("login in flight at a link close: route={route} result={result:?} after_close_ms={}", after.as_millis());
-    assert!(
-        matches!(result, Err(TransportError::LinkDown)) && after < Duration::from_secs(5),
-        "the {route} login outlived its link: {result:?}, {after:?} after the close"
-    );
-}
-
-#[test]
-fn an_ssh_login_in_flight_ends_when_its_link_closes() {
-    let gate = crate::ssh_bridge::LinkGate::default();
-    let (started, admitted) = std::sync::mpsc::channel();
-    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None).with_test_ssh_spawner(std::sync::Arc::new(move |_| {
-        let login = silent_login();
-        let _ = started.send(());
-        login
-    }));
-    assert_ended_by_the_close("ssh", dial_across_a_link_close(endpoint, &gate, admitted));
-}
-
-#[test]
-fn a_relay_login_in_flight_ends_when_its_link_closes() {
-    let daemon = FakeDaemon::new();
-    let gate = crate::ssh_bridge::LinkGate::default();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Relay(daemon.path.clone(), gate.clone()), None);
-    let (started, admitted) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    // The relay accepts and its far login answers nothing. It holds the connection until the dial has ended, so that
-    // end is the dial's own.
-    let relay = std::thread::spawn(move || {
-        let conn = daemon.accept();
-        started.send(()).unwrap();
-        let _ = released.recv_timeout(crate::ssh_bridge::SSH_LOGIN_BOUND + BOUND);
-        drop(conn);
-    });
-    let ended = dial_across_a_link_close(endpoint, &gate, admitted);
-    let _ = release.send(());
-    within(BOUND, "the fake relay", move || relay.join()).unwrap();
-    assert_ended_by_the_close("relay", ended);
 }

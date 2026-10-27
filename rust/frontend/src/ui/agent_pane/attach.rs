@@ -283,8 +283,8 @@ impl State {
         let effect = install_pane_attach(&mut self.agent_pane, plan, |host, target, (cols, rows)| {
             let config = hosts.host_transports.get(host).ok_or(AttachFailure::MissingConfig)?;
             let resolved = hosts.host_resolved_dial.get(host).cloned().ok_or(AttachFailure::Unresolved)?;
-            let gate = hosts.link_gates.entry(host.clone()).or_default().clone();
-            let (dial, token) = lane_dial(config, resolved, &gate).ok_or(AttachFailure::Unusable)?;
+            let link = hosts.links.entry(host.clone()).or_default().clone();
+            let (dial, token) = lane_dial(config, resolved, &link).ok_or(AttachFailure::Unusable)?;
             let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
             PaneAttachClient::attach(endpoint, target.to_string(), cols, rows, Box::new(move || wake.wake()))
                 .map_err(|e| AttachFailure::Startup(e.to_string()))

@@ -1,5 +1,5 @@
 //! Reaching a row through the daemon: directly, an old daemon, a lane-only drop, a never-started row,
-//! and through a stub ssh child.
+//! and over a window's link whose login is a stub ssh.
 
 use super::*;
 
@@ -283,7 +283,8 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 
 // Explicitly spawned SSH stand-ins exercise the real endpoint; parent PATH and SHELL preservation is observed through setup, execution and teardown.
 
-/// Writes the executable that the caller explicitly spawns to relay its pipes to the test-owned socket.
+// A stub ssh is the link's login: the link's start runs it in place of ssh; parent PATH and SHELL preservation is
+// observed through setup, execution and teardown.
 
 // Parent values are compared as Option<OsString>; diagnostics never format either value.
 struct ParentSshEnvironment {
@@ -306,53 +307,38 @@ impl ParentSshEnvironment {
     }
 }
 
-fn stub_ssh_relaying_to(dir: &Path, socket: &Path, guard: &ParentSshEnvironment) {
-    let script = format!(r#"#!/usr/bin/env python3
-import os, socket, sys, threading
-peer = socket.socket(socket.AF_UNIX)
-peer.connect({socket:?})
-def upload():
-    while True:
-        data = os.read(0, 65536)
-        if not data:
-            peer.shutdown(socket.SHUT_WR)
-            return
-        peer.sendall(data)
-threading.Thread(target=upload, daemon=True).start()
-while True:
-    data = peer.recv(65536)
-    if not data:
-        break
-    sys.stdout.buffer.write(data)
-    sys.stdout.buffer.flush()
-"#, socket = socket.to_string_lossy());
-    sot_platform::test_exec::write_executable(&dir.join("ssh"), script);
-    guard.observe("after preparing relay");
+/// Writes the stub ssh whose far end is the real bridge, routing a link to the daemon at `socket`, as the far
+/// computer's `sotd stdio-bridge` routes it.
+fn stub_ssh_bridging_to(dir: &Path, socket: &Path, guard: &ParentSshEnvironment) -> PathBuf {
+    let script = format!("#!/bin/sh\nexec '{}' stdio-bridge --endpoint 'unix:{}'\n", sotd_program().display(), socket.display());
+    let path = dir.join("ssh");
+    sot_platform::test_exec::write_executable(&path, script);
+    guard.observe("after preparing the bridge");
+    path
 }
 
-fn stub_endpoint(path: PathBuf, guard: Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
-    guard.observe("after preparing endpoint");
-    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
-        guard.observe("at spawn");
-        let spawned = std::process::Command::new(&path).args(command.get_args())
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn();
-        guard.observe("child active");
-        spawned
-    }))
-}
-
-/// Exits before connecting, with one stderr line; the lane status keeps the transport error and adds this diagnosis once.
-fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironment) {
+/// Exits before its answer, with one stderr line.
+fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironment) -> PathBuf {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
     sot_platform::test_exec::write_executable(&path, script);
     guard.observe("after preparing dying fixture");
+    path
 }
 
+/// The window's link, its login the stub at `program`.
+async fn link_over_stub(program: PathBuf, guard: &ParentSshEnvironment) -> Result<sot_topology::link::Link, sot_topology::link::LinkStartError> {
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name").with_test_command(program, Vec::<String>::new());
+    guard.observe("at spawn");
+    let started = sot_topology::link::Link::start(&sot_topology::link::LinkRoute::Ssh(recipe)).await;
+    guard.observe("child active");
+    started
+}
+
+/// A remote attach is a channel of the window's link: through a stub login whose far end is the real bridge, the
+/// attach client reaches a capsule row and checkpoints.
 #[tokio::test]
-async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
+async fn fe_client_reaches_a_capsule_row_over_a_link() {
     let _serial = SERIAL.lock().await;
     let guard = ParentSshEnvironment::new();
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
@@ -362,79 +348,55 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let (_workspace_id, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb-ssh1-workspace").await;
 
-    let relay = Relay::start(env.socket_path.clone()).await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-").tempdir().expect("tempdir");
-    stub_ssh_relaying_to(stub_dir.path(), &relay.path, &guard);
-
-    let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
+    let stub = stub_ssh_bridging_to(stub_dir.path(), &env.socket_path, &guard);
+    let mut link = link_over_stub(stub, &guard).await.expect("the link starts over the stub login");
+    // The window's control session on channel 0, as the transport opens it: a channel 0 that says nothing is closed by
+    // the daemon at its first-frame bound, and the link with it.
+    let mut control = link.take_control().expect("channel 0");
+    let hello = sot_protocol::HelloReq::this_process("lb-ssh1-control", "cli", Some("host-a".to_string())).expect("this process's account");
+    sot_protocol::codec::write_frame(&mut control, &Frame::req(1, op::HELLO, serde_json::to_value(hello).unwrap()), None).await.expect("the control hello");
+    let (reply, _) = sot_protocol::codec::read_frame(&mut tokio::io::BufReader::new(&mut control)).await.expect("the control hello's reply");
+    assert!(reply.payload.get("error").is_none(), "the control hello over the link: {:?}", reply.payload);
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None);
     let (_woke, wake) = wake_flag_for_test();
-    let mut client = FeAttachClient::attach(
-        endpoint,
-        target,
-        80,
-        24,
-        wake,
-    )
-    .expect("attach through the ssh-child bridge");
+    let mut client = FeAttachClient::attach(endpoint, target, 80, 24, wake).expect("attach over the link");
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while !client.is_checkpointed() {
         client.pump();
-        assert!(!client.is_dead(), "died before a checkpoint through the ssh-child bridge: {}", client.status_line());
-        assert!(Instant::now() < deadline, "never checkpointed through the ssh-child bridge");
+        assert!(!client.is_dead(), "died before a checkpoint over the link: {}", client.status_line());
+        assert!(Instant::now() < deadline, "never checkpointed over the link");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     // The peer report is the DAEMON's: a live checkpoint only reaches this far once the bridge's split-identity proof
-    // (`DaemonLaneEndpoint::challenge` against the daemon's own `LaneConnectRes` report) has succeeded over this exact
-    // stub-ssh connection.
+    // (`DaemonLaneEndpoint::challenge` against the daemon's own `LaneConnectRes` report) has succeeded over this
+    // channel.
     assert!(!client.run().is_empty(), "the attach names the row's run");
     guard.observe("after result");
 
     drop(client);
+    drop(control);
+    drop(link);
     env.kill_daemon_bounded().await;
     guard.finish();
 }
 
+/// A login that dies before it answers names its last stderr line in the link's start error, which the window shows
+/// as the host's disconnect reason; no channel is ever opened.
 #[tokio::test]
-async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
+async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_links_error() {
     let _serial = SERIAL.lock().await;
     let guard = ParentSshEnvironment::new();
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-dying-").tempdir().expect("tempdir");
-    stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).", &guard);
-
-    let endpoint = stub_endpoint(stub_dir.path().join("ssh"), guard.clone());
-    let (_woke, wake) = wake_flag_for_test();
-    // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
-    // `sot-capsule/src/attach_client/client.rs`) — the dial itself runs on the worker
-    // thread it spawns, and `Unreachable` (what a dying child classifies
-    // as) retries rather than failing this call outright (ADR 0045
-    // decision 4: "Unreachable must retry, never go terminal on its
-    // own"). The observable this test proves is the status TEXT a
-    // retrying attempt already carries, not a terminal/dead client.
-    let mut client = FeAttachClient::attach(
-        endpoint,
-        "row-does-not-matter-the-child-dies-first".to_string(),
-        80,
-        24,
-        wake,
-    )
-    .expect("attach() itself only fails on a thread-spawn error");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        client.pump();
-        if client.status_line().contains("Permission denied") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the lane status text never carried the dying child's last stderr line, got: {}",
-            client.status_line()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    let stub = stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).", &guard);
+    match link_over_stub(stub, &guard).await {
+        Err(sot_topology::link::LinkStartError::Failed(why)) => assert!(why.ends_with("(ssh: Permission denied (publickey).)"), "{why}"),
+        other => panic!("a login that died: {:?}", other.map(|_| ())),
     }
     guard.observe("after result");
-    client.shutdown(Duration::from_secs(5)); drop(client);
     guard.finish();
 }
 

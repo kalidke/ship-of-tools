@@ -133,11 +133,9 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `gio trash` and its wait budget | process, deadline | files | `rust/backend/src/files/io.rs` `trash_file`, `TRASH_WAIT`; `rust/containment/src/signal.rs` `ContainedStd::wait_within` |
 | hub-link ssh | process | messaging | `rust/backend/src/comm/mail/hub_link.rs` `recipe_for`, `link_once` |
 | comm forward ssh (guest to hub) | process | topology | `rust/backend/src/topology/dial.rs` `dial_and_call`, called by `rust/backend/src/comm/mail/filer.rs` `file_comm` |
-| `sotd stdio-bridge` | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect` |
+| `sotd stdio-bridge` (a shuttle, or a window's link's router at a first `link.hello`) | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect`, `route`; `rust/topology/src/link/router.rs` `serve` |
 | relay-unit ssh per relayed connection | process | topology | `rust/topology/src/relay_units.rs` `relay_command_line`; `rust/topology/src/ssh_bridge.rs` `SshRecipe` |
-| window control ssh per host | process | fe-net | `rust/frontend/src/net/transport/mod.rs` `connect_and_run` |
-| lane-dial ssh | process | topology | `rust/topology/src/lane_client.rs` `DaemonLaneEndpoint`, `dial`; `rust/topology/src/lane_child.rs` `BridgedClient` owns each child and its bounded teardown |
-| page-proxy ssh per browser connection | process | pages | `rust/frontend/src/pages.rs` `pipe_one`, `dial` |
+| the window's link login (one per remote host) | process | topology | `rust/topology/src/link/window.rs` `Link::start`; owned by `rust/frontend/src/net/transport/mod.rs` `connect_and_run` |
 | browser opener | process | pages | `rust/frontend/src/pages.rs` `open_url_in_browser`, `open_html_in_browser` |
 | drawer shell (portable-pty) | process | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `LocalTerminal`, `spawn` |
 | updater children (curl, gh, tar, zipinfo, unzip, PowerShell, git, julia instantiate, npm) | process | distribution | `rust/updater/src/fetch/mod.rs`; `rust/updater/src/fetch/archive.rs`; `rust/updater/src/prepare.rs`; daemon lifetime through `rust/backend/src/update.rs` `UpdaterSpawner`, window lifetime through `rust/frontend/src/selfupdate.rs` `WindowSpawner` |
@@ -300,8 +298,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_TEST_*` seams read by production binaries: the supervisor's recovery delay and its held `end_run` request | env | capsule | `rust/capsule/src/supervisor/mod.rs` `drive` (`SOT_TEST_RECOVERY_DELAY_MS`); `rust/capsule/src/supervisor/authority.rs` (`SOT_TEST_END_RUN_HOLD_MS`) |
 | `SOT_TCP_PORT`, `SOT_REMOTE_REPO`, `SOT_REMOTE_SOCKET` (retired: only scripts and skills still name them) | env | distribution | `scripts/shutdown-sot.ps1`; `agents/claude/sot-setup/SKILL.md` |
 | fan-in `(HostKey, IncomingEvt)` and per-host `OutgoingReq` senders | bus | fe-net | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/net/transport/event.rs` `IncomingEvt`; `rust/frontend/src/net/transport/request.rs` `OutgoingReq` |
-| `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/topology/src/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |
-| per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
+| `LinkHandle` (one per remote host; the window's transport is its only writer) and the link's channel table | state | topology | `rust/topology/src/link/window.rs` `LinkHandle`, `rust/topology/src/link/table.rs`; written `rust/frontend/src/net/transport/mod.rs` |
+| per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `links`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
 | waking the window from another thread (`MainWake`: a sender queues its event, then wakes; at most one user event outstanding) and the window handle (`MainWindow`, `!Send`, its `Arc<Window>` private to it but for wgpu's surface) | type, rule | fe-ui | `rust/frontend/src/ui/app/mod.rs` `MainWake`, `main_window`; `App::user_event` in `rust/frontend/src/ui/app/handler.rs` |
 | native pane harness layout and monitor receipt | test rule | fe-ui | `rust/frontend/src/ui/app/native_pane_tests.rs` `pane_child_settings`, `child`, `PaneDriver::resumed`, `layout_state`, `setup_state`, `verdict`; in-memory Laptop preset, no settings-file discovery |

@@ -73,14 +73,18 @@ async fn watch_silence(last: Arc<Mutex<Instant>>, silence: Duration) -> End {
     }
 }
 
+/// The router's channels are tasks this loop owns: when the link ends, its select drops the loop and with it every
+/// channel's connect and pump, whatever each is waiting on, and each local connection closes.
 async fn read_loop<R: AsyncBufRead + Unpin>(shared: &Arc<Shared>, mut rx: R, connector: Option<Connector>) -> End {
+    let mut channels = tokio::task::JoinSet::new();
     loop {
+        while channels.try_join_next().is_some() {}
         let frame = match codec::read_envelope(&mut rx).await {
             Ok(frame) => frame,
             Err(e) if e.to_string() == "eof" => return End::clean("the far end closed the link"),
             Err(e) => return End::failed(format!("reading the link: {e:#}")),
         };
-        match on_frame(shared, &mut rx, frame, connector.as_ref()).await {
+        match on_frame(shared, &mut rx, frame, connector.as_ref(), &mut channels).await {
             Ok(None) => {}
             Ok(Some(end)) => return end,
             Err(violation) => return End::failed(violation),
@@ -93,7 +97,13 @@ fn payload<T: serde::de::DeserializeOwned>(frame: &Frame) -> Result<T, String> {
 }
 
 /// One frame from the peer. `Err` is a violation of the link's rules; `Ok(Some)` an end the peer asked for.
-async fn on_frame<R: AsyncBufRead + Unpin>(shared: &Arc<Shared>, rx: &mut R, frame: Frame, connector: Option<&Connector>) -> Result<Option<End>, String> {
+async fn on_frame<R: AsyncBufRead + Unpin>(
+    shared: &Arc<Shared>,
+    rx: &mut R,
+    frame: Frame,
+    connector: Option<&Connector>,
+    channels: &mut tokio::task::JoinSet<()>,
+) -> Result<Option<End>, String> {
     let declared = codec::declared_blob_len(&frame);
     match (frame.kind, frame.op.as_str()) {
         (Kind::Evt, op::LINK_DATA) => {
@@ -141,7 +151,7 @@ async fn on_frame<R: AsyncBufRead + Unpin>(shared: &Arc<Shared>, rx: &mut R, fra
             let connect = shared.with(|t| t.on_open_request(open.ch, frame.id))?;
             if connect {
                 let connector = connector.ok_or("a link.open sent to the window")?;
-                tokio::spawn(connect_channel(Arc::clone(shared), open.ch, frame.id, Arc::clone(connector)));
+                channels.spawn(connect_channel(Arc::clone(shared), open.ch, frame.id, Arc::clone(connector)));
             }
             Ok(None)
         }

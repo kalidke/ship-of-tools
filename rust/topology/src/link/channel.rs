@@ -54,6 +54,13 @@ impl Channel {
         self.inner.ch
     }
 
+    /// Ready when the channel's link has ended, for whatever reason: a copy that may be blocked on its other side
+    /// selects on it, so the link's end ends the copy.
+    pub fn link_ended(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let shared = Arc::clone(&self.inner.shared);
+        async move { shared.wait_ended().await }
+    }
+
     pub fn into_split(self) -> (ChannelReader, ChannelWriter) {
         (ChannelReader { inner: Arc::clone(&self.inner) }, ChannelWriter { inner: self.inner })
     }

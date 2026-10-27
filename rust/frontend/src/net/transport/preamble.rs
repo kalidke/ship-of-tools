@@ -65,7 +65,7 @@ where
     let mut root_node_id = String::new();
     if frame.payload.get("error").is_some() {
         // An unreadable default directory is no reason to end the session:
-        // that would cycle the transport and flap the link gate.
+        // that would cycle the transport and its link.
         tracing::warn!(payload = %frame.payload, "tree.root preamble refused; staying connected");
     } else {
         let res: TreeRootRes = serde_json::from_value(frame.payload).context("tree.root res")?;

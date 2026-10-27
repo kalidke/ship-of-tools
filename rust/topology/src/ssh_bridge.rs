@@ -1,14 +1,14 @@
-//! The ssh child every non-local dial spawns (isolation-plan.md §3 C3, as
+//! The ssh login every non-local dial makes (isolation-plan.md §3 C3, as
 //! amended by `dev/output/c3-second-connection-amendment.md`). Reaching a
-//! daemon that is not on this box now means `ssh <target> '<PATH prelude>;
+//! daemon that is not on this box means `ssh <target> '<PATH prelude>;
 //! sotd stdio-bridge [--host <host>]'`, piped stdio, no shell on THIS end —
 //! never an `ssh -L` forward. One recipe type and one argv builder here,
-//! used by every Rust site that spawns one:
+//! used by every Rust site that starts one:
 //!
-//! - the frontend's control connection (`rust/frontend/src/net/transport/mod.rs`);
-//! - its per-host lane attach (`crate::lane_client`, this crate);
-//! - its per-browser-connection page-proxy leg
-//!   (`rust/frontend/src/pages.rs`).
+//! - the window's link (`crate::link::Link::start`), its one login per computer, which carries its control
+//!   connection, its pages and its rows as channels;
+//! - the daemon's own logins (the hub link, `sotd topology sync` and `dial_and_call`), started through containment
+//!   from [`SshRecipe::command`].
 //!
 //! C10's shell helper (`comm-lib.sh`'s `sot_ssh_bridge`) spawns the same
 //! child from the comm scripts, with its own implementation — shell cannot
@@ -66,7 +66,7 @@ impl SshRecipe {
         })
     }
 
-    /// Test builds only: every start this recipe drives runs `program` with `args` in place of `ssh`, through the same `LinkGate`.
+    /// Test builds only: every start this recipe drives runs `program` with `args` in place of `ssh`.
     #[cfg(any(test, feature = "test-handshake-bound"))]
     pub fn with_test_command(mut self, program: impl Into<std::path::PathBuf>, args: impl IntoIterator<Item = impl Into<std::ffi::OsString>>) -> Self {
         self.test_command = Some(TestCommand { program: program.into(), args: args.into_iter().map(Into::into).collect() });
@@ -113,11 +113,10 @@ pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/
 /// from the same list.
 pub const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"];
 
-/// How long a lane dial over ssh, or over a hub relay, waits for the far daemon's first reply. A whole login comes
-/// before that reply (the connect, key exchange, authentication, the remote shell and `sotd stdio-bridge`), so the
-/// local handshake bound (`CONNECT_BOUND`, 2 s) would kill a login that is merely slow, and its retry is one more login
-/// on a busy host. The window's control connection and page proxy wait the same 30 s for the same login
-/// (`read_connect_reply`).
+/// How long one login may take to answer: the window's link waits this long for its `link.hello` answer (a whole login
+/// comes before it: the connect, key exchange, authentication, the remote shell and `sotd stdio-bridge`), and the
+/// window's connect replies over it and the daemon's own logins (`sotd topology sync`, the installer's probe) wait the
+/// same. A shorter bound would kill a login that is merely slow, and its retry is one more login on a busy host.
 pub const SSH_LOGIN_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on
@@ -168,264 +167,12 @@ fn keep_no_descriptor(cmd: &mut std::process::Command) {
     let _ = cmd;
 }
 
-/// Spawn the child for a synchronous caller — the lane client, which
-/// implements `sot_platform::transport::Client`'s blocking `&self` methods and so
-/// cannot hold a tokio `Child`.
-fn spawn_sync(mut command: std::process::Command) -> std::io::Result<std::process::Child> {
-    #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = command.spawn();
-    child
-}
-
-/// Spawn the child for an async/tokio caller — the frontend's control
-/// connection and its page-proxy splice. `kill_on_drop` so a dropped
-/// `Child` (the branch returning, the splice task ending) never leaves an
-/// orphaned `ssh` running past its client — the async twin of
-/// `BridgedClient`'s own explicit `Drop` on the sync side.
-fn spawn_async(command: std::process::Command) -> std::io::Result<tokio::process::Child> {
-    #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = tokio::process::Command::from(command).kill_on_drop(true).spawn();
-    child
-}
-
-/// Both gated command APIs return a real owned child before admission ends.
-pub(crate) trait StartedChild {
-    #[cfg(test)]
-    fn child_id(&self) -> Option<u32>;
-}
-impl StartedChild for std::process::Child {
-    #[cfg(test)]
-    fn child_id(&self) -> Option<u32> { Some(self.id()) }
-}
-impl StartedChild for tokio::process::Child {
-    #[cfg(test)]
-    fn child_id(&self) -> Option<u32> { self.id() }
-}
-
-/// Why a gated spawn did not start a child.
-#[derive(Debug)]
-pub enum SpawnError {
-    /// The host's link is down; no ssh was started.
-    LinkDown,
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for SpawnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SpawnError::LinkDown => write!(f, "the host's link is down; no ssh was started"),
-            SpawnError::Io(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for SpawnError {}
-
-/// One host's link state, shared by every frontend site that starts an ssh
-/// login to it. While the link is down no gated spawn starts a child, so a
-/// new start site cannot be written without asking the gate: the ungated
-/// spawn functions above are private, and [`LinkGate::probe`] is the one
-/// ungated spawn. Only the host's control transport writes the gate (up at
-/// any hello reply, down when its session ends), and it is the only caller
-/// of `probe`. A default gate is up. A close also ends every login in flight
-/// that its start site watches through the gate ([`LinkGate::watch`]).
-#[derive(Debug, Clone, Default)]
-pub struct LinkGate {
-    down: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    admission: std::sync::Arc<std::sync::Mutex<()>>,
-    logins: std::sync::Arc<std::sync::Mutex<Logins>>,
-    #[cfg(test)]
-    rendezvous: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<tests::GateRendezvous>>>>,
-}
-
-impl LinkGate {
-    pub fn is_up(&self) -> bool {
-        !self.down.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Transport only.
-    pub fn set_up(&self, up: bool) {
-        #[cfg(test)]
-        let observation = if up { None } else {
-            self.rendezvous.lock().unwrap().clone().and_then(|hook| {
-                let sender = hook.close.lock().unwrap().take()?;
-                Some((hook, sender))
-            })
-        };
-        #[cfg(test)]
-        let _admission = self.observe_close_lock(observation.as_ref());
-        #[cfg(not(test))]
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        self.down.store(!up, std::sync::atomic::Ordering::Release);
-        // Under the admission lock: a watch began before this close and is ended by it, or it finds the link down.
-        if !up {
-            for (_, end) in self.logins.lock().unwrap_or_else(|error| error.into_inner()).open.drain(..) {
-                let _ = end.send(());
-            }
-        }
-        #[cfg(test)]
-        if let Some((hook, sender)) = observation {
-            hook.events.lock().unwrap().push("closed".into());
-            hook.snapshot.lock().unwrap().close = "completed";
-            sender.send(tests::CloseObservation::Completed).unwrap();
-        }
-    }
-
-    #[cfg(test)]
-    fn observe_close_lock(&self, observation: Option<&(std::sync::Arc<tests::GateRendezvous>, std::sync::mpsc::Sender<tests::CloseObservation>)>) -> std::sync::MutexGuard<'_, ()> {
-        if let Some((hook, sender)) = observation {
-            match self.admission.try_lock() {
-                Ok(guard) => return guard,
-                Err(std::sync::TryLockError::Poisoned(error)) => return error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    hook.snapshot.lock().unwrap().close = "contended";
-                    sender.send(tests::CloseObservation::Contended).unwrap();
-                }
-            }
-        }
-        self.admission.lock().unwrap_or_else(|error| error.into_inner())
-    }
-
-    /// Starts the login and watches it, both under the one admission lock: a close of the gate either comes after the
-    /// watch exists and ends the login, or comes first and no login starts.
-    pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<(C, LinkWatch), SpawnError> {
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        if !self.is_up() { return Err(SpawnError::LinkDown); }
-        #[cfg(test)]
-        let rendezvous = self.rendezvous.lock().unwrap().clone();
-        #[cfg(test)]
-        let command = if let Some(hook) = &rendezvous { hook.prepare(command) } else { command };
-        #[cfg(test)]
-        if let Some(hook) = &rendezvous { hook.phase("os-spawn"); }
-        #[cfg(not(test))]
-        let child = spawn(command).map_err(SpawnError::Io)?;
-        #[cfg(test)]
-        let child = {
-            let started = spawn(command);
-            if let Some(hook) = &rendezvous { hook.phase("spawn-return"); }
-            started.map_err(SpawnError::Io)?
-        };
-        #[cfg(test)]
-        if let Some(hook) = &rendezvous { hook.created(child.child_id()); }
-        #[cfg(test)]
-        if let Some(hook) = &rendezvous { hook.phase("admission-return"); }
-        Ok((child, self.register_watch()))
-    }
-
-    /// The login and its watch: see [`LinkGate::admit`].
-    pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<(std::process::Child, LinkWatch), SpawnError> {
-        self.admit(command(recipe), spawn_sync)
-    }
-
-    pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<(tokio::process::Child, LinkWatch), SpawnError> {
-        self.admit(command(recipe), spawn_async)
-    }
-
-    /// The gated command, not yet started, for a caller that contains the
-    /// child it starts (the daemon, which kills the child's whole tree).
-    pub fn command(&self, recipe: &SshRecipe) -> Result<std::process::Command, SpawnError> {
-        if !self.is_up() {
-            return Err(SpawnError::LinkDown);
-        }
-        Ok(command(recipe))
-    }
-
-    /// The one ungated spawn: the transport's own reconnect probe, which
-    /// is what discovers that a link is back.
-    pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
-        spawn_async(command(recipe))
-    }
-
-    /// Watch a dial that starts no login of its own (a hub relay's local socket) until its reply: a close in that
-    /// time ends it ([`LinkWatch`]). `None` while the link is down, when no dial starts. A login this process starts
-    /// is watched by its own start ([`LinkGate::spawn_sync`]).
-    pub fn watch(&self) -> Option<LinkWatch> {
-        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
-        self.is_up().then(|| self.register_watch())
-    }
-
-    /// A watch on the gate's open logins; the caller holds the admission lock, so a close is entirely before or after.
-    fn register_watch(&self) -> LinkWatch {
-        let (end, closed) = tokio::sync::oneshot::channel();
-        let mut logins = self.logins.lock().unwrap_or_else(|error| error.into_inner());
-        let id = logins.next;
-        logins.next += 1;
-        logins.open.push((id, end));
-        LinkWatch { listed: Listed { id, logins: std::sync::Arc::clone(&self.logins) }, closed }
-    }
-}
-
-/// The logins in flight that a close of their gate ends, each by the sender its watch waits on.
-#[derive(Debug, Default)]
-struct Logins {
-    next: u64,
-    open: Vec<(u64, tokio::sync::oneshot::Sender<()>)>,
-}
-
-/// A login its gate watches ([`LinkGate::watch`]). A close of the gate before the watch drops ends it: the waiter in
-/// [`LinkWatch::run`] or [`LinkWatch::closed`] wakes, and [`LinkWatch::ended`] is true from then on. Unwatched, a login
-/// started before the link went down would wait out its own bound (`SSH_LOGIN_BOUND`) after the link is back. Dropping
-/// the watch stops it.
-#[derive(Debug)]
-pub struct LinkWatch {
-    listed: Listed,
-    closed: tokio::sync::oneshot::Receiver<()>,
-}
-
-/// A watch's place among its gate's logins, given up when the watch stops.
-#[derive(Debug)]
-struct Listed {
-    id: u64,
-    logins: std::sync::Arc<std::sync::Mutex<Logins>>,
-}
-
-impl Drop for Listed {
-    fn drop(&mut self) {
-        self.logins.lock().unwrap_or_else(|error| error.into_inner()).open.retain(|(id, _)| *id != self.id);
-    }
-}
-
-impl LinkWatch {
-    /// Whether the gate has closed since the watch began.
-    pub(crate) fn ended(&mut self) -> bool {
-        !matches!(self.closed.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty))
-    }
-
-    /// Returns when the gate closes, for an async login; never, while the gate stays up.
-    pub async fn closed(&mut self) {
-        let _ = (&mut self.closed).await;
-    }
-
-    /// Run `login`, a blocking login on this thread, while a second thread waits for the gate's close and, if the close
-    /// comes before `login` returns, calls `end`, the login's own cancel. Returns `login`'s result and whether the close
-    /// ended it. With no thread to wait on the close, `login` runs unwatched, within its own bound.
-    pub(crate) fn run<T>(self, end: impl Fn() + Sync, login: impl FnOnce() -> T) -> (T, bool) {
-        let LinkWatch { listed, closed } = self;
-        std::thread::scope(|scope| {
-            let watcher = std::thread::Builder::new().name("sot-link-watch".to_string()).spawn_scoped(scope, || {
-                let ended = closed.blocking_recv().is_ok();
-                if ended {
-                    end();
-                }
-                ended
-            });
-            let result = login();
-            // The watch stops: its sender drops unless the close already took it, so the watcher returns either way.
-            drop(listed);
-            let ended = watcher.is_ok_and(|watcher| watcher.join().expect("the link watcher returns"));
-            (result, ended)
-        })
-    }
-}
-
 /// After an async caller's own operation over a spawned child has
 /// already failed, give a stderr drainer task a short bounded window to
 /// finish landing the child's last line before giving up — stdout and
 /// stderr are separate pipes with no ordering guarantee between them, so
 /// a child that writes a diagnosis to stderr and closes stdout in the
 /// same instant can otherwise be observed here before its line lands.
-/// Async twin of `lane_client::BridgedClient`'s own (sync, blocking)
-/// version of this same wait.
 pub async fn last_stderr_after_failure(
     last_stderr: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) -> Option<String> {

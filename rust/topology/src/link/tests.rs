@@ -379,6 +379,75 @@ async fn a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_l
     ends_with(&link, "never opened").await;
 }
 
+/// A router serving a raw window, which writes the window's frames by hand; the router's hello answer is read.
+async fn raw_window(connect: Connector) -> (RawPeer, tokio::task::JoinHandle<Served>) {
+    let (near, far) = tokio::io::duplex(1 << 22);
+    let (control, daemon) = tokio::io::duplex(1 << 16);
+    tokio::spawn(fake_daemon(daemon, Daemon::Echo));
+    let first = Frame::req(1, op::LINK_HELLO, serde_json::json!({ "link": 1 }));
+    let (rx, tx) = tokio::io::split(far);
+    let router = tokio::spawn(router::serve_within(first, rx, tx, Box::new(control), connect, SILENCE_BOUND));
+    let (rx, tx) = tokio::io::split(near);
+    let mut peer = RawPeer { rx: tokio::io::BufReader::new(rx), tx };
+    let (answer, _) = peer.next().await;
+    assert_eq!((answer.op.as_str(), answer.kind), (op::LINK_HELLO, Kind::Res));
+    (peer, router)
+}
+
+/// Topology 13: opens are numbered one after another, so a window that skips a number breaks the rules: the router
+/// ends the link, and a frame for the number skipped is never read as a closed channel's.
+#[tokio::test]
+async fn a_skipped_channel_number_ends_the_link_at_the_router() {
+    let made = Arc::new(AtomicUsize::new(0));
+    let (mut peer, router) = raw_window(connector(Vec::new(), Arc::clone(&made))).await;
+    peer.send(Frame::req(2, op::LINK_OPEN, serde_json::json!({ "ch": 2 })), None).await;
+    peer.data(1, b"for a channel never opened").await;
+    let served = tokio::time::timeout(BOUND, router).await.expect("the router ends the link").unwrap();
+    let why = served.expect_err("a skipped number is a violation");
+    assert!(why.contains("out of order"), "{why}");
+    assert_eq!(made.load(Ordering::SeqCst), 0, "nothing was connected for it");
+}
+
+/// Topology 14: the link's end ends every channel the router carries, whatever its copy waits on: a local connection
+/// that stopped reading, its pump blocked writing to it, closes when the window goes.
+#[tokio::test]
+async fn the_links_end_closes_a_local_connection_that_stopped_reading() {
+    let (held_tx, mut held_rx) = tokio::sync::mpsc::unbounded_channel();
+    let connect: Connector = Arc::new(move || {
+        let held_tx = held_tx.clone();
+        Box::pin(async move {
+            let (near, far) = tokio::io::duplex(1024);
+            let _ = held_tx.send(far);
+            Ok(Box::new(near) as Box<dyn Duplex>)
+        })
+    });
+    let (mut peer, router) = raw_window(connect).await;
+    peer.send(Frame::req(2, op::LINK_OPEN, serde_json::json!({ "ch": 1 })), None).await;
+    let (opened, _) = peer.next().await;
+    assert_eq!((opened.op.as_str(), opened.payload["ok"].as_bool()), (op::LINK_OPEN, Some(true)));
+    let mut stalled = tokio::time::timeout(BOUND, held_rx.recv()).await.expect("the channel's connection").unwrap();
+    // More than the local connection holds, none of it read: the pump blocks in its write.
+    peer.data(1, &vec![3u8; CHUNK]).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(peer);
+    tokio::time::timeout(BOUND, router).await.expect("the router ends with its window").unwrap().ok();
+    let mut read = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), stalled.read_to_end(&mut read))
+        .await
+        .expect("the stalled connection closes within 2 s of the link's end")
+        .expect("read the stalled connection");
+    assert!(read.len() < CHUNK, "the pump was blocked, not done: {} bytes", read.len());
+}
+
+/// Topology 13: credit returned beyond a channel's window ends the link.
+#[tokio::test]
+async fn credit_returned_beyond_the_window_ends_the_link() {
+    let (link, _handle, mut peer) = raw_pair(SILENCE_BOUND).await;
+    // Channel 0's credit starts at its whole window, none of it spent: one byte more is beyond it.
+    peer.send(Frame::evt(op::LINK_CREDIT, serde_json::json!({ "ch": 0, "bytes": 1 })), None).await;
+    ends_with(&link, "beyond its window").await;
+}
+
 /// Topology 13: the open past `MAX_CHANNELS` (channel 0 counted) is refused `too_many_channels`, and the link stays up.
 #[tokio::test]
 async fn the_open_past_the_cap_is_refused() {
@@ -476,4 +545,37 @@ async fn an_abandoned_open_closes_the_channel_its_answer_opens() {
     assert_eq!((close.op.as_str(), close.payload["ch"].as_u64()), (op::LINK_CLOSE, Some(1)));
     assert_eq!(close.payload["reason"], serde_json::json!(LinkCloseReason::Reset));
     assert!(link.ended().is_none());
+}
+
+/// The window's one login, ended before its answer: the start fails with the error's own words and ssh's last stderr
+/// line after them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_login_that_ends_before_its_answer_names_its_stderr_line() {
+    let script = "echo 'Permission denied (publickey).' >&2; exit 255";
+    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", script]);
+    match Link::start(&LinkRoute::Ssh(recipe)).await {
+        Err(LinkStartError::Failed(why)) => assert!(why.starts_with("link.hello") && why.ends_with("(ssh: Permission denied (publickey).)"), "{why}"),
+        other => panic!("a login that ended: {:?}", other.map(|_| ())),
+    }
+}
+
+/// The login's stderr is drained to its last non-empty line, read past a byte that is not UTF-8 (a far host's banner).
+#[tokio::test]
+async fn the_stderr_drain_keeps_the_last_non_empty_line() {
+    async fn drained(input: &'static [u8]) -> Option<String> {
+        let cell = super::window::drain_stderr(input);
+        tokio::time::timeout(BOUND, async {
+            while Arc::strong_count(&cell) != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the drain task ends at end of input");
+        let line = cell.lock().unwrap().clone();
+        line
+    }
+    assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
+    assert_eq!(drained(b"\n  \n").await, None);
+    assert_eq!(drained(b"Banner \xe9t\xe9\nPermission denied (publickey).\n").await.as_deref(), Some("Permission denied (publickey)."));
 }

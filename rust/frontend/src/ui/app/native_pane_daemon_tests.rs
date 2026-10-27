@@ -15,21 +15,51 @@ use std::time::{Duration, Instant};
 
 const SELF_HOST: &str = "t3daemon";
 
-/// One request/reply control connection to the private daemon, over a child that bridges stdio to it. A reader
-/// thread owns the child's stdout, so a call waits for its reply for at most `bound`.
+/// One request/reply control connection to the private daemon, over a child that bridges stdio to it or over a
+/// link's channel 0. A reader thread owns the input, so a call waits for its reply for at most `bound`.
 pub(super) struct Control {
-    child: Child,
-    stdin: Option<ChildStdin>,
+    child: Option<Child>,
+    stdin: Option<Box<dyn std::io::Write + Send>>,
     replies: Receiver<anyhow::Result<Frame>>,
     bound: Duration,
     dead: Option<String>,
     next: u64,
 }
 
+/// A link channel's blocking face as `Read` and `Write`, for the control client's reader thread and its writes.
+struct ChannelIo(std::sync::Arc<sot_topology::link::Channel>);
+
+impl std::io::Read for ChannelIo {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        sot_platform::transport::Client::read(&*self.0, buf).map_err(sot_platform::transport::transport_error_to_io)
+    }
+}
+
+impl std::io::Write for ChannelIo {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        sot_platform::transport::Client::write_all(&*self.0, buf).map(|()| buf.len()).map_err(sot_platform::transport::transport_error_to_io)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl Control {
     pub(super) fn from_child(mut child: Child, bound: Duration) -> Result<Self> {
-        let stdin = child.stdin.take().context("control child has no stdin")?;
-        let mut out = BufReader::new(child.stdout.take().context("control child has no stdout")?);
+        let stdin: ChildStdin = child.stdin.take().context("control child has no stdin")?;
+        let out = child.stdout.take().context("control child has no stdout")?;
+        Ok(Self::over(Box::new(stdin), out, Some(child), bound))
+    }
+
+    /// A control connection over `channel`, a link's channel 0.
+    pub(super) fn over_channel(channel: sot_topology::link::Channel, bound: Duration) -> Self {
+        let channel = std::sync::Arc::new(channel);
+        Self::over(Box::new(ChannelIo(channel.clone())), ChannelIo(channel), None, bound)
+    }
+
+    fn over(stdin: Box<dyn std::io::Write + Send>, out: impl std::io::Read + Send + 'static, child: Option<Child>, bound: Duration) -> Self {
+        let mut out = BufReader::new(out);
         let (tx, replies) = std::sync::mpsc::channel();
         std::thread::spawn(move || loop {
             let frame = sot_protocol::codec::read_frame_blocking(&mut out);
@@ -38,7 +68,7 @@ impl Control {
                 break;
             }
         });
-        Ok(Self { child, stdin: Some(stdin), replies, bound, dead: None, next: 1 })
+        Self { child, stdin: Some(stdin), replies, bound, dead: None, next: 1 }
     }
 
     /// Says hello and returns the daemon's session id.
@@ -82,10 +112,13 @@ impl Control {
         }
     }
 
-    /// Drops stdin and waits for the bridge's own exit; `wait_until` kills it only at the bound.
+    /// Drops stdin and waits for the bridge's own exit; `wait_until` kills it only at the bound. Over a channel, the
+    /// channel's end is the close.
     pub(super) fn close(mut self) {
         drop(self.stdin.take());
-        let _ = sot_platform::test_isolated::wait_until(&mut self.child, Instant::now() + Duration::from_secs(10));
+        if let Some(child) = self.child.as_mut() {
+            let _ = sot_platform::test_isolated::wait_until(child, Instant::now() + Duration::from_secs(10));
+        }
     }
 }
 

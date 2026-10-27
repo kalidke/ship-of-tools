@@ -1,22 +1,23 @@
-// net/transport — local frontend ↔ remote backend over a local socket (Unix
-// socket / Windows named pipe) or an ssh child's stdio.
+// net/transport — local frontend ↔ backend over a local socket (Unix
+// socket / Windows named pipe), or over channel 0 of the host's link.
 //
 // Per ADR 0010, as replaced by isolation-plan.md §3 C3 (amended by
 // dev/output/c3-second-connection-amendment.md):
-//   - Reaching a daemon that is not on this box means spawning
-//     `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`
-//     (`sot_topology::ssh_bridge`) and speaking the protocol over its piped
-//     stdin/stdout — never a port, on either box: the daemon has had no TCP
-//     listener since 0.4.0. A dead login or a dead `sotd` on the far end is
-//     the child exiting before the first frame; its last stderr line IS the
-//     diagnosis (no per-cause exit codes to invent).
+//   - Reaching a daemon that is not on this box means the host's link
+//     (`sot_topology::link`): one `ssh <target> '<PATH prelude>; sotd
+//     stdio-bridge [--host <host>]'` login, or one connection to the hub's
+//     relay socket, whose far `sotd stdio-bridge` routes the link's channels
+//     to its daemon — never a port, on either box: the daemon has had no TCP
+//     listener since 0.4.0. The control connection is channel 0; the host's
+//     pages and rows open channels on the same link. A dead login or a dead
+//     `sotd` on the far end is the link's start failing; the login's last
+//     stderr line IS the diagnosis (no per-cause exit codes to invent).
 //   - Connect handshake carries (session_id, client_id, last_seen_revision);
 //     backend either replays missed events or sends a snapshot on reconnect.
 //
-// Transport selection: `spawn` takes a pipe or an ssh recipe. The protocol
-// code is generic over `AsyncRead` / `AsyncWrite` so it runs identically on
-// either transport — an ssh child is a third `AsyncRead`/`AsyncWrite` pair,
-// not a protocol change (the amendment's own §0).
+// Transport selection: `spawn` takes a pipe, an ssh recipe or a relay path. The
+// protocol code is generic over `AsyncRead` / `AsyncWrite` so it runs
+// identically on a local socket and on a link's channel 0.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,7 +27,8 @@ use std::sync::Arc;
 use crate::net::dial::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
-use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
+use interprocess::local_socket::tokio::prelude::*;
+use sot_topology::link::{Link, LinkRoute, LinkStartError, LocalStream};
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
@@ -107,8 +109,8 @@ impl<'a> ResultTreeTestDriver<'a> {
     }
 }
 
-/// What the transport task should dial: a local socket/named pipe, or an
-/// ssh child's stdio (C3). Exactly one, never neither and never both —
+/// What the transport task should dial: a local socket/named pipe, or the
+/// host's link over an ssh login or a hub relay (C3). Exactly one, never neither and never both —
 /// replaces the former `pipe: Option<PathBuf>` / `ssh: Option<SshRecipe>`
 /// pair, whose "at least one must be set" was a doc caveat callers had to
 /// honor by convention (the CLI never actually built one with neither set;
@@ -117,7 +119,7 @@ impl<'a> ResultTreeTestDriver<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dial {
     Pipe(PathBuf),
-    /// A generated hub relay, remote for policy; its link gate precedes the existing protected local connector.
+    /// A generated hub relay, remote for policy: the host's link over the protected local connector.
     Relay(PathBuf),
     Ssh(sot_topology::ssh_bridge::SshRecipe),
 }
@@ -130,8 +132,8 @@ pub struct TransportConfig {
 
 /// ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
 /// amended: which transport a host's CONTROL connection actually resolved
-/// to — `Local` (the pipe/socket connected) or `Ssh` (the ssh child
-/// connected, carrying the exact recipe it spawned). Recorded from every
+/// to — `Local` (the pipe/socket connected), or the route of the host's link
+/// (`Ssh` with the exact recipe its login ran, `Relay` with the relay path). Recorded from every
 /// `Connected` evt (`State::host_resolved_dial`) so `spawn_pane_attach_term`
 /// dials the SAME endpoint the control connection is already talking to,
 /// rather than an independent preference guess that could reach a
@@ -159,9 +161,10 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 }
 
 /// The reconnect wait for `dial`: from 200 ms, doubling to a cap that depends on the dial, and back to 200 ms only
-/// after a session that lasted `STABLE`. A local socket costs nothing to probe, so it keeps 5 s. Each ssh probe is a
-/// login on the hub plus one on the far host, so the cap is 30 s: once the wait reaches it, a down remote host costs
-/// the hub at most two ssh logins a minute per frontend (about nine in the first minute, while the wait doubles).
+/// after a session that lasted `STABLE`. A local socket costs nothing to probe, so it keeps 5 s. Each start of a
+/// remote host's link is a login on the hub plus one on the far host, so the cap is 30 s: once the wait reaches it, a
+/// down remote host costs the hub at most two ssh logins a minute per frontend (about nine in the first minute, while
+/// the wait doubles), and that is every login the window makes to it: its pages and rows are channels on the link.
 fn redial_for(dial: &Dial) -> sot_platform::host::redial::Redial {
     let cap = match dial {
         Dial::Pipe(_) => std::time::Duration::from_secs(5),
@@ -183,7 +186,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
     out_rx: UnboundedReceiver<OutgoingReq>,
     window: Wn,
     reconnect_now: Arc<tokio::sync::Notify>,
-    gate: sot_topology::ssh_bridge::LinkGate,
+    link: sot_topology::link::LinkHandle,
     leases: Arc<crate::lease::Leases>,
 ) {
     rt.spawn(async move {
@@ -213,7 +216,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
                 evt_tx.clone(),
                 &mut out_rx,
                 window.clone(),
-                &gate,
+                &link,
                 &leases,
             )
             .await
@@ -266,7 +269,7 @@ async fn connect_and_run<Wn: Redraw>(
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: Wn,
-    gate: &sot_topology::ssh_bridge::LinkGate,
+    link: &sot_topology::link::LinkHandle,
     leases: &crate::lease::Leases,
 ) -> Result<()> {
     match &config.dial {
@@ -308,55 +311,50 @@ async fn connect_and_run<Wn: Redraw>(
             )
             .await
         }
-        Dial::Relay(path) => {
-            // The relay reaches a remote daemon: no window lease, but the account rule and budget of any local socket.
-            let stream = connect_pipe(path).await?;
-            tracing::info!(dial = %host, ?path, "connected via hub relay socket");
-            let (rx, tx) = stream.split();
-            let rx = codec::buffered(rx);
-            run_protocol(
+        Dial::Relay(_) | Dial::Ssh(_) => {
+            let (route, resolved) = match &config.dial {
+                Dial::Relay(path) => (LinkRoute::Relay(path.clone()), ResolvedDial::Relay(path.clone())),
+                Dial::Ssh(recipe) => (LinkRoute::Ssh(recipe.clone()), ResolvedDial::Ssh(recipe.clone())),
+                Dial::Pipe(_) => unreachable!("matched above"),
+            };
+            // The window's one login to this computer, or its one connection to the hub's relay socket for it: the
+            // control session, the host's pages and its rows are channels on it. No window lease: the daemon is remote.
+            #[allow(clippy::disallowed_methods, reason = "the window's one login per computer, its link, owned by this task")]
+            let started = Link::start(&route).await;
+            let mut started = match started {
+                Ok(started) => started,
+                Err(LinkStartError::Refused { code, message }) => {
+                    // A far end the person must update (a bridge from before the link, another link number): a refusal,
+                    // shown as a hello refusal is.
+                    tracing::error!(code, "link refused: {message}");
+                    let _ = evt_tx.send((host.clone(), IncomingEvt::HelloRefused { message: message.clone() }));
+                    window.request_redraw();
+                    return Err(HelloRefused(format!("link refused: {message} (code={code})")).into());
+                }
+                Err(e) => return Err(anyhow::Error::new(e).context(format!("link {route}"))),
+            };
+            // Pre-hello, same labeling rule as the pipe branch above.
+            tracing::info!(dial = %host, %route, build = started.build(), "connected via the host's link");
+            let control = started.take_control().expect("a new link's channel 0");
+            let (rx, tx) = control.into_split();
+            // The host's handle goes down inside `run_protocol`'s own wrapper, before the stderr wait below, so no
+            // channel opens while that wait runs.
+            let result = run_protocol(
                 host,
-                rx,
+                codec::buffered(rx),
                 tx,
                 config.token.as_deref(),
                 &evt_tx,
                 out_rx,
                 &window,
-                ResolvedDial::Relay(path.clone()),
-                Some(gate),
-            )
-            .await
-        }
-        Dial::Ssh(recipe) => {
-            #[allow(clippy::disallowed_methods, reason = "the window's control ssh, owned by the window")]
-            let mut child = sot_topology::ssh_bridge::LinkGate::probe(recipe)
-                .with_context(|| format!("spawn ssh {recipe}"))?;
-            let stdin = child.stdin.take().expect("spawned with a piped stdin");
-            let stdout = child.stdout.take().expect("spawned with a piped stdout");
-            let stderr = child.stderr.take().expect("spawned with a piped stderr");
-            let last_stderr = spawn_stderr_drain(stderr);
-            // Pre-hello, same labeling rule as the pipe branch above.
-            tracing::info!(dial = %host, %recipe, "connected via ssh child");
-            let rx = codec::buffered(stdout);
-            // The gate goes down inside `run_protocol`'s own wrapper, before
-            // the stderr wait below, so no lane dials while that wait runs.
-            let result = run_protocol(
-                host,
-                rx,
-                stdin,
-                config.token.as_deref(),
-                &evt_tx,
-                out_rx,
-                &window,
-                ResolvedDial::Ssh(recipe.clone()),
-                Some(gate),
+                resolved,
+                Some((link, &started)),
             )
             .await;
-            // `child` is dropped when this arm returns (`kill_on_drop`), after the
-            // stderr read below, ending the ssh login this attempt owns before the
-            // reconnect loop's next attempt spawns a fresh one.
+            // The link drops when this arm returns, ending its login (`kill_on_drop`) and every channel on it before
+            // the reconnect loop's next attempt starts a fresh one.
             if let Err(e) = &result {
-                if let Some(line) = sot_topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+                if let Some(line) = started.last_stderr().await {
                     return Err(anyhow::anyhow!("{e:#} (ssh: {line})"));
                 }
             }
@@ -365,47 +363,12 @@ async fn connect_and_run<Wn: Redraw>(
     }
 }
 
-/// Connect through `connect_own` on a blocking thread, then adopt the returned socket as the window's stream. The
-/// listener's cached account is checked before client I/O (ADR 0049, User isolation). The fixed `CONNECT_BOUND` retry
-/// budget permits an attempt or wait in progress to finish, including Unix's 20 ms retry sleep; it is not an exact
-/// elapsed-time limit.
-#[cfg(unix)]
+/// Connect through `connect_own` on a blocking thread, then adopt the returned socket or pipe as the window's stream
+/// (`sot_topology::link::connect_local`, which the far router's channels use too). The listener's account is checked
+/// before client I/O (ADR 0049, User isolation). The fixed `CONNECT_BOUND` retry budget permits an attempt or wait in
+/// progress to finish (Unix's 20 ms retry sleep, the 200 ms named-pipe wait); it is not an exact elapsed-time limit.
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
-    use interprocess::os::unix::uds_local_socket::tokio::Stream as UdsStream;
-
-    let owned = path.to_path_buf();
-    let client =
-        tokio::task::spawn_blocking(move || sot_platform::transport::connect_own::connect_own(&owned))
-            .await
-            .context("socket connect task")?
-            .with_context(|| format!("connect {path:?}"))?;
-    let socket = client.into_stream();
-    socket
-        .set_nonblocking(true)
-        .with_context(|| format!("connect {path:?}"))?;
-    let stream = UdsStream::try_from(std::os::fd::OwnedFd::from(socket))
-        .with_context(|| format!("connect {path:?}"))?;
-    Ok(LocalStream::from(stream))
-}
-
-/// Connect to the named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation): `connect_own`
-/// opens it at identification level and checks the serving process before any byte is written. The fixed
-/// `CONNECT_BOUND` retry budget permits an attempt or wait in progress to finish, including the 200 ms named-pipe wait;
-/// it is not an exact elapsed-time limit. The handle it returns, opened for overlapped I/O, is then adopted as the
-/// window's stream, as the lane bridge adopts its own (`rows/ops/lane_bridge.rs`).
-#[cfg(windows)]
-pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
-    use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;
-
-    let owned = path.to_path_buf();
-    let client = tokio::task::spawn_blocking(move || sot_platform::transport::connect_own::connect_own(&owned))
-        .await
-        .context("pipe connect task")?
-        .with_context(|| format!("connect {path:?}"))?;
-    let stream = PipeStream::try_from(client.into_handle())
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .with_context(|| format!("connect {path:?}"))?;
-    Ok(LocalStream::from(stream))
+    sot_topology::link::connect_local(path).await.with_context(|| format!("connect {path:?}"))
 }
 
 /// How often this connection sends `ping` (topology plan §F step 2) — a
@@ -440,10 +403,9 @@ impl Redraw for crate::ui::MainWake {
 }
 
 
-/// Run the session and write the link gate: up at any hello reply (inside
-/// [`run_session`]), down when the session ends for any reason except a
-/// refusal of the hello itself. `gate` is `None` for a local connection,
-/// which has no ssh link to gate.
+/// Run the session and write the host's link handle: up at an accepted hello
+/// (inside [`run_session`]), down when the session ends for any reason. `link`
+/// is `None` for a local connection, which has no link.
 async fn run_protocol<R, W, Wn>(
     host: HostKey,
     rx: tokio::io::BufReader<R>,
@@ -453,25 +415,23 @@ async fn run_protocol<R, W, Wn>(
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: &Wn,
     resolved: ResolvedDial,
-    gate: Option<&sot_topology::ssh_bridge::LinkGate>,
+    link: Option<(&sot_topology::link::LinkHandle, &Link)>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
     Wn: Redraw,
 {
-    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, resolved, gate).await;
-    if let Some(gate) = gate {
-        if !matches!(&result, Err(e) if e.is::<HelloRefused>()) {
-            gate.set_up(false);
-        }
+    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, resolved, link).await;
+    if let Some((handle, _)) = link {
+        handle.set_down();
     }
     result
 }
 
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
-/// transport and an ssh child's stdio — C3 as amended §0: adding this
+/// transport and a link's channel 0 — C3 as amended §0: adding this
 /// transport inside the protocol CRATE is not a wire-protocol change; the
 /// frames this function reads/writes are untouched.
 async fn run_session<R, W, Wn>(
@@ -484,11 +444,11 @@ async fn run_session<R, W, Wn>(
     window: &Wn,
     // C3 as amended §5: which transport `connect_and_run` actually
     // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
-    // for the ssh child, carrying the exact recipe it spawned. The proxy
+    // or `Relay` for the host's link, carrying its exact route. The proxy
     // arms only when NOT `Local` — keyed on the transport that CONNECTED,
     // not the CLI shape.
     resolved: ResolvedDial,
-    gate: Option<&sot_topology::ssh_bridge::LinkGate>,
+    link: Option<(&sot_topology::link::LinkHandle, &Link)>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -543,7 +503,11 @@ where
     // hello
     let hello_id = take_id(&mut next_id);
     send_hello(&mut tx, hello_id, &session, token).await?;
-    let frame = read_hello(&mut rx, hello_id, gate, &mut session, &emit, window).await?;
+    let frame = read_hello(&mut rx, hello_id, &mut session, &emit, window).await?;
+    // The daemon admitted this session: the host's pages and rows may open channels on its link from now on.
+    if let Some((handle, link)) = link {
+        handle.set_up(link);
+    }
     // The window's REPL runs the daemon names still running: this connection waits on each as on any run, so its
     // `done` or this connection's end closes the entry the window reopens for it.
     for eval_id in accept_hello(frame, &host, &mut session, resolved, &emit, window)? {
@@ -626,32 +590,6 @@ fn take_id(next_id: &mut u64) -> u64 {
     let id = *next_id;
     *next_id += 1;
     id
-}
-
-/// The child's last non-empty stderr line, drained on its own task
-/// for as long as `child` lives — ssh's own complaint ("Permission
-/// denied", or `unrecognised argument: --host` from a hub whose
-/// `sotd` predates C1) is the diagnosis a dead child leaves behind,
-/// the same rule `stdio_bridge.rs` already sets for the far end.
-pub(crate) fn spawn_stderr_drain<R>(stderr: R) -> Arc<std::sync::Mutex<Option<String>>>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
-    {
-        let last_stderr = Arc::clone(&last_stderr);
-        tokio::spawn(async move {
-            let mut lines = sot_protocol::child_lines::ChildLines::new(stderr);
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    if let Ok(mut guard) = last_stderr.lock() {
-                        *guard = Some(line);
-                    }
-                }
-            }
-        });
-    }
-    last_stderr
 }
 
 #[cfg(test)]

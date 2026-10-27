@@ -73,8 +73,9 @@ pub enum TransportError {
     /// charged to that absence window. An endpoint reached through a daemon (topology's lane client).
     #[error("the daemon's lane bridge is unreachable: {0}")]
     Unreachable(std::io::Error),
-    /// The host's link is down, so no ssh was started. An endpoint reached through a daemon (topology's lane client).
-    #[error("the host's link is down; no ssh was started")]
+    /// The host's link is down: nothing was sent, or the link ended under the call. An endpoint reached through a daemon
+    /// (topology's lane client).
+    #[error("the host's link is down")]
     LinkDown,
 }
 

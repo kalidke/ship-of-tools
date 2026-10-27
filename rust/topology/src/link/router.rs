@@ -28,7 +28,9 @@ where
     serve_within(first, rx, tx, control, connect, super::SILENCE_BOUND).await
 }
 
-pub(super) async fn serve_within<R, W>(first: Frame, rx: R, mut tx: W, control: Box<dyn Duplex>, connect: Connector, silence: Duration) -> Served
+/// [`serve`] with the silence bound given: `sotd stdio-bridge` passes its test override, every other caller
+/// `SILENCE_BOUND`.
+pub async fn serve_within<R, W>(first: Frame, rx: R, mut tx: W, control: Box<dyn Duplex>, connect: Connector, silence: Duration) -> Served
 where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,

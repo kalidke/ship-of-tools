@@ -1,12 +1,10 @@
 //! Frontend half of the daemon TCP proxy (ADR 0035), C3 as amended §3.
 //!
 //! A REMOTE frontend reaches any backend-served loopback page (Pluto, video,
-//! docs + pool, WGLMakie/Bonito) through its OWNING daemon: the window's page proxy opens a dedicated SSH or
-//! generated-relay connection using the owning host's resolved control selection; handoff hello and proxy.connect
-//! share one write. There is no per-port ssh `-L` forward and no launcher edit when a new
-//! backend port appears. A multi-host FE makes one such connection per browser
-//! connection (W2, the accepted cost — isolation-plan.md §10), so each
-//! listener carries its OWN target (never one baked-in default-host
+//! docs + pool, WGLMakie/Bonito) through its OWNING daemon: each browser connection is a channel on the owning
+//! host's link (`sot_topology::link`), never a login of its own; handoff hello and proxy.connect share one write.
+//! There is no per-port ssh `-L` forward and no launcher edit when a new
+//! backend port appears. Each listener carries its OWN host's link (never one baked-in default-host
 //! address for every port — that was the cross-host figure defect: a page
 //! served by a non-default host's daemon had nowhere to proxy through). The
 //! browser still opens a plain `http://127.0.0.1:<port>/…` URL; for a page a
@@ -21,38 +19,21 @@
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
 //! `browser_open::open_page` runs) and hands the bound listener — tagged with the
-//! ssh recipe and token it resolved for that page's host — to the transport
+//! link and token of that page's host — to the transport
 //! runtime here, which owns the async accept loop + the per-connection pipe.
 //!
 //! Part of pages; charter: rust/backend/src/pages/CLAUDE.md.
 
 use std::net::TcpListener as StdTcpListener;
 
-use sot_topology::ssh_bridge::{LinkGate, LinkWatch, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, HelloReq, ProxyConnectReq, HANDOFF_ROLE};
+use sot_topology::link::{LinkHandle, OpenError};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-/// Where a listener's browser connections go to reach their page's owning daemon: a dedicated ssh login, or a
-/// generated hub-relay socket reached locally. Both end in the same handoff hello and `proxy.connect`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PageDial {
-    Ssh(SshRecipe),
-    Relay(std::path::PathBuf),
-}
-
-impl std::fmt::Display for PageDial {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PageDial::Ssh(recipe) => recipe.fmt(f),
-            PageDial::Relay(path) => write!(f, "relay:{}", path.display()),
-        }
-    }
-}
-
 /// Whether an armed port's listener dials the daemon, shared by the GPU thread, which opens pages, and that port's
 /// listener. Even: dialing. Odd: parked — the daemon answered `bad_port`, so browser connections close at the
-/// listener with no ssh login until a page on the port is opened again. Each open moves to the next even value, so a
+/// listener with no channel opened until a page on the port is opened again. Each open moves to the next even value, so a
 /// refusal of a dial made before that open cannot park the port, and two refusals of one dial park (and log) once.
 #[derive(Default)]
 pub struct Arm(std::sync::atomic::AtomicU64);
@@ -79,13 +60,14 @@ impl Arm {
 
 /// How the daemon answered one browser connection's `proxy.connect`; every other end is an `Err`.
 #[derive(Debug)]
-enum Answer {
+pub(crate) enum Answer {
     /// `{ok: true}`: the connection was piped until either side closed.
     Piped,
     /// The typed `bad_port` refusal: the daemon does not serve this port, so its listener parks it (`Arm`).
     NotServed,
-    /// The host's link is down: no ssh child was spawned and the browser connection closes at once. The frontend's
-    /// status line already says the link is down, so this writes no log line (ADR 0045 decision 4).
+    /// The host's link is down, or ended during the handshake: no channel stays open and the browser connection closes
+    /// at once. The frontend's status line already says the link is down, so this writes no log line (ADR 0045
+    /// decision 4).
     LinkDown,
 }
 
@@ -95,25 +77,25 @@ enum Answer {
 pub struct PageListener {
     pub listener: StdTcpListener,
     pub daemon_port: u16,
-    pub dial: PageDial,
+    /// The page's owning host's link: each browser connection is a channel on it.
+    pub link: LinkHandle,
     pub token: Option<String>,
-    pub gate: LinkGate,
     pub arm: std::sync::Arc<Arm>,
 }
 
 /// Spawn the proxy manager on the transport runtime. It receives bound
 /// listeners from the GPU thread (`State::ensure_proxy_for_url`), each
-/// tagged with its daemon port and `(dial, token)` — the exact recipe and token resolved
-/// for the page's OWNING host, not a single manager-wide default. Per
+/// tagged with its daemon port and `(link, token)` — the link and token of
+/// the page's OWNING host, not a single manager-wide default. Per
 /// listener it runs an accept loop that pipes each accepted browser
-/// connection to a FRESH connection made from that listener's own
-/// `dial`; `token` is forwarded in the handshake when that daemon has one
+/// connection to a FRESH channel opened on that listener's own
+/// `link`; `token` is forwarded in the handshake when that daemon has one
 /// configured (Unix-socket transports carry none). A port the daemon answers `bad_port` is parked (`Arm`) until a page
 /// on it is opened again; the listener itself never closes.
 pub fn spawn_proxy_manager(rt: &tokio::runtime::Runtime, mut listener_rx: UnboundedReceiver<PageListener>) {
     rt.spawn(async move {
         while let Some(armed) = listener_rx.recv().await {
-            let PageListener { listener: std_listener, daemon_port: port, dial: target, token, gate, arm } = armed;
+            let PageListener { listener: std_listener, daemon_port: port, link, token, arm } = armed;
             // The GPU thread already set it non-blocking; from_std needs that.
             let listener = match tokio::net::TcpListener::from_std(std_listener) {
                 Ok(l) => l,
@@ -122,26 +104,19 @@ pub fn spawn_proxy_manager(rt: &tokio::runtime::Runtime, mut listener_rx: Unboun
                     continue;
                 }
             };
-            tracing::info!(port, %target, "proxy: accepting browser connections for backend port");
-            tokio::spawn(serve_page_listener(listener, port, target, token, gate, arm));
+            tracing::info!(port, "proxy: accepting browser connections for backend port");
+            tokio::spawn(serve_page_listener(listener, port, link, token, arm));
         }
         tracing::debug!("proxy: listener channel closed; manager exiting");
     });
 }
 
-/// Serve one armed listener: each browser connection `serve_own` admits is piped to `dial`'s daemon with
-/// `proxy.connect` naming `port`, the daemon's page port, never the listener's own.
-async fn serve_page_listener(
-    listener: tokio::net::TcpListener,
-    port: u16,
-    target: PageDial,
-    token: Option<String>,
-    gate: LinkGate,
-    arm: std::sync::Arc<Arm>,
-) {
+/// Serve one armed listener: each browser connection `serve_own` admits is piped over a channel of `link` to its
+/// daemon with `proxy.connect` naming `port`, the daemon's page port, never the listener's own.
+async fn serve_page_listener(listener: tokio::net::TcpListener, port: u16, link: LinkHandle, token: Option<String>, arm: std::sync::Arc<Arm>) {
     let dial = move |browser| {
-        let (d, g, t) = (target.clone(), gate.clone(), token.clone());
-        async move { pipe_one(browser, &d, &g, port, t.as_deref()).await }
+        let (l, t) = (link.clone(), token.clone());
+        async move { pipe_one(browser, &l, port, t.as_deref()).await }
     };
     sot_platform::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
         let arm = std::sync::Arc::clone(&arm);
@@ -152,7 +127,7 @@ async fn serve_page_listener(
 }
 
 /// One browser connection `serve_own` has admitted, as `done`, the future of its `dial`. A port the daemon refused
-/// (`Arm`) is parked: the connection is dropped here, with no ssh login and no log line. Otherwise `dial` runs and its
+/// (`Arm`) is parked: the connection is dropped here, with no channel opened and no log line. Otherwise `dial` runs and its
 /// answer is logged. The listener never closes, so the port stays this frontend's for its whole life.
 async fn serve_browser<Fut>(port: u16, arm: &Arm, done: Fut)
 where
@@ -176,77 +151,42 @@ where
     }
 }
 
-/// Pipe one browser connection to the daemon that owns `port`'s page (C3 as amended §3): reach it through a
-/// fresh ssh child spawned from the recipe, or through the generated relay socket's own protected connection, do
-/// the `proxy.connect` handshake behind a handoff hello as the first bytes (`server/conn.rs` `hand_off`), then
-/// splice bytes both ways until either side closes (carrying a WebSocket upgrade verbatim). While the host's link
-/// is down (`gate`) nothing is spawned or connected and the browser connection closes at once; the gate watches the
-/// login from before it starts until its replies, so a close of the link ends it the same way.
-async fn pipe_one(
-    browser: tokio::net::TcpStream,
-    target: &PageDial,
-    gate: &LinkGate,
-    port: u16,
-    token: Option<&str>,
-) -> anyhow::Result<Answer> {
-    match target {
-        PageDial::Ssh(recipe) => {
-            #[allow(
-                clippy::disallowed_methods,
-                reason = "the window's page-proxy ssh, owned by the window"
-            )]
-            let (child, link) = match gate.spawn_async(recipe) {
-                Ok(started) => started,
-                Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
-                Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
-            };
-            pipe_child(child, browser, port, token, link).await
-        }
-        PageDial::Relay(path) => {
-            use interprocess::local_socket::tokio::prelude::*;
-            let Some(link) = gate.watch() else {
-                return Ok(Answer::LinkDown);
-            };
-            let stream = crate::net::transport::connect_pipe(path).await?;
-            let (rx, mut tx) = stream.split();
-            let mut rx = codec::buffered(rx);
-            let _ = browser.set_nodelay(true);
-            pipe_one_over(&mut tx, &mut rx, browser, port, token, link).await
-        }
-    }
+/// Pipe one browser connection to the daemon that owns `port`'s page (C3 as amended §3): open a channel on the host's
+/// link, do the `proxy.connect` handshake behind a handoff hello as its first bytes (`server/conn.rs` `hand_off`),
+/// then splice bytes both ways until either side closes (carrying a WebSocket upgrade verbatim). While the host's link
+/// is down nothing is opened and the browser connection closes at once; a link that ends during the handshake or the
+/// splice ends it the same way, whatever either copy is waiting on. The open waits at most `LINK_REPLY_BOUND`
+/// (`OpenError::TimedOut`), and an open given up closes the channel its late answer opens.
+pub(crate) async fn pipe_one(browser: tokio::net::TcpStream, link: &LinkHandle, port: u16, token: Option<&str>) -> anyhow::Result<Answer> {
+    pipe_one_within(browser, link, port, token, sot_topology::link::LINK_REPLY_BOUND).await
 }
 
-/// The rest of [`pipe_one`] over a spawned child (an ssh login, or in a test a stand-in): the handshake, the splice,
-/// and, when it fails, the child's last stderr line after the error's own words.
-async fn pipe_child(
-    mut child: tokio::process::Child,
+async fn pipe_one_within(
     browser: tokio::net::TcpStream,
+    link: &LinkHandle,
     port: u16,
     token: Option<&str>,
-    link: LinkWatch,
+    open_bound: std::time::Duration,
 ) -> anyhow::Result<Answer> {
-    let d_wr = child.stdin.take().expect("spawned with a piped stdin");
-    let d_rd = child.stdout.take().expect("spawned with a piped stdout");
-    let stderr = child.stderr.take().expect("spawned with a piped stderr");
-    let last_stderr = crate::net::transport::spawn_stderr_drain(stderr);
-    let mut d_wr = d_wr;
+    let opened = tokio::time::timeout(open_bound, link.open()).await.unwrap_or(Err(OpenError::TimedOut));
+    let channel = match opened {
+        Ok(channel) => channel,
+        Err(OpenError::LinkDown) => return Ok(Answer::LinkDown),
+        Err(e) => return Err(anyhow::Error::new(e).context(format!("open a channel for port {port}"))),
+    };
+    let link_ended = channel.link_ended();
+    let (rx, mut tx) = channel.into_split();
+    // The handshake reads through a BufReader and the splice copies FROM that same BufReader, so bytes it buffered
+    // past the reply (the daemon may start streaming right after `{ok}`) are not lost.
+    let mut rx = BufReader::new(rx);
     let _ = browser.set_nodelay(true);
-
-    // Handshake read goes through a BufReader; the pipe below copies FROM that
-    // same BufReader so any bytes it buffered past the response envelope (the
-    // daemon may start streaming upstream data immediately after `{ok}`) are
-    // not lost — the throwaway-reader trap.
-    let mut d_buf = BufReader::new(d_rd);
-    let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token, link).await;
-    // `child` drops here (`kill_on_drop`), ending this connection's ssh
-    // login. The child's last stderr line is added after the error's own words when it died
-    // before or during the splice: the daemon's answer (a refused hello) stays first.
-    match result {
-        Err(e) => match sot_topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-            Some(line) => Err(anyhow::anyhow!("{e:#}: {line}")),
-            None => Err(e),
-        },
-        ok => ok,
+    let answer = tokio::select! {
+        answer = pipe_one_over(&mut tx, &mut rx, browser, port, token) => answer,
+        () = link_ended => return Ok(Answer::LinkDown),
+    };
+    match answer {
+        Err(_) if !link.is_up() => Ok(Answer::LinkDown),
+        answer => answer,
     }
 }
 
@@ -256,7 +196,6 @@ async fn pipe_one_over<W, R>(
     browser: tokio::net::TcpStream,
     port: u16,
     token: Option<&str>,
-    link: LinkWatch,
 ) -> anyhow::Result<Answer>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -285,12 +224,7 @@ where
         let (res, _blob) = crate::net::transport::read_connect_reply(&mut *d_buf, op::PROXY_CONNECT).await?;
         anyhow::Ok(res)
     };
-    // The login ends with the host's link (`LinkWatch`); a page already piped does not.
-    let mut link = link;
-    let res = tokio::select! {
-        res = login => res?,
-        () = link.closed() => return Ok(Answer::LinkDown),
-    };
+    let res = login.await?;
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
             .payload
