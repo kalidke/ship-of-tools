@@ -181,7 +181,7 @@ jobs:
           echo "key=apt-debs-${ImageOS}-${ImageVersion}-$(echo "$APT_PACKAGES" | tr ' ' '-')" >> "$GITHUB_OUTPUT"
       - name: Restore preview tool packages
         id: apt-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/apt-debs/*.deb
           key: ${{ steps.apt.outputs.key }}
