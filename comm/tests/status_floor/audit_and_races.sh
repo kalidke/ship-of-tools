@@ -95,9 +95,9 @@ case_marker_artifact_audit_skipped_in_continuation() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null
     local out
     out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge it"}]}' \
-        ITT "Write:::/tmp/brief.md" 'SITREP-QUESTION: which port?' true)"
+        ITT "Write:::/tmp/brief.md" "SITREP-QUESTION: $PORT_QUESTION" true)"
     [ -z "$out" ] || { echo "    nudged a stop-hook continuation: '$out'"; return 1; }
-    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ]
+    expect blocked/-/q/-/- state && [ "$(summ)" = "$PORT_QUESTION" ]
 }
 
 # ---- the inbox read runs before the closing marker (B1 fix-up 7b) ----
@@ -156,8 +156,8 @@ fb_gone() {
     [ -z "$left" ] || { echo "    the passing Stop left its feedback record: $left"; return 1; }
 }
 case_a_held_question_turn_ends_red_with_its_question() {
-    held_marker_turn $'SITREP-QUESTION: which port?\n\nContext...' || return 1
-    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ] || { echo "    summary '$(summ)'"; return 1; }
+    held_marker_turn "SITREP-QUESTION: $PORT_QUESTION"$'\n\nContext...' || return 1
+    expect blocked/-/q/-/- state && [ "$(summ)" = "$PORT_QUESTION" ] || { echo "    summary '$(summ)'"; return 1; }
 }
 case_a_held_waiting_or_done_turn_ends_as_its_marker() {
     held_marker_turn 'SITREP-WAITING: the build' || return 1
@@ -177,7 +177,7 @@ case_the_last_marker_in_a_held_turn_wins() {
 }
 case_a_turn_held_twice_keeps_its_first_marker() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
-    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    LT_NEW "please do the thing"; LT_REPLY "SITREP-QUESTION: $PORT_QUESTION"
     local out; out="$(LT_STOP)"
     [ "$out" = "$MAIL_BLOCK" ] || { echo "    no first block: '$out'"; return 1; }
     LT_BLOCKED "$out"; LT_REPLY 'looking'; _mail_line "$NAME"
@@ -186,10 +186,10 @@ case_a_turn_held_twice_keeps_its_first_marker() {
     poll_mail; LT_BLOCKED "$out"; LT_REPLY 'nothing for me'
     out="$(LT_STOP true)"
     [ -z "$out" ] || { echo "    the third turn end still blocked: '$out'"; return 1; }
-    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ] || { echo "    summary '$(summ)'"; return 1; }
+    expect blocked/-/q/-/- state && [ "$(summ)" = "$PORT_QUESTION" ] || { echo "    summary '$(summ)'"; return 1; }
 }
 case_a_real_prompt_after_a_marker_turn_starts_a_new_turn() {
-    held_marker_turn 'SITREP-QUESTION: which port?' || return 1
+    held_marker_turn "SITREP-QUESTION: $PORT_QUESTION" || return 1
     expect blocked/-/q/-/- asked || return 1
     local out
     W "$GENUINE"; LT_PROMPT "port 8080"; LT_REPLY 'It listens on 8080 now.'
@@ -199,7 +199,7 @@ case_a_real_prompt_after_a_marker_turn_starts_a_new_turn() {
 }
 case_feedback_the_hook_did_not_record_reads_as_a_prompt() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
-    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    LT_NEW "please do the thing"; LT_REPLY "SITREP-QUESTION: $PORT_QUESTION"
     local out; out="$(LT_STOP)"
     [ "$out" = "$MAIL_BLOCK" ] || { echo "    no mail block: '$out'"; return 1; }
     poll_mail; LT_FEEDBACK "$(printf '%s' "$out" | jq -r '.reason') (and another hook's words)"; LT_REPLY 'nothing for me'
@@ -209,7 +209,7 @@ case_feedback_the_hook_did_not_record_reads_as_a_prompt() {
 }
 case_feedback_without_ismeta_reads_as_a_prompt() {
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
-    LT_NEW "please do the thing"; LT_REPLY 'SITREP-QUESTION: which port?'
+    LT_NEW "please do the thing"; LT_REPLY "SITREP-QUESTION: $PORT_QUESTION"
     local out; out="$(LT_STOP)"
     [ "$out" = "$MAIL_BLOCK" ] || { echo "    no mail block: '$out'"; return 1; }
     poll_mail

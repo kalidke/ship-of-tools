@@ -180,7 +180,7 @@ case_askq_hook_carries_the_question() {
 # A refused marker stamp must not stop the turn either: the floor stays.
 case_marker_question_without_text_leaves_the_floor() {
     seed_facts '{"floor":"machine"}'
-    IT $'SITREP-QUESTION:' >/dev/null
+    IT $'SITREP-QUESTION:' true >/dev/null
     expect /machine/-/-/- floor-kept
 }
 # Only the refusal (rc 2) skips the floor: any other stamp failure falls

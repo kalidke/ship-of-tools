@@ -138,6 +138,7 @@ GENUINE='{"prompt":"please do the thing"}'
 RELAY='{"prompt":"[relay] from peer: ack"}'
 TEAMMATE='{"prompt":"Another Claude session sent a message:\\n<teammate-message teammate_id=x>done</teammate-message>"}'
 STOPBACK='{"prompt":"Stop hook feedback:\\nYour row ends this turn as waiting"}'
+PORT_QUESTION='which port? Options: (a) 8080; (b) 8081. Recommend (a).'
 
 # seed STATE [turn_origin] — a legacy-shaped row (no facts): the pre-amendment
 # field names, for the deletion/migration cases. Every OTHER case starts from
@@ -240,6 +241,14 @@ check "a pre-amendment working row floors gray and drops its legacy keys" case_p
 check "a short exchange on a waiting row is never nudged" case_short_exchange_on_waiting_row_never_nudged
 check "SITREP: stamps blue with the headline as summary" case_marker_done_stamps_blue_with_headline
 check "SITREP-QUESTION: (bold-wrapped) stamps red with the question" case_marker_question_stamps_red
+check "a bare question marker is refused even with options in its body, with no stamp" case_bare_question_marker_is_refused
+check "a deficient question marker preserves an earlier full blocked declaration" case_deficient_question_keeps_the_declared_question
+check "a question marker with one option is refused, with no stamp" case_incomplete_question_marker_is_refused 'which port? Options: (a) 8080. Recommend (a).'
+check "a question marker without a recommendation is refused, with no stamp" case_incomplete_question_marker_is_refused 'which port? Options: (a) 8080; (b) 8081.'
+check "question validation follows Page, first Options and recommendation boundaries" case_question_grammar_boundaries_are_refused
+check "a corrected full question stamps red with its entire line and grammar variants" case_corrected_question_stamps_the_whole_line
+check "a bare question continuation passes and stamps after its one refusal" case_bare_question_continuation_stamps
+check "unread mail outranks an incomplete question marker" case_mail_outranks_the_question_shape_nudge
 check "SITREP-WAITING: alone takes the next line and sets purple" case_marker_waiting_stamps_purple
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps
 check "a marker split across two assistant records still stamps, no nudge" case_marker_split_across_assistant_records_still_stamps

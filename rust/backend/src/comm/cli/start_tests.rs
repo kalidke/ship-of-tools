@@ -10,6 +10,7 @@ fn a_session_start_joins_and_prints_one_bootstrap_line_and_the_rules() {
     assert!(o.stdout.contains(&format!("Joined sot-comm as @{h} ")), "{}", o.stdout);
     assert!(o.stdout.contains(&format!("\nBOOTSTRAP-ARM handle={h} identity=ok WAKE: daemon\n")), "{}", o.stdout);
     assert!(o.stdout.contains("Work-state (nav row colour)") && o.stdout.contains("PERSISTENT REPL"));
+    assert!(o.stdout.lines().any(|line| line.contains("SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>")), "{}", o.stdout);
     assert_eq!(session_start(&t.env, &["x".into()]).code, 2);
 }
 

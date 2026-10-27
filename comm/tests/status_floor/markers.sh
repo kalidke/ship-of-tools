@@ -164,8 +164,92 @@ case_marker_done_stamps_blue_with_headline() {
 }
 case_marker_question_stamps_red() {
     seed idle; W "$GENUINE"
-    IT $'**SITREP-QUESTION: which box did you press W on?**\n\nContext...' >/dev/null
-    expect blocked/-/q/-/- state && [ "$(summ)" = "which box did you press W on?" ] || { echo "    summary '$(summ)'"; return 1; }
+    local question='which box did you press W on? Options: (a) this one; (b) another one. Recommend (a).'
+    IT "**SITREP-QUESTION: $question**"$'\n\nContext...' >/dev/null
+    expect blocked/-/q/-/- state && [ "$(summ)" = "$question" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+# The shape refusal keeps every row fact (apart from the Stop mark). These
+# cases observe the real hook and registry, including a correction or bounded
+# continuation after the refusal; each catches the old unconditional stamp.
+question_shape_block() {
+    [ -n "$1" ] && printf '%s' "$1" | jq -e '.decision=="block" and (.reason | contains("SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"))' >/dev/null \
+        || { echo "    no question-shape block: '$1'"; return 1; }
+}
+case_incomplete_question_marker_is_refused() {
+    seed idle; W "$GENUINE"
+    local before out; before="$(row_all)"
+    out="$(IT "SITREP-QUESTION: $1")"
+    question_shape_block "$out" || return 1
+    [ "$(row_all)" = "$before" ] || { echo "    the deficient marker changed the row"; return 1; }
+}
+hold_bare_question() {
+    seed idle; W "$GENUINE"
+    LT_NEW 'please choose a port'
+    LT_REPLY $'SITREP-QUESTION: which port?\n\nOptions: (a) 8080; (b) 8081. Recommend (a).'
+    local before out; before="$(row_all)"
+    out="$(LT_STOP)"
+    question_shape_block "$out" || return 1
+    [ "$(row_all)" = "$before" ] || { echo "    the bare marker changed the row"; return 1; }
+    LT_BLOCKED "$out"
+}
+case_bare_question_marker_is_refused() {
+    hold_bare_question || return 1
+    expect working/user/-/-/- unstamped
+}
+case_deficient_question_keeps_the_declared_question() {
+    seed idle; W "$GENUINE"; "$ST" blocked "$PORT_QUESTION" >/dev/null
+    local before out; before="$(row_all)"
+    out="$(IT 'SITREP-QUESTION: which port?')"
+    question_shape_block "$out" || return 1
+    [ "$(row_all)" = "$before" ] || { echo "    the full declaration was overwritten"; return 1; }
+}
+case_question_grammar_boundaries_are_refused() {
+    local question
+    for question in \
+        'which port? Options: (a) 8080. Recommend (a). (b) 8081.' \
+        'which port? Recommend (a). Options: (a) 8080; (b) 8081.' \
+        'which port? Options: (a) 8080; (b) 8081. Recommended.' \
+        'which port? Options: (a) 8080; (b) 8081. Page: /project/Recommend(a)' \
+        'which port? Page: /project/Options:(a)(b) Recommend (a).' \
+        'which port? Options: (a) 8080. Recommend (a). Options: (b) 8081.'; do
+        case_incomplete_question_marker_is_refused "$question" || return 1
+    done
+}
+case_corrected_question_stamps_the_whole_line() {
+    local question out
+    for question in "$PORT_QUESTION" \
+        'Land it? Irreversible: the change is merged. Pane only: approve here. Options: (a) merge; (b) wait. Recommend (a). Page: /project/decision.html' \
+        'which port? Page: /project/decision.html. Options: (a) 8080; (b) 8081. Recommended: b' \
+        'which port? Options: (A) 8080; (B) 8081. Recommend: (B).' \
+        'which port? Options: (a) 8080; (b) 8081. Recommend: 7; Recommended b'; do
+        hold_bare_question || return 1
+        out="$(LT_STOP true)"
+        [ -z "$out" ] || { echo "    the continuation blocked: '$out'"; return 1; }
+        W "$GENUINE"; LT_NEW 'please choose a port with the full question line'
+        LT_REPLY "**SITREP-QUESTION: $question**"$'\n\nContext to answer cold.'
+        out="$(LT_STOP)"
+        [ -z "$out" ] || { echo "    the corrected marker blocked: '$out'"; return 1; }
+        expect blocked/-/q/-/- stamped || return 1
+        jq -e --arg n "$NAME" --arg q "$question" '.agents[$n] | .question == $q and .summary == $q' "$REGISTRY" >/dev/null \
+            || { echo "    the complete question was not kept: '$(summ)'"; return 1; }
+    done
+}
+case_bare_question_continuation_stamps() {
+    hold_bare_question || return 1
+    LT_REPLY 'SITREP-QUESTION: which port?'
+    local out; out="$(LT_STOP true)"
+    [ -z "$out" ] || { echo "    the continuation blocked: '$out'"; return 1; }
+    expect blocked/-/q/-/- stamped && [ "$(summ)" = 'which port?' ]
+}
+case_mail_outranks_the_question_shape_nudge() {
+    hold_bare_question || return 1
+    seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
+    LT_NEW 'please choose a port'; LT_REPLY 'SITREP-QUESTION: which port?'
+    local before out; before="$(row_all)"
+    out="$(LT_STOP)"
+    [ "$out" = "$MAIL_BLOCK" ] || { echo "    mail did not block first: '$out'"; return 1; }
+    [ "$(row_all)" = "$before" ] || { echo "    the mail-blocked marker changed the row"; return 1; }
+    poll_mail || return 1
 }
 case_marker_waiting_stamps_purple() {
     seed idle; W "$GENUINE"
@@ -174,9 +258,9 @@ case_marker_waiting_stamps_purple() {
 }
 case_marker_in_continuation_still_stamps() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null
-    local out; out="$(IT $'SITREP-QUESTION: which port?' true)"
+    local out; out="$(IT "SITREP-QUESTION: $PORT_QUESTION" true)"
     [ -z "$out" ] || { echo "    unexpected output '$out'"; return 1; }
-    expect blocked/-/q/-/- state && [ "$(summ)" = "which port?" ]
+    expect blocked/-/q/-/- state && [ "$(summ)" = "$PORT_QUESTION" ]
 }
 # 2026-09-14 live incident: a long reply's closing SITREP-WAITING: line was
 # missed and nudged as "no closing marker" -- the reply streamed across two
@@ -200,7 +284,7 @@ case_parked_user_turn_blocked_without_marker_is_nudged_once() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null
     expect working/user/q/-/- pre-stop
     local out; out="$(IT 'I will ask now.')"
-    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("SITREP-QUESTION"))' >/dev/null || { echo "    no nudge: '$out'"; return 1; }
+    question_shape_block "$out" || return 1
     expect working/user/q/-/- untouched || return 1
     out="$(IT 'still nothing' true)"
     [ -z "$out" ] || { echo "    re-nudged in continuation: '$out'"; return 1; }
