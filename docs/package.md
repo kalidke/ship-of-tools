@@ -503,5 +503,5 @@ link's end ends every channel, every copy over it and the far router; the third 
 (48 files across the window, and a defect the keystroke timing suite found: the daemon's first-frame bound closes a
 channel 0 that sends no hello, which ends the link), its one findings round 25 (the router's exit with its input open,
 every copy cancelled at the link's end, a page's open bounded, opens in order), the gate 5 minutes. A real sshd, the
-Windows login and the other-account tests run at the release gate. Nothing is half-done on main.
+Windows login and the other-account tests run at the release gate. The publish guard's Windows fix landed 2026-10-26: main's Rust run was red on Windows from the guard's speed landing (16:20) until this merge, unnoticed for about four hours because no one watched main's runs after that merge; the faster scanner counted a blob's lines against its size, and Git for Windows' awk drops a CR before a line's end, so every push carrying a CRLF blob was refused; a CR now reaches the matcher as another non-word byte, proven by the branch's full hosted run on all three systems. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
