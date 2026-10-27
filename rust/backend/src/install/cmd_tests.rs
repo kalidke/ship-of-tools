@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 const FIXTURE: &str = "install::cmd::tests::command_fixture";
 
-fn command(mode: &str, pulse: &Path) -> Command {
+/// A native stand-in (the test binary itself, so on every system) in one of the fixture's modes.
+pub(in crate::install) fn command(mode: &str, pulse: &Path) -> Command {
     let mut c = Command::new(std::env::current_exe().unwrap());
     c.args(["--exact", FIXTURE, "--nocapture"]).env("SOT_BOUND_FIXTURE", mode).env("SOT_BOUND_PULSE", pulse);
     c
@@ -63,6 +64,18 @@ fn command_fixture() {
         std::io::stderr().write_all(&vec![b'b'; 2 * 1024 * 1024]).unwrap();
         return;
     }
+    match mode.as_str() {
+        "empty" => return,
+        "garbage" => {
+            println!("not a process listing");
+            return;
+        }
+        "fail" => {
+            eprintln!("the listing failed");
+            std::process::exit(2);
+        }
+        _ => {}
+    }
     if mode == "leader" {
         #[allow(clippy::disallowed_methods, reason = "finite fixture deliberately exits while its own child holds output; the bounded command owner owns their group/job")]
         let writer = command("writer", &pulse).spawn().unwrap();
@@ -79,4 +92,24 @@ fn command_fixture() {
         std::thread::sleep(Duration::from_millis(20));
     }
     if mode == "stall3" { std::process::exit(3); }
+}
+
+/// A process listing is an answer or says why it is not one, through the real bounded runner: one that stalls past its
+/// bound is cut and named so, one that exits nonzero, prints nothing or prints no process line is `Err` with its reason,
+/// never an empty list.
+#[test]
+fn a_listing_with_no_answer_is_never_an_empty_list() {
+    if !isolated("install::cmd::tests::a_listing_with_no_answer_is_never_an_empty_list") { return; }
+    let d = tempfile::tempdir().unwrap();
+    let pulse = d.path().join("pulse");
+    let start = Instant::now();
+    let cut = super::super::procs::listed(&mut command("stall", &pulse), Duration::from_secs(1), super::super::procs::parse_ps).unwrap_err();
+    assert!(cut.contains("did not finish within 1000 ms"), "{cut}");
+    assert!(start.elapsed() < Duration::from_secs(7), "the cut took {:?}", start.elapsed());
+    for (mode, says) in [("empty", "printed no process list"), ("garbage", "printed no process list"), ("fail", "ended with exit 2: the listing failed")] {
+        let why = super::super::procs::listed(&mut command(mode, &pulse), Duration::from_secs(10), super::super::procs::parse_ps).unwrap_err();
+        assert!(why.contains(says), "{mode}: {why}");
+    }
+    let missing = super::super::procs::listed(&mut Command::new("sot-no-such-listing-program"), Duration::from_secs(10), super::super::procs::parse_ps).unwrap_err();
+    assert!(missing.contains("gave no answer"), "{missing}");
 }

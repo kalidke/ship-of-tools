@@ -307,3 +307,12 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
     assert!(why.contains("did not finish within"), "{why}");
 }
+
+/// A daemon's children read from a listing that gave no answer rule nothing out: no daemon process is known, so the
+/// question asks as for one that may run.
+#[test]
+fn children_from_a_listing_with_no_answer_rule_nothing_out() {
+    assert_eq!(children_in(Err("`ps` gave no answer: ps did not finish within 60000 ms".into()), Path::new("/p")), None);
+    let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 10 julia /j/julia -e ShipToolsRepl.run_shim()\n");
+    assert_eq!(children_in(Ok(all), Path::new("/p")), Some(vec!["repl"]));
+}

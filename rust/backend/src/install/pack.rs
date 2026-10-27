@@ -59,6 +59,22 @@ pub(super) fn archive_version(sums: &[sot_updater::fetch::sums::SumEntry], targe
     Ok(version.clone())
 }
 
+/// The bound on a `--version` ask of the end state's check (scripts/CLAUDE.md, Installers: "Bounded waits").
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows end-state check asks its binaries within it"))]
+pub(super) const VERSION_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a binary's `--version`, asked within its bound, says `<name> <version>` at `commit` ([`binary_says`]); else
+/// what it said, or why it gave no answer (cut at the bound, did not start, ended badly).
+#[cfg_attr(not(windows), allow(dead_code, reason = "the Windows end-state check reads its binaries so"))]
+pub(super) fn version_says(ran: super::cmd::Ran, name: &str, version: &str, commit: &str) -> Result<(), String> {
+    if !ran.ok() {
+        let why = if ran.err.trim().is_empty() { format!("exit {}", ran.code.map_or_else(|| "none".to_string(), |c| c.to_string())) } else { ran.last_said() };
+        return Err(format!("gave no version ({why})"));
+    }
+    let line = ran.first_line();
+    if binary_says(&line, name, version, commit) { Ok(()) } else { Err(format!("reports '{line}'")) }
+}
+
 /// Whether a binary's `--version` line says `<name> <version>` built at `commit`: `<name> <version> (<sha> <date>, ...)`
 /// with the sha a prefix of the commit, or `<name> <version> (protocol N)` from a build that names no commit.
 pub(super) fn binary_says(line: &str, name: &str, version: &str, commit: &str) -> bool {

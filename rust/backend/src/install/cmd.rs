@@ -312,4 +312,4 @@ pub(super) fn on_path(name: &str) -> bool {
 
 #[cfg(test)]
 #[path = "cmd_tests.rs"]
-mod tests;
+pub(super) mod tests;

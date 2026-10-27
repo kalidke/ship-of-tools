@@ -50,3 +50,16 @@ fn a_pack_is_verified_before_it_runs() {
         assert!(read(d, "linux-x86_64", None).unwrap_err().contains("COMMIT does not match its SHA256SUMS entry"));
     }
 }
+
+/// An end-state `--version` asked within its bound counts only from an exit 0 that names the version and commit: one
+/// that stalls past the bound, through the real runner, is FAIL naming the cut.
+#[test]
+fn a_version_that_does_not_answer_within_its_bound_is_fail() {
+    let d = tempfile::tempdir().unwrap();
+    let ran = super::super::cmd::Steps::new().output_within(&mut super::super::cmd::tests::command("stall", &d.path().join("pulse")), std::time::Duration::from_secs(1));
+    let why = version_says(ran, "sotd", "0.7.0", "0123456789abcdef0123456789abcdef01234567").unwrap_err();
+    assert!(why.starts_with("gave no version (") && why.contains("did not finish within 1000 ms"), "{why}");
+    let said = |out: &str| super::super::cmd::Ran { code: Some(0), out: out.into(), err: String::new() };
+    assert_eq!(version_says(said("sotd 0.7.0 (0123456789 2026-10-26, protocol 9)\n"), "sotd", "0.7.0", "0123456789abcdef0123456789abcdef01234567"), Ok(()));
+    assert!(version_says(said("sotd 0.6.9 (0123456789 2026-10-26, protocol 9)\n"), "sotd", "0.7.0", "0123456789abcdef").unwrap_err().starts_with("reports '"));
+}

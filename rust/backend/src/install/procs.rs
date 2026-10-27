@@ -4,6 +4,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use super::cmd;
 
@@ -18,16 +19,49 @@ pub(super) struct Proc {
     pub args: String,
 }
 
-/// This account's processes; empty when they cannot be listed.
-#[cfg(unix)]
-pub(super) fn snapshot() -> Vec<Proc> {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let ran = cmd::output(Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]));
-    parse_ps(&ran.out)
+/// The bound on a process listing: a cold CIM query takes about 26 s on a hosted Windows runner (scripts/CLAUDE.md,
+/// Installers: "Bounded waits").
+pub(super) const LIST_BOUND: Duration = Duration::from_secs(60);
+
+/// This account's processes, or why they could not be listed (see [`listed`]): never an empty list, since this process
+/// is always one of them.
+pub(super) fn snapshot() -> Result<Vec<Proc>, String> {
+    #[cfg(unix)]
+    return listed(&mut listing(), LIST_BOUND, parse_ps);
+    #[cfg(windows)]
+    return listed(&mut listing(), LIST_BOUND, parse_cim);
 }
 
-/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines.
+/// The listing `cmd` prints within `bound` (through the run's bounded runner, which ends what it started), read by
+/// `parse`. One that was cut at its bound, did not start, was ended by a signal, exited nonzero, or printed no process
+/// that reads is `Err` with its reason.
+pub(super) fn listed(cmd: &mut Command, bound: Duration, parse: fn(&str) -> Vec<Proc>) -> Result<Vec<Proc>, String> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let ran = cmd::output_within(cmd, bound);
+    match ran.code {
+        Some(0) => Some(parse(&ran.out)).filter(|all| !all.is_empty()).ok_or_else(|| format!("`{program}` printed no process list")),
+        Some(code) => Err(format!("`{program}` ended with exit {code}: {}", ran.last_said())),
+        None if ran.err.trim().is_empty() => Err(format!("`{program}` was ended by a signal")),
+        None => Err(format!("`{program}` gave no answer: {}", ran.err.trim())),
+    }
+}
+
+/// The listing a final check reads: one that gave no answer is FAIL under `check` with its reason, since `unknown` (what
+/// the check judges) is not known.
+pub(super) fn checked(listing: Result<Vec<Proc>, String>, found: &mut super::verdict::Found, check: &str, unknown: &str) -> Option<Vec<Proc>> {
+    listing.map_err(|why| found.fail(check, format!("could not list this account's processes ({why}), so {unknown} is unknown"))).ok()
+}
+
+#[cfg(unix)]
+fn listing() -> Command {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let mut c = Command::new("ps");
+    c.args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]);
+    c
+}
+
+/// `ps -o pid= -o ppid= -o ucomm= -o args=` lines; a line that is not one is skipped.
 #[cfg_attr(windows, allow(dead_code, reason = "Unix reads its processes from ps"))]
 pub(super) fn parse_ps(text: &str) -> Vec<Proc> {
     text.lines()
@@ -42,14 +76,14 @@ pub(super) fn parse_ps(text: &str) -> Vec<Proc> {
         .collect()
 }
 
-/// This account's processes; empty when they cannot be listed.
 #[cfg(windows)]
-pub(super) fn snapshot() -> Vec<Proc> {
+fn listing() -> Command {
     // Every session's: a daemon started at the desk runs in the desk's session while an ssh logon runs in session 0.
     // Another account's process shows no ExecutablePath to this one, so it never matches an install's path.
     let script = "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine) | ConvertTo-Json -Compress";
-    let ran = cmd::output(Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]));
-    parse_cim(&ran.out)
+    let mut c = Command::new("powershell.exe");
+    c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    c
 }
 
 /// CIM's JSON: an array of objects, or one object for a single process.
