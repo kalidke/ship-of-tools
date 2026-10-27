@@ -104,7 +104,7 @@ fn installer_enrolls_distinct_clones_and_repair_restores_its_missing_hook() {
     let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
     assert_eq!(enrolled.clones.len(), 2);
     enrolled.check(&mut found);
-    assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
+    assert!(found.fails.is_empty() && found.steps.is_empty(), "{found:?}");
     for (clone, clean_name) in [(&f.base, "clean-base"), (&f.caller, "clean-caller")] {
         f.accept_push(clone, clean_name);
         f.reject_push(clone, "glimmerdeny");
@@ -114,11 +114,11 @@ fn installer_enrolls_distinct_clones_and_repair_restores_its_missing_hook() {
     std::fs::remove_file(enrolled.clones[0].common.join("hooks/pre-push")).unwrap();
     let mut damaged = Found::default();
     enrolled.check(&mut damaged);
-    assert!(damaged.fail.is_some(), "a check must not repair the missing hook");
+    assert!(damaged.failed(), "a check must not repair the missing hook");
     assert!(!enrolled.clones[0].common.join("hooks/pre-push").exists());
     let mut repaired = Found::default();
     plan.enroll(&f.source, &f.commit, &f.base, &mut repaired).unwrap().check(&mut repaired);
-    assert!(repaired.fail.is_none() && repaired.steps.is_empty(), "{repaired:?}");
+    assert!(repaired.fails.is_empty() && repaired.steps.is_empty(), "{repaired:?}");
     f.reject_push(&f.base, "glimmerdeny");
 }
 
@@ -155,7 +155,7 @@ fn installer_preserves_hooks_configuration_and_modified_owned_slots() {
     let mut found = Found::default();
     plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap().check(&mut found);
     assert_eq!(std::fs::read(f.caller.join(".git/config")).unwrap(), config);
-    assert!(found.fail.is_none() && found.steps.iter().any(|s| s.contains("preserved publish hook conflict")), "{found:?}");
+    assert!(found.fails.is_empty() && found.steps.iter().any(|s| s.contains("preserved publish hook conflict")), "{found:?}");
     assert!(!f.caller.join(".git/hooks/pre-push").exists());
     let (line, _) = super::super::verdict::line(&found, "");
     assert_checked_clone(&line, "caller", &f.caller, "preserved conflict");
@@ -165,11 +165,11 @@ fn installer_preserves_hooks_configuration_and_modified_owned_slots() {
     let slot = plan.caller.as_ref().unwrap().common.join("hooks/pre-push");
     std::fs::write(&slot, "# person's edited hook\n").unwrap();
     enrolled.check(&mut found);
-    assert!(found.fail.is_some(), "an installed hook changed during the run is FAIL");
+    assert!(found.failed(), "an installed hook changed during the run is FAIL");
     let mut repeated = Found::default();
     plan.enroll(&f.source, &f.commit, &f.base, &mut repeated).unwrap().check(&mut repeated);
     assert_eq!(std::fs::read_to_string(slot).unwrap(), "# person's edited hook\n");
-    assert!(repeated.fail.is_none() && !repeated.steps.is_empty(), "{repeated:?}");
+    assert!(repeated.fails.is_empty() && !repeated.steps.is_empty(), "{repeated:?}");
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn discovery_is_read_only_exact_and_deduplicates_linked_worktrees() {
     let enrolled = plan.enroll(&f.source, &f.commit, &f.base, &mut found).unwrap();
     assert_eq!(enrolled.clones.len(), 1);
     enrolled.check(&mut found);
-    assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
+    assert!(found.fails.is_empty() && found.steps.is_empty(), "{found:?}");
     let (line, _) = super::super::verdict::line(&found, "");
     assert_checked_clone(&line, "caller", &linked, "ready (shares base)");
     f.reject_push(&linked, "glimmerdeny");
@@ -215,7 +215,7 @@ fn pending_apply_never_claims_unavailable_setup_and_uses_verified_staged_setup_w
     let plan = f.plan(&f.caller);
     let mut found = Found::default();
     plan.pending(&f.dir.path().join("unavailable"), &f.commit, &f.base, &mut found).unwrap();
-    assert!(found.fail.is_none() && found.steps.iter().any(|s| s.contains("enrollment is pending")), "{found:?}");
+    assert!(found.fails.is_empty() && found.steps.iter().any(|s| s.contains("enrollment is pending")), "{found:?}");
     let (line, _) = super::super::verdict::line(&found, "");
     assert!(line.starts_with("ONE STEP LEFT:") && !line.contains(": ready"), "{line}");
     assert!(!f.base.join(".git/hooks/pre-push").exists());
@@ -224,7 +224,7 @@ fn pending_apply_never_claims_unavailable_setup_and_uses_verified_staged_setup_w
     f.policy(&plan);
     let mut found = Found::default();
     plan.pending(&f.source, &f.commit, &f.base, &mut found).unwrap();
-    assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
+    assert!(found.fails.is_empty() && found.steps.is_empty(), "{found:?}");
     f.reject_push(&f.caller, "glimmerdeny");
     f.reject_push(&f.base, "glimmerdeny");
 }
@@ -285,10 +285,18 @@ fn guard_results_never_override_a_failed_check() {
     found.pass = "installed".into();
     found.step("install Julia");
     found.fail("record", "changed");
-    let (line, code) = super::super::verdict::line(&found, "; pinned");
-    assert_eq!((line.as_str(), code), ("FAIL: record: changed; pinned", 1));
+    let (line, code) = super::super::verdict::line(&found, "");
+    // The failure names the line; the step and the guard's results follow it, never in its place.
+    assert!(code == 1 && line.starts_with("FAIL: record: changed; also: install Julia; publish guard scope: "), "{line}");
+    assert_eq!(super::super::verdict::line(&found, "; pinned").0, format!("{line}; pinned"));
+    for (role, path) in [("base", &f.base), ("caller", &f.caller)] {
+        assert_checked_clone(&line, role, path, "ready");
+    }
 }
 
+// Unix only: on Windows the guard runs git.exe and Git's bash.exe as programs, and a stand-in that takes their
+// arguments needs a binary of its own; the guard's reads go through `observe::ask`, whose cut is proven on Windows by
+// `install::observe::tests::a_question_is_answered_or_says_why_not`, and its Windows enrollment by the release gate.
 #[cfg(unix)]
 fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
     use std::time::Instant;
@@ -328,7 +336,7 @@ fn stalled_publish_child(selector: &str, phase: &str, name: &str) {
             std::fs::write(&switch, "stall").unwrap();
             let start = Instant::now();
             enrolled.check(&mut found);
-            assert!(found.fail.as_deref().is_some_and(|s| s.contains("within")), "{found:?}");
+            assert!(found.fails.first().is_some_and(|s| s.contains("within")), "{found:?}");
             assert!(super::super::verdict::line(&found, "").0.starts_with("FAIL: publish guard: "), "{found:?}");
             assert!(found.steps.is_empty(), "a cut check is not a provisioning/conflict step: {found:?}");
             start

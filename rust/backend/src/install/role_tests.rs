@@ -100,3 +100,41 @@ fn the_role_is_declared() {
         assert!(matches!(ownership(None, home.path(), "/p", false, false, true, true), Gate::Unresolvable(_)), "a unit with no program is never taken");
     }
 }
+
+/// The table and plan readers read what topology's own producers print: every line of a status table with hosts, a
+/// monitor-only row and a warning, and a plan whose endpoints hold a space (a private runtime folder may), read; a
+/// table line or a plan line outside the grammar does not. The plan runs in a child process of its own, since its
+/// endpoints come from the process's runtime folder.
+#[cfg(unix)]
+#[test]
+fn the_topology_readers_read_what_topology_prints() {
+    let hosts = "hub = \"h\"\n[host.h]\ndaemon = true\n[host.d]\ndaemon = true\n[host.f]\nfrontend = true\n[host.s]\n[monitor]\ngpu-box = \"other-user@gpu-box\"\nd = \"\"\n";
+    let topo = sot_topology::parse(hosts).unwrap();
+    let table = sot_topology::status_table(&topo);
+    assert!(table.contains(" monitor-only "), "the table has a monitor-only row: {table}");
+    assert_eq!(status_unread(&table), None, "{table}");
+    assert_eq!(status_unread(&format!("{table}WARNING something the parser noticed\ncache diverged: this box's hosts.toml (a) != the hub's (b); run `sotd topology sync`\n")), None);
+    for bad in ["me nonsense", "me", "Me daemon", "me daemon extra", ""] {
+        assert_eq!(status_unread(&format!("HOST DECLARED\n{bad}\n")), Some(bad), "'{bad}' is not a table line");
+    }
+    assert!(plan_reads("self me\nhub h\nrelay-endpoint ssh:h\nnew-fact a later release adds\n", "me"), "a line whose first word is unknown is ignored");
+    for bad in ["hub h\n", "self other\n", "self me\ndial d\n", "self me\ndial\n", "self me\nhub\n"] {
+        assert!(!plan_reads(bad, "me"), "{bad:?}");
+    }
+
+    if !sot_platform::test_isolated::run_isolated_until("install::role::tests::the_topology_readers_read_what_topology_prints", std::time::Instant::now() + std::time::Duration::from_secs(60)).unwrap() {
+        return;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let run = scratch.path().join("run dir");
+    std::fs::create_dir(&run).unwrap();
+    std::fs::set_permissions(&run, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::env::set_var("XDG_RUNTIME_DIR", &run);
+    for name in ["SOT_RUNTIME_DIR", "SOT_SOCKET"] {
+        std::env::remove_var(name);
+    }
+    let plan = sot_topology::plan(&topo, "d").unwrap();
+    assert!(plan.lines().any(|l| l.starts_with("relay-endpoint ") && l.contains("run dir")), "the plan's endpoints hold the space: {plan}");
+    assert!(plan_reads(&plan, "d"), "{plan}");
+    assert!(plan_dials_others(&plan), "{plan}");
+}

@@ -121,53 +121,57 @@ fn install_on(m: &dyn Machine, opts: Options) -> Result<(Found, String), Stop> {
         repair: false,
     };
     let pin = if named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
-    let installed = super::installed_for(super::installed_version(m, &ctx.prefix), &ctx.prefix, implicit, "-Version", &mut found)?;
-    let mut dir = None;
-    let way = super::meet(&installed, ctx.sotd().is_file(), || {
-        step("direction");
-        if implicit && installed.contains('+') {
-            let way = super::build_direction(m, &ctx.prefix, &installed, &ctx.pack.commit);
-            return Err(Stop::at("target", 2, super::build_stop(&installed, &ctx.pack.tag(), way, "-Archive", "-Version")));
+    // A stop carries the clauses and steps the run collected before it.
+    verdict::collecting(&mut found, |found| {
+        let installed = super::installed_for(super::installed_version(m, &ctx.prefix), &ctx.prefix, implicit, "-Version", found)?;
+        let mut dir = None;
+        let way = super::meet(&installed, ctx.sotd().is_file(), || {
+            step("direction");
+            if implicit && installed.contains('+') {
+                let way = super::build_direction(m, &ctx.prefix, &installed, &ctx.pack.commit);
+                return Err(Stop::at("target", 2, super::build_stop(&installed, &ctx.pack.tag(), way, "-Archive", "-Version")));
+            }
+            let asked = super::direction(m, &new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
+            dir = super::guard_direction(implicit, &installed, asked, &ctx.pack.version, &ctx.prefix, "-Version", found)?;
+            Ok(())
+        })?;
+        let publish = super::publish::Plan::capture()?;
+        let pending = match way {
+            super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, dir, found)?,
+            super::Meet::Fresh => {
+                fresh(&ctx)?;
+                None
+            }
+        };
+        found.pass = format!("Ship of Tools {} at {} on this computer", ctx.pack.version, ctx.pack.short());
+        if let Some(step) = pending {
+            // The update stays armed for a start: the run ends with that step.
+            found.step(step);
+            publish.pending(&ctx.version_dir, &ctx.pack.commit, &ctx.base, found)?;
+            return Ok(());
         }
-        let asked = super::direction(m, &new_sotd, &ctx.pack.version, &ctx.prefix, &installed);
-        dir = super::guard_direction(implicit, &installed, asked, &ctx.pack.version, &ctx.prefix, "-Version", &mut found)?;
+        let enrolled = publish.enroll(&ctx.version_dir, &ctx.pack.commit, &ctx.base, found)?;
+        if observe::which(m, "julia").is_some() {
+            step("julia");
+            let facts = julia::facts(m, &ctx.version_dir, None).map_err(|why| Stop::new(1, why))?;
+            match julia::judge(&facts) {
+                julia::Judged::Ok => {}
+                julia::Judged::Step(line) => found.step(line),
+                julia::Judged::Stop(line) => return Err(Stop::new(1, line)),
+            }
+        }
+        layout_and_comm(&ctx, found)?;
+        shortcut(&ctx, found)?;
+        let refusal = sync_hub(&ctx);
+        write_record(&ctx)?;
+        end_state(&ctx, found);
+        enrolled.check(found);
+        if let Some(hub) = refusal {
+            let me = sot_platform::host::state_dir::host_name_in(&ctx.env).unwrap_or_else(|_| ctx.env.text("COMPUTERNAME").to_lowercase());
+            found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));
+        }
         Ok(())
     })?;
-    let publish = super::publish::Plan::capture()?;
-    let pending = match way {
-        super::Meet::Update => update_or_repair(&mut ctx, &new_sotd, &installed, dir, &mut found)?,
-        super::Meet::Fresh => {
-            fresh(&ctx)?;
-            None
-        }
-    };
-    found.pass = format!("Ship of Tools {} at {} on this computer", ctx.pack.version, ctx.pack.short());
-    if let Some(step) = pending {
-        // The update stays armed for a start: the run ends with that step.
-        found.step(step);
-        publish.pending(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
-        return Ok((found, pin));
-    }
-    let enrolled = publish.enroll(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
-    if observe::which(m, "julia").is_some() {
-        step("julia");
-        let facts = julia::facts(m, &ctx.version_dir, None).map_err(|why| Stop::new(1, why))?;
-        match julia::judge(&facts) {
-            julia::Judged::Ok => {}
-            julia::Judged::Step(line) => found.step(line),
-            julia::Judged::Stop(line) => return Err(Stop::new(1, line)),
-        }
-    }
-    layout_and_comm(&ctx, &mut found)?;
-    shortcut(&ctx, &mut found)?;
-    let refusal = sync_hub(&ctx);
-    write_record(&ctx)?;
-    end_state(&ctx, &mut found);
-    enrolled.check(&mut found);
-    if let Some(hub) = refusal {
-        let me = sot_platform::host::state_dir::host_name_in(&ctx.env).unwrap_or_else(|_| ctx.env.text("COMPUTERNAME").to_lowercase());
-        found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));
-    }
     Ok((found, pin))
 }
 
@@ -243,7 +247,7 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option
     // A repair changes nothing in the record but its pin: a new -Hub is an install over the same build. A daemon that
     // cannot be told is no repair: the update asks about it, with its reason.
     let keeps = record::keeps(&record::read(&ctx.record_path()), &record_of(ctx));
-    let before = daemon_state(ctx, new_sotd);
+    let before = daemon_state(ctx, new_sotd, found);
     if dir == Some(super::Direction::Same) && keeps && matches!(before.0, State::None | State::Current) {
         println!("this computer already runs {installed} at {}: a repair run", ctx.pack.short());
         ctx.repair = true;
@@ -266,18 +270,22 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: Option
 /// The daemon's state: its pipe asked; a daemon whose pipe exists or whose program runs and cannot be told is
 /// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it. Whether one
 /// runs is asked only when it could not be told; a process listing that failed then presumes one does, so it is
-/// `Unknown`, never `None`, and the listing's reason leads `why`.
-fn daemon_state(ctx: &Ctx, sotd: &Path) -> (State, String) {
-    let (st, why) = daemon::state(ctx.m, sotd, &ctx.endpoint(), &|| daemon_runs(ctx));
+/// `Unknown`, never `None`, and the listing's reason leads `why`. A pipe that gave no answer while no daemon of the
+/// install was listed is `None`, its reason a clause of the verdict.
+fn daemon_state(ctx: &Ctx, sotd: &Path, found: &mut Found) -> (State, String) {
+    let (st, why) = daemon::state(ctx.m, sotd, &ctx.endpoint(), &|bound| daemon_runs(ctx, bound));
+    if let Some(clause) = daemon::none_clause(&ctx.pipe, (st, &why)) {
+        found.checked(clause);
+    }
     (if st == State::Held { State::Other } else { st }, why)
 }
 
-/// Whether a daemon may run: its pipe is listed, or its program runs.
-fn daemon_runs(ctx: &Ctx) -> Fact<bool> {
+/// Whether a daemon may run: its pipe is listed, or its program runs, listed within `bound`.
+fn daemon_runs(ctx: &Ctx, bound: Duration) -> Fact<bool> {
     if pipe_listed(&ctx.pipe) {
         return Fact::known(true);
     }
-    procs::snapshot(ctx.m).map(|all| !procs::daemon_pids(&all, &ctx.prefix).is_empty())
+    procs::snapshot_within(ctx.m, bound).map(|all| !procs::daemon_pids(&all, &ctx.prefix).is_empty())
 }
 
 /// Whether the pipe is listed (never opened: a probe must not take an instance).
@@ -378,7 +386,7 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str, before: (State, Strin
     }
     // Nothing runs and this is a desktop session: apply here, the daemon stopped first so it pins no stale image.
     step("apply");
-    let state = daemon_state(ctx, new_sotd);
+    let state = daemon_state(ctx, new_sotd, found);
     if daemon::apply_here(state.0) == daemon::Apply::Hold {
         return Ok(Some(format!("a daemon runs on {} and could not be told its version ({}); nothing was stopped, and the update to {} stays armed: start Ship of Tools at the desk, and the start applies it{work}", ctx.pipe, state.1, ctx.pack.tag())));
     }
@@ -623,21 +631,21 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         Err(why) => found.fail("launcher", format!("could not list this account's processes ({why}), so whether the window's supervisor runs an older launcher is unknown")),
     }
     let sotd = ctx.sotd();
-    // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
-    let (st, why) = if ctx.expect_daemon {
+    // After a converge the waiter is the only ask, so the check keeps its bound, and its failure names what the daemon
+    // is and why; else one ask says what runs.
+    if ctx.expect_daemon {
         let bound = super::secs_env(&ctx.env, "SOT_INSTALL_DAEMON_WAIT_S", 60);
-        let (st, why) = daemon::wait_current(ctx.m, &sotd, &ctx.endpoint(), bound, false, &|| daemon_runs(ctx));
+        let (st, why) = daemon::wait_current(ctx.m, &sotd, &ctx.endpoint(), bound, false, &|left| daemon_runs(ctx, left));
         if st != State::Current {
             found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}': {why})", ctx.pipe, bound.as_secs(), st.word()));
         }
-        (st, why)
-    } else {
-        daemon_state(ctx, &sotd)
-    };
+        return;
+    }
+    let (st, why) = daemon_state(ctx, &sotd, found);
     match st {
         State::Unknown => found.fail("daemon", format!("a daemon runs on {} and could not be told its version ({why})", ctx.pipe)),
         State::Other | State::Held => found.fail("daemon", format!("the daemon on {} still runs another version than {v}", ctx.pipe)),
-        _ => {}
+        State::Current | State::None => {}
     }
 }
 

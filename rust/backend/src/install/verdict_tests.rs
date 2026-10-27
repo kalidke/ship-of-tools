@@ -1,7 +1,7 @@
 use super::*;
 
 fn found(fail: Option<&str>, steps: &[&str]) -> Found {
-    Found { fail: fail.map(String::from), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into(), ..Found::default() }
+    Found { fails: fail.map(String::from).into_iter().collect(), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into(), ..Found::default() }
 }
 
 #[test]
@@ -22,6 +22,26 @@ fn checked_results_join_only_nonempty_verdict_parts() {
     assert_eq!(line(&Found::default(), "; pinned"), ("PASS: pinned".into(), 0));
 }
 
+/// No reason the run collected is dropped from its one line: a FAIL names its first failure, then every other failure,
+/// step and clause, in that order; a stop carries what the run had collected before it.
+#[test]
+fn a_fail_keeps_every_reason_the_run_collected() {
+    let mut f = Found::default();
+    f.checked("the version installed at /p before this run could not be read (`sotd --version` did not answer within 60 s)");
+    f.fail("binaries", "/p/bin/sotd did not answer within 60 s");
+    f.step("check whether sotd starts at boot");
+    f.fail("daemon", "could not list this account's processes");
+    f.fail("daemon", "could not list this account's processes");
+    assert_eq!(line(&f, "; pinned"), ("FAIL: binaries: /p/bin/sotd did not answer within 60 s; also: daemon: could not list this account's processes; check whether sotd starts at boot; the version installed at /p before this run could not be read (`sotd --version` did not answer within 60 s); pinned".into(), 1));
+
+    let mut f = Found::default();
+    f.checked("the daemon on /s could not be asked; no daemon of this install was listed, so none runs");
+    let stop = collecting(&mut f, |_| Err::<(), _>(Stop::at("layout", 1, "could not ask git"))).unwrap_err();
+    assert_eq!(stop_line(&stop, "; the update stays armed").0, "FAIL: layout: could not ask git; also: the daemon on /s could not be asked; no daemon of this install was listed, so none runs; the update stays armed");
+    let stop = collecting(&mut Found::default(), |_| Err::<(), _>(Stop::at("layout", 1, "could not ask git"))).unwrap_err();
+    assert_eq!(stop_line(&stop, "").0, "FAIL: layout: could not ask git", "nothing collected, nothing added");
+}
+
 /// One verdict, in its words: a run that reached its checks ends PASS, ONE STEP LEFT (both exit 0, the install is whole)
 /// or FAIL (exit 1), and a pinned run's line says where it is pinned whichever it is; a stop is a FAIL naming its
 /// check, with its own exit code (2 for a refusal) and the tail the run had written; a stop that lands while a step is
@@ -31,7 +51,7 @@ fn checked_results_join_only_nonempty_verdict_parts() {
 fn a_run_ends_in_one_verdict() {
     assert_eq!(line(&found(None, &[]), ""), ("PASS: Ship of Tools 1.2.3 at 0123abcde on this computer".into(), 0));
     assert_eq!(line(&found(None, &["a", "b"]), ""), ("ONE STEP LEFT: a; then b".into(), 0));
-    assert_eq!(line(&found(Some("comm: stale"), &["a"]), ""), ("FAIL: comm: stale".into(), 1));
+    assert_eq!(line(&found(Some("comm: stale"), &["a"]), ""), ("FAIL: comm: stale; also: a".into(), 1));
     let pin = pin_tail("1.2.3");
     for (f, word) in [(found(None, &[]), "PASS: "), (found(None, &["a"]), "ONE STEP LEFT: "), (found(Some("x: y"), &[]), "FAIL: ")] {
         let (text, _) = line(&f, &pin);

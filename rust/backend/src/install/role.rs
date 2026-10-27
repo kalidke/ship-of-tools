@@ -17,13 +17,42 @@ pub(super) struct Role {
 /// This host's entry in `sotd topology status`'s table (a header line, then `HOST DECLARED`, the declared words joined
 /// by commas), or `None` when the table does not list it.
 pub(super) fn from_status(table: &str, me: &str) -> Option<Role> {
-    table.lines().skip(1).find_map(|line| {
-        let mut words = line.split_whitespace();
-        (words.next()? == me).then_some(())?;
-        let declared: Vec<&str> = words.next()?.split(',').collect();
-        let frontend = declared.contains(&"frontend");
-        Some(Role { daemon: frontend || declared.contains(&"daemon"), frontend })
+    table.lines().skip(1).find_map(|line| match status_line(line)? {
+        Status::Host(name, role) if name == me => Some(role),
+        _ => None,
     })
+}
+
+/// One line of `sotd topology status`'s table after its header.
+enum Status<'a> {
+    /// A declared host and the role its words give.
+    Host(&'a str, Role),
+    /// A monitor-only row, a warning, or the cache divergence line.
+    Other,
+}
+
+/// A table line in topology's grammar (rust/topology/src/lib.rs:632-650 and the divergence line of
+/// rust/backend/src/topology/cli.rs:363): `<host> <words>`, a plain host name (rust/topology/src/endpoint.rs:120) and
+/// its words joined by commas from `hub`, `daemon`, `frontend`, `shell` and `sampled` (rust/topology/src/lib.rs:617);
+/// `<label> monitor-only <target>`; `WARNING <text>`; or `cache diverged: <text>`. `None` when it is none of these.
+fn status_line(line: &str) -> Option<Status<'_>> {
+    if line.starts_with("WARNING ") || line.starts_with("cache diverged: ") {
+        return Some(Status::Other);
+    }
+    if let Some((host, declared)) = line.split_once(' ').filter(|(host, words)| sot_topology::endpoint::is_plain_host_name(host) && !words.contains(' ')) {
+        let declared: Vec<&str> = declared.split(',').collect();
+        if declared.iter().all(|w| matches!(*w, "hub" | "daemon" | "frontend" | "shell" | "sampled")) {
+            let frontend = declared.contains(&"frontend");
+            return Some(Status::Host(host, Role { daemon: frontend || declared.contains(&"daemon"), frontend }));
+        }
+    }
+    line.split_once(" monitor-only ").filter(|(label, target)| !label.is_empty() && !target.is_empty()).map(|_| Status::Other)
+}
+
+/// The first line of a `sotd topology status` table after its header that is not in topology's grammar, or `None`
+/// when every line is.
+pub(super) fn status_unread(table: &str) -> Option<&str> {
+    table.lines().skip(1).find(|line| status_line(line).is_none())
 }
 
 /// The role a flag names.
@@ -186,17 +215,20 @@ pub(super) fn record_gate(record_path: &Path, declared: bool, daemon: bool, serv
     Gate::Allow
 }
 
-/// Whether a `sotd topology plan`'s text reads: its `self` line names `me`, and every line is `self`, `hub`,
-/// `relay-endpoint` or `dial <host> <endpoint>`.
+/// Whether a `sotd topology plan`'s text reads, in its producer's grammar (rust/topology/src/lib.rs:351-377): every
+/// line is `<word> <word> <rest of line>`, the rest free to hold spaces, and a line whose first word a reader does not
+/// know is ignored. It reads when its `self` line names `me`, and every `hub`, `relay-endpoint` and `dial` line has its
+/// parts: `hub <host>`, `relay-endpoint <endpoint>`, `dial <host> <endpoint>`.
 pub(super) fn plan_reads(plan: &str, me: &str) -> bool {
-    let lines: Vec<Vec<&str>> = plan.lines().map(|l| l.split_whitespace().collect()).filter(|w: &Vec<&str>| !w.is_empty()).collect();
-    lines.iter().any(|w| w.as_slice() == ["self", me])
-        && lines.iter().all(|w| match w[0] {
-            "self" => w.len() == 2,
-            "hub" | "relay-endpoint" => w.len() <= 2,
-            "dial" => w.len() == 3,
-            _ => false,
-        })
+    let parts = |line: &str| -> bool {
+        let Some((word, rest)) = line.split_once(' ') else { return !matches!(line, "self" | "hub" | "relay-endpoint" | "dial") };
+        match word {
+            "self" | "hub" | "relay-endpoint" => !rest.is_empty(),
+            "dial" => rest.split_once(' ').is_some_and(|(host, endpoint)| !host.is_empty() && !endpoint.is_empty()),
+            _ => true,
+        }
+    };
+    plan.lines().any(|line| line == format!("self {me}")) && plan.lines().filter(|line| !line.is_empty()).all(parts)
 }
 
 /// Whether a `sotd topology plan` dials a daemon host other than its own `self` line.

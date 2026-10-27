@@ -1,7 +1,8 @@
 //! The one verdict line every run ends with (scripts/CLAUDE.md, Installers: "One verdict"): `PASS: Ship of Tools <v> at
 //! <short> on this computer`, `ONE STEP LEFT: <steps>` (exit 0, the install is whole) or `FAIL: <check>: <detail>` (exit
 //! 1, or 2 for a refusal). It is printed from here alone: by [`finish`] at the end of a run, or by the signal watcher
-//! when a person stops it, whichever comes first.
+//! when a person stops it, whichever comes first. No reason the run collected is dropped from it: a FAIL names its first
+//! failure, then `; also: ` every other failure, step and clause, in that order.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -30,41 +31,58 @@ fn tail() -> String {
     TAIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
-/// A run that ends before its checks: the check (the step it stopped in), why, and the exit code (1, or 2 for a refusal).
+/// A run that ends before its checks: the check (the step it stopped in), why, the exit code (1, or 2 for a refusal),
+/// and what the run had collected before it ([`Found::carry`]).
 #[derive(Debug)]
 pub(super) struct Stop {
     pub check: String,
     pub detail: String,
     pub code: i32,
+    pub also: Vec<String>,
 }
 
 impl Stop {
     /// A stop in the current step.
     pub fn new(code: i32, detail: impl Into<String>) -> Self {
-        Self { check: current_step().to_string(), detail: detail.into(), code }
+        Self { check: current_step().to_string(), detail: detail.into(), code, also: Vec::new() }
     }
 
     /// A stop that names its own check.
     pub fn at(check: &str, code: i32, detail: impl Into<String>) -> Self {
-        Self { check: check.to_string(), detail: detail.into(), code }
+        Self { check: check.to_string(), detail: detail.into(), code, also: Vec::new() }
     }
 }
 
-/// What a run that reached its checks found: the first failed check, the steps a person takes, and what PASS names.
+/// What a run found: its failed checks in order, the steps a person takes, what PASS names, and its clauses.
 #[derive(Debug, Default)]
 pub(super) struct Found {
-    pub fail: Option<String>,
+    pub fails: Vec<String>,
     pub steps: Vec<String>,
     pub pass: String,
     pub checked: Vec<String>,
 }
 
 impl Found {
-    /// A failed check; the first one stands.
+    /// A failed check; the first names the FAIL, and every later one follows it.
     pub fn fail(&mut self, check: &str, detail: impl AsRef<str>) {
-        if self.fail.is_none() {
-            self.fail = Some(format!("{check}: {}", detail.as_ref()));
-        }
+        let text = format!("{check}: {}", detail.as_ref());
+        if !self.fails.contains(&text) { self.fails.push(text); }
+    }
+
+    #[cfg_attr(windows, allow(dead_code, reason = "the Unix check asks before its boot-start step"))]
+    pub fn failed(&self) -> bool {
+        !self.fails.is_empty()
+    }
+
+    /// Every failure, step and clause collected, in that order, for a FAIL line after its first failure.
+    fn rest(&self, skip: usize) -> Vec<String> {
+        self.fails.iter().skip(skip).chain(&self.steps).chain(&self.checked).filter(|part| !part.is_empty()).cloned().collect()
+    }
+
+    /// `stop` carrying what the run collected before it.
+    pub fn carry(&self, mut stop: Stop) -> Stop {
+        stop.also = self.rest(0);
+        stop
     }
 
     pub fn step(&mut self, text: impl Into<String>) {
@@ -84,8 +102,8 @@ pub(super) fn pin_tail(version: &str) -> String {
 
 /// The verdict for a run that reached its checks, and its exit code. `pin` is the pin's tail once the run wrote one.
 pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
-    if let Some(fail) = &found.fail {
-        return (format!("FAIL: {fail}{pin}"), 1);
+    if let Some(fail) = found.fails.first() {
+        return (format!("FAIL: {fail}{}{pin}", also(&found.rest(1))), 1);
     }
     let steps = found.steps.iter().filter(|part| !part.is_empty()).map(String::as_str).collect::<Vec<_>>().join("; then ");
     let (word, head) = if steps.is_empty() { ("PASS", found.pass.as_str()) } else { ("ONE STEP LEFT", steps.as_str()) };
@@ -97,7 +115,16 @@ pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
 
 /// The verdict for a run that stopped, and its exit code.
 pub(super) fn stop_line(stop: &Stop, tail: &str) -> (String, i32) {
-    (format!("FAIL: {}: {}{tail}", stop.check, stop.detail), stop.code)
+    (format!("FAIL: {}: {}{}{tail}", stop.check, stop.detail, also(&stop.also)), stop.code)
+}
+
+fn also(rest: &[String]) -> String {
+    if rest.is_empty() { String::new() } else { format!("; also: {}", rest.join("; ")) }
+}
+
+/// Run `body` with `found`; a stop it returns carries what the run had collected.
+pub(super) fn collecting<T>(found: &mut Found, body: impl FnOnce(&mut Found) -> Result<T, Stop>) -> Result<T, Stop> {
+    body(found).map_err(|stop| found.carry(stop))
 }
 
 /// Print `text` as the verdict unless one was printed; true when this call printed it.

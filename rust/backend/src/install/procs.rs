@@ -22,11 +22,16 @@ pub(super) struct Proc {
 /// This account's processes, or why they could not be listed: a listing that did not start, was cut at its bound,
 /// ended badly or gave no process is unknown, never an empty list (this process is always one of them), so no caller
 /// reads "could not list" as "none runs".
-#[cfg(unix)]
 pub(super) fn snapshot(m: &dyn Machine) -> Fact<Vec<Proc>> {
+    snapshot_within(m, observe::ASK_BOUND)
+}
+
+/// [`snapshot`] within `bound`, for a listing a wait with less than [`observe::ASK_BOUND`] left needs.
+#[cfg(unix)]
+pub(super) fn snapshot_within(m: &dyn Machine, bound: Duration) -> Fact<Vec<Proc>> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    list(m, Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]), observe::ASK_BOUND, parse_ps)
+    list(m, Command::new("ps").args(["-u", &uid.to_string(), "-ww", "-o", "pid=", "-o", "ppid=", "-o", "ucomm=", "-o", "args="]), bound, parse_ps)
 }
 
 /// The listing `command` prints within `bound`, read by `parse` (`None` when the text is not a process listing).
@@ -51,13 +56,13 @@ pub(super) fn parse_ps(text: &str) -> Option<Vec<Proc>> {
         .collect()
 }
 
-/// This account's processes, or why they could not be listed; see the Unix listing.
+/// [`snapshot`] within `bound`; see the Unix listing.
 #[cfg(windows)]
-pub(super) fn snapshot(m: &dyn Machine) -> Fact<Vec<Proc>> {
+pub(super) fn snapshot_within(m: &dyn Machine, bound: Duration) -> Fact<Vec<Proc>> {
     // Every session's: a daemon started at the desk runs in the desk's session while an ssh logon runs in session 0.
     // Another account's process shows no ExecutablePath to this one, so it never matches an install's path.
     let script = "@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine) | ConvertTo-Json -Compress";
-    list(m, Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]), observe::ASK_BOUND, parse_cim)
+    list(m, Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]), bound, parse_cim)
 }
 
 /// CIM's JSON: an array of objects, or one object for a single process, each with a numeric `ProcessId` and

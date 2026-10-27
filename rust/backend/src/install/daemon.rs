@@ -41,51 +41,74 @@ impl State {
     }
 }
 
-/// What `sotd same-version` answered: its exit code (0 the target's, 3 another, 4 another a window holds) and its line
-/// (the version it runs when another).
+/// What `sotd same-version` answered (rust/backend/src/topology/same_version.rs:6-11): its exit code (0 the target's,
+/// 3 another, 4 another a window holds, 2 it cannot be told) and its line (the version it runs when another, the reason
+/// when it cannot be told).
 pub(super) type Said = (i32, String);
 
-/// The state `sotd same-version`'s answer says, and its line or why it gave none. A daemon that gave no answer, or
-/// said it cannot tell, is `Unknown` when one may run and `None` when none does; whether one runs is asked only then
-/// (`runs`), and a `runs` that cannot say presumes one does, its reason kept.
-pub(super) fn state_of(said: Fact<Said>, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
+/// Whether a daemon may run, asked within the bound it is given.
+pub(super) type Runs<'a> = &'a dyn Fn(Duration) -> Fact<bool>;
+
+/// The state `sotd same-version`'s answer says, and its line or why it gave none. A daemon that said it cannot be told,
+/// or gave no answer, is `Unknown` when one may run and `None` when none does; whether one runs is asked only then
+/// (`runs`, within `bound`), and a `runs` that cannot say presumes one does, its reason kept. `None`'s line is empty when
+/// the daemon answered, and the ask's reason when it gave no answer: the caller's [`none_clause`].
+pub(super) fn state_of(said: Fact<Said>, runs: Runs, bound: Duration) -> (State, String) {
+    let unknown = |why: String| runs(bound).read(|runs| if runs { (State::Unknown, why.clone()) } else { (State::None, String::new()) }, |listing| (State::Unknown, format!("{listing}; {why}")));
     said.read(
         |(code, line)| match code {
             0 => (State::Current, line),
             3 => (State::Other, line),
-            _ => (State::Held, line),
+            4 => (State::Held, line),
+            _ => unknown(line),
         },
-        |why| runs().read(|runs| (if runs { State::Unknown } else { State::None }, why.to_string()), |listing| (State::Unknown, format!("{listing}; {why}"))),
+        |why| {
+            let why = why.to_string();
+            match unknown(why.clone()) {
+                (State::None, _) => (State::None, why),
+                seen => seen,
+            }
+        },
     )
+}
+
+/// The clause a `None` carries when the daemon on `endpoint` gave no answer and the listing showed none of the
+/// install's: the ask's reason, for the verdict.
+pub(super) fn none_clause(endpoint: &str, (state, why): (State, &str)) -> Option<String> {
+    (state == State::None && !why.is_empty()).then(|| format!("the daemon on {endpoint} could not be asked ({why}); no daemon of this install was listed, so none runs"))
 }
 
 /// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and its version when different, else
 /// why it could not tell.
-pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
-    state_within(m, sotd, endpoint, runs, Duration::from_secs(30))
+pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs) -> (State, String) {
+    state_within(m, sotd, endpoint, runs, Duration::from_secs(30), || observe::ASK_BOUND)
 }
 
-/// [`state`] with the ask itself held to `bound` by the clock: an ask cut at its bound could not tell. Another
-/// version's answer names it on stdout; one that names none does not read.
-fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: &dyn Fn() -> Fact<bool>, bound: Duration) -> (State, String) {
+/// [`state`] with the ask itself held to `bound` by the clock, and a listing it needs to the bound `left` gives once
+/// the ask has ended: an ask cut at its bound could not tell. The reader is same-version's grammar
+/// (rust/backend/src/topology/same_version.rs:6-11, 50-63): another version is named on stdout, never empty, and
+/// `cannot be told` is exit 2 (exit 1 from a `sotd` that predates the command) with its reason on stderr.
+fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs, bound: Duration, left: impl Fn() -> Duration) -> (State, String) {
     let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| match a.exit {
         0 => Ok((0, a.last_said())),
         3 | 4 if !a.first_line().is_empty() => Ok((a.exit, a.first_line())),
         3 | 4 => Err(observe::Why::Malformed(format!("another version with no version named (exit {})", a.exit))),
+        1 | 2 => Ok((2, Some(a.last_said()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("`sotd same-version` exit {} with no reason", a.exit)))),
         _ => Err(a.failed()),
     });
-    state_of(said, runs)
+    state_of(said, runs, left())
 }
 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
 /// else what the last ask said, with its reason, so no caller asks again past the bound. `held_ok` also ends the wait
 /// at `Held`.
-pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: &dyn Fn() -> Fact<bool>) -> (State, String) {
+pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: Duration, held_ok: bool, runs: Runs) -> (State, String) {
     let deadline = Instant::now() + bound;
     loop {
-        // Every ask ends by the deadline or its own bound, the smaller, and none starts after the deadline.
+        // Every ask, the listing it may need included, ends by the deadline or its own bound, the smaller, and none
+        // starts after the deadline.
         let left = deadline.saturating_duration_since(Instant::now());
-        let (st, why) = state_within(m, sotd, endpoint, runs, ask_slice(left));
+        let (st, why) = state_within(m, sotd, endpoint, runs, ask_slice(left), || ask_slice(deadline.saturating_duration_since(Instant::now())));
         let left = deadline.saturating_duration_since(Instant::now());
         if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
             return (st, why);
@@ -317,7 +340,8 @@ fn live_text(state: State, pipe: &str, work: &Work, why: &str) -> String {
     let rows = work.rows.join(", ");
     if state == State::Unknown {
         let rest = if rows.is_empty() { "; restarting it could end live REPLs and Pluto notebooks".to_string() } else { format!("; restarting it would end the REPLs of: {rows}") };
-        return format!("a daemon runs on {pipe} and could not be told its version ({why}){rest}");
+        let unsure = work.unsure.as_ref().map_or_else(String::new, |reason| format!("; sotd update repls: {reason}"));
+        return format!("a daemon runs on {pipe} and could not be told its version ({why}){unsure}{rest}");
     }
     if let Some(reason) = &work.unsure {
         let rest = if rows.is_empty() { String::new() } else { format!(", and restarting it would end the REPLs of: {rows}") };

@@ -106,17 +106,28 @@ fn agent_update_words_distinguish_06_retirement_from_07_restart() {
 #[test]
 fn a_live_daemon_is_asked_before_it_ends() {
     let said = |code: i32| Fact::known((code, String::new()));
-    let runs = |r: bool| move || Fact::known(r);
-    assert_eq!(state_of(said(0), &|| panic!("an answer asks nothing more")).0, State::Current);
-    assert_eq!(state_of(said(3), &runs(false)).0, State::Other);
-    assert_eq!(state_of(said(4), &runs(true)).0, State::Held);
-    for why in [Why::Failed("ended with exit 2: no hello".into()), Why::Cut(Duration::from_secs(30)), Why::Signal] {
+    let runs = |r: bool| move |_: Duration| Fact::known(r);
+    let b = observe::ASK_BOUND;
+    assert_eq!(state_of(said(0), &|_| panic!("an answer asks nothing more"), b).0, State::Current);
+    assert_eq!(state_of(said(3), &runs(false), b).0, State::Other);
+    assert_eq!(state_of(said(4), &runs(true), b).0, State::Held);
+    // `cannot be told` (exit 2) is an answer: none runs when none is listed, with nothing for the verdict.
+    let told = || Fact::known((2, "sotd same-version: unix:/s.sock: connection refused".to_string()));
+    assert_eq!(state_of(told(), &runs(true), b), (State::Unknown, "sotd same-version: unix:/s.sock: connection refused".into()));
+    assert_eq!(state_of(told(), &runs(false), b), (State::None, String::new()));
+    assert_eq!(none_clause("/s.sock", (State::None, "")), None);
+    for why in [Why::Failed("ended with exit 9".into()), Why::Cut(Duration::from_secs(30)), Why::Signal, Why::Malformed("another version with no version named (exit 3)".into())] {
         let no_answer = || Fact::unknown(Unknown::new("sotd same-version", why.clone()));
-        assert_eq!(state_of(no_answer(), &runs(true)), (State::Unknown, format!("`sotd same-version` {why}")), "one that may run is never none");
-        assert_eq!(state_of(no_answer(), &runs(false)).0, State::None);
-        let (st, said) = state_of(no_answer(), &|| Fact::unknown(Unknown::new("ps", Why::Cut(Duration::from_secs(60)))));
+        assert_eq!(state_of(no_answer(), &runs(true), b), (State::Unknown, format!("`sotd same-version` {why}")), "one that may run is never none");
+        // No answer while none of the install's is listed is none, and its reason is the verdict's clause.
+        let (st, said) = state_of(no_answer(), &runs(false), b);
+        assert_eq!((st, said.as_str()), (State::None, format!("`sotd same-version` {why}").as_str()));
+        let clause = none_clause("/s.sock", (st, &said)).expect("a None from no answer carries its reason");
+        assert!(clause.contains(&said) && clause.contains("/s.sock"), "{clause}");
+        let (st, said) = state_of(no_answer(), &|_| Fact::unknown(Unknown::new("ps", Why::Cut(Duration::from_secs(60)))), b);
         assert!(st == State::Unknown && said.starts_with("`ps` did not answer within 60 s; "), "a listing with no answer presumes one runs, its reason kept: {said}");
     }
+    assert_eq!(state_of(told(), &|bound| { assert_eq!(bound, Duration::from_secs(7)); Fact::known(false) }, Duration::from_secs(7)).0, State::None, "the listing gets the bound it is given");
 
     let answer = |exit: i32, out: &str, err: &str| super::super::observe::Answer { exit, out: out.into(), err: err.into() };
     let w = work_of(&answer(3, "repl alpha\nrepl beta\npluto server\n", "")).unwrap();
@@ -322,10 +333,16 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
     let sotd = dir.path().join("sotd");
     sot_platform::test_exec::write_executable(&sotd, "#!/bin/sh\nsleep 10\nexit 3\n");
     let t0 = Instant::now();
-    let (st, why) = wait_current(&Live, &sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, &|| Fact::known(true));
+    let given = std::cell::Cell::new(None);
+    let (st, why) = wait_current(&Live, &sotd, "unix:/nowhere.sock", Duration::from_secs(1), false, &|bound| {
+        given.set(Some(bound));
+        Fact::known(true)
+    });
     assert!(t0.elapsed() < Duration::from_millis(1800), "the wait took {:?}", t0.elapsed());
     assert_eq!(st, State::Unknown, "a daemon that runs and did not answer in time is not taken for none");
     assert!(why.contains("did not answer within"), "{why}");
+    // The listing a cut ask needs starts after it, with what is left of the wait, never a fresh ask bound.
+    assert!(given.get().is_some_and(|bound| bound <= Duration::from_millis(50)), "the listing was given {:?}", given.get());
 }
 
 /// A configured wait longer than the ask bound never lengthens one ask past it, and an ask never starts with less than a

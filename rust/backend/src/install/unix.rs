@@ -107,16 +107,19 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     }
     let publish = super::publish::Plan::capture()?;
     let mut found = Found::default();
-    let plan = decide(m, opts, prefix, home, &mut found)?;
-    lay_out(m, &plan, &mut found)?;
-    let enrolled = publish.enroll(&plan.checkout, &plan.pack.commit, &plan.prefix.join("repo/base"), &mut found)?;
-    julia_and_comm(m, &plan, &mut found)?;
-    configure(m, &plan, &mut found)?;
-    let restarted = wire(m, &plan)?;
-    write_record(m, &plan)?;
-    check(m, &plan, restarted, &mut found);
-    enrolled.check(&mut found);
-    let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
+    // A stop carries the clauses and steps the run collected before it.
+    let pin = verdict::collecting(&mut found, |found| {
+        let plan = decide(m, opts, prefix, home, found)?;
+        lay_out(m, &plan, found)?;
+        let enrolled = publish.enroll(&plan.checkout, &plan.pack.commit, &plan.prefix.join("repo/base"), found)?;
+        julia_and_comm(m, &plan, found)?;
+        configure(m, &plan, found)?;
+        let restarted = wire(m, &plan)?;
+        write_record(m, &plan)?;
+        check(m, &plan, restarted, found);
+        enrolled.check(found);
+        Ok(if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() })
+    })?;
     Ok((found, pin))
 }
 
@@ -149,10 +152,12 @@ fn git_value(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() 
         .ok_or_else(|| Stop::new(1, missing()))
 }
 
-/// A git read in `dir` that names a commit: [`git_value`] whose line is a 40-digit commit id, or does not read.
+/// A git read in `dir` that names a commit: [`git_value`] whose line is an object id, as `git rev-parse` prints one (40
+/// lowercase hex digits, or 64 in a SHA-256 repository), or does not read.
 fn git_commit(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() -> String) -> Result<String, Stop> {
     let line = git_value(m, dir, args, missing)?;
-    if super::is_commit(&line) { Ok(line) } else { Err(Stop::new(1, format!("`git -C {} {}` printed no commit id ('{line}')", dir.display(), args.join(" ")))) }
+    let id = matches!(line.len(), 40 | 64) && line.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if id { Ok(line) } else { Err(Stop::new(1, format!("`git -C {} {}` printed no commit id ('{line}')", dir.display(), args.join(" ")))) }
 }
 
 /// Whether a work tree has local changes, by `git status --porcelain`.
@@ -217,7 +222,8 @@ fn running_here(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Result<(bool, boo
 }
 
 /// What `sotd topology status` says: its table, no hosts.toml, or a hosts.toml it cannot read (why). Every exit is an
-/// answer; only a status that gave none is unknown.
+/// answer; a status that gave none, or an exit-0 table with a line not in topology's grammar ([`role::status_unread`]),
+/// is unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Topo {
     Table(String),
@@ -227,7 +233,10 @@ enum Topo {
 
 fn topology_status(m: &dyn Machine, sotd: &Path) -> Fact<Topo> {
     observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| match a.exit {
-        0 if a.first_line() == "HOST DECLARED" => Ok(Topo::Table(a.out.clone())),
+        0 if a.first_line() == "HOST DECLARED" => match role::status_unread(&a.out) {
+            None => Ok(Topo::Table(a.out.clone())),
+            Some(line) => Err(Why::Malformed(format!("a table line it cannot read ('{line}')"))),
+        },
         0 => Err(Why::Malformed(format!("no table ('{}')", a.first_line()))),
         _ if a.err.contains("no hosts.toml at") => Ok(Topo::Missing),
         _ => Ok(Topo::Unreadable(a.last_said())),
@@ -423,6 +432,9 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
     let retire_stops = !resolved.daemon && unit_active && unit_file;
     let (before, why) = discover(m, &new_sotd, &endpoint, resolved.daemon, retire_stops, unit_runs, own_daemon);
+    if let Some(clause) = daemon::none_clause(&socket, (before, &why)) {
+        found.checked(clause);
+    }
     // A repair ends no daemon: the predicate the restart step and the retire act on says so.
     let repair = dir == Some(super::Direction::Same) && pre_commit == pack.commit && matches!(before, State::None | State::Current) && !ends_daemon(unit_runs, retire_stops, before);
     let mut plan = Plan {
@@ -525,7 +537,8 @@ fn unit_owner(m: &dyn Machine) -> Result<String, Stop> {
     unit.or(|why| Stop::new(2, format!("{why}, so the owner of sotd.service is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set), or move ~/.config/systemd/user/sotd.service aside if no sotd runs from it")))
 }
 
-/// The glibc this box runs, from an exit-0 `ldd --version`'s first line.
+/// The glibc this box runs, from an exit-0 `ldd --version`'s first line, which glibc's ldd prints as `ldd (<package
+/// version>) <version>` (glibc's elf/ldd.bash.in), the version its last field.
 fn glibc_version(m: &dyn Machine) -> Fact<(u32, u32)> {
     observe::ask(m, Command::new("ldd").arg("--version"), ASK_BOUND, |a| glibc_of(&a.zero()?.out).ok_or_else(|| Why::Malformed(format!("no glibc version ('{}')", a.first_line()))))
 }
@@ -696,7 +709,7 @@ fn ends_daemon(unit_runs: bool, retire_stops: bool, before: State) -> bool {
 /// is never read as none.
 pub(super) fn discover(m: &dyn Machine, sotd: &Path, endpoint: &str, daemon_here: bool, retire_stops: bool, unit_runs: bool, own_pids: bool) -> (State, String) {
     if daemon_here || retire_stops {
-        daemon::state(m, sotd, endpoint, &|| Fact::known(unit_runs || retire_stops || own_pids))
+        daemon::state(m, sotd, endpoint, &|_| Fact::known(unit_runs || retire_stops || own_pids))
     } else {
         (State::None, String::new())
     }
@@ -1275,9 +1288,6 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
     );
     let short = commit.get(..9).unwrap_or("").to_string();
     found.pass = format!("Ship of Tools {version} at {short} on this computer");
-    if commit.is_empty() {
-        found.fail("checkout", format!("cannot read the commit of {}", checkout.display()));
-    }
     for b in ["sotd", "sot"] {
         if b == "sot" && !plan.role.frontend {
             continue;
@@ -1370,7 +1380,7 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
             }
         }
     }
-    if found.fail.is_none() && plan.unit_managed() {
+    if !found.failed() && plan.unit_managed() {
         boot_start_note(m, &plan.checkout, &plan.units().to_string_lossy()).read(|line| println!("{line}"), |why| found.step(boot_unknown(&why)));
     }
 }
@@ -1394,9 +1404,12 @@ fn daemon_after(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found
             return State::Unknown;
         };
         let runs = !procs::daemon_pids(&all, &plan.prefix).is_empty();
-        let (st, why) = daemon::state(m, &plan.sotd(), &endpoint, &|| Fact::known(runs));
+        let (st, why) = daemon::state(m, &plan.sotd(), &endpoint, &|_| Fact::known(runs));
         if st == State::Unknown {
             found.fail("daemon", format!("a daemon runs on {socket} and could not be told its version ({why})"));
+        }
+        if let Some(clause) = daemon::none_clause(socket, (st, &why)) {
+            found.checked(clause);
         }
         return st;
     }
@@ -1408,7 +1421,7 @@ fn daemon_after(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found
         return State::Unknown;
     };
     if active {
-        let (st, why) = daemon::wait_current(m, &plan.sotd(), &endpoint, super::secs_env(&m.env(), "SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, &|| Fact::known(true));
+        let (st, why) = daemon::wait_current(m, &plan.sotd(), &endpoint, super::secs_env(&m.env(), "SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, &|_| Fact::known(true));
         match st {
             State::Current => {}
             State::Held if held_ok => {}

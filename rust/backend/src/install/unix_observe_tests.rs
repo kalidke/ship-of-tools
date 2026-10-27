@@ -177,7 +177,7 @@ fn walk(c: &Computer, r: &Row, run: impl FnOnce(&Computer, &mut Found) -> Result
     c.fake.answer(pattern.clone(), r.how.clone());
     let before = c.written();
     let mut found = Found::default();
-    let (line, code) = match run(c, &mut found) {
+    let (line, code) = match verdict::collecting(&mut found, |found| run(c, found)) {
         Ok(()) => verdict::line(&found, ""),
         Err(stop) => verdict::stop_line(&stop, ""),
     };
@@ -242,6 +242,7 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         row("pack sot", none, Cut::Line("/sot --version"), &["--local"], Then::Stop("role", 1), false),
         row("topology status", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false),
         Row { how: says(0, "garbage\n"), reason: "printed no table", ..row("topology status, unreadable", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: says(0, "HOST DECLARED\nme nonsense\n"), reason: "a table line it cannot read ('me nonsense')", ..row("topology status, a declaration outside the grammar", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
         row("topology plan, declared", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false),
         Row { how: says(0, "nonsense\n"), reason: "printed no plan", ..row("topology plan, unreadable", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false) },
         row("ldd", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true),
@@ -376,6 +377,22 @@ fn a_cut_question_in_the_check_is_never_pass() {
             Ok(())
         });
     }
+    // Two failures and a clause: the FAIL names the first, then the other and the clause, nothing dropped. The daemon's
+    // ask is cut while the listing shows none of the install's, so none runs and its reason is the clause.
+    let c = Computer::new();
+    let plan = laid(&c, &["--local", "--no-service"]);
+    let two = |c: &Computer| {
+        c.fake.answer(format!("{}/bin/sot --version", c.prefix().display()), Canned::Stall);
+        c.fake.answer("same-version", Canned::Stall);
+    };
+    let r = row("both binaries and the daemon", two, Cut::Under("bin/sotd --version"), &[], Then::Fail("binaries"), false);
+    (r.setup)(&c);
+    let line = walk(&c, &r, |c, found| {
+        check(&c.fake, &plan, false, found);
+        Ok(())
+    });
+    let also = line.split_once("; also: ").map_or("", |(_, rest)| rest);
+    assert!(also.starts_with("binaries: ") && also.contains("/bin/sot ") && also.contains("could not be asked (`sotd same-version --endpoint ") && also.ends_with("so none runs"), "the other failure and the clause follow the first: {line}");
 }
 
 /// The Julia step's questions, cut in turn: the version and channel probes stop it (FAIL), a Julia whose version
@@ -403,7 +420,7 @@ fn a_cut_question_in_the_julia_step_says_why() {
         let plan = ready(&c);
         let mut found = Found::default();
         julia_and_comm(&c.fake, &plan, &mut found).unwrap();
-        assert!(found.steps.is_empty() && found.checked.is_empty() && found.fail.is_none(), "{found:?}");
+        assert!(found.steps.is_empty() && found.checked.is_empty() && found.fails.is_empty(), "{found:?}");
     }
     for r in [
         row("version gate", none, Cut::Line("exit(VERSION"), &[], Then::Fail("julia"), false),
@@ -420,12 +437,12 @@ fn a_cut_question_in_the_julia_step_says_why() {
     }
 }
 
-/// A retire with no hosts.toml whose boot wiring cannot be read is a step, the unit folder untouched; a record whose
-/// commit cannot be read is not written, and the one there stays byte for byte.
+/// A retire with no hosts.toml whose boot wiring cannot be read is a step, the unit folder untouched (Linux: the retire
+/// is of a systemd unit).
 #[cfg(target_os = "linux")]
 #[test]
-fn a_cut_question_in_the_retire_or_the_record_says_why() {
-    if !isolated("install::unix::observe_tests::a_cut_question_in_the_retire_or_the_record_says_why") {
+fn a_cut_question_in_the_retire_says_why() {
+    if !isolated("install::unix::observe_tests::a_cut_question_in_the_retire_says_why") {
         return;
     }
     let c = Computer::new();
@@ -436,11 +453,18 @@ fn a_cut_question_in_the_retire_or_the_record_says_why() {
     let units_before = tree(&units);
     walk(&c, &row("retire boot wiring", none, Cut::Line("sot_boot_wired"), &[], Then::Step, true), |c, found| configure(&c.fake, &plan, found));
     assert_eq!(tree(&units), units_before, "the cut wrote nothing in the unit folder");
+}
 
+/// A record whose commit cannot be read is not written, and the one there stays byte for byte.
+#[test]
+fn a_cut_question_in_the_record_keeps_the_one_there() {
+    if !isolated("install::unix::observe_tests::a_cut_question_in_the_record_keeps_the_one_there") {
+        return;
+    }
     let c = Computer::new();
     let record = c.recorded();
     let plan = c.decide(&["--local"], &mut Found::default()).unwrap();
-    walk(&c, &row("record commit", none, Cut::Line("rev-parse HEAD"), &[], Then::Stop("record", 1), true), |c, _| write_record(&c.fake, &plan));
+    walk(&c, &row("record commit", none, Cut::Line("rev-parse HEAD"), &[], Then::Stop("record", 1), false), |c, _| write_record(&c.fake, &plan));
     assert_eq!(std::fs::read(c.prefix().join("install.json")).unwrap(), record, "the record there stays byte for byte");
 }
 
@@ -514,6 +538,26 @@ fn a_cut_question_in_the_layout_keeps_what_is_there() {
         walk(&c, &r, |c, found| lay_out(&c.fake, &plan, found));
         assert_eq!(std::fs::read(c.prefix().join("install.json")).unwrap(), record, "{}: the record there stays byte for byte", r.name);
     }
+    // A stop after a clause: a named run over an installed sotd whose version cannot be read goes on, and the layout's
+    // stop that follows names the clause too.
+    let c = computer();
+    // A record cut inside its version: the installed sotd is asked.
+    let record = b"{\n  \"commit\": \"fedcba9876543210fedcba9876543210fedcba98\"\n}\n".to_vec();
+    std::fs::create_dir_all(c.prefix()).unwrap();
+    std::fs::write(c.prefix().join("install.json"), &record).unwrap();
+    let installed = |c: &Computer| {
+        std::fs::create_dir_all(c.prefix().join("bin")).unwrap();
+        std::fs::write(c.prefix().join("bin/sotd"), "").unwrap();
+        c.fake.answer(format!("{}/bin/sotd --version", c.prefix().display()), Canned::Stall);
+    };
+    let r = row("a named run's clause, then the layout's stop", installed, Cut::Line("rev-parse refs/tags/v0.7.0"), &[], Then::Fail("layout"), false);
+    (r.setup)(&c);
+    let line = walk(&c, &r, |c, found| {
+        let plan = c.decide(&["--local", "--version", "v0.7.0"], found)?;
+        lay_out(&c.fake, &plan, found)
+    });
+    assert!(line.contains("; also: the version installed at ") && line.contains("before this run could not be read (`"), "the stop carries the clause before it: {line}");
+    assert_eq!(std::fs::read(c.prefix().join("install.json")).unwrap(), record, "the record there stays byte for byte");
     let c = computer();
     for v in ["v0.0.0", "v0.0.1"] {
         std::fs::create_dir_all(c.prefix().join("repo/versions").join(v)).unwrap();

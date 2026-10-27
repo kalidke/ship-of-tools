@@ -62,19 +62,35 @@ fn daemon_listed(fake: &Fake, root: &Path, supervised: bool) {
     }
 }
 
-/// The verdict a step's outcome gives: a stop's FAIL line and code, or the line of what it found.
+/// The verdict a step's outcome gives: a stop's FAIL line and code, carrying what the run had collected, or the line
+/// of what it found.
 fn verdict_of(outcome: Result<(), Stop>, found: &Found) -> (String, i32) {
     match outcome {
         Ok(()) => verdict::line(found, ""),
-        Err(stop) => verdict::stop_line(&stop, ""),
+        Err(stop) => verdict::stop_line(&found.carry(stop), ""),
     }
 }
 
-/// Each question the Windows layout and update ask, cut in turn: the checkout's Git reads stop the run, a build of the
-/// line never asks for a tag, the shortcut that cannot be read is a step, and an update whose listing after the stage,
-/// logon session or daemon before an apply cannot be told stays armed with nothing stopped, its reason in the ONE STEP
-/// LEFT; a listing that gives no answer before an update leaves its daemon unknown, which the run asks about and
-/// refuses with no console, staging nothing.
+/// An install's record already at the prefix, whose bytes a layout that stops keeps.
+fn recorded(root: &Path) -> Vec<u8> {
+    let text = b"{\n  \"version\": \"0.6.9\",\n  \"commit\": \"fedcba9876543210fedcba9876543210fedcba98\"\n}\n".to_vec();
+    std::fs::write(root.join("prefix\\install.json"), &text).unwrap();
+    text
+}
+
+/// An update the stage armed: its pointer, whose bytes an update that stays armed keeps.
+fn armed(c: &Ctx) -> Vec<u8> {
+    let text = format!("{{\"version\":\"{}\"}}\n", c.pack.version).into_bytes();
+    std::fs::create_dir_all(c.pointer().parent().unwrap()).unwrap();
+    std::fs::write(c.pointer(), &text).unwrap();
+    text
+}
+
+/// Each question the Windows layout and update ask, cut in turn: the checkout's Git reads stop the run, the record there
+/// kept byte for byte, a build of the line never asks for a tag, the shortcut that cannot be read is a step, and an
+/// update whose listing after the stage, logon session or daemon before an apply cannot be told stays armed (its
+/// pointer kept byte for byte) with nothing stopped, its reason in the ONE STEP LEFT; a listing that gives no answer
+/// before an update leaves its daemon unknown, which the run asks about and refuses with no console, staging nothing.
 #[test]
 fn a_cut_question_on_windows_says_why() {
     if !isolated("install::windows::observe_tests::a_cut_question_on_windows_says_why") {
@@ -83,9 +99,11 @@ fn a_cut_question_on_windows_says_why() {
     for (name, pattern, version) in [("cat-file", "cat-file -e", "0.7.0"), ("tag -l", "tag -l", "0.7.0")] {
         let dir = tempfile::tempdir().unwrap();
         let fake = computer(dir.path());
+        let record = recorded(dir.path());
         fake.answer(pattern, Canned::Stall);
         let (line, code) = verdict_of(init_base(&ctx(&fake, dir.path(), version)), &Found::default());
         assert!(code == 1 && line.starts_with("FAIL: ") && line.contains("could not ask git") && line.contains(CUT), "{name}: {line}");
+        assert_eq!(std::fs::read(dir.path().join("prefix\\install.json")).unwrap(), record, "{name}: the record there stays byte for byte");
     }
     {
         let dir = tempfile::tempdir().unwrap();
@@ -98,10 +116,12 @@ fn a_cut_question_on_windows_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let fake = computer(dir.path());
         let c = ctx(&fake, dir.path(), "0.7.0");
+        let record = recorded(dir.path());
         std::fs::create_dir_all(&c.version_dir).unwrap();
         fake.answer("rev-parse HEAD", Canned::Stall);
         let (line, code) = verdict_of(version_folder(&c), &Found::default());
         assert!(code == 1 && line.contains("could not read HEAD") && line.contains(CUT), "{line}");
+        assert_eq!(std::fs::read(dir.path().join("prefix\\install.json")).unwrap(), record, "the record there stays byte for byte");
     }
     {
         let dir = tempfile::tempdir().unwrap();
@@ -127,9 +147,11 @@ fn a_cut_question_on_windows_says_why() {
         fake.answer(pattern, how);
         let bin = tree(&dir.path().join("prefix\\bin"));
         let mut c = ctx(&fake, dir.path(), "0.7.0");
+        // The stage arms the update; the fake's stage writes nothing, so the pointer it would leave is here first.
+        let pointer = armed.then(|| self::armed(&c));
         let sotd = c.pack.exe("sotd");
-        let before = daemon_state(&c, &sotd);
         let mut found = Found::default();
+        let before = daemon_state(&c, &sotd, &mut found);
         let outcome = update(&mut c, &sotd, "0.6.9", before, &mut found).map(|step| {
             if let Some(step) = step {
                 found.step(step);
@@ -140,9 +162,10 @@ fn a_cut_question_on_windows_says_why() {
         if armed {
             assert!(code == 0 && line.starts_with("ONE STEP LEFT: ") && (line.contains("stays armed") || line.contains("the start applies")), "{name}: {line}");
             assert!(!fake.was_asked("sot-apply.ps1") && !fake.was_asked("sot-local-daemon.ps1"), "{name}: nothing was stopped or applied: {:?}", fake.asked());
+            assert_eq!(std::fs::read(c.pointer()).ok(), pointer, "{name}: the update stays armed, its pointer byte for byte");
         } else {
             assert!(code == 2 && line.starts_with("FAIL: daemon: "), "{name}: {line}");
-            assert!(!fake.was_asked("update stage"), "{name}: the refusal staged nothing");
+            assert!(!fake.was_asked("update stage") && !c.pointer().exists(), "{name}: the refusal staged nothing");
         }
         assert_eq!(tree(&dir.path().join("prefix\\bin")), bin, "{name}: the binaries are untouched");
         println!("{name}: {line}");
@@ -175,7 +198,7 @@ fn a_cut_question_in_the_windows_check_is_never_pass() {
         let fake = laid(dir.path());
         let mut found = Found::default();
         end_state(&ctx(&fake, dir.path(), "0.7.0"), &mut found);
-        assert!(found.fail.is_none(), "a healthy end state: {found:?}");
+        assert!(found.fails.is_empty(), "a healthy end state: {found:?}");
     }
     type Setup = fn(&Fake, &Path);
     let none: Setup = |_, _| {};
