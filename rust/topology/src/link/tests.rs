@@ -477,3 +477,36 @@ async fn an_abandoned_open_closes_the_channel_its_answer_opens() {
     assert_eq!(close.payload["reason"], serde_json::json!(LinkCloseReason::Reset));
     assert!(link.ended().is_none());
 }
+
+/// The window's one login, ended before its answer: the start fails with the error's own words and ssh's last stderr
+/// line after them.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_login_that_ends_before_its_answer_names_its_stderr_line() {
+    let script = "echo 'Permission denied (publickey).' >&2; exit 255";
+    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap().with_test_command("sh", ["-c", script]);
+    match Link::start(&LinkRoute::Ssh(recipe)).await {
+        Err(LinkStartError::Failed(why)) => assert!(why.starts_with("link.hello") && why.ends_with("(ssh: Permission denied (publickey).)"), "{why}"),
+        other => panic!("a login that ended: {:?}", other.map(|_| ())),
+    }
+}
+
+/// The login's stderr is drained to its last non-empty line, read past a byte that is not UTF-8 (a far host's banner).
+#[tokio::test]
+async fn the_stderr_drain_keeps_the_last_non_empty_line() {
+    async fn drained(input: &'static [u8]) -> Option<String> {
+        let cell = super::window::drain_stderr(input);
+        tokio::time::timeout(BOUND, async {
+            while Arc::strong_count(&cell) != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the drain task ends at end of input");
+        let line = cell.lock().unwrap().clone();
+        line
+    }
+    assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
+    assert_eq!(drained(b"\n  \n").await, None);
+    assert_eq!(drained(b"Banner \xe9t\xe9\nPermission denied (publickey).\n").await.as_deref(), Some("Permission denied (publickey)."));
+}

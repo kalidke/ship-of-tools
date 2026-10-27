@@ -213,12 +213,12 @@ impl State {
             // transport), so it needs no help from this daemon
             // reconnect handler and re-firing would only be a
             // redundant round trip against a row already
-            // correctly attached. That episode is gated by this
-            // host's link gate (written only by the transport):
-            // while the link is down the client dials nothing,
-            // and once this very Connected has opened the gate
-            // the viewed client resumes within one worker tick,
-            // a parked one when it is next viewed.
+            // correctly attached. That episode waits on this
+            // host's link (its handle written only by the
+            // transport): while the link is down the client dials
+            // nothing, and once this session's accepted hello has
+            // put the link up the viewed client resumes within one
+            // worker tick, a parked one when it is next viewed.
             //
             // SHOULD-FIX (Codex review, lane B5 discharge):
             // also skipped when this row already carries a

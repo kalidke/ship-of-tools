@@ -28,10 +28,11 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
 - The video, site and pool servers keep a connection for the next request (HTTP/1.1), so a remote window's page costs
-  one ssh login per browser connection, not one per file; a connection closes when its request says so, when a reply
+  one channel of its host's link per browser connection, not one per file, and no login of its own; a connection closes when its request says so, when a reply
   cannot be sent whole, or after 30 s with no whole request head or POST body, or with a 64 KiB reply write the client takes more than 30 s over (`read_request`, `read_body`, `IDLE_BOUND`, `WRITE_BOUND`).
-- A window's page login, over ssh or a relay, ends when its host's link closes before the daemon's replies: the
-  browser connection closes as on a down link (`pipe_one`, `LinkWatch`). A page already piped ends on its own.
+- A window's page channel ends when its host's link ends before the daemon's replies: the browser connection closes
+  as on a down link (`pipe_one`, `Answer::LinkDown`), and while the link is down nothing is opened. A page already
+  piped ends with the link too, as its channel does.
 - `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection
   (`dial_upstream`, `a_proxy_dial_is_not_inheritable`).
 - A window's sites outlive its connections: `docs.open` keys them to the window, its hello's host and `instance`
@@ -126,7 +127,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `quarto.open`, `quarto_render_error`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `PagesGrants`,
 `is_servable_video`, `start_page_servers`, `PageVerbs`, `PageRow`, `PageOption`, `RowRef`, `remove_root`, `loopback_port_from_url`, `with_loopback_port`,
 `rust/protocol/src/page_url.rs`. Uses wire's `page_reply::line` for reply offers.
-Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `sot_protocol::pipe::pipe_bidirectional`, `sot_protocol::reply::reject`,
+Uses: `LinkHandle` (topology's link), `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `sot_protocol::pipe::pipe_bidirectional`, `sot_protocol::reply::reject`,
 `site_owner` and `away_sites` (the window's key and the windows away, given to `handle_docs_open` as arguments),
 the server-built `PageVerbs` closures (states, handle lookup, window lookup and the fe-command bus), Unix
 `sot_platform::host::{PinnedDir, dir_identity}` (`AsFd` for the pin's borrowed descriptor), `Signal::spawn`, `Signal::spawn_std`, `Contained`, `ContainedStd`, `Signal`, `sot_containment::process`, `resolve_bin`,

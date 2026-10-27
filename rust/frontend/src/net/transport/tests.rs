@@ -1,4 +1,4 @@
-//! Tests of the connection task: backoff, the link gate, a closed local connection.
+//! Tests of the connection task: backoff, the host's link, a closed local connection.
 
 use super::steady::read_owned;
 use super::*;
@@ -29,8 +29,8 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
 }
 
 /// A daemon that answers every hello and then closes is redialed on the doubling wait, not every 200 ms: an answered
-/// hello is not a working connection. The reconnect loop `spawn` runs dials a generated-relay endpoint this test serves
-/// (an in-process Unix socket, or a named pipe on Windows) and names, in each `Disconnected` event, the wait it is about
+/// hello is not a working connection. The reconnect loop `spawn` runs dials a local endpoint this test serves (an
+/// in-process Unix socket, or a named pipe on Windows; the window is lease-exempt) and names, in each `Disconnected` event, the wait it is about
 /// to sleep. The first three are 200, 400 and 800 ms: three attempts happened and each wait doubled. The daemon stamps
 /// each connection, and the gaps between the first three are at least the 200 and 400 ms the loop reported: it slept
 /// what it said. Those are lower bounds, which a slow machine can only widen; the deadline only fails a loop that stops
@@ -72,7 +72,7 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
     });
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     let (_out_tx, out_rx) = outgoing_channel();
-    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    let config = TransportConfig { dial: Dial::Pipe(sock_path.clone()), token: None };
     spawn(
         &rt,
         "redial-test".to_string(),
@@ -81,7 +81,7 @@ fn a_daemon_that_answers_the_hello_and_drops_is_redialed_on_the_doubling_wait() 
         out_rx,
         NoWindow,
         Arc::new(tokio::sync::Notify::new()),
-        sot_topology::ssh_bridge::LinkGate::default(),
+        sot_topology::link::LinkHandle::default(),
         crate::lease::Leases::new(true, Vec::new()),
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -145,7 +145,7 @@ fn a_refusal_and_then_a_failed_dial_are_told_apart() {
     });
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     let (_out_tx, out_rx) = outgoing_channel();
-    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    let config = TransportConfig { dial: Dial::Pipe(sock_path.clone()), token: None };
     spawn(
         &rt,
         "refusal-test".to_string(),
@@ -154,7 +154,7 @@ fn a_refusal_and_then_a_failed_dial_are_told_apart() {
         out_rx,
         NoWindow,
         Arc::new(tokio::sync::Notify::new()),
-        sot_topology::ssh_bridge::LinkGate::default(),
+        sot_topology::link::LinkHandle::default(),
         crate::lease::Leases::new(true, Vec::new()),
     );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -172,7 +172,7 @@ fn a_refusal_and_then_a_failed_dial_are_told_apart() {
     assert_eq!(ends, [true, false], "the refusal ends as a refusal, the dial after the daemon is gone does not");
 }
 
-// --- ADR 0045 decision 4: the link gate. ---
+// --- The fake daemon, and the host's link handle. ---
 
 #[derive(Clone, Copy)]
 struct NoWindow;
@@ -192,14 +192,24 @@ async fn run_against_fake_daemon(
     hello_reply: serde_json::Value,
     early: Vec<(usize, Frame)>,
     answered: usize,
-    gate: sot_topology::ssh_bridge::LinkGate,
+    uplink: Option<Uplink>,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
     tokio::task::JoinHandle<()>,
     std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>,
     tokio::sync::oneshot::Sender<()>,
 ) {
-    run_against_fake_daemon_counting(host, hello_reply, early, answered, gate, Default::default()).await
+    run_against_fake_daemon_counting(host, hello_reply, early, answered, uplink, Default::default()).await
+}
+
+/// A host's link handle and the link its session runs over, as `connect_and_run` hands them to `run_protocol`. The
+/// link is a fixture's (its channels go nowhere); the session itself runs over the fake daemon's stream.
+type Uplink = (sot_topology::link::LinkHandle, sot_topology::link::Link);
+
+async fn uplink() -> Uplink {
+    let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (link, _) = crate::net::link_fixture::link_to(std::path::PathBuf::from("/nonexistent/d.sock"), made).await;
+    (sot_topology::link::LinkHandle::default(), link)
 }
 
 /// A window that counts its wakes.
@@ -217,7 +227,7 @@ async fn run_against_fake_daemon_counting(
     hello_reply: serde_json::Value,
     early: Vec<(usize, Frame)>,
     answered: usize,
-    gate: sot_topology::ssh_bridge::LinkGate,
+    uplink: Option<Uplink>,
     window: CountingWindow,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
@@ -258,7 +268,7 @@ async fn run_against_fake_daemon_counting(
             &mut out_rx,
             &window,
             ResolvedDial::Local,
-            Some(&gate),
+            uplink.as_ref().map(|(handle, link)| (handle, link)),
         )
         .await;
         result
@@ -273,8 +283,7 @@ fn hello_ok() -> serde_json::Value {
 /// Every event of a session against the fake daemon, as text, once the daemon has answered `answered` requests and
 /// then closed: the session's end included.
 async fn events_until_the_daemon_closes(host: &str, hello_reply: serde_json::Value, early: Vec<(usize, Frame)>) -> Vec<String> {
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
-    let (session, daemon, evt_rx, hold) = run_against_fake_daemon(host, hello_reply, early, 3, gate).await;
+    let (session, daemon, evt_rx, hold) = run_against_fake_daemon(host, hello_reply, early, 3, None).await;
     drop(hold);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), daemon).await.expect("the fake daemon ends");
     let ended = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.expect("the session ends");
@@ -336,9 +345,8 @@ async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
         (0, Frame::evt(op::REPL_FRAME, serde_json::json!({ "eval_id": 5, "frame": { "kind": "stdout", "text": "early" } }))),
     ]] {
         let window = CountingWindow::default();
-        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let (session, daemon, _evt_rx, hold) =
-            run_against_fake_daemon_counting("preamble-wakes", hello_ok(), early, 3, gate, window.clone()).await;
+            run_against_fake_daemon_counting("preamble-wakes", hello_ok(), early, 3, None, window.clone()).await;
         drop(hold);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), daemon).await.expect("the fake daemon ends");
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.expect("the session ends");
@@ -347,19 +355,22 @@ async fn the_preamble_wakes_the_window_for_each_frame_and_each_reply() {
     assert_eq!(wakes, [3, 5], "(no early frame), (two early frames): the hello, two refused steps, and each early frame");
 }
 
+/// fe-net: the host's link handle is up from an accepted hello, so the host's pages and rows open channels only on a
+/// session the daemon admitted, and down by the time the session has ended.
 #[tokio::test]
-async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
+async fn the_link_is_up_after_an_accepted_hello_and_down_when_the_session_ends() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
-    gate.set_up(false);
+    let (handle, link) = uplink().await;
+    let watched = handle.clone();
+    assert!(!watched.is_up(), "down before the session");
     let (session, daemon, evt_rx, hold) =
-        run_against_fake_daemon("gate-test-up-down", hello_ok(), Vec::new(), 3, gate.clone()).await;
+        run_against_fake_daemon("link-up-down", hello_ok(), Vec::new(), 3, Some((handle, link))).await;
     let t0 = std::time::Instant::now();
     while evt_rx.try_recv().map_or(true, |(_, e)| !matches!(e, IncomingEvt::Connected { .. })) {
         assert!(t0.elapsed() < std::time::Duration::from_secs(5), "no Connected event");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(gate.is_up(), "a hello reply proves the link");
+    assert!(watched.is_up(), "an accepted hello puts the host's link up");
     drop(hold);
     tokio::time::timeout(std::time::Duration::from_secs(30), daemon)
         .await
@@ -367,20 +378,21 @@ async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
         .unwrap();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
     assert!(result.is_err(), "the daemon closing ends the session");
-    assert!(!gate.is_up(), "the gate is down by the time run_protocol has returned");
+    assert!(!watched.is_up(), "the link is down by the time run_protocol has returned");
 }
 
+/// A refused hello never puts the host's link up: the session ends with the refusal, and the link with it.
 #[tokio::test]
-async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
+async fn a_refused_hello_leaves_the_link_down() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
-    gate.set_up(false);
+    let (handle, link) = uplink().await;
+    let watched = handle.clone();
     let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-mismatch", reply, Vec::new(), 1, gate.clone()).await;
+        run_against_fake_daemon("link-refused", reply, Vec::new(), 1, Some((handle, link))).await;
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
     assert!(result.unwrap_err().is::<HelloRefused>());
-    assert!(gate.is_up(), "a refusal is a reply: the link is up");
+    assert!(!watched.is_up(), "a refusal opens nothing on the link");
 }
 
 /// ADR 0049 `## User isolation`: a daemon's refusal reaches the person whatever its code. The blocking screen shows
@@ -394,10 +406,9 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
         ("unauthenticated", "send a hello first"),
         ("protocol_mismatch", "protocol mismatch: update the older side"),
     ] {
-        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let reply = serde_json::json!({ "error": error, "code": code });
         let (session, _daemon, evt_rx, _hold) =
-            run_against_fake_daemon("hello-refused", reply, Vec::new(), 1, gate).await;
+            run_against_fake_daemon("hello-refused", reply, Vec::new(), 1, None).await;
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
         assert!(result.unwrap_err().is::<HelloRefused>(), "{code}");
         let mut shown = None;
@@ -418,12 +429,13 @@ async fn a_refused_hello_is_shown_whatever_its_code() {
 #[tokio::test]
 async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::net::state::test_env::set_test_env();
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
+    let (handle, link) = uplink().await;
+    let watched = handle.clone();
     let (session, _daemon, _evt_rx, _hold) =
-        run_against_fake_daemon("gate-test-tree-root", hello_ok(), Vec::new(), 3, gate.clone()).await;
+        run_against_fake_daemon("link-tree-root", hello_ok(), Vec::new(), 3, Some((handle, link))).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert!(!session.is_finished(), "the session must still be connected after 1 s");
-    assert!(gate.is_up());
+    assert!(watched.is_up());
     session.abort();
     let _ = session.await;
 }
@@ -440,10 +452,9 @@ async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_s
     let bound = sot_topology::ssh_bridge::SSH_LOGIN_BOUND;
     assert_eq!(bound, std::time::Duration::from_secs(30));
     for (answered, step) in [(0, "hello"), (1, "tree.root"), (2, "preview.get")] {
-        let gate = sot_topology::ssh_bridge::LinkGate::default();
         let started = tokio::time::Instant::now();
         let (session, _daemon, evt_rx, _hold) =
-            run_against_fake_daemon("connect-silent", hello_ok(), Vec::new(), answered, gate.clone()).await;
+            run_against_fake_daemon("connect-silent", hello_ok(), Vec::new(), answered, None).await;
         let waited = bound * 2;
         let result = tokio::time::timeout(waited, session)
             .await
@@ -457,7 +468,6 @@ async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_s
         let connected =
             std::iter::from_fn(|| evt_rx.try_recv().ok()).any(|(_, e)| matches!(e, IncomingEvt::Connected { .. }));
         assert_eq!(connected, answered > 0, "{step}: Connected is shown exactly when the hello was answered");
-        assert!(!gate.is_up(), "{step}: the link gate is down once the attempt has ended");
         println!("connect-silent: silent before the {step} reply -> \"{err}\" after {elapsed:?}");
     }
 }
@@ -465,6 +475,113 @@ async fn a_daemon_that_falls_silent_during_connect_ends_the_attempt_naming_the_s
 
 
 
+
+// --- fe-net: one login per remote host. ---
+
+/// A fake daemon on one connection the far router made: a control session's hello is answered and every request after
+/// it (a ping with `ok`, anything else with an error); a handoff's `proxy.connect` or `lane.connect` is answered as the
+/// daemon's handlers answer it, and the connection then ends.
+#[cfg(unix)]
+async fn fake_far_daemon(conn: tokio::io::DuplexStream) {
+    let (rx, mut tx) = tokio::io::split(conn);
+    let mut rx = codec::buffered(rx);
+    let Ok((hello, _)) = codec::read_frame(&mut rx).await else { return };
+    if codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_ok()).with_rev(0), None).await.is_err() {
+        return;
+    }
+    if hello.payload["role"] == sot_protocol::HANDOFF_ROLE {
+        if let Ok((req, _)) = codec::read_frame(&mut rx).await {
+            let reply = if req.op == op::PROXY_CONNECT { serde_json::json!({ "ok": true }) } else { serde_json::json!({ "ok": true, "pid": 1, "created": 1 }) };
+            let _ = codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply), None).await;
+        }
+        return;
+    }
+    while let Ok((req, _)) = codec::read_frame(&mut rx).await {
+        let reply = if req.op == op::PING { serde_json::json!({ "ok": true }) } else { serde_json::json!({ "error": "not here", "code": "io" }) };
+        if codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply), None).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// fe-net and topology 5: a remote host costs the window one login for its control connection, two page connections
+/// and three lane dials. The host is reached through a hub relay socket this test serves, where each connection is one
+/// hub-to-far login; behind it a far router in this process carries the link's channels to a fake daemon.
+#[cfg(unix)]
+#[test]
+fn a_remote_host_costs_one_login_for_control_pages_and_rows() {
+    use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
+    use sot_capsule::endpoint::Endpoint;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _env = crate::net::state::test_env::set_test_env();
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-one-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("sot-host-far.sock")
+    };
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let logins = Arc::new(AtomicUsize::new(0));
+    let channels = Arc::new(AtomicUsize::new(0));
+    rt.block_on(async {
+        let name = sock_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_tokio().expect("bind the relay stand-in");
+        let (logins, channels) = (logins.clone(), channels.clone());
+        tokio::spawn(async move {
+            while let Ok(conn) = listener.accept().await {
+                logins.fetch_add(1, Ordering::SeqCst);
+                let (control, far) = tokio::io::duplex(1 << 16);
+                tokio::spawn(fake_far_daemon(far));
+                let channels = channels.clone();
+                let connect: sot_topology::link::router::Connector = Arc::new(move || {
+                    channels.fetch_add(1, Ordering::SeqCst);
+                    let (near, far) = tokio::io::duplex(1 << 16);
+                    tokio::spawn(fake_far_daemon(far));
+                    Box::pin(async move { Ok(Box::new(near) as Box<dyn sot_topology::link::router::Duplex>) })
+                });
+                tokio::spawn(crate::net::link_fixture::route(conn, Box::new(control), connect));
+            }
+        });
+    });
+    let handle = sot_topology::link::LinkHandle::default();
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (_out_tx, out_rx) = outgoing_channel();
+    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    spawn(&rt, "one-login".to_string(), config, evt_tx, out_rx, NoWindow, Arc::new(tokio::sync::Notify::new()), handle.clone(), crate::lease::Leases::new(true, Vec::new()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Connected { .. })) => break,
+            Ok((_, IncomingEvt::Disconnected { reason, .. })) => panic!("the control session over the link ended: {reason}"),
+            Ok(_) => {}
+            Err(_) => panic!("no Connected over the link within 10 s"),
+        }
+    }
+    while !handle.is_up() {
+        assert!(std::time::Instant::now() < deadline, "the host's link never came up");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    rt.block_on(async {
+        for _ in 0..2 {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let _client = tokio::net::TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+            let (browser, _) = listener.accept().await.unwrap();
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(10), crate::pages::pipe_one(browser, &handle, 7000, None)).await.expect("the page connection ends");
+            assert!(matches!(answer, Ok(crate::pages::Answer::Piped)), "a page over the link: {answer:?}");
+        }
+        for n in 0..3 {
+            let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(sot_topology::lane_client::LaneDial::Link(handle.clone()), None);
+            let dialed = tokio::task::spawn_blocking(move || endpoint.connect_row_unchallenged(&format!("row-{n}")).map(|_| ())).await.unwrap();
+            assert!(dialed.is_ok(), "a lane dial over the link: {:?}", dialed.err());
+        }
+    });
+    println!("one login: logins={} channels={}", logins.load(Ordering::SeqCst), channels.load(Ordering::SeqCst));
+    assert_eq!(logins.load(Ordering::SeqCst), 1, "control, two pages and three rows cost one login");
+    assert_eq!(channels.load(Ordering::SeqCst), 5, "each page connection and each lane dial is a channel");
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+}
 
 // --- Field incident 2026-09-08: a peer closing the LOCAL connection
 // must surface as an error, not a silent hang. ---
@@ -663,38 +780,4 @@ async fn connect_pipe_refuses_a_pipe_another_account_serves() {
         Err(e) => format!("{e:#}"),
     };
     assert!(refused.contains("not connecting"), "{refused}");
-}
-
-#[tokio::test]
-async fn stderr_drain_keeps_the_last_non_empty_line() {
-    async fn drained(input: &'static [u8]) -> Option<String> {
-        let cell = spawn_stderr_drain(input);
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while Arc::strong_count(&cell) != 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the drain task ends at end of input");
-        let line = cell.lock().unwrap().clone();
-        line
-    }
-    assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
-    assert_eq!(drained(b"\n  \n").await, None);
-}
-
-/// An ssh child's stderr may hold a byte that is not UTF-8 (a far host's banner): the drain reads on past it, so the
-/// last line is still the child's last complaint.
-#[tokio::test]
-async fn stderr_drain_reads_past_a_byte_that_is_not_utf8() {
-    let cell = spawn_stderr_drain(&b"Banner \xe9t\xe9\nPermission denied (publickey).\n"[..]);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while Arc::strong_count(&cell) != 1 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the drain task ends at end of input");
-    let last = cell.lock().unwrap().clone();
-    assert_eq!(last.as_deref(), Some("Permission denied (publickey)."));
 }

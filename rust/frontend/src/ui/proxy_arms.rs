@@ -38,7 +38,7 @@ pub(in crate::ui) struct ProxyArms {
     /// daemon connection that owns the row, whichever host that is.
     capable: std::collections::HashSet<HostKey>,
     /// Hands GPU-thread-bound `std` listeners to the
-    /// runtime accept loop, each tagged with its daemon port and the dial + token to
+    /// runtime accept loop, each tagged with its daemon port and the link + token to
     /// reach that daemon through (`None` when no host has a
     /// runtime at all).
     manager: Option<tokio::sync::mpsc::UnboundedSender<crate::pages::PageListener>>,
@@ -64,11 +64,10 @@ impl ProxyArms {
         self.manager = Some(tx);
     }
 
-    /// Arm (or re-arm) the listener for `url` on `host`, which proxies through `dial` with `token` behind `gate`.
+    /// Arm (or re-arm) the listener for `url` on `host`, which proxies over channels of `link` with `token`.
     /// The bind is synchronous, so the port is listening by the time the caller launches the browser.
     pub(in crate::ui) fn arm(
-        &mut self, host: &HostKey, url: &str, source: PageSource, dial: crate::pages::PageDial, token: Option<String>,
-        gate: sot_topology::ssh_bridge::LinkGate,
+        &mut self, host: &HostKey, url: &str, source: PageSource, token: Option<String>, link: sot_topology::link::LinkHandle,
     ) -> ArmOutcome {
         let Some(tx) = self.manager.as_ref() else {
             tracing::warn!(target: "sot::ui::page_proxy", %host, "proxy: no listener manager to arm one; not opening");
@@ -100,20 +99,13 @@ impl ProxyArms {
             }
         };
         let arm = std::sync::Arc::new(crate::pages::Arm::default());
-        let armed = crate::pages::PageListener {
-            listener,
-            daemon_port,
-            dial: dial.clone(),
-            token,
-            gate,
-            arm: std::sync::Arc::clone(&arm),
-        };
+        let armed = crate::pages::PageListener { listener, daemon_port, link, token, arm: std::sync::Arc::clone(&arm) };
         if tx.send(armed).is_err() {
             tracing::warn!(target: "sot::ui::page_proxy", daemon_port, "proxy: manager gone; not arming");
             return ArmOutcome::Dropped;
         }
         self.ensured.insert((host.clone(), daemon_port), (local, arm));
-        tracing::info!(target: "sot::ui::page_proxy", daemon_port, local, ?source, %dial, "proxy: bound local listener for backend page");
+        tracing::info!(target: "sot::ui::page_proxy", daemon_port, local, ?source, %host, "proxy: bound local listener for backend page");
         ArmOutcome::Open(opened)
     }
 }

@@ -3,10 +3,10 @@
 use super::*;
 
 // Each reply on the connect path (the hello's, then the preamble's tree.root and preview.get) waits at most
-// `SSH_LOGIN_BOUND`, the window's one bound for a login: an ssh child stalled before auth leaves the pipe open and
-// silent, and a daemon that answered the hello can still leave the preamble unanswered; without a bound the one control
-// transport waits forever, the second time "connected" with no rows. On expiry the read errors like an EOF naming its
-// step, the window shows that as the disconnect reason, and the reconnect loop backs off normally, dropping the child.
+// `SSH_LOGIN_BOUND`, the window's one bound for a login (the link's start waits it for its own answer): a daemon that
+// answered the hello can still leave the preamble unanswered, and without a bound the one control transport waits
+// forever, the second time "connected" with no rows. On expiry the read errors like an EOF naming its step, the window
+// shows that as the disconnect reason, and the reconnect loop backs off normally, dropping the link.
 use sot_topology::ssh_bridge::SSH_LOGIN_BOUND;
 
 /// Read the reply to the connect step `step` (its op), within `SSH_LOGIN_BOUND`. The page proxy's handshake uses it
@@ -20,8 +20,8 @@ pub(crate) async fn read_connect_reply<R: tokio::io::AsyncBufRead + Unpin>(
         .map_err(|_| anyhow::anyhow!("{step} reply timed out after {SSH_LOGIN_BOUND:?}"))?
 }
 
-/// The daemon answered the hello with a refusal (protocol skew, no account named, a second account):
-/// a reply, so the link itself is fine and the gate stays up.
+/// The daemon answered the hello with a refusal (protocol skew, no account named, a second account), or the far end
+/// refused the link (a bridge from before it, another link number): the person's to read, never a transient drop.
 #[derive(Debug)]
 pub(super) struct HelloRefused(pub(super) String);
 
@@ -102,11 +102,10 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Read the hello reply and refuse an error envelope; any reply raises the link gate.
+/// Read the hello reply and refuse an error envelope.
 pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     mut rx: R,
     hello_id: u64,
-    gate: Option<&sot_topology::ssh_bridge::LinkGate>,
     session: &mut SessionState,
     emit: &impl Fn(IncomingEvt),
     window: &Wn,
@@ -114,10 +113,6 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     let (frame, _) = read_connect_reply(&mut rx, op::HELLO).await?;
     if frame.id != hello_id {
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
-    }
-    // Any reply, a refusal included, proves the link.
-    if let Some(gate) = gate {
-        gate.set_up(true);
     }
     if let Some(r) = frame.rev {
         session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);

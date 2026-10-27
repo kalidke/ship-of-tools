@@ -6,14 +6,15 @@ use super::*;
 use super::proxy_arms::ArmOutcome;
 
 /// Outcome of `State::resolve_proxy_target` — see its doc for the three
-/// cases. `Dial` carries the recipe to spawn for the remote leg
-/// (`pipe_one`, `pages.rs`) — no longer a resolved `SocketAddr`:
-/// the daemon has no TCP listener to resolve one for (C3 as amended §3).
+/// cases. `Dial` carries the token for the remote leg (`pipe_one`,
+/// `pages.rs`), which opens a channel on the host's link — no longer a
+/// resolved `SocketAddr`: the daemon has no TCP listener to resolve one for
+/// (C3 as amended §3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::ui) enum ProxyTarget {
     NotNeeded,
     Refused(String),
-    Dial(crate::pages::PageDial, Option<String>),
+    Dial(Option<String>),
 }
 
 /// Where a page URL came from, which decides the port this window may serve it on (PAGE-PORT). `Served`: the reply of a
@@ -41,10 +42,9 @@ impl State {
     /// coexist with a proxy-capable remote and means state has desynced).
     /// Visible, not a silent drop: the page would otherwise fail with no
     /// explanation.
-    /// `Dial`: the exact recipe (and its token, from `host_transports`) to
-    /// spawn an ssh child through for this host's browser connections —
-    /// the SAME connection the control transport already resolved for this
-    /// host, never a second independent guess.
+    /// `Dial`: the host's browser connections go over its link (with its
+    /// token, from `host_transports`) — the SAME link the control transport
+    /// holds for this host, never a second independent guess.
     pub(in crate::ui) fn resolve_proxy_target(
         host: &HostKey,
         proxy_capable_hosts: &std::collections::HashSet<HostKey>,
@@ -56,12 +56,7 @@ impl State {
         }
         let token = host_transports.get(host).and_then(|c| c.token.clone());
         match host_resolved_dial.get(host) {
-            Some(ResolvedDial::Ssh(recipe)) => {
-                ProxyTarget::Dial(crate::pages::PageDial::Ssh(recipe.clone()), token)
-            }
-            Some(ResolvedDial::Relay(path)) => {
-                ProxyTarget::Dial(crate::pages::PageDial::Relay(path.clone()), token)
-            }
+            Some(ResolvedDial::Ssh(_) | ResolvedDial::Relay(_)) => ProxyTarget::Dial(token),
             _ => ProxyTarget::Refused(format!(
                 "'{host}' has no resolved connection to proxy its pages through"
             )),
@@ -143,7 +138,7 @@ impl State {
             &self.hosts.host_resolved_dial,
             &self.hosts.host_transports,
         );
-        let (dial, token) = match target {
+        let token = match target {
             ProxyTarget::NotNeeded => return Some(url.to_string()),
             ProxyTarget::Refused(reason) => {
                 tracing::warn!(%host, %reason, "proxy: refusing — no dial to proxy through");
@@ -151,10 +146,10 @@ impl State {
                 self.window.request_redraw();
                 return None;
             }
-            ProxyTarget::Dial(dial, token) => (dial, token),
+            ProxyTarget::Dial(token) => token,
         };
-        let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
-        match self.proxies.arm(host, url, source, dial, token, gate) {
+        let link = self.hosts.links.entry(host.clone()).or_default().clone();
+        match self.proxies.arm(host, url, source, token, link) {
             ArmOutcome::Open(opened) => Some(opened),
             ArmOutcome::Dropped => None,
             ArmOutcome::PortHeld { daemon_port, owner } => {

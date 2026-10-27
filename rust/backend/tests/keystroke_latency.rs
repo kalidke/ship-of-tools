@@ -78,10 +78,15 @@ fn wait_for(client: &mut FeAttachClient, what: &str, done: impl Fn(&FeAttachClie
 async fn measure(env: &Env) {
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let target = create_row(env, &mut conn, &mut next_id).await;
-    let dial = LaneDial::Local(env.socket_path.clone());
+    sample(DaemonLaneEndpoint::new(LaneDial::Local(env.socket_path.clone()), None), &target, "");
+    env.kill_daemon_bounded().await;
+}
+
+/// `SAMPLES` keystrokes at the row `target` through `endpoint`, their ack and echo percentiles printed under `label`.
+fn sample(endpoint: DaemonLaneEndpoint, target: &str, label: &str) {
     let mut client = FeAttachClient::attach(
-        DaemonLaneEndpoint::new(dial, None),
-        target,
+        endpoint,
+        target.to_string(),
         80,
         24,
         Box::new(|| {}),
@@ -117,7 +122,14 @@ async fn measure(env: &Env) {
                 break Instant::now();
             }
             assert!(!client.is_dead(), "client died: {}", client.status_line());
-            assert!(Instant::now() < deadline, "echo never arrived");
+            assert!(
+                Instant::now() < deadline,
+                "echo never arrived: status {:?}, recorded {} (was {before}), outcome {:?}, discarded {}",
+                client.status_line(),
+                client.recorded_bytes(),
+                client.last_input_outcome(),
+                client.inputs_discarded()
+            );
             std::thread::sleep(Duration::from_micros(200));
         };
         acks.push(t_ack.unwrap_or(t_echo) - t0);
@@ -128,10 +140,9 @@ async fn measure(env: &Env) {
             wait_for(&mut client, "line clear", |c| screen_count(c, PROBE) < 5);
         }
     }
-    percentiles("t_ack ", acks);
-    percentiles("t_echo", echoes);
+    percentiles(&format!("{label}t_ack "), acks);
+    percentiles(&format!("{label}t_echo"), echoes);
     drop(client);
-    env.kill_daemon_bounded().await;
 }
 
 fn fsync_per_op(dir: &Path) -> f64 {
@@ -267,8 +278,7 @@ fn bridge_hello_dial(mut cmd: Command, hello: &Frame, guard: &ParentSshEnvironme
 
 fn private_ssh_command(remote: &str) -> Command {
     let recipe = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
-    let gate = sot_topology::ssh_bridge::LinkGate::default();
-    let command = gate.command(&recipe).expect("up gate");
+    let command = recipe.command();
     let mut args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
     args.pop().expect("remote command");
     let mut ssh = Command::new(command.get_program());
@@ -303,20 +313,20 @@ async fn k3b_ssh_cold_dial() {
     guard.finish();
 }
 
-fn private_ssh_endpoint(remote: &str, dir: &Path, guard: std::sync::Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
+/// The window's link over a real ssh login to this box, whose far end is the private daemon's bridge (`remote`): the
+/// recipe's own argv, its remote command replaced by `remote`.
+async fn private_ssh_link(remote: &str, dir: &Path, guard: &ParentSshEnvironment) -> sot_topology::link::Link {
     let wrapper = dir.join("private-ssh");
     let script = format!("#!/usr/bin/env python3\nimport os, sys\nos.execvp('ssh', ['ssh'] + sys.argv[1:-1] + [{remote:?}])\n");
     sot_platform::test_exec::write_executable(&wrapper, script);
-    guard.observe("after preparing private ssh endpoint");
-    let recipe = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |command| {
-        guard.observe("at endpoint spawn");
-        let spawned = Command::new(&wrapper).args(command.get_args())
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn();
-        guard.observe("endpoint child active");
-        spawned
-    }))
+    guard.observe("after preparing private ssh link");
+    let plain = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
+    let argv: Vec<std::ffi::OsString> = plain.command().get_args().map(|a| a.to_owned()).collect();
+    let recipe = plain.with_test_command(wrapper, argv);
+    guard.observe("at link start");
+    let link = sot_topology::link::Link::start(&sot_topology::link::LinkRoute::Ssh(recipe)).await.expect("k5 needs passwordless local ssh to its private daemon");
+    guard.observe("link active");
+    link
 }
 
 /// Headless request-to-checkpoint interval; T3 owns the frontend request-to-pane interval.
@@ -336,7 +346,8 @@ fn p50(times: &[Duration]) -> f64 {
     sorted[(sorted.len() - 1) / 2].as_secs_f64() * 1000.0
 }
 
-/// Five cold endpoints, interleaved local/ssh rounds; ratio uses p50, ceiling checks every total.
+/// Five cold endpoints, interleaved local and link rounds, over one ssh link started before them: a remote switch is a
+/// channel of the host's link, so it costs a round trip, not a login. The ratio uses p50; the ceiling checks every total.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn k5_cold_switch_over_ssh() {
@@ -353,12 +364,15 @@ async fn k5_cold_switch_over_ssh() {
     local.arg("-c").arg(&remote);
     let (_, reply) = bridge_hello_dial(local, &hello_frame("k5"), &guard).expect("local private bridge hello");
     assert_eq!(&reply.payload["session_id"], private_sid, "local bridge reached another daemon");
+    let link = private_ssh_link(&remote, wrapper_dir.path(), &guard).await;
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
     let (mut logins, mut locals, mut ssh_times, mut excess) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for round in 0..5 {
         let (login, reply) = bridge_hello_dial(private_ssh_command(&remote), &hello_frame("k5"), &guard).expect("k5 needs passwordless local ssh to its private daemon");
         assert_eq!(&reply.payload["session_id"], private_sid, "ssh bridge reached another daemon");
         let local = || timed_attach(DaemonLaneEndpoint::new(LaneDial::Local(env.socket_path.clone()), None), &target, &guard);
-        let ssh = || timed_attach(private_ssh_endpoint(&remote, wrapper_dir.path(), guard.clone()), &target, &guard);
+        let ssh = || timed_attach(DaemonLaneEndpoint::new(LaneDial::Link(handle.clone()), None), &target, &guard);
         let (local, ssh) = if round % 2 == 0 { let local = local(); (local, ssh()) } else { let ssh = ssh(); (local(), ssh) };
         println!("k5 round {round} L={:.1}ms local total={:.1}ms ssh total={:.1}ms", login.as_secs_f64() * 1000.0, local.as_secs_f64() * 1000.0, ssh.as_secs_f64() * 1000.0);
         logins.push(login); locals.push(local); ssh_times.push(ssh);
@@ -373,10 +387,86 @@ async fn k5_cold_switch_over_ssh() {
     println!("k5 excess p50={excess_p50:.1}ms ratio={:.2}", excess_p50 / login_p50);
     let pass = excess_p50 <= 1.5 * login_p50;
     println!("k5 {}", if pass { "PASS" } else { "FAIL" });
+    drop(link);
     env.kill_daemon_bounded().await;
     guard.finish();
     assert!(pass, "cold switch over ssh costs {excess_p50:.1}ms over a local dial, more than 1.5 x one login ({login_p50:.1}ms)");
     for total in locals.iter().chain(&ssh_times) {
         assert!(*total <= sot_platform::transport::CONNECT_BOUND, "headless request-to-checkpoint switch missed CONNECT_BOUND: {total:?}");
     }
+}
+
+/// The link's control session, as a window opens it: a hello on channel 0, answered. A channel 0 that says nothing is
+/// closed by the daemon at its first-frame bound, and the link with it. Returns the channel, held for the link's life.
+async fn say_hello_on_channel_zero(link: &mut sot_topology::link::Link, client: &str) -> sot_topology::link::Channel {
+    let mut control = link.take_control().expect("channel 0");
+    codec::write_frame(&mut control, &hello_frame(client), None).await.expect("the control hello");
+    let mut reader = tokio::io::BufReader::new(&mut control);
+    let (reply, _) = codec::read_frame(&mut reader).await.expect("the control hello's reply");
+    assert!(reply.payload.get("error").is_none(), "the control hello: {:?}", reply.payload);
+    control
+}
+
+/// One control session on a channel of `handle`'s link that downloads the file at `path` again and again, reading
+/// every chunk, until `stop`: a bulk transfer beside the keystrokes. Returns the bytes it read.
+async fn bulk_download(handle: sot_topology::link::LinkHandle, path: std::path::PathBuf, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> u64 {
+    let (rx, mut tx) = handle.open().await.expect("open the bulk channel").into_split();
+    let mut rx = tokio::io::BufReader::new(rx);
+    codec::write_frame(&mut tx, &hello_frame("k6-bulk"), None).await.expect("the bulk hello");
+    let (reply, _) = codec::read_frame(&mut rx).await.expect("the bulk hello's reply");
+    assert!(reply.payload.get("error").is_none(), "the bulk hello: {:?}", reply.payload);
+    let (mut id, mut bytes) = (2u64, 0u64);
+    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+        let req = Frame::req(id, op::FILE_DOWNLOAD, serde_json::json!({ "path": path }));
+        codec::write_frame(&mut tx, &req, None).await.expect("ask for the download");
+        loop {
+            let (frame, blob) = codec::read_frame(&mut rx).await.expect("a download frame");
+            if frame.id != id || frame.kind != sot_protocol::Kind::Res {
+                continue;
+            }
+            assert!(frame.payload.get("error").is_none(), "the download: {:?}", frame.payload);
+            bytes += blob.map_or(0, |b| b.len() as u64);
+            if frame.payload["eof"].as_bool() == Some(true) {
+                break;
+            }
+        }
+        id += 1;
+    }
+    bytes
+}
+
+/// The link's keystroke figure: keystrokes at a row over a channel of a window's link whose far end is the real bridge
+/// (no ssh: the link's own cost), first alone, then with a bulk download on another channel of the same link. The
+/// figure the link contract's head-of-line limit names is the second's p99.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn k6_link_keystrokes_with_a_bulk_channel_beside() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("k6");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let target = create_row(&env, &mut conn, &mut next_id).await;
+    let endpoint = format!("unix:{}", env.socket_path.display());
+    let recipe = sot_topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap().with_test_command(sotd_program(), ["stdio-bridge", "--endpoint", endpoint.as_str()]);
+    let link = sot_topology::link::Link::start(&sot_topology::link::LinkRoute::Ssh(recipe)).await.expect("the link over the bridge");
+    let mut link = link;
+    let control = say_hello_on_channel_zero(&mut link, "k6-control").await;
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    let lane = || DaemonLaneEndpoint::new(LaneDial::Link(handle.clone()), None);
+    let quiet = { let (lane, target) = (lane(), target.clone()); tokio::task::spawn_blocking(move || sample(lane, &target, "k6 link alone ")) };
+    quiet.await.unwrap();
+    let big = env._tmp.path().join("k6-bulk.bin");
+    std::fs::write(&big, vec![0x5au8; 32 << 20]).expect("write the bulk file");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = Instant::now();
+    let bulk = tokio::spawn(bulk_download(handle.clone(), big, stop.clone()));
+    let beside = { let (lane, target) = (lane(), target.clone()); tokio::task::spawn_blocking(move || sample(lane, &target, "k6 link beside a bulk download ")) };
+    beside.await.unwrap();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let bytes = bulk.await.expect("the bulk task");
+    println!("k6 bulk channel: {} MiB in {:.1}s beside the keystrokes", bytes >> 20, started.elapsed().as_secs_f64());
+    drop(control);
+    drop(link);
+    env.kill_daemon_bounded().await;
 }

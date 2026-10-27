@@ -607,7 +607,7 @@ fn an_unanswered_lease_is_named_and_held_until_its_answer() {
         out_rx,
         NoWindow,
         Arc::new(tokio::sync::Notify::new()),
-        sot_topology::ssh_bridge::LinkGate::default(),
+        sot_topology::link::LinkHandle::default(),
         leases.clone(),
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

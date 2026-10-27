@@ -136,8 +136,8 @@ file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
 the one way anything reads it. Neither the frontend nor the PowerShell
 launcher parses `hosts.toml` itself any more: the launcher runs
 `sotd topology plan --self <host>` and renders its plain-line output into
-`--dial <host>=<endpoint>` flags for the frontend (each an ssh child the
-frontend spawns itself, or a local socket/pipe);
+`--dial <host>=<endpoint>` flags for the frontend (each a link the
+frontend starts itself over one ssh login, or a local socket/pipe);
 the frontend reads no config file for hosts at all
 (see `--dial` under [CLI flags](../start/setup.md), and
 `rust/topology/src/lib.rs`'s `plan` doc comment for the exact
@@ -170,7 +170,7 @@ is canonical, and every other box's copy is a `sotd topology sync --hub
 
 One section per host. `<name>` is the plain host name (`[a-z0-9][a-z0-9._-]*`)
 that box's own `host_name()` resolves to — it doubles as its SSH alias.
-Every other box reaches a daemon host through an ssh child into the hub, so only
+Every other box reaches a daemon host through one ssh login into the hub, so only
 the hub needs an `~/.ssh/config` entry for each daemon host, and every other
 box needs one for the hub.
 
@@ -249,7 +249,7 @@ dial otherbox ssh:myserver/otherbox
 
 — which the launcher turns into
 `--dial myserver=ssh:myserver --dial otherbox=ssh:myserver/otherbox` for
-the frontend: an ssh child into the hub, no argument for the hub's own
+the frontend: one ssh login into the hub per host, no argument for the hub's own
 daemon and `--host otherbox` to reach the hub's relay socket for the
 other one. No port, no forward — read the actual endpoints from
 `sotd topology plan`, never hardcode one.

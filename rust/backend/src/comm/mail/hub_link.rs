@@ -126,10 +126,7 @@ fn spawn_link(recipe: &sot_topology::ssh_bridge::SshRecipe) -> Result<tokio::pro
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         return Ok(cmd);
     }
-    sot_topology::ssh_bridge::LinkGate::default()
-        .command(recipe)
-        .map(tokio::process::Command::from)
-        .map_err(|e| format!("spawn {recipe}: {e}"))
+    Ok(tokio::process::Command::from(recipe.command()))
 }
 
 /// One connection, from spawn to the first failure. The child and what it

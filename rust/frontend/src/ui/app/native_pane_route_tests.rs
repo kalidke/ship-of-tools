@@ -2,7 +2,8 @@
 
 use super::native_pane_daemon_tests::{reap, Control, Daemon};
 use anyhow::{ensure, Context, Result};
-use sot_topology::ssh_bridge::{LinkGate, SshRecipe};
+use sot_topology::link::{Link, LinkHandle, LinkRoute};
+use sot_topology::ssh_bridge::SshRecipe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -89,31 +90,39 @@ pub(super) fn recipe_from(host: &str, program: &Path, args: &[String]) -> SshRec
     SshRecipe::new(HUB, Some(host)).expect("plain host names").with_test_command(program, args.iter().cloned())
 }
 
-/// The route's evidence before any timing: a control child reaches the private daemon, the relay hop (if any) carried
-/// it, and a real attach through the same recipe checkpoints Ready row 0 with its sentinel.
+/// The route's evidence before any timing: a link over the route's recipe reaches the private daemon on its channel
+/// 0, the relay hop (if any) carried it, and a real attach over a channel of the same link checkpoints Ready row 0 with
+/// its sentinel, with no second relay hop.
 pub(super) fn preflight(route: &Route, daemon: &Daemon) -> Result<()> {
     let name = route.kind.name();
-    let child = LinkGate::default().spawn_sync(&route.recipe()).map(|(child, _)| child).map_err(|e| anyhow::anyhow!("{name} route could not start: {e}"))?;
-    let mut control = Control::from_child(child, Duration::from_secs(30))?;
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
+    let mut link: Link = rt.block_on(Link::start(&LinkRoute::Ssh(route.recipe()))).map_err(|e| anyhow::anyhow!("{name} route could not start: {e}"))?;
+    let mut control = Control::over_channel(link.take_control().context("the link's channel 0")?, Duration::from_secs(30));
     let session = control.hello("t3-preflight")?;
     ensure!(session == daemon.session_id, "{name} route reached another daemon");
+    let hops = route.relay_accepts();
     if route.kind == RouteKind::SshRelay {
-        ensure!(route.relay_accepts().unwrap_or(0) >= 1, "relayed route used no relay hop");
+        ensure!(hops.unwrap_or(0) >= 1, "relayed route used no relay hop");
     }
-    control.close();
+    let handle = LinkHandle::default();
+    handle.set_up(&link);
     let started = Instant::now();
     let row = &daemon.ready_rows()[0];
-    let screen = attach_and_read(route, &row.session)?;
+    let screen = attach_and_read(&handle, &row.session)?;
     ensure!(screen.contains(&row.nonce), "{name} preflight attach did not show the row's sentinel");
+    ensure!(route.relay_accepts() == hops, "{name} preflight attach made a relay hop of its own");
     println!("pane-timing preflight route={name} session=matched checkpoint_ms={} sentinel=true", started.elapsed().as_millis());
+    // Channel 0's end ends the link, so the control closes last.
+    control.close();
+    drop(link);
     Ok(())
 }
 
-/// One headless attach over the route's recipe: waits for the checkpoint and returns the screen's text.
-fn attach_and_read(route: &Route, session: &str) -> Result<String> {
+/// One headless attach over a channel of `link`: waits for the checkpoint and returns the screen's text.
+fn attach_and_read(link: &LinkHandle, session: &str) -> Result<String> {
     use sot_capsule::attach_client::client::FeAttachClient;
     use sot_topology::lane_client::{DaemonLaneEndpoint, LaneDial};
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(route.recipe(), LinkGate::default()), None);
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(link.clone()), None);
     let mut client = FeAttachClient::attach(endpoint, session.to_string(), 80, 24, Box::new(|| {}))
         .map_err(|e| anyhow::anyhow!("preflight attach: {e}"))?;
     let deadline = Instant::now() + Duration::from_secs(30);

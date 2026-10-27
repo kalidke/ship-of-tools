@@ -1,72 +1,60 @@
-//! An ssh route's login: one dial starts one, a failed start is the dial's error, and none is left behind.
+//! A remote attach over the host's link: one dial opens one channel and starts no login, and a channel the router
+//! refuses is the dial's error with no second try.
+use super::tests::{link_to, runtime};
 use super::*;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-fn ssh_endpoint() -> DaemonLaneEndpoint {
-    let recipe = crate::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None)
-}
-
-struct PeerScript(std::path::PathBuf);
-impl Drop for PeerScript {
-    fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove owned peer folder"); }
-}
-
-/// `failed_spawn` names the start that fails; `dying_spawn` the one whose peer reads the hello and exits unanswered.
-fn counted_endpoint(failed_spawn: Option<usize>, dying_spawn: Option<usize>) -> (DaemonLaneEndpoint, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!("sot-spare-peer-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst)));
-    std::fs::create_dir(&path).unwrap();
-    let script = std::sync::Arc::new(PeerScript(path));
-    sot_platform::test_exec::write_executable(&script.0.join("peer.py"), r#"import json, os, sys
-hello = json.loads(sys.stdin.readline())
-if sys.argv[1:] == ['dies-in-handshake']:
-    sys.exit(0)
-request = json.loads(sys.stdin.readline())
-assert hello['kind'] == 'req' and hello['op'] == 'hello'
-assert hello['payload']['role'] == 'handoff'
-assert request['kind'] == 'req' and request['op'] == 'lane.connect'
-for frame, payload in [(hello, {'ok': True}), (request, {'ok': True, 'pid': os.getpid(), 'created': 1})]:
-    print(json.dumps(dict(v=frame['v'], id=frame['id'], kind='res', op=frame['op'], payload=payload)), flush=True)
-sys.stdin.buffer.read()
-"#);
-    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = calls.clone();
-    let ep = ssh_endpoint().with_test_ssh_spawner(std::sync::Arc::new(move |command| {
-        let n = counted.fetch_add(1, Ordering::SeqCst);
-        assert!(command.get_args().any(|arg| arg == "ControlMaster=no"), "the seam uses the gated argv authority");
-        if failed_spawn == Some(n) {
-            return Err(std::io::Error::other("injected spawn failure"));
+/// Topology 8: a remote attach is one dial, so one channel on the host's link and no login of its own.
+#[cfg(unix)]
+#[test]
+fn a_remote_attach_opens_one_channel_and_starts_no_login() {
+    use std::io::{BufRead, Read, Write};
+    let peer = tempfile::Builder::new().prefix("sot-attach-peer-").tempdir_in("/tmp").expect("a private folder");
+    let path = peer.path().join("d.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the daemon stand-in");
+    let rt = runtime();
+    let made = Arc::new(AtomicUsize::new(0));
+    let (_link, handle) = link_to(&rt, path, made.clone());
+    let served = std::thread::spawn(move || {
+        let (conn, _) = listener.accept().expect("the dial's connection");
+        let mut reader = std::io::BufReader::new(conn.try_clone().unwrap());
+        let mut conn = conn;
+        let (mut hello, mut request) = (Vec::new(), Vec::new());
+        reader.read_until(b'\n', &mut hello).unwrap();
+        reader.read_until(b'\n', &mut request).unwrap();
+        let answers = [
+            Frame::res(1, op::HELLO, serde_json::json!({ "ok": true })),
+            Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": std::process::id(), "created": 1 })),
+        ];
+        for answer in answers {
+            let mut line = serde_json::to_vec(&answer).unwrap();
+            line.push(b'\n');
+            conn.write_all(&line).unwrap();
         }
-        std::process::Command::new("python3").arg("-u").arg(script.0.join("peer.py"))
-            .args((dying_spawn == Some(n)).then_some("dies-in-handshake"))
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn()
-    }));
-    (ep, calls)
-}
-
-fn ssh_step(ep: &DaemonLaneEndpoint) -> Result<DaemonLaneClient, TransportError> {
-    ep.dial("row-owned-peer")
-}
-
-/// An ssh-route attach is one dial, so one login: nothing is parked for a second dial that no longer follows.
-#[test]
-fn a_remote_attach_uses_one_login() {
-    let (ep, calls) = counted_endpoint(None, None);
-    let client = ssh_step(&ep).expect("the one login answers");
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "a remote attach starts exactly one login");
+        let mut rest = Vec::new();
+        let _ = reader.read_to_end(&mut rest);
+    });
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None);
+    let client = endpoint.dial("row-owned-peer").expect("the one channel answers");
+    assert_eq!(made.load(Ordering::SeqCst), 1, "a remote attach opens exactly one channel");
     drop(client);
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "and no login is started behind it");
+    sot_platform::test_wait::within(std::time::Duration::from_secs(10), "the stand-in", move || served.join()).unwrap();
+    assert_eq!(made.load(Ordering::SeqCst), 1, "and nothing is opened behind it");
 }
 
-/// A login that cannot start is the dial's error, and the dial does not try again by itself.
+/// A channel the router could not connect is the dial's error, `Unreachable` with the router's words, and the dial
+/// does not try again by itself.
 #[test]
-fn a_failed_login_is_the_dials_error_with_no_second_try() {
-    let (ep, calls) = counted_endpoint(Some(0), None);
-    match ssh_step(&ep) {
-        Err(TransportError::Unreachable(error)) => assert_eq!(error.to_string(), "injected spawn failure"),
-        other => panic!("expected the spawn failure, got {:?}", other.err()),
+fn a_refused_channel_is_the_dials_error_with_no_second_try() {
+    let rt = runtime();
+    let made = Arc::new(AtomicUsize::new(0));
+    let nowhere = std::env::temp_dir().join(format!("sot-no-daemon-{}", std::process::id())).join("d.sock");
+    let (_link, handle) = link_to(&rt, nowhere, made.clone());
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Link(handle), None);
+    match endpoint.dial("row") {
+        Err(TransportError::Unreachable(error)) => assert!(error.to_string().contains("unreachable"), "{error}"),
+        other => panic!("expected the router's refusal, got {:?}", other.err()),
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(made.load(Ordering::SeqCst), 1);
 }

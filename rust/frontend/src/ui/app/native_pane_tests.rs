@@ -103,8 +103,8 @@ fn run_children(kind: RouteKind, sotd: &std::path::Path, daemon: &mut Daemon, ro
         let before = route.as_ref().and_then(Route::relay_accepts);
         let run = run_child(role, &path)?;
         if let (Some(before), Some(after)) = (before, route.as_ref().and_then(Route::relay_accepts)) {
-            let attaches = if role == "fault" { 1 } else { 6 };
-            anyhow::ensure!(after >= before + 1 + 2 * attaches, "relayed run used no relay hop: {role} grew {} accepts, wanted {}", after - before, 1 + 2 * attaches);
+            // The window's link is its one login: its control and every attach are channels on it.
+            anyhow::ensure!(after == before + 1, "a relayed run's window made {} relay hops, wanted its link's one", after - before);
         }
         let unrunnable = run.out.contains(DISPLAY_MARKER) || run.err.contains(DISPLAY_MARKER);
         runs.push(run);

@@ -235,7 +235,7 @@ fn connect(endpoint: &str, sig: &'static sot_containment::Signal) -> Result<Conn
             None => (rest, None),
         };
         let recipe = sot_topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
-        let mut cmd = sot_topology::ssh_bridge::LinkGate::default().command(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        let mut cmd = recipe.command();
         let child = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }

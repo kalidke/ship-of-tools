@@ -210,8 +210,10 @@ fn hello_answer(answer: Frame) -> Result<String, LinkStartError> {
     Ok(res.build)
 }
 
-/// The child's last non-empty stderr line, drained on its own task for as long as the child writes.
-fn drain_stderr(stderr: tokio::process::ChildStderr) -> Arc<Mutex<Option<String>>> {
+/// The child's last non-empty stderr line, drained on its own task for as long as the child writes: ssh's own
+/// complaint ("Permission denied", or `unrecognised argument: --host` from a hub whose `sotd` predates it) is the
+/// diagnosis a dead login leaves behind.
+pub(super) fn drain_stderr<R: AsyncRead + Unpin + Send + 'static>(stderr: R) -> Arc<Mutex<Option<String>>> {
     let last = Arc::new(Mutex::new(None::<String>));
     let cell = Arc::clone(&last);
     tokio::spawn(async move {
