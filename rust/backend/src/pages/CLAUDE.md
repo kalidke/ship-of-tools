@@ -45,6 +45,25 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - A window keeps its last eight prefix sites (`SITES_PER_WINDOW`): opening a question's page leaves the queue page
   live. The ninth open evicts the oldest nonce; `remove_root` removes every nonce of the owner. The pool still keeps
   one site per owner, so opening a second pool site replaces the first.
+- An authenticated opener sets one entry's reply scope with `DocsOpenReq.direct`: `none` (the default), `row` with a
+  workspace id, or `all`. A row request resolves an id or slug to the canonical workspace id and refuses a page outside
+  that row's canonical project folder, or a row root holding the home folder, with a reason and no URL. The folder's
+  index must also stay inside that row. An all-row grant retains ordinary docs confinement to a known workspace.
+  Scope belongs to the entry's URL path (a folder URL and its index are the same entry), never the site tree. A document
+  or POST body cannot set or upgrade it. `states.reply_scope` reports `{scope: "none"}`, `{scope: "row", workspace_id}`
+  or `{scope: "all"}` from the requesting capability and entry, even when an older frontend discarded the opener's field.
+- Navigation from a scoped entry to another HTML document exchanges its capability through a noncached redirect:
+  a prefix document gets an ordinary nonce (counted in the eight-site limit); a pool document gets an ordinary secret
+  on the same origin, keeping root-relative assets working. That secret and the entry secret expire together on
+  reassignment. A cookie still authorizes files only. An ordinary capability stays ordinary on navigation back to the
+  original entry; the entry's own grant keeps its scope. A POST elsewhere beneath a direct nonce has scope `none`.
+  A reply from an entry with no scope offers the window's bar and answers 202. A reply from a scoped entry needs no
+  window: a `row` scope naming any other row's handle is refused `403 out_of_scope`; otherwise rows' direct delivery
+  (`PageVerbs::with_direct`) types it at once or holds it, and the POST answers `200 {ok, receipt}`, the receipt being
+  `{request_id, workspace_id, handle, outcome, detail}` with `outcome` `sent`, `held`, `refused` or `unknown`. The page
+  may name its `request_id` (1 to 64 of `A-Za-z0-9-_`); a repeated id answers its receipt again and types nothing.
+  A scoped POST's deadline is 15 s; a page that misses it reads the outcome from `states.replies`, rows' newest
+  receipts (memory only: after a daemon restart a held reply has none, and its page shows unknown).
 - A site's POST channel admits a live site capability first (prefix nonce or explicit pool secret), then requires
   `Origin` to equal `http://` plus the request's own `Host`. Missing, null, repeated or foreign origins are refused
   with 403 `forbidden`; a missing nonce is a file 404. No command runs before these checks. GET and HEAD remain files;
@@ -75,10 +94,11 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   500 `handler_error`, never a successful empty queue. `goto` resolves a handle fresh and sends
   `goto_workspace {workspace}`. `open` takes only the handle and reads the question's `Page:` fresh. Its absolute
   page must canonicalize under that row's canonical project root, which must not hold the home folder. It grants a
-  plain prefix site rooted at that row (no git link authority or widened URL root), then sends `docs {workspace,
+  prefix site with that canonical row's reply scope, rooted at that row (no git link authority or widened URL root), then sends `docs {workspace,
   path: "sot-page:<nonce>/<relative>"}`. `docs.open` redeems only the requesting owner's live grant, returning its
   existing URL through the usual remote proxy route, without interpreting the path under any other workspace.
-  On Unix a decision site holds the row's `PinnedDir` from preparation through the grant's lifetime, after checking
+  The open verb grants only the target row, whatever the opener's scope or POST fields; redemption preserves that
+  existing grant even if its request asks for a wider scope. On Unix a decision site holds the row's `PinnedDir` from preparation through the grant's lifetime, after checking
   that its identity matches the row's original folder. Every file request refuses a changed base identity and opens
   each component with `openat` from the borrowed pin descriptor (`AsFd`), never by reopening the base pathname.
   This works on Linux and macOS, even if the row or an ancestor is replaced between the check and the final open;
@@ -152,6 +172,7 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, the browser-port table and its receiver (`PagesGrants`).
 - `site/`: the static-site server (own page).
 - `site/verbs.rs`: the page channel and its four server-supplied capabilities; it reads no row registry or roster.
+- `site/grant.rs`: entry reply scopes and the ordinary pool credential used for other document navigation.
 
 Page channel tests: `tests/page_channel.rs` drives a real daemon, `docs.open`, separate windows and their redials,
 HTTP capability/Origin checks, states, go-to, page containment, site retention and persistent bodies. The bounded
@@ -188,3 +209,8 @@ Reply behavior: `tests/page_channel.rs::a_reply_with_hostile_text_is_refused_and
 exact marked offers on the owner's newest connection; `a_handle_that_binds_no_row_here_is_refused` includes replies
 and named foreign-daemon refusals. `tests/comm_wake.rs::a_page_reply_post_types_nothing` observes an offer and no pane
 input for three seconds on a free stub-agent row.
+Landing A's scope proofs in `tests/page_channel.rs`: `states_reports_the_entry_scope_with_a_canonical_row_id`,
+`a_direct_row_open_refuses_a_page_in_another_known_workspace`, `the_open_verb_always_grants_the_targets_row_and_never_all`,
+`navigation_from_a_direct_entry_gets_an_ordinary_grant_in_both_servers`, and
+`a_post_cannot_change_scope_and_only_an_unscoped_reply_offers_the_bar`. Direct delivery: `site/verbs_tests.rs::
+a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_row`.

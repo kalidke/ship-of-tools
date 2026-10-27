@@ -252,6 +252,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
+- The `docs` command carries the opener's `direct` reply scope unchanged through parse, dispatch and the outgoing
+  `docs.open` request on the sending daemon's connection. It defaults to `none`; row scopes carry their workspace,
+  which the daemon resolves to a canonical id, and `all` is explicit. Ordinary UI opens pass `none`. An older
+  frontend that discards the field grants no direct authority; the page reads `states.reply_scope` to learn what
+  the daemon granted. Landing A carries scope only: every reply still reaches the confirmation bar below.
+  Proofs: `control::command::tests::docs_scopes_reach_the_encoded_request_and_an_old_frontend_grants_none`, the
+  transport's `every_request_kind_and_its_error_reply_match_the_golden`, and the native
+  `result_target_uses_host_and_listed_identity` fixture's docs route (parse, dispatch, encoder and ordinary UI open).
 - `ReplyBar` privately owns a reply a page offered: the daemon it came from, the row's id and listed name, the handle
   and the exact line, how the bar is laid out (covered by a dialog, cut off, or whole at a panel rectangle) and when
   a presented frame last showed it whole. It never takes `State`. At most one offer is open: a second is dropped and the status line says so. `State`

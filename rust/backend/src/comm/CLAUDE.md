@@ -106,7 +106,9 @@ Waking:
 - The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,
   1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its fit and
   exact-content checks; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an
-  existing line, even the exact offered line. Unlike a wake, it keeps no owed Enter or retry.
+  existing line, even the exact offered line. Unlike a wake, it keeps no owed Enter. A direct reply a busy row holds
+  (rows' `page_reply::release`) gets one more attempt on each tick, after the mail checks, under the same gate and
+  per-row exclusion; mail sends stay unqueued.
 - One typing per row in this daemon: `attempt.rs` holds the state folder in a process-wide set from before attach
   through client shutdown, for both callers and for Enter-only wakes too. Contention returns `not_free` with
   "another typing on this row", without attaching. Other rows remain independent, and RAII releases the entry on

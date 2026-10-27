@@ -31,8 +31,12 @@ name is in this crate's one op table.
    (held to it by a test that runs it), and refused on mismatch by the daemon's hello, the server's check of this
    integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, where `hello_refuses_protocol_3` pins the last release's integer as refused, and `rust/backend/tests/admission.rs`). serde does not
    enforce the defaulted-field rule: it is a maintenance obligation, held by review and by previous-shape tests only for
-   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen) and the lease (`ops/lease_wire_tests.rs`). The families with
-   none are agent, browse, lane, monitor, pages, pty, repl, update, workspace and the preview payloads (`ir.rs`).
+   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen), the lease
+   (`ops/lease_wire_tests.rs`) and docs opens (`ops/pages_tests.rs`). `DocsOpenReq.direct` is an additive field defaulting
+   to `ReplyScope::None`; an older frontend's payload without it grants no direct scope. Adding authority must never
+   change that default; incompatible scope vocabulary changes follow this same protocol-number rule. The families
+   with none are agent, browse, lane, monitor, pty, repl, update, workspace and the preview payloads (`ir.rs`), and the
+   other page payloads have no previous-shape fixtures.
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
    `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s
    child-output group refuses tokio's and std's strict line readers. Each user keeps its own proof (the sidecars'
@@ -107,7 +111,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 |---|---|---|
 | 1 | envelope cap | `codec_tests.rs`: `an_envelope_at_the_cap_is_written_and_read_by_both_pairs`, `oversize_envelope_is_typed_and_writes_nothing`, `an_envelope_with_no_newline_is_refused_at_the_cap` |
 | 2 | blob exact | `codec_tests.rs`: `file_chunk_blob_is_consumed_no_desync`, `a_blob_of_another_length_than_the_payload_declares_is_refused_before_any_byte_is_written`, `a_declared_blob_length_reserves_at_most_a_small_bound`, `a_truncated_frame_error_carries_no_frame_bytes` |
-| 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
+| 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; `ops/pages_tests.rs`: `docs_open_grows_by_a_defaulted_scope_and_old_payloads_grant_none`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
 | 4 | lossy lines | `child_lines_tests.rs`: `every_byte_a_child_writes_reads_as_a_line` |
 | 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
 | 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked` |
@@ -131,6 +135,12 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
   delivery. `ops/pages.rs` holds `PageReplyReq { workspace_id, handle, line }` and `PageReplyRes { outcome, detail }`
   for the new `page.reply` op. Older daemons refuse the unknown op; older windows drop `page_reply` commands, so no
   protocol integer change is needed.
+- `src/ops/pages.rs` also holds `ReplyScope`, tagged by `scope`: `none`, `row` with `workspace_id`, or `all`.
+  `DocsOpenReq { path, direct }` defaults its scope to `none`; pages canonicalizes the requested row id or slug and
+  attaches authority to one entry. HTTP `states.reply_scope` uses this same representation. The opener's field
+  survives the frontend encoder; a missing field means no authority, including with an older frontend that drops it.
+  `PageReplyReq.hold` is an additive field defaulting to false (the bar's request): with it, a busy row holds the
+  line and the outcome is `sent`, `held`, `refused` or `unknown`.
 - `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy, and the port rewrite the window's page proxy opens
 - `src/video_path.rs`: video_mime, the five ASCII-insensitive dotted suffixes, and Rust consumer fixtures matching the executed Julia matches corpus.
 - `src/version.rs`: the product version string and `is_release_build`

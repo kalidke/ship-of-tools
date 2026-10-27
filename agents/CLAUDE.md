@@ -198,6 +198,13 @@ of each.
   `PATH` wrappers (`show-result`, `sot-fe`, `sot-gh-auth`): `claude/`. The Codex launcher `ccx`: `codex/`.
 - The row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast `sot-fe/`,
   `sot-gh-auth.sh`, and the suites `tests/`.
+- `sot-fe docs <workspace> <absolute-page>` carries an explicit entry reply scope through `fe.command docs`:
+  ordinary by default, `--direct` for the named row, or `--direct-all` for all rows (the list pages). The two flags are
+  exclusive and accepted only for docs. The daemon resolves the row to its canonical id and refuses a row-scoped
+  page outside its project folder; the CLI never infers authority from a document. Navigation to another HTML
+  document is ordinary, and the page reads `states.reply_scope` before enabling scoped controls. Landing A carries
+  the scope only; replies still use the window's confirmation bar. `tests/test-sot-fe-paths.sh` records the scope in
+  the actual request; `tests/test-sot-fe-goto.sh` covers invalid flag combinations.
 - Still elsewhere, listed so a reader finds them: the shell daemon client `comm/lib/comm-lib-client.sh`
   (`sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`); the hooks' scripts, the Codex
   skills and plugin, and the two messaging skills (`sot-comm`, `sot-session-start`) in `comm/work_state/` and

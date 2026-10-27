@@ -180,20 +180,28 @@ Ends:
 
 Page replies:
 - Rows owns `page.reply`, beside `pty.input` (`ops/page_reply.rs`). It rechecks the canonical marked line, resolves
-  only the canonical workspace id and requires the row's current bound handle to equal the handle the bar named.
+  only the canonical workspace id and requires the row's current bound handle to equal the handle the bar or page named.
   Invalid text is `refused`; a missing id is `unknown_workspace`; a moved handle is `refused: handle_changed`.
   Only a capsule row running Claude is typeable (`refused: not_typeable` otherwise). A blocking phase probe must
   read Ready (`not_ready` otherwise); nothing on this path starts or resumes a row. It delegates typing to messaging's
   shared attempt, rechecking binding, agent and phase at each prompt check. The op runs off the connection loop and
   takes no preview-pool permit.
 - Outcomes are `sent` (the marked line and Enter recorded), `not_free` (nothing typed; detail names the gate's reason),
-  `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never retried or
-  owed Enter by a wake; a line left unsent is for the person to inspect. The supplied line must fit one prompt row;
+  `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never owed Enter
+  by a wake, and one without `hold` is never retried; a line left unsent is for the person to inspect. The supplied line must fit one prompt row;
   the fit counts characters, and a wide line that wraps gets no Enter. The wake's screen and read-to-input race
   limits apply. Delivery logs the handle, workspace, marked line and outcome.
 - Behavior proofs: `tests/page_channel.rs::page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it`,
   and the `page_reply` tests in `tests/comm_wake.rs` (real stub-agent input, refused panes, concurrent typings and a
   changed handle). These tests use scratch homes only.
+- A direct reply (`hold`, or a scoped page through `submit`) is typed at once at a free prompt; a row that is only
+  busy (working, its Stop hook running, a moving screen, another typing, not yet Ready) keeps it in memory, one per
+  row, keyed by the question the row declared when the page answered, and the wake's tick offers it the prompt again
+  (`release`). A draft (text in the box, or the cursor past the prompt) or a screen with no input box (a dialog) refuses it (`refused: draft`, `refused: dialog`), as
+  do a gone row, a moved handle and a changed question; a newer reply for the row supersedes a held one. Receipts by
+  request id (the newest 64) are what pages report; nothing survives a daemon restart. Proofs: `tests/comm_wake.rs::
+  a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees` and
+  `a_direct_reply_is_refused_at_a_draft_and_types_nothing`.
 
 Work-state. A row with a joined agent has one work-state, which the window shows as the color of its name:
 
