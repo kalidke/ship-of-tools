@@ -48,7 +48,10 @@ of each.
    `os_user` and `client_id` are the client's own declarations, checked for presence and for conflict (guarantee 4),
    never against the OS. The peer's process (pid and creation time) is read apart from
    the account and only a lease uses it: a peer of this account whose process the daemon cannot read (an
-   administrator's ssh session on Windows; one that has ended on Linux) is served and cannot hold a lease.
+   administrator's ssh session on Windows; one that has ended on Linux) is served and cannot hold a lease. A
+   window's link reaches the daemon as one connection per channel from the far router (`sotd stdio-bridge`, topology's
+   guarantee 15), so a remote window's control, pages and rows are each admitted here as any connection; the daemon
+   does not know they share a login.
 4. **A connection is served only after a hello the daemon accepted.** A first frame that is not a hello request that
    parses and declares no blob, or that fails `admit_hello` (the protocol integer, the declared host and OS account
    present, the host's account record), gets one reply (`unauthenticated`, `protocol_mismatch`, `identity_missing` or

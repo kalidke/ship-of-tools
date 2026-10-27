@@ -24,6 +24,9 @@
 //!    started at `local_daemon_label()` and the bridge started with no
 //!    argument reach the same socket, because that is the whole point of
 //!    dropping a caller-supplied label.
+//! 6. **A `link.hello` first makes it a window's router** (topology's guarantees 12, 14 and 15): each channel the
+//!    link opens is one more connection to the same endpoint, admitted by the daemon as any connection; the link's
+//!    end ends every one; a plain first frame is still forwarded byte for byte, and `--host` never routes.
 //!
 //! Unix-gated because the echo listener below is a `UnixListener` bound at
 //! the endpoint the daemon would own. The bridge itself is
@@ -560,4 +563,319 @@ fn lease_through_stdio_bridge_refused() {
     let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
     assert!(exited.is_none(), "the bridged lease's end shut the daemon down: {exited:?}: {}", daemon_said(&daemon_stderr));
     assert!(UnixStream::connect(&socket).is_ok(), "the daemon stopped answering after a bridged lease");
+}
+
+// --- The router: a window's link whose far end is this bridge (topology's guarantees 12, 14 and 15). ---
+
+/// A listener that echoes every connection it takes, each on a thread of its own, counting the connections and the
+/// ends it saw.
+struct EchoListener {
+    accepts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ends: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl EchoListener {
+    fn bind(socket: &Path) -> Self {
+        use std::sync::atomic::Ordering;
+        let _ = std::fs::remove_file(socket);
+        let listener = UnixListener::bind(socket).expect("bind the echo listener");
+        let accepts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ends = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (taken, ended) = (accepts.clone(), ends.clone());
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { return };
+                taken.fetch_add(1, Ordering::SeqCst);
+                let ended = ended.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    loop {
+                        match conn.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if conn.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    ended.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+        Self { accepts, ends }
+    }
+
+    fn accepts(&self) -> usize {
+        self.accepts.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn ends(&self) -> usize {
+        self.ends.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The bridge with `args`, its stdio piped, and a window's link over them; the child is killed on drop.
+fn bridge_link(rt: &tokio::runtime::Runtime, args: &[&str]) -> (tokio::process::Child, sot_topology::link::Link) {
+    let mut cmd = support::sotd_command();
+    cmd.arg("stdio-bridge").args(args).env("XDG_RUNTIME_DIR", runtime_root());
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    rt.block_on(async {
+        let mut child = tokio::process::Command::from(cmd).kill_on_drop(true).spawn().expect("spawn sotd stdio-bridge");
+        let (stdout, stdin) = (child.stdout.take().unwrap(), child.stdin.take().unwrap());
+        let link = tokio::time::timeout(BOUND, sot_topology::link::Link::over(stdout, stdin))
+            .await
+            .expect("the link's hello within the bound")
+            .expect("the bridge answers link.hello as a router");
+        (child, link)
+    })
+}
+
+/// Writes `bytes` on `channel` and reads the same count back.
+async fn channel_echo(channel: &mut sot_topology::link::Channel, bytes: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    channel.write_all(bytes).await.expect("write on the channel");
+    channel.flush().await.expect("flush the channel");
+    let mut back = vec![0u8; bytes.len()];
+    tokio::time::timeout(BOUND, channel.read_exact(&mut back)).await.expect("the echo within the bound").expect("read the echo");
+    back
+}
+
+fn wait_for(what: &str, bound: Duration, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + bound;
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}: not within {bound:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Topology 12: a `link.hello` first makes the bridge a router: its connection is channel 0, and each channel the
+/// window opens is one more connection to the same endpoint, carrying its own bytes.
+#[test]
+fn a_link_hello_makes_the_bridge_a_router() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("link-echo.sock");
+    let echo = EchoListener::bind(&socket);
+    let endpoint = format!("unix:{}", socket.display());
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (_child, mut link) = bridge_link(&rt, &["--endpoint", &endpoint]);
+    assert!(!link.build().is_empty(), "the router names its build");
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    rt.block_on(async {
+        let mut control = link.take_control().expect("channel 0");
+        assert_eq!(channel_echo(&mut control, b"channel 0\n").await, b"channel 0\n");
+        let mut row = handle.open().await.expect("a row's channel");
+        let mut page = handle.open().await.expect("a page's channel");
+        assert_eq!(channel_echo(&mut row, PAYLOAD).await, PAYLOAD, "a channel carries any byte unchanged");
+        assert_eq!(channel_echo(&mut page, b"GET / HTTP/1.1\r\n\r\n").await, b"GET / HTTP/1.1\r\n\r\n");
+    });
+    assert_eq!(echo.accepts(), 3, "channel 0 and one connection per opened channel");
+}
+
+/// Topology 14: a dropped link ends its router, which ends every connection it made, within 2 s: the window's end of
+/// input reaches the bridge, the bridge exits 0, and the endpoint sees each connection end.
+#[test]
+fn a_dropped_link_ends_its_router_and_every_daemon_connection() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("link-drop.sock");
+    let echo = EchoListener::bind(&socket);
+    let endpoint = format!("unix:{}", socket.display());
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (mut child, mut link) = bridge_link(&rt, &["--endpoint", &endpoint]);
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    let channels = rt.block_on(async {
+        let mut control = link.take_control().unwrap();
+        assert_eq!(channel_echo(&mut control, b"up").await, b"up");
+        let mut held = vec![control];
+        for _ in 0..3 {
+            let mut channel = handle.open().await.expect("open");
+            assert_eq!(channel_echo(&mut channel, b"up").await, b"up");
+            held.push(channel);
+        }
+        held
+    });
+    assert_eq!((echo.accepts(), echo.ends()), (4, 0));
+    let dropped = Instant::now();
+    drop(link);
+    let exited = rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), child.wait()).await });
+    let status = exited.expect("the bridge exits within 2 s of the link's drop").expect("wait for the bridge");
+    assert_eq!(status.code(), Some(0), "a closed window is a clean end");
+    wait_for("every connection the router made ends", Duration::from_secs(2), || echo.ends() == 4);
+    println!("link drop: the router and its 4 connections ended {:?} after the drop", dropped.elapsed());
+    drop(channels);
+}
+
+/// Topology 12: a plain first frame is forwarded byte for byte: a hello line, then more bytes, all echoed exactly.
+#[test]
+fn a_plain_first_frame_is_forwarded_byte_for_byte() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    let hello = sot_protocol::HelloReq::this_process("bridge-plain", "fe", Some("plain-host".to_string())).expect("this process's account");
+    let frame = sot_protocol::Frame::req(1, sot_protocol::op::HELLO, serde_json::to_value(&hello).unwrap());
+    let mut bytes = serde_json::to_vec(&frame).unwrap();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(PAYLOAD);
+    let socket = runtime_root().join("plain.sock");
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("bind");
+    let echo = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = conn.read(&mut buf) {
+            if n == 0 || conn.write_all(&buf[..n]).is_err() {
+                return;
+            }
+        }
+    });
+    let endpoint = format!("unix:{}", socket.display());
+    let mut child = spawn_bridge(&["--endpoint", &endpoint]);
+    let mut stdin = child.stdin.take().unwrap();
+    let rx = read_head_then_tail(child.stdout.take().unwrap(), bytes.len());
+    stdin.write_all(&bytes).unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(next(&rx, "the echoed hello and bytes"), bytes, "a plain first frame and what follows it, unchanged");
+    drop(stdin);
+    assert!(next(&rx, "stdout after").is_empty());
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    echo.join().unwrap();
+}
+
+/// Topology 12: `--host` never routes: its endpoint is a relay socket, where each connection is a login, so a
+/// `link.hello` goes through it unchanged to the far bridge, which routes.
+#[test]
+fn dash_dash_host_carries_a_link_hello_unchanged() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    runtime_root();
+    let socket = sot_topology::relay_socket_path("link-host");
+    let hello = sot_protocol::Frame::req(1, sot_protocol::op::LINK_HELLO, serde_json::json!({ "link": 1 }));
+    let mut line = serde_json::to_vec(&hello).unwrap();
+    line.push(b'\n');
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).expect("bind the relay stand-in");
+    let echo = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept");
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = conn.read(&mut buf) {
+            if n == 0 || conn.write_all(&buf[..n]).is_err() {
+                return;
+            }
+        }
+    });
+    let mut child = spawn_bridge(&["--host", "link-host"]);
+    let mut stdin = child.stdin.take().unwrap();
+    let rx = read_head_then_tail(child.stdout.take().unwrap(), line.len());
+    stdin.write_all(&line).unwrap();
+    stdin.flush().unwrap();
+    assert_eq!(next(&rx, "the link.hello, echoed by the relay"), line, "the shuttle answered link.hello itself");
+    drop(stdin);
+    let _ = next(&rx, "stdout after");
+    let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(status.code(), Some(0), "{stderr}");
+    echo.join().unwrap();
+}
+
+/// One request on a channel that carries the wire's frames, its reply read past any event.
+#[cfg(target_os = "linux")]
+async fn channel_call(
+    tx: &mut sot_topology::link::ChannelWriter,
+    rx: &mut tokio::io::BufReader<sot_topology::link::ChannelReader>,
+    id: u64,
+    op: &str,
+    payload: serde_json::Value,
+) -> sot_protocol::Frame {
+    sot_protocol::codec::write_frame(tx, &sot_protocol::Frame::req(id, op, payload), None).await.expect("write a frame");
+    loop {
+        let (frame, _) = tokio::time::timeout(BOUND, sot_protocol::codec::read_frame(rx)).await.expect("a reply within the bound").expect("read a frame");
+        if frame.id == id && frame.kind == sot_protocol::Kind::Res {
+            return frame;
+        }
+    }
+}
+
+/// Topology 15: each channel reaches the daemon as a connection of its own, admitted by its own hello: two control
+/// sessions and a handoff, all on one link, each answered as the daemon answers any connection.
+#[cfg(target_os = "linux")]
+#[test]
+fn each_channel_is_admitted_as_its_own_connection() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new("bridge-channels");
+    env.spawn_sotd();
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        support::poll_until(|| async { support::try_connect(&env.socket_path).await }, BOUND, "sotd's socket").await;
+    });
+    let endpoint = format!("unix:{}", env.socket_path.display());
+    let (_child, mut link) = bridge_link(&rt, &["--endpoint", &endpoint]);
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    rt.block_on(async {
+        let hello = |client: &str, role: &str| {
+            let req = sot_protocol::HelloReq::this_process(client, role, Some(TEST_STATE_HOST.to_string())).expect("this process's account");
+            serde_json::to_value(req).unwrap()
+        };
+        let (r0, mut w0) = link.take_control().unwrap().into_split();
+        let mut r0 = tokio::io::BufReader::new(r0);
+        let first = channel_call(&mut w0, &mut r0, 1, sot_protocol::op::HELLO, hello("link-control", "cli")).await;
+        assert!(first.payload.get("error").is_none(), "channel 0's hello: {:?}", first.payload);
+        let (r1, mut w1) = handle.open().await.expect("open").into_split();
+        let mut r1 = tokio::io::BufReader::new(r1);
+        let second = channel_call(&mut w1, &mut r1, 1, sot_protocol::op::HELLO, hello("link-second", "cli")).await;
+        assert!(second.payload.get("error").is_none(), "channel 1's hello: {:?}", second.payload);
+        // A handoff channel: its hello and lane.connect, answered by the lane's own handler.
+        let (r2, mut w2) = handle.open().await.expect("open").into_split();
+        let mut r2 = tokio::io::BufReader::new(r2);
+        let accepted = channel_call(&mut w2, &mut r2, 1, sot_protocol::op::HELLO, hello("link-lane", sot_protocol::HANDOFF_ROLE)).await;
+        assert!(accepted.payload.get("error").is_none(), "the handoff's hello: {:?}", accepted.payload);
+        let lane = channel_call(&mut w2, &mut r2, 2, sot_protocol::op::LANE_CONNECT, serde_json::json!({ "target": "no-such-row" })).await;
+        assert_eq!(lane.payload["code"], "unknown_workspace", "the lane's own answer: {:?}", lane.payload);
+        // A channel that says no hello is refused as any connection is.
+        let (r3, mut w3) = handle.open().await.expect("open").into_split();
+        let mut r3 = tokio::io::BufReader::new(r3);
+        let refused = channel_call(&mut w3, &mut r3, 1, sot_protocol::op::VERSION_QUERY, serde_json::json!({})).await;
+        assert_eq!(refused.payload["code"], "unauthenticated", "{:?}", refused.payload);
+        let version = channel_call(&mut w0, &mut r0, 2, sot_protocol::op::VERSION_QUERY, serde_json::json!({})).await;
+        let clients: Vec<&str> = version.payload["clients"].as_array().expect("clients").iter().filter_map(|c| c["client_id"].as_str()).collect();
+        assert!(clients.contains(&"link-control") && clients.contains(&"link-second"), "two control sessions on one link: {clients:?}");
+    });
+    drop(link);
+    rt.block_on(env.kill_daemon_bounded());
+}
+
+/// Topology 15: a channel's connection is `connect_own`'s, so a socket another OS account listens on at the endpoint's
+/// path is refused at the channel's open, and that listener gets no byte. The endpoint is this account's when the link
+/// starts; another account's listener is moved onto its path before the open. Linux: a zero byte count is evidence of
+/// no write there only.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_channel_to_another_accounts_daemon_is_refused() {
+    if !sot_platform::test_isolated::run_isolated("a_channel_to_another_accounts_daemon_is_refused") {
+        return;
+    }
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(foreign) = sot_platform::test_foreign::ForeignListener::start(false) else {
+        return;
+    };
+    let socket = runtime_root().join("link-foreign.sock");
+    let _echo = EchoListener::bind(&socket);
+    let endpoint = format!("unix:{}", socket.display());
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (_child, link) = bridge_link(&rt, &["--endpoint", &endpoint]);
+    let handle = sot_topology::link::LinkHandle::default();
+    handle.set_up(&link);
+    std::fs::rename(&foreign.path, &socket).expect("move the other account's socket onto the endpoint's path");
+    let opened = rt.block_on(handle.open());
+    match opened {
+        Err(sot_topology::link::OpenError::Refused { code, detail }) => {
+            assert_eq!(code, "unreachable", "{detail}");
+            assert!(detail.contains("another OS account listens on this socket"), "{detail}");
+        }
+        other => panic!("a channel to another account's socket: {other:?}"),
+    }
+    // The socket goes back where its helper looks for it.
+    std::fs::rename(&socket, &foreign.path).expect("move the socket back");
+    drop(link);
+    assert_eq!(foreign.finish(), 0, "the router sent another account's listener bytes");
 }

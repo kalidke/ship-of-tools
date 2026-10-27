@@ -80,6 +80,12 @@ impl SshRecipe {
     pub fn host(&self) -> Option<&str> {
         self.host.as_deref()
     }
+
+    /// The login, not yet started: its argv (or a test build's fixture command) and three piped stdio. The window's
+    /// link starts it (`Link::start`); the daemon starts it through containment.
+    pub fn command(&self) -> std::process::Command {
+        command(self)
+    }
 }
 
 impl std::fmt::Display for SshRecipe {

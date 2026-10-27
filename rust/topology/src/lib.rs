@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 
 pub mod endpoint;
 pub mod lane_client;
+pub mod link;
 pub mod relay_units;
 pub mod ssh_bridge;
 

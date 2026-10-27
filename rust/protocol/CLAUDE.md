@@ -61,10 +61,24 @@ name is in this crate's one op table.
    in the server, so the services that hand a connection off (pages' `proxy.connect`, rows' `lane.connect`) and the
    server take it from the wire without naming each other. Limit: it has no bound of its own (an idle pipe stays open
    until a side closes).
+9. **A link names its channel in the payload of its own ops, so no reader misroutes it.** The window's link family
+   (`ops/link.rs`; topology's `link` runs it): `link.hello {link}` -> `{link, build}` or `{error, code, link}`
+   (`link_mismatch`, `unreachable`); `link.open {ch}` -> `{ch, ok}` or `{ch, error, code}` (`unreachable`,
+   `too_many_channels`); `link.data {ch}` with a blob of at most `CHUNK` (64 KiB); `link.credit {ch, bytes}`;
+   `link.close {ch, reason}` (`eof`, `refused`, `reset`). `LINK` (1) is the link's own number, raised only when the
+   family changes; `WINDOW` (256 KiB) is the credit a channel's direction is granted at open and `MAX_CHANNELS` (128)
+   the channels a link holds, both read by both ends. Mechanism: new op names with their own payloads; the envelope and
+   every existing payload are unchanged, so guarantee 3 needs no raise. What an old reader does: the only reader that
+   can be sent a link frame without knowing the family is a `sotd stdio-bridge` built before the link, which hands
+   `link.hello` to its daemon; the daemon refuses a first frame that is not a hello (`unauthenticated`, the server's
+   guarantee 4) and closes, and the window opens no channel before `link.hello` is answered, so no channel byte reaches
+   an old reader. Limits: the family's previous-shape test is its own (`ops/link_tests.rs`); `v` on a link frame is the
+   protocol integer as on every frame, and no link reader checks it (the link number does).
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
-names and every op's payload type (`ops/`, its page lists the families); the tree and preview payloads and the binary
+names and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -75,7 +89,8 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 
 ## Calls out
 `Frame`, `read_frame`, `read_envelope`, `write_frame` and their blocking forms, `ChildLines`, `blocking_child_lines`,
-`PROTOCOL_VERSION`, `HelloReq`/`HelloRes` and every op payload, `is_release_build`, `version_line`,
+`PROTOCOL_VERSION`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
+`is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
 `video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
@@ -98,6 +113,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked` |
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
+| 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours

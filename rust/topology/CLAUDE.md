@@ -122,17 +122,55 @@ of each.
     reset, show and restart per host; the start adds the MainPID probe), so a manager that answers the first and
     stalls the rest can cost minutes (a manager that answers none fails at the first call); `apply` is a dry run unless
     `--yes`. The reported relay-socket hang is not reproduced and its cause is not established.
-12. **`sotd stdio-bridge` adds nothing to the stream.** It connects through `connect_own` to the local label's socket
-    (no argument), to the hub's relay socket for a plain host name (`--host`) or to a local endpoint a caller on this
-    box names (`--endpoint`), puts nothing of its own on stdout, copies bytes both ways unchanged until either side
-    reaches EOF, and exits 0 on a clean end and 1 on a failure. Limits: it copies until EOF, not for a bound (its
-    caller, ssh or a systemd unit, owns the lifetime); a failure usually prints one stderr line, but a host name that
-    contains a newline prints several, and the two copy directions can each print a diagnosis; the no-argument form
-    ignores `$SOT_SOCKET` and `$SOT_BACKEND_LABEL`; its integration suite is Unix-only.
+12. **`sotd stdio-bridge` adds nothing to the stream unless its first frame is `link.hello`.** It connects through
+    `connect_own` to the local label's socket (no argument), to the hub's relay socket for a plain host name (`--host`)
+    or to a local endpoint a caller on this box names (`--endpoint`), and puts nothing of its own on stdout. The forms
+    whose endpoint is local (no argument and `--endpoint`) then read the caller's first line (at most
+    `MAX_ENVELOPE_BYTES` and one byte more without a newline, or what came before the end of input, within 10 s, else
+    exit 1): a `link.hello` makes the bridge the far end of a window's link (guarantees 14 and 15), the connection
+    already made its channel 0; any other line is written to the endpoint unchanged, byte for byte, and the copy starts.
+    `--host` never routes (its endpoint is a relay socket, where a connection is a login) and copies from the first
+    byte. The copy carries bytes both ways unchanged until either side reaches EOF, and the bridge exits 0 on a clean
+    end and 1 on a failure. Limits: it copies until EOF, not for a bound (its caller, ssh or a systemd unit, owns the
+    lifetime); a failure usually prints one stderr line, but a host name that contains a newline prints several, and
+    the two copy directions can each print a diagnosis; the no-argument form ignores `$SOT_SOCKET` and
+    `$SOT_BACKEND_LABEL`; a caller of a local form that says nothing for 10 s is ended (the daemon's own bound on a
+    first frame is the same); its integration suite is Unix-only.
+13. **Flow control is per channel, so a stalled channel never stops the control channel or another channel.** The
+    link (`link/`) keeps each channel's queues and credit under one lock with the link's state (`table.rs`). Each
+    direction of each channel has a credit of `WINDOW` (256 KiB) granted at open; a sender writes a channel's data only
+    against its credit, in blobs of at most `CHUNK`; the receiver queues a channel's bytes in a queue its credit bounds
+    and returns credit, a chunk at a time, as its consumer reads. The link's one reader therefore never waits on a
+    consumer, and its one writer (`io.rs`) serves the link ops first and then the channels with data and credit in
+    turn, one chunk each. A consumer that stops reading holds at most `WINDOW` bytes of its channel at each end; its
+    producer then waits. A peer that sends beyond its credit, a blob over `CHUNK` (refused on its declared length, before
+    a byte of it is read), credit beyond the window or a frame for a channel never opened ends the link (logged once); a
+    frame for a channel already closed is dropped; the open past `MAX_CHANNELS` (channel 0 counted) is refused
+    `too_many_channels`. Limits: the bound on another channel's wait is not one chunk but the bytes already in flight
+    inside ssh and TCP, at most the sum of the open channels' credit (n x 256 KiB), so on a 1 MB/s link with two bulk
+    channels a keystroke can wait about half a second; `MAX_CHANNELS` bounds the queues at 64 MiB per link in the worst
+    case; a channel's throughput is at most `WINDOW` per round trip.
+14. **A closed window ends its link and every channel within one bound.** Dropping a `Link` ends it, kills its ssh
+    child (`kill_on_drop`) or closes its relay connection; the far router reads the end of its input, ends the link,
+    every channel and every local connection it made, and exits 0, and the daemon sees each channel's connection end
+    as it would any client's. A window killed outright leaves its ssh child with its input closed, which ends the same
+    way. Either end also ends a link that brought it no byte for `SILENCE_BOUND` (90 s); channel 0's 30 s ping keeps a
+    live link inside it. Limits: on a live network the end takes about one round trip; on a dead network it takes up
+    to 90 s at the far end (the router's silence rule) and up to ssh's `ServerAlive` 45 s at the window's; sshd's own
+    session cleanup is the far system's.
+15. **Users stay separate by their own ssh identities; the router adds no path between accounts.** The far sshd
+    authenticates the login with the user's own key; the router runs as that account; each channel's connect is
+    `connect_own`, which connects only to an endpoint this account serves (platform's guarantee); the daemon admits
+    each channel's connection by its OS peer and its hello, as any connection (the server's guarantees 3 and 4). What is
+    checked per channel: the account at the daemon's accept, and the hello. What is not: which window or which key
+    opened the channel (the hello's host and account are declarations, as today), and any process of the same account
+    on that computer may still connect to its daemon directly, as today. The router reads no channel byte.
 
 ## Owns
 hosts.toml's grammar, search rule, edits and status table; this box's own endpoint, the label, `slug` and the plain
-host-name grammar; the ssh recipe, `SSH_OPTS`, `SSH_LOGIN_BOUND`, `LinkGate` and `LinkWatch`; the lane dial
+host-name grammar; the ssh recipe, `SSH_OPTS`, `SSH_LOGIN_BOUND`, `LinkGate` and `LinkWatch`; the link runtime (`link/`: the channel
+table, the reader and writer, `Channel`, `Link`, `LinkHandle`, the router's `serve`, `connect_local` and `adopt`,
+`LINK_REPLY_BOUND`, `SILENCE_BOUND`); the lane dial
 `DaemonLaneEndpoint` and its piped child; the unit text sotd generates (the hub's relay socket, service and command
 drop-in per relayed host, the pins), the tunnel and relay unit names, and `apply_plan`'s convergence; in `sotd`:
 `TopologyStore`, `topology.set` and `topology.changed`, `sotd topology`'s verbs, `sotd status`, `sotd same-version`,
@@ -141,8 +179,9 @@ drop-in per relayed host, the pins), the tunnel and relay unit names, and `apply
 ## Calls in
 `sot_protocol::{op, Frame, Kind, HelloReq, HANDOFF_ROLE, LaneConnectReq, LaneConnectRes, codec, child_lines}` (wire);
 `sot_platform::host::{state_dir, env, inherit_none}` and `sot_platform::identity::{challenge, peer, exchange}`;
-`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_capsule::endpoint::Endpoint`; serde, tokio
-(oneshot, process, time). In `sotd`: `sot_containment::{process, Signal, Contained, ContainedStd, guard_pid}` and the
+`sot_platform::transport::{Client, TransportError, connect_own, socket_unix, pipe_win}`, `sot_capsule::endpoint::Endpoint`;
+`sot_protocol::ops::link` (the link's payloads and constants); serde, tokio (oneshot, process, time, io), interprocess
+(the link's local streams), tracing (the link's end). In `sotd`: `sot_containment::{process, Signal, Contained, ContainedStd, guard_pid}` and the
 server's roster and rows for `topology.set`.
 
 ## Calls out
@@ -179,7 +218,10 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 9 | endpoints derived once | `tests.rs`: `plan_lines_are_stable`, `relay_socket_path_is_a_sibling_of_the_relay_socket`, `only_the_complete_generated_path_is_a_hub_relay`, `a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not`; `endpoint_tests.rs`: `session_socket_path_honours_xdg_runtime_dir` (the launcher's label has no behavior test here); `rust/backend/tests/stdio_bridge.rs`: `stdio_bridge_refuses_a_host_outside_the_grammar` |
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
 | 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |
-| 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there) |
+| 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there; the first-line rule: `a_link_hello_makes_the_bridge_a_router`, `a_plain_first_frame_is_forwarded_byte_for_byte`, `dash_dash_host_carries_a_link_hello_unchanged`) |
+| 13 | per-channel flow control | `link/tests.rs`: `a_stalled_channel_never_delays_another_channel`, `data_beyond_its_credit_ends_the_link`, `a_blob_over_the_chunk_ends_the_link`, `a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_link`, `the_open_past_the_cap_is_refused` |
+| 14 | a closed window ends its link | `rust/backend/tests/stdio_bridge.rs`: `a_dropped_link_ends_its_router_and_every_daemon_connection`; `link/tests.rs`: `a_silent_link_ends_at_its_bound` (both ends, the bound injected) |
+| 15 | no path between accounts | `rust/backend/tests/stdio_bridge.rs`: `each_channel_is_admitted_as_its_own_connection`, `a_channel_to_another_accounts_daemon_is_refused` (Linux, root: skipped where `sudo -n` fails, run by the hosted Linux job) |
 
 Windows- and macOS-specific arms run on the hosted runner of their OS (`endpoint_windows_tests.rs`, the Windows arms of
 `dial_tests.rs`).

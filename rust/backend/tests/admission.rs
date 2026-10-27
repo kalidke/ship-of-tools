@@ -189,6 +189,22 @@ async fn every_connection_kind_needs_an_accepted_hello() {
     env.kill_daemon_bounded().await;
 }
 
+/// Wire 9, the old reader: a bridge from before the link hands a window's `link.hello` to its daemon, which answers it
+/// as any first frame that is not a hello: one `unauthenticated` reply, then the end. The window reads that reply as
+/// a backend that predates the link.
+#[tokio::test]
+async fn a_link_hello_sent_to_a_daemon_is_refused_unauthenticated() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("admit-link-hello");
+    env.spawn_sotd();
+    let mut conn = open(&env).await;
+    write_together(&mut conn, &[Frame::req(1, op::LINK_HELLO, json!({ "link": 1 }))]).await;
+    let seen = until_closed(&mut conn, "a link.hello first").await;
+    assert_eq!(seen.len(), 1, "exactly one reply: {seen:?}");
+    assert_eq!((seen[0].op.as_str(), code(&seen[0].payload)), (op::LINK_HELLO, Some("unauthenticated")), "{:?}", seen[0]);
+    env.kill_daemon_bounded().await;
+}
+
 /// ADR 0049 `## User isolation`: "Two OS users on one hub account get a loud refusal". The second account to say
 /// hello for a host is refused with `os_user_conflict` and the end; the host is then refused for either account, as
 /// control and as handoff, until the daemon restarts; another host is served; the first account's open connection
