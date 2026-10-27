@@ -29,8 +29,8 @@
 #       carrying identifiers back to be rewritten. A Stop send-back can only
 #       APPEND a continuation, so the rewrite landed as a second, different
 #       block under the first — the owner saw two waiting reports in a row.
-#       Any nudge on a turn that already has its block is a duplicate by
-#       construction; the language rules live in the sitrep skill only.
+#       The language rules live in the sitrep skill only. A question marker
+#       missing its answer choices gets one shape nudge before stamping.
 #
 #       ARTIFACT AUDIT EXCEPTION (decided 2026-09-14): a session announced a
 #       design brief in a file but never showed it. A marker still stamps the
@@ -425,6 +425,42 @@ if [ -n "$lock_warn" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ] 
     fi
 fi
 
+question_form='SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>'
+if [ "$marker_state" = blocked ] && printf '%s' "$input" | jq -e '.stop_hook_active != true' >/dev/null 2>&1; then
+    # Rows' question grammar: remove the first Page value, split at the first
+    # Options:, and count letter marks before the first valid recommendation.
+    # Only a successful check can refuse; a continuation always stamps below.
+    question_shape="$(printf '%s\n' "$marker_summary" | awk '
+        {
+            text = $0
+            if (match(text, /Page:[[:space:]]+[^[:space:]]+/))
+                text = substr(text, 1, RSTART - 1) substr(text, RSTART + RLENGTH)
+            at = index(text, "Options:")
+            if (!at) { print "incomplete"; next }
+            options = substr(text, at + 8); search = options; offset = 0; recommend = 0
+            while ((at = index(search, "Recommend")) != 0) {
+                rest = substr(search, at + 9)
+                sub(/^ed/, "", rest)
+                sub(/^[[:space:]]*/, "", rest); sub(/^:/, "", rest)
+                sub(/^[[:space:]]*/, "", rest); sub(/^\(/, "", rest)
+                if (rest ~ /^[A-Za-z]/) {
+                    options = substr(options, 1, offset + at - 1); recommend = 1; break
+                }
+                offset += at + 8; search = substr(search, at + 9)
+            }
+            if (!recommend || gsub(/\([A-Za-z]\)/, "", options) < 2) print "incomplete"
+        }' 2>/dev/null)" || question_shape=""
+    if [ "$question_shape" = incomplete ]; then
+        if question_block="$(jq -nc --arg f "$question_form" '{
+          decision: "block",
+          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Irreversible:, Pane only: and Page: are optional; Options: and Recommend are required. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
+        }' 2>/dev/null)" && [ -n "$question_block" ]; then
+            emit_block "$question_block"
+            exit 0
+        fi
+    fi
+fi
+
 if [ -n "$marker_state" ]; then
     # Explicit: the marker IS the model's report. `waiting` sets the fact;
     # every other marker clears it (comm-status.sh's declaration reduction).
@@ -509,7 +545,7 @@ case "$parked" in
     blocked|done)
         if [ "$origin" = user ]; then
             case "$parked" in
-                blocked) owed='SITREP-QUESTION: <the exact question, one sentence>  then the context needed to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible' ;;
+                blocked) owed="$question_form  (all on one line; Irreversible:, Pane only: and Page: are optional; Options: and Recommend are required), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
             emit_block "$(jq -nc --arg s "$parked" --arg o "$owed" '{
