@@ -117,9 +117,14 @@ pub(super) fn work(sotd: &Path, endpoint: &str) -> Work {
 
 /// What the daemon processes of the install at `prefix` run for a person, from their own process tree: `Some` with one
 /// entry per direct child that is a REPL (`repl`) or the Pluto server (`pluto`), `None` when no daemon process of the
-/// install is found, so nothing can be ruled out. The daemon is its program path, the sidecars its children by parent id.
+/// install is found or the listing gave no answer, so nothing can be ruled out. The daemon is its program path, the
+/// sidecars its children by parent id.
 pub(super) fn children(prefix: &Path) -> Option<Vec<&'static str>> {
-    let all = procs::snapshot();
+    children_in(procs::snapshot(), prefix)
+}
+
+pub(super) fn children_in(listing: Result<Vec<procs::Proc>, String>, prefix: &Path) -> Option<Vec<&'static str>> {
+    let all = listing.ok()?;
     let daemon = procs::daemon_pids(&all, prefix);
     if daemon.is_empty() {
         return None;

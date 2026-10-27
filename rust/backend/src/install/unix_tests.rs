@@ -301,3 +301,17 @@ fn version_cleanup_keeps_unavailable_registrations_and_refused_worktrees() {
     let registrations = git(&["-C", &b, "worktree", "list", "--porcelain"]);
     assert!(registrations.contains(&format!("worktree {}\n", unavailable.display())), "{registrations}");
 }
+
+/// A listing that gave no answer stops decide before any write (decide writes nothing; its stop is FAIL, exit 1,
+/// naming why), and in the final check it is FAIL with its reason, never "none runs".
+#[test]
+fn a_listing_with_no_answer_stops_decide_and_fails_the_check() {
+    let why = "`ps` gave no answer: ps did not finish within 60000 ms";
+    let stop = listed_before(Err(why.into())).unwrap_err();
+    let (line, code) = verdict::stop_line(&stop, "");
+    assert!(code == 1 && line.contains(why) && line.contains("nothing was changed"), "exit {code}: {line}");
+    let mut found = Found::default();
+    assert!(procs::checked(Err(why.into()), &mut found, "daemon", "what runs under the install").is_none());
+    let (line, code) = verdict::line(&found, "");
+    assert!(code == 1 && line.starts_with("FAIL: daemon: could not list this account's processes") && line.contains(why), "exit {code}: {line}");
+}

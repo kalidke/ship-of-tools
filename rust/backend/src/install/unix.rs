@@ -292,7 +292,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     step("daemon");
     let socket = sotd_at(&new_sotd, &["session-socket-path", "sot"]).first_line();
     let endpoint = format!("unix:{socket}");
-    let all = procs::snapshot();
+    let all = listed_before(procs::snapshot())?;
     let unit_active = !macos && cmd::on_path("systemctl") && systemctl(&["is-active", "sotd.service"]).ok();
     let unit_runs = resolved.daemon && !no_service && unit_active;
     // A role with no daemon here stops this host's run of the unit (the retire), so its daemon is asked too.
@@ -1190,6 +1190,11 @@ fn check(plan: &Plan, restarted: bool, found: &mut Found) {
     }
 }
 
+/// The listing the decisions read before any write; one that gave no answer stops the run, nothing changed.
+fn listed_before(listing: Result<Vec<procs::Proc>, String>) -> Result<Vec<procs::Proc>, Stop> {
+    listing.map_err(|why| Stop::new(1, format!("could not list this account's processes ({why}), so whether the install's daemon or window runs is unknown; nothing was changed")))
+}
+
 /// The daemon after the run. A unit this run restarted or started must answer as the target within the bound; one it
 /// left alone may be held by a window on its old version; any other state of an active unit is a failure. A daemon with
 /// no unit is read once: a person starts it again.
@@ -1201,7 +1206,10 @@ fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
     let socket = &plan.socket;
     let journal = "see journalctl --user -u sotd.service";
     if !plan.unit_managed() {
-        let runs = !procs::daemon_pids(&procs::snapshot(), &plan.prefix).is_empty();
+        let runs = match procs::checked(procs::snapshot(), found, "daemon", "what runs under the install") {
+            Some(all) => !procs::daemon_pids(&all, &plan.prefix).is_empty(),
+            None => return State::Unknown,
+        };
         let (st, why) = daemon::state(&plan.sotd(), &endpoint, runs);
         if st == State::Unknown {
             found.fail("daemon", format!("a daemon runs on {socket} and could not be told its version ({why})"));

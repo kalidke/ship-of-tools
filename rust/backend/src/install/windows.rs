@@ -241,7 +241,27 @@ fn update_or_repair(ctx: &mut Ctx, new_sotd: &Path, installed: &str, dir: &str) 
 /// The daemon's state: its pipe asked; a daemon whose pipe exists or whose program runs and cannot be told is
 /// `Unknown`. A window that holds it counts as another version: the converge or the start replaces it.
 fn daemon_state(ctx: &Ctx, sotd: &Path) -> (State, String) {
-    let runs = pipe_listed(&ctx.pipe) || !procs::daemon_pids(&procs::snapshot(), &ctx.prefix).is_empty();
+    daemon_state_as(ctx, sotd, daemon_runs(ctx).0)
+}
+
+/// Whether a daemon of the install may run: its pipe is listed, or its program runs. A listing that gave no answer
+/// presumes one does, so it is asked about and never read as "none runs"; its reason comes with it.
+fn daemon_runs(ctx: &Ctx) -> (bool, Option<String>) {
+    if pipe_listed(&ctx.pipe) {
+        return (true, None);
+    }
+    runs_in(procs::snapshot(), &ctx.prefix)
+}
+
+/// [`daemon_runs`] from a listing.
+fn runs_in(listing: Result<Vec<procs::Proc>, String>, prefix: &Path) -> (bool, Option<String>) {
+    match listing {
+        Ok(all) => (!procs::daemon_pids(&all, prefix).is_empty(), None),
+        Err(why) => (true, Some(why)),
+    }
+}
+
+fn daemon_state_as(ctx: &Ctx, sotd: &Path, runs: bool) -> (State, String) {
     if ctx.pipe.is_empty() {
         return (if runs { State::Unknown } else { State::None }, "no pipe name".into());
     }
@@ -300,7 +320,10 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         return Err(Stop::new(1, detail));
     }
     verdict::set_tail(armed_tail(ctx));
-    let all = procs::snapshot();
+    let all = match armed_listing(procs::snapshot(), &ctx.pack.tag()) {
+        Ok(all) => all,
+        Err(step) => return Ok(Some(step)),
+    };
     let sup = supervisor(&ctx.log_dir, &all);
     let window_only = sup.is_none() && procs::window_runs(&all, &ctx.prefix);
     let work = if live.is_empty() { String::new() } else { format!("; {live}") };
@@ -339,6 +362,12 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     }
     verdict::set_tail(if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() });
     Ok(None)
+}
+
+/// The listing an update reads after its stage: one that gave no answer stops nothing, and the update stays armed for
+/// the next start, the step naming why.
+fn armed_listing(listing: Result<Vec<procs::Proc>, String>, tag: &str) -> Result<Vec<procs::Proc>, String> {
+    listing.map_err(|why| format!("start Ship of Tools at the desk or quit it and start it again; the start applies {tag} (this run could not list this account's processes ({why}), so it could not tell whether a window or supervisor runs, and stopped nothing)"))
 }
 
 /// The resident supervisor: its pid (`launcher.pid` names a live `launch-sot.ps1`) and the launcher code id its last
@@ -516,9 +545,8 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     let (v, short) = (&ctx.pack.version, ctx.pack.short());
     for b in ["sotd", "sot"] {
         let exe = ctx.prefix.join("bin").join(format!("{b}.exe"));
-        let line = cmd::output(Command::new(&exe).arg("--version")).first_line();
-        if !super::pack::binary_says(&line, b, v, &ctx.pack.commit) {
-            found.fail("binaries", format!("bin\\{b}.exe reports '{line}', not {v} at {short}"));
+        if let Err(why) = super::pack::version_says(cmd::output_within(Command::new(&exe).arg("--version"), super::pack::VERSION_BOUND), b, v, &ctx.pack.commit) {
+            found.fail("binaries", format!("bin\\{b}.exe {why}, not {v} at {short}"));
         }
     }
     let text = record::read(&ctx.record_path());
@@ -548,7 +576,8 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     } else {
         found.step("install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again");
     }
-    if let Some((_, code)) = supervisor(&ctx.log_dir, &procs::snapshot()) {
+    let listed = procs::checked(procs::snapshot(), found, "launcher", "whether the window's supervisor runs an older launcher");
+    if let Some((_, code)) = listed.and_then(|all| supervisor(&ctx.log_dir, &all)) {
         let want = launcher_code_id(&ctx.version_dir.join("scripts"));
         if !want.is_empty() && code != want {
             found.step("quit Ship of Tools, choose Keep, and start it from the shortcut; the window runs an older launcher");
@@ -556,16 +585,17 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
     }
     let sotd = ctx.sotd();
     // After a converge the waiter is the only ask, so the check keeps its bound; else one ask says what runs.
+    // A listing that gave no answer presumes a daemon runs, and the check FAILs naming why: what runs is not known.
+    let runs = pipe_listed(&ctx.pipe) || procs::checked(procs::snapshot(), found, "daemon", "what runs under the install").is_none_or(|all| !procs::daemon_pids(&all, &ctx.prefix).is_empty());
     let (st, why) = if ctx.expect_daemon && !ctx.pipe.is_empty() {
         let bound = super::secs_env("SOT_INSTALL_DAEMON_WAIT_S", 60);
-        let runs = pipe_listed(&ctx.pipe) || !procs::daemon_pids(&procs::snapshot(), &ctx.prefix).is_empty();
         let (st, why) = daemon::wait_current(&sotd, &ctx.endpoint(), bound, false, runs);
         if st != State::Current {
             found.fail("daemon", format!("the daemon on {} did not answer as {v} within {} s after the converge (it is '{}')", ctx.pipe, bound.as_secs(), st.word()));
         }
         (st, why)
     } else {
-        daemon_state(ctx, &sotd)
+        daemon_state_as(ctx, &sotd, runs)
     };
     match st {
         State::Unknown => found.fail("daemon", format!("a daemon runs on {} and could not be told its version ({why})", ctx.pipe)),
@@ -573,3 +603,7 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

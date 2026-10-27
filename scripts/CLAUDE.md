@@ -174,8 +174,19 @@ Guarantees, each with the mechanism it rests on. Install:
   `http.lowSpeedLimit=1000` and `http.lowSpeedTime=60`, ssh with the tree's `SSH_OPTS` under a 30 s bound; a converge
   waits at most `SOT_INSTALL_CONVERGE_WAIT_S` (1800 s), a restarted daemon `SOT_INSTALL_RESTART_WAIT_S` (Unix, 30 s) or
   `SOT_INSTALL_DAEMON_WAIT_S` (Windows, 60 s). Publish enrollment's child commands have the stronger wall-clock and
-  output-completion bound below. Until the observation pass, the installer's own process listings (`procs.rs`) and
-  installed binaries' `--version` asks remain unbounded. Whole-install completion on Windows in an isolated profile
+  output-completion bound below. The installer's own process listing (`procs::snapshot`: `ps` on Unix, CIM's
+  `Win32_Process` on Windows) runs through the same bounded runner at 60 s, and so do the Windows end-state check's
+  `--version` asks of the installed binaries. A listing that was cut, did not start, was ended by a signal, exited
+  nonzero, printed no process, or printed what its program never prints is never an empty list: `ps` must give a
+  `pid ppid name args` row on every nonblank line, and CIM one object or an array of objects, each with an integer
+  `ProcessId` and `ParentProcessId` and a `Name`, `ExecutablePath` and `CommandLine` each a string or null, so `null`,
+  `{}`, `[null]`, a string or an object missing a pid is unreadable. Whether a daemon of the install runs is then
+  presumed yes, so it is asked about (a daemon's children it cannot list rule nothing out); Unix decide stops before any write
+  (FAIL, exit 1, naming why); a Windows update after its stage stops nothing and stays armed (ONE STEP LEFT naming
+  why); and the final checks are FAIL with the reason. A `--version` that was cut or gave no answer is FAIL with its
+  reason. Every other observation keeps its own wait. The tests read each listing shape through the real runner on
+  every system, and each caller's meaning through its own function; tests that drive decide, the update and the
+  checks with a cut listing wait for 0.7.1's fake-machine seam. Whole-install completion on Windows in an isolated profile
   remains unproven until the release-gate witness completes.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
@@ -441,8 +452,8 @@ if the Python trampoline never joined the job, its own spawn handle permits term
 Snapshot PIDs are never used for termination. `capture` owns the file and process lifetime directly; there is no
 separate `capture_to_file` helper.
 
-Hosted Windows measured a cold CIM process query at about 26 s; the install's process observation remains unbounded
-until the observation pass, a 0.7.0 tag blocker.
+Hosted Windows measured a cold CIM process query at about 26 s; the install's process listing is bounded at 60 s
+(Installers, "Bounded waits").
 
 The three publish suites are listed in `rc-gate.sh` and `under-bash.sh`, and run as real local pushes in rust.yml's
 three-system `publish-guard` job. No passing evidence is implied by this contract; the landing records the actual runs.
