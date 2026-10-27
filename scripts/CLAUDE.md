@@ -189,8 +189,9 @@ Guarantees, each with the mechanism it rests on. Install:
   `topology status` and `plan`, `systemctl --user is-active` and `cat`, `sot_boot_wired` and `sot_boot_off_line`,
   `ldd --version`, `stat -f`, Julia's version, gate and channel probes, the Git reads (`rev-parse`, `rev-list`,
   `merge-base`, `status`, `ls-files`, `cat-file`, `tag -l`, the publish guard's), and on Windows the logon session, the
-  launcher code id and the Desktop shortcut's target. `systemctl --user` is asked only where the run uses the unit (a
-  role that wires it, or a retire of an existing unit file), so a `--no-service` run never reads the user manager.
+  launcher code id and the Desktop shortcut's target. `systemctl --user` is asked wherever a `sotd.service` unit file
+  is in the user's unit folder, whatever the options (the ownership gate and the retire read it); a run that finds none
+  (a fresh box, a container, macOS) never reads the user manager.
   What each unknown means:
   - Before any write (the direction, role, gate and daemon steps) every unknown stops the run with its reason: exit 1,
     exit 2 where a gate or the never-backwards rule refuses, nothing written under the prefix, `~/.local/bin`, the unit

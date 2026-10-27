@@ -99,8 +99,17 @@ impl Computer {
         (tree(&self.prefix()), tree(&self.root().join("home")))
     }
 
+    /// A `sotd.service` unit file of this install in the user's unit folder.
+    fn unit_file(&self) -> &Self {
+        let units = self.root().join("home/.config/systemd/user");
+        std::fs::create_dir_all(&units).unwrap();
+        std::fs::write(units.join("sotd.service"), format!("[Service]\nExecStart={}/bin/sotd --label sot\n", self.prefix().display())).unwrap();
+        self
+    }
+
     /// An active `sotd.service` of this install.
     fn unit_runs(&self) -> &Self {
+        self.unit_file();
         self.fake.answer("is-active sotd.service", says(0, "active\n"));
         self.fake.answer("--user cat sotd.service", says(0, &format!("[Service]\nExecStart={}/bin/sotd --label sot\n", self.prefix().display())));
         self
@@ -153,6 +162,13 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         let mut found = Found::default();
         let plan = c.decide(&["--local"], &mut found).expect("a healthy computer decides");
         assert!(found.steps.is_empty() && found.checked.is_empty() && !plan.others, "{found:?}");
+        assert!(!c.fake.asked().iter().any(|l| l.contains("is-active")), "no unit file: the user manager is never asked: {:?}", c.fake.asked());
+    }
+    for flags in [&["--local", "--no-service"][..], &["--be-only", "--no-service"][..]] {
+        let c = Computer::new();
+        c.fake.answer("is-active sotd.service", Canned::Stall);
+        c.decide(flags, &mut Found::default()).unwrap_or_else(|stop| panic!("{flags:?}: {stop:?}"));
+        assert!(!c.fake.asked().iter().any(|l| l.contains("is-active")), "{flags:?}: no unit file, never asked: {:?}", c.fake.asked());
     }
     type Setup = fn(&Computer);
     let none: Setup = |_| {};
@@ -162,7 +178,8 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         ("pack sot", none, "/sot --version", &["--local"], Then::Stop("role", 1), false),
         ("topology status", none, "topology status", &["--local"], Then::Stop("role", 1), false),
         ("ldd", none, "ldd --version", &["--local"], Then::Stop("role", 1), true),
-        ("is-active", none, "is-active sotd.service", &["--local"], Then::Stop("gate", 1), true),
+        ("is-active", |c| { c.unit_file(); }, "is-active sotd.service", &["--local"], Then::Stop("gate", 1), true),
+        ("is-active, --no-service", |c| { c.unit_file(); }, "is-active sotd.service", &["--local", "--no-service"], Then::Stop("gate", 1), true),
         ("systemctl cat", |c| { c.unit_runs(); }, "--user cat sotd.service", &["--local"], Then::Stop("gate", 2), true),
         ("socket path", none, "session-socket-path", &["--local"], Then::Stop("daemon", 1), false),
         ("ps", none, "ps -u", &["--local"], Then::Stop("daemon", 1), false),

@@ -375,12 +375,12 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
 
     step("gate");
     let prefix_s = prefix.to_string_lossy().into_owned();
-    // `sotd.service` is asked about only where this run uses it: a role that wires the unit, or one with no daemon here
-    // whose retire stops it. A --no-service run, or a retire with no unit file, never reads the user manager.
+    // `sotd.service` is asked about wherever its unit file is in the user's unit folder, whatever the options: a run
+    // never replaces another install's unit or works under one it does not own, and the retire stops it. A run that
+    // finds no unit file (a fresh box, a container, macOS) never reads the user manager.
     let wires_unit = !macos && resolved.daemon && !no_service;
     let unit_file = home.join(".config/systemd/user/sotd.service").is_file();
-    let uses_unit = !macos && observe::on_path(m, "systemctl") && if resolved.daemon { !no_service } else { unit_file };
-    let unit_active = uses_unit && unit_active(m, "systemctl").or(unit_unknown)?;
+    let unit_active = !macos && unit_file && observe::on_path(m, "systemctl") && unit_active(m, "systemctl").or(unit_unknown)?;
     let running = if unit_active { Some(running_unit_program(m)?) } else { None };
     match role::ownership(running.as_deref(), &home, &prefix_s, macos, resolved.frontend, wires_unit, opts.force_role_change) {
         Gate::Allow => {}
