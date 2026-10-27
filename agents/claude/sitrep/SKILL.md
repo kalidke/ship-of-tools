@@ -95,14 +95,21 @@ introduces a number that the page's tables do not hold.
 
 The closing block of a turn opens with a marker line. The Stop hook reads
 it, stamps the session's work-state from it, and takes the rest of the line
-as the nav-row summary, so the chat and the row come from one sentence and
+as the nav-row summary, so the chat and the row come from one line and
 cannot disagree. No separate status call is needed at turn end.
 
 | Marker | State | The line, then the block |
 |---|---|---|
 | `SITREP: <headline>` | done (blue) | one-line headline, then the chain above |
-| `SITREP-QUESTION: <the question>` | blocked (red) | the exact question in one sentence, then the context to answer it cold: what was being done, the options and what follows from each, the default if unanswered, what is irreversible |
-| `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, the marker is `SITREP-QUESTION:` with the jobs listed after the question) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
+| `SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>` | blocked (red) | the whole convention on one line, then the context to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible |
+| `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, use the full question marker above with the jobs listed below it) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
+
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required on the question marker
+line. `Irreversible:`, `Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot
+be undone; the card asks the user to acknowledge what happens. Use `Pane only:` for a tag or General registration;
+those still need the user's words typed in the pane, and the card offers only Go to and the page. `Page:` is the
+marker's permitted path; keep the prose below it in plain words. The Stop hook nudges an incomplete question once,
+without stamping it; a stop-hook continuation is allowed to stamp its marker.
 
 The marker starts a line (bold-wrapping it is fine). The block is the last
 thing in the reply. A turn that ends parked (blocked / done) from a
@@ -113,7 +120,7 @@ a plain answer needs no marker and floors as before. Red shows once the turn
 actually ends, not while it's still running; a wait declared earlier returns
 purple on its own once an answered question's turn closes — you don't
 re-declare it. The language rules are
-yours to keep: the hook never sends a block back (a send-back can only append
+yours to keep: the hook never sends a block back for its language (a send-back can only append
 a second block under the first, which is what a reader then sees). The question and waiting
 blocks follow the same language rules as the sitrep: plain words, no
 identifiers, about 80–150 words. Mid-turn stamps (marking `waiting` the

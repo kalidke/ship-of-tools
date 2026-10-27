@@ -18,7 +18,7 @@ do not retry or join.
 ~/.sot-comm/bin/comm-poll.sh                           # read your unread mail (a busy inbox exits 75: run it again)
 ~/.sot-comm/bin/comm-list.sh                           # registered sessions
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
-~/.sot-comm/bin/comm-status.sh blocked "need Y"        # red
+~/.sot-comm/bin/comm-status.sh blocked "<question> Options: (a) ...; (b) .... Recommend (a)."  # red
 ~/.sot-comm/bin/sot-fe notify "message"                # toast on the window in use
 ~/.sot-comm/bin/sot-fe preview <workspace> <path>      # badge/show result in FE
 ```
@@ -58,15 +58,25 @@ Hooks handle turn start/end and permission prompts. Self-report what hooks canno
 see:
 
 ```bash
-~/.sot-comm/bin/comm-status.sh blocked "question for the user"
+~/.sot-comm/bin/comm-status.sh blocked "<question> Options: (a) ...; (b) .... Recommend (a)."
 ~/.sot-comm/bin/comm-status.sh waiting "background job/subagent still running"
 ~/.sot-comm/bin/comm-status.sh working "resuming"
 ```
 
 Clear waiting when the job lands. A stale purple row lies to the user.
 
-A blocked question can carry its answers and its page:
-`<question> Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>`. A decision page named in `Page:` must
+A blocked question carries its answers and recommendation on the same line, in the status summary and, when using
+a closing marker, after `SITREP-QUESTION:`:
+
+```text
+SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+```
+
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
+`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone (the card
+requires acknowledgment); `Pane only:` for a tag or General registration (approval must be typed in the pane, and
+the card offers only Go to and the page). Put the context needed to answer cold below the marker line.
+A decision page named in `Page:` must
 use relative asset and navigation paths (`assets/app.js`, not `/assets/app.js`); decision grants do not support
 root-relative paths.
 

@@ -61,21 +61,31 @@ turn the user asked for, unread"; a machine-started turn floors to gray
 Self-report the two cases hooks can't see:
 
 ```bash
-comm-status.sh blocked "the question you're asking"   # plain-text question, no AskUserQuestion tool
+comm-status.sh blocked "<question> Options: (a) ...; (b) .... Recommend (a)."  # plain-text question
 comm-status.sh waiting "what you're waiting on"        # turn ended with a background job/subagent still running
 ```
 
 **Closing markers.** A turn that CLOSES an effort, or ends parked, ends with
 the closing block from the `sitrep` skill: a line opening `SITREP: <headline>`
-(done), `SITREP-QUESTION: <the question>` (blocked) or `SITREP-WAITING: <what
-for>` (waiting), then the chain in plain words. The Stop hook stamps the row
+(done), `SITREP-WAITING: <what for>` (waiting), or this whole line (blocked):
+
+```text
+SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+```
+
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
+`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone (the card
+requires acknowledgment); `Pane only:` for a tag or General registration (approval must be typed in the pane, and
+the card offers only Go to and the page). Put the context needed to answer cold below the line, in plain words.
+The Stop hook stamps the row
 from that line, so no status call is needed at turn end. A step in a live
 back-and-forth owes no block — answer and end. Nudges, each once per turn: a
 human turn ending parked without a marker; a long human turn (many tool calls
 or minutes of wall time) ending green without one — "close with the block if
 this closed an effort, end normally if it was a step". A turn that already
-carries its block is never nudged, whatever the block says — a send-back can
-only append, and the owner would read two reports.
+carries its block is never nudged for its language — a send-back can only append, and the owner would read two
+reports. An incomplete question marker gets one shape nudge before stamping; a stop-hook continuation passes
+and stamps its marker. Unread mail is checked first.
 
 **The row is a set of facts (floor/question/waiting/done), reduced to one
 colour: a running turn (green) or an open question with no turn running

@@ -9,7 +9,7 @@ work-state); this page is how a session meets it.
 
 When a turn both needs the user (a go-ahead, a pasted file, a decision) and has
 jobs running, the row is `blocked` and the closing marker is `SITREP-QUESTION:`
-with the question first and the running jobs listed after it. `waiting` is only
+with the full question convention below on its marker line and the running jobs listed below it. `waiting` is only
 for a turn where nothing needs the user; a purple row that is really waiting on
 the owner is a question they never see (decided 2026-09-19).
 
@@ -58,11 +58,16 @@ has one; when it has none the stamp is refused: rc 2, stderr
 `comm-status.sh: <verb> needs its text -- stamp discarded`, nothing written.
 A script that stamped a bare `blocked` or `waiting` now shows that error.
 
-For a question with answer choices and a full-context page, declare the parts on the same line:
+For a blocked question, declare the parts on the same line:
 
 ```text
-blocked "<question> Options: (a) ...; (b) .... Recommend (a). Page: <absolute path of a page under your folder>"
+blocked "<question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"
 ```
+
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
+`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone; the card
+requires acknowledgment of what happens. Use `Pane only:` for a tag or General registration: approval must be typed
+in the pane, and the card offers only Go to and the page.
 
 The page channel reads the question, answer keys and texts, recommendation and page separately. Without options a
 queue can show a reply box; without a page it has no context button. `Page:` takes one non-space path, with a trailing
@@ -136,8 +141,18 @@ waiting) and carries the report that state demands (the `sitrep` skill
 holds the three shapes). The `Stop` hook stamps that state **explicitly** —
 the matching declaration sets the fact — with the rest of the marker line
 as the row summary (the next non-empty line when the marker stands alone).
-A marker is followed by `stop` as normal, so the fact it just set survives:
-no nudge, no auditor.
+A complete marker is followed by `stop` as normal, so the fact it just set survives, subject to the artifact audit.
+The blocked marker carries this whole convention on one line, then the context needed to answer cold below it:
+
+```text
+SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+```
+
+Unread mail is checked first. A question marker missing `Options:` with at least two `(letter)` choices before a
+`Recommend` with a letter is refused once, before stamping or flooring, preserving any earlier blocked declaration.
+The check reads the same grammar as rows: remove `Page:` and its value first, split at the first `Options:`, then
+end options at the first valid `Recommend[ed][:] [(]letter[)]`. An error while checking passes the stop. A stop-hook
+continuation is never refused for the shape and stamps from its marker as usual.
 
 Without a marker, a **human** turn that ends `blocked` / `done` gets one
 Stop nudge naming the shape it owes; the continuation's marker then stamps
@@ -157,10 +172,10 @@ nudge: close with `SITREP:` if the turn closed an effort, end normally if it
 was a step in a live back-and-forth (no formal block during an exchange).
 Short turns never trip it, whatever they did.
 
-**No nudge on a turn that has its block.** A plain-language lint that sent a
+**No language nudge on a turn that has its block.** A plain-language lint that sent a
 block carrying identifiers back to be rewritten lasted one afternoon: a Stop
 send-back can only append a continuation, so the rewrite landed as a second,
-different report under the first. The marker stamps whatever the block says;
+different report under the first. A complete marker stamps whatever the block says;
 the language rules are the skill's, not the hook's. The marker line tolerates
 a heading prefix and bold that closes before or after the colon.
 
@@ -204,6 +219,5 @@ daemon's read and its write stays red for one more 5-second tick).
 Two more limits are known. An AskUserQuestion payload with no question text
 still leaves the answer marker before the stamp is refused (real payloads
 always carry the text; only a matching AskUserQuestion answer consumes the
-marker, so it otherwise stays). A refused
-marker stamp gives the model no feedback: the row simply stays green until the
-session's next turn stamps it.
+marker, so it otherwise stays). A textless marker stamp in a stop-hook continuation still gives the model no
+feedback: the row simply stays green until the session's next turn stamps it.
