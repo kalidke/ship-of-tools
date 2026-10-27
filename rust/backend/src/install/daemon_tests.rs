@@ -313,6 +313,10 @@ fn a_wait_for_the_daemon_keeps_its_bound() {
 #[test]
 fn children_from_a_listing_with_no_answer_rule_nothing_out() {
     assert_eq!(children_in(Err("`ps` gave no answer: ps did not finish within 60000 ms".into()), Path::new("/p")), None);
-    let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 10 julia /j/julia -e ShipToolsRepl.run_shim()\n").unwrap();
-    assert_eq!(children_in(Ok(all), Path::new("/p")), Some(vec!["repl"]));
+    // The control is a Unix `ps` listing, whose daemon path matches a Unix prefix; Windows reads CIM's paths.
+    #[cfg(unix)]
+    {
+        let all = procs::parse_ps("10 1 sotd /p/bin/sotd --label sot\n11 10 julia /j/julia -e ShipToolsRepl.run_shim()\n").unwrap();
+        assert_eq!(children_in(Ok(all), Path::new("/p")), Some(vec!["repl"]));
+    }
 }
