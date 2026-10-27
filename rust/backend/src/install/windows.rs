@@ -224,7 +224,7 @@ fn init_base(ctx: &Ctx) -> Result<(), Stop> {
 }
 
 fn version_folder(ctx: &Ctx) -> Result<(), Stop> {
-    let head = |dir: &Path| observe::ask(ctx.m, super::cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| Ok(a.zero()?.first_line())).or(|why| Stop::new(1, format!("could not read HEAD of {}: {why}", dir.display())));
+    let head = |dir: &Path| observe::ask(ctx.m, super::cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| super::commit_line(&a.zero()?.out)).or(|why| Stop::new(1, format!("could not read HEAD of {}: {why}", dir.display())));
     if ctx.version_dir.exists() {
         if head(&ctx.version_dir)? == ctx.pack.commit {
             return Ok(());

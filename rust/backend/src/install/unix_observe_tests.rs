@@ -64,8 +64,8 @@ impl Computer {
         fake.answer("stat -f", says(0, "ext2/ext3\n"))
             .answer("/sotd --version", says(0, &format!("sotd {VERSION} ({short} 2026-10-26, protocol 9)\n")))
             .answer("/sot --version", says(0, &format!("sot {VERSION} ({short} 2026-10-26, protocol 9)\n")))
-            .answer("topology status", says_err(1, "sotd topology: no hosts.toml at /h/.config/sot/hosts.toml (run `sotd topology sync --hub <alias>`)"))
-            .answer("topology plan", says(0, "self me\ndial me unix:/run/sot.sock\n"))
+            .answer("topology status", says_err(2, "sotd topology: no hosts.toml at /h/.config/sot/hosts.toml (run `sotd topology sync --hub <alias>`)"))
+            .answer("topology plan", says(0, "self me\nhub me\nrelay-endpoint unix:/run/sot.sock\ndial me unix:/run/sot.sock\n"))
             .answer("ldd --version", says(0, "ldd (GNU libc) 2.35\n"))
             .answer("is-active sotd.service", says(3, "inactive\n"))
             .answer("session-socket-path", says(0, "/run/sot.sock\n"))
@@ -212,6 +212,17 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         assert!(found.steps.is_empty() && found.checked.is_empty() && !plan.others, "{found:?}");
         assert!(!c.fake.was_asked("is-active") && !c.fake.was_asked("--user cat"), "no unit file: the user manager is never asked: {:?}", c.fake.asked());
     }
+    {
+        // A declared frontend whose plan dials another daemon host gets the dialing launcher; one whose plan dials only
+        // itself does not.
+        for (dials, others) in [("dial h ssh:h\n", true), ("dial me unix:/run/user dir/sot.sock\n", false)] {
+            let c = Computer::new();
+            c.fake.answer("topology status", says(0, "HOST DECLARED\nh hub,daemon\nme frontend\n"))
+                .answer("topology plan", says(0, &format!("self me\nhub h\nrelay-endpoint ssh:h\n{dials}")));
+            let plan = c.decide(&[], &mut Found::default()).expect("a declared frontend decides");
+            assert_eq!(plan.others, others, "{dials}");
+        }
+    }
     for flags in [&["--local", "--no-service"][..], &["--be-only", "--no-service"][..]] {
         let c = Computer::new();
         c.fake.answer("is-active sotd.service", Canned::Stall);
@@ -241,18 +252,21 @@ fn a_cut_question_in_decide_stops_before_any_write() {
         row("pack sotd", none, Cut::Line("pack/sot-0.7.0"), &["--local"], Then::Stop("unpack", 1), false),
         row("pack sot", none, Cut::Line("/sot --version"), &["--local"], Then::Stop("role", 1), false),
         row("topology status", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false),
-        Row { how: says(0, "garbage\n"), reason: "printed no table", ..row("topology status, unreadable", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
-        Row { how: says(0, "HOST DECLARED\nme nonsense\n"), reason: "a table line it cannot read ('me nonsense')", ..row("topology status, a declaration outside the grammar", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: says(0, "garbage\n"), reason: "no `HOST DECLARED` header", ..row("topology status, unreadable", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: says(0, "HOST DECLARED\nme nonsense\n"), reason: "`me nonsense` is not a status line", ..row("topology status, a declaration outside the grammar", none, Cut::Line("topology status"), &["--local"], Then::Stop("role", 1), false) },
         row("topology plan, declared", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false),
-        Row { how: says(0, "nonsense\n"), reason: "printed no plan", ..row("topology plan, unreadable", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false) },
+        Row { how: says(0, "nonsense\n"), reason: "no `self` line", ..row("topology plan, unreadable", |c| { c.fake.answer("topology status", says(0, "HOST DECLARED\nme frontend\n")); }, Cut::Line("topology plan"), &["--local"], Then::Stop("role", 1), false) },
         row("ldd", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true),
         Row { how: says(0, "musl libc\n"), reason: "printed no glibc version", ..row("ldd, unreadable", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true) },
+        Row { how: says(0, "something else 99.99\n"), reason: "printed no glibc version ('something else 99.99')", ..row("ldd, another program's version", none, Cut::Line("ldd --version"), &["--local"], Then::Stop("role", 1), true) },
         row("is-active", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local"], Then::Stop("gate", 1), true),
         row("is-active, --no-service", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local", "--no-service"], Then::Stop("gate", 1), true),
         Row { how: Canned::Missing, reason: "could not start", ..row("systemctl missing", |c| { c.unit_file(); }, Cut::Line("is-active sotd.service"), &["--local", "--no-service"], Then::Stop("gate", 1), true) },
         row("systemctl cat, active", |c| { c.unit_runs(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true),
         row("systemctl cat, inactive", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--be-only", "--no-service"], Then::Stop("gate", 2), true),
-        Row { how: says(0, "[Unit]\n"), reason: "names no program", ..row("systemctl cat, unreadable", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
+        Row { how: says(0, "[Unit]\n"), reason: "names no ExecStart", ..row("systemctl cat, unreadable", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
+        Row { how: says(0, "# /h/.config/systemd/user/sotd.service\n[Service]\nExecStart=/p/bin/sotd\n# /h/.config/systemd/user/sotd.service.d/x.conf\n[Service]\nExecStart=\nExecStart=/q/bin/sotd\n"), reason: "holds 3 ExecStart lines", ..row("systemctl cat, a drop-in replaces ExecStart", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
+        Row { how: says(0, "[Service]\nExecStart=/p/bin/sotd\"unterminated\n"), reason: "an unbalanced quote", ..row("systemctl cat, an unbalanced quote", |c| { c.unit_file(); }, Cut::Line("--user cat sotd.service"), &["--local"], Then::Stop("gate", 2), true) },
         row("socket path", none, Cut::Line("session-socket-path"), &["--local"], Then::Stop("daemon", 1), false),
         row("ps", none, Cut::Line("ps -u"), &["--local"], Then::Stop("daemon", 1), false),
         row("same-version, unit running", |c| { c.unit_runs(); }, Cut::Line("same-version"), &["--local"], Then::Stop("daemon", 2), true),
@@ -264,7 +278,7 @@ fn a_cut_question_in_decide_stops_before_any_write() {
             c.unit_runs();
             c.fake.answer("same-version", says(3, "0.6.9\n"));
         }, Cut::Line("update repls"), &["--local"], Then::Stop("daemon", 2), true),
-        Row { how: says(3, ""), reason: "printed no reading of its live work", ..row("update repls, unreadable", |c| {
+        Row { how: says(3, ""), reason: "no answer of sotd update repls (exit 3", ..row("update repls, unreadable", |c| {
             c.unit_runs();
             c.fake.answer("same-version", says(3, "0.6.9\n"));
         }, Cut::Line("update repls"), &["--local"], Then::Stop("daemon", 2), true) },
@@ -351,13 +365,13 @@ fn a_cut_question_in_the_check_is_never_pass() {
     }
     let rows = vec![
         row("checkout HEAD", none, Cut::Under("repo/versions/v0.7.0 rev-parse HEAD"), &["--local"], Then::Fail("checkout"), false),
-        Row { how: says(0, "garbage\n"), reason: "printed no commit id", ..row("checkout HEAD, unreadable", none, Cut::Under("repo/versions/v0.7.0 rev-parse HEAD"), &["--local"], Then::Fail("checkout"), false) },
+        Row { how: says(0, "garbage\n"), reason: "printed no one commit id", ..row("checkout HEAD, unreadable", none, Cut::Under("repo/versions/v0.7.0 rev-parse HEAD"), &["--local"], Then::Fail("checkout"), false) },
         row("repo/current HEAD", none, Cut::Under("repo/current rev-parse HEAD"), &["--local"], Then::Fail("checkout"), false),
         row("bin/sotd", none, Cut::Under("bin/sotd --version"), &["--local"], Then::Fail("binaries"), false),
         row("bin/sot", none, Cut::Under("bin/sot --version"), &["--local"], Then::Fail("binaries"), false),
         row("unit state", none, Cut::Line("is-active sotd.service"), &["--local"], Then::Fail("daemon"), true),
         row("daemon's answer", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true),
-        Row { how: says(3, ""), reason: "printed another version with no version named", ..row("daemon's answer, unreadable", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true) },
+        Row { how: says(3, ""), reason: "no answer of sotd same-version (exit 3", ..row("daemon's answer, unreadable", none, Cut::Line("same-version"), &["--local"], Then::Fail("daemon"), true) },
         row("boot wiring", none, Cut::Line("sot_boot_wired"), &["--local"], Then::Step, true),
         row("boot-off line", |c| { c.fake.answer("sot_boot_wired", says(1, "")); }, Cut::Line("sot_boot_off_line"), &["--local"], Then::Step, true),
         row("listing, no unit, the daemon current", none, Cut::Line("ps -u"), &["--be-only", "--no-service"], Then::Fail("daemon"), false),

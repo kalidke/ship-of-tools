@@ -265,8 +265,16 @@ fn meet(installed: &str, binary: bool, guard: impl FnOnce() -> Result<(), verdic
     Ok(if binary { Meet::Update } else { Meet::Fresh })
 }
 
+/// A commit id as git prints one: 40 lowercase hex digits, or 64 in a SHA-256 repository.
 pub(super) fn is_commit(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The commit id an exit-0 git read printed (`rev-parse`, `merge-base`): exactly one line, a commit id; the reason it
+/// does not read, otherwise.
+fn commit_line(out: &str) -> Result<String, observe::Why> {
+    let line = out.strip_suffix('\n').unwrap_or(out);
+    if !line.contains('\n') && is_commit(line) { Ok(line.to_string()) } else { Err(observe::Why::Malformed(format!("no one commit id ('{}')", out.trim_end().replace('\n', "; ")))) }
 }
 
 /// The variables the run reads that the bootstrap sets: the tag its prelude resolved, and whether the person named it.

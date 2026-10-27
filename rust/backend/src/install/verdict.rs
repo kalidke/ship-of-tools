@@ -1,8 +1,10 @@
 //! The one verdict line every run ends with (scripts/CLAUDE.md, Installers: "One verdict"): `PASS: Ship of Tools <v> at
 //! <short> on this computer`, `ONE STEP LEFT: <steps>` (exit 0, the install is whole) or `FAIL: <check>: <detail>` (exit
 //! 1, or 2 for a refusal). It is printed from here alone: by [`finish`] at the end of a run, or by the signal watcher
-//! when a person stops it, whichever comes first. No reason the run collected is dropped from it: a FAIL names its first
-//! failure, then `; also: ` every other failure, step and clause, in that order.
+//! when a person stops it, whichever comes first. No reason the run collected is dropped from a run's own verdict: a FAIL
+//! leads with its first failure in time, recorded or the stop it returned, then `; also: ` every other failure, step
+//! and clause, in that order. The stated exception is a person's stop (a signal): its line names the step it stopped
+//! in, and the person runs again.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -32,24 +34,26 @@ fn tail() -> String {
 }
 
 /// A run that ends before its checks: the check (the step it stopped in), why, the exit code (1, or 2 for a refusal),
-/// and what the run had collected before it ([`Found::carry`]).
+/// and what the run had collected before it ([`Found::carry`]): a failure recorded first, which leads the line, and
+/// the rest.
 #[derive(Debug)]
 pub(super) struct Stop {
     pub check: String,
     pub detail: String,
     pub code: i32,
+    pub first: Option<String>,
     pub also: Vec<String>,
 }
 
 impl Stop {
     /// A stop in the current step.
     pub fn new(code: i32, detail: impl Into<String>) -> Self {
-        Self { check: current_step().to_string(), detail: detail.into(), code, also: Vec::new() }
+        Self { check: current_step().to_string(), detail: detail.into(), code, first: None, also: Vec::new() }
     }
 
     /// A stop that names its own check.
     pub fn at(check: &str, code: i32, detail: impl Into<String>) -> Self {
-        Self { check: check.to_string(), detail: detail.into(), code, also: Vec::new() }
+        Self { check: check.to_string(), detail: detail.into(), code, first: None, also: Vec::new() }
     }
 }
 
@@ -74,14 +78,20 @@ impl Found {
         !self.fails.is_empty()
     }
 
-    /// Every failure, step and clause collected, in that order, for a FAIL line after its first failure.
-    fn rest(&self, skip: usize) -> Vec<String> {
-        self.fails.iter().skip(skip).chain(&self.steps).chain(&self.checked).filter(|part| !part.is_empty()).cloned().collect()
+    /// Every failure after the first, `then` (a stop's own line), every step and every clause, in that order.
+    fn rest(&self, then: Option<String>) -> Vec<String> {
+        self.fails.iter().skip(1).cloned().chain(then).chain(self.steps.iter().cloned()).chain(self.checked.iter().cloned()).filter(|part| !part.is_empty()).collect()
     }
 
-    /// `stop` carrying what the run collected before it.
+    /// `stop` carrying what the run collected before it: a failure recorded before it leads, the stop follows it.
     pub fn carry(&self, mut stop: Stop) -> Stop {
-        stop.also = self.rest(0);
+        match self.fails.first() {
+            Some(first) => {
+                stop.also = self.rest(Some(format!("{}: {}", stop.check, stop.detail)));
+                stop.first = Some(first.clone());
+            }
+            None => stop.also = self.rest(None),
+        }
         stop
     }
 
@@ -103,7 +113,7 @@ pub(super) fn pin_tail(version: &str) -> String {
 /// The verdict for a run that reached its checks, and its exit code. `pin` is the pin's tail once the run wrote one.
 pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
     if let Some(fail) = found.fails.first() {
-        return (format!("FAIL: {fail}{}{pin}", also(&found.rest(1))), 1);
+        return (format!("FAIL: {fail}{}{pin}", also(&found.rest(None))), 1);
     }
     let steps = found.steps.iter().filter(|part| !part.is_empty()).map(String::as_str).collect::<Vec<_>>().join("; then ");
     let (word, head) = if steps.is_empty() { ("PASS", found.pass.as_str()) } else { ("ONE STEP LEFT", steps.as_str()) };
@@ -115,7 +125,8 @@ pub(super) fn line(found: &Found, pin: &str) -> (String, i32) {
 
 /// The verdict for a run that stopped, and its exit code.
 pub(super) fn stop_line(stop: &Stop, tail: &str) -> (String, i32) {
-    (format!("FAIL: {}: {}{}{tail}", stop.check, stop.detail, also(&stop.also)), stop.code)
+    let lead = stop.first.clone().unwrap_or_else(|| format!("{}: {}", stop.check, stop.detail));
+    (format!("FAIL: {lead}{}{tail}", also(&stop.also)), stop.code)
 }
 
 fn also(rest: &[String]) -> String {

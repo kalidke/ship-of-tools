@@ -350,3 +350,62 @@ fn a_monitor_label_repeated_under_a_second_header_is_refused() {
     let e = parse(text).unwrap_err();
     assert!(e.contains("line 7") && e.contains("twice"), "{e}");
 }
+
+/// The status table has one reader, `parse_status`, and it reads back every table the printer gives: hosts in every
+/// declared shape, monitor-only rows (an empty label among them), warnings and the divergence line. A declaration the
+/// printer cannot give, and a value of only spaces, is refused.
+#[test]
+fn parse_status_reads_back_every_table_the_printer_gives() {
+    let files = [
+        V2.to_string(),
+        "hub = \"a\"\n[host.a]\ndaemon = true\nfrontend = true\ncolour = \"red\"\n[host.b]\n[host.c]\nfrontend = true\n[monitor]\n= \"gpu-box\"\nb = \"\"\n\"two words\" = \"user@far box\"\n".to_string(),
+        "hub = \"a\"\n[host.a]\ndaemon = true\n".to_string(),
+    ];
+    for text in &files {
+        let t = parse(text).unwrap();
+        let table = status_table(&t);
+        assert_eq!(parse_status(&table), Ok(status_rows(&t)), "{table}");
+    }
+    let t = parse(&files[1]).unwrap();
+    assert!(status_table(&t).contains("\n monitor-only gpu-box\n"), "an empty label prints: {}", status_table(&t));
+    let diverged = StatusRow::Diverged { local: "0123456789abcdef".into(), hub: "fedcba9876543210".into() };
+    assert_eq!(parse_status(&format!("HOST DECLARED\n{}\n", status_line(&diverged))), Ok(vec![diverged]));
+    for bad in ["me sampled", "me shell,daemon", "me hub", "me daemon,hub", "me daemon,daemon", "me nonsense", "me", "Me daemon", "me daemon extra", "", "WARNING  ", "  monitor-only x", "x monitor-only  "] {
+        assert!(parse_status(&format!("HOST DECLARED\n{bad}\n")).is_err(), "'{bad}' is no line the printer gives");
+    }
+    assert!(parse_status("me daemon\n").is_err(), "no header");
+    assert!(parse("hub = \"a\"\n[host.a]\ndaemon = true\n[monitor]\nx = \"  \"\n").is_err(), "a monitor target of only spaces is refused, so the printer never gives one");
+}
+
+/// The plan has one reader, `parse_plan`, and it reads back every plan the printer gives, an endpoint that holds a
+/// space included (a private runtime folder may); a line of a later release's word is ignored, and a missing, repeated
+/// or empty fact is refused.
+#[test]
+fn parse_plan_reads_back_every_plan_the_printer_gives() {
+    let t = parse(V2).unwrap();
+    for h in &t.hosts {
+        let p = plan_of(&t, &h.name).unwrap();
+        assert_eq!(parse_plan(&plan(&t, &h.name).unwrap()), Ok(p), "{}", h.name);
+    }
+    let spaced = Plan {
+        self_host: "beta".into(),
+        hub: "alpha".into(),
+        relay_endpoint: "unix:/run/user dir/sot-relay.sock".into(),
+        dials: vec![("alpha".into(), "ssh:alpha".into()), ("beta".into(), "pipe:\\\\.\\pipe\\sot-a user-local".into())],
+    };
+    assert_eq!(parse_plan(&print_plan(&spaced)), Ok(spaced.clone()));
+    assert_eq!(parse_plan(&format!("{}a-later-fact with words\n", print_plan(&spaced))), Ok(spaced));
+    for bad in [
+        "hub alpha\nrelay-endpoint ssh:alpha\n",
+        "self beta\nrelay-endpoint ssh:alpha\n",
+        "self beta\nhub alpha\n",
+        "self beta\nself beta\nhub alpha\nrelay-endpoint ssh:alpha\n",
+        "self beta\nhub alpha\nrelay-endpoint  \n",
+        "self beta\nhub alpha\nrelay-endpoint ssh:alpha\ndial d  \n",
+        "self beta\nhub alpha\nrelay-endpoint ssh:alpha\ndial d\n",
+        "self Beta\nhub alpha\nrelay-endpoint ssh:alpha\n",
+        "self beta\nhub alpha\nrelay-endpoint ssh:alpha\n\n",
+    ] {
+        assert!(parse_plan(bad).is_err(), "{bad:?}");
+    }
+}

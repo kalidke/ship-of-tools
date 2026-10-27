@@ -41,26 +41,26 @@ impl State {
     }
 }
 
-/// What `sotd same-version` answered (rust/backend/src/topology/same_version.rs:6-11): its exit code (0 the target's,
-/// 3 another, 4 another a window holds, 2 it cannot be told) and its line (the version it runs when another, the reason
-/// when it cannot be told).
-pub(super) type Said = (i32, String);
+/// What `sotd same-version` answered, read by its one parser (`topology::same_version::parse`).
+pub(super) type Said = crate::topology::same_version::Answer;
 
 /// Whether a daemon may run, asked within the bound it is given.
 pub(super) type Runs<'a> = &'a dyn Fn(Duration) -> Fact<bool>;
 
 /// The state `sotd same-version`'s answer says, and its line or why it gave none. A daemon that said it cannot be told,
 /// or gave no answer, is `Unknown` when one may run and `None` when none does; whether one runs is asked only then
-/// (`runs`, within `bound`), and a `runs` that cannot say presumes one does, its reason kept. `None`'s line is empty when
-/// the daemon answered, and the ask's reason when it gave no answer: the caller's [`none_clause`].
-pub(super) fn state_of(said: Fact<Said>, runs: Runs, bound: Duration) -> (State, String) {
-    let unknown = |why: String| runs(bound).read(|runs| if runs { (State::Unknown, why.clone()) } else { (State::None, String::new()) }, |listing| (State::Unknown, format!("{listing}; {why}")));
+/// (`runs`, within `listing`), and a `runs` that cannot say presumes one does, its reason kept. A `listing` of zero is
+/// a wait past its deadline (`wait`): no listing starts, and it is unknown, cut at the wait's bound. `None`'s line is
+/// empty when the daemon answered, and the ask's reason when it gave no answer: the caller's [`none_clause`].
+pub(super) fn state_of(said: Fact<Said>, runs: Runs, listing: Duration, wait: Duration) -> (State, String) {
+    let listed = || if listing.is_zero() { Fact::unknown(observe::Unknown::new("the process listing", observe::Why::Cut(wait))) } else { runs(listing) };
+    let unknown = |why: String| listed().read(|runs| if runs { (State::Unknown, why.clone()) } else { (State::None, String::new()) }, |listing| (State::Unknown, format!("{listing}; {why}")));
     said.read(
-        |(code, line)| match code {
-            0 => (State::Current, line),
-            3 => (State::Other, line),
-            4 => (State::Held, line),
-            _ => unknown(line),
+        |answer| match answer {
+            Said::Same => (State::Current, String::new()),
+            Said::Other(v) => (State::Other, v),
+            Said::OtherHeld(v) => (State::Held, v),
+            Said::Untold(why) => unknown(format!("sotd same-version: {why}")),
         },
         |why| {
             let why = why.to_string();
@@ -81,22 +81,17 @@ pub(super) fn none_clause(endpoint: &str, (state, why): (State, &str)) -> Option
 /// The daemon on `endpoint` (`unix:<path>`, `pipe:<path>`), asked of `sotd`, and its version when different, else
 /// why it could not tell.
 pub(super) fn state(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs) -> (State, String) {
-    state_within(m, sotd, endpoint, runs, Duration::from_secs(30), || observe::ASK_BOUND)
+    state_within(m, sotd, endpoint, runs, Duration::from_secs(30), || observe::ASK_BOUND, observe::ASK_BOUND)
 }
 
 /// [`state`] with the ask itself held to `bound` by the clock, and a listing it needs to the bound `left` gives once
-/// the ask has ended: an ask cut at its bound could not tell. The reader is same-version's grammar
-/// (rust/backend/src/topology/same_version.rs:6-11, 50-63): another version is named on stdout, never empty, and
-/// `cannot be told` is exit 2 (exit 1 from a `sotd` that predates the command) with its reason on stderr.
-fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs, bound: Duration, left: impl Fn() -> Duration) -> (State, String) {
-    let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| match a.exit {
-        0 => Ok((0, a.last_said())),
-        3 | 4 if !a.first_line().is_empty() => Ok((a.exit, a.first_line())),
-        3 | 4 => Err(observe::Why::Malformed(format!("another version with no version named (exit {})", a.exit))),
-        1 | 2 => Ok((2, Some(a.last_said()).filter(|l| !l.is_empty()).unwrap_or_else(|| format!("`sotd same-version` exit {} with no reason", a.exit)))),
-        _ => Err(a.failed()),
+/// the ask has ended (zero past the deadline of a wait of `wait`): an ask cut at its bound could not tell. The answer
+/// is read by same-version's one parser.
+fn state_within(m: &dyn Machine, sotd: &Path, endpoint: &str, runs: Runs, bound: Duration, left: impl Fn() -> Duration, wait: Duration) -> (State, String) {
+    let said = observe::ask(m, Command::new(sotd).args(["same-version", "--endpoint", endpoint]), bound, |a| {
+        crate::topology::same_version::parse(a.exit, &a.out, &a.err).map_err(observe::Why::Malformed)
     });
-    state_of(said, runs, left())
+    state_of(said, runs, left(), wait)
 }
 
 /// The state once the daemon has had up to `bound` by the clock to answer as the target: `Current` as soon as it does,
@@ -106,9 +101,9 @@ pub(super) fn wait_current(m: &dyn Machine, sotd: &Path, endpoint: &str, bound: 
     let deadline = Instant::now() + bound;
     loop {
         // Every ask, the listing it may need included, ends by the deadline or its own bound, the smaller, and none
-        // starts after the deadline.
+        // starts after the deadline (the listing past it is unknown).
         let left = deadline.saturating_duration_since(Instant::now());
-        let (st, why) = state_within(m, sotd, endpoint, runs, ask_slice(left), || ask_slice(deadline.saturating_duration_since(Instant::now())));
+        let (st, why) = state_within(m, sotd, endpoint, runs, ask_slice(left), || deadline.saturating_duration_since(Instant::now()).min(observe::ASK_BOUND), bound);
         let left = deadline.saturating_duration_since(Instant::now());
         if st == State::Current || (held_ok && st == State::Held) || left.is_zero() {
             return (st, why);
@@ -127,31 +122,12 @@ fn ask_slice(left: Duration) -> Duration {
 }
 
 /// What a restart of the daemon would end: the rows with a live REPL, whether its Pluto server runs, and, when the
-/// daemon could not say all of it, why.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct Work {
-    pub rows: Vec<String>,
-    pub pluto: bool,
-    pub unsure: Option<String>,
-}
+/// daemon could not say all of it, why; `sotd update repls`' answer, read by its one parser.
+pub(super) type Work = crate::update::cli::Repls;
 
-/// `sotd update repls`' answer: exit 0 with no line (nothing live), exit 3 with its `repl <row>` and `pluto server`
-/// lines and nothing else, or another exit (it could not say all of it, its reason on stderr, the lines it gave kept).
-/// Exit 0 with lines, or exit 3 with no line or a line that is neither, does not read.
+/// `sotd update repls`' answer through its one parser (`update::cli::parse_repls`); one it refuses does not read.
 pub(super) fn work_of(a: &observe::Answer) -> Result<Work, observe::Why> {
-    let lines: Vec<&str> = a.out.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let rows: Vec<String> = lines.iter().filter_map(|l| l.strip_prefix("repl ")).map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
-    let pluto = lines.contains(&"pluto server");
-    let read = rows.len() + usize::from(pluto) == lines.len();
-    match a.exit {
-        0 if lines.is_empty() => Ok(Work::default()),
-        3 if read && !lines.is_empty() => Ok(Work { rows, pluto, unsure: None }),
-        0 | 3 => Err(observe::Why::Malformed(format!("no reading of its live work (exit {}: '{}')", a.exit, lines.join("; ")))),
-        exit => {
-            let said = a.err.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("sotd update repls gave no reason (exit {exit})"), String::from);
-            Ok(Work { rows, pluto, unsure: Some(said) })
-        }
-    }
+    crate::update::cli::parse_repls(a.exit, &a.out, &a.err).map_err(observe::Why::Malformed)
 }
 
 /// What a restart would end, asked of the daemon within [`observe::ASK_BOUND`]; an ask that gave no answer, or one that

@@ -96,8 +96,8 @@ pub(super) fn read(m: &dyn Machine, dir: &Path, target: &str, want: Option<&str>
         }
     }
     let commit = std::fs::read_to_string(dir.join("COMMIT")).unwrap_or_default().trim().to_string();
-    if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-        return Err(format!("{}/COMMIT is not a 40-digit commit id", dir.display()));
+    if !super::is_commit(&commit) {
+        return Err(format!("{}/COMMIT is not a commit id", dir.display()));
     }
     let bin = dir.join(format!("sot-{version}-{target}"));
     let libc = std::fs::read_to_string(dir.join("LIBC")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());

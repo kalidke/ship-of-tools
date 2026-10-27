@@ -245,9 +245,13 @@ gate (minutes each under Git Bash on a hosted runner), and the three guard suite
 of the machine (the process listing, `--version`, a unit's state) is bounded (60 s; `same-version` 30 s, the guard's
 read-only check 300 s) and comes back a fact no caller reads without saying what its unknown means: before any write it
 stops the run, but for the stated steps and clauses; after the first write it is FAIL, a step, an update left armed or
-state kept. Its reason is in the one verdict line, which drops no reason the run collected, and a listing with no answer
-is never "none runs"; the readers follow their producers' grammar, and the tables that cut each question run on Linux
-and macOS here and, for Windows, first in hosted CI after the merge (scripts/CLAUDE.md, Installers). A push scans only commits the
+state kept. Its reason is in the one verdict line, which leads with the first failure in time and drops no reason the
+run collected (a person's interrupt is the stated exception: it names the step it stopped in), and a listing with no
+answer is never "none runs". Text our own programs print is read only by the one parser its printer's owner keeps
+beside the printer (topology's status and plan, `same-version`, `update repls`); other programs' text (`systemctl
+cat`, `ldd`, Git's commit ids) is read in its documented shapes, anything else stopping the run. The tables that cut
+each question run on Linux before a merge, and on macOS and Windows first in hosted CI after it (scripts/CLAUDE.md,
+Installers). A push scans only commits the
 destination does not hold: since 2026-10-25 the guard bounds its history scan by the push's old ids and by what the
 destination advertises at push time (one `ls-remote` per push, read only when it would dial exactly the URL git hands the
 hook; any error refuses), so a new branch or tag no longer rescans the history the server already has. Since 2026-10-26 a push costs a few

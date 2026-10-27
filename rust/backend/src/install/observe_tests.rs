@@ -30,8 +30,9 @@ pub(in crate::install) fn says(exit: i32, out: &str) -> Canned {
     Canned::Says(exit, out.into(), String::new())
 }
 
+/// An answer on stderr, one line ending as a program's line does.
 pub(in crate::install) fn says_err(exit: i32, err: &str) -> Canned {
-    Canned::Says(exit, String::new(), err.into())
+    Canned::Says(exit, String::new(), if err.is_empty() || err.ends_with('\n') { err.into() } else { format!("{err}\n") })
 }
 
 /// The bound a stalled question is cut at.
@@ -59,7 +60,6 @@ impl Fake {
     }
 
     /// Set a variable of the machine's environment.
-    #[cfg_attr(windows, allow(dead_code, reason = "the Unix tables set the bootstrap's variables"))]
     pub fn set_env(&self, k: &str, v: impl AsRef<std::ffi::OsStr>) -> &Self {
         self.env.borrow_mut().set(k, v);
         self

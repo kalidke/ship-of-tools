@@ -179,19 +179,26 @@ Guarantees, each with the mechanism it rests on. Install:
 - Every question the install asks of the machine is bounded, and its unknown has one stated meaning. A question is a
   read-only child whose answer the run decides on. Each runs through `observe::ask` and comes back an
   `observe::Fact`, its value or why there is none: it did not start, was cut at its bound, was ended by a signal, ended
-  with an exit its reader does not document, or printed what its reader cannot read (a reader builds a value only from
-  an answer its producer documents, in the producer's own grammar, cited where it is read: `topology status` line by
-  line, each a declared host and its words, a monitor-only row, a warning or the divergence line; `topology plan` by
-  its `self` line and the parts of its `hub`, `relay-endpoint` and `dial` lines, the rest of a line free to hold spaces
-  and a line of another first word ignored; `update repls` exit 3 only with its lines; `same-version` exit 3 or 4 only
-  with a version, and exit 2 as "cannot be told"; a Git commit read only with an object id). No caller reaches the
+  with an exit its reader does not document, or printed what its reader cannot read. Text our own programs print is
+  read only by the one parser its printer's owner keeps beside the printer, tested by reading back every answer the
+  printer gives; the installer keeps no grammar of its own: `topology status` and `plan` by `sot_topology::parse_status`
+  and `parse_plan`, a `sotd topology` refusal (no hosts.toml, or one it cannot read) by `topology::cli::refusal`,
+  `same-version` by `topology::same_version::parse`, and `update repls` by `update::cli::parse_repls` (below, Update).
+  Text of other programs is read in its documented shapes, anything else does not read and stops the run naming what
+  was read: `systemctl --user cat`'s one ExecStart in the two shapes an install wrote (`deploy/sotd.service` as the
+  library renders it, and an older bare `ExecStart=<bin>/sotd`), refusing no ExecStart, more than one (a drop-in that
+  resets or replaces it), an unbalanced quote and a program that is not an absolute path (limit: a unit that runs sotd
+  another way is refused, never read; the library's shell `sot_unit_owner_path` reads the same file more loosely);
+  `ldd --version`'s first line as glibc prints it, `ldd (` text naming glibc or GNU libc in any case `) <version>`
+  (glibc's `elf/ldd.bash.in`); a Git commit read as exactly one line of 40 or 64 lowercase hex digits, the one
+  helper (`is_commit`, `commit_line`) the pack's `COMMIT` is checked by too. No caller reaches the
   value without writing what the unknown means: a `Fact` left unused or bound to `let _` is refused in `install/`
   (`unused_must_use` by the compiler, `clippy::let_underscore_must_use` by the gate's clippy runs). The bound is 60 s
   through exit and complete output, under the same group or job ownership as the publish guard's reads, then at most
   5 s to end it (a cold CIM listing takes about 26 s on a hosted Windows runner and misses 15 s); `same-version` has
-  30 s, a daemon wait's ask and the listing it needs the smaller of the wait left and 60 s, the console's ssh check
-  30 s, the publish guard's
-  Git reads 60 s and `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`; CIM
+  30 s, a daemon wait's ask and the listing it needs the smaller of the wait left and 60 s (past the wait's deadline
+  no listing starts: it is unknown, cut at the wait's bound), the console's ssh check 30 s, the publish guard's Git
+  reads 60 s and `setup-publish-guard.sh --check-only` 300 s. The questions: the process listing (`ps`; CIM
   `Win32_Process`), every `--version`, `session-socket-path`, `update direction` and `repls`, `same-version`,
   `topology status` and `plan`, `systemctl --user is-active` and `cat`, `sot_boot_wired` and `sot_boot_off_line`,
   `ldd --version`, `stat -f`, the console's `ssh -n <alias> true`, Julia's version, gate and channel probes, the Git
@@ -202,9 +209,11 @@ Guarantees, each with the mechanism it rests on. Install:
   manager, and macOS, with no systemd, asks neither. The ownership rule they serve: a run never replaces another
   install's unit and never works beside one another install runs here, so an active unit of another install is
   refused (`--force-role-change` consents), and an inactive one is refused only by a run that would write over it (the
-  unit file's own owner) and left alone by one that does not. The verdict keeps every reason the run collected: a
-  FAIL line names its first failure, then `; also: ` every other failure, step and clause, in that order, and a stop's
-  line carries the steps and clauses collected before it. What each unknown means, and where its reason shows:
+  unit file's own owner) and left alone by one that does not. The run's own verdict keeps every reason it collected: a
+  FAIL line leads with the first failure in time, a recorded one or the stop the run returned, then `; also: ` every
+  other failure (the stop among them when a recorded one led), every step and every clause, in that order. The stated
+  exception is a person's stop: a signal's FAIL line names the step it stopped in and nothing the run had collected,
+  and the person runs the install again. What each unknown means, and where its reason shows:
   - Before any write (the direction, role, gate and daemon steps) an unknown stops the run with its reason (FAIL, exit
     1, or 2 where a gate or the never-backwards rule refuses), nothing written under the prefix, `~/.local/bin`, the
     unit folder or the comm home; `systemctl` missing while a unit file exists is such an unknown, and the stop names
@@ -239,21 +248,28 @@ Guarantees, each with the mechanism it rests on. Install:
   `install::observe` (each reason from a real child), the decision tests of each module, and one table per phase that
   cuts each question in turn on a fake computer, and gives each reader an answer it cannot read, and reads the verdict
   line, its reason, its exit code and the protected state (the prefix and home byte for byte before any write, the
-  record byte for byte after, and on Windows the armed pointer): `install::unix::observe_tests` (decide, the check,
-  Julia, the retire on Linux, the record, the layout on a scratch origin; Linux and macOS, each row on the systems its
-  code runs on) and `install::windows::observe_tests` (the layout's Git reads, the shortcut, the update and the final
-  state), whose Windows tables are compiled here and first run in hosted CI after the merge. The readers' grammar is
-  tested against topology's own producers (`install::role`). The publish guard's reads are cut by its own suite
-  (`install::publish`), which names the FAIL line, on Linux and macOS only: on Windows the guard runs `git.exe` and
-  Git's `bash.exe` as programs, a stand-in for them needs a binary of its own, and the cut through the same runner is
-  `install::observe`'s, which runs there. The console's own reading of a person's answer is a person's, not a fake's:
-  the role question's ssh check is cut by itself.
+  record byte for byte after, and on Windows the binaries and the armed pointer): `install::unix::observe_tests`
+  (decide, the check, Julia, the retire on Linux, the record, the layout on a scratch origin; each row on the systems
+  its code runs on) and `install::windows::observe_tests` (the pack, endpoint and direction gates, the layout's Git
+  reads, the shortcut, the update and the final state). The tables run on Linux before a merge; macOS's and Windows'
+  first run in hosted CI after it (they are compiled for both before it). The parsers' read-back tests are their
+  owners' (`sot_topology`'s, `topology::same_version`'s, `topology::cli`'s and `update::cli`'s). The publish guard's
+  reads are cut by its own suite (`install::publish`), which names the FAIL line, on Linux and macOS only: on Windows
+  the guard runs `git.exe` and Git's `bash.exe` as programs, a stand-in for them needs a binary of its own, and the cut
+  through the same runner is `install::observe`'s, which runs there. The console's own reading of a person's answer is
+  a person's, not a fake's: the role question's ssh check is cut by itself.
 
 Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdate.rs`):
 - An automatic arm goes only strictly above install.json's version, never into a dev build, a pinned or unreadable
   install, or an install on a host the topology names with neither key. `sotd update stage` is the operator's and may
   arm at or below. A stage verifies the sums and digests and prepares the checkout at the tag's commit, clean, under
   the stage lock, before it arms.
+- `sotd update repls` answers in one grammar with one reader beside its printer (`update/cli.rs`: `print_repls` and
+  `parse_repls`, tested by `parse_repls_reads_back_every_answer_print_repls_gives`): exit 0 and nothing printed when
+  nothing is live; `repl <label>` lines then a `pluto server` line, exit 3; exit 1 and one `sotd update repls: <why>`
+  line on stderr when the daemon could not say all of it, the rows it read printed first. The parser refuses anything
+  else, exit 0 with an error on stderr included. A row label's line break is printed as a space, so every live row
+  stays one line.
 
 Apply (`sot-apply.sh`, `sot-apply.ps1`):
 - It verifies the whole stage before it mutates, restores on a failure after mutation and exits 0 (fail-open); a

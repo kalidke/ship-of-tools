@@ -341,38 +341,81 @@ pub(crate) const REPLS_LIVE: i32 = 3;
 /// How long the daemon may take to list its rows: it answers from memory.
 const LIST_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// What a restart of the daemon would end, from a `workspace.list` reply: one line each, `repl <label>` for every row whose
-/// REPL is live (its `repl_state` is `ready`, a Julia process holding the row's variables; `starting` holds none yet and
-/// `dead` or `not_started` none any more) and `pluto server` when the Pluto server is running (every notebook open in it
-/// ends with it, however it was opened). `unsure` is what the reply could not say: it has no `workspaces` list (an error
-/// payload is one), or no `pluto_server_up` (a daemon older than the field). The lines read before that are kept, and the
-/// caller must not read an unsure reply as "none live".
-struct LiveWork {
-    lines: Vec<String>,
-    unsure: Option<String>,
-}
-
-fn live_work(reply: &serde_json::Value) -> LiveWork {
-    let text = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+/// What a restart of the daemon would end, from a `workspace.list` reply: every row whose REPL is live (its
+/// `repl_state` is `ready`, a Julia process holding the row's variables; `starting` holds none yet and `dead` or
+/// `not_started` none any more), by its label, and whether the Pluto server is running (every notebook open in it ends
+/// with it, however it was opened). `unsure` is what the reply could not say: it has no `workspaces` list (an error
+/// payload is one), or no `pluto_server_up` (a daemon older than the field). The rows read before that are kept, and
+/// the caller must not read an unsure reply as "none live".
+fn live_work(reply: &serde_json::Value) -> Repls {
+    // A label is one line of the answer: a line break in it is shown as a space.
+    let text = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.replace(['\n', '\r'], " "));
     let Some(rows) = reply.get("workspaces").and_then(|v| v.as_array()) else {
         let said = reply.get("error").and_then(|v| v.as_str()).unwrap_or("no `workspaces` key");
-        return LiveWork { lines: Vec::new(), unsure: Some(format!("the daemon answered without a workspace list: {said}")) };
+        return Repls { unsure: Some(format!("the daemon answered without a workspace list: {said}").replace('\n', " ")), ..Repls::default() };
     };
-    let mut lines: Vec<String> = rows
+    let rows = rows
         .iter()
         .filter(|row| row.get("repl_state").and_then(|v| v.as_str()) == Some("ready"))
         .filter_map(|row| text(row, "label").or_else(|| text(row, "slug")))
-        .map(|label| format!("repl {label}"))
         .collect();
-    let unsure = match reply.get("pluto_server_up").and_then(|v| v.as_bool()) {
-        Some(true) => {
-            lines.push("pluto server".to_string());
-            None
-        }
-        Some(false) => None,
-        None => Some("the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)".to_string()),
+    let (pluto, unsure) = match reply.get("pluto_server_up").and_then(|v| v.as_bool()) {
+        Some(up) => (up, None),
+        None => (false, Some("the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)".to_string())),
     };
-    LiveWork { lines, unsure }
+    Repls { rows, pluto, unsure }
+}
+
+/// What `sotd update repls` answers, as a value: [`print_repls`] writes it as an exit code and two streams, and
+/// [`parse_repls`], the one reader of that answer (the installer's included), reads it back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Repls {
+    /// The labels of the rows with a live REPL.
+    pub rows: Vec<String>,
+    /// The Pluto server runs.
+    pub pluto: bool,
+    /// What the daemon could not say.
+    pub unsure: Option<String>,
+}
+
+/// The answer as the command gives it: exit 0 and nothing printed when nothing is live; one stdout line each, `repl
+/// <label>` then `pluto server`, and exit 3 when something is; exit 1 and one stderr line saying why when the daemon
+/// could not say all of it, the lines it could read printed first.
+pub(crate) fn print_repls(work: &Repls) -> (i32, String, String) {
+    let mut out: String = work.rows.iter().map(|r| format!("repl {r}\n")).collect();
+    if work.pluto {
+        out.push_str("pluto server\n");
+    }
+    match &work.unsure {
+        Some(why) => (1, out, format!("sotd update repls: {why}\n")),
+        None if out.is_empty() => (0, out, String::new()),
+        None => (REPLS_LIVE, out, String::new()),
+    }
+}
+
+/// [`print_repls`]'s answer read back. Anything it cannot give is refused, saying what was read: exit 0 with a line or
+/// a stderr line (an error is not "nothing live"), exit 3 with no line or a stderr line, a line that is neither `repl
+/// <label>` nor a last `pluto server`, exit 1 with no reason, another exit.
+pub(crate) fn parse_repls(code: i32, out: &str, err: &str) -> Result<Repls, String> {
+    let refused = || format!("no answer of sotd update repls (exit {code}, stdout '{}', stderr '{}')", out.trim_end(), err.trim_end());
+    if !out.is_empty() && !out.ends_with('\n') {
+        return Err(refused());
+    }
+    let mut work = Repls::default();
+    for line in out.lines() {
+        match line.strip_prefix("repl ") {
+            Some(label) if !label.is_empty() && !work.pluto => work.rows.push(label.to_string()),
+            _ if line == "pluto server" && !work.pluto => work.pluto = true,
+            _ => return Err(refused()),
+        }
+    }
+    let reason = || err.strip_suffix('\n').filter(|l| !l.contains('\n')).and_then(|l| l.strip_prefix("sotd update repls: ")).filter(|w| !w.trim().is_empty());
+    match code {
+        0 if out.is_empty() && err.is_empty() => Ok(work),
+        REPLS_LIVE if !out.is_empty() && err.is_empty() => Ok(work),
+        1 => reason().map(|why| Repls { unsure: Some(why.to_string()), ..work }).ok_or_else(refused),
+        _ => Err(refused()),
+    }
 }
 
 /// `--endpoint <unix:PATH|pipe:PATH>`, or the reason the arguments are not that.
@@ -396,30 +439,14 @@ fn repls_cli(args: &[String]) -> i32 {
     let asked = sot_platform::host::state_dir::host_name().and_then(|me| {
         crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), LIST_BOUND)
     });
-    let reply = match asked {
-        Ok(reply) => reply,
-        Err(why) => {
-            eprintln!("sotd update repls: {why}");
-            return 1;
-        }
+    let work = match asked {
+        Ok(reply) => live_work(&reply),
+        Err(why) => Repls { unsure: Some(why.replace('\n', " ")), ..Repls::default() },
     };
-    let work = live_work(&reply);
-    for line in &work.lines {
-        println!("{line}");
-    }
-    if let Some(why) = &work.unsure {
-        eprintln!("sotd update repls: {why}");
-    }
-    repls_exit(&work)
-}
-
-/// The exit code for what was read: 1 when the reply left something unsaid (whatever lines it did give), else 0 or `REPLS_LIVE`.
-fn repls_exit(work: &LiveWork) -> i32 {
-    match (&work.unsure, work.lines.is_empty()) {
-        (Some(_), _) => 1,
-        (None, true) => 0,
-        (None, false) => REPLS_LIVE,
-    }
+    let (code, out, err) = print_repls(&work);
+    print!("{out}");
+    eprint!("{err}");
+    code
 }
 
 #[cfg(test)]

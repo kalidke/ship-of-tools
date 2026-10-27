@@ -152,12 +152,12 @@ fn git_value(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() 
         .ok_or_else(|| Stop::new(1, missing()))
 }
 
-/// A git read in `dir` that names a commit: [`git_value`] whose line is an object id, as `git rev-parse` prints one (40
-/// lowercase hex digits, or 64 in a SHA-256 repository), or does not read.
+/// A git read in `dir` that names a commit: exit 0 and [`super::commit_line`], or the `Stop` that names `missing` (git
+/// answered with a failure), or why it gave no answer or printed no one commit id.
 fn git_commit(m: &dyn Machine, dir: &Path, args: &[&str], missing: impl FnOnce() -> String) -> Result<String, Stop> {
-    let line = git_value(m, dir, args, missing)?;
-    let id = matches!(line.len(), 40 | 64) && line.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    if id { Ok(line) } else { Err(Stop::new(1, format!("`git -C {} {}` printed no commit id ('{line}')", dir.display(), args.join(" ")))) }
+    observe::ask(m, cmd::git_in(dir).args(args), ASK_BOUND, |a| if a.exit == 0 { super::commit_line(&a.out).map(Some) } else { Ok(None) })
+        .or(|why| Stop::new(1, format!("could not ask git in {}: {why}", dir.display())))?
+        .ok_or_else(|| Stop::new(1, missing()))
 }
 
 /// Whether a work tree has local changes, by `git status --porcelain`.
@@ -221,37 +221,42 @@ fn running_here(all: Fact<Vec<procs::Proc>>, prefix: &Path) -> Result<(bool, boo
     Ok((!procs::daemon_pids(&all, prefix).is_empty(), procs::window_runs(&all, prefix)))
 }
 
-/// What `sotd topology status` says: its table, no hosts.toml, or a hosts.toml it cannot read (why). Every exit is an
-/// answer; a status that gave none, or an exit-0 table with a line not in topology's grammar ([`role::status_unread`]),
-/// is unknown.
+/// What `sotd topology status` says: its table, read by topology's one parser; no hosts.toml; or a hosts.toml it
+/// cannot read (why), the CLI's refusal read by its one reader. Any other answer, or a table the parser refuses, is
+/// unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Topo {
-    Table(String),
+    Table(Vec<sot_topology::StatusRow>),
     Missing,
     Unreadable(String),
 }
 
 fn topology_status(m: &dyn Machine, sotd: &Path) -> Fact<Topo> {
-    observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| match a.exit {
-        0 if a.first_line() == "HOST DECLARED" => match role::status_unread(&a.out) {
-            None => Ok(Topo::Table(a.out.clone())),
-            Some(line) => Err(Why::Malformed(format!("a table line it cannot read ('{line}')"))),
-        },
-        0 => Err(Why::Malformed(format!("no table ('{}')", a.first_line()))),
-        _ if a.err.contains("no hosts.toml at") => Ok(Topo::Missing),
-        _ => Ok(Topo::Unreadable(a.last_said())),
+    observe::ask(m, Command::new(sotd).args(["topology", "status"]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
+        (0, _) => sot_topology::parse_status(&a.out).map(Topo::Table).map_err(Why::Malformed),
+        (_, Some((_, true))) => Ok(Topo::Missing),
+        (_, Some((why, false))) => Ok(Topo::Unreadable(why)),
+        _ => Err(a.failed()),
     })
 }
 
-/// Whether the topology plan dials a daemon host other than this one (`me`): exit 0 is the plan, and an exit that names
-/// no hosts.toml is none; any other exit is no answer.
-fn plan_dials(m: &dyn Machine, sotd: &Path, me: &str) -> Fact<bool> {
-    observe::ask(m, Command::new(sotd).args(["topology", "plan", "--self", me]), ASK_BOUND, |a| match a.exit {
-        0 if role::plan_reads(&a.out, me) => Ok(role::plan_dials_others(&a.out)),
-        0 => Err(Why::Malformed(format!("no plan for {me} ('{}')", a.first_line()))),
-        _ if a.err.contains("no hosts.toml at") => Ok(false),
+/// `sotd topology plan --self <me>`, read by topology's one parser: the plan, `None` when there is no hosts.toml, or
+/// no answer (another exit, a plan the parser refuses, or one for another host).
+fn topology_plan(m: &dyn Machine, sotd: &Path, me: &str) -> Fact<Option<sot_topology::Plan>> {
+    observe::ask(m, Command::new(sotd).args(["topology", "plan", "--self", me]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
+        (0, _) => match sot_topology::parse_plan(&a.out) {
+            Ok(plan) if plan.self_host == me => Ok(Some(plan)),
+            Ok(plan) => Err(Why::Malformed(format!("a plan for {}, not {me}", plan.self_host))),
+            Err(why) => Err(Why::Malformed(why)),
+        },
+        (_, Some((_, true))) => Ok(None),
         _ => Err(a.failed()),
     })
+}
+
+/// Whether the topology plan dials a daemon host other than this one (`me`); no hosts.toml is none.
+fn plan_dials(m: &dyn Machine, sotd: &Path, me: &str) -> Fact<bool> {
+    topology_plan(m, sotd, me).map(|plan| plan.is_some_and(|p| p.dials.iter().any(|(host, _)| *host != p.self_host)))
 }
 
 /// Everything decided before the first write: the system, the pack, the direction, the role and its gates, the daemon.
@@ -332,7 +337,7 @@ fn decide(m: &dyn Machine, opts: Options, prefix: PathBuf, home: PathBuf, found:
     let me = sot_platform::host::state_dir::host_name_in(&env).map_err(|e| Stop::new(1, e))?;
     let status = topology_status(m, &new_sotd).or(|why| Stop::new(1, format!("could not read the topology ({why}); nothing was changed")))?;
     let (topo_declared, topo_readable, topo_role) = match &status {
-        Topo::Table(table) => (true, true, role::from_status(table, &me)),
+        Topo::Table(rows) => (true, true, role::from_status(rows, &me)),
         Topo::Missing => (false, false, None),
         Topo::Unreadable(said) => {
             say(&format!("WARNING: hosts.toml could not be read ({said}); the role comes from the flags, and the shared sotd.service is never disabled from here"));
@@ -532,22 +537,27 @@ fn heal_old_hosts(config: &Path) {
 /// the ownership gate cannot be answered, and the run stops.
 fn unit_owner(m: &dyn Machine) -> Result<String, Stop> {
     let unit = observe::ask(m, Command::new("systemctl").args(["--user", "cat", "sotd.service"]), ASK_BOUND, |a| {
-        role::unit_owner_path(&a.zero()?.out).ok_or_else(|| Why::Malformed("a unit that names no program".into()))
+        role::unit_owner_path(&a.zero()?.out).map_err(|why| Why::Malformed(format!("a sotd.service (~/.config/systemd/user/sotd.service and its drop-ins) that {why}")))
     });
     unit.or(|why| Stop::new(2, format!("{why}, so the owner of sotd.service is unknown; nothing was changed. Run this from a full login session, where systemctl --user reaches the user manager (XDG_RUNTIME_DIR set), or move ~/.config/systemd/user/sotd.service aside if no sotd runs from it")))
 }
 
-/// The glibc this box runs, from an exit-0 `ldd --version`'s first line, which glibc's ldd prints as `ldd (<package
-/// version>) <version>` (glibc's elf/ldd.bash.in), the version its last field.
+/// The glibc this box runs, from an exit-0 `ldd --version`'s first line, which glibc's ldd prints as `ldd
+/// (<package version>) <version>` (glibc's `elf/ldd.bash.in`: `ldd (@PKGVERSION@) @VERSION@`): the parenthesis names
+/// glibc or GNU libc in any case (`GNU libc`, `Ubuntu GLIBC 2.35-0ubuntu3.8`), and the version is digits and dots. Any
+/// other first line (musl's ldd, another program) does not read, and the run stops naming what it read.
 fn glibc_version(m: &dyn Machine) -> Fact<(u32, u32)> {
     observe::ask(m, Command::new("ldd").arg("--version"), ASK_BOUND, |a| glibc_of(&a.zero()?.out).ok_or_else(|| Why::Malformed(format!("no glibc version ('{}')", a.first_line()))))
 }
 
 fn glibc_of(text: &str) -> Option<(u32, u32)> {
-    let line = text.lines().next()?.trim_end().to_string();
-    let last = line.rsplit(|c: char| !(c.is_ascii_digit() || c == '.')).next()?;
-    let (a, b) = last.split_once('.')?;
-    Some((a.parse().ok()?, b.split('.').next()?.parse().ok()?))
+    let (package, version) = text.lines().next()?.trim_end().strip_prefix("ldd (")?.rsplit_once(") ")?;
+    let names = package.to_ascii_lowercase();
+    if !(names.contains("glibc") || names.contains("gnu libc")) || version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let mut parts = version.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 /// The role asked at the console, when nothing else names one (it works under `curl | bash`: the questions go to
@@ -1278,7 +1288,7 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
     step("check");
     let (version, prefix) = (&plan.pack.version, &plan.prefix);
     let checkout = plan.checkout.clone();
-    let head = |dir: &Path| observe::ask(m, cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| Some(a.zero()?.first_line()).filter(|c| super::is_commit(c)).ok_or_else(|| Why::Malformed(format!("no commit id ('{}')", a.first_line()))));
+    let head = |dir: &Path| observe::ask(m, cmd::git_in(dir).args(["rev-parse", "HEAD"]), ASK_BOUND, |a| super::commit_line(&a.zero()?.out));
     let commit = head(&checkout).read(
         |commit| commit,
         |why| {
@@ -1370,7 +1380,12 @@ fn check(m: &dyn Machine, plan: &Plan, restarted: bool, found: &mut Found) {
         } else if said.contains("does not list this box") {
             found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {} --frontend  (the sotd of its install), then run this installer again", plan.me, plan.me));
         } else {
-            let readable = observe::ask(m, Command::new(plan.sotd()).args(["topology", "plan", "--self", &plan.me]), ASK_BOUND, |a| Ok(a.exit == 0));
+            // The plan is read by topology's one parser; a refusal (no hosts.toml, or one it cannot read) is the sync's.
+            let readable = observe::ask(m, Command::new(plan.sotd()).args(["topology", "plan", "--self", &plan.me]), ASK_BOUND, |a| match (a.exit, crate::topology::cli::refusal(a.exit, &a.err)) {
+                (0, _) => sot_topology::parse_plan(&a.out).map(|_| true).map_err(Why::Malformed),
+                (_, Some(_)) => Ok(false),
+                _ => Err(a.failed()),
+            });
             let readable = readable.read(Some, |why| {
                 found.fail("enroll", format!("could not read the topology plan ({why})"));
                 None

@@ -225,3 +225,71 @@ fn a_cut_question_in_the_windows_check_is_never_pass() {
         println!("{name}: {line}");
     }
 }
+
+/// The Windows run's questions before it writes, each cut in turn through `install_on` to its verdict line: the pack's
+/// own binary and the daemon's endpoint stop the run (exit 1), and an implicit run over an install whose version, way
+/// or build cannot be told refuses (exit 2); each leaves the binaries and the record there byte for byte.
+#[test]
+fn a_cut_question_before_a_windows_run_writes_stops_it() {
+    if !isolated("install::windows::observe_tests::a_cut_question_before_a_windows_run_writes_stops_it") {
+        return;
+    }
+    // A pack of 0.7.0 at COMMIT, a PATH with git and jq, and the fake's answers for a healthy run up to its first write.
+    let machine = |root: &Path| -> (Fake, Options) {
+        let fake = computer(root);
+        let pack = root.join("pack");
+        std::fs::create_dir_all(pack.join("sot-0.7.0-windows-x86_64")).unwrap();
+        for b in ["sot.exe", "sotd.exe", "sot-capsule.exe"] {
+            std::fs::write(pack.join("sot-0.7.0-windows-x86_64").join(b), b).unwrap();
+        }
+        std::fs::write(pack.join("sot-0.7.0-windows-x86_64.zip"), "archive").unwrap();
+        std::fs::write(pack.join("COMMIT"), format!("{COMMIT}\n")).unwrap();
+        let sum = |p: &str| sot_updater::fetch::hash::sha256_bytes(&std::fs::read(pack.join(p)).unwrap());
+        std::fs::write(pack.join("SHA256SUMS"), format!("{}  sot-0.7.0-windows-x86_64.zip\n{}  COMMIT\n", sum("sot-0.7.0-windows-x86_64.zip"), sum("COMMIT"))).unwrap();
+        std::fs::create_dir_all(root.join("path")).unwrap();
+        for tool in ["git.exe", "jq.exe"] {
+            std::fs::write(root.join("path").join(tool), "").unwrap();
+        }
+        fake.set_env("PATH", root.join("path"));
+        fake.set_env("PROCESSOR_ARCHITECTURE", "AMD64");
+        fake.answer("session-socket-path", says(0, &format!("\\\\.\\pipe\\sot-observe-{}-local\n", std::process::id())))
+            .answer("update direction", says(0, "newer\n"));
+        let args = ["--pack".to_string(), pack.to_string_lossy().into_owned(), "-Prefix".to_string(), root.join("prefix").to_string_lossy().into_owned()];
+        (fake, super::super::options::parse(&args).unwrap())
+    };
+    type Setup = fn(&Fake, &Path);
+    let none: Setup = |_, _| {};
+    let installed: Setup = |f, r| {
+        std::fs::write(r.join("prefix\\bin\\sotd.exe"), "").unwrap();
+        std::fs::write(r.join("prefix\\install.json"), "{\n  \"commit\": \"fedcba9876543210fedcba9876543210fedcba98\"\n}\n").unwrap();
+        f.set_env("SOT_INSTALL_IMPLICIT", "1");
+    };
+    let recorded_implicit: Setup = |f, r| {
+        recorded(r);
+        f.set_env("SOT_INSTALL_IMPLICIT", "1");
+    };
+    let build: Setup = |f, r| {
+        std::fs::write(r.join("prefix\\install.json"), "{\n  \"version\": \"0.7.0-dev+abcdef1\"\n}\n").unwrap();
+        f.set_env("SOT_INSTALL_IMPLICIT", "1");
+    };
+    for (name, setup, pattern, check, code) in [
+        ("the pack's own sot", none, "pack\\sot-0.7.0-windows-x86_64\\sot.exe --version", "fetch", 1),
+        ("the daemon's endpoint", none, "session-socket-path", "fetch", 1),
+        ("installed sotd, implicit", installed, "prefix\\bin\\sotd.exe --version", "direction", 2),
+        ("direction, implicit", recorded_implicit, "update direction", "direction", 2),
+        ("a build of the line", build, "rev-list --all", "target", 2),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, opts) = machine(dir.path());
+        setup(&fake, dir.path());
+        fake.answer(pattern, Canned::Stall);
+        let (bin, record) = (tree(&dir.path().join("prefix\\bin")), std::fs::read(dir.path().join("prefix\\install.json")).ok());
+        let Err(stop) = install_on(&fake, opts) else { panic!("{name}: the run went on past a cut question") };
+        let (line, got) = verdict::stop_line(&stop, "");
+        assert!(fake.was_asked(pattern), "{name}: `{pattern}` was never asked: {:?}", fake.asked());
+        assert!(got == code && line.starts_with(&format!("FAIL: {check}: ")) && line.contains(CUT), "{name}: exit {got}: {line}");
+        assert_eq!(tree(&dir.path().join("prefix\\bin")), bin, "{name}: the binaries are untouched");
+        assert_eq!(std::fs::read(dir.path().join("prefix\\install.json")).ok(), record, "{name}: the record there stays byte for byte");
+        println!("{name}: {line}");
+    }
+}

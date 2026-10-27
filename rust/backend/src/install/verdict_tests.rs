@@ -22,8 +22,9 @@ fn checked_results_join_only_nonempty_verdict_parts() {
     assert_eq!(line(&Found::default(), "; pinned"), ("PASS: pinned".into(), 0));
 }
 
-/// No reason the run collected is dropped from its one line: a FAIL names its first failure, then every other failure,
-/// step and clause, in that order; a stop carries what the run had collected before it.
+/// No reason the run collected is dropped from its one line: a FAIL leads with its first failure in time, recorded or
+/// the stop it returned, then every other failure, step and clause, in that order. (A person's stop, a signal, is the
+/// stated exception: its line names the step it stopped in.)
 #[test]
 fn a_fail_keeps_every_reason_the_run_collected() {
     let mut f = Found::default();
@@ -38,6 +39,12 @@ fn a_fail_keeps_every_reason_the_run_collected() {
     f.checked("the daemon on /s could not be asked; no daemon of this install was listed, so none runs");
     let stop = collecting(&mut f, |_| Err::<(), _>(Stop::at("layout", 1, "could not ask git"))).unwrap_err();
     assert_eq!(stop_line(&stop, "; the update stays armed").0, "FAIL: layout: could not ask git; also: the daemon on /s could not be asked; no daemon of this install was listed, so none runs; the update stays armed");
+    // A failure recorded before the stop is first in time, so it leads, and the stop follows it.
+    let mut f = Found::default();
+    f.fail("julia", "instantiating julia/kernel failed; run it again");
+    f.step("install Julia");
+    let stop = collecting(&mut f, |_| Err::<(), _>(Stop::at("service", 1, "could not write sotd.service"))).unwrap_err();
+    assert_eq!(stop_line(&stop, ""), ("FAIL: julia: instantiating julia/kernel failed; run it again; also: service: could not write sotd.service; install Julia".into(), 1));
     let stop = collecting(&mut Found::default(), |_| Err::<(), _>(Stop::at("layout", 1, "could not ask git"))).unwrap_err();
     assert_eq!(stop_line(&stop, "").0, "FAIL: layout: could not ask git", "nothing collected, nothing added");
 }

@@ -227,8 +227,12 @@ pub fn parse(text: &str) -> Result<Topology, String> {
 }
 
 /// A `[monitor]` target (an empty one is its label) becomes an argument of ssh, which reads one that begins with `-` as an option (`-oProxyCommand=...`
-/// runs a command on this box). Anything else is allowed: it may be an alias or `user@host`, and ssh gets it as one argument.
+/// runs a command on this box). One of only spaces names nothing. Anything else is allowed: it may be an alias or `user@host`,
+/// and ssh gets it as one argument.
 fn check_monitor_target(target: &str) -> Result<(), String> {
+    if !target.is_empty() && target.trim().is_empty() {
+        return Err("a monitor target of only spaces names no ssh target".to_string());
+    }
     match target.starts_with('-') {
         true => Err(format!("monitor target `{target}` would be read by ssh as an ssh option")),
         false => Ok(()),
@@ -369,12 +373,63 @@ fn relay_host_in(dir: &Path, path: &Path) -> Option<String> {
 ///                                    # runs `sotd stdio-bridge [--host <host>]` there.
 /// ```
 pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
-    let relay = relay_endpoint(topo, self_host)?;
-    let mut out = format!("self {self_host}\nhub {}\nrelay-endpoint {relay}\n", topo.hub);
-    for (name, endpoint) in dial_endpoints(topo, self_host) {
+    plan_of(topo, self_host).map(|p| print_plan(&p))
+}
+
+/// What `sotd topology plan --self <host>` says, as a value: [`plan`] prints it with [`print_plan`], and
+/// [`parse_plan`], the one reader of that text (the installer's included), reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub self_host: String,
+    pub hub: String,
+    pub relay_endpoint: String,
+    /// `(host, endpoint)`, one per dialable host, in file order.
+    pub dials: Vec<(String, String)>,
+}
+
+/// The plan's facts for `self_host`.
+pub fn plan_of(topo: &Topology, self_host: &str) -> Result<Plan, String> {
+    Ok(Plan {
+        relay_endpoint: relay_endpoint(topo, self_host)?,
+        self_host: self_host.to_string(),
+        hub: topo.hub.clone(),
+        dials: dial_endpoints(topo, self_host),
+    })
+}
+
+/// The plan's lines, in the grammar above.
+pub fn print_plan(p: &Plan) -> String {
+    let mut out = format!("self {}\nhub {}\nrelay-endpoint {}\n", p.self_host, p.hub, p.relay_endpoint);
+    for (name, endpoint) in &p.dials {
         out.push_str(&format!("dial {name} {endpoint}\n"));
     }
-    Ok(out)
+    out
+}
+
+/// [`print_plan`]'s text read back: exactly one `self`, `hub` and `relay-endpoint` line and any `dial` lines, each host
+/// a plain host name and each endpoint the rest of its line, neither empty nor only spaces; a line whose first word
+/// is another is ignored (a later release's fact). Anything else is refused, naming the line.
+pub fn parse_plan(text: &str) -> Result<Plan, String> {
+    let (mut self_host, mut hub, mut relay, mut dials) = (None, None, None, Vec::new());
+    let host = |line: &str, h: &str| if endpoint::is_plain_host_name(h) { Ok(h.to_string()) } else { Err(format!("`{line}`: `{h}` is not a plain host name")) };
+    let value = |line: &str, v: &str| if v.trim().is_empty() { Err(format!("`{line}` has no value")) } else { Ok(v.to_string()) };
+    let once = |slot: &mut Option<String>, line: &str, v: String| if slot.replace(v).is_some() { Err(format!("`{line}` is given twice")) } else { Ok(()) };
+    for line in text.lines() {
+        let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match word {
+            "self" => once(&mut self_host, line, host(line, rest)?)?,
+            "hub" => once(&mut hub, line, host(line, rest)?)?,
+            "relay-endpoint" => once(&mut relay, line, value(line, rest)?)?,
+            "dial" => {
+                let (h, e) = rest.split_once(' ').ok_or_else(|| format!("`{line}` names no endpoint"))?;
+                dials.push((host(line, h)?, value(line, e)?));
+            }
+            "" => return Err("an empty line".to_string()),
+            _ => {}
+        }
+    }
+    let missing = |what: &str| format!("no `{what}` line");
+    Ok(Plan { self_host: self_host.ok_or_else(|| missing("self"))?, hub: hub.ok_or_else(|| missing("hub"))?, relay_endpoint: relay.ok_or_else(|| missing("relay-endpoint"))?, dials })
 }
 
 /// Every "dialable" host — every box declaring `daemon` — in file order.
@@ -616,33 +671,108 @@ pub fn apply(topo: &Topology, edit: &TopologyEdit) -> Result<Topology, String> {
 /// factored out so `sotd status` (topology plan §E's DECLARED column)
 /// prints the identical words instead of re-deriving them.
 pub fn declared_words(topo: &Topology, host: &HostDecl) -> Vec<&'static str> {
+    let sampled = topo.monitor_targets().iter().any(|(l, t)| *l == host.name || *t == host.name);
+    words(host.name == topo.hub, host.daemon, host.frontend, sampled)
+}
+
+fn words(hub: bool, daemon: bool, frontend: bool, sampled: bool) -> Vec<&'static str> {
     let mut words = Vec::new();
-    if host.name == topo.hub { words.push("hub") }
-    if host.daemon { words.push("daemon") }
-    if host.frontend { words.push("frontend") }
+    if hub { words.push("hub") }
+    if daemon { words.push("daemon") }
+    if frontend { words.push("frontend") }
     if words.is_empty() { words.push("shell") }
-    if topo.monitor_targets().iter().any(|(l, t)| *l == host.name || *t == host.name) {
-        words.push("sampled")
-    }
+    if sampled { words.push("sampled") }
     words
+}
+
+/// One line of `sotd topology status` after its `HOST DECLARED` header: [`status_line`] prints it and
+/// [`parse_status`], the one reader of the table (the installer's included), reads it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusRow {
+    /// A listed host and its declared words.
+    Host { name: String, hub: bool, daemon: bool, frontend: bool, sampled: bool },
+    /// A `[monitor]` target that is no listed host: its label (possibly empty) and resolved target.
+    MonitorOnly { label: String, target: String },
+    /// A hosts.toml warning (an unknown key inside a host block).
+    Warning(String),
+    /// `sotd topology status`'s line when this box's hosts.toml hash differs from the hub's.
+    Diverged { local: String, hub: String },
+}
+
+/// The rows of the declared table, in the order [`status_table`] prints them.
+pub fn status_rows(topo: &Topology) -> Vec<StatusRow> {
+    let mut rows: Vec<StatusRow> = topo
+        .hosts
+        .iter()
+        .map(|h| StatusRow::Host {
+            name: h.name.clone(),
+            hub: h.name == topo.hub,
+            daemon: h.daemon,
+            frontend: h.frontend,
+            sampled: topo.monitor_targets().iter().any(|(l, t)| *l == h.name || *t == h.name),
+        })
+        .collect();
+    for (label, target) in topo.monitor_targets() {
+        if topo.host(&label).is_none() && topo.host(&target).is_none() {
+            rows.push(StatusRow::MonitorOnly { label, target });
+        }
+    }
+    // Surfaced here and only here (module doc): the person who edited the
+    // file is looking at `status`, not at `plan`'s line-oriented output.
+    rows.extend(topo.warnings.iter().cloned().map(StatusRow::Warning));
+    rows
+}
+
+/// One row's line, with no newline.
+pub fn status_line(row: &StatusRow) -> String {
+    match row {
+        StatusRow::Host { name, hub, daemon, frontend, sampled } => format!("{name} {}", words(*hub, *daemon, *frontend, *sampled).join(",")),
+        StatusRow::MonitorOnly { label, target } => format!("{label} monitor-only {target}"),
+        StatusRow::Warning(w) => format!("WARNING {w}"),
+        StatusRow::Diverged { local, hub } => format!("cache diverged: this box's hosts.toml ({local}) != the hub's ({hub}); run `sotd topology sync`"),
+    }
 }
 
 /// `sotd topology status` — the declared table only; live columns come
 /// from `version.query` on each daemon.
 pub fn status_table(topo: &Topology) -> String {
     let mut out = String::from("HOST DECLARED\n");
-    for h in &topo.hosts {
-        out.push_str(&format!("{} {}\n", h.name, declared_words(topo, h).join(",")));
-    }
-    for (label, target) in topo.monitor_targets() {
-        if topo.host(&label).is_none() && topo.host(&target).is_none() {
-            out.push_str(&format!("{label} monitor-only {target}\n"));
-        }
-    }
-    // Surfaced here and only here (module doc): the person who edited the
-    // file is looking at `status`, not at `plan`'s line-oriented output.
-    for w in &topo.warnings {
-        out.push_str(&format!("WARNING {w}\n"));
+    for row in status_rows(topo) {
+        out.push_str(&status_line(&row));
+        out.push('\n');
     }
     out
+}
+
+/// A `sotd topology status` table read back: its `HOST DECLARED` header, then lines [`status_line`] can print. A
+/// host's words are exactly the ones [`declared_words`] would give (`hub` only with `daemon`, `shell` alone, `sampled`
+/// last), so `me sampled`, `me shell,daemon` and a reordering are refused; a value that is only spaces is refused.
+/// Limit: a monitor label that itself holds ` monitor-only ` is read at its first one.
+pub fn parse_status(text: &str) -> Result<Vec<StatusRow>, String> {
+    let mut lines = text.lines();
+    if lines.next() != Some("HOST DECLARED") {
+        return Err("no `HOST DECLARED` header".to_string());
+    }
+    lines.map(|line| status_row(line).ok_or_else(|| format!("`{line}` is not a status line"))).collect()
+}
+
+fn status_row(line: &str) -> Option<StatusRow> {
+    let blank = |v: &str| !v.is_empty() && v.trim().is_empty();
+    if let Some(w) = line.strip_prefix("WARNING ") {
+        return (!w.trim().is_empty()).then(|| StatusRow::Warning(w.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("cache diverged: this box's hosts.toml (") {
+        let (local, rest) = rest.split_once(") != the hub's (")?;
+        let hub = rest.strip_suffix("); run `sotd topology sync`")?;
+        return (!local.trim().is_empty() && !hub.trim().is_empty()).then(|| StatusRow::Diverged { local: local.to_string(), hub: hub.to_string() });
+    }
+    if let Some((label, target)) = line.split_once(" monitor-only ") {
+        return (!blank(label) && !blank(target)).then(|| StatusRow::MonitorOnly { label: label.to_string(), target: target.to_string() });
+    }
+    let (name, declared) = line.split_once(' ')?;
+    let declared: Vec<&str> = declared.split(',').collect();
+    let has = |w: &str| declared.contains(&w);
+    let (hub, daemon, frontend, sampled) = (has("hub"), has("daemon"), has("frontend"), has("sampled"));
+    let printed = words(hub, daemon, frontend, sampled);
+    (endpoint::is_plain_host_name(name) && (daemon || !hub) && printed == declared).then(|| StatusRow::Host { name: name.to_string(), hub, daemon, frontend, sampled })
 }

@@ -30,7 +30,7 @@ use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallFile, InstallManifest, ReleaseIdentity, UpdaterConfig, MISSING_LEAD, UNREADABLE_LEAD};
 
-mod cli;
+pub(crate) mod cli;
 mod refusal;
 pub(crate) use cli::{run, USAGE};
 use refusal::{apply_refusal, arm_refusal, host_runs_no_sotd};

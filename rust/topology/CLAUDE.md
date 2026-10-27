@@ -23,7 +23,7 @@ of each.
    top-level key or section, a duplicate key and a malformed line are errors naming the line; an unknown key inside
    `[host.<name>]` is a warning collected on the `Topology`, not an error. A duplicate key is refused within a section,
    and a `[monitor]` label is refused when any earlier `[monitor]` header gave it. A monitor target (an empty one is
-   its label) must not begin with `-` (ssh would read it as an option). Limits: the reader is a subset of TOML
+   its label) must not begin with `-` (ssh would read it as an option) nor be only spaces. Limits: the reader is a subset of TOML
    (strings, booleans, integers, comments), not the `toml` crate; a `[monitor]` target is otherwise any string, since
    it may be `user@host` or an alias; `serialize`, which every edit writes through, is a canonical rewrite, so a
    `topology.set` drops the file's comments and any unknown host key a hand edit added.
@@ -129,6 +129,16 @@ of each.
     caller, ssh or a systemd unit, owns the lifetime); a failure usually prints one stderr line, but a host name that
     contains a newline prints several, and the two copy directions can each print a diagnosis; the no-argument form
     ignores `$SOT_SOCKET` and `$SOT_BACKEND_LABEL`; its integration suite is Unix-only.
+13. **The text a topology verb prints has one reader, kept beside its printer.** `sotd topology status`'s table is
+    `status_rows` printed by `status_line` (the CLI's divergence line included) and read back by `parse_status`;
+    `sotd topology plan` is `plan_of` printed by `print_plan` and read back by `parse_plan`; a verb's refusal (exit 2,
+    `sotd topology: <why>`, no hosts.toml among them) is read back by `cli::refusal`; `sotd same-version`'s answer is
+    `same_version::Answer` printed by `print` and read back by `parse`. Each parser accepts exactly what its printer
+    gives and refuses the rest, naming it: a host's words other than `declared_words` would give (`me sampled`, `me
+    shell,daemon`), a value of only spaces, a missing or repeated plan fact, another exit or stream. A plan line whose
+    first word a reader does not know is ignored (a later release's fact). The installer reads these through them and
+    keeps no grammar of its own. Limits: a monitor label that itself holds ` monitor-only ` is read at its first one;
+    the shell and PowerShell launchers keep their own readers of the plan and of `same-version`'s exit code.
 
 ## Owns
 hosts.toml's grammar, search rule, edits and status table; this box's own endpoint, the label, `slug` and the plain
@@ -149,7 +159,8 @@ server's roster and rows for `topology.set`.
 The window (`rust/frontend`): `LinkGate`, `SshRecipe`, `DaemonLaneEndpoint`, `relay_host_for_path`,
 `is_plain_host_name`, `local_endpoint`, `session_socket_path`, `slug`, `SSH_LOGIN_BOUND`; the daemon: `load`, `parse`,
 `plan`, the unit text and `SshRecipe`; the monitor reads `Topology::monitor_targets` and `SSH_OPTS`; the installers
-read `SSH_OPTS` and run `sotd topology pin|plan|sync` and `sotd same-version`.
+read `SSH_OPTS` and run `sotd topology pin|plan|status|sync` and `sotd same-version`, whose answers `sotd install`
+reads through `parse_status`, `parse_plan`, `cli::refusal` and `same_version::parse`.
 
 ## Does not
 Hold a connection beyond one dial (the lane client keeps its streams; fe-net and the daemon's link hold the long-lived ones), decide when anything ends (lifecycle), start a daemon child
@@ -180,6 +191,7 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
 | 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |
 | 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there) |
+| 13 | one reader per printed text | `tests.rs`: `parse_status_reads_back_every_table_the_printer_gives`, `parse_plan_reads_back_every_plan_the_printer_gives`; backend `same_version_tests.rs`: `parse_reads_back_every_answer_print_gives`; backend `cli_tests.rs`: `refusal_reads_back_what_report_prints` |
 
 Windows- and macOS-specific arms run on the hosted runner of their OS (`endpoint_windows_tests.rs`, the Windows arms of
 `dial_tests.rs`).

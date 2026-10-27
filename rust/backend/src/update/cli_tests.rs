@@ -339,6 +339,10 @@ fn direction_over_an_unreadable_record_reads_the_version_text_or_says_unknown() 
     assert_eq!(direction_cli(&["--prefix".into(), dir.path().display().to_string(), "v0.6.6".into()]), 0);
 }
 
+fn repls_code(work: &Repls) -> i32 {
+    print_repls(work).0
+}
+
 #[test]
 fn a_live_repl_is_one_the_daemon_says_is_ready() {
     let reply = serde_json::json!({ "pluto_server_up": false, "workspaces": [
@@ -348,38 +352,39 @@ fn a_live_repl_is_one_the_daemon_says_is_ready() {
         { "workspace_id": "ws-d", "slug": "gone", "label": "Gone", "repl_state": "dead" },
         { "workspace_id": "ws-e", "slug": "scan", "label": "", "repl_state": "ready" },
         { "workspace_id": "ws-f", "slug": "old" },
+        { "workspace_id": "ws-g", "slug": "two", "label": "two\nlines", "repl_state": "ready" },
     ]});
     let work = live_work(&reply);
-    assert_eq!(work.lines, ["repl Rig PC", "repl scan"]);
-    assert_eq!((work.unsure.is_none(), repls_exit(&work)), (true, REPLS_LIVE));
+    assert_eq!(work.rows, ["Rig PC", "scan", "two lines"], "a label's line break is shown as a space, never dropped");
+    assert_eq!(print_repls(&work), (REPLS_LIVE, "repl Rig PC\nrepl scan\nrepl two lines\n".to_string(), String::new()));
     let none = live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": false }));
-    assert_eq!((none.lines.len(), none.unsure.is_none(), repls_exit(&none)), (0, true, 0), "a server not started adds no Pluto line");
+    assert_eq!(print_repls(&none), (0, String::new(), String::new()), "a server not started adds no Pluto line");
 }
 
 #[test]
 fn a_pluto_server_that_is_up_is_live_work_with_no_notebook_opened_through_the_daemon() {
     // Pluto's own home page opens notebooks the daemon never sees, so the server being up is the fact.
     let up = live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": true }));
-    assert_eq!((up.lines.clone(), up.unsure.is_none(), repls_exit(&up)), (vec!["pluto server".to_string()], true, REPLS_LIVE));
+    assert_eq!(print_repls(&up), (REPLS_LIVE, "pluto server\n".to_string(), String::new()));
     let with_repl = live_work(&serde_json::json!({
         "workspaces": [{ "slug": "rig", "label": "Rig PC", "repl_state": "ready" }],
         "pluto_server_up": true,
     }));
-    assert_eq!(with_repl.lines, ["repl Rig PC", "pluto server"]);
+    assert_eq!(print_repls(&with_repl).1, "repl Rig PC\npluto server\n");
 }
 
 #[test]
 fn a_daemon_that_cannot_say_about_pluto_has_not_answered_but_its_repls_are_kept() {
     // A daemon older than the field lists rows only: it may hold a Pluto server it cannot report.
     let old = live_work(&serde_json::json!({ "workspaces": [{ "slug": "rig", "label": "Rig PC", "repl_state": "ready" }] }));
-    assert_eq!(old.lines, ["repl Rig PC"], "the rows it did list are named");
+    assert_eq!(old.rows, ["Rig PC"], "the rows it did list are named");
     assert_eq!(
         old.unsure.as_deref(),
         Some("the daemon's reply says nothing of its Pluto server (a daemon older than this build cannot say whether it is running)")
     );
-    assert_eq!(repls_exit(&old), 1, "and it exits 1: not an answer");
+    assert_eq!(repls_code(&old), 1, "and it exits 1: not an answer");
     let silent = live_work(&serde_json::json!({ "workspaces": [] }));
-    assert_eq!((silent.lines.len(), repls_exit(&silent)), (0, 1));
+    assert_eq!((silent.rows.len(), repls_code(&silent)), (0, 1));
 }
 
 #[test]
@@ -387,10 +392,44 @@ fn a_reply_with_no_rows_is_not_an_answer() {
     // An error payload is a reply too; reading it as "no live REPL" would restart the daemon unasked.
     let refused = live_work(&serde_json::json!({ "error": "unknown op" }));
     assert_eq!(refused.unsure.as_deref(), Some("the daemon answered without a workspace list: unknown op"));
-    assert_eq!((refused.lines.len(), repls_exit(&refused)), (0, 1));
-    assert_eq!(repls_exit(&live_work(&serde_json::json!({}))), 1);
-    assert_eq!(repls_exit(&live_work(&serde_json::json!({ "workspaces": "none", "pluto_server_up": false }))), 1);
+    assert_eq!((refused.rows.len(), repls_code(&refused)), (0, 1));
+    assert_eq!(repls_code(&live_work(&serde_json::json!({}))), 1);
+    assert_eq!(repls_code(&live_work(&serde_json::json!({ "workspaces": "none", "pluto_server_up": false }))), 1);
     assert!(live_work(&serde_json::json!({ "workspaces": [], "pluto_server_up": "yes" })).unsure.is_some(), "a flag that is no bool is no answer");
+}
+
+/// The answer has one reader, `parse_repls`, and it reads back every answer `print_repls` gives (labels with spaces,
+/// one of only a space, the Pluto server, a partial answer); what `print_repls` cannot give is refused: exit 0 with an
+/// error on stderr is not "nothing live".
+#[test]
+fn parse_repls_reads_back_every_answer_print_repls_gives() {
+    for work in [
+        Repls::default(),
+        Repls { rows: vec!["Rig PC".into(), " ".into(), "scan".into()], pluto: false, unsure: None },
+        Repls { rows: vec![], pluto: true, unsure: None },
+        Repls { rows: vec!["pluto server".into()], pluto: true, unsure: None },
+        Repls { rows: vec!["Rig PC".into()], pluto: false, unsure: Some("the daemon's reply says nothing of its Pluto server".into()) },
+        Repls { rows: vec![], pluto: false, unsure: Some("unix:/run/user dir/sot.sock: connection refused".into()) },
+    ] {
+        let (c, out, err) = print_repls(&work);
+        assert_eq!(parse_repls(c, &out, &err), Ok(work));
+    }
+    for (c, out, err) in [
+        (0, "", "sotd update repls: the daemon cannot be asked\n"),
+        (0, "repl a\n", ""),
+        (3, "", ""),
+        (3, "repl a\n", "noise\n"),
+        (3, "garbage\n", ""),
+        (3, "repl \n", ""),
+        (3, "pluto server\nrepl a\n", ""),
+        (3, "pluto server\npluto server\n", ""),
+        (3, "repl a", ""),
+        (1, "", ""),
+        (1, "", "sotd update repls:  \n"),
+        (2, "", "usage\n"),
+    ] {
+        assert!(parse_repls(c, out, err).is_err(), "exit {c} {out:?} {err:?}");
+    }
 }
 
 #[test]

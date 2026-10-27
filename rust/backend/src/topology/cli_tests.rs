@@ -107,3 +107,15 @@ fn sync_replaces_only_the_version_it_read() {
     publish_synced(&dest, Some(newer), fetched).unwrap();
     assert_eq!(std::fs::read_to_string(&dest).unwrap(), fetched);
 }
+
+/// A verb's refusal has one reader, `refusal`, and it reads back the line `report` prints (exit 2), telling the one
+/// for a missing hosts.toml from any other; any other exit or text is no refusal.
+#[test]
+fn refusal_reads_back_what_report_prints() {
+    let missing = format!("{NO_HOSTS}/h/.config/sot/hosts.toml (run `sotd topology sync --hub <alias>`)");
+    assert_eq!(refusal(2, &format!("{}\n", refusal_line(&missing))), Some((missing.clone(), true)));
+    assert_eq!(refusal(2, &format!("{}\n", refusal_line("line 3: unknown key `x`"))), Some(("line 3: unknown key `x`".to_string(), false)));
+    for (code, err) in [(1, format!("{}\n", refusal_line(&missing))), (2, "another program's line\n".to_string()), (2, format!("{}\n", refusal_line("  ")))] {
+        assert_eq!(refusal(code, &err), None, "exit {code} {err:?}");
+    }
+}

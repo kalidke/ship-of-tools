@@ -367,4 +367,9 @@ fn a_git_read_that_fails_is_not_a_clean_tree() {
     assert!(stop.code == 1 && stop.detail == "missing", "{stop:?}");
     assert_eq!(glibc_of("ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35\n"), Some((2, 35)));
     assert_eq!(glibc_of(""), None);
+    assert_eq!(glibc_of("ldd (GNU libc) 2.39\nCopyright (C) 2024 Free Software Foundation, Inc.\n"), Some((2, 39)));
+    assert_eq!(glibc_of("ldd (Debian GLIBC 2.36-9+deb12u4) 2.36\n"), Some((2, 36)));
+    for bad in ["musl libc (x86_64)\nVersion 1.2.4\n", "something else 99.99\n", "ldd (busybox) 1.36\n", "ldd (GNU libc) 2\n", "ldd (GNU libc) two.35\n", "ldd (GNU libc)\n"] {
+        assert_eq!(glibc_of(bad), None, "{bad:?}");
+    }
 }

@@ -130,7 +130,7 @@ fn with_topology(f: impl FnOnce(&Topology) -> Result<(), String>) -> i32 {
         Ok(Some(x)) => x,
         Ok(None) => {
             let looked = topology::locate().map(|p| p.display().to_string()).unwrap_or_default();
-            return report(Err(format!("no hosts.toml at {looked} (run `sotd topology sync --hub <alias>`)")));
+            return report(Err(format!("{NO_HOSTS}{looked} (run `sotd topology sync --hub <alias>`)")));
         }
         Err(e) => return report(Err(e)),
     };
@@ -158,10 +158,25 @@ fn report(r: Result<(), String>) -> i32 {
     match r {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("sotd topology: {e}");
+            eprintln!("{}", refusal_line(&e));
             2
         }
     }
+}
+
+/// How a verb's refusal begins on stderr (exit 2), and how the one with no hosts.toml continues.
+const REFUSED: &str = "sotd topology: ";
+const NO_HOSTS: &str = "no hosts.toml at ";
+
+fn refusal_line(why: &str) -> String {
+    format!("{REFUSED}{why}")
+}
+
+/// A verb's refusal read back (the installer's one reader of it): exit 2 and its `sotd topology: <why>` line, and
+/// whether it is the refusal for a missing hosts.toml. `None` for any other answer.
+pub(crate) fn refusal(code: i32, err: &str) -> Option<(String, bool)> {
+    let why = err.lines().rev().find_map(|l| l.strip_prefix(REFUSED)).filter(|w| code == 2 && !w.trim().is_empty())?;
+    Some((why.to_string(), why.starts_with(NO_HOSTS)))
 }
 
 /// The longest `topology set` waits on the hub's daemon, and its local running-rows check on this box's own.
@@ -360,7 +375,7 @@ fn report_cache_divergence(topo: &Topology) {
         return;
     };
     if !hub_hash.is_empty() && hub_hash != local_hash {
-        println!("cache diverged: this box's hosts.toml ({local_hash}) != the hub's ({hub_hash}); run `sotd topology sync`");
+        println!("{}", topology::status_line(&topology::StatusRow::Diverged { local: local_hash, hub: hub_hash.to_string() }));
     }
 }
 

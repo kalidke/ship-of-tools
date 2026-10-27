@@ -14,45 +14,13 @@ pub(super) struct Role {
     pub frontend: bool,
 }
 
-/// This host's entry in `sotd topology status`'s table (a header line, then `HOST DECLARED`, the declared words joined
-/// by commas), or `None` when the table does not list it.
-pub(super) fn from_status(table: &str, me: &str) -> Option<Role> {
-    table.lines().skip(1).find_map(|line| match status_line(line)? {
-        Status::Host(name, role) if name == me => Some(role),
+/// This host's entry in `sotd topology status`'s table (read by `sot_topology::parse_status`), or `None` when the table
+/// does not list it. A frontend runs its own daemon.
+pub(super) fn from_status(rows: &[sot_topology::StatusRow], me: &str) -> Option<Role> {
+    rows.iter().find_map(|row| match row {
+        sot_topology::StatusRow::Host { name, daemon, frontend, .. } if name == me => Some(Role { daemon: *daemon || *frontend, frontend: *frontend }),
         _ => None,
     })
-}
-
-/// One line of `sotd topology status`'s table after its header.
-enum Status<'a> {
-    /// A declared host and the role its words give.
-    Host(&'a str, Role),
-    /// A monitor-only row, a warning, or the cache divergence line.
-    Other,
-}
-
-/// A table line in topology's grammar (rust/topology/src/lib.rs:632-650 and the divergence line of
-/// rust/backend/src/topology/cli.rs:363): `<host> <words>`, a plain host name (rust/topology/src/endpoint.rs:120) and
-/// its words joined by commas from `hub`, `daemon`, `frontend`, `shell` and `sampled` (rust/topology/src/lib.rs:617);
-/// `<label> monitor-only <target>`; `WARNING <text>`; or `cache diverged: <text>`. `None` when it is none of these.
-fn status_line(line: &str) -> Option<Status<'_>> {
-    if line.starts_with("WARNING ") || line.starts_with("cache diverged: ") {
-        return Some(Status::Other);
-    }
-    if let Some((host, declared)) = line.split_once(' ').filter(|(host, words)| sot_topology::endpoint::is_plain_host_name(host) && !words.contains(' ')) {
-        let declared: Vec<&str> = declared.split(',').collect();
-        if declared.iter().all(|w| matches!(*w, "hub" | "daemon" | "frontend" | "shell" | "sampled")) {
-            let frontend = declared.contains(&"frontend");
-            return Some(Status::Host(host, Role { daemon: frontend || declared.contains(&"daemon"), frontend }));
-        }
-    }
-    line.split_once(" monitor-only ").filter(|(label, target)| !label.is_empty() && !target.is_empty()).map(|_| Status::Other)
-}
-
-/// The first line of a `sotd topology status` table after its header that is not in topology's grammar, or `None`
-/// when every line is.
-pub(super) fn status_unread(table: &str) -> Option<&str> {
-    table.lines().skip(1).find(|line| status_line(line).is_none())
 }
 
 /// The role a flag names.
@@ -93,16 +61,28 @@ pub(super) fn service_record(linux: bool, daemon: bool, no_service: bool) -> &'s
     if linux && daemon && !no_service { "systemd" } else { "none" }
 }
 
-/// ExecStart's program from a unit's text, in both shapes: `ExecStart=<bin>/sotd ...` and the `bash -c '...; exec
-/// "<bin>/sotd" ...'` the template writes.
-pub(super) fn unit_owner_path(unit: &str) -> Option<String> {
-    let line = unit.lines().find_map(|l| l.strip_prefix("ExecStart="))?;
-    let rest = match line.rfind("exec \"") {
-        Some(at) => &line[at + "exec \"".len()..],
-        None => line,
+/// ExecStart's program from a unit's text, in the two shapes an install wrote: the `bash -c '...; exec "<bin>/sotd"
+/// ...'` of `deploy/sotd.service`'s ExecStart (as `scripts/lib/sot-daemon.sh` `render_sotd_unit` renders it), and an
+/// older `ExecStart=<bin>/sotd ...`. A text whose program cannot be read so is refused, saying why: no ExecStart, more
+/// than one (a drop-in that resets or replaces it shows as a second in `systemctl cat`), an unbalanced quote, or a
+/// program that is not an absolute path. Limit: a unit whose one ExecStart runs the program another way is refused,
+/// never read.
+pub(super) fn unit_owner_path(unit: &str) -> Result<String, String> {
+    let starts: Vec<&str> = unit.lines().filter_map(|l| l.strip_prefix("ExecStart=")).collect();
+    let line = match starts.as_slice() {
+        [one] => *one,
+        [] => return Err("names no ExecStart".to_string()),
+        many => return Err(format!("holds {} ExecStart lines (a drop-in resets or replaces it)", many.len())),
     };
-    let path: String = rest.chars().take_while(|c| *c != ' ' && *c != '"').collect();
-    (!path.is_empty()).then_some(path)
+    if line.matches('"').count() % 2 != 0 || line.matches('\'').count() % 2 != 0 {
+        return Err(format!("has an unbalanced quote in ExecStart={line}"));
+    }
+    let path = match line.rfind("exec \"") {
+        Some(at) => line[at + "exec \"".len()..].split('"').next().unwrap_or(""),
+        None if !line.contains(['"', '\'']) => line.split(' ').next().unwrap_or(""),
+        None => "",
+    };
+    if path.starts_with('/') { Ok(path.to_string()) } else { Err(format!("runs no absolute program it can name in ExecStart={line}")) }
 }
 
 /// The prefix a `sot-launch` wrapper's text names, in its three known shapes (the all-in-one's `PENDING=`, the remote
@@ -159,11 +139,11 @@ pub(super) fn ownership(running: Option<&str>, home: &Path, prefix: &str, macos:
     let unit = home.join(".config/systemd/user/sotd.service");
     if let (true, Ok(text)) = (wires_unit, std::fs::read_to_string(&unit)) {
         match unit_owner_path(&text) {
-            None => return Gate::Unresolvable(format!("{} exists but names no program — move it aside and re-run", unit.display())),
-            Some(owner) if !force && !owner.starts_with(&format!("{prefix}/")) => {
+            Err(why) => return Gate::Unresolvable(format!("{} exists but {why} — move it aside and re-run", unit.display())),
+            Ok(owner) if !force && !owner.starts_with(&format!("{prefix}/")) => {
                 return Gate::Refuse(format!("{} runs {owner}, another install's sotd; this install targets {prefix}/bin/sotd", unit.display()));
             }
-            Some(_) => {}
+            Ok(_) => {}
         }
     }
     if !frontend {
@@ -213,28 +193,6 @@ pub(super) fn record_gate(record_path: &Path, declared: bool, daemon: bool, serv
         return Gate::Refuse(format!("{shown} records an install whose daemon runs as a systemd unit, and this run would record none"));
     }
     Gate::Allow
-}
-
-/// Whether a `sotd topology plan`'s text reads, in its producer's grammar (rust/topology/src/lib.rs:351-377): every
-/// line is `<word> <word> <rest of line>`, the rest free to hold spaces, and a line whose first word a reader does not
-/// know is ignored. It reads when its `self` line names `me`, and every `hub`, `relay-endpoint` and `dial` line has its
-/// parts: `hub <host>`, `relay-endpoint <endpoint>`, `dial <host> <endpoint>`.
-pub(super) fn plan_reads(plan: &str, me: &str) -> bool {
-    let parts = |line: &str| -> bool {
-        let Some((word, rest)) = line.split_once(' ') else { return !matches!(line, "self" | "hub" | "relay-endpoint" | "dial") };
-        match word {
-            "self" | "hub" | "relay-endpoint" => !rest.is_empty(),
-            "dial" => rest.split_once(' ').is_some_and(|(host, endpoint)| !host.is_empty() && !endpoint.is_empty()),
-            _ => true,
-        }
-    };
-    plan.lines().any(|line| line == format!("self {me}")) && plan.lines().filter(|line| !line.is_empty()).all(parts)
-}
-
-/// Whether a `sotd topology plan` dials a daemon host other than its own `self` line.
-pub(super) fn plan_dials_others(plan: &str) -> bool {
-    let me = plan.lines().find_map(|l| l.strip_prefix("self ")).map(str::trim).unwrap_or("");
-    plan.lines().filter_map(|l| l.strip_prefix("dial ")).filter_map(|r| r.split_whitespace().next()).any(|h| !h.is_empty() && h != me)
 }
 
 /// Whether a `sotd.service` host pin under `dir` names `host` and no other: the pin a claim writes with no hosts.toml.
