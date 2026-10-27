@@ -30,7 +30,7 @@ and tests whole; Order of passes says how a load is counted.
 |---|---|---:|---:|---:|---:|---|
 | platform | one answer per machine fact; durable publish, kernel locks, close-on-exec births, the peer challenge | 82 | 69 | 43 | 8 | yes |
 | wire | every byte between our programs: one frame codec, one op table, one protocol integer | 42 | 15 | 3 | 2 | yes |
-| topology | hosts.toml read one way; one ssh recipe; a link gate that ends logins on close | 50 | 54 | 31 | 23 | yes |
+| topology | hosts.toml read one way; one ssh recipe; one login per computer for the window, its end ending every channel | 50 | 54 | 31 | 23 | yes |
 | containment | every child in a kill domain its owner ends; every wait bounded | 26 | 18 | 27 | 3 | yes |
 | lifecycle | the last window's lease decides whether rows end; every daemon end is bounded and fires the child signal | 22 | 44 | 21 | 14 | yes |
 | server | one listener; nothing served before the OS peer check and an admitted hello; one writer per connection | 52 | 121 | 14 | 42 | yes |
@@ -80,13 +80,16 @@ platform and the capsule's lane client); the daemon's half stays in `sotd` until
 the limit the contract states: hosts.toml has one grammar and one search order, and its writers exclude one another
 through one lock, so neither `topology.set` nor `sync` replaces a newer version; a name that reaches ssh from the Rust
 tree is checked against `[a-z0-9][a-z0-9._-]*`, and no shell runs on this end; every ssh the Rust tree starts turns
-sharing off (the shell bridge is a named exception); a login the window or the lane client starts is admitted through
-the link gate, whose close ends the login a dial waits on (an established login ends when its stream closes); one
-remote attach is one dial and one login (the spare login went in 6c-1a2); a lane dial is bounded and typed; endpoints are derived by one function each; a unit sotd writes starts only where hosts.toml gives
+sharing off (the shell bridge is a named exception); since 2026-10-26 the window reaches each other computer over one
+login, its link, which carries its control connection, its pages and its rows as channels (two dial keys that name
+one relay endpoint are two links, a stated limit), and one remote attach is one channel and no login; a stalled
+channel never stops another (per-channel credit, opens taken in order); the link's end (a closed window, ssh's end,
+the far input's end, or 90 s of silence) fails every channel and every dial in flight at once, ends every copy over
+it whatever it is blocked on, and ends the far router with its input still open; a page's open and a lane dial are
+bounded and typed; endpoints are derived by one function each; a unit sotd writes starts only where hosts.toml gives
 it; every `systemctl` call has a wait budget; `sotd stdio-bridge` adds nothing to the stream unless its first frame
-is `link.hello`, which makes it the far router of a window's link (since 2026-10-26: per-channel credit, so a stalled
-channel never stops another; a dropped link ends every channel; each channel is admitted by the daemon as its own
-connection, so the router adds no path between accounts; no shipped window speaks the link yet). Owns: the hub's
+is `link.hello`, which makes it the far router of a window's link, each channel admitted by the daemon as its own
+connection, so the router adds no path between accounts. Owns: the hub's
 hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections (fe-net and the
 daemon's link do).
 
@@ -211,10 +214,12 @@ serve pages to the browser (pages).
 
 **pages.** Guarantees: every listener is loopback and the bound port is the one named; nothing served without a grant
 (token, nonce, secret then cookie); `.git` and `..` never served; a remote window's page rides its one link and ends
-when the link closes. Rests on: topology (link gate), sidecars (Pluto's grant), containment (quarto, git). Owns: the
+when the link closes. Rests on: topology (the window's link), sidecars (Pluto's grant), containment (quarto, git). Owns: the
 grant tables (memory only). Does not: render documents itself.
 
-**fe-net.** Guarantees: one task per dialled host; each connect-path reply within 30 s or a disconnect naming the
+**fe-net.** Guarantees: one task per dialled host; a remote host is one link, whose control session sends its hello on
+channel 0 at once and again on each reconnect (the daemon's first-frame bound would end the link otherwise), and its
+pages and rows are channels on it; each connect-path reply within 30 s or a disconnect naming the
 step; a down ssh host costs at most two logins a minute; a pipe host is leased before its data connection; 90 s of
 silence ends a connection. Rests on: wire, topology, platform's `Redial`, lifecycle's window lease. Owns: the
 connection set and `session-<host>.json`. Does not: touch view state.
@@ -492,6 +497,11 @@ holding that subsystem whole). The crossing words and the core types' removal to
 minutes each from launch to main, and one push of 199 seconds, before the guard's speed. The link's first two
 commits landed 2026-10-26: wire's link family and topology's link runtime, and `sotd stdio-bridge` as the far router
 of a window's link; the change 26 minutes (18 and 8), the local gate 9, the push about 20 seconds, with 11 minutes
-lost because the first commit's ready line went unwatched. The window on the link is the third commit; until it lands,
-no shipped window speaks the link, and that is the one thing half-done on main.
+lost because the first commit's ready line went unwatched. The link landed whole 2026-10-26: the window reaches each
+other computer over one login, the link gate, the lane child and the per-row and per-page logins are gone, and a
+link's end ends every channel, every copy over it and the far router; the third commit's change 52 minutes, a miss
+(48 files across the window, and a defect the keystroke timing suite found: the daemon's first-frame bound closes a
+channel 0 that sends no hello, which ends the link), its one findings round 25 (the router's exit with its input open,
+every copy cancelled at the link's end, a page's open bounded, opens in order), the gate 5 minutes. A real sshd, the
+Windows login and the other-account tests run at the release gate. Nothing is half-done on main.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
