@@ -32,7 +32,7 @@ TABLE = pathlib.Path(__file__).resolve().parents[2] / '.github' / 'test-shards.t
 KINDS = ('bin', 'test', 'example', 'bench')
 ROW_KINDS = KINDS + ('lib',)  # a row may also name one library's unit tests, by the library's target name
 REST = ('rest-0', 'rest-1', 'rest-2')
-OSES = {'linux': 'ubuntu-latest', 'windows': 'windows-latest', 'macos': 'macos-latest'}
+OSES = {'linux': 'ubuntu-24.04', 'windows': 'windows-latest', 'macos': 'macos-latest'}
 
 
 def rows():

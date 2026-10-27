@@ -52,7 +52,7 @@ jobs:
           - '1.12'
           - 'pre'
         os:
-          - ubuntu-latest
+          - ubuntu-24.04
         arch:
           - x64
     steps:
@@ -96,7 +96,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
+          - ubuntu-24.04
           - macos-latest
           - windows-latest
     steps:
@@ -124,7 +124,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
+          - ubuntu-24.04
           - macos-latest
           - windows-latest
     steps:
@@ -146,7 +146,7 @@ jobs:
   # two tool-backed preview plugins.
   julia-packages:
     name: Julia packages ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # As in `test`: the pre-release leg warns and never gates a cut.
     continue-on-error: ${{ matrix.version == 'pre' }}
     timeout-minutes: 12
@@ -234,7 +234,7 @@ jobs:
           fail_ci_if_error: false
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Usually 2 to 10 minutes; makedocs runs the doctests.
     timeout-minutes: 12
     concurrency:

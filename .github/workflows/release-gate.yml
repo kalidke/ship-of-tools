@@ -25,7 +25,7 @@ env:
 jobs:
   plan:
     name: plan the test shards
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
       gate: ${{ steps.plan.outputs.gate }}
@@ -61,7 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'test-linux' || format('test-{0}', matrix.os) }}
+          shared-key: ${{ matrix.os == 'ubuntu-24.04' && 'test-linux' || format('test-{0}', matrix.os) }}
           cache-on-failure: true
           save-if: ${{ contains(matrix.shard, 'rest-0') }}
       # The sotd unit tests render through the real MathJax node script, which needs its npm modules.
@@ -93,7 +93,7 @@ jobs:
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. The
       # landing run (rust.yml `checks-linux`) checks what compiles on Linux; this checks cfg(windows) and cfg(macos).
       - name: Disallowed methods
-        if: matrix.os != 'ubuntu-latest' && matrix.shard == 'gate-wgl'
+        if: matrix.os != 'ubuntu-24.04' && matrix.shard == 'gate-wgl'
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
       # here. --no-fail-fast: one failing test binary must not hide the others.
@@ -311,7 +311,7 @@ jobs:
   # the premises on real children (its guard-free cases are the in-crate lifecycle tests of the `test` job below).
   daemon-lifetime-linux:
     name: daemon lifetime harness (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     defaults:
       run:
@@ -379,7 +379,7 @@ jobs:
   # of the machine, so the per-landing CI.yml job skips them and the local gate and this run set the switch.
   repl-signals-linux:
     name: REPL signal tests (Linux, Julia 1.12)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -395,8 +395,8 @@ jobs:
   # The ubuntu checks that take minutes: the gate's clippy and bash 3.2 jobs on a stand-in workspace, the heartbeat
   # suite and the hermetic comm and agents suites.
   checks-slow-linux:
-    name: slow checks (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: slow checks (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
       run:
@@ -528,8 +528,8 @@ jobs:
   # tarball (sha256 pinned), parses each shipped script and is the bash every hermetic suite's scripts run under
   # (scripts/tests/under-bash.sh, whose default is every hermetic suite, so a new suite joins by its name alone).
   bash32-linux:
-    name: scripts under bash 3.2.57 (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: scripts under bash 3.2.57 (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7

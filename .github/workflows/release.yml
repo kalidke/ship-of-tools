@@ -202,7 +202,7 @@ jobs:
     # break on its first run). Installs instantiate from the checkout, so
     # "resolves + loads at the tag" is the release-blocking property.
     name: julia envs resolve + load
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Usually about a minute.
     timeout-minutes: 15
     steps:
@@ -226,7 +226,7 @@ jobs:
     # fleet; this job exists so that never recurs.
     name: smoke test (linux artifact)
     needs: [build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Usually under a minute.
     timeout-minutes: 10
     container: ubuntu:20.04
@@ -434,7 +434,7 @@ jobs:
     # here. One job names it for the three platforms, so they update from the same release.
     name: release before this run
     needs: [build]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Usually under a minute.
     timeout-minutes: 10
     outputs:
@@ -465,7 +465,7 @@ jobs:
     # bus"); Julia comes from the installer's own juliaup step. Scenarios: scripts/tests/install-smoke.sh.
     name: install smoke (linux ${{ matrix.scenario }})
     needs: [build, release-before]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Cold: juliaup, then three Julia environments (Pluto's precompile is most of it); the update scenarios do it twice.
     timeout-minutes: 60
     container: ubuntu:22.04
@@ -553,7 +553,7 @@ jobs:
     name: draft the release
     if: startsWith(github.ref, 'refs/tags/')
     needs: [build, smoke, smoke-windows, smoke-macos, julia-check, install-linux, install-macos, install-windows]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Usually under a minute.
     timeout-minutes: 10
     permissions:
