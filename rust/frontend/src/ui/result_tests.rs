@@ -75,11 +75,30 @@ impl State {
         b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
     ) -> Result<()> {
         anyhow::ensure!(*self.selected.host() == *a, "docs probe: the window must view host a");
-        self.dispatch_fe_command(Some(b), FeCommand::Docs { workspace: "project".into(), path: "/site/page.html".into() });
-        anyhow::ensure!(
-            matches!(b_rx.try_recv(), Ok(OutgoingReq::DocsOpen { .. })) && a_rx.try_recv().is_err(),
-            "docs went to the viewed host, not the host that sent it"
-        );
+        for scope in [serde_json::json!({"scope": "none"}),
+            serde_json::json!({"scope": "row", "workspace_id": "id-b"}), serde_json::json!({"scope": "all"})] {
+            let evt = sot_protocol::FeCommandEvt {
+                v: 1, cmd: "docs".into(),
+                args: serde_json::json!({"workspace": "project", "path": "/site/page.html", "direct": scope}),
+                target: None, target_serial: None,
+            };
+            let cmd = route_fe_command(&evt, "fe@test").expect("docs route");
+            self.dispatch_fe_command(Some(b), cmd);
+            let request = b_rx.try_recv()?;
+            anyhow::ensure!(matches!(&request, OutgoingReq::DocsOpen { .. }) && a_rx.try_recv().is_err(),
+                "docs went to the viewed host instead of the sending daemon");
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut driver = crate::net::transport::ResultTreeTestDriver::new(b.clone(), &tx);
+            let mut bytes = Vec::new();
+            pollster::block_on(driver.send(&mut bytes, 42, request))?;
+            let frame: sot_protocol::Frame = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(frame.op == sot_protocol::op::DOCS_OPEN
+                && frame.payload["path"] == "/site/page.html" && frame.payload["direct"] == scope,
+                "docs lost its opener's scope before the encoded request: {:?}", frame.payload);
+        }
+        self.docs_open_external(b, "/site/ordinary.html".into());
+        anyhow::ensure!(matches!(b_rx.try_recv(), Ok(OutgoingReq::DocsOpen { direct: sot_protocol::ReplyScope::None, .. })),
+            "an ordinary UI open requested direct replies");
         Ok(())
     }
 

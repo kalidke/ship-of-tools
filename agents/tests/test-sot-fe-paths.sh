@@ -260,6 +260,13 @@ check "docs (windows): a pipe: daemon gets its spelling" \
     "$(sent fe.command.send .payload.args.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" --endpoint "$PIPE" --timeout 1)" "$FW"
 check "docs: a unix: daemon gets the path as written" \
     "$(sent fe.command.send .payload.args.path "$PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" --endpoint "unix:$REC" --timeout 1)" "$F"
+for scope in none row all; do
+    direct_args=()
+    case "$scope" in row) direct_args=(--direct) ;; all) direct_args=(--direct-all) ;; esac
+    want_scope="$(jq -nc --arg s "$scope" 'if $s == "row" then {scope:$s, workspace_id:"ws"} else {scope:$s} end')"
+    check "docs: the opener sends the $scope reply scope through fe.command" \
+        "$(sent fe.command.send '.payload.args.direct | tojson' "$PATH" bash "$SCRIPTS_DIR/sot-fe" docs ws "$F" "${direct_args[@]}" --endpoint "unix:$REC" --timeout 1)" "$want_scope"
+done
 check "repl run --fresh (windows): a pipe: daemon gets its spelling" \
     "$(sent repl.run_file .payload.path "$WIN_PATH" bash "$SCRIPTS_DIR/sot-fe" repl run ws-x "$F" --fresh --endpoint "$PIPE" --timeout 1)" "$FW"
 check "repl run --fresh numbers no run: the daemon numbers it and announces it to every window" \

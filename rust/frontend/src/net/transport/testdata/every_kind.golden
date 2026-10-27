@@ -31,7 +31,7 @@
 > {"v":4,"id":32,"kind":"req","op":"workspace.destroy","payload":{"workspace_id":"wd.ws"}}
 > {"v":4,"id":33,"kind":"req","op":"pluto.open","payload":{"path":"pl.path"}}
 > {"v":4,"id":34,"kind":"req","op":"video.open","payload":{"path":"vo.path"}}
-> {"v":4,"id":35,"kind":"req","op":"docs.open","payload":{"path":"do.path"}}
+> {"v":4,"id":35,"kind":"req","op":"docs.open","payload":{"direct":{"scope":"all"},"path":"do.path"}}
 > {"v":4,"id":36,"kind":"req","op":"page.reply","payload":{"handle":"pr.handle","line":"pr.line","workspace_id":"pr.ws"}}
 > {"v":4,"id":37,"kind":"req","op":"quarto.open","payload":{"execute":true,"path":"qo.path"}}
 > {"v":4,"id":38,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}

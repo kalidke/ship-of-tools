@@ -48,8 +48,12 @@ async fn window(env: &Env, instance: &str) -> Conn {
 }
 
 async fn setup(tag: &str) -> (Env, Conn) {
+    setup_with_slug(tag, ROW).await
+}
+
+async fn setup_with_slug(tag: &str, slug: &str) -> (Env, Conn) {
     let env = Env::new(tag);
-    env.seed_capsule_toml(ROW, ROW, &env.workspace_project_root, "none");
+    env.seed_capsule_toml(ROW, slug, &env.workspace_project_root, "none");
     // The page belongs to the default workspace; its actions target a different row.
     let site = env.daemon_project_root.join("queue");
     std::fs::create_dir_all(&site).unwrap();
@@ -139,6 +143,167 @@ async fn open(conn: &mut Conn, path: &Path) -> SiteUrl {
     let res = call(conn, 10, op::DOCS_OPEN, json!({"path": path})).await;
     assert!(res.payload.get("error").is_none(), "{res:?}");
     SiteUrl::parse(res.payload["url"].as_str().unwrap())
+}
+
+async fn open_scoped(conn: &mut Conn, path: &Path, direct: Value) -> SiteUrl {
+    let res = call(conn, 10, op::DOCS_OPEN, json!({"path": path, "direct": direct})).await;
+    assert!(res.payload.get("error").is_none(), "{res:?}");
+    SiteUrl::parse(res.payload["url"].as_str().unwrap())
+}
+
+async fn reply_scope(site: &SiteUrl) -> Value {
+    let res = site.post(json!({"verb": "states"})).await;
+    assert_eq!(res.status, 200, "{}", String::from_utf8_lossy(&res.body));
+    res.json()["reply_scope"].clone()
+}
+
+#[tokio::test]
+async fn states_reports_the_entry_scope_with_a_canonical_row_id() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup_with_slug("page-scopes", "direct-alias").await;
+    let ordinary = queue(&env, &mut a).await;
+    assert_eq!(reply_scope(&ordinary).await, json!({"scope": "none"}), "an old frontend sends only path");
+    let all = open_scoped(&mut a, &env.daemon_project_root.join("queue/index.html"), json!({"scope": "all"})).await;
+    assert_eq!(reply_scope(&all).await, json!({"scope": "all"}));
+    let row = open_scoped(&mut a, &env.workspace_project_root.join("decision.html"),
+        json!({"scope": "row", "workspace_id": "direct-alias"})).await;
+    assert_eq!(reply_scope(&row).await, json!({"scope": "row", "workspace_id": ROW}));
+    std::fs::write(env.workspace_project_root.join("index.html"), "<p>Row index</p>").unwrap();
+    let directory = open_scoped(&mut a, &env.workspace_project_root, json!({"scope": "row", "workspace_id": ROW})).await;
+    assert_eq!(reply_scope(&directory).await, json!({"scope": "row", "workspace_id": ROW}));
+    assert_eq!(directory.raw("GET", None, "", "").await.status, 200);
+}
+
+#[tokio::test]
+async fn a_direct_row_open_refuses_a_page_in_another_known_workspace() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-scope-outside").await;
+    let outside = env.daemon_project_root.join("queue/index.html");
+    let refused = call(&mut a, 10, op::DOCS_OPEN,
+        json!({"path": outside, "direct": {"scope": "row", "workspace_id": ROW}})).await;
+    assert_eq!(refused.payload["code"], "page_outside", "{refused:?}");
+    assert!(!refused.payload["error"].as_str().unwrap().is_empty());
+    assert!(refused.payload.get("url").is_none(), "refusal must not downgrade to an ordinary open");
+    #[cfg(unix)]
+    {
+        let link = env.workspace_project_root.join("escape.html");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let refused = call(&mut a, 11, op::DOCS_OPEN,
+            json!({"path": link, "direct": {"scope": "row", "workspace_id": ROW}})).await;
+        assert_eq!(refused.payload["code"], "page_outside");
+        assert!(refused.payload.get("url").is_none());
+        let directory = env.workspace_project_root.join("escaped-index");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::os::unix::fs::symlink(&outside, directory.join("index.html")).unwrap();
+        let refused = call(&mut a, 11, op::DOCS_OPEN,
+            json!({"path": directory, "direct": {"scope": "row", "workspace_id": ROW}})).await;
+        assert_eq!(refused.payload["code"], "page_outside");
+    }
+    let missing = call(&mut a, 12, op::DOCS_OPEN,
+        json!({"path": outside, "direct": {"scope": "row", "workspace_id": "unregistered-row"}})).await;
+    assert_eq!(missing.payload["code"], "unknown_workspace");
+}
+
+#[tokio::test]
+async fn the_open_verb_always_grants_the_targets_row_and_never_all() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-open-scope").await;
+    let page = env.workspace_project_root.join("decision.html");
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "workspace_id": ROW, "state": "blocked",
+        "question": format!("Land it? Page: {}", page.display())}));
+    for scope in [json!({"scope": "none"}), json!({"scope": "row", "workspace_id": ROW}), json!({"scope": "all"})] {
+        let opener = open_scoped(&mut a, &page, scope).await;
+        let offered = opener.post(json!({"verb": "open", "handle": HANDLE, "direct": {"scope": "all"}})).await;
+        assert_eq!(offered.status, 202);
+        let args = command(&mut a, "docs").await;
+        // Neither a forged POST field nor a wider redemption request may upgrade the already-made grant.
+        let res = call(&mut a, 11, op::DOCS_OPEN, json!({"path": args["path"], "direct": {"scope": "all"}})).await;
+        let decision = SiteUrl::parse(res.payload["url"].as_str().unwrap());
+        assert_eq!(reply_scope(&decision).await, json!({"scope": "row", "workspace_id": ROW}));
+        assert_eq!(decision.raw("GET", None, "", "").await.status, 200);
+    }
+}
+
+#[tokio::test]
+async fn navigation_from_a_direct_entry_gets_an_ordinary_grant_in_both_servers() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-scope-navigation").await;
+    for pool in [false, true] {
+        let folder = env.workspace_project_root.join(if pool { "pool" } else { "prefix" });
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("index.html"), if pool { "<script src=\"/a.js\"></script>" } else { "<p>Entry</p>" }).unwrap();
+        std::fs::write(folder.join("other page.html"), "<p>Other document</p>").unwrap();
+        std::fs::write(folder.join("a.js"), "// asset").unwrap();
+        for scope in [json!({"scope": "row", "workspace_id": ROW}), json!({"scope": "all"})] {
+            let direct = open_scoped(&mut a, &folder.join("index.html"), scope.clone()).await;
+            assert_eq!(reply_scope(&direct).await, scope);
+            let entry_file = direct.raw("GET", None, "", "").await;
+            assert_eq!(entry_file.status, 200);
+            let (path, query) = direct.target.split_once('?').unwrap_or((&direct.target, ""));
+            let parent = path.rsplit_once('/').unwrap().0;
+            let suffix = if query.is_empty() { String::new() } else { format!("?{query}") };
+            let other = SiteUrl { target: format!("{parent}/other%20page.html{suffix}"), ..direct.clone() };
+            if pool {
+                let cookie = entry_file.headers.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap();
+                let bare = SiteUrl { target: format!("{parent}/other%20page.html?view=waiting"), ..direct.clone() };
+                let redirected = bare.raw("GET", None, &format!("Cookie: {cookie}\r\n"), "").await;
+                assert_eq!(redirected.status, 302, "a browser's relative navigation carries its cookie, not the entry's query");
+                let target = redirected.headers.lines().find_map(|l| l.strip_prefix("Location: ")).unwrap().to_string();
+                assert!(target.contains("view=waiting&secret="));
+                assert_eq!(reply_scope(&SiteUrl { target, ..direct.clone() }).await, json!({"scope": "none"}));
+            }
+            let redirected = other.raw("GET", None, "", "").await;
+            assert_eq!(redirected.status, 302, "another HTML document must exchange capabilities");
+            let target = redirected.headers.lines().find_map(|l| l.strip_prefix("Location: ")).unwrap().to_string();
+            assert_ne!(target, other.target);
+            let ordinary = SiteUrl { target, ..direct.clone() };
+            let file = ordinary.raw("GET", None, "", "").await;
+            assert_eq!(file.status, 200);
+            assert_eq!(file.body, b"<p>Other document</p>");
+            assert_eq!(reply_scope(&ordinary).await, json!({"scope": "none"}));
+            let back = SiteUrl { target: ordinary.target.replace("other%20page.html", "index.html"), ..ordinary.clone() };
+            assert_eq!(back.raw("GET", None, "", "").await.status, 200);
+            assert_eq!(reply_scope(&back).await, json!({"scope": "none"}), "navigation back cannot upgrade an ordinary grant");
+            assert_eq!(reply_scope(&direct).await, scope, "the original entry keeps its own grant");
+            if pool {
+                let cookie = file.headers.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).unwrap().split(';').next().unwrap();
+                let asset = SiteUrl { target: "/a.js".into(), ..ordinary.clone() };
+                assert_eq!(asset.raw("GET", None, &format!("Cookie: {cookie}\r\n"), "").await.status, 200,
+                    "ordinary navigation retains root-relative assets on the same pool origin");
+                let replacement = open_scoped(&mut a, &folder.join("index.html"), scope.clone()).await;
+                ordinary.post(json!({"verb": "states"})).await.code(403, "forbidden");
+                direct.post(json!({"verb": "states"})).await.code(403, "forbidden");
+                assert_eq!(reply_scope(&replacement).await, scope);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_post_cannot_change_scope_and_only_an_unscoped_reply_offers_the_bar() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-post-scope").await;
+    let page = env.workspace_project_root.join("decision.html");
+    for scope in [json!({"scope": "none"}), json!({"scope": "row", "workspace_id": ROW}), json!({"scope": "all"})] {
+        let site = open_scoped(&mut a, &page, scope.clone()).await;
+        let forged = json!({"scope": "all", "workspace_id": "another-row"});
+        let res = site.post(json!({"verb": "states", "direct": forged, "reply_scope": forged})).await;
+        assert_eq!(res.status, 200);
+        assert_eq!(res.json()["reply_scope"], scope);
+        let reply = site.post(json!({"verb": "reply", "handle": HANDLE, "text": "approve", "direct": forged})).await;
+        if scope == json!({"scope": "none"}) {
+            assert_eq!(reply.status, 202);
+            assert_eq!(command(&mut a, "page_reply").await,
+                json!({"workspace": ROW, "handle": HANDLE, "line": "[sot-page] approve"}));
+        } else {
+            assert_eq!(reply.status, 200, "a scoped reply is rows' to deliver: {:?}", reply.json());
+            assert!(reply.json()["receipt"]["outcome"].is_string(), "{:?}", reply.json());
+            no_command(&mut a).await;
+        }
+        assert_eq!(reply_scope(&site).await, scope);
+        let elsewhere = SiteUrl { target: site.target.replace("decision.html", "no-file-needed"), ..site.clone() };
+        assert_eq!(reply_scope(&elsewhere).await, json!({"scope": "none"}), "a POST path beneath the nonce does not inherit entry authority");
+    }
 }
 
 async fn queue(env: &Env, conn: &mut Conn) -> SiteUrl {

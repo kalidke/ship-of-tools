@@ -121,15 +121,37 @@ fn route_docs_parses_workspace_and_path() {
         None,
     );
     match route_fe_command(&evt, "fe@host-a") {
-        Some(FeCommand::Docs { workspace, path }) => {
+        Some(FeCommand::Docs { workspace, path, direct }) => {
             assert_eq!(workspace, "ws");
             assert_eq!(path, "/abs/site/index.html");
+            assert_eq!(direct, sot_protocol::ReplyScope::None);
         }
         other => panic!("expected Docs, got {other:?}"),
     }
     // Missing path → None (required arg bails the parse).
     let evt = fe_evt("docs", serde_json::json!({"workspace": "ws"}), None);
     assert!(route_fe_command(&evt, "fe@host-a").is_none());
+}
+
+#[tokio::test]
+async fn docs_scopes_reach_the_encoded_request_and_an_old_frontend_grants_none() {
+    use crate::net::transport::{OutgoingReq, ResultTreeTestDriver};
+    use sot_protocol::{DocsOpenReq, ReplyScope};
+    for scope in [ReplyScope::None, ReplyScope::Row { workspace_id: "ws".into() }, ReplyScope::All] {
+        let evt = fe_evt("docs", serde_json::json!({"workspace": "ws", "path": "/site/index.html", "direct": scope}), None);
+        let Some(FeCommand::Docs { path, direct, .. }) = route_fe_command(&evt, "fe@host-a") else { panic!("docs command lost"); };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut driver = ResultTreeTestDriver::new("host-a".into(), &tx);
+        let mut bytes = Vec::new();
+        driver.send(&mut bytes, 42, OutgoingReq::DocsOpen { path, direct }).await.unwrap();
+        let frame: sot_protocol::Frame = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(frame.op, sot_protocol::op::DOCS_OPEN);
+        let request: DocsOpenReq = serde_json::from_value(frame.payload.clone()).unwrap();
+        assert_eq!(request.direct, scope);
+        // An older frontend drops the command's new field and sends the previous payload shape.
+        let old: DocsOpenReq = serde_json::from_value(serde_json::json!({"path": request.path})).unwrap();
+        assert_eq!(old.direct, ReplyScope::None);
+    }
 }
 
 #[test]

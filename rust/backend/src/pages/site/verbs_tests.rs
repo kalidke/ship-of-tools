@@ -326,3 +326,63 @@ async fn budget_case(states_stalled: bool, owner: u64) {
     if !states_stalled { assert_eq!(commands.try_recv().unwrap().target_serial, Some(42)); }
     remove_root(owner);
 }
+
+/// A grant with a reply scope types through rows' direct delivery and answers its receipt, with no window; a row scope
+/// answers only its own row, and `states` carries the scope and the receipts.
+#[tokio::test]
+async fn a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_row() {
+    let root = tempfile::tempdir().unwrap();
+    const OWNER: u64 = 8_000_000_077;
+    let site = || Site::plain(root.path().to_path_buf());
+    let row_nonce = set_root_scoped(OWNER, site(), "index.html", ReplyScope::Row { workspace_id: "row".into() }).unwrap();
+    let all_nonce = set_root_scoped(OWNER, site(), "index.html", ReplyScope::All).unwrap();
+    let delivered = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let d = delivered.clone();
+    let verbs = Arc::new(PageVerbs::new(
+        Arc::new(|| Ok(Vec::new())),
+        Arc::new(|handle| Ok(RowRef {
+            workspace_id: if handle == "mine" { "row".into() } else { "other".into() },
+            project_root: PathBuf::new(), page: String::new(),
+        })),
+        Arc::new(|_| None),
+        tokio::sync::broadcast::channel(16).0,
+    ).with_direct(
+        Arc::new(move |ws: String, handle: String, line: String, id: String| -> verbs::DirectReply {
+            d.lock().unwrap().push((ws.clone(), line));
+            Box::pin(async move { Ok(json!({"request_id": id, "workspace_id": ws, "handle": handle, "outcome": "held", "detail": "busy"})) })
+        }),
+        Arc::new(|| json!([{"request_id": "r1", "outcome": "sent"}])),
+    ));
+    let listener = crate::pages::bind_page_listener(0).unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(sot_platform::identity::peer_owner::serve_own(listener, "page-test", move |stream| {
+        let verbs = verbs.clone();
+        async move { handle_conn(stream, ServeMode::Prefix, verbs).await.expect("page connection"); }
+    }));
+    let post = |nonce: String, body: serde_json::Value| async move {
+        let body = body.to_string();
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(format!("POST /{nonce}/ HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let status = text.split_whitespace().nth(1).unwrap().parse::<u16>().unwrap();
+        (status, serde_json::from_str::<serde_json::Value>(text.split("\r\n\r\n").nth(1).unwrap_or("null")).unwrap_or_default())
+    };
+    let (status, answer) = post(row_nonce.clone(), json!({"verb": "reply", "handle": "theirs", "text": "approve"})).await;
+    assert_eq!((status, answer["code"].as_str()), (403, Some("out_of_scope")), "{answer}");
+    assert!(delivered.lock().unwrap().is_empty(), "an out-of-scope reply reached delivery");
+    let (status, answer) = post(row_nonce.clone(), json!({"verb": "reply", "handle": "mine", "text": "approve", "request_id": "r1"})).await;
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!((answer["receipt"]["request_id"].as_str(), answer["receipt"]["outcome"].as_str()), (Some("r1"), Some("held")));
+    let (status, _) = post(all_nonce, json!({"verb": "reply", "handle": "theirs", "text": "approve"})).await;
+    assert_eq!(status, 200);
+    let seen = delivered.lock().unwrap().clone();
+    assert_eq!(seen.iter().map(|(ws, _)| ws.as_str()).collect::<Vec<_>>(), ["row", "other"]);
+    assert!(seen.iter().all(|(_, line)| line.starts_with("[sot-page] ")), "{seen:?}");
+    let (status, states) = post(row_nonce, json!({"verb": "states"})).await;
+    assert_eq!(status, 200);
+    assert_eq!((states["reply_scope"]["scope"].as_str(), states["reply_scope"]["workspace_id"].as_str()), (Some("row"), Some("row")));
+    assert_eq!(states["replies"][0]["outcome"], "sent");
+    remove_root(OWNER);
+}

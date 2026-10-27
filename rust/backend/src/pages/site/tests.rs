@@ -47,7 +47,7 @@ mod pool_tests {
         assert_ne!(s2_again, s2);
         assert!(s2_again.len() == 32 && s2_again.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         assert_eq!(
-            pool_entry_for(p2).map(|(_, r, _)| r.content_root.clone()),
+            pool_entry_for(p2).map(|(_, r, _)| r.site.content_root.clone()),
             Some(PathBuf::from("/b2"))
         );
         // Fifth owner: exhausted while no owner holding a port is away.
@@ -58,7 +58,7 @@ mod pool_tests {
         let (p5, s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e")), || vec![S + 9, S + 3, S + 1]).unwrap();
         assert_eq!(p5, p3);
         assert_ne!(s5, s3);
-        assert_eq!(pool_entry_for(p3).map(|(_, r, s)| (r.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
+        assert_eq!(pool_entry_for(p3).map(|(_, r, s)| (r.site.content_root.clone(), s)), Some((PathBuf::from("/e"), s5)));
         // An owner's end frees exactly its port; next claim gets it.
         remove_root(S + 4);
         assert_eq!(pool_in_use(), 3);

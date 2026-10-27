@@ -74,7 +74,7 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         OutgoingReq::WorkspaceDestroy { workspace_id: s("wd.ws") },
         OutgoingReq::PlutoOpen { path: s("pl.path") },
         OutgoingReq::VideoOpen { path: s("vo.path") },
-        OutgoingReq::DocsOpen { path: s("do.path") },
+        OutgoingReq::DocsOpen { path: s("do.path"), direct: sot_protocol::ReplyScope::All },
         OutgoingReq::PageReply { workspace_id: s("pr.ws"), handle: s("pr.handle"), line: s("pr.line") },
         OutgoingReq::QuartoOpen { path: s("qo.path"), execute: true },
         OutgoingReq::ReplRunFile { eval_id: 116, path: s("rf.path"), fresh: true, workspace_id: o("rf.ws") },

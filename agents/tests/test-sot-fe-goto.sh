@@ -49,6 +49,15 @@ case_urgent_needs_fe() {
 check "goto --boot is refused as an unknown flag before anything is sent" case_boot_is_refused
 check "preview --urgent without --fe is refused before anything is sent" case_urgent_needs_fe
 
+case_direct_flags_are_exclusive_and_docs_only() {
+    local out rc
+    out="$("$SOT_FE" docs demo /site/index.html --direct --direct-all --endpoint "unix:$WORK/nobody.sock" 2>&1)"; rc=$?
+    [ "$rc" = 1 ] && [[ $out == *"choose only one"* ]] || { echo "rc=$rc out=$out"; return 1; }
+    out="$("$SOT_FE" goto demo --direct --endpoint "unix:$WORK/nobody.sock" 2>&1)"; rc=$?
+    [ "$rc" = 1 ] && [[ $out == *"only for docs"* ]] || { echo "rc=$rc out=$out"; return 1; }
+}
+check "direct scope flags are exclusive and only accepted for docs" case_direct_flags_are_exclusive_and_docs_only
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

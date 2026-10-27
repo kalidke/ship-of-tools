@@ -1057,6 +1057,46 @@ async fn a_page_reply_left_typed_is_never_entered_or_retried_by_the_wake() {
     row.env.kill_daemon_bounded().await;
 }
 
+async fn page_reply_held(row: &mut Row, handle: &str, line: &str) -> serde_json::Value {
+    let id = row.next_id;
+    row.next_id += 1;
+    call(&mut row.conn, id, "page.reply", serde_json::json!({
+        "workspace_id": row.ws, "handle": handle, "line": line, "hold": true
+    })).await.payload
+}
+
+/// A direct reply to a working row waits in memory and is typed by the wake's tick once the prompt frees.
+#[tokio::test]
+async fn a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("pr-held", None, false).await;
+    prepare_page_reply(&row).await;
+    std::fs::write(&row.spin, b"").unwrap();
+    wait_for_screen(&mut row, "spinner").await;
+    let res = page_reply_held(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "held", "{res}");
+    assert!(received(&row).is_empty(), "typed into a working row");
+    std::fs::remove_file(&row.spin).unwrap();
+    wait_for("the held reply", || !received(&row).is_empty()).await;
+    assert_eq!(received(&row), ["[sot-page] approve"]);
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The person's unsent text is a refusal that waiting does not clear: nothing is held or typed.
+#[tokio::test]
+async fn a_direct_reply_is_refused_at_a_draft_and_types_nothing() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_with("pr-held-draft", None, false, &["draft=unsent words"], &[]).await;
+    prepare_page_reply(&row).await;
+    wait_for_screen(&mut row, "unsent words").await;
+    let res = page_reply_held(&mut row, HANDLE, "[sot-page] approve").await;
+    assert_eq!(res["outcome"], "refused", "{res}");
+    assert!(res["detail"].as_str().unwrap().starts_with("draft"), "{res}");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert!(received(&row).is_empty(), "a refused reply reached the pane");
+    row.env.kill_daemon_bounded().await;
+}
+
 /// POST only offers a reply to its own window; even with a free row no bytes reach the pane.
 #[tokio::test]
 async fn a_page_reply_post_types_nothing() {
