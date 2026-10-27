@@ -114,12 +114,14 @@ def main():
             # Keep native Git in its installation so the installer can find that installation's Bash.
             path = [tools, git.parent, system, system / "WindowsPowerShell/v1.0", system / "Wbem"]
         else:
-            # No installed Julia, npm, service tool or agent can be reached. Git still finds its own libexec tools.
-            for name in ["bash", "sh", "cat", "chmod", "cmp", "cp", "git", "grep", "ldd", "mkdir", "mktemp", "mv", "od", "rm", "sed", "stat", "tr", "uname", "awk", "id"]:
+            # No installed Julia, npm, service tool or agent can be reached. Git still finds its own libexec tools. The
+            # real ps lists this account's processes, none of them the scratch prefix's: a listing that prints nothing
+            # is no answer, never "none runs".
+            for name in ["bash", "sh", "cat", "chmod", "cmp", "cp", "git", "grep", "ldd", "mkdir", "mktemp", "mv", "od", "ps", "rm", "sed", "stat", "tr", "uname", "awk"]:
                 executable = shutil.which(name)
                 if executable:
                     (tools / name).symlink_to(executable)
-            for name in ["ps", "jq"]:
+            for name in ["jq"]:
                 (tools / name).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 (tools / name).chmod(0o755)
             path = [tools]
