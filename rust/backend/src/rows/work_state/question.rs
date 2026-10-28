@@ -64,6 +64,28 @@ pub(crate) fn parts(text: &str) -> Parts {
     out
 }
 
+/// Why a blocked question owes a decision page it does not name (`Page:`), or `None`. The maintainer, 2026-10-27: "we
+/// need a decision page when I need more context than a sentence or two to make the decision", and a merge, a tag or
+/// a registration (an `Irreversible:` clause, or an older line's `Pane only:`) always carries one. The context is the
+/// question before `Options:`; more than two sentences of it owe a page.
+pub(crate) fn page_owed(text: &str) -> Option<&'static str> {
+    let p = parts(text);
+    if !p.page.is_empty() {
+        return None;
+    }
+    if text.contains("Irreversible:") || text.contains("Pane only:") {
+        return Some("an Irreversible question (a merge, a tag, a registration) always carries a decision page");
+    }
+    (sentences(&p.question) > 2).then_some("the question runs past two sentences, so its context belongs on a decision page")
+}
+
+/// Sentences, counted by their ends: a `.`, `?` or `!` followed by a space or the end (a run such as "?!" or "..."
+/// ends one; a version's "0.7.0" or a path's dot ends none).
+fn sentences(text: &str) -> usize {
+    let cs: Vec<char> = text.trim_end().chars().collect();
+    (0..cs.len()).filter(|&i| matches!(cs[i], '.' | '?' | '!') && cs.get(i + 1).map_or(true, |c| c.is_whitespace())).count()
+}
+
 /// The options before a recommendation, without the word that opens it ("... measured. I recommend (a)").
 fn without_speaker(head: &str) -> &str {
     let head = head.trim_end();

@@ -220,6 +220,12 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   `question`, `waiting`, `done`, `dialog` and `note`. Precedence: a dialog, then a question while no turn runs, then a
   floor, a wait, done, idle. `blocked` keeps a wait; `waiting` clears a question; `working`, `idle` and `done` clear
   both; a question or a wait without text of its own is refused (exit 2), so no red or purple row is ever textless.
+  A `blocked` declaration whose question owes a decision page and names none is refused too (exit 2, with the reason
+  and the fix on stderr; `question::page_owed`): one with an `Irreversible:` or `Pane only:` clause, or with more than
+  two sentences before `Options:` (the maintainer, 2026-10-27: "we need a decision page when I need more context than
+  a sentence or two to make the decision"). `--page-nudged`, which the Stop hook passes only once it has asked the
+  session for the page, lets it through, so no question goes unstamped (`work_state::cli::tests::
+  a_blocked_stamp_that_owes_a_page_is_refused_until_nudged`, `comm/tests/test-status-floor.sh`).
 - One writer path. Every write of a work-state fact is `work_state::apply_event` (through `write_event`), one read-decide-write under the registry lock
   on a fresh read (messaging's `edit_entry`). A session reaches it through `sotd work-state`, which `comm-status.sh`
   runs; the daemon calls it in its own process.

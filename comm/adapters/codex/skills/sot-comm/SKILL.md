@@ -72,10 +72,12 @@ a closing marker, after `SITREP-QUESTION:`:
 SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 ```
 
-`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:` and
-`Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be
-undone, saying what it does (the card requires acknowledgment before its answer buttons work, and the click types the
-answer into the pane). Put the context needed to answer cold below the marker line.
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. Use `Irreversible:` for
+a merge, a tag, a General registration or anything else that cannot be undone, saying what it does (the card requires
+acknowledgment before its answer buttons work, and the click types the answer into the pane). A question carries a
+decision page (`Page:`) when the person needs more than a sentence or two of context to decide, and an
+`Irreversible:` one always does: a stamp that owes a page is refused. Put the context needed to answer cold below the
+marker line.
 A decision page named in `Page:` must
 use relative asset and navigation paths (`assets/app.js`, not `/assets/app.js`); decision grants do not support
 root-relative paths.

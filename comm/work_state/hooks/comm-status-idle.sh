@@ -453,7 +453,7 @@ if [ "$marker_state" = blocked ] && printf '%s' "$input" | jq -e '.stop_hook_act
     if [ "$question_shape" = incomplete ]; then
         if question_block="$(jq -nc --arg f "$question_form" '{
           decision: "block",
-          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Irreversible: and Page: are optional; Options: and Recommend are required. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
+          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Options: and Recommend are required; Irreversible: is optional; Page: is owed when the person needs more than a sentence or two of context, and always for an Irreversible question. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
         }' 2>/dev/null)" && [ -n "$question_block" ]; then
             emit_block "$question_block"
             exit 0
@@ -467,8 +467,29 @@ if [ -n "$marker_state" ]; then
     # Only rc 2 (a refused stamp: blocked or waiting with no text) ends the hook
     # here, with no `stop`: the running floor stays and no empty question is
     # written. Any other failure falls through to the audit and the floor.
+    # A question that owes a decision page (an Irreversible one, or one past two
+    # sentences: rows' question::page_owed) is refused by the stamp. On a turn's
+    # first stop that refusal becomes one nudge to make the page; a stop-hook
+    # continuation stamps the question as written (COMM_STATUS_PAGE_NUDGED), so
+    # no question is left unstamped.
     if [ -x "$STATUS" ]; then
-        stamp_rc=0; "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$?
+        stamp_rc=0
+        if [ "$marker_state" = blocked ] && [ -n "$marker_summary" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ]; then
+            stamp_err="$("$STATUS" "$marker_state" "$marker_summary" 2>&1 >/dev/null)" || stamp_rc=$?
+            case "$stamp_rc:$stamp_err" in
+                2:*"blocked refused:"*)
+                    if page_block="$(jq -nc --arg w "$stamp_err" --arg f "$question_form" '{
+                      decision: "block",
+                      reason: ("Your closing question owes a decision page: " + $w + " Make the page with /decision-page, then close again with the whole marker line, Page: included: " + $f + ". The question has not been stamped yet; a stop-hook continuation stamps it as written.")
+                    }' 2>/dev/null)" && [ -n "$page_block" ]; then
+                        emit_block "$page_block"
+                        exit 0
+                    fi
+                    stamp_rc=0; COMM_STATUS_PAGE_NUDGED=1 "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$? ;;
+            esac
+        else
+            COMM_STATUS_PAGE_NUDGED=1 "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$?
+        fi
         [ "$stamp_rc" -ne 2 ] || exit 0
     fi
 
@@ -545,7 +566,7 @@ case "$parked" in
     blocked|done)
         if [ "$origin" = user ]; then
             case "$parked" in
-                blocked) owed="$question_form  (all on one line; Irreversible: and Page: are optional; Options: and Recommend are required), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
+                blocked) owed="$question_form  (all on one line; Options: and Recommend are required; Irreversible: is optional; Page: is owed when the person needs more than a sentence or two of context, and always for an Irreversible question), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
             emit_block "$(jq -nc --arg s "$parked" --arg o "$owed" '{

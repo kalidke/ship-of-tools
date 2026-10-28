@@ -248,6 +248,8 @@ check "a question marker without a recommendation is refused, with no stamp" cas
 check "question validation follows Page, first Options and recommendation boundaries" case_question_grammar_boundaries_are_refused
 check "a corrected full question stamps red with its entire line and grammar variants" case_corrected_question_stamps_the_whole_line
 check "a bare question continuation passes and stamps after its one refusal" case_bare_question_continuation_stamps
+check "a question owing a decision page is nudged once, row kept, then its continuation stamps it" case_a_question_owing_a_page_is_nudged_then_stamped
+check "an explicit blocked stamp owing a page is refused with its reason, and stamps with its page" case_a_blocked_stamp_owing_a_page_is_refused
 check "unread mail outranks an incomplete question marker" case_mail_outranks_the_question_shape_nudge
 check "SITREP-WAITING: alone takes the next line and sets purple" case_marker_waiting_stamps_purple
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps

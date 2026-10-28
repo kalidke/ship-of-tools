@@ -105,9 +105,11 @@ cannot disagree. No separate status call is needed at turn end.
 | `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, use the full question marker above with the jobs listed below it) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
 
 `Options:` with at least two `(letter)` choices and `Recommend` with a letter are required on the question marker
-line. `Irreversible:` and `Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or
-anything else that cannot be undone, saying what it does; the card asks the user to acknowledge it before its answer
-buttons work, and the user's click types the answer into the pane. `Page:` is the
+line. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be undone, saying
+what it does; the card asks the user to acknowledge it before its answer buttons work, and the user's click types the
+answer into the pane. A question carries a decision page (`Page:`, made with `/decision-page`) when the user needs
+more than a sentence or two of context to decide, and an `Irreversible:` one always does: the Stop hook asks for a
+page it owes before stamping. `Page:` is the
 marker's permitted path; keep the prose below it in plain words. The Stop hook nudges an incomplete question once,
 without stamping it; a stop-hook continuation is allowed to stamp its marker.
 

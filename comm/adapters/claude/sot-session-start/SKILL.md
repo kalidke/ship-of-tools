@@ -56,10 +56,11 @@ the running jobs below it:
 SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 ```
 
-`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:` and
-`Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be
-undone, saying what it does (the card requires acknowledgment before its answer buttons work, and the click types the
-answer into the pane). An incomplete question gets one Stop nudge before stamping; a stop-hook
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. Use `Irreversible:` for
+a merge, a tag, a General registration or anything else that cannot be undone, saying what it does (the card requires
+acknowledgment before its answer buttons work, and the click types the answer into the pane). A question carries a
+decision page (`Page:`, made with `/decision-page`) when the person needs more than a sentence or two of context to
+decide, and an `Irreversible:` one always does: a stamp that owes a page is refused. An incomplete question gets one Stop nudge before stamping; a stop-hook
 continuation passes and stamps its marker. `waiting` is only for a turn where nothing needs the user. Mechanics: the sot-comm skill's
 `references/work-state.md`.
 

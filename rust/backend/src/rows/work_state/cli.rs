@@ -3,7 +3,9 @@
 //! standard input, never from an argument: free text may start with `/`, which Git Bash rewrites in a native program's
 //! argv. Exit 0 when written or when there is nothing to write (no entry, a tick with no turn); 1 when the registry
 //! could not be locked, read or written, with one FAILED line on stderr; 2 for a refused stamp (a question or a wait
-//! with no text) or a bad argument. `comm-status.sh` keeps its own identity, gate and markers.
+//! with no text, or a question that owes a decision page and names none, `question::page_owed`, with its reason on
+//! stderr) or a bad argument. `--page-nudged` lets that question through: the Stop hook passes it once it has asked the
+//! session for the page, so a question is never left unstamped. `comm-status.sh` keeps its own identity, gate and markers.
 
 use std::io::Read;
 use std::time::Duration;
@@ -12,7 +14,7 @@ use super::{write_event, Declaration, Event, Origin, StampError};
 use crate::comm::registry::registry::EditError;
 
 pub(crate) const USAGE: &str = "usage: sotd work-state <prompt|stop|dialog|resumed|tick|working|idle|blocked|waiting|done> \
---handle <h> [--origin user|machine] [--text] [--lock-wait <secs>]";
+--handle <h> [--origin user|machine] [--text] [--lock-wait <secs>] [--page-nudged]";
 
 /// The registry lock's wait when `--lock-wait` is not given: `comm-lib.sh`'s `SOT_LOCK_WAIT_SECS`.
 const LOCK_WAIT: Duration = Duration::from_secs(10);
@@ -35,13 +37,14 @@ fn event_for(verb: &str, origin: Origin, text: Option<String>) -> Option<Event> 
     }
 }
 
-/// The parsed command line: the event, the handle and the lock's wait; `Err` is the line to print.
-fn parse(args: &[String], read_text: impl FnOnce() -> std::io::Result<String>) -> Result<(Event, String, Duration), String> {
+/// The parsed command line: the event, the handle, the lock's wait and `--page-nudged`; `Err` is the line to print.
+fn parse(args: &[String], read_text: impl FnOnce() -> std::io::Result<String>) -> Result<(Event, String, Duration, bool), String> {
     let mut it = args.iter();
     let verb = it.next().ok_or("no verb")?.clone();
-    let (mut handle, mut origin, mut want_text, mut lock_wait) = (None, Origin::Machine, false, LOCK_WAIT);
+    let (mut handle, mut origin, mut want_text, mut lock_wait, mut nudged) = (None, Origin::Machine, false, LOCK_WAIT, false);
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--page-nudged" => nudged = true,
             "--handle" => handle = Some(it.next().ok_or("--handle needs a value")?.clone()),
             "--origin" => {
                 origin = match it.next().map(String::as_str) {
@@ -61,12 +64,20 @@ fn parse(args: &[String], read_text: impl FnOnce() -> std::io::Result<String>) -
     let handle = handle.filter(|h| !h.is_empty()).ok_or("--handle is required")?;
     let text = if want_text { Some(read_text().map_err(|e| format!("the text could not be read: {e}"))?) } else { None };
     let event = event_for(&verb, origin, text).ok_or_else(|| format!("unknown verb {verb:?}"))?;
-    Ok((event, handle, lock_wait))
+    Ok((event, handle, lock_wait, nudged))
+}
+
+/// Why this stamp is refused for a decision page it owes, as the line to print, or `None`.
+fn page_refusal(event: &Event, nudged: bool) -> Option<String> {
+    let Event::Declare(Declaration::Blocked, Some(text)) = event else { return None };
+    let why = (!nudged).then(|| super::question::page_owed(text)).flatten()?;
+    Some(format!("comm-status.sh: blocked refused: {why}. Make the page with /decision-page first, then stamp again \
+        with Page: <its absolute path> on the line -- stamp discarded"))
 }
 
 /// Runs the command; the process's exit code.
 pub(crate) fn run(args: &[String]) -> i32 {
-    let (event, handle, lock_wait) = match parse(args, || {
+    let (event, handle, lock_wait, nudged) = match parse(args, || {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s).map(|_| s)
     }) {
@@ -76,6 +87,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
+    if let Some(line) = page_refusal(&event, nudged) {
+        eprintln!("{line}");
+        return 2;
+    }
     match write_event(&handle, &event, lock_wait) {
         Ok(_) => 0,
         Err(StampError::Refused) => 2,

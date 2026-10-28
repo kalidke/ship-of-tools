@@ -30,3 +30,19 @@ fn the_question_line_parses_like_the_queue() {
         assert_eq!(got.page, page, "{text}");
     }
 }
+
+/// A question owes a decision page when it is Irreversible or runs past two sentences before its options, unless it
+/// names one; the sentence count ignores a version's dots and a path's.
+#[test]
+fn a_question_owes_a_page_when_irreversible_or_past_two_sentences() {
+    let owed = |t: &str| page_owed(t).is_some();
+    assert!(!owed("Land v0.7.0-rc.3? Options: (a) yes; (b) no. Recommend (a)."));
+    assert!(!owed("The hub is on rc.3. Cut rc.4 now? Options: (a) yes; (b) no. Recommend (a)."));
+    assert!(owed("The hub is on rc.3. The laptop waits. Cut rc.4 now? Options: (a) yes; (b) no. Recommend (a)."));
+    assert!(!owed("The hub is on rc.3. The laptop waits. Cut rc.4 now? Options: (a) yes; (b) no. Recommend (a). Page: /p/d.html"));
+    assert!(owed("Merge it? Irreversible: main moves. Options: (a) merge; (b) wait. Recommend (a)."));
+    assert!(!owed("Merge it? Irreversible: main moves. Options: (a) merge; (b) wait. Recommend (a). Page: /p/d.html"));
+    assert!(owed("Tag it? Pane only: the tag. Options: (a) tag; (b) wait. Recommend (a)."));
+    assert!(!owed("Wait... really?! Options: (a) yes; (b) no. Recommend (a)."), "a run of ends is one sentence");
+    assert!(!owed("Read /home/x/a.b.c and dev/output/x.html? Options: (a) yes; (b) no. Recommend (a)."));
+}
