@@ -188,9 +188,9 @@ Page replies:
   takes no preview-pool permit.
 - Outcomes are `sent` (the marked line and Enter recorded), `not_free` (nothing typed; detail names the gate's reason),
   `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never owed Enter
-  by a wake, and one without `hold` is never retried; a line left unsent is for the person to inspect. The supplied line must fit one prompt row;
-  the fit counts characters, and a wide line that wraps gets no Enter. The wake's screen and read-to-input race
-  limits apply. Delivery logs the handle, workspace, marked line and outcome.
+  by a wake, and one without `hold` is never retried; a line left unsent is for the person to inspect. The pane's
+  width is not asked: a line wider than the box wraps, and Enter goes once the box's rows hold it (messaging's
+  `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. Delivery logs the handle, workspace, marked line and outcome.
 - Behavior proofs: `tests/page_channel.rs::page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it`,
   and the `page_reply` tests in `tests/comm_wake.rs` (real stub-agent input, refused panes, concurrent typings and a
   changed handle). These tests use scratch homes only.
@@ -241,8 +241,11 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   the checked read's error instead. The window's optional read retains its defensive behavior.
 - Question grammar is rows': `work_state::question::parts` removes `Page:` plus whitespace and a non-space path first
   (one trailing period dropped), splits at the first `Options:`, then extracts `(letter) text` options, trimming
-  whitespace, semicolons and periods. `Recommend` or `Recommended`, optional colon, and a letter with optional
-  parentheses ends the options and supplies the recommendation. No `Options:` means no options or recommendation.
+  whitespace, semicolons and periods. `Recommend` or `Recommended` in any case, optional colon, and a letter with
+  optional parentheses ends the options and supplies the recommendation; an "I" or "We" before it is not the last
+  option's. An option starts only at a mark whose letter follows the one before it (the first any letter), so a letter
+  an option's text repeats stays text, and an option with no text is left out: no card shows a blank or repeated
+  button. No `Options:` means no options or recommendation.
   The page server requires an absolute page under the row's canonical project root and grants a plain site there;
   Unix file requests walk beneath a pin of that row's original directory object when serving bytes. Windows keeps
   its path-based open and its check/open replacement gap (pages' contract).

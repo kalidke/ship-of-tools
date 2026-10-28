@@ -14,6 +14,13 @@ fn the_question_line_parses_like_the_queue() {
         ("Page: is not a path?", "not a path?", vec![], "", "is"),
         ("Pick? Options: (a) one. (b) two;", "Pick?", vec![("a", "one"), ("b", "two")], "", ""),
         ("Unchanged Page:/project/x", "Unchanged Page:/project/x", vec![], "", ""),
+        // REAL (a card on 2026-10-27, stamped by hand): "recommend" in lower case, opened by "I". It set no
+        // recommendation and made a third button, a blank (a) between a and b.
+        ("Order? Options: (a) you point me to the order list and measure the axis; (b) you point me to the order list and I keep the axis from the CAD until it is measured. I recommend (a).",
+         "Order?", vec![("a", "you point me to the order list and measure the axis"),
+             ("b", "you point me to the order list and I keep the axis from the CAD until it is measured")], "a", ""),
+        ("Pick? Options: (a) first; (b) unlike (a), second. We recommend (b)", "Pick?", vec![("a", "first"), ("b", "unlike (a), second")], "b", ""),
+        ("Pick? Options: (a); (b) only this one. RECOMMENDED: (b)", "Pick?", vec![("b", "only this one")], "b", ""),
     ];
     for (text, question, options, recommend, page) in cases {
         let got = parts(text);
