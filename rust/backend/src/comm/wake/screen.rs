@@ -60,13 +60,14 @@ const PANEL_RING: char = '\u{25ef}';
 /// the glyph; (b) the cursor just after the glyph, or one more; (c) the line directly between the input box's
 /// two borders (a rule, optionally labelled); (d) after the glyph U+00A0, the main prompt's own mark (menus and
 /// dialog inputs draw an ASCII space), then nothing but spaces, or, where the NBSP is not required
-/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]); (f) the supplied line fits on the prompt row ([`fits`]).
+/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]).
+/// The pane's width is not asked: a line wider than the box wraps, and the gate before Enter reads it across its rows
+/// ([`holds_wrapped`]).
 /// The wake reads the cursor's row with dim cells blank (`screen::free_test_lines`), so Claude Code's dim
 /// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
 /// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
 pub(super) fn prompt_of(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Result<Prompt, &'static str> {
     match input_refused(lines, cursor, agent, windows, Expect::Empty) {
-        None if !fits(lines, cursor, text) => Err("pane too narrow for the line"),
         None => Ok(Prompt::Empty),
         // A caller may recognize its own line already in the box; only the wake may complete it.
         Some(_) if typed_refusal(lines, cursor, agent, windows, text).is_none() => Ok(Prompt::HoldsLine),
@@ -82,19 +83,36 @@ pub(super) enum Prompt {
     HoldsLine,
 }
 
-/// Whether `text`, typed after the glyph and its NBSP, leaves two columns before the end of the box's lower rule,
-/// which Claude Code draws the pane's full width: one for the cursor after the text, one spare, as the column at
-/// which Claude Code wraps its input has not been measured. The gate before Enter reads the prompt's one row, so a
-/// line that would wrap is never typed. Asked only once [`input_refused`] has passed, so the cursor's row lies
-/// between two borders.
-fn fits(lines: &[String], cursor: Option<(u16, u16)>, text: &str) -> bool {
-    let Some((row, _)) = cursor else {
+/// Whether the box's rows hold exactly `want`, as Claude Code wraps a line wider than its box (measured on 2.1.312,
+/// 2026-10-27, at 60 and 83 columns, up to 505 bytes, drawn inline): `first` is the glyph's row after its separator,
+/// and each row in `wrapped` after it is indented to `indent`, two columns past the glyph. A row breaks at a run of
+/// spaces, which the break drops (two spaces were dropped whole), or inside a word longer than a row. So each row
+/// holds the next text exactly, and only at a break may the text's spaces be missing from the rows; a row that is
+/// blank holds nothing. Anything else in the box (a person's text, a second line) fails.
+fn holds_wrapped(first: &[char], wrapped: &[Vec<char>], indent: usize, want: &[char]) -> bool {
+    let space = |c: &char| *c == ' ';
+    let trimmed = |cs: &[char]| cs.len() - cs.iter().rev().take_while(|c| space(c)).count();
+    let Some(mut left) = want.strip_prefix(&first[..trimmed(first)]) else {
         return false;
     };
-    let row = row as usize;
-    let width = lines[row + 1].trim_end_matches(' ').chars().count();
-    let glyph = lines[row].chars().take_while(|c| *c == ' ').count();
-    glyph + 2 + text.chars().count() + 2 <= width
+    for row in wrapped {
+        let row = &row[..trimmed(row)];
+        let held = if row.is_empty() {
+            row
+        } else {
+            match row.get(..indent) {
+                Some(pad) if pad.iter().all(space) => &row[indent..],
+                _ => return false,
+            }
+        };
+        let skip = |cs: &[char]| cs.iter().position(|c| !space(c)).unwrap_or(cs.len());
+        let (held, rest) = (&held[skip(held)..], &left[skip(left)..]);
+        let Some(after) = rest.strip_prefix(held) else {
+            return false;
+        };
+        left = after;
+    }
+    left.iter().all(space)
 }
 
 /// What the input box is expected to hold: nothing (the free test), or exactly the typed wake line (the gate
@@ -106,7 +124,9 @@ enum Expect<'a> {
 
 /// Why `text`, just typed, does not sit alone in main's input box (`None` when it does): every structural check of [`prompt_of`] (a box,
 /// the glyph, nothing before it, [`panel_refusal`] below) except the cursor column, then after the glyph the
-/// NBSP (a space where the NBSP is not required), exactly `text`, and spaces. Enter goes only when this holds.
+/// NBSP (a space where the NBSP is not required), exactly `text`, and spaces. A `text` wider than the box wraps: the
+/// glyph's row is then the first under the upper rule, the cursor's the last above the lower, and the rows between
+/// hold `text` as [`holds_wrapped`] reads it. Enter goes only when this holds.
 pub(crate) fn typed_refusal(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Option<&'static str> {
     input_refused(lines, cursor, agent, windows, Expect::Typed(text))
 }
@@ -120,11 +140,18 @@ fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, wind
         return Some("no cursor");
     };
     let (row, col) = (row as usize, col as usize);
-    let boxed = row > 0 && row + 1 < lines.len() && is_border(&lines[row - 1]) && is_border(&lines[row + 1]);
-    if !boxed {
+    if row == 0 || row + 1 >= lines.len() || !is_border(&lines[row + 1]) {
         return Some("not in an input box");
     }
-    let cells: Vec<char> = lines[row].chars().collect();
+    // The glyph's row: the cursor's own in an empty box; a typed line may wrap, with the cursor after it on the last.
+    let first = match expect {
+        Expect::Empty => row,
+        Expect::Typed(_) => (1..=row).rev().take_while(|r| !is_border(&lines[*r])).last().unwrap_or(row),
+    };
+    if !is_border(&lines[first - 1]) {
+        return Some("not in an input box");
+    }
+    let cells: Vec<char> = lines[first].chars().collect();
     let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
         return Some("no prompt glyph");
     };
@@ -150,7 +177,8 @@ fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, wind
                 _ => return Some("typed text not in main's input box"),
             };
             let want: Vec<char> = text.chars().collect();
-            if !after.starts_with(&want) || !blank(&after[want.len()..]) {
+            let wrapped: Vec<Vec<char>> = lines[first + 1..=row].iter().map(|l| l.chars().collect()).collect();
+            if !holds_wrapped(after, &wrapped, g + 2, &want) {
                 return Some("typed text not in main's input box");
             }
         }

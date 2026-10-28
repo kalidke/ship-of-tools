@@ -220,14 +220,57 @@ fn cc288_rest_with_the_one_agent_footer_reads_free() {
     }
 }
 
+/// A box of `rows` between two rules `width` wide, and the cursor after the last row's text, as Claude Code leaves it.
+fn wrapped_box(width: usize, rows: &[&str]) -> (Vec<String>, Option<(u16, u16)>) {
+    let mut l = vec!["\u{2500}".repeat(width)];
+    l.extend(rows.iter().map(|r| r.to_string()));
+    l.push("\u{2500}".repeat(width));
+    let last = rows.len();
+    (l, Some((last as u16, rows[last - 1].chars().count() as u16)))
+}
+
+/// REAL (Claude Code 2.1.312, 2026-10-27, typed into a live box and never sent): a line wider than the box is drawn
+/// inline and word-wrapped, each further row indented two columns; a break drops its run of spaces (two here), and a
+/// path longer than a row moves to the next row and breaks inside itself. A pane narrower than the line is free, and
+/// the gate before Enter reads the line across its rows; one character more, less or changed in any row refuses.
 #[test]
-fn a_pane_too_narrow_for_the_wake_line_is_refused() {
-    let b = |w: usize| vec!["\u{2500}".repeat(w), "\u{276f}\u{a0}".to_string(), "\u{2500}".repeat(w)];
-    let need = 2 + WAKE_LINE.chars().count() + 2;
+fn a_line_wider_than_the_pane_wraps_and_passes_the_gate() {
+    let n = |w: usize| vec!["\u{2500}".repeat(w), "\u{276f}\u{a0}".to_string(), "\u{2500}".repeat(w)];
+    let page83 = "[sot-page] Make a decision page for your question with /decision-page, then stamp blocked again with the same question and its Page: the card asked for one at 19:05 from the Radiant.";
+    let rows83 = [
+        "\u{276f}\u{a0}[sot-page] Make a decision page for your question with /decision-page, then",
+        "  stamp blocked again with the same question and its Page: the card asked for one",
+        "  at 19:05 from the Radiant.",
+    ];
+    let page60 = "[sot-page] (b) Keep /srv/data/example-project/results/run-2026-10-27/figure-03-recovery-versus-signal-to-noise.png and check it.  Two spaces before this, then ordinary prose that wraps.";
+    let rows60 = [
+        "\u{276f}\u{a0}[sot-page] (b) Keep",
+        "  /srv/data/example-project/results/run-2026-10-27/figure-",
+        "  03-recovery-versus-signal-to-noise.png and check it.",
+        "  Two spaces before this, then ordinary prose that wraps.",
+    ];
     for windows in [false, true] {
-        assert_eq!(prompt_of(&b(need - 1), Some((1, 2)), "claude", windows), Err("pane too narrow for the line"));
-        assert_eq!(prompt_of(&b(need), Some((1, 2)), "claude", windows), Ok(Prompt::Empty));
+        assert_eq!(prompt_of(&n(20), Some((1, 2)), "claude", windows), Ok(Prompt::Empty), "a narrow pane is free");
+        for (width, text, rows) in [(83, page83, &rows83[..]), (60, page60, &rows60[..])] {
+            let (l, cur) = wrapped_box(width, rows);
+            assert_eq!(typed_refusal(&l, cur, "claude", windows, text), None, "{width} columns");
+            assert_eq!(super::prompt_of(&l, cur, "claude", windows, text), Ok(Prompt::HoldsLine), "{width} columns");
+            // The 100th character lies in a middle row of both lines.
+            let changed: String = text.chars().enumerate().map(|(i, c)| if i == 100 { '#' } else { c }).collect();
+            assert_ne!(changed, text);
+            for other in [format!("{text} and more"), text[..text.len() - 1].to_string(), changed] {
+                assert!(typed_refusal(&l, cur, "claude", windows, &other).is_some(), "{width} columns: {other}");
+            }
+            // A person's word added in a middle row, and the cursor moved off the last row.
+            let mut edited = l.clone();
+            edited[2].push_str(" and");
+            assert!(typed_refusal(&edited, cur, "claude", windows, text).is_some(), "{width} columns");
+            assert!(typed_refusal(&l, Some((1, 2)), "claude", windows, text).is_some(), "{width} columns");
+        }
     }
+    // The wake line in a box too narrow for it: left typed and not sent, a later tick completes it with Enter alone.
+    let (l, cur) = wrapped_box(30, &["\u{276f}\u{a0}[sot-comm] you have mail: run", "  comm-poll.sh"]);
+    assert_eq!(prompt_of(&l, cur, "claude", false), Ok(Prompt::HoldsLine));
 }
 
 #[test]

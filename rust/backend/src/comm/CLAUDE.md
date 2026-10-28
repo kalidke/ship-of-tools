@@ -79,8 +79,11 @@ Waking:
 - What a wake types into: only a Ready capsule row running Claude Code whose screen is a free prompt and holds still:
   the cursor at the start of the main input line, the prompt glyph and its no-break space with nothing but blanks
   after it (a dim cell reads blank: Claude Code draws its suggestion dim), that line alone between the input box's two
-  rules, the agents panel (if any) on main, the line wide enough for the wake line, and every row through the box's
-  lower rule unchanged for 1.5 s; and no `stop_at` mark under a minute old on its entry (its Stop hook is running).
+  rules, the agents panel (if any) on main, and every row through the box's lower rule unchanged for 1.5 s; and no
+  `stop_at` mark under a minute old on its entry (its Stop hook is running). The pane's width is not asked: a line
+  wider than the box wraps, as Claude Code draws it (measured on 2.1.312: inline up to 512 bytes, each further row
+  indented two columns, a break dropping its run of spaces or falling inside a word longer than a row), and the gate
+  before Enter reads it across its rows (`screen::holds_wrapped`).
 - How a wake attaches: as a watcher over the row's socket that takes the pen once, only to type (the capsule contract's
   guarantees 6 and 7: one driver, and a headless client takes the pen once per run). A window that was driving is demoted by it and takes the pen back on its next key
   (`fe_attach::a_demoted_window_types_again_after_a_wake`).
@@ -104,8 +107,8 @@ Waking:
   Each typing, the line or Enter alone, is one INFO log event: the handle, what was
   sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
 - The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,
-  1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its fit and
-  exact-content checks; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an
+  1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its
+  exact-content check; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an
   existing line, even the exact offered line. Unlike a wake, it keeps no owed Enter. A direct reply a busy row holds
   (rows' `page_reply::release`) gets one more attempt on each tick, after the mail checks, under the same gate and
   per-row exclusion; mail sends stay unqueued.

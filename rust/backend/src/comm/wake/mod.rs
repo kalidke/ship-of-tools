@@ -48,8 +48,8 @@
 //! (`screen::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
 //! while a typed draft is not dim and reads not free wherever its cursor sits. The input must reach the main
 //! agent: no agents panel below the box, or a panel with no panel cursor and its one dot on main
-//! ([`panel_refusal`]); Claude Code's footer is not read. A pane too narrow for the wake line on the prompt's one
-//! row refuses ([`fits`]). A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
+//! ([`panel_refusal`]); Claude Code's footer is not read. A line wider than the pane wraps, and the gate before Enter
+//! reads it across its rows ([`holds_wrapped`]). A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
 //! refusals, naming its handle, the reason, the line above the prompt and the cursor's row as the gate read it ([`cursor_row_trace`]). Known limits: a suggestion drawn by color rather than dim reads as a draft, and so does every
 //! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
