@@ -9,8 +9,12 @@ use super::daemon::{self, Asks, State};
 use super::options::{Options, RoleFlag};
 use super::pack::Pack;
 use super::role::{self, Gate, Role};
-use super::verdict::{self, step, Found, Stop};
-use super::{cmd, julia, procs, record, say};
+use super::verdict::{self, step, Found, Mark, Stop};
+use super::{cmd, julia, procs, record, say, state};
+
+#[path = "unix_check.rs"]
+mod checks;
+use checks::check;
 
 /// The glibc the frontend binary needs (the build image's).
 const GLIBC_FLOOR_FE: (u32, u32) = (2, 35);
@@ -107,10 +111,11 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     let enrolled = publish.enroll(&plan.checkout, &plan.pack.commit, &plan.prefix.join("repo/base"), &mut found)?;
     julia_and_comm(&plan, &mut found)?;
     configure(&plan)?;
-    let restarted = wire(&plan)?;
+    let (restarted, state) = wire(&plan)?;
     write_record(&plan)?;
-    check(&plan, restarted, &mut found);
+    check(&plan, restarted, state, &mut found);
     enrolled.check(&mut found);
+    checks::guard_items(&mut found);
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
     if found.fail.is_none() && plan.unit_managed() {
         let wired = lib(&plan.checkout, "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();
@@ -147,10 +152,6 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     let macos = target == "macos-aarch64";
     if macos {
         say("macOS support is EXPERIMENTAL — both roles work; please report anything broken");
-    } else {
-        for (label, dir) in [("$HOME".to_string(), home.clone()), ("the state dir".to_string(), std::env::var_os("XDG_STATE_HOME").map_or_else(|| home.join(".local/state"), PathBuf::from))] {
-            warn_remote_fs(&label, &dir);
-        }
     }
     if !cmd::on_path("jq") {
         let how = if macos { "brew install jq" } else { "sudo apt-get install jq" };
@@ -253,9 +254,6 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     if pin_excludes {
         say(&format!("WARNING: hosts.toml declares no daemon on '{me}', so sotd.service's host pin keeps it from starting here; declare the host (daemon or frontend) in hosts.toml"));
     }
-    if resolved.daemon && !["claude", "ccx"].iter().any(|p| cmd::on_path(p)) && ![".local/bin/claude", ".claude/local/claude", ".local/bin/ccx"].iter().any(|p| home.join(p).is_file()) {
-        say("WARNING: neither claude nor ccx (the Codex launcher) found on PATH — install and log in a coding agent on this machine before running sessions");
-    }
     if !macos && resolved.frontend {
         let glibc = glibc_version();
         if glibc.is_none_or(|g| g < GLIBC_FLOOR_FE) {
@@ -351,21 +349,6 @@ fn flag_word(flag: &RoleFlag) -> String {
 
 fn role_words(r: Role) -> String {
     format!("daemon:{} frontend:{}", u8::from(r.daemon), u8::from(r.frontend))
-}
-
-/// The warning for a folder on a remote filesystem, where the daemon will not keep capsule records (Linux; the names are
-/// GNU `stat -f -c %T`'s for `REMOTE_FS_TYPES` in `rust/platform/src/host/volume.rs`).
-fn warn_remote_fs(label: &str, dir: &Path) {
-    let ran = cmd::output(Command::new("stat").args(["-f", "-c", "%T"]).arg(dir));
-    let fstype = ran.first_line();
-    if ran.ok() && ["nfs", "nfs4", "cifs", "smb2", "fuse.sshfs", "9p"].contains(&fstype.as_str()) {
-        say(&format!("WARNING: {label} ({}) is on a remote filesystem ({fstype}).", dir.display()));
-        say("  Capsule session records cannot live on a remote filesystem (ADR 0043 decision 23). Set XDG_STATE_HOME to a");
-        say("  local-disk directory in the environment sotd starts from -- for a systemd install: systemctl --user");
-        say("  set-environment XDG_STATE_HOME=/path/on/local/disk, or export it in ~/.bashrc (which the unit sources) --");
-        say("  then restart sotd. sotd requires that directory to be owned by you with mode 700 and does not back it up --");
-        say("  pick a path that persists across reboots, not /tmp.");
-    }
 }
 
 /// A pre-0.6 hosts.toml (`default_host` at its top) is a parse error to the current grammar: it is moved aside, never
@@ -922,8 +905,9 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
     Ok(())
 }
 
-/// The unit, the launcher and the restart; whether the run restarted the daemon.
-fn wire(plan: &Plan) -> Result<bool, Stop> {
+/// The unit, the launcher and the restart; whether the run restarted the daemon, and the state folder a daemon of this
+/// computer keeps its rows in (none when it runs no daemon).
+fn wire(plan: &Plan) -> Result<(bool, Option<state::Choice>), Stop> {
     step("service");
     if plan.role.daemon && plan.no_service && !plan.macos {
         say("skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:");
@@ -935,26 +919,49 @@ fn wire(plan: &Plan) -> Result<bool, Stop> {
             say(&format!("  be-only: start it with  {} --project-root ~ --label sot", plan.sotd().display()));
         }
     }
-    if plan.unit_managed() {
-        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket)?;
-    }
+    let env = sot_platform::host::env::Env::process().with("HOME", &plan.home);
+    let mut state = None;
+    let state_changed = if plan.unit_managed() {
+        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, || {
+            let (choice, changed) = state::setup(&env, Some(&plan.units()), Path::new("/scratch"), &service_user())?;
+            state = Some(choice);
+            Ok(changed)
+        })?
+    } else {
+        if plan.role.daemon {
+            state = Some(state::setup(&env, None, Path::new("/scratch"), "")?.0);
+        }
+        false
+    };
     step("launcher");
     if plan.role.frontend {
         wire_launcher(plan)?;
     }
     step("restart");
-    let restart = restarts(plan.unit_runs, plan.before);
-    if restart {
-        say("restarting sotd to pick up the new version");
-        let _ = systemctl(&["try-restart", "sotd.service"]);
+    let restart = restart_service(&plan.units_ctx(), restarts(plan.unit_runs, plan.before), state_changed);
+    Ok((restart, state))
+}
+
+/// Restart the unit when the version changed or this run wrote its state drop-in; whether it did. Its answer is not
+/// read here: the final check judges the daemon that answers.
+fn restart_service(u: &Units, version_changed: bool, state_changed: bool) -> bool {
+    if !version_changed && !state_changed {
+        return false;
     }
-    Ok(restart)
+    say(if version_changed { "restarting sotd to pick up the new version" } else { "restarting sotd to pick up its state folder" });
+    let _ = u.systemctl(&["try-restart", "sotd.service"]);
+    true
+}
+
+/// The state candidate and linger use the same account name.
+fn service_user() -> String {
+    std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line())
 }
 
 /// Render, pin, wire and start the unit: pinned to the hosts that run sotd (with no hosts.toml, to this one) before any
 /// manager reloads it; boot start wired for a unit this run finds new, and over an existing one only where it was; no
 /// `enable`, which on a shared home would link the unit for every host.
-pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> Result<(), Stop> {
+pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, state_folder: impl FnOnce() -> Result<bool, Stop>) -> Result<bool, Stop> {
     let units = u.dir();
     let ud = units.to_string_lossy().into_owned();
     std::fs::create_dir_all(&units).map_err(|e| Stop::new(1, format!("creating {ud}: {e}")))?;
@@ -980,16 +987,17 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str) -> 
     if !u.lib(if fresh { "sot_boot_wants" } else { "sot_boot_keep" }, &[&ud]).ok() {
         return Err(Stop::new(1, "could not write the sotd boot drop-in"));
     }
+    let state_changed = state_folder()?;
     for args in [&["daemon-reload"][..], &["start", "sotd.service"][..]] {
         let ran = u.systemctl(args);
         if !ran.ok() {
             return Err(Stop::new(1, format!("systemctl --user {} failed: {}", args.join(" "), ran.last_said())));
         }
     }
-    let user = std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line());
+    let user = service_user();
     let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
     say(&format!("sotd running: {} (socket {socket})", u.systemctl(&["is-active", "sotd.service"]).first_line()));
-    Ok(())
+    Ok(state_changed)
 }
 
 /// The window's launcher: the all-in-one wrapper (this computer's daemon), or the one that dials the topology plan when
@@ -1095,152 +1103,9 @@ fn write_record(plan: &Plan) -> Result<(), Stop> {
     Ok(())
 }
 
-/// What the run left, read from the disk and the processes: a failed check is FAIL, a step only a person takes is ONE
-/// STEP LEFT.
-#[allow(clippy::too_many_lines, reason = "the checks in install.sh's order, one block each")]
-fn check(plan: &Plan, restarted: bool, found: &mut Found) {
-    step("check");
-    let (version, prefix) = (&plan.pack.version, &plan.prefix);
-    let checkout = plan.checkout.clone();
-    let commit = cmd::output(cmd::git_in(&checkout).args(["rev-parse", "HEAD"])).first_line();
-    let short = commit.get(..9).unwrap_or("").to_string();
-    found.pass = format!("Ship of Tools {version} at {short} on this computer");
-    if commit.is_empty() {
-        found.fail("checkout", format!("cannot read the commit of {}", checkout.display()));
-    }
-    for b in ["sotd", "sot"] {
-        if b == "sot" && !plan.role.frontend {
-            continue;
-        }
-        let ran = sotd_at(&prefix.join("bin").join(b), &["--version"]);
-        let line = if ran.ok() { ran.first_line() } else { format!("does not run: {}", ran.last_said()) };
-        if !super::pack::binary_says(&line, b, version, &commit) {
-            found.fail("binaries", format!("{}/bin/{b} says '{line}', not {version} at {short}", prefix.display()));
-        }
-    }
-    let text = record::read(&prefix.join("install.json"));
-    if record::string(&text, "version").as_deref() != Some(version) || record::string(&text, "commit").as_deref() != Some(&commit) {
-        found.fail("record", format!("{}/install.json does not name {version} at {short}", prefix.display()));
-    }
-    let current = prefix.join("repo/current");
-    let resolves = std::fs::read_link(&current).ok() == Some(checkout.clone())
-        && cmd::output(cmd::git_in(&current).args(["rev-parse", "HEAD"])).first_line() == commit;
-    if !resolves {
-        found.fail("checkout", format!("{} does not resolve to {} at {short}", current.display(), checkout.display()));
-    }
-    let pointer = prefix.join(format!("updates/pending-{}.json", plan.target));
-    if pointer.exists() {
-        found.fail("pointer", format!("an update pointer is armed again ({}): another daemon armed it after this run dropped it; remove it and run this again", pointer.display()));
-    }
-    let comm = std::env::var_os("SOT_COMM_HOME").map_or_else(|| plan.home.join(".sot-comm"), PathBuf::from);
-    let stamp = std::fs::read_to_string(comm.join("VERSION")).ok().and_then(|t| t.lines().next().map(|l| l.trim().trim_end_matches("-dirty").to_string())).unwrap_or_default();
-    if stamp.is_empty() {
-        found.fail("comm", format!("{} records no version, not {short}", comm.display()));
-    } else if !commit.starts_with(&stamp) {
-        found.fail("comm", format!("{} is at '{stamp}', not {short}", comm.display()));
-    }
-    if plan.role.daemon {
-        for (env, _) in julia::ENVS {
-            if !checkout.join("julia").join(env).join("Manifest.toml").is_file() {
-                found.fail("julia", format!("julia/{env} has no Manifest.toml: its environment is not instantiated"));
-            }
-        }
-    }
-    let after = daemon_after(plan, restarted, found);
-    let changed = plan.pre_version != *version || plan.pre_commit != commit;
-    let left = matches!(after, State::Held | State::Other);
-    let live = &plan.live;
-    let mut window_step = false;
-    if plan.windows_before && changed {
-        let note = if left { daemon::rows_note(&live.rows, live.pluto, plan.rows_unknown) } else { String::new() };
-        let old = if plan.pre_version.is_empty() { "the old version" } else { &plan.pre_version };
-        found.step(format!("quit Ship of Tools and start it again: its window still runs {old}{}", if note.is_empty() { String::new() } else { format!(" ({note})") }));
-        window_step = true;
-    }
-    if left && !window_step {
-        let skew = "still runs another version, beside the new repo/current and bin/sot-capsule";
-        let socket = &plan.socket;
-        let mut text = if plan.role.frontend && (after != State::Held || plan.windows_before) {
-            format!("start Ship of Tools again (the daemon on {socket} {skew})")
-        } else if plan.unit_managed() {
-            if after == State::Held {
-                format!("run systemctl --user restart sotd.service once the window that holds the daemon on {socket} is closed (it {skew})")
-            } else {
-                format!("run systemctl --user restart sotd.service (the daemon on {socket} {skew})")
-            }
-        } else {
-            format!("restart the sotd on {socket} by hand (it {skew})")
-        };
-        let note = daemon::rows_note(&live.rows, live.pluto, plan.rows_unknown);
-        if !note.is_empty() {
-            text = format!("{text}; {note}");
-        }
-        found.step(text);
-    }
-    if let Some(alias) = plan.be_alias.as_ref().filter(|_| !plan.topo_named) {
-        let hub = if plan.hub.is_empty() { alias.clone() } else { plan.hub.clone() };
-        let sync = sotd_at(&plan.sotd(), &["topology", "sync", "--hub", &hub]);
-        let said = format!("{}{}", sync.out, sync.err);
-        if sync.ok() {
-        } else if said.contains("does not list this box") {
-            found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {} --frontend  (the sotd of its install), then run this installer again", plan.me, plan.me));
-        } else if !sotd_at(&plan.sotd(), &["topology", "plan", "--self", &plan.me]).ok() {
-            found.fail("enroll", format!("could not read the hosts.toml on '{hub}': {}", sync.last_said()));
-        }
-    }
-}
-
 /// The listing the decisions read before any write; one that gave no answer stops the run, nothing changed.
 fn listed_before(listing: Result<Vec<procs::Proc>, String>) -> Result<Vec<procs::Proc>, Stop> {
     listing.map_err(|why| Stop::new(1, format!("could not list this account's processes ({why}), so whether the install's daemon or window runs is unknown; nothing was changed")))
-}
-
-/// The daemon after the run. A unit this run restarted or started must answer as the target within the bound; one it
-/// left alone may be held by a window on its old version; any other state of an active unit is a failure. A daemon with
-/// no unit is read once: a person starts it again.
-fn daemon_after(plan: &Plan, restarted: bool, found: &mut Found) -> State {
-    if !plan.role.daemon {
-        return State::None;
-    }
-    let endpoint = format!("unix:{}", plan.socket);
-    let socket = &plan.socket;
-    let journal = "see journalctl --user -u sotd.service";
-    if !plan.unit_managed() {
-        let runs = match procs::checked(procs::snapshot(), found, "daemon", "what runs under the install") {
-            Some(all) => !procs::daemon_pids(&all, &plan.prefix).is_empty(),
-            None => return State::Unknown,
-        };
-        let (st, why) = daemon::state(&plan.sotd(), &endpoint, runs);
-        if st == State::Unknown {
-            found.fail("daemon", format!("a daemon runs on {socket} and could not be told its version ({why})"));
-        }
-        return st;
-    }
-    let held_ok = plan.unit_runs && !restarted;
-    if systemctl(&["is-active", "sotd.service"]).ok() {
-        let (st, why) = daemon::wait_current(&plan.sotd(), &endpoint, super::secs_env("SOT_INSTALL_RESTART_WAIT_S", 30), held_ok, true);
-        match st {
-            State::Current => {}
-            State::Held if held_ok => {}
-            State::Held => found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} still runs another version, held by a window; {journal}")),
-            State::Other => found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} still runs another version, not {}; {journal}", plan.pack.version)),
-            State::Unknown => {
-                found.fail("daemon", format!("sotd.service is active, but the daemon on {socket} could not be told its version ({why}); {journal}"));
-            }
-            State::None => found.fail("daemon", format!("sotd.service is active, but no daemon answers on {socket}; {journal}")),
-        }
-        st
-    } else {
-        let detail = if plan.pin_excludes {
-            format!("sotd.service is not running because its host pin excludes this computer ('{}'): hosts.toml declares no daemon here; declare the host (daemon or frontend) in hosts.toml, then run this installer again", plan.me)
-        } else if restarted {
-            format!("sotd.service is not running after the restart; {journal}")
-        } else {
-            format!("sotd.service is not running after this run started it; {journal}")
-        };
-        found.fail("daemon", detail);
-        State::None
-    }
 }
 
 #[cfg(test)]

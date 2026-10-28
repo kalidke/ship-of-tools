@@ -232,7 +232,8 @@ of each.
 The rows (`rows/spawn/detach.rs` calls `account_spawn_env` and `capsule_supervisor_env`; `rows/run/watchdog.rs`,
 `rows/ops/create.rs` and `rows/run/activation.rs` call `agent_argv`; `rows/reauth` calls `claude_resume_argv`,
 `account_env`, `discover_accounts` and `claude_config_dir`), the server's op table (`accounts.list`), `main.rs`
-(`agent-exec`, `trust declare`, `own_sotd_bin` at start), the installer (`sotd trust declare`; `update_comm`'s adapter
+(`agent-exec`, `trust declare`, `own_sotd_bin` at start), the installer (`resolve_claude` for the Unix checklist;
+`sotd trust declare`; `update_comm`'s adapter
 stage for the layer and its retirements), `ccb` (`sotd agent-exec claude`).
 
 ## Calls out

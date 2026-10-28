@@ -99,7 +99,7 @@ pub fn sot_state_dir_in(env: &super::env::Env) -> Option<std::path::PathBuf> {
                     .map(|home| std::path::PathBuf::from(home).join("AppData").join("Local"))
             })
     } else {
-        env.get("XDG_STATE_HOME")
+        env.get_nonempty("XDG_STATE_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| env.get("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("state")))
     }?;

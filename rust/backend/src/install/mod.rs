@@ -17,6 +17,8 @@ mod record;
 mod role;
 mod supervisor;
 #[cfg(unix)]
+mod state;
+#[cfg(unix)]
 mod unix;
 mod verdict;
 #[cfg(windows)]

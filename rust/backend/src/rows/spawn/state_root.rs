@@ -72,6 +72,12 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
     let root = sot_platform::host::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
+    qualify_state_root(&root, row)
+}
+
+/// Qualify a given root with the same privacy, durability and volume checks every row launch uses. Install uses this
+/// before wiring a daemon, without changing its own environment to try a different root.
+pub fn qualify_state_root(root: &Path, row: Option<&Path>) -> Result<PathBuf, String> {
     // Security review addendum (item 2b, v0.6.5 macOS field report): the
     // runtime dir and sockets already get `is_private_dir`'s
     // symlink/ownership/mode check; this root -- what `XDG_STATE_HOME`
@@ -82,9 +88,9 @@ pub fn qualified_state_root(row: Option<&Path>) -> Result<PathBuf, String> {
     // dir already uses for exactly this threat model (atomic 0700 create
     // when absent; symlink/owner/mode-checked, never trusted, when
     // present) -- reused here rather than a second bespoke check.
-    sot_platform::host::paths::secure_private_dir(&root)
+    sot_platform::host::paths::secure_private_dir(root)
         .map_err(|e| format!("could not secure the state root {root:?}: {e}"))?;
-    let root = std::fs::canonicalize(&root)
+    let root = std::fs::canonicalize(root)
         .map_err(|e| format!("could not resolve the state root {root:?}: {e}"))?;
     #[cfg(target_os = "linux")]
     {

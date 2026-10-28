@@ -104,8 +104,14 @@ where every rule of install lives once for all three systems.
 Guarantees, each with the mechanism it rests on. Install:
 - One verdict. Every run ends in exactly one line, `PASS: Ship of Tools <v> at <short> on this computer`, `ONE STEP
   LEFT: <steps>` (exit 0: the install is whole) or `FAIL: <check>: <detail>` (exit 1; 2 for a refusal), on standard
-  output after every other line. `sotd install` prints it from one place (`verdict.rs`), on a signal too: the running
-  step and every process it started end first, then the line names the step, and it exits 128 plus the signal. The
+  output after every other line. A Unix run that reaches its checks prints `Checklist:` immediately before that last
+  line: an `ok` or `made` line for each check that passed, in order (binaries at the version, install record,
+  checkout, comm and skills at the commit, Julia environments and the state folder and Claude Code for a daemon role,
+  the daemon at the version, each clone the publish guard found ready), then each step left as `todo`, then the
+  failed check as `FAIL`, so it holds everything the verdict names. A stop before the checks prints no checklist, and
+  Windows records no items yet, so it prints the verdict alone. `sotd install` prints it from one place
+  (`verdict.rs`), on a signal too: the running step and every process it started end first, then the line names the
+  step, and it exits 128 plus the signal. The
   bootstrap passes a signal it gets on to `sotd install` (as TERM), and prints a verdict only before `sotd install`
   runs or when it ended without one.
 - Verified before it runs. The bootstrap runs nothing from a pack until every file it downloaded or copied matches
@@ -132,12 +138,13 @@ Guarantees, each with the mechanism it rests on. Install:
   verdict line of a pinning run says so once the pin is written.
 - A repair run moves nothing. A named run of the installed version and commit that would change nothing else the
   readable record says (the role, the hub, the prefix; `record::keeps`), with no daemon on another version, writes the
-  pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing; its other steps lay
+  pin, drops any pointer armed over the install, and stops, restarts, stages and applies nothing except the Unix
+  state-folder correction below; its other steps lay
   again what is there (the same binaries and checkout, the environments' own manifests kept), so a repeat finishes a
   half-done install, and the record gets its pin and no other change. A run of the same build that changes the role
-  or the hub is an install over it, and writes the record whole. It stops and restarts nothing by construction: on
-  Unix a repair is a run for which `ends_daemon`, the predicate the restart step and the retire act on, is false; on
-  Windows the repair returns before the stage.
+  or the hub is an install over it, and writes the record whole. Apart from that correction, it stops and restarts
+  nothing by construction: on Unix a repair is a run for which `ends_daemon`, the predicate the version restart and
+  the retire act on, is false; on Windows the repair returns before the stage.
 - The record last, whole, in its old shape. `install.json` is written last, beside itself and renamed in (no BOM), one
   key per line with schema 1's keys, the shape every earlier release's readers take (line readers in the scripts,
   `InstallManifest`). A repeat keeps the rollback: a `.prev` copy is made only of a binary that differs, and a prune
@@ -151,7 +158,8 @@ Guarantees, each with the mechanism it rests on. Install:
   REPL rows and the Pluto server; a daemon that cannot say is judged by its own child processes, by parent id) is
   answered: yes at a console, or `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. A restart
   must answer as the target within its bound by the clock. A daemon that runs and cannot be told its version is never
-  read as none.
+  read as none. The state-folder correction below is the one additional restart: rows outlive it, and no row could
+  have started on the unqualified root, so it asks nothing.
 - The role is declared (Unix). hosts.toml's entry for this host decides (a frontend runs its own daemon); else the
   role flag; else what install.json records; else a question at the console; else FAIL 2. A host hosts.toml runs no
   sotd on never writes over an install at the prefix, a run never replaces another install's unit, wrapper or desktop
@@ -163,12 +171,29 @@ Guarantees, each with the mechanism it rests on. Install:
   for a unit the run finds new, kept over an existing one only where a link or the drop-in was. A retire never
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
   The pin command the retire tells a person to run is the install's own arguments (`pin_args`), by construction.
+- The state folder qualifies by the row launcher's own `qualify_state_root`, never a second filesystem list. Unix
+  resolves it with `sot_state_dir_in` from the installer's environment: nonempty `XDG_STATE_HOME`, else
+  `$HOME/.local/state`, joined with `sot`. An unqualified explicit choice is left alone and ends ONE STEP LEFT,
+  naming the folder, the qualification's reason and the export to change (the unit sources `~/.bashrc`, whose
+  export wins over its drop-in). On Linux with a managed daemon unit and no explicit choice, the installer tries
+  `/scratch/<user>/sot-state/sot` only when `/scratch` is a directory and its account folder is absent or a real
+  directory owned by this uid. It creates and qualifies the private root, then durably publishes
+  `sotd.service.d/state.conf` setting `XDG_STATE_HOME=/scratch/<user>/sot-state`, after the host pin and before
+  daemon-reload. An absent drop-in is published without replacing anything; identical bytes are kept; every other
+  entry is the person's and is left alone with ONE STEP LEFT. A newly written drop-in gets `try-restart`, even on a
+  repair. A shared home carries the same drop-in to each computer, whose own local folder is created at its first
+  daemon start. No usable candidate gives ONE STEP LEFT with commands to make a local folder, write the drop-in,
+  reload and restart. A daemon role without a managed unit (macOS, `--no-service`) gets the same qualification, and
+  a failure gives ONE STEP LEFT naming the folder, the reason and the export to change. A computer that runs no
+  daemon has no state folder to check.
 - The Julia the daemon will run meets the kernel's floor (`[compat] julia` of `julia/kernel/Project.toml`): the
   daemon's (`SOT_JULIA_BIN`, else juliaup's default read from `juliaup.json`, else PATH) and the comm refresh's (PATH).
   Below it the run ends ONE STEP LEFT naming the fix; a PATH julia below it ends the run before a Julia step. Julia
   steps run with `TMPDIR` inside the run's scratch folder, which the run removes.
 - What it left is checked. The verdict reads the disk and the processes: the binaries' versions, the record,
-  `repo/current`, no pointer armed again, the comm stamp, the Julia manifests of a daemon role, the daemon's answer;
+  `repo/current`, no pointer armed again, the comm stamp, the Julia manifests of a daemon role, the state folder,
+  Claude Code through agents' executable resolver with the installer's PATH and home, and the daemon's answer;
+  missing Claude Code gives ONE STEP LEFT to install it on this computer;
   a step only a person takes (a window on the old version, a daemon a window holds) is ONE STEP LEFT.
 - Bounded waits. curl runs with `--connect-timeout 15 --speed-limit 1000 --speed-time 60`, every git call with
   `http.lowSpeedLimit=1000` and `http.lowSpeedTime=60`, ssh with the tree's `SSH_OPTS` under a 30 s bound; a converge
@@ -242,11 +267,10 @@ shortcut. The interfaces that do not move: the entry paths and the option names 
 never renamed), the verdict words, `$PREFIX`'s layout, `install.json`, the unit names, `SOT_INSTALL_REPO`,
 `SOT_INSTALL_TAG`.
 
-Calls out: `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`,
-`sotd trust declare`, `sotd session-socket-path`, `sotd stdio-bridge`, run as programs (the command line is the seam:
-`sotd install` names no other subsystem's module but platform's `host_name` and `kernel_host_name` and topology's
-`SSH_OPTS`); git, curl, tar, julia and juliaup, npm, systemctl and loginctl,
-ps; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
+Calls out: rows' `qualify_state_root`, agents' `resolve_claude`, platform's state resolver and host facts, and topology's
+`SSH_OPTS`; `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`,
+`sotd trust declare`, `sotd session-socket-path`, `sotd stdio-bridge`, run as programs; git, curl, tar, julia and juliaup,
+npm, systemctl, loginctl and ps; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
 (`sot-local-daemon.ps1 -Stop`) and the apply.
 
 Does not: write hosts.toml (the hub's daemon does); set or derive a Julia depot; install a package a box lacks (git,

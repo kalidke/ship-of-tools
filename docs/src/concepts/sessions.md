@@ -75,8 +75,16 @@ degraded mode that shares the daemon's lifetime, and the daemon log says why.
 The daemon's state root is `${XDG_STATE_HOME:-~/.local/state}/sot`: the
 capsule folders and the daemon's own `sotd.log`. It must be a **local, durable
 filesystem** — the daemon refuses to start a capsule on a network or volatile
-filesystem rather than risk the screen file and the capsule's lock. On a home directory shared across
-servers, give each host its own local state root (see
+filesystem rather than risk the screen file and the capsule's lock. On Linux,
+the installer checks this root. When it fails qualification, a managed
+daemon unit with no nonempty `XDG_STATE_HOME` gets
+`/scratch/<user>/sot-state/sot` when that local folder is usable. The installer
+writes a systemd drop-in pointing there and
+restarts the daemon. Each computer sharing the home uses its own local
+disk. An explicit export or a personal drop-in is kept; an unqualified root
+ends **ONE STEP LEFT**, with the folder and the reason in the final checklist.
+The unit sources `~/.bashrc`, whose export wins over the drop-in. Other Unix
+installs check the root and name the export to fix when it fails (see
 [Troubleshooting](../guide/troubleshooting.md#A-session-will-not-start-on-a-shared-home)).
 
 Closing a session from the session list ends its capsule and removes its folder under `workspaces/`, with the saved screen. The conversation itself lives with the agent, so it stays resumable with `/resume` in the same

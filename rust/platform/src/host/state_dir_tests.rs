@@ -175,6 +175,13 @@ fn env_of(pairs: &[(&str, &str)]) -> super::super::env::Env {
 }
 
 #[test]
+#[cfg(not(windows))]
+fn an_empty_xdg_state_home_uses_the_home_fallback() {
+    let env = env_of(&[("HOME", "/home/account"), ("XDG_STATE_HOME", "")]);
+    assert_eq!(sot_state_dir_in(&env), Some(std::path::PathBuf::from("/home/account/.local/state/sot")));
+}
+
+#[test]
 fn a_raw_host_name_gives_its_first_lowercase_label_or_an_error() {
     assert_eq!(host_label("Box.Example.Org"), Ok("box".to_string()));
     assert_eq!(host_label("  BOX \n"), Ok("box".to_string()));

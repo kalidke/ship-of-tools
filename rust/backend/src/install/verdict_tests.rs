@@ -1,5 +1,25 @@
 use super::*;
 
+#[test]
+fn the_checklist_precedes_the_one_last_verdict_and_a_stop_has_none() {
+    let mut f = found(None, &[]);
+    f.item(Mark::Ok, "sotd 1.2.3");
+    f.item(Mark::Made, "state folder /scratch/account/sot-state/sot");
+    f.step("install Claude Code on this computer");
+    f.item(Mark::Ok, "Julia environments");
+    assert_eq!(output(Ok((&f, "")), ""), (
+        "Checklist:\n  ok: sotd 1.2.3\n  made: state folder /scratch/account/sot-state/sot\n  ok: Julia environments\n  todo: install Claude Code on this computer\nONE STEP LEFT: install Claude Code on this computer".into(), 0));
+    f.fail("record", "missing");
+    assert!(output(Ok((&f, "; pinned")), "").0.ends_with("  todo: install Claude Code on this computer\n  FAIL: record: missing\nFAIL: record: missing; pinned"));
+    // Steps and a fail with no item print the verdict alone: a system that records no items prints no checklist.
+    let bare = found(Some("record: missing"), &["install Julia"]);
+    assert_eq!(output(Ok((&bare, "")), ""), line(&bare, ""));
+    let empty = found(None, &[]);
+    assert_eq!(output(Ok((&empty, "")), ""), line(&empty, ""));
+    let stop = Stop::at("service", 2, "stopped before checks");
+    assert_eq!(output(Err(&stop), "; pinned"), stop_line(&stop, "; pinned"));
+}
+
 fn found(fail: Option<&str>, steps: &[&str]) -> Found {
     Found { fail: fail.map(String::from), steps: steps.iter().map(|s| (*s).to_string()).collect(), pass: "Ship of Tools 1.2.3 at 0123abcde on this computer".into(), ..Found::default() }
 }

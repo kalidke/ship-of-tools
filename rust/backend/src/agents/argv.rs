@@ -315,14 +315,15 @@ fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Ve
 /// existence+executable check, never a second PATH walk). Takes its
 /// inputs explicitly (never reads `std::env` itself) so it is testable
 /// without mutating global process state — [`claude_argv`]'s Linux arm
-/// and [`agent_exec_argv`]'s `"claude"` arm are the two real callers,
-/// each supplying the process's own `PATH`/`HOME`; `claude_argv` itself
+/// and [`agent_exec_argv`]'s `"claude"` arm supply their own `PATH`/`HOME`; the Unix installer also asks this resolver
+/// for its final Claude Code check. Both launch paths use
+/// the process's own `PATH`/`HOME`; `claude_argv` itself
 /// is `cfg(unix)` ABOVE as well (macOS lane: the narrower gate it used to
 /// carry named no mechanism this resolver does not already provide, and
 /// is deleted) — widening this shared helper is what let `agent_exec_argv`
 /// resolve a real `claude` on any Unix in the first place.
 #[cfg(unix)]
-fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
+pub(crate) fn resolve_claude(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Result<String, String> {
     // Review round, reproduced: a RELATIVE `PATH` entry resolves against
     // the daemon's own current directory (`execve`'s own rule for a
     // relative argv[0]/PATH member) — which, for a daemon started as a

@@ -284,7 +284,9 @@ handles (the rows that run); work-state: the reduction and
 `comm/adapters/claude/sot-comm/references/work-state.md`. Housed there and messaging's: the Stop hook's mail gate and
 `comm-subagent-guard.sh`, until pass 4 moves the hooks to `sotd comm`.
 
-Calls in: the window and the row CLIs (`agents/spawn/`, `sot-fe`) through the ops above; lifecycle (`end_every`,
+Calls in: distribution's Unix installer (`spawn::state_root::qualify_state_root`, the privacy, local durability and
+volume checks `qualified_state_root` also calls on the resolved state root); the window and the row CLIs
+(`agents/spawn/`, `sot-fe`) through the ops above; lifecycle (`end_every`,
 `forget`, `resume_all`, `close_gate_and_settle`, `claim_create`, `list`); the server (`row_or_reply`, `resolve`,
 `capsule_guard`, `seed_default_row`, the bus setters, and page-channel `work_state::states` and `handle::row_of_handle`);
 files and sidecars (a row's lazy handles); messaging's wake

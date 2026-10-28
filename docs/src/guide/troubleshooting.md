@@ -118,16 +118,36 @@ The daemon keeps capsule session records under
 `${XDG_STATE_HOME:-~/.local/state}/sot` and refuses to start a capsule row on a
 remote filesystem (NFS, SMB/CIFS, 9p, an unqualified FUSE mount) or a volatile
 one (tmpfs, ramfs), answering `state_root_unqualified` and naming the
-filesystem. On a home shared over NFS, point each host's state root at its
-own local disk with a drop-in at
-`~/.config/systemd/user/sotd.service.d/state.conf`:
+filesystem. On a server whose homes are on NFS, the Linux installer checks
+the same root that session creation uses. With a managed daemon
+unit and no nonempty `XDG_STATE_HOME`, it creates
+`/scratch/<user>/sot-state/sot` on this computer's local disk when it can,
+writes a state drop-in and restarts the daemon. Its final checklist names
+the state folder as `ok`, `made` or `todo` above the verdict.
+
+If it says **ONE STEP LEFT**, follow the state-folder step: an explicit
+`XDG_STATE_HOME` or a personal drop-in is left alone. Change that export
+where it is set; the unit sources `~/.bashrc`, so an export there wins over
+the drop-in. Without a usable scratch folder, make a durable local folder
+(not `/tmp` or a tmpfs mount):
+
+```sh
+mkdir -p /path/on/local/disk/state
+chmod 700 /path/on/local/disk/state
+mkdir -p ~/.config/systemd/user/sotd.service.d
+```
+
+Write `~/.config/systemd/user/sotd.service.d/state.conf` (preserving any
+personal settings already there) with:
 
 ```ini
 [Service]
 Environment=XDG_STATE_HOME=/path/on/local/disk/state
 ```
 
-then `systemctl --user daemon-reload && systemctl --user restart sotd`.
+Then run `systemctl --user daemon-reload && systemctl --user restart sotd.service`.
+Without systemd, export `XDG_STATE_HOME` pointing at that folder in the
+environment that starts the daemon, and restart it yourself.
 Relocating the root does not migrate existing rows — end that host's capsule
 runs first. See [Sessions and persistence](../concepts/sessions.md).
 

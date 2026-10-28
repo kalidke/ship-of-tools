@@ -57,9 +57,30 @@ pub(super) struct Found {
     pub steps: Vec<String>,
     pub pass: String,
     pub checked: Vec<String>,
+    pub items: Vec<(Mark, String)>,
+}
+
+/// A checklist line a check that passed records. What is left to do and what failed are the run's steps and its fail,
+/// which the checklist prints after these, so it never leaves out what the verdict names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code, reason = "Windows does not record checklist items yet"))]
+pub(super) enum Mark {
+    Ok,
+    Made,
+}
+
+impl Mark {
+    fn word(self) -> &'static str {
+        match self { Self::Ok => "ok", Self::Made => "made" }
+    }
 }
 
 impl Found {
+    #[cfg_attr(windows, allow(dead_code, reason = "Windows does not record checklist items yet"))]
+    pub fn item(&mut self, mark: Mark, text: impl Into<String>) {
+        self.items.push((mark, text.into()));
+    }
+
     /// A failed check; the first one stands.
     pub fn fail(&mut self, check: &str, detail: impl AsRef<str>) {
         if self.fail.is_none() {
@@ -100,6 +121,33 @@ pub(super) fn stop_line(stop: &Stop, tail: &str) -> (String, i32) {
     (format!("FAIL: {}: {}{tail}", stop.check, stop.detail), stop.code)
 }
 
+/// The run's last output: the checklist, then the verdict line. The checklist is the items in the order they were
+/// recorded, then each step left (`todo`), then the fail (`FAIL`), so it holds everything the verdict names; a system
+/// that records no items prints the verdict alone, and a stop (a run that ended before its checks) has no checklist.
+fn output(outcome: Result<(&Found, &str), &Stop>, tail: &str) -> (String, i32) {
+    let (found, pin) = match outcome {
+        Ok(pair) => pair,
+        Err(stop) => return stop_line(stop, tail),
+    };
+    let (verdict, code) = line(found, pin);
+    if found.items.is_empty() {
+        return (verdict, code);
+    }
+    let one_line = |text: &str| text.replace(['\n', '\r'], " ");
+    let mut text = String::from("Checklist:\n");
+    for (mark, item) in &found.items {
+        text.push_str(&format!("  {}: {}\n", mark.word(), one_line(item)));
+    }
+    for step in found.steps.iter().filter(|s| !s.is_empty()) {
+        text.push_str(&format!("  todo: {}\n", one_line(step)));
+    }
+    if let Some(fail) = &found.fail {
+        text.push_str(&format!("  FAIL: {}\n", one_line(fail)));
+    }
+    text.push_str(&verdict);
+    (text, code)
+}
+
 /// Print `text` as the verdict unless one was printed; true when this call printed it.
 fn print_once(text: &str) -> bool {
     if DONE.swap(true, Ordering::SeqCst) {
@@ -119,8 +167,8 @@ pub(super) fn finish(outcome: Result<(Found, String), Stop>) -> i32 {
         std::thread::park();
     }
     let (text, code) = match outcome {
-        Ok((found, pin)) => line(&found, &pin),
-        Err(stop) => stop_line(&stop, &tail()),
+        Ok((found, pin)) => output(Ok((&found, &pin)), ""),
+        Err(stop) => output(Err(&stop), &tail()),
     };
     if print_once(&text) {
         code

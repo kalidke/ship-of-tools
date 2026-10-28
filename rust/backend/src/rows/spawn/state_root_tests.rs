@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn a_given_local_state_root_is_created_private_and_qualified() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("state/sot");
+    let resolved = qualify_state_root(&root, None).expect("a durable scratch filesystem qualifies");
+    assert_eq!(resolved, root.canonicalize().unwrap());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+    assert_eq!(qualify_state_root(&root, None).unwrap(), resolved);
+}
+
 /// A full volume qualifies only a row that has run; any other preflight
 /// failure stays a refusal, and a row has run once its fence file exists.
 #[test]

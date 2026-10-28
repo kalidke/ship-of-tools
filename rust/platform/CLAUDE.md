@@ -14,7 +14,9 @@ where each lives).
 1. **A machine fact has one answer.** The state folder (`sot_state_dir`), the config folder (`sot_config_dir`), the
    runtime base (`runtime_sot_dir`), the host name (`host_name`, `SOT_SELF_HOST` over the kernel's name), the OS
    account (`own_account_id`) and the folder hash lane sockets are named by (`state_dir_hash`) are each defined once,
-   here, from an `Env` value the caller supplies or the process's own; a second rule anywhere is a defect. Raw host
+   here, from an `Env` value the caller supplies or the process's own; a second rule anywhere is a defect. On Unix an
+   empty `XDG_STATE_HOME` uses the same home fallback as an unset one
+   (`an_empty_xdg_state_home_uses_the_home_fallback`). Raw host
    name readers that remain, each for a format that must not change under installed releases: the comm handle's host
    component (`rust/backend/src/comm/identity/context.rs`), the updater's stage lock record (`rust/updater/src/lock.rs`)
    and the window's resume file name (`rust/frontend/src/ui/persist/resume.rs`); they fold with their owners' passes.
