@@ -7,6 +7,7 @@
 # Usage: agents/tests/test-show-result.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SHOW="$(cd "$(dirname "${BASH_SOURCE[0]}")/../claude/bin" && pwd)/show-result"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/show-result-test-XXXXXX")"
