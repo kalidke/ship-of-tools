@@ -70,13 +70,13 @@ the closing block from the `sitrep` skill: a line opening `SITREP: <headline>`
 (done), `SITREP-WAITING: <what for>` (waiting), or this whole line (blocked):
 
 ```text
-SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 ```
 
-`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
-`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone (the card
-requires acknowledgment); `Pane only:` for a tag or General registration (approval must be typed in the pane, and
-the card offers only Go to and the page). Put the context needed to answer cold below the line, in plain words.
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:` and
+`Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be
+undone, saying what it does (the card requires acknowledgment before its answer buttons work, and the click types the
+answer into the pane). Put the context needed to answer cold below the line, in plain words.
 The Stop hook stamps the row
 from that line, so no status call is needed at turn end. A step in a live
 back-and-forth owes no block — answer and end. Nudges, each once per turn: a

@@ -61,13 +61,13 @@ A script that stamped a bare `blocked` or `waiting` now shows that error.
 For a blocked question, declare the parts on the same line:
 
 ```text
-blocked "<question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"
+blocked "<question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"
 ```
 
-`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
-`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone; the card
-requires acknowledgment of what happens. Use `Pane only:` for a tag or General registration: approval must be typed
-in the pane, and the card offers only Go to and the page.
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:` and
+`Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be
+undone, saying what it does; the card requires acknowledgment of it before its answer buttons work, and the click types
+the answer into the pane. An older line's `Pane only:` is still read, and gated as `Irreversible:` is.
 
 The page channel reads the question, answer keys and texts, recommendation and page separately. Without options a
 queue can show a reply box; without a page it has no context button. `Page:` takes one non-space path, with a trailing
@@ -145,7 +145,7 @@ A complete marker is followed by `stop` as normal, so the fact it just set survi
 The blocked marker carries this whole convention on one line, then the context needed to answer cold below it:
 
 ```text
-SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 ```
 
 Unread mail is checked first. A question marker missing `Options:` with at least two `(letter)` choices before a

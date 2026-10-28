@@ -3,9 +3,9 @@ Part of rows: see ../../../rust/backend/src/rows/CLAUDE.md (work-state); the Sto
 `comm-status-idle.sh` checks unread mail before markers. A blocked closing marker carries this convention on one
 line, followed by the context needed to answer cold:
 
-    SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+    SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 
-`Irreversible:`, `Pane only:` and `Page:` are optional; `Options:` with at least two `(letter)` choices before a
+`Irreversible:` and `Page:` are optional (an older line's `Pane only:` passes the check and stamps as before); `Options:` with at least two `(letter)` choices before a
 `Recommend` with a letter is required. Read rows' grammar (`work_state/question.rs`): remove the first `Page:` value,
 split at the first `Options:`, then end options at the first valid `Recommend[ed][:] [(]letter[)]`. An incomplete
 question blocks once before stamping or flooring, keeping any earlier blocked declaration. A stop-hook continuation

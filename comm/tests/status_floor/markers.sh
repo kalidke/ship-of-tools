@@ -172,7 +172,7 @@ case_marker_question_stamps_red() {
 # cases observe the real hook and registry, including a correction or bounded
 # continuation after the refusal; each catches the old unconditional stamp.
 question_shape_block() {
-    [ -n "$1" ] && printf '%s' "$1" | jq -e '.decision=="block" and (.reason | contains("SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"))' >/dev/null \
+    [ -n "$1" ] && printf '%s' "$1" | jq -e '.decision=="block" and (.reason | contains("SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>"))' >/dev/null \
         || { echo "    no question-shape block: '$1'"; return 1; }
 }
 case_incomplete_question_marker_is_refused() {
@@ -217,6 +217,7 @@ case_question_grammar_boundaries_are_refused() {
 }
 case_corrected_question_stamps_the_whole_line() {
     local question out
+    # The second is an older line: its retired Pane only: clause still passes and stamps whole.
     for question in "$PORT_QUESTION" \
         'Land it? Irreversible: the change is merged. Pane only: approve here. Options: (a) merge; (b) wait. Recommend (a). Page: /project/decision.html' \
         'which port? Page: /project/decision.html. Options: (a) 8080; (b) 8081. Recommended: b' \

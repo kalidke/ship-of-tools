@@ -101,13 +101,13 @@ cannot disagree. No separate status call is needed at turn end.
 | Marker | State | The line, then the block |
 |---|---|---|
 | `SITREP: <headline>` | done (blue) | one-line headline, then the chain above |
-| `SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>` | blocked (red) | the whole convention on one line, then the context to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible |
+| `SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>` | blocked (red) | the whole convention on one line, then the context to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible |
 | `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, use the full question marker above with the jobs listed below it) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
 
 `Options:` with at least two `(letter)` choices and `Recommend` with a letter are required on the question marker
-line. `Irreversible:`, `Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot
-be undone; the card asks the user to acknowledge what happens. Use `Pane only:` for a tag or General registration;
-those still need the user's words typed in the pane, and the card offers only Go to and the page. `Page:` is the
+line. `Irreversible:` and `Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or
+anything else that cannot be undone, saying what it does; the card asks the user to acknowledge it before its answer
+buttons work, and the user's click types the answer into the pane. `Page:` is the
 marker's permitted path; keep the prose below it in plain words. The Stop hook nudges an incomplete question once,
 without stamping it; a stop-hook continuation is allowed to stamp its marker.
 

@@ -50,13 +50,13 @@ file, a decision), the turn ends `blocked` with this whole marker line, then the
 the running jobs below it:
 
 ```text
-SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
+SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>
 ```
 
-`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:`,
-`Pane only:` and `Page:` are optional. Use `Irreversible:` for a merge or anything that cannot be undone (the card
-requires acknowledgment); `Pane only:` for a tag or General registration (approval must be typed in the pane, and
-the card offers only Go to and the page). An incomplete question gets one Stop nudge before stamping; a stop-hook
+`Options:` with at least two `(letter)` choices and `Recommend` with a letter are required. `Irreversible:` and
+`Page:` are optional. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be
+undone, saying what it does (the card requires acknowledgment before its answer buttons work, and the click types the
+answer into the pane). An incomplete question gets one Stop nudge before stamping; a stop-hook
 continuation passes and stamps its marker. `waiting` is only for a turn where nothing needs the user. Mechanics: the sot-comm skill's
 `references/work-state.md`.
 

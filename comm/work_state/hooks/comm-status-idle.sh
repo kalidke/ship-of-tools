@@ -425,7 +425,7 @@ if [ -n "$lock_warn" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ] 
     fi
 fi
 
-question_form='SITREP-QUESTION: <question> Irreversible: <what happens>. Pane only: <what>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>'
+question_form='SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>'
 if [ "$marker_state" = blocked ] && printf '%s' "$input" | jq -e '.stop_hook_active != true' >/dev/null 2>&1; then
     # Rows' question grammar: remove the first Page value, split at the first
     # Options:, and count letter marks before the first valid recommendation.
@@ -453,7 +453,7 @@ if [ "$marker_state" = blocked ] && printf '%s' "$input" | jq -e '.stop_hook_act
     if [ "$question_shape" = incomplete ]; then
         if question_block="$(jq -nc --arg f "$question_form" '{
           decision: "block",
-          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Irreversible:, Pane only: and Page: are optional; Options: and Recommend are required. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
+          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Irreversible: and Page: are optional; Options: and Recommend are required. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
         }' 2>/dev/null)" && [ -n "$question_block" ]; then
             emit_block "$question_block"
             exit 0
@@ -545,7 +545,7 @@ case "$parked" in
     blocked|done)
         if [ "$origin" = user ]; then
             case "$parked" in
-                blocked) owed="$question_form  (all on one line; Irreversible:, Pane only: and Page: are optional; Options: and Recommend are required), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
+                blocked) owed="$question_form  (all on one line; Irreversible: and Page: are optional; Options: and Recommend are required), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
             emit_block "$(jq -nc --arg s "$parked" --arg o "$owed" '{
