@@ -173,7 +173,8 @@ pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
         return o.exit(1);
     };
     let now = unix_now_secs();
-    o.out(format!("sot-comm agents  ({}):", crate::comm::identity::paths::native(&ctx.registry().to_string_lossy())));
+    o.out(format!("sot-comm agents in this computer's registry  ({}):", crate::comm::identity::paths::native(&ctx.registry().to_string_lossy())));
+    o.out(super::join::REACH_NOTE);
     let agents = doc["agents"].as_object().cloned().unwrap_or_default();
     for (name, e) in &agents {
         let s = |k: &str| e.get(k).and_then(serde_json::Value::as_str).unwrap_or("").to_string();
@@ -226,7 +227,7 @@ pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
         }
     }
     if rows.is_empty() {
-        o.out("  (none attached, or no daemon answered)");
+        o.out("  (none attached here, or this computer's daemon did not answer; a send still reaches the hub)");
     }
     for r in rows {
         o.out(format!("  {r}"));

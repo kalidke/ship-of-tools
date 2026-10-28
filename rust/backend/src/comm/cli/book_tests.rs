@@ -40,6 +40,8 @@ fn list_names_each_handle_its_liveness_and_its_work_state() {
     assert!(o.stdout.contains("  @me-box1") && o.stdout.contains("live") && o.stdout.contains("<- me"), "{}", o.stdout);
     assert!(o.stdout.contains("[a/b]") && o.stdout.contains("    [blocked] q?") && o.stdout.contains("stale "), "{}", o.stdout);
     assert!(o.stdout.contains("attached frontend boxes"), "{}", o.stdout);
+    // The list is this computer's registry, and says so: a session once read it as everyone it could reach.
+    assert!(o.stdout.contains("in this computer's registry") && o.stdout.contains(super::super::join::REACH_NOTE), "{}", o.stdout);
     assert_eq!(epoch_of("1970-01-02T00:00:01Z"), Some(86_401));
     assert_eq!(fmt_age(7200), "2h ago");
 }

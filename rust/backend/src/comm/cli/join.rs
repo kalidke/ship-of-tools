@@ -12,6 +12,9 @@ use crate::comm::identity::derive::{derive, still_cleared, tier, Derived, Mode};
 use crate::comm::identity::self_file;
 use crate::comm::registry::registry::{binding, command_lock_wait, iso8601_utc_now, read_doc, unix_now_secs, update, Binding};
 
+/// What a local listing does not show (messaging's Sending: a handle the folder does not list goes to the hub).
+pub(super) const REACH_NOTE: &str = "  Sessions on other computers are not listed here; a send to any handle still reaches them through the hub. Send, and judge reach by its verdict, never by this list.";
+
 pub(crate) const HELP: &str = "comm-join.sh \u{2014} register this session in the sot-comm network.
 
 Usage:
@@ -256,7 +259,9 @@ fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
     o.out(format!("Joined sot-comm as @{name}  ({} on {}).", ctx.repo, ctx.host));
     o.out(format!("  inbox: {}/{name}.jsonl", crate::comm::identity::paths::native(&ctx.inbox_dir().to_string_lossy())));
     if let Some(others) = others {
-        o.out(format!("Others registered: {}", if others.is_empty() { "none" } else { &others }));
+        // A session read this list as everyone reachable and told its person a hub session was not (2026-10-27).
+        o.out(format!("Others in this computer's registry: {}", if others.is_empty() { "none" } else { &others }));
+        o.out(REACH_NOTE);
     }
     o
 }

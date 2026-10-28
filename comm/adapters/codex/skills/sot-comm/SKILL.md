@@ -16,7 +16,7 @@ do not retry or join.
 ~/.sot-comm/bin/comm-send.sh @<handle> 'message'       # durable, registry-based
 ~/.sot-comm/bin/comm-send.sh --broadcast 'message'
 ~/.sot-comm/bin/comm-poll.sh                           # read your unread mail (a busy inbox exits 75: run it again)
-~/.sot-comm/bin/comm-list.sh                           # registered sessions
+~/.sot-comm/bin/comm-list.sh                           # this computer's registry only; a send still reaches other computers
 ~/.sot-comm/bin/comm-status.sh waiting "watching X"    # purple until you report
 ~/.sot-comm/bin/comm-status.sh blocked "<question> Options: (a) ...; (b) .... Recommend (a)."  # red
 ~/.sot-comm/bin/sot-fe notify "message"                # toast on the window in use

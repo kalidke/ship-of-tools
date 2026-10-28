@@ -34,7 +34,7 @@ registration in General: those need their approval typed in your pane, without t
 | Intent | Command |
 |--------|---------|
 | Join (once per session; `/sot-session-start` does it) | `comm-join.sh --expertise "a, b"` (the handle is derived: folder name plus box name, unless the launcher pinned one) |
-| Who's online | `comm-list.sh` |
+| Who is in this computer's registry | `comm-list.sh` (other computers' sessions are not listed; a send to their handle still reaches them through the hub, so judge reach by the send's verdict) |
 | Direct message | `comm-send.sh @<name> 'message'` |
 | Direct message from a file | `comm-send.sh @<name> --file <path>` (`--file -` reads stdin) |
 | Broadcast | `comm-send.sh --broadcast 'message'` |
