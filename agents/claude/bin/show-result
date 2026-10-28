@@ -61,6 +61,31 @@ case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
     fi ;;
 esac
 
-# The badge floor is the only path — we never force-switch the user's view.
+# A page goes to the browser through `sot-fe docs`, as the skill's table says, by its absolute path. A page under this
+# row's own project folder opens with --direct, so its answer buttons reach this session: the session opening its own
+# page is the opener whose say --direct needs (pages' contract), and the daemon refuses --direct outside that folder.
+# Any other page opens plain. An older sot-fe without --direct opens it plain.
+case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
+  *.html|*.htm)
+    case "$REL" in
+      /*) ABS="$REL" ;;
+      *) ABS="${SOT_WORKSPACE_ROOT:-$PWD}/$REL" ;;
+    esac
+    PAGE="$(cd "$(dirname -- "$ABS")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename -- "$ABS")" || true)"
+    [ -n "$PAGE" ] || PAGE="$ABS"
+    ROOT=""
+    [ -n "${SOT_WORKSPACE_ROOT:-}" ] && ROOT="$(cd "$SOT_WORKSPACE_ROOT" 2>/dev/null && pwd -P || true)"
+    DIRECT=()
+    case "$PAGE" in
+      "$ROOT"/*)
+        if [ -n "$ROOT" ]; then
+          HELP="$("$SFE" --help 2>&1 || true)"
+          case "$HELP" in *--direct*) DIRECT=(--direct) ;; esac
+        fi ;;
+    esac
+    exec "$SFE" docs "$WS" "$PAGE" ${DIRECT[@]+"${DIRECT[@]}"} ;;
+esac
+
+# The badge floor is the only path for everything else — we never force-switch the user's view.
 # Any extra flags pass through to `sot-fe preview`.
 exec "$SFE" preview "$WS" "$REL" "$@"

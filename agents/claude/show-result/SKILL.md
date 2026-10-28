@@ -16,7 +16,10 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 | You produced | Command | Lands in |
 |---|---|---|
 | Image, figure, PDF, markdown, source file | `show-result <path>` | FE nav + preview pane (badge) |
-| A built site, ANY page inside it, or a self-contained `.html` | `sot-fe docs <ws> <abs-path>` | FE machine's OS browser |
+| A built site, ANY page inside it, or a self-contained `.html` | `show-result <page.html>` (or `sot-fe docs <ws> <abs-path>`) | FE machine's OS browser |
+
+`show-result` on an `.html` page runs `sot-fe docs` for you. A page under your row's own folder opens with `--direct`,
+so a decision page's answer buttons reach you; a page opened any other way cannot answer.
 | An http(s) URL — page, PR, CI run, dashboard | `sot-fe open-url <url>` | FE machine's OS browser |
 
 `open-url` puts the address on a command line any account on the box can read: never pass it an address with a
