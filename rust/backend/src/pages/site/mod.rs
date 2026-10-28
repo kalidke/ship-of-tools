@@ -272,7 +272,11 @@ pub fn remove_root(owner: u64) {
     let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
     if let Some(nonces) = sn.remove(&owner) {
         let mut roots = SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner());
-        for nonce in nonces { roots.remove(&nonce); }
+        let mut embeds = EMBED_OF.write().unwrap_or_else(|p| p.into_inner());
+        for nonce in nonces {
+            roots.remove(&nonce);
+            embeds.remove(&nonce);
+        }
     }
     drop(sn);
     let mut p = POOL.write().unwrap_or_else(|p| p.into_inner());
@@ -399,6 +403,32 @@ impl Capability {
                     && (ct_eq(key.as_bytes(), secret.as_bytes()) || grant.is_navigation_secret(secret))),
         }
     }
+}
+
+/// The one embedded page each calling page holds, by the caller's nonce: a new embed replaces the last, so a page that
+/// embeds as often as it likes spends one of its window's `SITES_PER_WINDOW` slots and never evicts itself.
+static EMBED_OF: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
+
+/// An ordinary grant (no reply scope) for an already-confined page that the prefix page `caller` shows in a frame,
+/// replacing that caller's last embed: the path its own origin resolves, `/<nonce>/<relative>`, so the frame is the
+/// caller's origin locally and through a remote window's proxy alike.
+pub(super) fn embed_grant_path(owner: u64, caller: &str, site: Site, relative: &str) -> Option<String> {
+    let old = EMBED_OF.write().unwrap_or_else(|p| p.into_inner()).remove(caller);
+    if let Some(old) = old {
+        forget_nonce(owner, &old);
+    }
+    let nonce = set_root(owner, site)?;
+    EMBED_OF.write().unwrap_or_else(|p| p.into_inner()).insert(caller.to_string(), nonce.clone());
+    Some(format!("/{nonce}/{}", encode_url_path(relative)))
+}
+
+/// Drop one of `owner`'s prefix grants: its links answer 404 from now on.
+fn forget_nonce(owner: u64, nonce: &str) {
+    let mut sn = OWNER_NONCE.write().unwrap_or_else(|p| p.into_inner());
+    if let Some(nonces) = sn.get_mut(&owner) {
+        nonces.retain(|n| n != nonce);
+    }
+    SITE_ROOTS.write().unwrap_or_else(|p| p.into_inner()).remove(nonce);
 }
 
 /// Pass an already-confined page through the existing docs command/reply route, which arms remote proxies.

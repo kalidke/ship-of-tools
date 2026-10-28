@@ -102,7 +102,14 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   path: "sot-page:<nonce>/<relative>"}`. `docs.open` redeems only the requesting owner's live grant, returning its
   existing URL through the usual remote proxy route, without interpreting the path under any other workspace.
   The open verb grants only the target row, whatever the opener's scope or POST fields; redemption preserves that
-  existing grant even if its request asks for a wider scope. On Unix a decision site holds the row's `PinnedDir` from preparation through the grant's lifetime, after checking
+  existing grant even if its request asks for a wider scope. `open` with `embed: true` (since 2026-10-27, for a page
+  that shows a row's question page in a frame) takes the same checks (`not_a_row`, `no_page`, `page_outside`), sends
+  the window nothing and answers `200 {ok, url}`: `url` is the path `/<nonce>/<relative>` of an ordinary grant (no
+  reply scope, so the framed page cannot answer) on the prefix server, which the calling page's own origin resolves,
+  locally and through a remote window's proxy. Each calling page holds one embed, so a new one replaces its last
+  (`site::embed_grant_path`, `EMBED_OF`) and embeds never evict the caller from its window's eight slots; a pool page
+  (its own origin) is answered `409 embed_unsupported`. No response header forbids framing
+  (`tests/page_channel.rs::an_embedded_question_page_is_on_the_callers_origin_and_one_per_caller`). On Unix a decision site holds the row's `PinnedDir` from preparation through the grant's lifetime, after checking
   that its identity matches the row's original folder. Every file request refuses a changed base identity and opens
   each component with `openat` from the borrowed pin descriptor (`AsFd`), never by reopening the base pathname.
   This works on Linux and macOS, even if the row or an ancestor is replaced between the check and the final open;

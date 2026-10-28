@@ -230,6 +230,20 @@ impl PageVerbs {
             let Some(prepared) = prepared else {
                 return Ok(("403 Forbidden", error("page_outside", "the question's page must resolve under the row's project folder")));
             };
+            // `embed: true` answers the page's URL for the calling page's own frame instead of opening it in the
+            // window: an ordinary grant (the frame cannot answer), one per calling page, by a path its origin resolves.
+            if body.get("embed").and_then(Value::as_bool) == Some(true) {
+                let super::Capability::Prefix { owner, nonce } = capability else {
+                    return Ok(("409 Conflict", error("embed_unsupported",
+                        "only a page served under a /<nonce>/ prefix can embed: this page has its own origin")));
+                };
+                if !capability.live() { return Ok(grant_gone()); }
+                let (site, relative) = prepared;
+                let Some(url) = super::embed_grant_path(*owner, nonce, site, &relative) else {
+                    anyhow::bail!("could not mint a secure page grant");
+                };
+                return Ok(("200 OK", json!({"ok": true, "url": url})));
+            }
             page = Some(prepared);
             ("docs", json!({"workspace": workspace}))
         };

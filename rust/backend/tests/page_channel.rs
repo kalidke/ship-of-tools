@@ -224,6 +224,33 @@ async fn the_open_verb_always_grants_the_targets_row_and_never_all() {
     }
 }
 
+/// `open` with `embed: true` answers the question page's URL for the calling page's own frame and sends the window
+/// nothing: a path on the caller's origin, an ordinary grant (the frame cannot answer), one per calling page (a second
+/// embed replaces the first), and the caller's own grant kept.
+#[tokio::test]
+async fn an_embedded_question_page_is_on_the_callers_origin_and_one_per_caller() {
+    let _serial = SERIAL.lock().await;
+    let (env, mut a) = setup("page-embed").await;
+    let page = env.workspace_project_root.join("decision.html");
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "workspace_id": ROW, "state": "blocked",
+        "question": format!("Land it? Page: {}", page.display())}));
+    let caller = queue(&env, &mut a).await;
+    let first = caller.post(json!({"verb": "open", "handle": HANDLE, "embed": true})).await;
+    assert_eq!(first.status, 200, "{:?}", first.json());
+    let url = first.json()["url"].as_str().expect("an embed URL").to_string();
+    assert!(url.starts_with('/') && url.ends_with("/decision.html"), "a path on the caller's origin: {url}");
+    no_command(&mut a).await;
+    let framed = SiteUrl { target: url, ..caller.clone() };
+    assert_eq!(framed.raw("GET", None, "", "").await.status, 200);
+    assert_eq!(reply_scope(&framed).await, json!({"scope": "none"}), "an embedded page cannot answer");
+    let second = caller.post(json!({"verb": "open", "handle": HANDLE, "embed": true})).await;
+    assert_eq!(second.status, 200, "{:?}", second.json());
+    assert_eq!(framed.raw("GET", None, "", "").await.status, 404, "the second embed replaced the first");
+    assert_eq!(caller.post(json!({"verb": "states"})).await.status, 200, "the calling page keeps its grant");
+    set_entry(&env, HANDLE, json!({"host": TEST_STATE_HOST, "workspace_id": ROW, "state": "blocked", "question": "Land it?"}));
+    caller.post(json!({"verb": "open", "handle": HANDLE, "embed": true})).await.code(409, "no_page");
+}
+
 #[tokio::test]
 async fn navigation_from_a_direct_entry_gets_an_ordinary_grant_in_both_servers() {
     let _serial = SERIAL.lock().await;

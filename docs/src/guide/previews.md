@@ -107,7 +107,9 @@ each file request there. Unix grants hold the row folder by identity and open fi
 Windows retains a path-based check/open race. The page
 script supplies a handle; it cannot select an arbitrary file. These actions need no confirmation and answer
 `202` with `{ok: true}`. They go to the page's own window even when another window is in use, locally and through a
-remote window's page proxy.
+remote window's page proxy. `{verb: "open", handle, embed: true}` instead answers `200` with `{ok: true, url}`, a
+path on the calling page's own origin for an `<iframe>`, and opens nothing: the framed page can be read but cannot
+answer, and a page keeps one embed at a time, so a new one replaces the last.
 
 Replies are JSON and never cached. A refusal has `error` (the explanation) and `code`: `not_a_row` (409, including a
 foreign session, whose daemon is named), `no_page` (409), `page_outside` (403), or `window_gone` (503). States still
