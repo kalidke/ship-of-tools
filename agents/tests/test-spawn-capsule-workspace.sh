@@ -149,7 +149,10 @@ run_spawn() {
     SPAWN_HOME="$WORK/home-$SPAWNN"
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
+    # The runner's own account never reaches the spawn: a case names one with SPAWN_CFG (CLAUDE_CONFIG_DIR) and
+    # SPAWN_ACCT (SOT_ACCOUNT).
     SPAWN_OUT="$(cd "$WORK" && in_row spawn-test bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
+        -u CLAUDE_CONFIG_DIR -u SOT_ACCOUNT ${SPAWN_CFG:+CLAUDE_CONFIG_DIR="$SPAWN_CFG"} ${SPAWN_ACCT:+SOT_ACCOUNT="$SPAWN_ACCT"} \
         ${SPAWN_PATH:+PATH="$SPAWN_PATH"} ${SPAWN_SYSROOT:+SYSTEMROOT="$SPAWN_SYSROOT"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
         "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
@@ -408,6 +411,37 @@ case_bash_row_refuses_a_handle_or_a_task() {
     return 0
 }
 
+# With no --account a claude row runs under the spawning session's account: the .claude-auth folder its
+# CLAUDE_CONFIG_DIR names (either slash), else its SOT_ACCOUNT. A default folder keeps the default, --account wins, and
+# a bash row carries none.
+case_an_omitted_account_is_the_spawning_sessions() {
+    local how cfg acct want got n=0
+    local -a args
+    for how in unix windows row default explicit bash; do
+        n=$((n + 1)); cfg=""; acct=""; args=(); want=null
+        case "$how" in
+            unix)     cfg="/home/u/.claude-auth/lab1"; want='"lab1"' ;;
+            windows)  cfg='C:\Users\u\.claude-auth\lab2\'; want='"lab2"' ;;
+            row)      acct="lab3"; want='"lab3"' ;;
+            default)  cfg="/home/u/.claude"; acct="lab4" ;;
+            explicit) cfg="/home/u/.claude-auth/lab1"; args=(--account other); want='"other"' ;;
+            bash)     cfg="/home/u/.claude-auth/lab1"; args=(--agent none) ;;
+        esac
+        start_stub_daemon "ws-acct$n" "acct$n" "$(entry "ws-acct$n" "acct$n" capsule ready)"
+        local name="spawn-acct$n"
+        [ "$how" = bash ] && name=""
+        SPAWN_CFG="$cfg" SPAWN_ACCT="$acct" SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "$name" ${args[@]+"${args[@]}"}
+        got="$(jq -c 'select(.op=="workspace.create") | .payload.account' "$REQLOG")"
+        stop_stub_daemon
+        [ "$SPAWN_RC" -eq 0 ] || { echo "  $how: exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+        [ "$got" = "$want" ] || { echo "  $how: workspace.create account $got (want $want)"; return 1; }
+        if [ "$how" = unix ]; then
+            contains "$SPAWN_OUT" "Account: lab1 (this session's own" || { echo "  unix: stdout: $SPAWN_OUT"; return 1; }
+        fi
+    done
+    return 0
+}
+
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
@@ -435,6 +469,8 @@ check "--agent none: a bash row with no handle, registry row or inbox; waits for
     case_bash_row_spawns_with_no_handle
 check "--agent none refuses --name, a name argument and --task before any create or write" \
     case_bash_row_refuses_a_handle_or_a_task
+check "no --account: a claude row gets the spawning session's account, --account wins, a default folder keeps the default" \
+    case_an_omitted_account_is_the_spawning_sessions
 # A case that cannot run here is a SKIP in the count, never a PASS; and a case leaves the suite's own SYSTEMROOT as it
 # found it (a Windows case hands its stand-in to the spawn call only).
 case_skipped() { return 2; }

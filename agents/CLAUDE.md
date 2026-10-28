@@ -61,7 +61,13 @@ of each.
    an entry already there in any form is left alone, and a sibling spawn's race is tolerated. Where the OS refuses
    symlinks (Windows without the privilege) a folder becomes a junction the daemon proves it can cross and a file a
    one-time copy the account then owns; `CLAUDE.md` there is a copy unless the import stub is switched on (queue:
-   CLAUDE-MD-STUB). Limit: the shared `settings.json` must not select a login; nothing here checks it.
+   CLAUDE-MD-STUB). A session that starts a row gives it its own account unless told which (the maintainer,
+   2026-10-27): with no `--account`, `comm-spawn.sh` names for a Claude row the `.claude-auth/<name>` folder its caller's
+   `CLAUDE_CONFIG_DIR` names (either slash), else the caller's `SOT_ACCOUNT` when that variable is unset; a caller on
+   the default folder, on a folder of another shape or outside any account keeps the default, `--account` always wins
+   (`--account default` asks for the default), and a Codex or bash row names none. Limits: the shared `settings.json`
+   must not select a login, and nothing here checks it; a spawn on another computer names the caller's account there,
+   and that daemon refuses it if the folder is missing.
 6. **Folder trust is recorded only under the declared prefix, and preparation never stops a row.** `sotd trust
    declare <absolute-prefix>` (offline, the installer calls it) writes `[trust] root_prefix` into the daemon's
    `settings.toml` by exclusive creation or one durable replace, and keeps any existing `[trust]` answer
@@ -254,7 +260,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/capsule/tests/supervisor/spawn.rs`: `first_run_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
-| 5 | `accounts::tests::*`, `account_links::tests::*` |
+| 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*`;
 `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh`; `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |

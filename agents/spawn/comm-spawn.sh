@@ -31,8 +31,10 @@
 #                 row's agent runs under — the NAME of a subdirectory that
 #                 must already exist under ~/.claude-auth (claude rows
 #                 only; logged in there already, or not yet — either is
-#                 fine, only the subdirectory must exist). Omit for the
-#                 agent's own default account. The daemon refuses the
+#                 fine, only the subdirectory must exist). Omitted, a claude
+#                 row runs under the account of the session that spawns it
+#                 (below), and `--account default` asks for the agent's own
+#                 default account. The daemon refuses the
 #                 whole create, loudly, with the exact one-line command
 #                 to fix it, if the named subdirectory is missing; a bash
 #                 (--agent none) row refuses any --account but "default",
@@ -148,7 +150,7 @@ fi
 # `<name> <repo-path>`, kept for existing callers (e.g. /worktree). --name is
 # the equivalent flag form — either way an explicitly-passed name is used
 # VERBATIM, exactly as before.
-USAGE="usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex|none] [--expertise \"...\"] [--task \"...\"] [--label L]"
+USAGE="usage: comm-spawn.sh [--name NAME] <repo-path> [--agent claude|codex|none] [--account NAME] [--expertise \"...\"] [--task \"...\"] [--label L]"
 case "${#POSITIONAL[@]}" in
     1) REPO_PATH="${POSITIONAL[0]}" ;;
     2) NAME="${POSITIONAL[0]}"; REPO_PATH="${POSITIONAL[1]}" ;;
@@ -166,6 +168,25 @@ esac
 ACCOUNT_RE='^[a-z0-9][a-z0-9_-]*$'
 if [ -n "$ACCOUNT" ] && ! [[ "$ACCOUNT" =~ $ACCOUNT_RE ]]; then
     echo "ERROR: --account must match ^[a-z0-9][a-z0-9_-]*\$ (got '$ACCOUNT')" >&2; exit 1
+fi
+# With no --account, a claude row runs under the spawning session's own account, not the default (the maintainer,
+# 2026-10-27): the account folder its CLAUDE_CONFIG_DIR names (`.claude-auth/<name>`, either slash), else its row's
+# SOT_ACCOUNT when CLAUDE_CONFIG_DIR is unset. A caller on the default folder, on a folder of another shape, or outside
+# any account keeps the default. --account always wins; a codex or bash row takes no account.
+ACCOUNT_INHERITED=false
+if [ -z "$ACCOUNT" ] && [ "$AGENT" = claude ]; then
+    cfg="${CLAUDE_CONFIG_DIR:-}"; cfg="${cfg//\\//}"; cfg="${cfg%/}"
+    if [ -n "$cfg" ]; then
+        parent="${cfg%/*}"
+        [ "$parent" != "$cfg" ] && [ "${parent##*/}" = ".claude-auth" ] && ACCOUNT="${cfg##*/}"
+    else
+        ACCOUNT="${SOT_ACCOUNT:-}"
+    fi
+    if [ -n "$ACCOUNT" ] && ! [[ "$ACCOUNT" =~ $ACCOUNT_RE ]]; then
+        echo "NOTE: this session's account folder '$ACCOUNT' is not an account name; the row gets the default account" >&2
+        ACCOUNT=""
+    fi
+    [ -n "$ACCOUNT" ] && ACCOUNT_INHERITED=true
 fi
 if [ -n "$NAME_FLAG" ]; then
     if [ -n "$NAME" ]; then
@@ -622,9 +643,11 @@ WSID="$(printf '%s' "$RESP" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/
 if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
     echo "ERROR: workspace.create failed via $ENDPOINT" >&2
     [ -n "$RESP" ] && printf '  daemon said: %s\n' "$(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2
+    [ "$ACCOUNT_INHERITED" = true ] && echo "  the account '$ACCOUNT' was this session's own; --account names another, --account default the default" >&2
     exit 1
 fi
 echo "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
+[ "$ACCOUNT_INHERITED" = true ] && echo "Account: $ACCOUNT (this session's own; --account names another)"
 
 # workspace.create's own response never echoes `runtime`
 # (WorkspaceCreateRes has no such field); only workspace.list does.
