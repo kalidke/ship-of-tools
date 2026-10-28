@@ -150,12 +150,14 @@ run_spawn() {
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
     # The runner's own account never reaches the spawn: a case names one with SPAWN_CFG (CLAUDE_CONFIG_DIR) and
-    # SPAWN_ACCT (SOT_ACCOUNT).
+    # SPAWN_ACCT (SOT_ACCOUNT). SPAWN_READER is the caller's reader of stdout (cat, or one that leaves early, `head
+    # -1`); SPAWN_RC is the spawn's own status either way.
     SPAWN_OUT="$(cd "$WORK" && in_row spawn-test bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
         -u CLAUDE_CONFIG_DIR -u SOT_ACCOUNT ${SPAWN_CFG:+CLAUDE_CONFIG_DIR="$SPAWN_CFG"} ${SPAWN_ACCT:+SOT_ACCOUNT="$SPAWN_ACCT"} \
         ${SPAWN_PATH:+PATH="$SPAWN_PATH"} ${SPAWN_SYSROOT:+SYSTEMROOT="$SPAWN_SYSROOT"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
-        "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
+        "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile" \
+        | ${SPAWN_READER:-cat}; exit "${PIPESTATUS[0]}")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
@@ -191,6 +193,23 @@ case_capsule_reaches_ready_on_second_poll() {
     [ "$create" = '["claude","spawn-ready",true]' ] || { echo "  workspace.create [agent, agent_name, autostart_claude]: $create"; return 1; }
     contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
     registry_has_row "spawn-ready" || { echo "  registry row missing after success"; return 1; }
+    return 0
+}
+
+# A caller that stops reading after the first line (`| head -1`) never ends the spawn: before `trap '' PIPE` its next
+# write took SIGPIPE, which bash dies of with no EXIT trap, after the row was made and before any task was sent.
+case_a_reader_that_leaves_never_ends_the_spawn() {
+    local wsid="ws-cut" slug="cut1"
+    start_stub_daemon "$wsid" "$slug" \
+        "$(entry "$wsid" "$slug" capsule starting)" \
+        "$(entry "$wsid" "$slug" capsule ready)"
+    SPAWN_READER="head -1" SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-cut
+    stop_stub_daemon
+
+    contains "$SPAWN_OUT" "Created workspace" && ! contains "$SPAWN_OUT" "Capsule row ready" \
+        || { echo "  the reader did not leave after the first line: $SPAWN_OUT"; return 1; }
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC (141 is SIGPIPE): the spawn ended before its last step: $SPAWN_ERR"; return 1; }
+    registry_has_row "spawn-cut" || { echo "  registry row missing after success"; return 1; }
     return 0
 }
 
@@ -446,6 +465,8 @@ case_an_omitted_account_is_the_spawning_sessions() {
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
     case_capsule_reaches_ready_on_second_poll
+check "a caller that stops reading after the first line never ends the spawn: it runs to its end and exits 0" \
+    case_a_reader_that_leaves_never_ends_the_spawn
 check "capsule row settles to 'ended_no_respawn': never destroys, prints the despawn command" \
     case_capsule_terminal_phase_never_destroys
 check "capsule row never reaches 'ready' within the wait: TIMEOUT never destroys" \

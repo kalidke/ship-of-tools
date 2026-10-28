@@ -11,6 +11,9 @@ Messaging itself is `sotd comm`; what lives here is the shell every installed sc
 - A cleanup trap (an EXIT trap that removes or undoes what its shell holds) starts `trap "" HUP INT TERM`, ends with
   `sot_end_by_signal`, and its shell runs `sot_cleanup_signals` right after setting it (`comm/lib/comm-lib-base.sh`,
   cleanup traps); a test suite's own traps are the suite's.
+- A tool whose steps follow its own output lines (the spawn, the despawn) runs `trap '' PIPE` and writes every line of
+  its success path with `sot_say`, so a caller that stops reading never ends it between steps (`comm/lib/comm-lib-base.sh`,
+  a reader that leaves).
 - A messaging function a script calls is the shell door's (`lib/comm-lib-sotd.sh`), which runs `sotd comm`: no script
   reads or writes the comm folder's registry, inboxes or cursors itself.
 

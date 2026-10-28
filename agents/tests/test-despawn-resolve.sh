@@ -131,12 +131,15 @@ seed_row() {
 reg_hash() { sha256sum "$CH/registry.json" 2>/dev/null | cut -d' ' -f1; }
 reg_has() { jq -e --arg n "$1" '.agents | has($n)' "$CH/registry.json" >/dev/null 2>&1; }
 
+# DESPAWN_READER is the caller's reader of stdout (cat, or one that leaves early, `head -1`); DESPAWN_RC is the
+# despawn's own status either way.
 run_despawn() {
     local who="$1"
     DESPAWN_OUT="$(bounded 30 env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_SESSION \
         ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
-        "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp")"
+        "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp" \
+        | ${DESPAWN_READER:-cat}; exit "${PIPESTATUS[0]}")"
     DESPAWN_RC=$?
     DESPAWN_ERR="$(cat "$CH/stderr.tmp" 2>/dev/null || true)"
 }
@@ -308,6 +311,22 @@ case_confirmed_destroy_deregisters() {
     [ "$d" -eq 1 ] && [ "$n" -ge 1 ] || { echo "  destroys=$d ws-6 mentions=$n"; return 1; }
 }
 
+# A caller that stops reading after the first line (`| head -1`) never ends the despawn between its destroy and the
+# handle's removal: before `trap '' PIPE` the write after the destroy took SIGPIPE and the registry row was left.
+case_a_reader_that_leaves_never_ends_the_despawn() {
+    new_home; seed_row h10 ws-10
+    LIST_PAYLOAD="{\"workspaces\":[$(ws_entry ws-10 other10 other10)]}"
+    DESTROY_PAYLOAD='{"workspace_id":"ws-10"}'
+    start_stub_daemon; DESPAWN_READER="head -1" run_despawn h10
+    local d; d="$(destroys)"
+    stop_stub_daemon
+    [ "$DESPAWN_OUT" = "Resolved workspace via registry row 'ws-10' (handle @h10)" ] \
+        || { echo "  the reader did not leave after the first line: $DESPAWN_OUT"; return 1; }
+    [ "$DESPAWN_RC" -eq 0 ] || { echo "  exited $DESPAWN_RC (141 is SIGPIPE): $DESPAWN_ERR"; return 1; }
+    [ "$d" -eq 1 ] || { echo "  destroys=$d (want 1)"; return 1; }
+    ! reg_has h10 || { echo "  registry row survived: the despawn ended between its destroy and the removal"; return 1; }
+}
+
 # A Windows box's daemon listens only on a named pipe: the request goes
 # through the stand-in bridge (stubbed by a script that carries stdin to the stub
 # daemon's socket and its replies back).
@@ -461,6 +480,8 @@ check "D3 no row and no workspace: refused, no comm-leave hint" case_no_row_no_w
 check "D4 workspace.list is not a workspace list: refused, row kept, no comm-leave hint" case_list_is_not_a_workspace_list
 check "D5 destroy refused: exit 1, row kept" case_refused_destroy_keeps_the_row
 check "D6 confirmed destroy: row removed afterwards" case_confirmed_destroy_deregisters
+check "D6b a caller that stops reading after the first line never ends the despawn: the row is still removed" \
+    case_a_reader_that_leaves_never_ends_the_despawn
 check "D7 despawn removes only its own self-file, by exact name" case_self_file_exact_name
 check "D8 despawn destroys the registry's recorded workspace first" case_recorded_workspace_first
 check "D9 pipe: endpoint (Windows local daemon): destroy succeeds through the stand-in bridge" case_confirmed_destroy_over_pipe_endpoint

@@ -8,6 +8,7 @@
 #
 # The default workspace cannot be destroyed (daemon refuses).
 set -euo pipefail
+trap '' PIPE   # a caller that stops reading never ends the despawn between steps (comm-lib-base.sh, a reader that leaves)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 # A second agent inside the session neither despawns nor spawns rows; the gate
@@ -79,7 +80,7 @@ WSID=""
 if [ -n "$AGENT_WSID" ]; then
     WSID="$(printf '%s' "$LIST" | sot_jq -r --arg w "$AGENT_WSID" \
         '[.payload.workspaces[]? | select(.workspace_id==$w) | .workspace_id][0] // empty' 2>/dev/null)"
-    [ -n "$WSID" ] && echo "Resolved workspace via registry row '$AGENT_WSID' (handle @$WHO)"
+    [ -n "$WSID" ] && sot_say "Resolved workspace via registry row '$AGENT_WSID' (handle @$WHO)"
 fi
 # No row, an empty id, or an id the daemon does not list: match WHO itself
 # against a workspace slug, label or id.
@@ -105,12 +106,12 @@ SLOT_LEAF="$(sot_comm self-slot "$TARGET_HOST" "$WSID")" || { echo "FAILED: noth
 DESTROY="$(jq -nc --arg id "$WSID" '{v:1,id:2,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
 RESP="$(sot_send "$DESTROY" workspace.destroy || true)"
 if printf '%s' "$RESP" | jq -e '.payload.workspace_id' >/dev/null 2>&1; then
-    echo "Destroyed workspace: $(printf '%s' "$RESP" | jq -c '.payload')"
+    sot_say "Destroyed workspace: $(printf '%s' "$RESP" | jq -c '.payload')"
     # The destroyed workspace's identity slot, by its exact name on the daemon's declared host.
     rm -f "${SELF_DIR:?}/${SLOT_LEAF:?}" 2>/dev/null || true
     if [ "$HAS_ROW" = true ]; then
         sot_comm registry del "$WHO"
-        echo "Removed @$WHO from sot-comm registry"
+        sot_say "Removed @$WHO from sot-comm registry"
     fi
 else
     echo "ERROR: workspace.destroy failed: $(printf '%s' "$RESP" | jq -c '.payload' 2>/dev/null || printf '%s' "$RESP")" >&2

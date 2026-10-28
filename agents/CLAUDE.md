@@ -191,6 +191,14 @@ of each.
     `$1` or `${1}`. Limit: the rule keeps a skill from being spoiled by a substitution, not from being wrong, and no
     test runs a skill's script or Claude Code. Check (a lint over the files, which a skill with `$1` fails):
     `tests/test-skill-templates.sh`.
+16. **A caller that stops reading never ends the spawn or the despawn between steps.** Both run `trap '' PIPE` and
+    write every line of their success path with `sot_say` (`comm/lib/comm-lib-base.sh`, a reader that leaves), so a
+    reader that leaves (`| head -2`) costs only the lines it did not read: the spawn still waits for ready, sends its
+    `--task` and exits 0, and the despawn still removes the handle after its destroy. Under SIGPIPE's default the
+    spawn died at its next write, with no EXIT trap, and a row was left ready without the task it was promised. Limit:
+    a caller that kills the tool still ends it (SIGKILL runs nothing; HUP, INT and TERM run the spawn's rollback). Test:
+    `tests/test-spawn-capsule-workspace.sh` ("a caller that stops reading after the first line never ends the
+    spawn"), `tests/test-despawn-resolve.sh` (D6b).
 
 ## Owns
 - The launch recipe: `agent_argv`, `agent_exec_argv`, `claude_resume_argv`, `claude_recipe`, `resolve_claude`,
@@ -276,6 +284,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 13 | `test/install_tests.jl` (the agents testset) |
 | 14 | `tests/test-temp-files.sh` |
 | 15 | `tests/test-skill-templates.sh` (a lint) |
+| 16 | `tests/test-spawn-capsule-workspace.sh` (a reader that leaves), `tests/test-despawn-resolve.sh` (D6b) |
 
 ## Queue
 - The Stop script `comm-status-idle.sh` does the mail check and the work-state stamping, audits and nudges in one

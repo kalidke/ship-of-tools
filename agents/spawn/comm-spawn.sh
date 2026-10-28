@@ -82,6 +82,7 @@
 # daemon's destroy removes that handle with the row (it matches the row's
 # stored agent_name).
 set -euo pipefail
+trap '' PIPE   # a caller that stops reading never ends the spawn between steps (comm-lib-base.sh, a reader that leaves)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 # A second agent inside the session neither spawns nor despawns rows (a row it
@@ -183,7 +184,7 @@ if [ -z "$ACCOUNT" ] && [ "$AGENT" = claude ]; then
         ACCOUNT="${SOT_ACCOUNT:-}"
     fi
     if [ -n "$ACCOUNT" ] && ! [[ "$ACCOUNT" =~ $ACCOUNT_RE ]]; then
-        echo "NOTE: this session's account folder '$ACCOUNT' is not an account name; the row gets the default account" >&2
+        sot_say "NOTE: this session's account folder '$ACCOUNT' is not an account name; the row gets the default account" >&2
         ACCOUNT=""
     fi
     [ -n "$ACCOUNT" ] && ACCOUNT_INHERITED=true
@@ -298,9 +299,9 @@ _spawn_rollback_report() {
     local rc=0
     sot_comm registry del-provisional "$NAME" "$CANON_ROOT" "$PROV_NONCE" || rc=$?
     case "$rc" in
-        0) echo "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
-        2) echo "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;
-        *) echo "comm-spawn: FAILED to roll back the provisional row for @$NAME (rc=$rc) — check by hand: jq '.agents[\"$NAME\"]' $REGISTRY" >&2 ;;
+        0) sot_say "comm-spawn: rolled back provisional registry row for @$NAME after a failed spawn" >&2 ;;
+        2) sot_say "comm-spawn: did NOT roll back @$NAME — its row no longer matches what this spawn wrote (something else has since claimed/updated it); left untouched" >&2 ;;
+        *) sot_say "comm-spawn: FAILED to roll back the provisional row for @$NAME (rc=$rc) — check by hand: jq '.agents[\"$NAME\"]' $REGISTRY" >&2 ;;
     esac
 }
 trap 'trap "" HUP INT TERM; _spawn_rollback_report; sot_end_by_signal' EXIT
@@ -368,7 +369,7 @@ SPAWN_IS_LOCAL=true
 if [ -n "$SPAWN_HOST" ] && [ -n "$SELF_HOST" ] && [ "$SPAWN_HOST" != "$SELF_HOST" ]; then
     SPAWN_IS_LOCAL=false
 elif [ -z "$SPAWN_HOST" ]; then
-    echo "comm-spawn: the daemon at $ENDPOINT did not declare a host (predates version.query's host field) — assuming it runs on this box (${SELF_HOST:-unknown})." >&2
+    sot_say "comm-spawn: the daemon at $ENDPOINT did not declare a host (predates version.query's host field) — assuming it runs on this box (${SELF_HOST:-unknown})." >&2
 fi
 
 # One repo root, one workspace (ADR 0036): a root the daemon already lists is
@@ -646,8 +647,8 @@ if [ -n "$CREATE_ERR" ] || [ -z "$SLUG" ] || [ -z "$WSID" ]; then
     [ "$ACCOUNT_INHERITED" = true ] && echo "  the account '$ACCOUNT' was this session's own; --account names another, --account default the default" >&2
     exit 1
 fi
-echo "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
-[ "$ACCOUNT_INHERITED" = true ] && echo "Account: $ACCOUNT (this session's own; --account names another)"
+sot_say "Created workspace '$LABEL' (slug=$SLUG, id=$WSID) via $ENDPOINT"
+[ "$ACCOUNT_INHERITED" = true ] && sot_say "Account: $ACCOUNT (this session's own; --account names another)"
 
 # workspace.create's own response never echoes `runtime`
 # (WorkspaceCreateRes has no such field); only workspace.list does.
@@ -681,35 +682,35 @@ while :; do
     sleep 1
 done
 
-echo "Capsule row ready (id=$WSID, phase=ready)"
+sot_say "Capsule row ready (id=$WSID, phase=ready)"
 SPAWN_SUCCEEDED=true
 
 [ -n "$SPAWNER" ] && SOT_LOCK_WAIT_SECS=1 sot_comm registry touch "$SPAWNER" 2>/dev/null || true
 if [ "$AGENT" = none ]; then
-    echo "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with $(_despawn_cmd)"
+    sot_say "Spawned a bash row as workspace '${SLUG}' (id=${WSID}) on ${REPO_NAME}: no agent, no handle. End it with $(_despawn_cmd)"
     exit 0
 fi
 # The row's capsule already runs the agent (workspace.create started it, and the
 # wait above saw it ready), its self file naming <agent_name>. The agent joins
 # comm and reads its repo CLAUDE.md; nothing is pasted.
-echo "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
+sot_say "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}, autostart; NO brief — agent uses its repo CLAUDE.md / AGENTS.md)."
 # Said BEFORE the --task attempt below, because it is also why that attempt
 # can fail: a handle with no row here is not addressable here yet.
 if [ "$SPAWN_IS_LOCAL" = false ]; then
-    echo "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row for it — it is not addressable from here yet."
-    echo "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
+    sot_say "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row for it — it is not addressable from here yet."
+    sot_say "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
 fi
 if [ -n "$SPAWNER" ]; then
-    echo "The row runs ${AGENT} now; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+    sot_say "The row runs ${AGENT} now; the agent joins comm (~1 min) and reports to @${SPAWNER}."
 else
-    echo "The row runs ${AGENT} now; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+    sot_say "The row runs ${AGENT} now; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
 # it queues in the agent's inbox now and is read with comm-poll once the daemon
 # tells the agent of mail.
 if [ -n "$TASKMSG" ]; then
     if "$BIN/comm-send.sh" @"$NAME" "$TASKMSG" >/dev/null 2>&1; then
-        echo "Task queued to @${NAME}'s inbox (durable; the agent reads it with comm-poll once the daemon tells it of mail)."
+        sot_say "Task queued to @${NAME}'s inbox (durable; the agent reads it with comm-poll once the daemon tells it of mail)."
     else
         # A failed enqueue must fail the command, not just warn (Codex
         # review round-3 finding 4) — the routability pre-check above
@@ -723,7 +724,7 @@ if [ -n "$TASKMSG" ]; then
     fi
 fi
 if [ "$SPAWN_IS_LOCAL" = true ]; then
-    echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} '...' queues durably in its inbox,"
-    echo "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after it starts)."
+    sot_say "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} '...' queues durably in its inbox,"
+    sot_say "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after it starts)."
 fi
-echo "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"
+sot_say "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"

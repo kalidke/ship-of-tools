@@ -200,6 +200,16 @@ sot_cleanup_signals() {
 }
 sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c 'kill -s "$1" "$$"' sh "$_SOT_SIG"; }; }
 
+# --- a reader that leaves ---
+#
+# A tool whose steps must not depend on who reads its output (the spawn: create, wait for ready, then send the
+# promised task; the despawn: destroy, then remove the handle) runs `trap '' PIPE` and writes every line on its success
+# path with sot_say. Under SIGPIPE's default, a caller that stopped reading (`| head -2`) ended the spawn at its next
+# write, a death bash runs no EXIT trap for, after its row was ready and before its task was sent. Ignored, the write
+# fails instead, in the tool and in what it starts, and sot_say lets it fail where errexit would end the tool, so the
+# steps and the exit status are the same whoever reads. A line that ends the tool with its error stays a plain echo.
+sot_say() { printf '%s\n' "$*" 2>/dev/null || :; }
+
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, S1/S2): the ONE resolver matching
 # sot_platform::host::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
