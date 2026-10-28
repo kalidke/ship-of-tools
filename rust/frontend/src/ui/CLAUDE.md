@@ -260,7 +260,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Proofs: `control::command::tests::docs_scopes_reach_the_encoded_request_and_an_old_frontend_grants_none`, the
   transport's `every_request_kind_and_its_error_reply_match_the_golden`, and the native
   `result_target_uses_host_and_listed_identity` fixture's docs route (parse, dispatch, encoder and ordinary UI open).
-- `ReplyBar` privately owns a reply a page offered: the daemon it came from, the row's id and listed name, the handle
+- `ReplyBar` privately owns a reply a page offered (since 2026-10-27 a daemon of this tree offers none: an unscoped
+  page's reply is refused, pages' contract; the bar serves only an older daemon and is a deletion candidate at this
+  subsystem's next pass): the daemon it came from, the row's id and listed name, the handle
   and the exact line, how the bar is laid out (covered by a dialog, cut off, or whole at a panel rectangle) and when
   a presented frame last showed it whole. It never takes `State`. At most one offer is open: a second is dropped and the status line says so. `State`
   (`control/reply_dispatch.rs`) opens the bar only for a row `RowDirectory::resolve` finds listed on the offering daemon

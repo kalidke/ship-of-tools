@@ -280,7 +280,7 @@ async fn navigation_from_a_direct_entry_gets_an_ordinary_grant_in_both_servers()
 }
 
 #[tokio::test]
-async fn a_post_cannot_change_scope_and_only_an_unscoped_reply_offers_the_bar() {
+async fn a_post_cannot_change_scope_and_an_unscoped_reply_is_refused() {
     let _serial = SERIAL.lock().await;
     let (env, mut a) = setup("page-post-scope").await;
     let page = env.workspace_project_root.join("decision.html");
@@ -292,9 +292,9 @@ async fn a_post_cannot_change_scope_and_only_an_unscoped_reply_offers_the_bar() 
         assert_eq!(res.json()["reply_scope"], scope);
         let reply = site.post(json!({"verb": "reply", "handle": HANDLE, "text": "approve", "direct": forged})).await;
         if scope == json!({"scope": "none"}) {
-            assert_eq!(reply.status, 202);
-            assert_eq!(command(&mut a, "page_reply").await,
-                json!({"workspace": ROW, "handle": HANDLE, "line": "[sot-page] approve"}));
+            // No reply waits on the window's bar: an unscoped page is told why, and nothing is offered or typed.
+            reply.code(403, "no_reply_scope");
+            no_command(&mut a).await;
         } else {
             assert_eq!(reply.status, 200, "a scoped reply is rows' to deliver: {:?}", reply.json());
             assert!(reply.json()["receipt"]["outcome"].is_string(), "{:?}", reply.json());
@@ -703,7 +703,8 @@ async fn malformed_verbs_and_unframed_or_oversize_bodies_run_nothing() {
     no_command(&mut a).await;
 }
 
-/// Red at the base: reply answers bad_request, rather than sanitizing and offering a marked line.
+/// Hostile text is refused as bad_text, and a valid line from an unscoped page is refused as no_reply_scope: no window
+/// is offered either.
 #[tokio::test]
 async fn a_reply_with_hostile_text_is_refused_and_opens_no_bar() {
     let _serial = SERIAL.lock().await;
@@ -716,11 +717,10 @@ async fn a_reply_with_hostile_text_is_refused_and_opens_no_bar() {
     }
     site.post(json!({"verb": "reply", "handle": HANDLE, "text": "a".repeat(513)})).await.code(400, "bad_text");
     tokio::join!(no_command(&mut old), no_command(&mut other), no_command(&mut newest));
-    for (text, line) in [("approve", "[sot-page] approve"), (" /clear ", "[sot-page] /clear")] {
-        assert_eq!(site.post(json!({"verb": "reply", "handle": HANDLE, "text": text})).await.status, 202);
-        assert_eq!(command(&mut newest, "page_reply").await, json!({"workspace": ROW, "handle": HANDLE, "line": line}));
+    for text in ["approve", " /clear "] {
+        site.post(json!({"verb": "reply", "handle": HANDLE, "text": text})).await.code(403, "no_reply_scope");
     }
-    tokio::join!(no_command(&mut old), no_command(&mut other));
+    tokio::join!(no_command(&mut old), no_command(&mut other), no_command(&mut newest));
 }
 
 /// Red at the base: fe.command.send publishes the reserved command.

@@ -198,22 +198,25 @@ impl PageVerbs {
                 Ok(line) => line,
                 Err(reason) => return Ok(("400 Bad Request", error("bad_text", &reason.to_string()))),
             };
-            // A grant with a reply scope types without the window's bar: a row scope answers only its own row.
-            if *reply_scope != sot_protocol::ReplyScope::None {
-                if let sot_protocol::ReplyScope::Row { workspace_id } = reply_scope {
-                    if *workspace_id != row.workspace_id {
-                        return Ok(("403 Forbidden", error("out_of_scope", "this page answers only its own row's question")));
-                    }
-                }
-                let request_id = body.get("request_id").and_then(Value::as_str)
-                    .filter(|id| !id.is_empty() && id.len() <= 64
-                        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
-                    .unwrap_or_default().to_string();
-                if !capability.live() { return Ok(grant_gone()); }
-                let receipt = (self.direct)(row.workspace_id, handle.to_string(), line, request_id).await?;
-                return Ok(("200 OK", json!({"ok": true, "receipt": receipt})));
+            // Only a grant with a reply scope answers, and it types directly; a row scope answers only its own row. An
+            // entry with none is refused with a reason its page can show: no reply waits on the window's bar, where
+            // answers were lost unseen (the maintainer, 2026-10-27).
+            if *reply_scope == sot_protocol::ReplyScope::None {
+                return Ok(("403 Forbidden", error("no_reply_scope",
+                    "this page was opened without a reply scope; open it with sot-fe docs --direct (its own row) or --direct-all to answer from it")));
             }
-            ("page_reply", json!({"workspace": row.workspace_id, "handle": handle, "line": line}))
+            if let sot_protocol::ReplyScope::Row { workspace_id } = reply_scope {
+                if *workspace_id != row.workspace_id {
+                    return Ok(("403 Forbidden", error("out_of_scope", "this page answers only its own row's question")));
+                }
+            }
+            let request_id = body.get("request_id").and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 64
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+                .unwrap_or_default().to_string();
+            if !capability.live() { return Ok(grant_gone()); }
+            let receipt = (self.direct)(row.workspace_id, handle.to_string(), line, request_id).await?;
+            return Ok(("200 OK", json!({"ok": true, "receipt": receipt})));
         } else {
             if row.page.is_empty() {
                 return Ok(("409 Conflict", error("no_page", "the row's question names no page")));

@@ -57,8 +57,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   on the same origin, keeping root-relative assets working. That secret and the entry secret expire together on
   reassignment. A cookie still authorizes files only. An ordinary capability stays ordinary on navigation back to the
   original entry; the entry's own grant keeps its scope. A POST elsewhere beneath a direct nonce has scope `none`.
-  A reply from an entry with no scope offers the window's bar and answers 202. A reply from a scoped entry needs no
-  window: a `row` scope naming any other row's handle is refused `403 out_of_scope`; otherwise rows' direct delivery
+  A reply from an entry with no scope is refused, 403 `no_reply_scope`, with words naming how to open the page with a
+  scope; no reply is offered to the window's bar, where answers waited unseen and were lost (the maintainer,
+  2026-10-27). A reply from a scoped entry needs no window: a `row` scope naming any other row's handle is refused `403 out_of_scope`; otherwise rows' direct delivery
   (`PageVerbs::with_direct`) types it at once or holds it, and the POST answers `200 {ok, receipt}`, the receipt being
   `{request_id, workspace_id, handle, outcome, detail}` with `outcome` `sent`, `held`, `refused` or `unknown`. The page
   may name its `request_id` (1 to 64 of `A-Za-z0-9-_`); a repeated id answers its receipt again and types nothing.
@@ -118,10 +119,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   answers 409 `not_a_row` (a known foreign entry names its daemon); no question page answers 409 `no_page`; an outside,
   relative or unresolvable page answers 403 `page_outside`. Unknown or malformed verbs answer 400 `bad_request`. A blocking handler failure is logged and answers JSON 500 `handler_error`, keeping the
   consumed connection available for the next request. `reply {handle, text}` resolves the handle with the same local/foreign rule, then calls wire's `page_reply::line`.
-  Invalid text answers 400 `bad_text`, naming the refusal; valid text sends `page_reply {workspace, handle, line}` to
-  the same owner connection and answers 202. A POST offers only: it never types or confirms delivery, and the daemon
-  keeps no pending-reply table. A window shows the offer on its reply bar (fe-ui); an older window drops the command and delivers nothing.
-  `fe.command.send` refuses the reserved command, so only this page server publishes an offer.
+  Invalid text answers 400 `bad_text`, naming the refusal; valid text from a scoped entry goes to rows' direct delivery
+  (above), and from an unscoped one answers 403 `no_reply_scope`. No page command offers a reply any more: the window's
+  reply bar (fe-ui) is reached by nothing this daemon sends, and `fe.command.send` still refuses the reserved command.
 - A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
   since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
@@ -208,12 +208,13 @@ the existing worker-deadline case now holds four actions and observes successful
 
 `proxy.rs` `allowed_proxy_ports` for what a remote window may reach; `video.rs` `serve_request` for a served request.
 
-Reply behavior: `tests/page_channel.rs::a_reply_with_hostile_text_is_refused_and_opens_no_bar` observes refusal and
-exact marked offers on the owner's newest connection; `a_handle_that_binds_no_row_here_is_refused` includes replies
-and named foreign-daemon refusals. `tests/comm_wake.rs::a_page_reply_post_types_nothing` observes an offer and no pane
-input for three seconds on a free stub-agent row.
+Reply behavior: `tests/page_channel.rs::a_reply_with_hostile_text_is_refused_and_opens_no_bar` observes `bad_text`,
+then `no_reply_scope` for valid lines from an unscoped page, and no command to any window;
+`a_handle_that_binds_no_row_here_is_refused` includes replies and named foreign-daemon refusals.
+`tests/comm_wake.rs::a_page_reply_post_types_nothing` observes the refusal, no offer and no pane input for three seconds
+on a free stub-agent row.
 Landing A's scope proofs in `tests/page_channel.rs`: `states_reports_the_entry_scope_with_a_canonical_row_id`,
 `a_direct_row_open_refuses_a_page_in_another_known_workspace`, `the_open_verb_always_grants_the_targets_row_and_never_all`,
 `navigation_from_a_direct_entry_gets_an_ordinary_grant_in_both_servers`, and
-`a_post_cannot_change_scope_and_only_an_unscoped_reply_offers_the_bar`. Direct delivery: `site/verbs_tests.rs::
+`a_post_cannot_change_scope_and_an_unscoped_reply_is_refused`. Direct delivery: `site/verbs_tests.rs::
 a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_row`.

@@ -112,29 +112,24 @@ remote window's page proxy.
 Replies are JSON and never cached. A refusal has `error` (the explanation) and `code`: `not_a_row` (409, including a
 foreign session, whose daemon is named), `no_page` (409), `page_outside` (403), or `window_gone` (503). States still
 works while the window is away. Missing fields, malformed JSON and unknown verbs answer `bad_request` (400).
-Post `{verb: "reply", handle: "session-handle", text: "approve"}` to offer a reply to that window. Text trims ASCII
-spaces, must be nonempty and fit in 512 UTF-8 bytes, and must contain no controls, line separators or invisible
-formatting characters. Invalid text answers 400 `bad_text`, naming the refusal. Accepted text gains the visible
-`[sot-page] ` mark and answers 202; that is an offer, not a delivery receipt. No page verb confirms delivery.
+Post `{verb: "reply", handle: "session-handle", text: "approve"}` to answer that session. Text trims ASCII spaces,
+must be nonempty and fit in 512 UTF-8 bytes, and must contain no controls, line separators or invisible formatting
+characters. Invalid text answers 400 `bad_text`, naming the refusal. Accepted text gains the visible `[sot-page] `
+mark. Only a page opened with a reply scope answers: `sot-fe docs --direct` gives a session's own page its row,
+`--direct-all` gives a list page every row, and a question's page opened by `open` answers its own row. Such a reply
+is typed at once at the session's free prompt, or held until the prompt frees, and answers 200 with its receipt:
+`sent`, `held`, `refused` with the reason, or `unknown`. A page opened without a scope is refused, 403
+`no_reply_scope`, and nothing is typed or offered anywhere. Every reply leaves one line in the daemon's log, whatever
+became of it.
 
-A window shows an offer on a reply bar drawn over every pane, titled "Reply from a page". It names the session, the row
-and its computer, and shows the exact line that will be typed. Enter sends only after the bar has been on screen, whole, for one
-second and is not a held key's repeat; Esc drops it; while the bar is up it takes every key. A dialog over the bar, such
-as the quit question or the quit hint, takes the keys instead and nothing under the bar gets one; the bar's second
-starts again when it is shown again, so an Enter given to the dialog never sends the reply. A second offer while one is
-open is dropped, and the status line says so. In a window too small to show the whole target and line, Esc drops the
-bar but Enter cannot send it. If the connection ends before the daemon answers, the status line says the delivery is
-unknown: look at the pane before replying again. Nothing a page sends can confirm the bar:
-it reads only the window's own keys. A window without the bar drops the offer and delivers nothing.
-
-The daemon's `page.reply` delivery op rechecks the mark and target handle and uses the wake's free-prompt gate,
-sharing one typing attempt per row. It refuses a dialog, menu, working screen, unsent draft, active Stop hook,
-unsupported agent or line that cannot fit the prompt row; only a Ready Claude capsule row is supported. A sent line
-contains the mark in the pane and transcript. `typed_not_sent` means text was typed but Enter withheld, and `unknown`
-means delivery could not be confirmed; inspect the pane before trying again. An unsent page line is never completed
-by the wake. A marked approval is the person's word for a merge, never for a tag or a registration in General:
-those require approval typed in that session's pane without the mark. That unmarked convention is not proof of
-physical keyboard input, since existing `pty.input` callers can type unmarked text.
+The typing rechecks the mark and the target handle and uses the wake's free-prompt gate, sharing one typing attempt
+per row. It refuses a dialog, a menu, unsent text a person typed and an unsupported agent, and holds a reply for a
+working screen or a running Stop hook; only a Ready Claude capsule row is supported. A line wider than the pane wraps
+and is checked across its rows before Enter. A sent line carries the mark in the pane and the transcript.
+`typed_not_sent` means text was typed but Enter withheld, and `unknown` means delivery could not be confirmed; inspect
+the pane before trying again. An unsent page line is never completed by the wake. A card answer counts as the
+person's word, a merge, a tag or a registration in General included, behind the card's acknowledgment of what it
+does. The mark is not proof of physical keyboard input, since existing `pty.input` callers can type text.
 
 The channel requires the site's live nonce or explicit pool query secret and a matching browser Origin. Keep
 `location.search` in a pool page's POST URL: cookies alone do not authorize verbs, since another open may replace

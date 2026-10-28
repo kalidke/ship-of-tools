@@ -1097,7 +1097,8 @@ async fn a_direct_reply_is_refused_at_a_draft_and_types_nothing() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// POST only offers a reply to its own window; even with a free row no bytes reach the pane.
+/// A POST from a page opened with no reply scope is refused and offers nothing to its window; even with a free row no
+/// bytes reach the pane.
 #[tokio::test]
 async fn a_page_reply_post_types_nothing() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1121,16 +1122,14 @@ async fn a_page_reply_post_types_nothing() {
     http.write_all(request.as_bytes()).await.unwrap();
     let mut response = String::new();
     tokio::time::timeout(BOUND, http.read_to_string(&mut response)).await.unwrap().unwrap();
-    assert!(response.starts_with("HTTP/1.1 202"), "{response}");
-    let offer = tokio::time::timeout(BOUND, async {
+    assert!(response.starts_with("HTTP/1.1 403") && response.contains("no_reply_scope"), "{response}");
+    let offered = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let (frame, _) = sot_protocol::codec::read_frame(&mut window).await.unwrap();
             if frame.op == op::FE_COMMAND { break frame.payload; }
         }
-    }).await.unwrap();
-    assert_eq!(offer["cmd"], "page_reply");
-    assert_eq!(offer["args"], serde_json::json!({"workspace": row.ws, "handle": HANDLE, "line": "[sot-page] approve"}));
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    }).await;
+    assert!(offered.is_err(), "an unscoped reply was offered to the window: {offered:?}");
     assert!(received(&row).is_empty());
     assert!(!row.screen_has("[sot-page]").await);
     row.env.kill_daemon_bounded().await;
