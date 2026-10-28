@@ -242,7 +242,7 @@ case_bare_question_continuation_stamps() {
     [ -z "$out" ] || { echo "    the continuation blocked: '$out'"; return 1; }
     expect blocked/-/q/-/- stamped && [ "$(summ)" = 'which port?' ]
 }
-# A question that owes a decision page (rows' question::page_owed: Irreversible, or past two sentences) is not stamped
+# A question that owes a decision page (rows' question::page_owed: an Irreversible one with no Page:) is not stamped
 # at a turn's first stop: the hook asks for the page and keeps the row; its continuation stamps the line as written.
 IRREV_QUESTION='Merge it? Irreversible: main moves. Options: (a) merge; (b) wait. Recommend (a).'
 case_a_question_owing_a_page_is_nudged_then_stamped() {
@@ -259,7 +259,7 @@ case_a_question_owing_a_page_is_nudged_then_stamped() {
 # An explicit blocked stamp that owes a page is refused, rc 2, naming why and the fix; with its page it stamps.
 case_a_blocked_stamp_owing_a_page_is_refused() {
     seed idle
-    local q='The hub is on rc.3. The laptop waits. Cut rc.4? Options: (a) yes; (b) no. Recommend (a).'
+    local q='Tag v9.9.9? Irreversible: the tag is published. Options: (a) tag; (b) wait. Recommend (a).'
     local before err rc=0; before="$(row_all)"
     err="$("$ST" blocked "$q" 2>&1 >/dev/null)" || rc=$?
     [ "$rc" = 2 ] || { echo "    rc $rc (want 2): '$err'"; return 1; }

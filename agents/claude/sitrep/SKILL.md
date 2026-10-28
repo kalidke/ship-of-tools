@@ -107,9 +107,9 @@ cannot disagree. No separate status call is needed at turn end.
 `Options:` with at least two `(letter)` choices and `Recommend` with a letter are required on the question marker
 line. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be undone, saying
 what it does; the card asks the user to acknowledge it before its answer buttons work, and the user's click types the
-answer into the pane. A question carries a decision page (`Page:`, made with `/decision-page`) when the user needs
-more than a sentence or two of context to decide, and an `Irreversible:` one always does: the Stop hook asks for a
-page it owes before stamping. `Page:` is the
+answer into the pane. A question carries a decision page (`Page:`, made with `/decision-page`) by default: skip it
+only when the question and a sentence or two of background are everything the user needs to decide. An
+`Irreversible:` question always carries one, and the Stop hook asks for it before stamping. `Page:` is the
 marker's permitted path; keep the prose below it in plain words. The Stop hook nudges an incomplete question once,
 without stamping it; a stop-hook continuation is allowed to stamp its marker.
 

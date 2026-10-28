@@ -453,7 +453,7 @@ if [ "$marker_state" = blocked ] && printf '%s' "$input" | jq -e '.stop_hook_act
     if [ "$question_shape" = incomplete ]; then
         if question_block="$(jq -nc --arg f "$question_form" '{
           decision: "block",
-          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Options: and Recommend are required; Irreversible: is optional; Page: is owed when the person needs more than a sentence or two of context, and always for an Irreversible question. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
+          reason: ("Your closing question marker needs at least two (letter) options after Options: and a Recommend with a letter, all on the marker line: " + $f + ". Options: and Recommend are required; Irreversible: is optional; Page: is the default, skipped only when the question and a sentence or two of background are all the person needs, and always owed for an Irreversible question. Put the context needed to answer it cold below that line. The deficient line has not been stamped; an earlier blocked declaration is kept. This nudge will not fire in a stop-hook continuation.")
         }' 2>/dev/null)" && [ -n "$question_block" ]; then
             emit_block "$question_block"
             exit 0
@@ -566,7 +566,7 @@ case "$parked" in
     blocked|done)
         if [ "$origin" = user ]; then
             case "$parked" in
-                blocked) owed="$question_form  (all on one line; Options: and Recommend are required; Irreversible: is optional; Page: is owed when the person needs more than a sentence or two of context, and always for an Irreversible question), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
+                blocked) owed="$question_form  (all on one line; Options: and Recommend are required; Irreversible: is optional; Page: is the default, skipped only when the question and a sentence or two of background are all the person needs, and always owed for an Irreversible question), then below it the context needed to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible" ;;
                 *)       owed='SITREP: <one-line headline>  then the sitrep chain (the sitrep skill): issue in context, diagnosis, design, result with its scale, interpretation, plan' ;;
             esac
             emit_block "$(jq -nc --arg s "$parked" --arg o "$owed" '{

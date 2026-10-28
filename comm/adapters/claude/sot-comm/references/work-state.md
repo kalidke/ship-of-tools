@@ -68,9 +68,9 @@ blocked "<question> Irreversible: <what happens>. Options: (a) ...; (b) .... Rec
 a merge, a tag, a General registration or anything else that cannot be undone, saying what it does; the card requires
 acknowledgment of it before its answer buttons work, and the click types the answer into the pane. An older line's
 `Pane only:` is still read, and gated as `Irreversible:` is. A question carries a decision page (`Page:`, made with
-`/decision-page`) when the person needs more than a sentence or two of context to decide, and an `Irreversible:` one
-always does: `blocked` refuses a question that owes a page (rc 2, naming why), more than two sentences before
-`Options:` counting as owing one, and the Stop hook asks for the page once before it stamps the line as written.
+`/decision-page`) by default: skip it only when the question and a sentence or two of background are everything the
+person needs to decide. An `Irreversible:` question always carries one: `blocked` refuses one without a page (rc 2,
+naming why), and the Stop hook asks for the page once before it stamps the line as written.
 
 The page channel reads the question, answer keys and texts, recommendation and page separately. Without options a
 queue can show a reply box; without a page it has no context button. `Page:` takes one non-space path, with a trailing
