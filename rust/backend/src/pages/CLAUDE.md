@@ -63,7 +63,10 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   `{request_id, workspace_id, handle, outcome, detail}` with `outcome` `sent`, `held`, `refused` or `unknown`. The page
   may name its `request_id` (1 to 64 of `A-Za-z0-9-_`); a repeated id answers its receipt again and types nothing.
   A scoped POST's deadline is 15 s; a page that misses it reads the outcome from `states.replies`, rows' newest
-  receipts (memory only: after a daemon restart a held reply has none, and its page shows unknown).
+  receipts (memory only: after a daemon restart a held reply has none, and its page shows unknown). Every `reply` POST
+  logs one INFO line (target `page_reply`, "page reply answered": the handle, the entry's scope, the status and the
+  answer), whether it was offered to the bar, given a receipt or refused, so an answer that never landed can be found
+  (`site/verbs_tests.rs::a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_row`).
 - A site's POST channel admits a live site capability first (prefix nonce or explicit pool secret), then requires
   `Origin` to equal `http://` plus the request's own `Host`. Missing, null, repeated or foreign origins are refused
   with 403 `forbidden`; a missing nonce is a file 404. No command runs before these checks. GET and HEAD remain files;

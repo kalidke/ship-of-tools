@@ -41,8 +41,16 @@ pub(crate) async fn handle_page_reply(req_id: u64, payload: Value, workspaces: &
     }).await.context("page.reply typing task")
 }
 
-/// One typing attempt through the wake's gate, the row's identity checked again under it. Blocks.
+/// One typing attempt through the wake's gate, the row's identity checked again under it, logged whatever its outcome.
+/// Blocks.
 fn attempt(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String) {
+    let (outcome, detail) = attempt_unlogged(rows, workspace_id, handle, line);
+    tracing::info!(target: "page_reply", { handle = %handle, workspace = %workspace_id,
+        line = ?line, outcome, detail = %detail }, "page reply delivery");
+    (outcome, detail)
+}
+
+fn attempt_unlogged(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String) {
     let Some(ws) = rows.resolve(Some(workspace_id)).filter(|ws| ws.workspace_id == workspace_id) else {
         return ("refused", "row_gone".into());
     };
@@ -76,10 +84,7 @@ fn attempt(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (
         }
         Ok(())
     };
-    let (outcome, detail) = delivery(type_if_free(&home, &state_dir, handle, line, &admit).map(|attempt| attempt.outcome));
-    tracing::info!(target: "page_reply", { handle = %handle, workspace = %workspace_id,
-        line = ?line, outcome, detail = %detail }, "page reply delivery");
-    (outcome, detail)
+    delivery(type_if_free(&home, &state_dir, handle, line, &admit).map(|attempt| attempt.outcome))
 }
 
 fn delivery(result: std::result::Result<WakeOutcome, HeadlessError>) -> (&'static str, String) {
@@ -154,6 +159,8 @@ pub(crate) async fn release(rows: &Workspaces) {
             // An unreadable registry keeps the hold for the next tick.
             let Ok(question) = question_of(&held.handle) else { return };
             if question != held.question {
+                tracing::info!(target: "page_reply", handle = %held.handle, workspace = %held.workspace_id,
+                    line = ?held.line, "page reply ended: question_changed");
                 settle(held, "refused", "question_changed: the row's question is not the one answered".into());
                 return;
             }
@@ -173,6 +180,8 @@ fn supersede(new: &Held) {
         }
     };
     if let Some(old) = old {
+        tracing::info!(target: "page_reply", handle = %old.handle, workspace = %old.workspace_id,
+            line = ?old.line, "page reply ended: superseded");
         record(receipt(&old, "refused", "superseded: a newer reply replaced it".into()));
     }
 }

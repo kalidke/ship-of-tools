@@ -331,6 +331,7 @@ async fn budget_case(states_stalled: bool, owner: u64) {
 /// answers only its own row, and `states` carries the scope and the receipts.
 #[tokio::test]
 async fn a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_row() {
+    let log = sot_platform::test_log::capture();
     let root = tempfile::tempdir().unwrap();
     const OWNER: u64 = 8_000_000_077;
     let site = || Site::plain(root.path().to_path_buf());
@@ -384,5 +385,9 @@ async fn a_scoped_reply_is_delivered_directly_and_a_row_scope_answers_only_its_r
     assert_eq!(status, 200);
     assert_eq!((states["reply_scope"]["scope"].as_str(), states["reply_scope"]["workspace_id"].as_str()), (Some("row"), Some("row")));
     assert_eq!(states["replies"][0]["outcome"], "sent");
+    // Each reply left one line with its handle and what became of it: the refusal here and the receipt.
+    let text = log.text();
+    assert!(text.contains("page reply answered") && text.contains("handle=\"theirs\"") && text.contains("out_of_scope"), "{text}");
+    assert!(text.contains("handle=\"mine\"") && text.contains("\"outcome\":\"held\""), "{text}");
     remove_root(OWNER);
 }

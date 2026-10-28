@@ -155,6 +155,12 @@ impl PageVerbs {
             Err(_) => ("503 Service Unavailable", error("handler_timeout", &format!(
                 "the page handler exceeded its {} s deadline; a direct reply's outcome is in states' replies", bound.as_secs())))
         };
+        if body.get("verb").and_then(Value::as_str) == Some("reply") {
+            // Every page reply leaves one line whatever became of it (offered to the window's bar, a direct receipt, or
+            // refused here), so an answer that never landed can be found (2026-10-27: card answers lost with no trace).
+            let handle = body.get("handle").and_then(Value::as_str).unwrap_or("");
+            tracing::info!(target: "page_reply", handle, scope = ?reply_scope, status, answer = %answer, "page reply answered");
+        }
         write_json(stream, status, &answer, set_cookie, request.keep).await
     }
 

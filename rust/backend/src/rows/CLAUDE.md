@@ -190,7 +190,9 @@ Page replies:
   `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never owed Enter
   by a wake, and one without `hold` is never retried; a line left unsent is for the person to inspect. The pane's
   width is not asked: a line wider than the box wraps, and Enter goes once the box's rows hold it (messaging's
-  `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. Delivery logs the handle, workspace, marked line and outcome.
+  `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. Every attempt logs the handle,
+  workspace, marked line and outcome, an early refusal (a gone row, a moved handle, not typeable, not Ready) included,
+  and a held reply that ends untyped (superseded, its question changed) logs that end.
 - Behavior proofs: `tests/page_channel.rs::page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it`,
   and the `page_reply` tests in `tests/comm_wake.rs` (real stub-agent input, refused panes, concurrent typings and a
   changed handle). These tests use scratch homes only.
