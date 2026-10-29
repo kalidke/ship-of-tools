@@ -489,5 +489,12 @@ Its cause: one brief carried two features (the checklist was asked for while the
 pages, and the Codex job could not build in its sandbox, so it worked blind and added four behaviors nobody asked for
 (no `systemctl` read as no service, a failed restart as a stop, a new step for a daemon not running, the guard's
 results merged last), which a reading had to undo; the second Codex round could not run, because the job runner
-starts Codex ephemeral and a resume finds no session. Nothing is half-done on main.
+starts Codex ephemeral and a resume finds no session. Nothing is half-done on main. The v0.7.0-rc.5 cut (2026-10-29)
+drafted nothing, a miss: that landing made a missing Claude Code a step of the checklist, the hosted runners have none,
+and the install smoke takes only PASS, so 7 of its 13 legs ended ONE STEP LEFT (the Windows legs record no checklist
+items, and the leg that installs the release before passed). No gate before a tag runs the install smoke, so the
+release run was the first to see it. The fix gives the smoke a stand-in `claude` in its scratch home, proven against
+rc.5's own Linux pack and by the branch's whole release run; it was on main 28 minutes after the failure showed (47
+after the cut), and it cost one tag: rc.5 stays with no release, and rc.6 carries its product. Queued for distribution:
+a landing that changes the installer's verdict runs no install smoke before the tag.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
