@@ -3,14 +3,16 @@ use super::*;
 #[test]
 fn a_state_dropin_is_written_after_the_pin_before_reload_and_restarted_even_on_a_repair() {
     let f = Fixture::new("me");
+    let mut written_at = 0;
     let changed = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| {
         assert!(f.units().join("sotd.service.d/topology.conf").is_file());
-        assert!(f.at("systemctl --user daemon-reload").is_none());
         let path = f.units().join("sotd.service.d/state.conf");
         std::fs::write(path, "[Service]\nEnvironment=XDG_STATE_HOME=/local/state\n").unwrap();
+        written_at = f.log().len();
         Ok(true)
     })).unwrap();
     assert!(changed);
+    assert!(f.log()[written_at..].iter().any(|l| l == "systemctl --user daemon-reload"), "a reload after the drop-in: {:?}", f.log());
     assert!(with_units(&f, |u| restart_service(u, false, changed)), "a written drop-in restarts even a repair run");
     let reload = f.at("systemctl --user daemon-reload").unwrap();
     let restart = f.at("systemctl --user try-restart sotd.service").unwrap();
@@ -26,8 +28,9 @@ fn a_state_dropin_is_written_after_the_pin_before_reload_and_restarted_even_on_a
     assert!(!called, "a failed pin never reaches the state-folder writer");
 }
 
-/// The state folder is judged where the daemon will keep it: the unit's loaded XDG_STATE_HOME (a person's drop-in on a
-/// network home), read by that one name, not this run's environment.
+/// The state folder is judged where the daemon will keep it: the unit's XDG_STATE_HOME after a reload (a person's
+/// drop-in on a network home), read by that one name and never from inside a quoted entry, unless this run exports the
+/// variable, even empty, since the unit sources ~/.bashrc.
 #[test]
 fn the_state_folder_decision_reads_the_units_state_home() {
     let f = Fixture::new("me");
@@ -42,10 +45,24 @@ fn the_state_folder_decision_reads_the_units_state_home() {
     with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |home| { seen = home; Ok(false) })).unwrap();
     assert_eq!(seen.as_deref(), Some("/scratch/me/state"));
     let show = f.at("systemctl --user show sotd.service -p Environment --value").unwrap();
-    assert!(show < f.at("systemctl --user daemon-reload").unwrap(), "{:?}", f.log());
-    for (line, want) in [("", None), ("A=b", None), ("XDG_STATE_HOME=", None), ("\"XDG_STATE_HOME=/a b\"", None), ("XDG_STATE_HOME=/a XDG_STATE_HOME=/b", Some("/b"))] {
+    assert!(f.at("systemctl --user daemon-reload").unwrap() < show, "read after a reload: {:?}", f.log());
+    for (line, want) in [
+        ("", None),
+        ("A=b", None),
+        ("XDG_STATE_HOME=", None),
+        ("\"XDG_STATE_HOME=/a b\"", None),
+        ("XDG_STATE_HOME=/a XDG_STATE_HOME=/b", Some("/b")),
+        ("\"NOTE=use XDG_STATE_HOME=/x please\" A=b", None),
+        ("\"NOTE=a \\\" XDG_STATE_HOME=/x\" XDG_STATE_HOME=/y", Some("/y")),
+    ] {
         assert_eq!(unit_state_home(line).as_deref(), want, "{line}");
     }
+    let shell = sot_platform::host::env::Env::empty().with("HOME", "/h");
+    let unit = || Some("/scratch/me/state".to_string());
+    assert_eq!(daemon_env(shell.clone(), unit()).get("XDG_STATE_HOME"), Some(std::ffi::OsStr::new("/scratch/me/state")));
+    assert_eq!(daemon_env(shell.clone().with("XDG_STATE_HOME", ""), unit()).get("XDG_STATE_HOME"), Some(std::ffi::OsStr::new("")), "an empty export wins");
+    assert_eq!(daemon_env(shell.clone().with("XDG_STATE_HOME", "/x"), unit()).get("XDG_STATE_HOME"), Some(std::ffi::OsStr::new("/x")));
+    assert_eq!(daemon_env(shell, None).get("XDG_STATE_HOME"), None);
 }
 
 #[test]

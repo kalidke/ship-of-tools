@@ -233,8 +233,14 @@ pub(super) fn setup(
             false,
         ));
     }
-    let candidate = candidate_at(scratch, user, sot_platform::host::state_dir::current_uid());
     let existing = existing_at(&dropin);
+    let base = scratch.join(user).join("sot-state");
+    // A person's drop-in decides before anything is made under the scratch folder for ours; `decide` reads no more.
+    let candidate = if existing.as_deref().is_some_and(|b| b != dropin_text(&base).as_bytes()) {
+        Candidate { base, scratch_dir: true, parent: Parent::Absent, qualified: Err("not made: the drop-in is a person's".into()) }
+    } else {
+        candidate_at(scratch, user, sot_platform::host::state_dir::current_uid())
+    };
     let choice = decide(
         xdg,
         &root,

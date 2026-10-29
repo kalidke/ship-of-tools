@@ -187,6 +187,7 @@ fn a_personal_dropin_and_an_explicit_xdg_value_stay_untouched() {
     let (choice, changed) = setup(&env, Some(&units), &scratch, "account").unwrap();
     assert!(matches!(choice, Choice::Todo(t) if t.contains("is a person's file")));
     assert!(!changed);
+    assert!(!scratch.join("account").exists(), "nothing is made under the scratch folder for a person's drop-in");
     assert_eq!(std::fs::read(&dropin).unwrap(), own);
     assert_eq!(publish(&dropin, DROPIN).unwrap(), None);
     let link = dir.path().join("linked.conf");

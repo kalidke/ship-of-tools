@@ -923,11 +923,7 @@ fn wire(plan: &Plan) -> Result<(bool, Option<state::Choice>), Stop> {
     let mut state = None;
     let state_changed = if plan.unit_managed() {
         enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, |unit_state| {
-            // The daemon's root: an export (the unit sources ~/.bashrc, whose export wins), else the unit's drop-in.
-            let env = match unit_state {
-                Some(home) if env.get_nonempty("XDG_STATE_HOME").is_none() => env.with("XDG_STATE_HOME", home),
-                _ => env,
-            };
+            let env = daemon_env(env, unit_state);
             let (choice, changed) = state::setup(&env, Some(&plan.units()), Path::new("/scratch"), &service_user())?;
             state = Some(choice);
             Ok(changed)
@@ -963,10 +959,41 @@ fn service_user() -> String {
     std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line())
 }
 
-/// The last `XDG_STATE_HOME` in `systemctl show -p Environment --value`'s line, when not empty. A value systemd prints
-/// quoted (one holding a space) is not read.
+/// The environment the unit's daemon resolves its state root from: this run's export of `XDG_STATE_HOME`, even an empty
+/// one (the unit sources `~/.bashrc`, whose export wins over its drop-in), else the unit's own value.
+fn daemon_env(env: sot_platform::host::env::Env, unit_state: Option<String>) -> sot_platform::host::env::Env {
+    match unit_state {
+        Some(home) if env.get("XDG_STATE_HOME").is_none() => env.with("XDG_STATE_HOME", home),
+        _ => env,
+    }
+}
+
+/// The last `XDG_STATE_HOME` in `systemctl show -p Environment --value`'s line, when not empty. systemd prints each
+/// entry bare, or whole in double quotes (with backslash escapes) when it holds a space or a shell character; a quoted
+/// entry is skipped whole, so neither a value holding a space nor text inside another entry is read.
 fn unit_state_home(environment: &str) -> Option<String> {
-    environment.split_whitespace().rev().find_map(|w| w.strip_prefix("XDG_STATE_HOME=")).filter(|v| !v.is_empty()).map(String::from)
+    let mut found = None;
+    let mut rest = environment.trim_start();
+    while !rest.is_empty() {
+        let end = if rest.starts_with('"') {
+            let (mut end, mut escaped) = (rest.len(), false);
+            for (i, c) in rest.char_indices().skip(1) {
+                if !escaped && c == '"' {
+                    end = i + 1;
+                    break;
+                }
+                escaped = !escaped && c == '\\';
+            }
+            end
+        } else {
+            rest.find(char::is_whitespace).unwrap_or(rest.len())
+        };
+        if let Some(value) = rest[..end].strip_prefix("XDG_STATE_HOME=") {
+            found = Some(value);
+        }
+        rest = rest[end..].trim_start();
+    }
+    found.filter(|v| !v.is_empty()).map(String::from)
 }
 
 /// Render, pin, wire and start the unit: pinned to the hosts that run sotd (with no hosts.toml, to this one) before any
@@ -999,8 +1026,9 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, sta
     if !u.lib(if fresh { "sot_boot_wants" } else { "sot_boot_keep" }, &[&ud]).ok() {
         return Err(Stop::new(1, "could not write the sotd boot drop-in"));
     }
-    let shown = u.systemctl(&["show", "sotd.service", "-p", "Environment", "--value"]);
-    let state_changed = state_folder(if shown.ok() { unit_state_home(&shown.out) } else { None })?;
+    // Reloaded first (after the pin), so the value read is the one the start or restart below will run with.
+    let shown = u.systemctl(&["daemon-reload"]).ok().then(|| u.systemctl(&["show", "sotd.service", "-p", "Environment", "--value"]));
+    let state_changed = state_folder(shown.filter(cmd::Ran::ok).and_then(|s| unit_state_home(&s.out)))?;
     for args in [&["daemon-reload"][..], &["start", "sotd.service"][..]] {
         let ran = u.systemctl(args);
         if !ran.ok() {

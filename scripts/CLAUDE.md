@@ -172,17 +172,19 @@ Guarantees, each with the mechanism it rests on. Install:
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
   The pin command the retire tells a person to run is the install's own arguments (`pin_args`), by construction.
 - The state folder qualifies by the row launcher's own `qualify_state_root`, never a second filesystem list. Unix
-  resolves it with `sot_state_dir_in` from the installer's environment: nonempty `XDG_STATE_HOME`, else, for a
-  managed unit, the `XDG_STATE_HOME` systemd has loaded for it (a person's drop-in; read by that one name from
-  `systemctl --user show sotd.service -p Environment --value`, and a value systemd prints quoted is not read), else
-  `$HOME/.local/state`, joined with `sot`. An unqualified explicit choice is left alone and ends ONE STEP LEFT,
+  resolves it with `sot_state_dir_in` from the installer's environment, where an exported `XDG_STATE_HOME` decides
+  even when empty; with none exported, a managed unit's own `XDG_STATE_HOME` (a person's drop-in), read after the
+  pin and a daemon-reload, by that one name, from `systemctl --user show sotd.service -p Environment --value`, an
+  entry systemd prints quoted skipped whole; else `$HOME/.local/state`; joined with `sot`. A nonempty value of
+  either is an explicit choice. An unqualified explicit choice is left alone and ends ONE STEP LEFT,
   naming the folder, the qualification's reason and the export to change (the unit sources `~/.bashrc`, whose
   export wins over its drop-in). On Linux with a managed daemon unit and no explicit choice, the installer tries
   `/scratch/<user>/sot-state/sot` only when `/scratch` is a directory and its account folder is absent or a real
   directory owned by this uid. It creates and qualifies the private root, then durably publishes
   `sotd.service.d/state.conf` setting `XDG_STATE_HOME=/scratch/<user>/sot-state`, after the host pin and before
-  daemon-reload. An absent drop-in is published without replacing anything; identical bytes are kept; every other
-  entry is the person's and is left alone with ONE STEP LEFT. A newly written drop-in gets `try-restart`, even on a
+  the daemon-reload that precedes the start. An absent drop-in is published without replacing anything; identical
+  bytes are kept; every other entry is the person's and is left alone with ONE STEP LEFT, read before anything is
+  made under `/scratch`. A newly written drop-in gets `try-restart`, even on a
   repair. A shared home carries the same drop-in to each computer, whose own local folder is created at its first
   daemon start. No usable candidate gives ONE STEP LEFT with commands to make a local folder, write the drop-in,
   reload and restart. A daemon role without a managed unit (macOS, `--no-service`) gets the same qualification, and
