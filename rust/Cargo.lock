@@ -3831,7 +3831,7 @@ dependencies = [
 
 [[package]]
 name = "sot-backend"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "anyhow",
  "base64",
@@ -3865,7 +3865,7 @@ dependencies = [
 
 [[package]]
 name = "sot-capsule"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "getrandom 0.3.4",
  "interprocess",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "sot-containment"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "libc",
  "sot-containment",
@@ -3900,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "sot-frontend"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3951,7 +3951,7 @@ dependencies = [
 
 [[package]]
 name = "sot-platform"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "cc",
  "gethostname 0.5.0",
@@ -3970,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "sot-protocol"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "anyhow",
  "serde",
@@ -3983,7 +3983,7 @@ dependencies = [
 
 [[package]]
 name = "sot-topology"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "interprocess",
  "libc",
@@ -3999,7 +3999,7 @@ dependencies = [
 
 [[package]]
 name = "sot-updater"
-version = "0.7.0-rc.5"
+version = "0.7.0-rc.6-dev"
 dependencies = [
  "anyhow",
  "gethostname 0.5.0",
