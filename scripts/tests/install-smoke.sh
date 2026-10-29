@@ -73,6 +73,13 @@ mkdir -p "$HOME/.config/sot"
 ( set -C; printf '# synthetic install smoke policy\nsmoke-denied-publication\n' > "$HOME/.config/sot/publish-list.txt" ) \
     || die 'scratch config already has a publish list or cannot provision its synthetic policy'
 
+# A stand-in Claude Code, which the runners lack: a daemon role's check finds claude by agents' resolver (an executable
+# file in its search folders, never run), and a missing one is a step, the ONE STEP LEFT this script judges a FAIL.
+mkdir -p "$HOME/.local/bin"
+( set -C; printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/claude" ) \
+    || die 'scratch home already has a claude or cannot provision the stand-in'
+chmod +x "$HOME/.local/bin/claude"
+
 sha_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 # ---- the folder --archive takes, made from the artifacts ------------------------------------------------------------
