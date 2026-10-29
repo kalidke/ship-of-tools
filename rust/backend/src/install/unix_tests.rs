@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_state_dropin_is_written_after_the_pin_before_reload_and_restarted_even_on_a_repair() {
     let f = Fixture::new("me");
-    let changed = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || {
+    let changed = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| {
         assert!(f.units().join("sotd.service.d/topology.conf").is_file());
         assert!(f.at("systemctl --user daemon-reload").is_none());
         let path = f.units().join("sotd.service.d/state.conf");
@@ -22,8 +22,30 @@ fn a_state_dropin_is_written_after_the_pin_before_reload_and_restarted_even_on_a
     let f = Fixture::new("me");
     sot_platform::test_exec::write_executable(&f.path("prefix/bin/sotd"), "#!/bin/sh\nexit 2\n");
     let mut called = false;
-    assert!(with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || { called = true; Ok(true) })).is_err());
+    assert!(with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| { called = true; Ok(true) })).is_err());
     assert!(!called, "a failed pin never reaches the state-folder writer");
+}
+
+/// The state folder is judged where the daemon will keep it: the unit's loaded XDG_STATE_HOME (a person's drop-in on a
+/// network home), read by that one name, not this run's environment.
+#[test]
+fn the_state_folder_decision_reads_the_units_state_home() {
+    let f = Fixture::new("me");
+    let mut seen = Some("unset".to_string());
+    with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |home| { seen = home; Ok(false) })).unwrap();
+    assert_eq!(seen, None, "a unit that sets none gives none");
+    let log = f.path("log");
+    sot_platform::test_exec::write_executable(
+        &f.path("stubs/systemctl"),
+        format!("#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >> '{}'\ncase \"$*\" in *show*) echo 'TOKEN=x XDG_STATE_HOME=/scratch/me/state' ;; esac\n", log.display()),
+    );
+    with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |home| { seen = home; Ok(false) })).unwrap();
+    assert_eq!(seen.as_deref(), Some("/scratch/me/state"));
+    let show = f.at("systemctl --user show sotd.service -p Environment --value").unwrap();
+    assert!(show < f.at("systemctl --user daemon-reload").unwrap(), "{:?}", f.log());
+    for (line, want) in [("", None), ("A=b", None), ("XDG_STATE_HOME=", None), ("\"XDG_STATE_HOME=/a b\"", None), ("XDG_STATE_HOME=/a XDG_STATE_HOME=/b", Some("/b"))] {
+        assert_eq!(unit_state_home(line).as_deref(), want, "{line}");
+    }
 }
 
 #[test]
@@ -129,7 +151,7 @@ fn template() -> PathBuf {
 fn the_unit_is_pinned_before_any_reload() {
     {
         let f = Fixture::new("me");
-        with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || Ok(false))).unwrap();
+        with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| Ok(false))).unwrap();
         let d = f.units().display().to_string();
         let pin = f.at(&format!("sotd topology pin --dir {d} --claim")).expect("a claimed pin");
         let reload = f.at("systemctl --user daemon-reload").expect("a reload");
@@ -141,7 +163,7 @@ fn the_unit_is_pinned_before_any_reload() {
 
         let f = Fixture::new("me");
         sot_platform::test_exec::write_executable(&f.path("prefix/bin/sotd"), format!("#!/bin/sh\nprintf 'sotd %s\\n' \"$*\" >> '{}'\necho 'sotd topology: hosts.toml line 2: expected key = value' >&2\nexit 2\n", f.path("log").display()));
-        let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || Ok(false))).unwrap_err();
+        let stop = with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| Ok(false))).unwrap_err();
         assert!(stop.detail.contains("could not pin sotd.service") && stop.detail.contains("hosts.toml line 2"), "{stop:?}");
         assert!(!f.log().iter().any(|l| l.starts_with("systemctl --user daemon-reload") || l.starts_with("systemctl --user start")), "{:?}", f.log());
         assert!(!f.units().join("sotd.service").exists(), "no unpinned unit is written");
@@ -163,7 +185,7 @@ fn the_unit_is_pinned_before_any_reload() {
                 }
                 _ => {}
             }
-            with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || Ok(false))).unwrap();
+            with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| Ok(false))).unwrap();
             assert_eq!(f.wiring(), want, "{state}");
         }
     }
@@ -192,7 +214,7 @@ fn the_unit_is_pinned_before_any_reload() {
 
     {
         let f = Fixture::new("unithost-a");
-        with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", || Ok(false))).unwrap();
+        with_units(&f, |u| enable_local_service(u, &template(), "/s.sock", |_| Ok(false))).unwrap();
         assert_eq!(f.wiring(), "dropin none");
         with_units(&f, |u| retire_local_service(u, false, "unithost-b")).unwrap();
         assert!(!f.log().iter().any(|l| l.contains("disable")), "{:?}", f.log());
@@ -204,7 +226,7 @@ fn the_unit_is_pinned_before_any_reload() {
         std::fs::create_dir_all(&pin).unwrap();
         std::fs::write(pin.join("topology.conf"), "[Unit]\nConditionHost=|unithost-a\nConditionHost=|unithost-a.*\n").unwrap();
         assert_eq!(role::pin_hosts(&g.units()), ["unithost-a"]);
-        with_units(&g, |u| enable_local_service(u, &template(), "/s.sock", || Ok(false))).unwrap();
+        with_units(&g, |u| enable_local_service(u, &template(), "/s.sock", |_| Ok(false))).unwrap();
         assert_eq!(role::pin_hosts(&g.units()), ["unithost-b"], "the claim moved the daemon to host B");
     }
 

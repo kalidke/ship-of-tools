@@ -172,7 +172,9 @@ Guarantees, each with the mechanism it rests on. Install:
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
   The pin command the retire tells a person to run is the install's own arguments (`pin_args`), by construction.
 - The state folder qualifies by the row launcher's own `qualify_state_root`, never a second filesystem list. Unix
-  resolves it with `sot_state_dir_in` from the installer's environment: nonempty `XDG_STATE_HOME`, else
+  resolves it with `sot_state_dir_in` from the installer's environment: nonempty `XDG_STATE_HOME`, else, for a
+  managed unit, the `XDG_STATE_HOME` systemd has loaded for it (a person's drop-in; read by that one name from
+  `systemctl --user show sotd.service -p Environment --value`, and a value systemd prints quoted is not read), else
   `$HOME/.local/state`, joined with `sot`. An unqualified explicit choice is left alone and ends ONE STEP LEFT,
   naming the folder, the qualification's reason and the export to change (the unit sources `~/.bashrc`, whose
   export wins over its drop-in). On Linux with a managed daemon unit and no explicit choice, the installer tries

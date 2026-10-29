@@ -922,7 +922,12 @@ fn wire(plan: &Plan) -> Result<(bool, Option<state::Choice>), Stop> {
     let env = sot_platform::host::env::Env::process().with("HOME", &plan.home);
     let mut state = None;
     let state_changed = if plan.unit_managed() {
-        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, || {
+        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, |unit_state| {
+            // The daemon's root: an export (the unit sources ~/.bashrc, whose export wins), else the unit's drop-in.
+            let env = match unit_state {
+                Some(home) if env.get_nonempty("XDG_STATE_HOME").is_none() => env.with("XDG_STATE_HOME", home),
+                _ => env,
+            };
             let (choice, changed) = state::setup(&env, Some(&plan.units()), Path::new("/scratch"), &service_user())?;
             state = Some(choice);
             Ok(changed)
@@ -958,10 +963,17 @@ fn service_user() -> String {
     std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line())
 }
 
+/// The last `XDG_STATE_HOME` in `systemctl show -p Environment --value`'s line, when not empty. A value systemd prints
+/// quoted (one holding a space) is not read.
+fn unit_state_home(environment: &str) -> Option<String> {
+    environment.split_whitespace().rev().find_map(|w| w.strip_prefix("XDG_STATE_HOME=")).filter(|v| !v.is_empty()).map(String::from)
+}
+
 /// Render, pin, wire and start the unit: pinned to the hosts that run sotd (with no hosts.toml, to this one) before any
 /// manager reloads it; boot start wired for a unit this run finds new, and over an existing one only where it was; no
-/// `enable`, which on a shared home would link the unit for every host.
-pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, state_folder: impl FnOnce() -> Result<bool, Stop>) -> Result<bool, Stop> {
+/// `enable`, which on a shared home would link the unit for every host. The state folder decision is given the
+/// `XDG_STATE_HOME` the loaded unit sets (a person's drop-in among them), read by that one name.
+pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, state_folder: impl FnOnce(Option<String>) -> Result<bool, Stop>) -> Result<bool, Stop> {
     let units = u.dir();
     let ud = units.to_string_lossy().into_owned();
     std::fs::create_dir_all(&units).map_err(|e| Stop::new(1, format!("creating {ud}: {e}")))?;
@@ -987,7 +999,8 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, sta
     if !u.lib(if fresh { "sot_boot_wants" } else { "sot_boot_keep" }, &[&ud]).ok() {
         return Err(Stop::new(1, "could not write the sotd boot drop-in"));
     }
-    let state_changed = state_folder()?;
+    let shown = u.systemctl(&["show", "sotd.service", "-p", "Environment", "--value"]);
+    let state_changed = state_folder(if shown.ok() { unit_state_home(&shown.out) } else { None })?;
     for args in [&["daemon-reload"][..], &["start", "sotd.service"][..]] {
         let ran = u.systemctl(args);
         if !ran.ok() {
