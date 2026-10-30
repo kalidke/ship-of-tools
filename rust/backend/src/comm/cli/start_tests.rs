@@ -12,7 +12,20 @@ fn a_session_start_joins_and_prints_one_bootstrap_line_and_the_rules() {
     assert!(o.stdout.contains("Work-state (nav row colour)") && o.stdout.contains("PERSISTENT REPL"));
     assert!(o.stdout.contains("Others in this computer's registry: ") && o.stdout.contains("still reaches them through the hub"), "{}", o.stdout);
     assert!(o.stdout.lines().any(|line| line.contains("SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>")), "{}", o.stdout);
+    assert!(!o.stdout.contains("In a row:"), "a session outside any row is told nothing about a window: {}", o.stdout);
     assert_eq!(session_start(&t.env, &["x".into()]).code, 2);
+}
+
+/// A row's session is told it is in the window, and how its person gets a terminal of their own.
+#[test]
+fn a_rows_session_start_says_it_is_in_the_window_and_how_to_give_its_person_a_terminal() {
+    let mut t = TestHome::new();
+    assert_eq!(row_note(&t.env), None);
+    t.set("SOT_WORKSPACE_ID", "ws-1");
+    let line = row_note(&t.env).expect("a row's leg carries its workspace id");
+    assert!(line.starts_with("In a row:"), "{line}");
+    assert!(line.contains("comm-spawn.sh <a folder no row holds") && line.contains("--agent none") && line.contains("sot-fe goto"), "{line}");
+    assert!(line.contains("Shift+Enter"), "{line}");
 }
 
 /// A slot that names another project's identity is never joined over without a pin.

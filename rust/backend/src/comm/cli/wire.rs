@@ -58,6 +58,18 @@ pub(crate) fn agent_join(env: &crate::comm::Env, endpoint: &str, workspace_id: &
     call(env, endpoint, sot_protocol::op::AGENT_JOIN, payload, Duration::from_secs(10))
 }
 
+/// How long `comm-list.sh` waits for the daemon's roster: one op on this computer, answered in milliseconds.
+pub(crate) const LIST_WINDOW: Duration = Duration::from_secs(5);
+
+/// One `version.query` at `endpoint`: the daemon's version and the frontends attached to it, or why there is none.
+pub(crate) fn version_query(env: &crate::comm::Env, endpoint: &str) -> Result<sot_protocol::VersionQueryRes, String> {
+    let answer = call(env, endpoint, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), LIST_WINDOW)?;
+    if let Some(e) = answer.get("error") {
+        return Err(format!("the daemon at {endpoint} refused version.query: {}", e.as_str().map_or_else(|| e.to_string(), str::to_string)));
+    }
+    serde_json::from_value(answer).map_err(|e| format!("the daemon at {endpoint} answered version.query in another shape: {e}"))
+}
+
 /// One request and its answer; `Err` names a refused hello in its own words, else that nothing answered.
 fn call(env: &crate::comm::Env, endpoint: &str, op: &str, payload: serde_json::Value, within: Duration) -> Result<serde_json::Value, String> {
     let me = sot_platform::host::state_dir::host_name_in(env).unwrap_or_default();

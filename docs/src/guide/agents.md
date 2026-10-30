@@ -62,10 +62,16 @@ package and has it report back to you over the comm relay. Combined with
 [agent messaging](messaging.md), one session can fan work out to several
 others and collect their answers.
 
-`comm-spawn.sh <repo-path> --agent none` starts a shell row instead, with no
+`comm-spawn.sh <folder> --agent none` starts a shell row instead, with no
 agent: it prints the row's workspace id and the `comm-despawn.sh` command that
 ends it. A row made this way appears in the session strip without moving the
-window off the row you are on.
+window off the row you are on; `sot-fe goto <workspace id>` moves it there.
+One folder holds one row, so the folder must be one no row holds: a session's
+own project folder is taken by its own row, and the home folder is free unless
+a row was made there (the window's default row does not count). This is how a
+session gives its person a terminal for something only they can type, such as
+a password or an interactive login. In the window, Shift+Enter in the
+new-session picker makes the same row.
 
 ## A separate subscription per session
 

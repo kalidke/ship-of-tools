@@ -378,7 +378,10 @@ fi
 # list that does not answer refuses too. Compared by canonical path, the
 # daemon's own rule; a listed root that does not resolve here is compared as
 # written. Both sides are compared in the daemon's spelling (sot_daemon_path): a
-# native Windows daemon lists the C:/... form it was sent.
+# native Windows daemon lists the C:/... form it was sent. The default row with
+# no agent (the inert anchor) holds no folder, by the daemon's own rule
+# (rows' `is_inert_default_anchor`), so a terminal-only row in the home folder
+# it sits on is not refused here either.
 if ! OCC_LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
     || ! printf '%s' "$OCC_LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
     echo "ERROR: could not confirm that $CANON_ROOT has no workspace yet (workspace.list did not answer via $ENDPOINT); nothing was spawned." >&2
@@ -388,13 +391,17 @@ OCC_N="$(printf '%s' "$OCC_LIST" | sot_jq -r '.payload.workspaces | length')"
 occ_i=0
 while [ "$occ_i" -lt "$OCC_N" ]; do
     OCC_ROW="$(printf '%s' "$OCC_LIST" | jq -c --argjson i "$occ_i" '.payload.workspaces[$i]')"
-    OCC_ROOT="$(printf '%s' "$OCC_ROW" | sot_jq -r '.project_root // empty')"
+    OCC_ROOT="$(printf '%s' "$OCC_ROW" | sot_jq -r 'if .is_default == true and .agent == "none" then empty else .project_root // empty end')"
     if [ -n "$OCC_ROOT" ]; then
         OCC_CANON="$(sot_canonical_path "$OCC_ROOT" 2>/dev/null)" || OCC_CANON="$OCC_ROOT"
         OCC_WIRE="$(sot_daemon_path "$OCC_CANON")" || OCC_WIRE="$OCC_CANON"
         if [ "$OCC_WIRE" = "$SPAWN_WIRE_ROOT" ]; then
             echo "ERROR: $CANON_ROOT already has a workspace: '$(printf '%s' "$OCC_ROW" | sot_jq -r '.label')' (slug '$(printf '%s' "$OCC_ROW" | sot_jq -r '.slug')', id $(printf '%s' "$OCC_ROW" | sot_jq -r '.workspace_id')); nothing was spawned." >&2
-            echo "       One repo root holds one session. For a second session on this repo, make a worktree: $COMM_HOME/bin/comm-worktree-new.sh <short>" >&2
+            if [ "$AGENT" = "none" ]; then
+                echo "       One folder holds one row. A terminal-only row needs a folder no row holds: give another one, such as your home folder." >&2
+            else
+                echo "       One repo root holds one session. For a second session on this repo, make a worktree: $COMM_HOME/bin/comm-worktree-new.sh <short>" >&2
+            fi
             exit 1
         fi
     fi

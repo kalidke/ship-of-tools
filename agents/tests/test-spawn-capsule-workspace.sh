@@ -408,6 +408,32 @@ case_bash_row_spawns_with_no_handle() {
     return 0
 }
 
+# The default row with no agent (the inert anchor) holds no folder, as the
+# daemon rules, so a terminal-only row for a person in the home folder it sits
+# on is created; a folder a real row holds is refused with the shell row's own
+# advice (another folder), never the worktree pointer an agent row gets.
+case_bash_row_beside_the_inert_default_row() {
+    local wsid="ws-bash2" slug="bash2"
+    PRE_CREATE_LIST="$(entry ws-def home capsule stopped | jq -c '.[0].is_default = true | .[0].agent = "none" | .[0].autostart_claude = false')"
+    start_stub_daemon "$wsid" "$slug" "$(entry "$wsid" "$slug" capsule ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "" --agent none
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    grep -q '"op":"workspace.create"' "$REQLOG" || { echo "  no workspace.create was sent: $SPAWN_ERR"; return 1; }
+
+    PRE_CREATE_LIST="$(entry ws-occ repo capsule ready)"
+    start_stub_daemon ws-occ repo "$(entry ws-occ repo capsule ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn "" --agent none
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    [ "$SPAWN_RC" -eq 1 ] || { echo "  exited $SPAWN_RC (want 1): $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_ERR" "A terminal-only row needs a folder no row holds" || { echo "  stderr: $SPAWN_ERR"; return 1; }
+    ! contains "$SPAWN_ERR" "comm-worktree-new.sh" || { echo "  worktree pointer for a shell row: $SPAWN_ERR"; return 1; }
+    ! grep -q '"op":"workspace.create"' "$REQLOG" || { echo "  workspace.create was sent"; return 1; }
+    return 0
+}
+
 # --name, a name argument (the legacy form) and --task each promise an agent:
 # a bash row refuses them before workspace.create or any registry write.
 case_bash_row_refuses_a_handle_or_a_task() {
@@ -490,6 +516,8 @@ check "--agent none: a bash row with no handle, registry row or inbox; waits for
     case_bash_row_spawns_with_no_handle
 check "--agent none refuses --name, a name argument and --task before any create or write" \
     case_bash_row_refuses_a_handle_or_a_task
+check "--agent none: the inert default row holds no folder; a real row's folder is refused with the shell row's advice" \
+    case_bash_row_beside_the_inert_default_row
 check "no --account: a claude row gets the spawning session's account, --account wins, a default folder keeps the default" \
     case_an_omitted_account_is_the_spawning_sessions
 # A case that cannot run here is a SKIP in the count, never a PASS; and a case leaves the suite's own SYSTEMROOT as it

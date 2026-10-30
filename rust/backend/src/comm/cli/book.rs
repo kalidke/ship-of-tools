@@ -153,8 +153,8 @@ pub(crate) fn epoch_of(stamp: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
-/// `sotd comm list`: every registered handle with its liveness and work-state line, then the frontend boxes this
-/// daemon talks to (`sot-fe version`, bounded at 5 s).
+/// `sotd comm list`: every registered handle with its liveness and work-state line, then the windows attached to
+/// this computer's daemon (`attached_windows`).
 pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
     let mut notes = Vec::new();
@@ -202,37 +202,64 @@ pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
         o.out("  (none)");
     }
     o.out("");
-    let fe = std::path::PathBuf::from(super::bin_dir(env)).join("sot-fe");
-    let mut cmd = std::process::Command::new(&fe);
-    cmd.arg("version");
-    let fe_out = sot_containment::process()
-        .output(&mut cmd, std::time::Duration::from_secs(5))
-        .map(|r| String::from_utf8_lossy(&r.stdout).into_owned())
-        .unwrap_or_default();
-    let uptime = fe_out.split(", up ").nth(1).and_then(|r| r.split(')').next()).map(str::to_string);
-    match uptime {
-        Some(u) => o.out(format!("attached frontend boxes (this daemon, up {u}):")),
-        None => o.out("attached frontend boxes (this daemon):"),
-    }
-    let mut keep = false;
-    let mut rows = Vec::new();
-    for l in fe_out.lines() {
-        if l.starts_with("fe@") {
-            keep = true;
-            rows.push(l);
-        } else if keep && l.starts_with(' ') {
-            rows.push(l);
-        } else {
-            keep = false;
-        }
-    }
-    if rows.is_empty() {
-        o.out("  (none attached here, or this computer's daemon did not answer; a send still reaches the hub)");
-    }
-    for r in rows {
-        o.out(format!("  {r}"));
+    for line in attached_windows(env, now) {
+        o.out(line);
     }
     o
+}
+
+/// The windows attached to this computer's own daemon, asked by one `version.query` (no other program, no text to
+/// parse): a header naming the daemon, then each window with the sessions its box declared; or one line saying why
+/// there is none to show: no daemon here, a daemon that did not answer, or a daemon with no window attached.
+fn attached_windows(env: &Env, now: u64) -> Vec<String> {
+    const REACH: &str = "a send still reaches the hub";
+    let Some(ep) = super::wire::own_daemon(env) else {
+        return vec![format!("attached frontend boxes: none, since no daemon of this account runs on this computer ({REACH})")];
+    };
+    let v = match super::wire::version_query(env, &ep) {
+        Ok(v) => v,
+        Err(e) => return vec![format!("attached frontend boxes: unknown, since this computer's daemon did not answer: {e} ({REACH})")],
+    };
+    let up = match v.daemon.uptime_s {
+        0 => String::new(),
+        s => format!(", up {}", fmt_age(s).trim_end_matches(" ago")),
+    };
+    let mut lines = vec![format!("attached frontend boxes (this computer's daemon at {ep}{up}):")];
+    let windows: Vec<_> = v.clients.iter().filter(|c| c.role == "fe").collect();
+    for c in &windows {
+        let who = match &c.host {
+            Some(h) => format!("fe@{h}"),
+            None => format!("fe {}", c.name.as_deref().unwrap_or(&c.client_id)),
+        };
+        lines.push(format!("  {who:<20} {:<28} {}", c.app_version, if c.active { "active" } else { "idle" }));
+        match &c.sessions {
+            None => lines.push("    (declares no sessions: an older frontend, or no daemon on that box)".into()),
+            Some(s) if s.is_empty() => lines.push("    (no sessions)".into()),
+            Some(s) => {
+                for d in s {
+                    let mut line = match d.state.as_str() {
+                        "" => format!("    @{} [\u{2014}] no state recorded", d.handle),
+                        st => format!("    @{} [{st}]", d.handle),
+                    };
+                    if !d.summary.is_empty() {
+                        line.push(' ');
+                        line.push_str(&d.summary);
+                    }
+                    if let Some(at) = epoch_of(&d.status_at).filter(|t| *t > 0) {
+                        line.push_str(&format!(" \u{b7} {}", fmt_age(now.saturating_sub(at))));
+                    }
+                    lines.push(line);
+                }
+            }
+        }
+    }
+    for d in &v.disconnected {
+        lines.push(format!("  {}  (frontend not connected since {}; its sessions cannot be listed)", d.identity, fmt_age(d.since_s)));
+    }
+    if windows.is_empty() && v.disconnected.is_empty() {
+        lines.push(format!("  (none: no window is attached to this computer's daemon now; {REACH})"));
+    }
+    lines
 }
 
 #[cfg(test)]

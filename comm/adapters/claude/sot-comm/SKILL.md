@@ -183,7 +183,7 @@ a root that already has a workspace, naming it; a second session on a repo is
 a worktree (`/worktree`). The new row appears in every window's strip on its
 own, and no window leaves the row it is on. `--agent none` makes a bash row
 instead (no agent, no handle, no `--name` or `--task`) and prints its
-workspace id. Despawn with `comm-despawn.sh <name|slug|workspace-id>`, which
+workspace id; it too needs a folder no row holds (the next section). Despawn with `comm-despawn.sh <name|slug|workspace-id>`, which
 fails (exit 1, nothing changed) when it cannot resolve the name to a
 workspace; a handle with no workspace is removed with
 `comm-leave.sh --name <handle>`.
@@ -192,6 +192,25 @@ workspace; a handle with no workspace is removed with
 your `CLAUDECODE` env). A durable peer is a capsule row: `comm-spawn.sh`, or a
 `workspace.create` from the FE Sessions mode. Endpoint override and worktree
 spawning: `references/spawning.md`.
+
+## A terminal for your person
+
+A row's session runs in this computer's Ship of Tools window, and its person
+watches the pane. Anything the person must type themselves (a password, an
+interactive `ssh` login) goes in a terminal-only row with no agent, which you
+make for them and bring their window to:
+
+```bash
+~/.sot-comm/bin/comm-spawn.sh "$HOME" --agent none   # prints the row's workspace id and its despawn command
+~/.sot-comm/bin/sot-fe goto <that workspace id>
+```
+
+One folder holds one row, so give a folder no row holds: the home folder
+unless a row already holds it (the window's own default row there does not
+count), else any other. Tell your person the row is there and what to type in
+it; never type a password for them. End it with the `comm-despawn.sh` command
+the spawn printed once they are done. A person makes the same row with
+Shift+Enter in the window's new-session picker.
 
 ## Conventions
 

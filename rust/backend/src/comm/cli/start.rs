@@ -15,6 +15,10 @@ Turn end: when a turn CLOSES an effort (a result landed, a fix shipped, a diagno
 /// What a session cannot discover on its own, printed beside the rule.
 const CAPABILITIES: &str = "Julia: this workspace has a PERSISTENT REPL you can drive \u{2014} sot-fe repl eval \"$SOT_WORKSPACE_ID\" --code '<code>' | sot-fe repl run <ws> <file.jl>. Packages stay loaded between runs and the call returns real output; use it instead of spawning julia for anything that re-pays a heavy package load. One eval at a time, and Main is shared with the owner's drawer \u{2014} read the julia-repl skill before the first call.";
 
+/// Where a row's session runs and what its person has, printed only in a row (`SOT_WORKSPACE_ID`): a session once went
+/// looking for another session to ask, from inside the window it was already in.
+const IN_A_ROW: &str = "In a row: you run in a row of this computer's Ship of Tools window, and your person watches your pane there; sot-fe drives that window (goto, docs, preview, type, screen). For anything your person must type themselves (a password, an interactive login), give them a terminal-only row with no agent: comm-spawn.sh <a folder no row holds, such as your home folder> --agent none, then sot-fe goto <the workspace id it prints> (the sot-comm skill, A terminal for your person). A person makes the same row with Shift+Enter in the new-session picker.";
+
 /// The session's recovery file, `<project root>/dev/output/handoff-<handle>.md`, as one line when it exists.
 pub(crate) fn handoff_line(handle: &str, cwd: &std::path::Path) -> Option<String> {
     if handle.is_empty() {
@@ -87,7 +91,15 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     }
     o.out(WORKSTATE_RULE);
     o.out(CAPABILITIES);
+    if let Some(line) = row_note(env) {
+        o.out(line);
+    }
     o
+}
+
+/// `IN_A_ROW` for a session the daemon started in a row (its leg carries `SOT_WORKSPACE_ID`), else nothing.
+fn row_note(env: &Env) -> Option<&'static str> {
+    env.get_nonempty("SOT_WORKSPACE_ID").map(|_| IN_A_ROW)
 }
 
 #[cfg(test)]
