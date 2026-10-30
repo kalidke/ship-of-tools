@@ -22,8 +22,8 @@ target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns t
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
-`preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line anchor, the math
-SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
+`preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll, mouse selection and definition-line
+anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
@@ -221,7 +221,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no draw path reads it today.
 - `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
   (resized only when the rect moved by more than half a pixel), the math SVG beside it, the scroll in body lines, the
-  definition-line anchor and the refused-hello overlay. Installing a buffer drops the SVG and scrolls to the top. A
+  definition-line anchor, the refused-hello overlay and mouse selection as buffer line/byte positions. Its `hit`,
+  `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations account
+  for the text origin, top padding and scroll; the render pass tints the clipped rectangles before painting glyphs.
+  Installing a buffer clears selection, drops the SVG and scrolls to the top. A row switch, Escape in the preview
+  and opening edit mode also clear selection. The text scope's `preview.copy_selection` copies rendered text on
+  Primary+C or Primary+Shift+C; `y` still copies fenced code sources. Selection does not cover MarkdownMedia's wide
+  table buffers, math images, image previews, the concept pane or double-click word selection. A
   sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
   request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
   named: by a signed step stopping at the top, saturating line steps, top, end (clamped by the next layout).
@@ -329,6 +335,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no battery or on an error (never a fake reading), and every frame between queries reuses it.
 - `Pointer` privately owns the pointer between events: the last position (winit reports it only on motion) and the
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.
+  Mouse routing focuses the agent or flowed-text preview before anchoring its selection; an outside left press
+  clears each pane's selection, motion extends its active drag to the visible edge, and release ends both drags.
 - `ProxyArms` privately owns the window half of the page proxy (ADR 0035): a host's pages are proxied exactly when
   its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
   port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or

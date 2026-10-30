@@ -1,12 +1,14 @@
-//! The shaped preview: the flowed text buffer the pane draws, its rect, scroll and definition-line anchor, the math
-//! SVG beside it, the refused-hello overlay, and the highlighter every markdown shape uses.
+//! The shaped preview: the flowed text buffer, rect, scroll, selection and definition-line anchor, the math SVG
+//! beside it, the refused-hello overlay, and the highlighter every markdown shape uses.
 
 use crate::ui::render::quad::Quad;
+use crate::ui::render::text::EXTRA_TOP_PAD_PX;
 use crate::ui::*;
+use cosmic_text::Cursor;
 
 /// What the preview pane's flowed text is: one buffer, shaped for the rect the last layout pass gave it. A new
-/// installation drops the math SVG and resets the scroll to the top; the anchor scrolls a code preview to the
-/// definition a modules row names, once per request.
+/// installation clears selection, drops the math SVG and resets the scroll to the top; the anchor scrolls a code
+/// preview to the definition a modules row names, once per request.
 pub(in crate::ui) struct ShapedPreview {
     md: MarkdownPreview,
     /// The math SVG rendered for the shown markdown; `None` until a `math.render` reply rasterizes.
@@ -25,6 +27,9 @@ pub(in crate::ui) struct ShapedPreview {
     /// Scroll offset in body lines from the top; clamped at layout to the content's end. Image-only previews
     /// ignore it.
     scroll: u16,
+    /// Buffer positions survive scrolling and resizing; a fresh buffer retires them.
+    selection: Option<(Cursor, Cursor)>,
+    dragging: bool,
     /// The refused-hello overlay shaped for the active host (ADR 0030 §2, ADR 0042 L2a), rebuilt on set, on resize
     /// and on an active-host switch.
     fatal: Option<MarkdownPreview>,
@@ -34,7 +39,8 @@ impl ShapedPreview {
     pub(in crate::ui) fn new(
         md: MarkdownPreview, highlight: crate::ui::preview::markdown::highlight::HighlightService, rect: ScreenRect,
     ) -> Self {
-        Self { md, svg: None, rect, highlight, anchor_line: None, anchored_to: None, scroll: 0, fatal: None }
+        Self { md, svg: None, rect, highlight, anchor_line: None, anchored_to: None, scroll: 0,
+            selection: None, dragging: false, fatal: None }
     }
 
     pub(in crate::ui) fn md(&self) -> &MarkdownPreview { &self.md }
@@ -46,11 +52,101 @@ impl ShapedPreview {
     pub(in crate::ui) fn fatal(&self) -> Option<&MarkdownPreview> { self.fatal.as_ref() }
     pub(in crate::ui) fn scroll(&self) -> u16 { self.scroll }
 
-    /// A freshly shaped buffer replaces the shown one: the math SVG goes and the scroll returns to the top.
+    /// A freshly shaped buffer replaces the shown one: selection and the math SVG go, and scroll returns to the top.
     pub(in crate::ui) fn install(&mut self, md: MarkdownPreview) {
+        self.clear_selection();
         self.md = md;
         self.svg = None;
         self.scroll = 0;
+    }
+
+    fn scroll_px(&self) -> f32 { self.scroll as f32 * self.md.line_height().max(1.0) }
+
+    /// The text renderer clips at the last whole visual line, after its top padding.
+    fn clip_bottom(&self) -> f32 {
+        (self.rect.y + EXTRA_TOP_PAD_PX
+            + self.md.whole_line_bottom(self.scroll_px(), self.rect.h - EXTRA_TOP_PAD_PX))
+            .min(self.rect.y + self.rect.h)
+    }
+
+    /// Pointer coordinates follow the same origin, headroom and scroll as the glyphs. A drag clamps to the
+    /// visible text; a press must be inside the flowed rect. The separate media buffers are not hit here.
+    pub(in crate::ui) fn hit(&self, (x, y): (f32, f32), strict: bool) -> Option<Cursor> {
+        let r = self.rect;
+        if r.w <= 0.0 || r.h <= 0.0 || !x.is_finite() || !y.is_finite() { return None; }
+        if strict && (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) { return None; }
+        let x = x.clamp(r.x, r.x + r.w) - r.x;
+        let y = y.clamp(r.y, (self.clip_bottom() - 0.01).max(r.y)) - r.y - EXTRA_TOP_PAD_PX + self.scroll_px();
+        self.md.buffer.hit(x, y)
+    }
+
+    /// A press replaces the old range, including an outside press, which also ends a previous drag.
+    pub(in crate::ui) fn press(&mut self, cursor: Option<Cursor>) -> bool {
+        let changed = self.selection.is_some() || cursor.is_some();
+        self.selection = cursor.map(|c| (c, c));
+        self.dragging = cursor.is_some();
+        changed
+    }
+
+    pub(in crate::ui) fn extend_drag(&mut self, at: (f32, f32)) -> bool {
+        if !self.dragging { return false; }
+        let Some(end) = self.hit(at, false) else { return false; };
+        let Some((start, old_end)) = self.selection else { return false; };
+        self.selection = Some((start, end));
+        end != old_end
+    }
+
+    pub(in crate::ui) fn release(&mut self) { self.dragging = false; }
+
+    pub(in crate::ui) fn clear_selection(&mut self) {
+        self.selection = None;
+        self.dragging = false;
+    }
+
+    fn selection_range(&self) -> Option<(Cursor, Cursor)> {
+        let (a, b) = self.selection?;
+        // Affinity distinguishes the two sides of a soft wrap, not selected bytes.
+        let a_pos = (a.line, a.index);
+        let b_pos = (b.line, b.index);
+        if a_pos == b_pos { None } else if a_pos < b_pos { Some((a, b)) } else { Some((b, a)) }
+    }
+
+    /// Copy the rendered buffer's bytes, joining real buffer lines, never inserting a newline at a soft wrap.
+    pub(in crate::ui) fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let mut text = String::new();
+        for line in start.line..=end.line {
+            if line != start.line { text.push('\n'); }
+            let source = self.md.buffer.lines.get(line)?.text();
+            let from = if line == start.line { start.index } else { 0 };
+            let to = if line == end.line { end.index } else { source.len() };
+            let selected = source.get(from..to)?;
+            if self.md.media_blocks.is_empty() {
+                text.push_str(selected);
+            } else {
+                // Embedded images, math and wide tables have no selectable text in this buffer.
+                text.extend(selected.chars().filter(|&c| c != crate::ui::preview::markdown::MATH_PLACEHOLDER));
+            }
+        }
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Pure geometry for the render pass: one tint per selected visual line, clipped to the text's paint bounds.
+    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+        let Some((start, end)) = self.selection_range() else { return Vec::new(); };
+        let r = self.rect;
+        let origin_y = r.y + EXTRA_TOP_PAD_PX - self.scroll_px();
+        let bottom = self.clip_bottom();
+        self.md.buffer.layout_runs().filter_map(|run| {
+            // Standalone media reservations have no selected glyphs; the wide-table buffer paints separately.
+            if !self.md.media_blocks.is_empty() && run.text.trim() == "\u{FFFC}" { return None; }
+            let (x, w) = run.highlight(start, end)?;
+            let left = (r.x + x).max(r.x);
+            let right = (r.x + x + w).min(r.x + r.w);
+            let top = (origin_y + run.line_top).max(r.y);
+            let bot = (origin_y + run.line_top + run.line_height).min(bottom);
+            (right > left && bot > top).then_some(ScreenRect { x: left, y: top, w: right - left, h: bot - top })
+        }).collect()
     }
 
     pub(in crate::ui) fn show_svg(&mut self, quad: Quad) { self.svg = Some(quad); }
@@ -117,3 +213,7 @@ impl ShapedPreview {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "shaped_tests.rs"]
+mod tests;

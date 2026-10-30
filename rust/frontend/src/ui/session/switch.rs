@@ -167,6 +167,7 @@ impl State {
         session_name: Option<String>,
         person_driven: bool,
     ) -> TreeKey {
+        self.shaped.clear_selection();
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
         // The departing tree's key, computed while (mode, workspace) still

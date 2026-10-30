@@ -48,16 +48,19 @@ impl State {
         )
     }
 
-    pub(in crate::ui) fn paint_llm_selection(
+    pub(in crate::ui) fn paint_text_selections(
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,
         llm_selection: Option<((u16, u16), (u16, u16))>,
+        show_md: bool,
     ) -> Result<()> {
         // LLM-pane selection highlight — render a pastel-yellow rect
         // for each row of the selection before text.render so glyphs
         // sit on top. Per-row geometry: the first and last rows may
         // be partial (start_col..pane_cols and 0..=end_col); middle
         // rows are full-width.
+        // Both panes share one brush: batch their rectangles so a second paint does not overwrite its vertices.
+        let mut row_rects = if show_md { self.shaped.selection_rects() } else { Vec::new() };
         if let Some(sel) = llm_selection {
             let (a, b) = sel;
             let (start, end) = if a <= b { (a, b) } else { (b, a) };
@@ -79,7 +82,6 @@ impl State {
                 // looked like single-line selection (the copy walked
                 // the real range all along). Same fix as the markdown
                 // code-bg panels.
-                let mut row_rects: Vec<ScreenRect> = Vec::new();
                 for row in sr..=er {
                     let cs = if row == sr { sc } else { 0 };
                     let ce = if row == er { ec } else { max_col };
@@ -94,10 +96,10 @@ impl State {
                         h: self.canvas.cell_h(),
                     });
                 }
-                if !row_rects.is_empty() {
-                    self.brushes.paint(Solid::SelectionBg, &self.gpu, &mut rpass, &row_rects)?;
-                }
             }
+        }
+        if !row_rects.is_empty() {
+            self.brushes.paint(Solid::SelectionBg, &self.gpu, &mut rpass, &row_rects)?;
         }
         Ok(())
     }

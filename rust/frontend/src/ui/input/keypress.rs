@@ -63,6 +63,10 @@ pub(in crate::ui) fn input_continuation<S, P>(
 pub(in crate::ui) enum InputRoute<P> { Prompt(QuitPromptStep), Next(Option<Action>, P) }
 
 fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &KeyEvent) -> (Option<Action>, (String, help::Context, Option<WsKey>)) {
+    // Escape can restore layout before reaching the preview's pane handler.
+    if state.focus_prompts.focus() == PaneFocus::Preview && event.logical_key == Key::Named(NamedKey::Escape) {
+        state.shaped.clear_selection();
+    }
     // A real, non-synthetic keypress, past this point — presence
     // reporting (design point A) precedes and is independent of
     // whatever action this key resolves to below. A held key's repeats

@@ -182,7 +182,7 @@ pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String
         match context.pane {
             Pane::Preview if context.image => &[Action::PreviewPngZoomIn, Action::PreviewPngReset],
             Pane::Preview if context.pages => &[Action::PageNext, Action::PagePrev],
-            Pane::Preview => &[Action::EditFile, Action::CopyCode],
+            Pane::Preview => &[Action::PreviewCopySelection, Action::EditFile, Action::CopyCode],
             Pane::Nav if context.file.as_ref().is_some_and(|p| p.ends_with(".jl")) => {
                 &[Action::RunCurrent, Action::RunFresh]
             }

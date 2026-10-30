@@ -255,6 +255,7 @@ impl State {
     /// font-rescale path (which replays against the cached source).
     #[allow(clippy::too_many_lines, reason = "routes a preview blob to its renderer by mime; predates the 100-line limit")]
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
+        self.shaped.clear_selection();
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
         if is_raster_preview_mime(mime) {
             // Paginated document pages (preview_page set from this reply's

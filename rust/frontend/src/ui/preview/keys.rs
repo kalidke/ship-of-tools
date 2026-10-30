@@ -131,6 +131,13 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
                 }
             }
         }
+        Some(Action::PreviewCopySelection) if !event.repeat => {
+            if let Some(status) = copy_selection_status(&state.shaped, |text| {
+                arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)).map_err(|e| e.to_string())
+            }) {
+                state.status.set(status);
+            }
+        }
         // Open-style keys work from the preview pane too
         // (same handlers as NavTree), acting on the file
         // whose preview is SHOWING — pinned/badge-consumed
@@ -162,6 +169,21 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         }
         _ => preview_scroll_key(state, key, h),
     }
+}
+
+/// The same clipboard operation as CopyCode, with no clipboard or status effect for an empty selection.
+fn copy_selection_status(
+    shaped: &crate::ui::preview::shaped::ShapedPreview,
+    clipboard: impl FnOnce(String) -> std::result::Result<(), String>,
+) -> Option<String> {
+    let text = shaped.selected_text()?;
+    Some(match clipboard(text) {
+        Ok(()) => "copied preview selection".into(),
+        Err(error) => {
+            tracing::warn!(%error, "failed to copy preview selection");
+            format!("copy failed · {error}")
+        }
+    })
 }
 
 fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
@@ -207,3 +229,7 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+#[path = "keys_tests.rs"]
+mod tests;

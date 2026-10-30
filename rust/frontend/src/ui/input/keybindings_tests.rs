@@ -23,6 +23,46 @@ fn defaults_parse_clean() {
 }
 
 #[test]
+fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
+    use crate::ui::input::help::{Context, Pane};
+    let b = KeyBindings::defaults();
+    let context = Context { pane: Pane::Preview, file: Some("example.txt".into()), ..Context::default() };
+    let resolve = |context: &Context, key: &str, modifiers| {
+        b.resolve(&Key::Character(key.into()), None, modifiers, context.consumes_text(), |a| context.allows(a))
+            .map(|a| a.spec().name)
+    };
+    for bits in 0..16 {
+        let m = Modifiers { ctrl: bits & 1 != 0, alt: bits & 2 != 0, shift: bits & 4 != 0, super_: bits & 8 != 0 };
+        for key in ["c", "C", "v", "y"] {
+            let expected = key.eq_ignore_ascii_case("c") && !m.alt
+                && m.ctrl == primary().ctrl && m.super_ == primary().super_;
+            assert_eq!(resolve(&context, key, m) == Some("preview.copy_selection"), expected, "{key}, {m:?}");
+        }
+    }
+    for other in [
+        Context { pane: Pane::Nav, ..context.clone() },
+        Context { pane: Pane::Agent, ..context.clone() },
+        Context { pane: Pane::Repl, ..context.clone() },
+        Context { image: true, ..context.clone() },
+        Context { editing: true, ..context.clone() },
+    ] {
+        for shift in [false, true] {
+            assert_ne!(resolve(&other, "c", Modifiers { shift, ..primary() }), Some("preview.copy_selection"));
+        }
+    }
+    assert_eq!(resolve(&context, "y", Modifiers::default()), Some("preview.copy_code"));
+}
+
+#[test]
+fn preview_copy_selection_reference_matches_catalog() {
+    let spec = ACTIONS.iter().find(|s| s.name == "preview.copy_selection").expect("preview copy action");
+    let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
+    let row = manual.lines().find(|line| line.starts_with("| `preview.copy_selection` |")).expect("manual row");
+    let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
+    assert_eq!(row, format!("| `{}` | {shortcuts} | {} |", spec.name, spec.detail));
+}
+
+#[test]
 fn chord_parses_alt_equals() {
     let c = Chord::parse("Alt+=").unwrap();
     assert!(!c.ctrl);

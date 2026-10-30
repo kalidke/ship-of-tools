@@ -10,6 +10,10 @@ frontend which renderer to use; the bytes are opaque to Rust. Adding a format is
 Julia-only change — see [The Dispatch ABI](../extend/abi.md) and
 [Writing a FileType Plugin](../extend/filetype.md).
 
+Drag with the left mouse button to select text in a rendered markdown, source or plain text preview, then press
+Ctrl+C (Cmd+C on macOS) to copy it. Ctrl+Shift+C (Cmd+Shift+C on macOS) also copies the selection; `y` copies all
+fenced code blocks in a markdown preview.
+
 ```@raw html
 <DemoLoop name="pdf" caption="With the preview focused, n and p page through a PDF, then = zooms in to read it." />
 ```

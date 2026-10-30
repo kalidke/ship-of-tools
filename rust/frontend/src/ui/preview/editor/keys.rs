@@ -140,6 +140,7 @@ impl State {
     /// few-KB annotation. Without an edit it clears the shaped
     /// buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
+        if self.editor.is_editing() { self.shaped.clear_selection(); }
         let width = self.concept.rect().w.max(1.0);
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
         let canvas = &mut self.canvas;
