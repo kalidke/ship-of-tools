@@ -35,8 +35,15 @@ impl RowSide {
         Self { signals, server: Some(server), path, _dir: dir }
     }
 
-    /// A client attached as the driver, at the run's own geometry.
+    /// A client attached as the driver, at the run's own geometry, once the run has spawned its terminal: a driver's
+    /// attach resizes the terminal through the run's loop, which answers within the input bound (2 s) only once it runs,
+    /// and a ConPTY spawn on a hosted Windows runner has taken longer (the attach then refused, 2026-10-30).
     pub fn driver(&self, cols: u16, rows: u16) -> RowClient {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while self.signals.spawned_at().is_none() {
+            assert!(Instant::now() < deadline, "the run never spawned its terminal");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         self.client(cols, rows, true)
     }
 
