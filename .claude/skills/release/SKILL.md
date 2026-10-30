@@ -66,6 +66,14 @@ run at 53 to 140 KB/s, about 3 to 7 minutes for the Linux archive).
      is never re-cut.
    - The one exception is a test that genuinely needs a **newer published
      version** — an updater/downgrade check, say — named as such when you cut.
+   - **A new candidate waits until a person has used the last one.** One cut
+     per round of use, carrying everything that use found; never one cut per
+     defect the cutting session's own install finds, and never the session as
+     the consumer with the installer's verdict as the test. An installer change
+     is proven before the tag (the release workflow on main without a tag, the
+     case at hand reproduced), not by cutting. The maintainer, 2026-10-29, when
+     an rc.7 was proposed hours after rc.6: "how can you be on rc7 when no one
+     ever tried rc5 or rc6?"
 
 ## Cut it (on the word)
 

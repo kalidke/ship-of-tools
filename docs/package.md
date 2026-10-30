@@ -496,5 +496,17 @@ items, and the leg that installs the release before passed). No gate before a ta
 release run was the first to see it. The fix gives the smoke a stand-in `claude` in its scratch home, proven against
 rc.5's own Linux pack and by the branch's whole release run; it was on main 28 minutes after the failure showed (47
 after the cut), and it cost one tag: rc.5 stays with no release, and rc.6 carries its product. Queued for distribution:
-a landing that changes the installer's verdict runs no install smoke before the tag.
+a landing that changes the installer's verdict runs no install smoke before the tag. rc.6 was cut 2026-10-29; its first
+install, on the maintainer's workstation, ended ONE STEP LEFT on a false step (the installer judged the state folder
+from its own environment, not from the unit's drop-in), fixed on main the same day. An rc.7 to carry that fix was
+proposed within hours and withdrawn on the maintainer's question, "how can you be on rc7 when no one ever tried rc5 or
+rc6?": each cut had become the test of the session's own installer change, with the session as the consumer and the
+installer's verdict as the test. Since (the maintainer, 2026-10-29) a new candidate waits until a person has used the
+last one, and carries everything that use found. The row tools seen in rc.6's first use landed 2026-10-30: a session
+in a row knew neither that it ran in the window nor how to give its person a terminal of their own, read "none
+attached" from inside an attached window, and was refused a shell row in its own folder with a worktree's advice. A
+row's session start now says where it runs and how to make a terminal-only row (`comm-spawn.sh <folder> --agent
+none`, then `sot-fe goto`), `comm-list.sh` asks its own daemon's `version.query` and says why it shows no window, and
+the spawn counts the default row with no agent as holding no folder, the daemon's own rule. Four items took about 18
+minutes of change and 30 from the maintainer's word to main (the gate 10).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
