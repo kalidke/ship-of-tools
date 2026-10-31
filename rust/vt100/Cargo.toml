@@ -15,6 +15,9 @@
 # `src/vte/utf8/LICENSE-*`. Reason: no released `vte` (checked through
 # 0.15.0) exposes its parser state, and `Parser::is_ground` needs it to cut
 # a capsule's attach stream at a VTE ground-state boundary (ADR 0041 step 5).
+# The vendored vte holds an OSC of up to 1 MiB (upstream 1024 bytes), so an
+# OSC 52 copy of a long text fits, and drops an OSC that outgrows it whole
+# instead of dispatching it cut short (`src/vte/mod.rs`, marked FORK).
 
 [package]
 name = "vt100-ctt"

@@ -15,11 +15,13 @@ struct Wire {
 struct Step {
     status: Option<&'static str>, checkpoint: bool, dead: bool,
     outcome: Option<InputOutcome>, output: &'static [u8],
+    copy: Option<&'static [u8]>, backlog: bool,
 }
 type Handle = Rc<RefCell<Wire>>;
 struct Scripted {
     wire: Handle, parser: vt100::Parser, status: String,
     checkpoint: bool, dead: bool, outcome: Option<InputOutcome>,
+    copy: Option<Vec<u8>>, drained: bool,
 }
 impl Scripted {
     fn new(text: &[u8], ready: bool) -> (Self, Handle) { Self::at_size(text, ready, 80, 24) }
@@ -28,7 +30,7 @@ impl Scripted {
         let mut parser = vt100::Parser::new(rows, cols, 100);
         parser.process(text);
         (Self { wire: wire.clone(), parser, status: if ready { "attached" } else { "connecting…" }.into(),
-            checkpoint: ready, dead: false, outcome: None }, wire)
+            checkpoint: ready, dead: false, outcome: None, copy: None, drained: true }, wire)
     }
 }
 impl PaneClient for Scripted {
@@ -43,6 +45,8 @@ impl PaneClient for Scripted {
         self.dead |= s.dead;
         if s.outcome.is_some() { self.outcome = s.outcome; }
         self.parser.process(s.output);
+        if let Some(copy) = s.copy { self.copy = Some(copy.to_vec()); }
+        self.drained = !s.backlog;
         true
     }
     fn last_input_outcome(&self) -> Option<InputOutcome> { self.outcome }
@@ -56,6 +60,8 @@ impl PaneClient for Scripted {
     fn scroll(&mut self, rows: i32) { self.wire.borrow_mut().scrolls.push(rows); scroll_ring(self.parser.screen_mut(), rows); }
     fn mouse_tracking_on(&self) -> bool { !matches!(self.screen().mouse_protocol_mode(), vt100::MouseProtocolMode::None) }
     fn set_viewed(&self, viewed: bool) { self.wire.borrow_mut().viewed.push(viewed); }
+    fn take_copy(&mut self) -> Option<Vec<u8>> { self.copy.take() }
+    fn backlog_drained(&self) -> bool { self.drained }
 }
 fn key(h: &str, n: &str) -> WsKey { (h.into(), n.into()) }
 fn after(t: Instant, ms: u64) -> Instant { t + Duration::from_millis(ms) }
@@ -629,4 +635,34 @@ fn kept_row_invalidation_preserves_the_existing_scope() {
     start(&mut p, plan, |_, _, _| panic!("kept outcome preserves warm storage"), || t);
     assert_eq!(a.borrow().viewed.last(), Some(&true));
     // Native kept-default controls separately prove State retains its ledger, view and snapshots.
+}
+
+/// A copy the selected row asks for reaches the effect once the installed client has drained what waited for it; one
+/// read from that backlog (what the row said while off screen, a warm client's earlier view) is dropped, and so is one
+/// in the pump that drains it. A reinstalled warm client starts quiet again.
+#[test]
+fn a_copy_is_taken_only_after_the_installed_clients_backlog() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "a", "row", b"", t);
+    let stale = Step { copy: Some(b"b2xk"), backlog: true, ..Step::default() };
+    assert_eq!(step(&mut p, &wire, stale, t).copy, None, "read from the backlog");
+    let draining = Step { copy: Some(b"b2xkZXI="), ..Step::default() };
+    assert_eq!(step(&mut p, &wire, draining, t).copy, None, "the pump that drains the backlog");
+    let fresh = Step { copy: Some(b"bmV3"), ..Step::default() };
+    assert_eq!(step(&mut p, &wire, fresh, t).copy.as_deref(), Some(&b"bmV3"[..]), "asked for once on screen");
+    assert_eq!(step(&mut p, &wire, Step::default(), t).copy, None, "taken once");
+    let (c, wire) = Scripted::new(b"", true);
+    select(&mut p, "a", "other", t, 16);
+    install(&mut p, "a", "other", c, t);
+    let after_switch = Step { copy: Some(b"b2xk"), ..Step::default() };
+    assert_eq!(step(&mut p, &wire, after_switch, t).copy, None, "a newly installed client starts quiet");
+}
+
+#[test]
+fn a_copy_decodes_to_its_text_and_bad_base64_is_refused_with_why() {
+    assert_eq!(copied_text(b"aGVsbG8=").as_deref(), Ok("hello"));
+    assert_eq!(copied_text(b"/w==").as_deref(), Ok("\u{fffd}"), "a byte that is not UTF-8");
+    assert!(copied_text(b"").unwrap_err().contains("nothing"));
+    assert!(copied_text(b"@@@").unwrap_err().contains("base64"));
 }

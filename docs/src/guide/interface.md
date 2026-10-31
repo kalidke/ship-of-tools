@@ -226,6 +226,11 @@ tasks → timeline → step-detail view).
   `--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`;
   Ship of Tools adds no
   permission layer of its own. See [Agent sessions](orchestrator.md#Permission-mode).
+- **Its copies reach your clipboard.** `/copy` in Claude Code, or any program in the session that copies through
+  the terminal (OSC 52), puts the text on the clipboard of the computer whose window shows the session, on every
+  system, whichever computer the session runs on. The status line says how many characters were copied. Only the
+  session on screen copies; what a session asked while you were viewing another is dropped. A copy of more than about
+  768 KB of text is dropped whole, and a program cannot read your clipboard this way.
 
 ### Hand it a file, or a crop of an image
 

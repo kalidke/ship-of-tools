@@ -37,8 +37,20 @@ impl std::fmt::Display for FeAttachError {
     }
 }
 
+/// The latest OSC 52 copy the row's output asked for (`ESC ] 52 ; <selection> ; <base64> BEL`, what Claude Code's `/copy`
+/// sends), kept as its base64 until the window takes it; a newer copy replaces an untaken one, so it holds one at most.
+/// A request to read the clipboard (`?`) is never answered.
+#[derive(Default)]
+pub struct CopyRequest(Option<Vec<u8>>);
+
+impl vt100_ctt::Callbacks for CopyRequest {
+    fn copy_to_clipboard(&mut self, _: &mut vt100_ctt::Screen, _ty: &[u8], data: &[u8]) {
+        self.0 = Some(data.to_vec());
+    }
+}
+
 pub struct FeAttachClient {
-    parser: vt100_ctt::Parser,
+    parser: vt100_ctt::Parser<CopyRequest>,
     /// The pane's `(rows, cols)`, tracked apart from whatever size a restored snapshot carries: a watcher cannot
     /// correct the row's geometry, so every snapshot is reflowed to this size, not the other way round.
     pane_size: (u16, u16),
@@ -50,6 +62,8 @@ pub struct FeAttachClient {
     checkpointed: bool,
     /// A client with no viewport adopts the snapshot's own size instead of reflowing it.
     headless: bool,
+    /// The last `pump()` emptied the worker's queue, rather than stopping at its byte cap.
+    drained: bool,
 }
 
 impl FeAttachClient {
@@ -93,7 +107,7 @@ impl FeAttachClient {
 
     fn with_worker(worker: AttachWorker, events_rx: Receiver<WorkerEvent>, rows: u16, cols: u16, headless: bool) -> Self {
         Self {
-            parser: vt100_ctt::Parser::new(rows, cols, SCROLLBACK_ROWS),
+            parser: vt100_ctt::Parser::new_with_callbacks(rows, cols, SCROLLBACK_ROWS, CopyRequest::default()),
             pane_size: (rows, cols),
             worker,
             events_rx,
@@ -101,6 +115,7 @@ impl FeAttachClient {
             dead: false,
             checkpointed: false,
             headless,
+            drained: true,
         }
     }
 
@@ -109,6 +124,7 @@ impl FeAttachClient {
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         let mut drained_output_bytes = 0usize;
+        self.drained = false;
         while drained_output_bytes < PUMP_DRAIN_CAP_BYTES {
             match self.events_rx.try_recv() {
                 Ok(WorkerEvent::Checkpoint(bytes)) => {
@@ -147,10 +163,24 @@ impl FeAttachClient {
                     self.dead = true;
                     changed = true;
                 }
-                Err(_) => break,
+                Err(_) => {
+                    self.drained = true;
+                    break;
+                }
             }
         }
         changed
+    }
+
+    /// The latest copy to the clipboard the row's output asked for since the last take, as base64 (`CopyRequest`).
+    pub fn take_copy(&mut self) -> Option<Vec<u8>> {
+        self.parser.callbacks_mut().0.take()
+    }
+
+    /// Whether the last `pump()` emptied the queue of output that waited for it: until it does, what the parser reads
+    /// arrived while the window was not reading (an earlier view of the row).
+    pub fn backlog_drained(&self) -> bool {
+        self.drained
     }
 
     pub fn screen(&self) -> &vt100_ctt::Screen {

@@ -82,3 +82,36 @@ fn clipboard() {
 fn unknown_osc() {
     helpers::fixture("unknown_osc");
 }
+
+// FORK: an OSC 52 copy longer than upstream's 1024-byte buffer arrives whole, in pieces as a terminal reads them; one
+// past the bound is dropped whole, never delivered cut short, and the next copy is delivered.
+#[test]
+fn a_long_clipboard_copy_arrives_whole_and_an_overlong_one_not_at_all() {
+    #[derive(Default)]
+    struct Copies(Vec<Vec<u8>>);
+    impl vt100_ctt::Callbacks for Copies {
+        fn copy_to_clipboard(&mut self, _: &mut vt100_ctt::Screen, _ty: &[u8], data: &[u8]) {
+            self.0.push(data.to_vec());
+        }
+    }
+    let mut parser = vt100_ctt::Parser::new_with_callbacks(24, 80, 0, Copies::default());
+    let long = "QUJD".repeat(25_000).into_bytes(); // 100,000 bytes of base64
+    let mut seq = b"\x1b]52;c;".to_vec();
+    seq.extend_from_slice(&long);
+    seq.push(0x07);
+    for piece in seq.chunks(4096) {
+        parser.process(piece);
+    }
+    assert_eq!(parser.callbacks().0, vec![long], "the whole copy, not its first kilobyte");
+
+    let mut overlong = b"\x1b]52;c;".to_vec();
+    overlong.extend(std::iter::repeat(b'A').take(1 << 20));
+    overlong.push(0x07);
+    parser.process(&overlong);
+    assert_eq!(parser.callbacks().0.len(), 1, "a copy past the bound is not delivered at all");
+
+    parser.process(b"\x1b]52;c;aGk=\x07");
+    assert_eq!(parser.callbacks().0.last().map(Vec::as_slice), Some(&b"aGk="[..]), "the next copy is");
+    parser.process(b"after");
+    assert!(parser.screen().contents().contains("after"), "the screen still takes text");
+}

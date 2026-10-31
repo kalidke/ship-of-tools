@@ -46,7 +46,12 @@ use definitions::{unpack, Action, State};
 
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC_PARAMS: usize = 16;
-const MAX_OSC_RAW: usize = 1024;
+// FORK: upstream holds 1024 bytes of an OSC; an OSC 52 copy (`ESC ] 52 ; c ; <base64> BEL`, what a program in a row
+// sends to put text on the window's clipboard) is routinely longer, so the bound is 1 MiB of base64 (about 768 KiB of
+// text). The buffer grows only as bytes arrive and is shrunk back after a long sequence.
+const MAX_OSC_RAW: usize = 1 << 20;
+/// What the OSC buffer keeps between sequences; a longer sequence's growth is given back at its end.
+const OSC_RAW_KEEP: usize = 64 * 1024;
 
 struct VtUtf8Receiver<'a, P: Perform>(&'a mut P, &'a mut State);
 
@@ -78,6 +83,9 @@ pub struct Parser<const OSC_RAW_BUF_SIZE: usize = MAX_OSC_RAW> {
     osc_raw: Vec<u8>,
     osc_params: [(usize, usize); MAX_OSC_PARAMS],
     osc_num_params: usize,
+    // FORK: an OSC that outgrew the buffer is dropped whole at its end, never dispatched cut short (a cut OSC 52
+    // would put a truncated text on the clipboard as if it were the whole).
+    osc_overflow: bool,
     ignoring: bool,
     utf8_parser: utf8::Parser,
 }
@@ -250,6 +258,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             Action::OscStart => {
                 self.osc_raw.clear();
                 self.osc_num_params = 0;
+                self.osc_overflow = false;
             },
             Action::OscPut => {
                 // FORK: upstream caps this buffer only on its (previously
@@ -258,6 +267,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 // it is unconditional here. Semantics identical to
                 // upstream's `is_full()` early-return.
                 if self.osc_raw.len() >= OSC_RAW_BUF_SIZE {
+                    self.osc_overflow = true;
                     return;
                 }
 
@@ -310,7 +320,11 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                         self.osc_num_params += 1;
                     },
                 }
-                self.osc_dispatch(performer, byte);
+                if !self.osc_overflow {
+                    self.osc_dispatch(performer, byte);
+                }
+                self.osc_raw.clear();
+                self.osc_raw.shrink_to(OSC_RAW_KEEP);
             },
             Action::Unhook => performer.unhook(),
             Action::CsiDispatch => {
@@ -651,14 +665,19 @@ mod tests {
             parser.advance(&mut dispatcher, *byte);
         }
 
+        // FORK: upstream dispatched the sequence cut at the cap; an OSC that
+        // outgrew the buffer is dropped whole here (see Action::OscPut), and
+        // the next one is dispatched as usual.
+        assert!(dispatcher.dispatched.is_empty());
+        for byte in b"\x1b]52;s;aGk=\x07" {
+            parser.advance(&mut dispatcher, *byte);
+        }
         assert_eq!(dispatcher.dispatched.len(), 1);
         match &dispatcher.dispatched[0] {
             Sequence::Osc(params, _) => {
-                assert_eq!(params.len(), 2);
+                assert_eq!(params.len(), 3);
                 assert_eq!(params[0], b"52");
-                // FORK: upstream's `no_std`-arm assertion — the cap is
-                // unconditional here (see Action::OscPut).
-                assert_eq!(params[1].len(), MAX_OSC_RAW - params[0].len());
+                assert_eq!(params[2], b"aGk=");
             },
             _ => panic!("expected osc sequence"),
         }

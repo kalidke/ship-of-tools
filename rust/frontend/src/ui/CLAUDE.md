@@ -484,6 +484,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the request clock keeps its earlier origin. Direct-reply admission already guarantees an empty active slot.
 - Input reaches only the selected pane client or is counted once per call; Pending input is discarded without replay.
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
+  A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
+  alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
+  backlog is an earlier view of the row); State decodes it (`copied_text`) and writes this window's clipboard, the
+  status line saying the count or why not. Proof: `agent_pane::owner_tests::a_copy_is_taken_only_after_the_installed_clients_backlog`.
   Pending resize tracks geometry without sending; page/wheel routing preserves local scrollback, alternate-screen
   fallthrough and mouse tracking. Selection survives release, switches and resizing.
 - Pane draw preserves presence/read-mark, pane pump, drawer pump, immutable screen borrow, draw, geometry/resize and

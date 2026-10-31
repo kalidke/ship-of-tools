@@ -109,6 +109,8 @@ pub(in crate::ui) struct PumpEffect {
     pub outcomes: Vec<AttachOutcome>,
     pub since_request_ms: u64,
     pub since_client_ms: u64,
+    /// An OSC 52 copy the pane's row asked for (`/copy` in Claude Code), as base64, for this window's clipboard.
+    pub copy: Option<Vec<u8>>,
 }
 
 impl<C: PaneClient> AgentPane<C> {
@@ -194,6 +196,7 @@ impl<C: PaneClient> AgentPane<C> {
                 if c.status_line() == "attached" { self.pane_inputs_discarded = 0; }
             }
             self.pane_attach_term = Some(c);
+            self.copy_quiet = true;
             self.pane_dial_error = None;
             if warm { self.pane_hold = None; }
             self.pane_attach_started_at = Some(now());
@@ -210,11 +213,17 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     pub(in crate::ui) fn pump(&mut self, mut now: impl FnMut() -> Instant) -> PumpEffect {
-        let mut effect = PumpEffect { status: None, outcomes: vec![], since_request_ms: 0, since_client_ms: 0 };
+        let mut effect = PumpEffect { status: None, outcomes: vec![], since_request_ms: 0, since_client_ms: 0, copy: None };
         let Some(t) = self.pane_attach_term.as_mut() else { return effect };
         let was_checkpointed = t.is_checkpointed();
         let status_before = t.status_line().to_string();
         let changed = t.pump();
+        let copy = t.take_copy();
+        if !self.copy_quiet {
+            effect.copy = copy;
+        } else if t.backlog_drained() {
+            self.copy_quiet = false;
+        }
         effect.since_request_ms = self.pane_attach_requested_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
         effect.since_client_ms = self.pane_attach_started_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
         if !was_checkpointed && t.is_checkpointed() {
@@ -308,12 +317,45 @@ impl State {
             }
         }
         if let Some(status) = effect.status { self.status.set(status); }
+        if let Some(b64) = effect.copy { self.copy_to_clipboard(&b64); }
+    }
+
+    /// A copy the pane's row asked for (`/copy` in Claude Code, any OSC 52 write) lands on this window's clipboard, the
+    /// computer the person is at, whatever computer the row runs on; the status line says so either way.
+    fn copy_to_clipboard(&mut self, b64: &[u8]) {
+        let status = match copied_text(b64) {
+            Err(why) => format!("copy from the row not done: {why}"),
+            Ok(text) => match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text.clone())) {
+                Ok(()) => {
+                    tracing::info!(bytes = text.len(), "row copy → clipboard");
+                    format!("copied {} characters from the row to the clipboard", text.chars().count())
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "row copy: clipboard write failed");
+                    format!("copy from the row not done: the clipboard refused it ({e})")
+                }
+            },
+        };
+        self.status.set(status);
+        self.status.hold();
+        self.window.request_redraw();
     }
 
     pub(in crate::ui) fn prune_warm_attach(&mut self, host: &HostKey) {
         let live = self.row_directory.rows(host).map(|l| l.iter().map(|w| w.session_name.clone()).collect()).unwrap_or_default();
         shutdown_detached(self.agent_pane.prune_warm(host, &live));
     }
+}
+
+/// The text an OSC 52 copy carries: its base64 decoded, a byte that is not UTF-8 shown as U+FFFD. Empty or undecodable
+/// base64 is refused with why.
+pub(in crate::ui) fn copied_text(b64: &[u8]) -> Result<String, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("not base64 ({e})"))?;
+    if bytes.is_empty() {
+        return Err("nothing to copy".into());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]

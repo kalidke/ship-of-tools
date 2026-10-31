@@ -58,3 +58,27 @@ fn output_is_drained_in_order_into_the_screen() {
     assert!(client.pump());
     assert!(client.screen().contents().starts_with("one two"), "{}", client.screen().contents());
 }
+
+/// An OSC 52 copy in the row's output is kept for the window to take, once, whole across two output events; a newer
+/// one replaces an untaken one; a request to read the clipboard is never kept. A pump stopped at its cap says the
+/// backlog is not drained.
+#[test]
+fn a_copy_in_the_output_is_taken_once_and_a_read_request_never() {
+    let (mut client, events) = client(false);
+    events.send(WorkerEvent::Output(b"text \x1b]52;c;aGVs".to_vec())).unwrap();
+    events.send(WorkerEvent::Output(b"bG8=\x07 more".to_vec())).unwrap();
+    client.pump();
+    assert!(client.backlog_drained());
+    assert_eq!(client.take_copy().as_deref(), Some(&b"aGVsbG8="[..]));
+    assert_eq!(client.take_copy(), None, "taken once");
+    events.send(WorkerEvent::Output(b"\x1b]52;c;b25l\x07\x1b]52;c;dHdv\x07\x1b]52;c;?\x07".to_vec())).unwrap();
+    client.pump();
+    assert_eq!(client.take_copy().as_deref(), Some(&b"dHdv"[..]), "the newer copy; the read request kept nothing");
+    for _ in 0..3 {
+        events.send(WorkerEvent::Output(vec![b'x'; PUMP_DRAIN_CAP_BYTES / 2])).unwrap();
+    }
+    client.pump();
+    assert!(!client.backlog_drained(), "stopped at the cap with output still waiting");
+    client.pump();
+    assert!(client.backlog_drained());
+}
