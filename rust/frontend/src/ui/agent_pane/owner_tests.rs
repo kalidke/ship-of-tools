@@ -15,13 +15,13 @@ struct Wire {
 struct Step {
     status: Option<&'static str>, checkpoint: bool, dead: bool,
     outcome: Option<InputOutcome>, output: &'static [u8],
-    copy: Option<&'static [u8]>, backlog: bool,
+    copy: Option<&'static [u8]>, backlog: bool, mid_sequence: bool,
 }
 type Handle = Rc<RefCell<Wire>>;
 struct Scripted {
     wire: Handle, parser: vt100::Parser, status: String,
     checkpoint: bool, dead: bool, outcome: Option<InputOutcome>,
-    copy: Option<Vec<u8>>, drained: bool,
+    copy: Option<Vec<u8>>, drained: bool, ground: bool,
 }
 impl Scripted {
     fn new(text: &[u8], ready: bool) -> (Self, Handle) { Self::at_size(text, ready, 80, 24) }
@@ -30,7 +30,7 @@ impl Scripted {
         let mut parser = vt100::Parser::new(rows, cols, 100);
         parser.process(text);
         (Self { wire: wire.clone(), parser, status: if ready { "attached" } else { "connecting…" }.into(),
-            checkpoint: ready, dead: false, outcome: None, copy: None, drained: true }, wire)
+            checkpoint: ready, dead: false, outcome: None, copy: None, drained: true, ground: true }, wire)
     }
 }
 impl PaneClient for Scripted {
@@ -47,6 +47,7 @@ impl PaneClient for Scripted {
         self.parser.process(s.output);
         if let Some(copy) = s.copy { self.copy = Some(copy.to_vec()); }
         self.drained = !s.backlog;
+        self.ground = !s.mid_sequence;
         true
     }
     fn last_input_outcome(&self) -> Option<InputOutcome> { self.outcome }
@@ -62,6 +63,7 @@ impl PaneClient for Scripted {
     fn set_viewed(&self, viewed: bool) { self.wire.borrow_mut().viewed.push(viewed); }
     fn take_copy(&mut self) -> Option<Vec<u8>> { self.copy.take() }
     fn backlog_drained(&self) -> bool { self.drained }
+    fn at_ground(&self) -> bool { self.ground }
 }
 fn key(h: &str, n: &str) -> WsKey { (h.into(), n.into()) }
 fn after(t: Instant, ms: u64) -> Instant { t + Duration::from_millis(ms) }
@@ -657,6 +659,17 @@ fn a_copy_is_taken_only_after_the_installed_clients_backlog() {
     install(&mut p, "a", "other", c, t);
     let after_switch = Step { copy: Some(b"b2xk"), ..Step::default() };
     assert_eq!(step(&mut p, &wire, after_switch, t).copy, None, "a newly installed client starts quiet");
+
+    // The backlog drains in the middle of a copy's sequence: the copy that ends next began off screen.
+    let (c, wire) = Scripted::new(b"", true);
+    select(&mut p, "a", "third", t, 16);
+    install(&mut p, "a", "third", c, t);
+    let mid = Step { mid_sequence: true, ..Step::default() };
+    assert_eq!(step(&mut p, &wire, mid, t).copy, None);
+    let tail = Step { copy: Some(b"c3RhbGU="), ..Step::default() };
+    assert_eq!(step(&mut p, &wire, tail, t).copy, None, "the tail of a copy begun in the backlog");
+    let next = Step { copy: Some(b"bmV4dA=="), ..Step::default() };
+    assert_eq!(step(&mut p, &wire, next, t).copy.as_deref(), Some(&b"bmV4dA=="[..]), "the next copy is the person's");
 }
 
 #[test]

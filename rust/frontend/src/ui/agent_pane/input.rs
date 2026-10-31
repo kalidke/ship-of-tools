@@ -166,7 +166,7 @@ impl State {
 
     pub(in crate::ui) fn copy_llm_selection(&mut self) -> bool {
         let Some(out) = self.agent_pane.copy_text(self.pane_rects.llm.width) else { return false };
-        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(out.clone())) {
+        match crate::ui::input::write_clipboard_text(out.clone()) {
             Ok(()) => {
                 tracing::info!(bytes = out.len(), "llm.copy → clipboard");
                 self.agent_pane.copy_finished(true);

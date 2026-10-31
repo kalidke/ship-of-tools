@@ -91,7 +91,7 @@ impl State {
             }
             None => rel.to_string(),
         };
-        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(out.clone())) {
+        match crate::ui::input::write_clipboard_text(out.clone()) {
             Ok(()) => {
                 tracing::info!(path = %out, "navtree.copy_path → clipboard");
                 true

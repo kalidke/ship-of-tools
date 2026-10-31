@@ -486,8 +486,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
-  backlog is an earlier view of the row); State decodes it (`copied_text`) and writes this window's clipboard, the
-  status line saying the count or why not. Proof: `agent_pane::owner_tests::a_copy_is_taken_only_after_the_installed_clients_backlog`.
+  backlog is an earlier view of the row), and a copy whose sequence began in that backlog is dropped too
+  (`copy_tail`, while the parser is mid-sequence); State decodes it (`copied_text`) and writes this window's
+  clipboard, the status line saying the count or why not. Limit: output the row sent while off screen and the window
+  had not read yet when it came back counts as new. Proof:
+  `agent_pane::owner_tests::a_copy_is_taken_only_after_the_installed_clients_backlog`.
+- Every copy to and paste from the OS clipboard goes through the window's one handle (`input::write_clipboard_text`,
+  `read_clipboard_text`), made at first use and kept for the process's life, since on Linux (X11) a copy is served
+  by the handle that set it; a handle whose write failed is made again at the next use.
   Pending resize tracks geometry without sending; page/wheel routing preserves local scrollback, alternate-screen
   fallthrough and mouse tracking. Selection survives release, switches and resizing.
 - Pane draw preserves presence/read-mark, pane pump, drawer pump, immutable screen borrow, draw, geometry/resize and

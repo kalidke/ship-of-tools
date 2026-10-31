@@ -197,6 +197,7 @@ impl<C: PaneClient> AgentPane<C> {
             }
             self.pane_attach_term = Some(c);
             self.copy_quiet = true;
+            self.copy_tail = false;
             self.pane_dial_error = None;
             if warm { self.pane_hold = None; }
             self.pane_attach_started_at = Some(now());
@@ -219,10 +220,17 @@ impl<C: PaneClient> AgentPane<C> {
         let status_before = t.status_line().to_string();
         let changed = t.pump();
         let copy = t.take_copy();
-        if !self.copy_quiet {
+        if self.copy_quiet {
+            if t.backlog_drained() {
+                self.copy_quiet = false;
+                self.copy_tail = !t.at_ground();
+            }
+        } else if self.copy_tail {
+            if copy.is_some() || t.at_ground() {
+                self.copy_tail = false;
+            }
+        } else {
             effect.copy = copy;
-        } else if t.backlog_drained() {
-            self.copy_quiet = false;
         }
         effect.since_request_ms = self.pane_attach_requested_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
         effect.since_client_ms = self.pane_attach_started_at.map(|s| now().saturating_duration_since(s).as_millis() as u64).unwrap_or(0);
@@ -325,16 +333,19 @@ impl State {
     fn copy_to_clipboard(&mut self, b64: &[u8]) {
         let status = match copied_text(b64) {
             Err(why) => format!("copy from the row not done: {why}"),
-            Ok(text) => match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text.clone())) {
+            Ok(text) => {
+                let (bytes, chars) = (text.len(), text.chars().count());
+                match crate::ui::input::write_clipboard_text(text) {
                 Ok(()) => {
-                    tracing::info!(bytes = text.len(), "row copy → clipboard");
-                    format!("copied {} characters from the row to the clipboard", text.chars().count())
+                    tracing::info!(bytes, "row copy → clipboard");
+                    format!("copied {chars} characters from the row to the clipboard")
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "row copy: clipboard write failed");
                     format!("copy from the row not done: the clipboard refused it ({e})")
                 }
-            },
+                }
+            }
         };
         self.status.set(status);
         self.status.hold();

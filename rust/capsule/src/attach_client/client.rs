@@ -41,7 +41,7 @@ impl std::fmt::Display for FeAttachError {
 /// sends), kept as its base64 until the window takes it; a newer copy replaces an untaken one, so it holds one at most.
 /// A request to read the clipboard (`?`) is never answered.
 #[derive(Default)]
-pub struct CopyRequest(Option<Vec<u8>>);
+struct CopyRequest(Option<Vec<u8>>);
 
 impl vt100_ctt::Callbacks for CopyRequest {
     fn copy_to_clipboard(&mut self, _: &mut vt100_ctt::Screen, _ty: &[u8], data: &[u8]) {
@@ -181,6 +181,12 @@ impl FeAttachClient {
     /// arrived while the window was not reading (an earlier view of the row).
     pub fn backlog_drained(&self) -> bool {
         self.drained
+    }
+
+    /// Whether the parser is between escape sequences: a copy whose sequence began in output already read is not
+    /// whole yet while it is not.
+    pub fn at_ground(&self) -> bool {
+        self.parser.is_ground()
     }
 
     pub fn screen(&self) -> &vt100_ctt::Screen {

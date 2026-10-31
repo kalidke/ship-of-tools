@@ -114,4 +114,10 @@ fn a_long_clipboard_copy_arrives_whole_and_an_overlong_one_not_at_all() {
     assert_eq!(parser.callbacks().0.last().map(Vec::as_slice), Some(&b"aGk="[..]), "the next copy is");
     parser.process(b"after");
     assert!(parser.screen().contents().contains("after"), "the screen still takes text");
+
+    // A copy cancelled by CAN or SUB is no copy; one ended by ESC \ (its string terminator) is.
+    parser.process(b"\x1b]52;c;QUJD\x18\x1b]52;c;REVG\x1a");
+    assert_eq!(parser.callbacks().0.len(), 2, "two cancelled copies delivered nothing");
+    parser.process(b"\x1b]52;c;R0hJ\x1b\\");
+    assert_eq!(parser.callbacks().0.last().map(Vec::as_slice), Some(&b"R0hJ"[..]));
 }

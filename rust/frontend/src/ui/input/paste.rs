@@ -1,6 +1,34 @@
-//! Clipboard paste into a pane: the OS clipboard read and the bracketed-paste forwarders.
+//! The OS clipboard: the window's one handle on it, its read and write, and the bracketed-paste forwarders.
 
 use super::*;
+use std::cell::RefCell;
+
+thread_local! {
+    /// The window's one clipboard handle, made at its first use and kept for the process's life: on Linux (X11) the
+    /// text a window copies is served by the handle that set it, so a handle dropped at once leaves nothing to paste
+    /// unless a clipboard manager took it (arboard's rule). Every copy and paste runs on the UI thread, through it.
+    static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+}
+
+fn with_clipboard<T>(use_it: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>) -> Result<T, arboard::Error> {
+    CLIPBOARD.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new()?);
+        }
+        use_it(slot.as_mut().expect("the handle was just made"))
+    })
+}
+
+/// Put `text` on the OS clipboard through the window's one handle; a handle whose write failed is made again at the
+/// next use.
+pub(in crate::ui) fn write_clipboard_text(text: String) -> Result<(), arboard::Error> {
+    let written = with_clipboard(|cb| cb.set_text(text));
+    if written.is_err() {
+        CLIPBOARD.with(|cell| cell.borrow_mut().take());
+    }
+    written
+}
 
 /// Read the OS clipboard as text. Returns `None` (logging at warn) on
 /// clipboard failure or empty contents so callers fall through without
@@ -8,14 +36,7 @@ use super::*;
 /// `Cargo.toml`), so every paste path goes through an explicit clipboard
 /// read.
 pub(in crate::ui) fn read_clipboard_text() -> Option<String> {
-    let mut cb = match arboard::Clipboard::new() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "clipboard.new failed — paste dropped");
-            return None;
-        }
-    };
-    match cb.get_text() {
+    match with_clipboard(|cb| cb.get_text()) {
         Ok(t) if !t.is_empty() => Some(t),
         Ok(_) => None,
         Err(e) => {

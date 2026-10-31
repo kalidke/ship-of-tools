@@ -37,6 +37,8 @@ pub(in crate::ui) trait PaneClient {
     fn take_copy(&mut self) -> Option<Vec<u8>>;
     /// The last pump emptied the output that waited for it.
     fn backlog_drained(&self) -> bool;
+    /// The parser is between escape sequences.
+    fn at_ground(&self) -> bool;
 }
 
 impl PaneClient for PaneAttachClient {
@@ -55,6 +57,7 @@ impl PaneClient for PaneAttachClient {
     fn set_viewed(&self, viewed: bool) { self.set_viewed(viewed); }
     fn take_copy(&mut self) -> Option<Vec<u8>> { self.take_copy() }
     fn backlog_drained(&self) -> bool { self.backlog_drained() }
+    fn at_ground(&self) -> bool { self.at_ground() }
 }
 
 type Selection = ((u16, u16), (u16, u16));
@@ -81,6 +84,9 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     /// Copies are not taken from the installed client until it has drained the output that waited for it: what it read
     /// while off screen (a warm client's backlog) is an earlier view of the row, not a copy its person just asked for.
     copy_quiet: bool,
+    /// The backlog drained in the middle of an escape sequence: the next copy to end began in it, so it is dropped too,
+    /// unless the parser returns to ground first.
+    copy_tail: bool,
 }
 
 impl<C: PaneClient> AgentPane<C> {
@@ -90,7 +96,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_attach_term: None, warm_attach: WarmAttachPool::new(), pane_hold: None,
             pane_dial_error: None, pane_attach_requested_at: None, pane_attach_started_at: None,
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
-            pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, copy_quiet: false,
+            pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, copy_quiet: false, copy_tail: false,
         }
     }
 

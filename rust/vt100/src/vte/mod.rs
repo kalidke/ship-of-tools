@@ -320,7 +320,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                         self.osc_num_params += 1;
                     },
                 }
-                if !self.osc_overflow {
+                // FORK: a CAN or SUB that leaves the string cancels it, so it
+                // is not dispatched either (a cancelled OSC 52 is no copy).
+                // An ESC still ends it: ESC \ is its string terminator.
+                if !self.osc_overflow && byte != 0x18 && byte != 0x1a {
                     self.osc_dispatch(performer, byte);
                 }
                 self.osc_raw.clear();

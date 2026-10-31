@@ -415,9 +415,7 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
         {
             if let Some(sel) = edit.buf.selected_text() {
                 let text = sel.to_string();
-                match arboard::Clipboard::new()
-                    .and_then(|mut cb| cb.set_text(text.clone()))
-                {
+                match crate::ui::input::write_clipboard_text(text.clone()) {
                     Ok(()) => tracing::info!(
                         target: "sot::ui::preview::editor::keys",
                         bytes = text.len(),
@@ -438,9 +436,7 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
         {
             if let Some(sel) = edit.buf.selected_text() {
                 let text = sel.to_string();
-                if let Err(e) = arboard::Clipboard::new()
-                    .and_then(|mut cb| cb.set_text(text))
-                {
+                if let Err(e) = crate::ui::input::write_clipboard_text(text) {
                     tracing::warn!(
                         target: "sot::ui::preview::editor::keys",
                         error = %e,

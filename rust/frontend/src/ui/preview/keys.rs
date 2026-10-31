@@ -117,9 +117,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
             if !sources.is_empty() {
                 let joined = sources.join("\n");
                 let n = sources.len();
-                match arboard::Clipboard::new()
-                    .and_then(|mut cb| cb.set_text(joined))
-                {
+                match crate::ui::input::write_clipboard_text(joined) {
                     Ok(()) => tracing::info!(
                         blocks = n,
                         "yanked code block(s) to clipboard"
@@ -133,7 +131,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         }
         Some(Action::PreviewCopySelection) if !event.repeat => {
             if let Some(status) = copy_selection_status(&state.shaped, |text| {
-                arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)).map_err(|e| e.to_string())
+                crate::ui::input::write_clipboard_text(text).map_err(|e| e.to_string())
             }) {
                 state.status.set(status);
             }
