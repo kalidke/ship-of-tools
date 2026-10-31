@@ -202,7 +202,8 @@ address that redirects to the figure, so the secret is never on a command line. 
 its WebSocket ride the daemon proxy over the control connection (ADR 0035), with no dedicated forward, so
 pan/zoom/rotate work whether the backend is local or remote. One server per REPL lives as long as the REPL;
 calling `wglshow` again shows the new figure at the same address. With several frontends attached, the figure opens
-in one window, the window in use (the one you used last); `wglshow(fig; open = "<fe>")` opens it only on the frontend
+in one window, the window in use (the one you used last), and in none while that window is away;
+`wglshow(fig; open = "<fe>")` opens it only on the frontend
 `sot-fe --fe <fe>` names, and `open = false` opens it nowhere.
 
 WGLMakie and Bonito are resolved from *your own* project env at call time

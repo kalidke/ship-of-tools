@@ -77,11 +77,18 @@ send_fe_command() {
     # command actually reached — ground truth, not a guess from --fe's
     # string shape. Absent means an old daemon that predates the field; only
     # there do we fall back to the previous blind-ack behaviour.
-    local has_delivered delivered_to resolved_target
+    local has_delivered delivered_to resolved_target away
     has_delivered="$(printf '%s' "$resp" | jq -r '.payload | has("delivered_to")' 2>/dev/null || true)"
     delivered_to="$(printf '%s' "$resp" | jq -r '.payload.delivered_to // empty' 2>/dev/null || true)"
     resolved_target="$(printf '%s' "$resp" | jq -r '.payload.resolved_target // empty' 2>/dev/null || true)"
+    away="$(printf '%s' "$resp" | jq -r '.payload.away // empty' 2>/dev/null || true)"
     if [ "$has_delivered" = "true" ]; then
+        # The window the person used last is away (asleep or closed): the daemon sent this to no other window.
+        if [ "$delivered_to" = "0" ] && [ -n "$away" ]; then
+            echo "NOT SHOWN: fe.command.send ($fe_cmd) went to no window: the window your person used last, on $away, is away (asleep or closed), and nothing opens on a computer they left." >&2
+            echo "  Tell your person in your reply; a question's page stays reachable from the Queue." >&2
+            exit 2
+        fi
         # Ground truth, every verb: nothing can act on this send.
         if [ "$delivered_to" = "0" ]; then
             echo "ERROR: fe.command.send ($fe_cmd) reached NO attached frontend${FE:+ (target '$FE' matched nothing)}." >&2

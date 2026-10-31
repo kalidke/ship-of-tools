@@ -278,6 +278,23 @@ case_untargeted_relaunch_with_resolved_target_exits_0() {
     return 0
 }
 
+case_an_open_while_the_window_used_last_is_away_names_that_computer_and_exits_2() {
+    # The daemon sent the open to no window: the window the person used last is away (asleep or closed), and the ack
+    # names its computer. sot-fe says so, names it, and exits 2, never "sent".
+    stage_reply "fe.command.send" '{"v":1,"id":1,"kind":"res","op":"fe.command.send","payload":{"ok":true,"delivered_to":0,"away":"host-laptop"}}'
+    start_stub_daemon
+    local out rc
+    out="$("$SOT_FE" open-url https://example.org/ --endpoint "unix:$SOCK" --timeout 5 2>&1)"
+    rc=$?
+    stop_stub_daemon
+
+    [ "$rc" -eq 2 ] || { echo "  expected exit 2, got $rc. Output:\n$out"; return 1; }
+    contains "$out" "host-laptop" || { echo "  expected the away computer named: $out"; return 1; }
+    contains "$out" "is away" || { echo "  expected the reason: $out"; return 1; }
+    contains "$out" "fe.command sent" && { echo "  must not report a send: $out"; return 1; }
+    return 0
+}
+
 case_foreign_row_prints_the_phase_with_no_derived_verdict() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def","lane_proto":1},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[{"workspace_id":"ws2","slug":"scratch","label":"","project_root":"/p2","session_name":"t2","kernel_running":false,"is_default":false,"runtime":"capsule","state_dir":"/sd2","phase":"foreign"}]}}'
@@ -484,6 +501,7 @@ check "the version reply names the daemon's own declared host"                  
 check "a daemon predating the host field prints a placeholder and still exits 0"           case_version_daemon_predating_host_field_prints_a_placeholder
 check "an untargeted relaunch sends no target and exits 2 without a resolved_target"        case_untargeted_relaunch_carries_no_target_field_and_exits_2_without_resolved_target
 check "an untargeted relaunch with a resolved_target in the ack exits 0"                    case_untargeted_relaunch_with_resolved_target_exits_0
+check "an open while the window used last is away names that computer and exits 2"         case_an_open_while_the_window_used_last_is_away_names_that_computer_and_exits_2
 check "a foreign-phase capsule row prints its phase with no derived verdict column"        case_foreign_row_prints_the_phase_with_no_derived_verdict
 check "a daemon that predates version.query prints 'unknown' and still exits 0"            case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0
 check "a workspace.list failure after a successful version.query reports it and exits 2"   case_workspace_list_failure_after_successful_version_query_exits_2

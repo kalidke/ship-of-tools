@@ -323,8 +323,9 @@ where
 }
 
 /// The frame `m` is written as to the connection `my_serial`. A `browser` frame every frontend would open (`open`
-/// true or absent: `wglshow(fig)`) opens in one window, the window in use (`ClientsSnapshot::in_use`): a browser open
-/// goes to the window a person is at, and two browsers on one `wglshow` figure resize its one scene against each other.
+/// true or absent: `wglshow(fig)`) opens in one window, the window in use (`ClientsSnapshot::in_use`), and in none when
+/// the window a person used last is away: a browser open goes to the window a person is at, and two browsers on one
+/// `wglshow` figure resize its one scene against each other.
 /// The window is chosen once per frame, by the first connection that writes it (`ReplFrameMsg::opener`), and every
 /// other connection is sent the frame with `open: false` and no `fe`. Every other frame is written as it came.
 fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients) -> serde_json::Value {
@@ -333,7 +334,7 @@ fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients) -
         return frame;
     }
     let opener = *m.opener.get_or_init(|| {
-        let (to, why) = clients.snapshot_with_active().in_use()?;
+        let (to, why) = clients.snapshot_with_active().in_use().ok()?;
         tracing::info!(workspace_id = ?m.workspace_id, to = %to.handle, why, "repl browser frame opens on one window");
         Some(to.serial)
     });

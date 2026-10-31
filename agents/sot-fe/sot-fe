@@ -6,7 +6,8 @@
 # `fe.command` evt. The FE shows the target in place when it is already on
 # that workspace and otherwise badges it (see preview below). With no --fe, preview and reveal go to EVERY window;
 # every other verb, docs and open-url included, goes to ONE window, never all: the window in use, the one a person
-# used last, else the window that connected last (relaunch: only one used within five minutes). A window counts as
+# used last, else the window that connected last (relaunch: only one used within five minutes); when the window used
+# last is away (asleep, closed), to NONE, and the send exits 2 naming that computer. A window counts as
 # used from the second key or button press in it (`fe.presence`). --fe <host> always scopes delivery to the
 # frontend on that host (wire `target` = `fe@<host>`, the address every
 # frontend declares as its hello `name`), overriding that choice.

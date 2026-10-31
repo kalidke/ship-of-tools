@@ -680,6 +680,31 @@ mod fe_command_send_tests {
         );
     }
 
+    /// A browser open while the window a person used last is away publishes NOTHING, though another window is live
+    /// and was used before it, and the ack names the away window's computer (the maintainer, 2026-10-31: pages piled
+    /// up on a computer he had left).
+    #[tokio::test]
+    async fn a_browser_open_while_the_window_used_last_is_away_publishes_nothing() {
+        let clients = Clients::new();
+        let fe = |host: &str| {
+            let name = Some(format!("fe@{host}"));
+            clients.register("c", "0.7.0", 4, "fe".to_string(), Some(host.into()), Some(format!("i-{host}")), name)
+        };
+        let left = fe("host-left");
+        clients.touch_person_input(left.serial());
+        let laptop = fe("host-laptop");
+        clients.touch_person_input(laptop.serial());
+        drop(laptop);
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let docs = serde_json::json!({"cmd": "docs", "args": {"workspace": "w", "path": "/x/index.html"}});
+        let out = handle_fe_command_send(1, docs, &tx, &clients).await.expect("handler ok");
+        assert_eq!(resolved_target_of(&out), None);
+        assert_eq!(delivered_to_of(&out), Some(0), "nothing was published");
+        assert_eq!(out[0].0.payload.get("away").and_then(|v| v.as_str()), Some("host-laptop"), "names the computer");
+        assert!(rx.try_recv().is_err(), "no window opens it, the one left earlier included");
+    }
+
     /// A relaunch WITH an active frontend behaves like any other verb:
     /// exclusive delivery by serial, `resolved_target` names the winner.
     #[tokio::test]

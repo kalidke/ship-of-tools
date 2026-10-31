@@ -209,6 +209,11 @@ pub struct FeCommandSendRes {
     pub resolved_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered_to: Option<usize>,
+    /// With `delivered_to: Some(0)`, the computer whose window a person used last and which is away (asleep or
+    /// closed): the daemon sent the command to no other window. Absent from an older daemon and when no window was
+    /// used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub away: Option<String>,
 }
 
 /// Payload of an `FE_COMMAND` evt (ADR 0025) — one imperative UI command pushed

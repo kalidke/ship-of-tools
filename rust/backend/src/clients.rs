@@ -334,9 +334,12 @@ impl Clients {
     /// separate reads.
     pub fn snapshot_with_active(&self) -> ClientsSnapshot {
         let now = Instant::now();
-        let clients: Vec<ClientInfo> = self.inner.lock().unwrap().by_conn.values().cloned().collect();
+        let inner = self.inner.lock().unwrap();
+        let clients: Vec<ClientInfo> = inner.by_conn.values().cloned().collect();
+        let away = inner.away_used();
+        drop(inner);
         let active = Self::resolve_active(&clients, now);
-        ClientsSnapshot { clients, active }
+        ClientsSnapshot { clients, active, away }
     }
 
     /// Pure resolution: the `"fe"`-role, named connection with the most
@@ -388,6 +391,9 @@ pub struct ActiveFrontend {
 pub struct ClientsSnapshot {
     pub clients: Vec<ClientInfo>,
     active: Option<ActiveFrontend>,
+    /// The windows with no live connection that a person has used: each one's host and when it was last used
+    /// (`clients_window.rs`). `in_use` ranks them with the live windows.
+    away: Vec<(String, Instant)>,
 }
 
 impl ClientsSnapshot {
@@ -584,15 +590,18 @@ pub async fn handle_version_query(
 /// - a preview or a reveal, what a session puts in the preview pane, goes to every window (`target: None`).
 /// - `relaunch` goes to the active frontend (used within `ACTIVE_WINDOW`), and with none publishes NOTHING: an
 ///   unresolved relaunch is a command nobody can safely execute.
-/// - every other command, a browser open (`docs`, `open_url`) included, goes to the window in use (`in_use`).
+/// - every other command, a browser open (`docs`, `open_url`) included, goes to the window in use (`in_use`); when the
+///   window a person used last is away (asleep, closed) and no live window shares its computer, or no named window is
+///   attached, it publishes NOTHING and the ack's `away` names that computer: a page meant for the person never opens
+///   on a computer they left (the maintainer, 2026-10-31).
 ///
 /// A resolved window gets it alone, by serial (`evt.target_serial`, which `server/events.rs` filters on; `target`
 /// carries its handle for the FE's own `route_fe_command` check). An explicit `target` is never touched and stays a
 /// handle-matched broadcast (`target_serial: None`). `resolved_target` on the ack mirrors the final `target`.
 /// `delivered_to` (2026-09-09 field incident: a broadcast `open-url` acked `ok:true` while landing on a machine other
 /// than the owner's) counts the frontends that will act, read off the same snapshot: 1 for a resolved serial however
-/// many connections share its handle, the handle count for an explicit target, every named frontend for `target: None`
-/// (0 when none is attached), 0 for an unresolved relaunch. The relay's log line names the command's `workspace` and
+/// many connections share its handle, the handle count for an explicit target, every named window for a preview or a
+/// reveal, 0 for a command published nowhere. The relay's log line names the command's `workspace` and
 /// `path` arguments, the target and why it was chosen.
 pub async fn handle_fe_command_send(
     req_id: u64,
@@ -610,37 +619,29 @@ pub async fn handle_fe_command_send(
     let mut target_serial: Option<u64> = None;
     let mut why = if req.target.is_some() { "named" } else { "every" };
     let snap = clients.snapshot_with_active();
-    if req.target.is_none() {
-        if let Some((to, reason)) = snap.window_for(&req.cmd) {
-            req.target = Some(to.handle);
-            target_serial = Some(to.serial);
-            why = reason;
-        }
-    }
-    let resolved_target = req.target.clone();
     // Relay diagnostics include the optional forwarded workspace and path without changing command routing.
     let forwarded = |key: &str| req.args.get(key).and_then(serde_json::Value::as_str);
     let (workspace, path) = (forwarded("workspace"), forwarded("path"));
-
-    if req.cmd == "relaunch" && req.target.is_none() {
-        tracing::info!(
-            cmd = %req.cmd, workspace, path,
-            delivered_to = 0,
-            "fe.command.send relay: relaunch has no active frontend and no explicit target — not publishing"
-        );
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::FE_COMMAND_SEND,
-                serde_json::to_value(FeCommandSendRes {
-                    ok: true,
-                    resolved_target,
-                    delivered_to: Some(0),
-                })?,
-            ),
-            None,
-        )]);
+    if req.target.is_none() {
+        match snap.window_for(&req.cmd) {
+            show::Route::Every => {}
+            show::Route::One(to, reason) => {
+                req.target = Some(to.handle);
+                target_serial = Some(to.serial);
+                why = reason;
+            }
+            show::Route::Nowhere(away) => {
+                tracing::info!(
+                    cmd = %req.cmd, workspace, path, away = away.as_deref(), delivered_to = 0,
+                    "fe.command.send relay: no window to send it to (the window used last is away, none is attached, \
+                     or a relaunch has no active frontend) — not publishing"
+                );
+                let res = FeCommandSendRes { ok: true, resolved_target: None, delivered_to: Some(0), away };
+                return Ok(vec![(Frame::res(req_id, op::FE_COMMAND_SEND, serde_json::to_value(res)?), None)]);
+            }
+        }
     }
+    let resolved_target = req.target.clone();
 
     let delivered_to = match (target_serial, resolved_target.as_deref()) {
         // Resolved to one window: `server/events.rs` fans out on the
@@ -661,8 +662,8 @@ pub async fn handle_fe_command_send(
             .iter()
             .filter(|c| c.role == "fe" && c.name.as_deref() == Some(handle))
             .count(),
-        // Every window: a preview or a reveal, or a command with no named frontend attached to resolve to. A window
-        // that holds an old connection beside its redial is one audience, not two.
+        // Every window: a preview or a reveal. A window that holds an old connection beside its redial is one
+        // audience, not two.
         (None, None) => window::window_count(
             snap.clients.iter().filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty())),
         ),
@@ -686,6 +687,7 @@ pub async fn handle_fe_command_send(
                 ok: true,
                 resolved_target,
                 delivered_to: Some(delivered_to),
+                away: None,
             })?,
         ),
         None,

@@ -27,7 +27,9 @@ secret in it (a `wglshow` figure, a Pluto notebook, a docs or video page); `wgls
 `open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
 path (confined to a workspace root) — use it for anything that must actually
 run (JS/WebGL). A preview reaches every attached window. `docs`, `open-url` and a `wglshow` figure open in ONE
-window, never all: the window in use, the one the user used last. You never need to check which frontend is active;
+window, never all: the window in use, the one the user used last. When that window is away (its computer asleep or
+closed), nothing opens and `sot-fe` exits 2 with `NOT SHOWN` naming the computer: tell the user in your reply, and
+never resend it with `--fe` to another window. You never need to check which frontend is active;
 `--fe <host>` targets the FE on that host.
 
 **Point `docs` straight at the SUBPAGE you mean** — a project-log entry, one

@@ -108,6 +108,12 @@ impl Inner {
         self.windows.remove(&key).map(|w| w.sites)
     }
 
+    /// The windows with no live connection that a person has used: each one's host and when it was last used.
+    pub(super) fn away_used(&self) -> Vec<(String, Instant)> {
+        let away = self.windows.iter().filter(|(_, w)| w.live == 0);
+        away.filter_map(|((host, _), w)| Some((host.clone(), w.last_person_input_at?))).collect()
+    }
+
     /// `serial`'s connection reports a person at its window at `at`: it lands on the connection and on its window. A
     /// no-op for an unregistered serial.
     pub(super) fn report(&mut self, serial: u64, at: Instant) {

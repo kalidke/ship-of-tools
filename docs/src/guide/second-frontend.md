@@ -36,8 +36,10 @@ With two windows attached, a file an agent shows (`sot-fe preview`, `show-result
 badge of **every** window. A browser an agent opens (a docs site, a URL, a `wglshow` figure) opens on **one** computer:
 the window you used last, however long ago; with none used yet, the one that connected last. A window counts as used
 from its second key press, click or wheel step within five minutes, and a switch between windows is noticed within
-about six seconds. Name a window with `--fe <host>` to override this. A window that is reconnecting at that moment is
-not chosen, and a browser open cannot wait for it.
+about six seconds. When the window you used last is away (its computer asleep or closed, or the window reconnecting),
+nothing opens on another computer: the agent is told which computer's window is away, and a question's page stays
+reachable from the Queue. Another window connected from that same computer, such as a restarted window, takes it
+instead. Name a window with `--fe <host>` to override this.
 
 ## Many machines, one workspace
 

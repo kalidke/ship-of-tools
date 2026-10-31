@@ -18,8 +18,8 @@ fn fe(serial: u64, name: &str, used: Option<Instant>) -> ClientInfo {
 }
 
 fn chosen(clients: &[ClientInfo]) -> Option<(String, &'static str)> {
-    let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None };
-    snapshot.in_use().map(|(to, why)| (to.handle, why))
+    let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None, away: vec![] };
+    snapshot.in_use().ok().map(|(to, why)| (to.handle, why))
 }
 
 fn pick(handle: &str, why: &'static str) -> Option<(String, &'static str)> {
@@ -60,9 +60,51 @@ fn a_preview_goes_to_every_window_and_every_other_command_to_one() {
     clients.touch_person_input(a.serial());
     let snap = clients.snapshot_with_active();
     for cmd in ["preview", "reveal"] {
-        assert_eq!(snap.window_for(cmd), None, "{cmd}: every window");
+        assert_eq!(snap.window_for(cmd), Route::Every, "{cmd}: every window");
     }
     for cmd in ["docs", "open_url", "notify", "goto_workspace", "goto_mode", "relaunch"] {
-        assert_eq!(snap.window_for(cmd).map(|(to, _)| to.serial), Some(a.serial()), "{cmd}: the window in use");
+        let to = match snap.window_for(cmd) {
+            Route::One(to, _) => Some(to.serial),
+            _ => None,
+        };
+        assert_eq!(to, Some(a.serial()), "{cmd}: the window in use");
     }
+}
+
+fn window(clients: &Clients, host: &str, instance: &str) -> crate::clients::ClientGuard {
+    let name = Some(format!("fe@{host}"));
+    clients.register("c", "0.7.0", 4, "fe".into(), Some(host.into()), Some(instance.into()), name)
+}
+
+fn to(guard: &crate::clients::ClientGuard, host: &str, why: &'static str) -> Route {
+    Route::One(ActiveFrontend { serial: guard.serial(), handle: format!("fe@{host}") }, why)
+}
+
+/// The window a person used last is away (a laptop asleep or closed): a browser open goes to no other window, and the
+/// route names its computer; a live window on that computer (a relaunched window) takes it; once the person uses
+/// another window, that window does. Seen in use 2026-10-31: pages piled up on a computer the maintainer had left,
+/// sent there while the window he had used last was away.
+#[test]
+fn a_window_used_last_that_is_away_sends_nothing_to_another_window() {
+    let clients = Clients::new();
+    let t0 = Instant::now();
+    let desk = window(&clients, "desk", "b");
+    let laptop = window(&clients, "laptop", "l");
+    clients.inner.lock().unwrap().report(desk.serial(), t0);
+    clients.inner.lock().unwrap().report(laptop.serial(), t0 + Duration::from_secs(60));
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&laptop, "laptop", "last-used"));
+    drop(laptop);
+    let snap = clients.snapshot_with_active();
+    for cmd in ["docs", "open_url", "notify"] {
+        assert_eq!(snap.window_for(cmd), Route::Nowhere(Some("laptop".into())), "{cmd}: not the computer left earlier");
+    }
+    assert_eq!(snap.window_for("preview"), Route::Every, "a preview still reaches every window");
+    assert_eq!(snap.in_use(), Err(Some("laptop".into())));
+
+    let relaunched = window(&clients, "laptop", "l2");
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&relaunched, "laptop", "same-computer"));
+    drop(relaunched);
+
+    clients.inner.lock().unwrap().report(desk.serial(), t0 + Duration::from_secs(120));
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&desk, "desk", "last-used"), "used after");
 }

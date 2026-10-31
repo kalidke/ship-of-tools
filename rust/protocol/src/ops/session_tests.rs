@@ -400,6 +400,7 @@ mod fe_presence_and_command_tests {
             ok: true,
             resolved_target: Some("fe@host-a".into()),
             delivered_to: Some(1),
+            away: None,
         };
         let json = serde_json::to_string(&res).unwrap();
         let back: FeCommandSendRes = serde_json::from_str(&json).unwrap();

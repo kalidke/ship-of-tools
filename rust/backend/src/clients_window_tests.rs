@@ -70,7 +70,7 @@ fn of_a_windows_connections_the_newest_is_chosen() {
     let new = connect(&clients, Some("w"));
     let snap = clients.snapshot_with_active();
     assert_eq!(snap.active().map(|a| a.serial), Some(new.serial()));
-    assert_eq!(snap.in_use().map(|(to, why)| (to.serial, why)), Some((new.serial(), "last-used")));
+    assert_eq!(snap.in_use().map(|(to, why)| (to.serial, why)), Ok((new.serial(), "last-used")));
 }
 
 /// The roster remembers at most `AWAY` windows with no live connection, forgetting the one away longest; a window
