@@ -108,21 +108,31 @@ impl Inner {
         self.windows.remove(&key).map(|w| w.sites)
     }
 
-    /// The windows with no live connection that a person has used: each one's host and when it was last used.
-    pub(super) fn away_used(&self) -> Vec<(String, Instant)> {
+    /// The window with no live connection a person used most recently: its host and when.
+    pub(super) fn latest_away(&self) -> Option<(String, Instant)> {
         let away = self.windows.iter().filter(|(_, w)| w.live == 0);
-        away.filter_map(|((host, _), w)| Some((host.clone(), w.last_person_input_at?))).collect()
+        away.filter_map(|((host, _), w)| Some((host.clone(), w.last_person_input_at?))).max_by_key(|(_, at)| *at)
     }
 
-    /// `serial`'s connection reports a person at its window at `at`: it lands on the connection and on its window. A
-    /// no-op for an unregistered serial.
+    /// `serial`'s connection reports a person at its window at `at`: it lands on the connection and, for a named
+    /// frontend (the windows `in_use` ranks), on its window and every connection of it, so a window's use is one fact
+    /// however many connections it holds. A no-op for an unregistered serial.
     pub(super) fn report(&mut self, serial: u64, at: Instant) {
         let Some(info) = self.by_conn.get_mut(&serial) else {
             return;
         };
         info.last_person_input_at = Some(at);
-        if let Some(window) = window_key(info).and_then(|key| self.windows.get_mut(&key)) {
+        if info.role != "fe" || info.name.as_deref().is_none_or(str::is_empty) {
+            return;
+        }
+        let Some(key) = window_key(info) else {
+            return;
+        };
+        if let Some(window) = self.windows.get_mut(&key) {
             window.last_person_input_at = Some(at);
+        }
+        for other in self.by_conn.values_mut().filter(|c| window_key(c).as_ref() == Some(&key)) {
+            other.last_person_input_at = Some(at);
         }
     }
 }

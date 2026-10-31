@@ -129,14 +129,17 @@ of each.
     (`ClientsSnapshot::window_for`, `in_use`); a `browser` REPL frame with `open` true goes as it came to the window in
     use and with `open: false` and no `fe` to every other connection, chosen once per frame by the first connection that
     writes it (`repl_frame_for`, `ReplFrameMsg::opener`). "In use" ranks live windows and the windows away
-    (`Clients::away_used`, a window's stamp kept past its last connection) by their latest `fe.presence` stamp: when
+    (`Inner::latest_away`, a window's stamp kept past its last connection) by their latest `fe.presence` stamp: when
     the winner is away and no live window shares its computer, a command that is not a preview-pane command goes to no
     window, publishes nothing, and its ack's `away` names that computer (`Route::Nowhere`; the maintainer, 2026-10-31,
     after pages piled up on a computer he had left while his laptop's window was away); a live window on that computer,
     a relaunched one, takes it (`same-computer`). Limit: only `fe`-role connections with a name are windows; a
     connection whose hello names no instance is no window and is not remembered away; with no window stamped, the one
     connected last; with no named frontend attached a browser open goes nowhere; the away memory is the roster's, so
-    a daemon restart forgets it.
+    a daemon restart forgets it, and a window forgotten past `AWAY` windows away no longer ranks; a `wglshow` page that
+    opens nowhere for this reason tells its REPL run nothing (queued); a tie between a live window and the window away
+    goes to the one away; a window's use lands on every connection of it, and only a named `fe` connection's use is
+    remembered (`Inner::report`).
     A page's command instead goes to the window that opened its site: `Clients::window_connection(owner)` selects
     that owner's newest live named `fe` connection, and `PageVerbs` publishes with its name and serial. The bus writer
     writes only to that serial, so another window and an older redial receive nothing. No live connection answers
@@ -223,7 +226,7 @@ tests need the built `sotd` and run in test containers.
 | 10 | off the loop | `dispatch_place_tests.rs`: `the_lists_are_disjoint_and_reasoned`; `reply_tests.rs`: `a_pooled_job_that_waits_ten_seconds_for_a_permit_is_answered_and_never_runs`; `tests/switch_latency/main.rs`: `slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connection`, `an_instant_op_is_answered_while_kernel_previews_hold_the_pool`, `a_ping_is_answered_while_a_quarto_render_is_held`, `a_held_render_runs_to_its_end_after_its_connection_closes`; `src/rows/unknown_workspace_tests.rs` (the pooled hint) |
 | 11 | accept errors | `listen_tests.rs`: `the_session_loop_survives_every_transient_and_resource_accept_error`; the stop at departure is lifecycle's (`tests/window_lease/lease.rs`: `last_one_out_two_windows`) |
 | 12 | the hello names running REPL runs | `tests/repl_windows.rs` (Linux) |
-| 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`, `a_window_used_last_that_is_away_sends_nothing_to_another_window`; `src/clients_tests.rs`: `a_browser_open_while_the_window_used_last_is_away_publishes_nothing`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
+| 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`, `a_window_used_last_that_is_away_sends_nothing_to_another_window`, `ties_a_windows_other_connection_and_non_windows_rank_as_the_rule_says`; `src/clients_tests.rs`: `a_browser_open_while_the_window_used_last_is_away_publishes_nothing`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
 | 14 | a handler is given its arguments | the private submodules (compiler); the rest by convention, no test |
 | 16 | an event is one frame or dropped | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_nothing`, `a_closed_bus_writes_nothing` (per bus) |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |

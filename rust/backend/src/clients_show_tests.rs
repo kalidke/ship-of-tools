@@ -18,7 +18,7 @@ fn fe(serial: u64, name: &str, used: Option<Instant>) -> ClientInfo {
 }
 
 fn chosen(clients: &[ClientInfo]) -> Option<(String, &'static str)> {
-    let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None, away: vec![] };
+    let snapshot = ClientsSnapshot { clients: clients.to_vec(), active: None, away: None };
     snapshot.in_use().ok().map(|(to, why)| (to.handle, why))
 }
 
@@ -107,4 +107,30 @@ fn a_window_used_last_that_is_away_sends_nothing_to_another_window() {
 
     clients.inner.lock().unwrap().report(desk.serial(), t0 + Duration::from_secs(120));
     assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&desk, "desk", "last-used"), "used after");
+}
+
+/// A tie between a live window and the window away goes to the one away, so nothing opens on the other computer; a
+/// window whose one connection reported and left keeps that use on its other live connection; a connection that is not
+/// a named frontend leaves no use behind it (the review of the away rule, 2026-10-31).
+#[test]
+fn ties_a_windows_other_connection_and_non_windows_rank_as_the_rule_says() {
+    let clients = Clients::new();
+    let t0 = Instant::now();
+    let desk = window(&clients, "desk", "d");
+    let laptop = window(&clients, "laptop", "l");
+    clients.inner.lock().unwrap().report(desk.serial(), t0);
+    clients.inner.lock().unwrap().report(laptop.serial(), t0);
+    drop(laptop);
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), Route::Nowhere(Some("laptop".into())), "a tie");
+
+    let first = window(&clients, "tablet", "t");
+    let second = window(&clients, "tablet", "t");
+    clients.inner.lock().unwrap().report(first.serial(), t0 + Duration::from_secs(60));
+    drop(first);
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&second, "tablet", "last-used"), "its other one");
+
+    let cli = clients.register("c", "0.7.0", 4, "cli".into(), Some("server".into()), Some("s".into()), Some("x".into()));
+    clients.inner.lock().unwrap().report(cli.serial(), t0 + Duration::from_secs(120));
+    drop(cli);
+    assert_eq!(clients.snapshot_with_active().window_for("docs"), to(&second, "tablet", "last-used"), "no window");
 }

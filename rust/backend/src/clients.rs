@@ -336,7 +336,7 @@ impl Clients {
         let now = Instant::now();
         let inner = self.inner.lock().unwrap();
         let clients: Vec<ClientInfo> = inner.by_conn.values().cloned().collect();
-        let away = inner.away_used();
+        let away = inner.latest_away();
         drop(inner);
         let active = Self::resolve_active(&clients, now);
         ClientsSnapshot { clients, active, away }
@@ -391,9 +391,9 @@ pub struct ActiveFrontend {
 pub struct ClientsSnapshot {
     pub clients: Vec<ClientInfo>,
     active: Option<ActiveFrontend>,
-    /// The windows with no live connection that a person has used: each one's host and when it was last used
-    /// (`clients_window.rs`). `in_use` ranks them with the live windows.
-    away: Vec<(String, Instant)>,
+    /// The window with no live connection a person used most recently, its host and when (`clients_window.rs`):
+    /// `in_use` ranks it with the live windows.
+    away: Option<(String, Instant)>,
 }
 
 impl ClientsSnapshot {

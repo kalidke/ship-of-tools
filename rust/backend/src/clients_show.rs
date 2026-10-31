@@ -48,8 +48,9 @@ impl ClientsSnapshot {
         };
         let to = |(c, handle): (&ClientInfo, &str)| ActiveFrontend { serial: c.serial, handle: handle.to_string() };
         let live = windows().max_by_key(|(c, _)| (c.last_person_input_at, c.serial));
-        if let Some((host, at)) = self.away.iter().max_by_key(|(_, at)| *at) {
-            if live.is_none_or(|(c, _)| c.last_person_input_at < Some(*at)) {
+        if let Some((host, at)) = &self.away {
+            // A tie goes to the window away: nothing opens on another computer.
+            if live.is_none_or(|(c, _)| c.last_person_input_at <= Some(*at)) {
                 let here = windows().filter(|(c, _)| c.host.as_deref() == Some(host.as_str()));
                 let here = here.max_by_key(|(c, _)| c.serial);
                 return here.map(|w| (to(w), "same-computer")).ok_or_else(|| Some(host.clone()));
