@@ -438,7 +438,8 @@ async fn read_states_lists_every_session_with_its_question_parts() {
     for (key, value) in [("repo", "demo"), ("state", "blocked"), ("waiting", "build"), ("status_at", "status-time"), ("last_seen", "seen-time")] {
         assert_eq!(row[key], value);
     }
-    assert_eq!(row["summary"], question);
+    let unpaged = question.split(" Page:").next().unwrap();
+    assert_eq!(row["summary"], unpaged, "the summary without its page clause, which is the row's page");
     for key in ["row", "repo", "summary", "question", "recommend", "page", "status_at", "last_seen"] {
         assert_eq!(rows[0][key], "", "absent {key}");
     }
