@@ -109,7 +109,9 @@ of each.
    visits every Claude configuration folder (the install's own, `~/.claude`, each `~/.claude-auth/<name>`). In a skills
    folder it removes a skill directory only when its contents hash to a version of that skill the repo shipped
    (`comm/legacy-skills.txt`, 306 versions from `git log` of `agents/claude/`, `comm/adapters/claude/` and
-   `.claude/skills/`, made by `scripts/legacy-skill-hashes.sh`; the list is frozen history), warns about any other
+   `.claude/skills/`, made by `scripts/legacy-skill-hashes.sh`; every committed version is listed, so a landing that
+   changes a skill's text regenerates the list after its commits, and `test/protect_tests.jl`, which copies the
+   current skill, fails until it does), warns about any other
    directory of such a name and leaves it; a skills folder that is itself a link is never acted through, and a link inside
    a skill is never followed. From each settings file it removes a hook command only when it equals exactly one an earlier
    installer wrote (`_EARLIER_HOOK_COMMANDS`: the comm scripts under `$HOME/.sot-comm/bin/`, both slash forms) and is not

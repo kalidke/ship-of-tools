@@ -508,5 +508,19 @@ attached" from inside an attached window, and was refused a shell row in its own
 row's session start now says where it runs and how to make a terminal-only row (`comm-spawn.sh <folder> --agent
 none`, then `sot-fe goto`), `comm-list.sh` asks its own daemon's `version.query` and says why it shows no window, and
 the spawn counts the default row with no agent as holding no folder, the daemon's own rule. Four items took about 18
-minutes of change and 30 from the maintainer's word to main (the gate 10).
+minutes of change and 30 from the maintainer's word to main (the gate 10). Pages, from rc.6's use, landed 2026-10-31:
+with several windows up, the maintainer found at each computer he came back to tabs meant for the window he had been
+at. A browser open goes to one window, the one a person used last, but the choice ranked only live windows, so while
+his laptop's window was away (asleep or closed) every page fell to the live window used before it, however long ago.
+The choice now ranks the windows away too: when the winner is away and no window on its computer is connected,
+nothing opens and the session is told which computer's window is away (his choice of three rules). At his word the
+same landing sends pages to his Queue instead of a tab: show-result opens no page and prints the `Page: <path>` line a
+session ends its closing marker with, and the page channel reads the page of any stamp line, not only a question's.
+A miss: about 55 minutes from his rule to main, three local gates and one Codex review (four of its six findings
+fixed, two stated as limits). Its causes: the second feature joined the landing while the first gated, the first
+gate failed because a skill text edit did not regenerate `comm/legacy-skills.txt`, and the second on a real-daemon
+states test that pinned a summary with its page clause, each costing a gate of 10 to 15 minutes. A project chat in
+the window was planned 2026-10-30 (Slack as its carrier, one listener per Slack workspace on the hub through a Ship of
+Tools app of its own, a drawer per row with its history and figures both ways) and approved 2026-10-31: the bot
+package's landing first, the window's five after the 0.7.0 tag.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
