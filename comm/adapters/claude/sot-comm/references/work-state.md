@@ -72,6 +72,11 @@ acknowledgment of it before its answer buttons work, and the click types the ans
 person needs to decide. An `Irreversible:` question always carries one: `blocked` refuses one without a page (rc 2,
 naming why), and the Stop hook asks for the page once before it stamps the line as written.
 
+A page offered on any stamp line reaches the page channel: the question's `Page:` when the row asks one, else the
+`Page:` on its latest summary line (a `SITREP:` or `SITREP-WAITING:` marker, or a `comm-status.sh` stamp's text), so a
+report you made is offered with `SITREP: <headline> Page: <absolute path>` and the Queue opens it from its card;
+pages' `summary` is that line without the clause. Offer pages this way, never by opening a browser tab.
+
 The page channel reads the question, answer keys and texts, recommendation and page separately. Without options a
 queue can show a reply box; without a page it has no context button. `Page:` takes one non-space path, with a trailing
 period ignored. The daemon opens it only if the absolute path resolves under the row's own project folder; a page

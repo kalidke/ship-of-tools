@@ -282,6 +282,17 @@ pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&
     Shown { state: field("state"), summary: field("summary"), status_at: field("status_at") }
 }
 
+/// The page a session offered on its latest stamp line, and that line without it: its question's `Page:` when it asks
+/// one, else its summary's (the line a `SITREP:`, `SITREP-WAITING:` or `comm-status.sh` stamp left: the waiting text or
+/// the note), so a page offered on a done or waiting row reaches the page channel as a question's does (the maintainer,
+/// 2026-10-31: pages went to the browser, not to the Queue). Served only under the row's project folder (pages' open).
+pub(crate) fn offered_page(entry: &Value) -> (String, String) {
+    let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("");
+    let (summary, page) = question::split_page(field("summary"));
+    let asked = question::parts(field("question")).page;
+    (summary.trim().to_string(), if asked.is_empty() { page } else { asked })
+}
+
 /// The page view of this daemon's registry sessions, including sessions outside any row, sorted by handle.
 /// The server supplies a fresh registry read on a blocking thread, as it does for the window's read.
 pub(crate) fn states(rows: &[Arc<Workspace>], agents: &serde_json::Map<String, Value>, host: &str) -> Vec<crate::pages::site::verbs::PageRow> {
@@ -289,12 +300,13 @@ pub(crate) fn states(rows: &[Arc<Workspace>], agents: &serde_json::Map<String, V
     for (handle, entry) in agents.iter().filter(|(_, entry)| host_matches(entry, host)) {
         let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let parts = question::parts(&field("question"));
+        let (summary, page) = offered_page(entry);
         let row = rows.iter().find(|ws| bound_handle(ws, rows) == *handle)
             .map(|ws| ws.workspace_id.clone()).unwrap_or_default();
         out.push(crate::pages::site::verbs::PageRow {
             handle: handle.clone(), host: field("host"), repo: field("repo"), row,
-            state: field("state"), summary: field("summary"), question: parts.question,
-            options: parts.options, recommend: parts.recommend, page: parts.page,
+            state: field("state"), summary, question: parts.question,
+            options: parts.options, recommend: parts.recommend, page,
             waiting: field("waiting"), status_at: field("status_at"), last_seen: field("last_seen"),
         });
     }

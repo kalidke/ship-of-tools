@@ -257,6 +257,33 @@ fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
     assert!(states(&rows, &serde_json::Map::new(), "host-a").is_empty());
 }
 
+/// A page offered on a stamp that is not a question (a `SITREP:` line's note, a wait) reaches the page channel as a
+/// question's does, with the clause left out of the summary; a question's own page wins over its summary's (the
+/// maintainer, 2026-10-31: pages went to the browser, not to the Queue).
+#[test]
+fn a_page_on_a_done_or_waiting_stamp_reaches_states_and_the_lookup() {
+    let done = row("done", "landed", "");
+    let waiting = row("wait", "gating", "");
+    let rows = [done.clone(), waiting.clone()];
+    let agents = json!({
+        "landed": {"host": "host-a", "state": "done", "summary": "The fix landed. Page: /p/report.html."},
+        "gating": {"host": "host-a", "state": "waiting", "summary": "gate running Page: /p/gate.html"},
+        "plain": {"host": "host-a", "state": "idle", "summary": "nothing offered"},
+        "asked": {"host": "host-a", "state": "blocked", "question": "Merge? Options: (a) yes; (b) no. Page: /p/q.html",
+                  "summary": "Merge? Options: (a) yes; (b) no. Page: /p/q.html"}
+    });
+    let view = states(&rows, agents.as_object().unwrap(), "host-a");
+    let by = |h: &str| view.iter().find(|r| r.handle == h).expect("its row");
+    assert_eq!((by("landed").page.as_str(), by("landed").summary.as_str()), ("/p/report.html", "The fix landed."));
+    assert_eq!((by("gating").page.as_str(), by("gating").summary.as_str()), ("/p/gate.html", "gate running"));
+    assert_eq!((by("plain").page.as_str(), by("plain").summary.as_str()), ("", "nothing offered"));
+    assert_eq!(by("asked").page, "/p/q.html");
+    for (handle, page) in [("landed", "/p/report.html"), ("gating", "/p/gate.html")] {
+        let found = crate::rows::handle::row_of_handle(&rows, handle, Some(&agents), "host-a").unwrap();
+        assert_eq!(found.page, page, "{handle}: the open verb serves the offered page");
+    }
+}
+
 /// A person's read clears the row's own entry through its bound handle, keeps its summary and time, and never touches
 /// another host's same-named entry.
 #[test]

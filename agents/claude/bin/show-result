@@ -7,6 +7,8 @@
 #
 # Usage:
 #   show-result <path>                        # BADGE it (default; non-intrusive — PREFERRED)
+#   show-result <page.html>                   # a page under the row's folder: says how to OFFER it to the
+#                                             # person's Queue (Page: on the closing marker line); opens nothing
 #   show-result <path> --caption "<text>"     # images: a caption band UNDER the figure
 #                                             # (reserved space, never covers the plot);
 #                                             # sticky per (workspace, file) — re-badging
@@ -61,10 +63,11 @@ case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
     fi ;;
 esac
 
-# A page goes to the browser through `sot-fe docs`, as the skill's table says, by its absolute path. A page under this
-# row's own project folder opens with --direct, so its answer buttons reach this session: the session opening its own
-# page is the opener whose say --direct needs (pages' contract), and the daemon refuses --direct outside that folder.
-# Any other page opens plain. An older sot-fe without --direct opens it plain.
+# A page is offered, never opened (the maintainer, 2026-10-31: "things are still posting pages directly to browser, and
+# not to radiant queue"): the session ends its reply's closing marker line with `Page: <absolute path>`, the daemon
+# keeps that page on the row's latest stamp, and the person's Queue opens it from its card. The Queue serves only a page
+# under this row's own project folder (pages' open verb), so a page elsewhere is refused here. A person who asks to see
+# a page now gets it from `sot-fe docs <workspace> <absolute path>`, which this wrapper never runs.
 case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
   *.html|*.htm)
     case "$REL" in
@@ -75,15 +78,18 @@ case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
     [ -n "$PAGE" ] || PAGE="$ABS"
     ROOT=""
     [ -n "${SOT_WORKSPACE_ROOT:-}" ] && ROOT="$(cd "$SOT_WORKSPACE_ROOT" 2>/dev/null && pwd -P || true)"
-    DIRECT=()
-    case "$PAGE" in
-      "$ROOT"/*)
-        if [ -n "$ROOT" ]; then
-          HELP="$("$SFE" --help 2>&1 || true)"
-          case "$HELP" in *--direct*) DIRECT=(--direct) ;; esac
-        fi ;;
-    esac
-    exec "$SFE" docs "$WS" "$PAGE" ${DIRECT[@]+"${DIRECT[@]}"} ;;
+    if [ -n "$ROOT" ]; then
+      case "$PAGE" in
+        "$ROOT"/*)
+          echo "show-result: offered, not opened. End your reply's closing marker line with  Page: $PAGE"
+          echo "  (SITREP-QUESTION when you ask, SITREP-WAITING while you wait, SITREP when you close): your person's Queue"
+          echo "  shows it as a card and opens it there. Only if they asked to see it now: sot-fe docs $WS $PAGE"
+          exit 0 ;;
+      esac
+    fi
+    echo "show-result: not offered: the Queue opens only a page under this row's project folder (${ROOT:-unknown})." >&2
+    echo "  Write the page there, then end your closing marker line with  Page: <its absolute path>" >&2
+    exit 2 ;;
 esac
 
 # The badge floor is the only path for everything else — we never force-switch the user's view.

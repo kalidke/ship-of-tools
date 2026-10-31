@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # test-show-result.sh — hermetic suite for which `sot-fe` verb `show-result` asks for. An image or any non-page badges
-# through `preview`; an .html page opens through `docs` by its absolute path, with `--direct` only when it lies under
-# the calling row's project folder (SOT_WORKSPACE_ROOT) and the installed sot-fe knows the flag. A stand-in sot-fe in a
-# temporary HOME records its arguments; nothing reaches a daemon or the live comm home.
+# through `preview`; an .html page opens nothing: under the calling row's project folder (SOT_WORKSPACE_ROOT) it says how
+# to offer the page to the person's Queue (`Page: <absolute path>` on the closing marker line), and elsewhere it refuses.
+# A stand-in sot-fe in a temporary HOME records its arguments; nothing reaches a daemon or the live comm home.
 #
 # Usage: agents/tests/test-show-result.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -40,12 +40,15 @@ check() {
     if "$2"; then echo "PASS: $1"; PASS=$((PASS + 1)); else echo "FAIL: $1"; FAIL=$((FAIL + 1)); fi
 }
 
-# run PATH [ENV=VALUE...] — show-result from inside the row's folder, as a row's session runs it.
+# run PATH [ENV=VALUE...] — show-result from inside the row's folder, as a row's session runs it; its output in $OUT
+# and its exit code in $RC.
+OUT="$WORK/out"
 run() {
     local path="$1"; shift
     rm -f "$ARGS"
     (cd "$ROW" && env HOME="$FAKE_HOME" SOT_WORKSPACE=row-slug SOT_WORKSPACE_ROOT="$ROW" STUB_ARGS="$ARGS" "$@" \
-        bash "$SHOW" "$path") >/dev/null 2>&1
+        bash "$SHOW" "$path") >"$OUT" 2>&1
+    RC=$?
 }
 got() { tr '\n' ' ' < "$ARGS" 2>/dev/null | sed 's/ $//'; }
 expect() {
@@ -56,24 +59,29 @@ expect() {
 case_an_image_badges_through_preview() {
     run fig.png && expect "preview row-slug fig.png"
 }
-case_a_page_in_the_row_opens_direct() {
+# A page under the row's folder opens nothing: show-result names the line that offers it to the Queue, by its absolute
+# path, and exits 0 (the maintainer, 2026-10-31: pages went to the browser, not to the Queue).
+case_a_page_in_the_row_is_offered_and_opens_nothing() {
     : > "$ROW/dev/output/decision.html"
-    run dev/output/decision.html && expect "docs row-slug $ROW/dev/output/decision.html --direct" || return 1
-    run "$ROW/dev/output/decision.html" && expect "docs row-slug $ROW/dev/output/decision.html --direct"
+    for path in dev/output/decision.html "$ROW/dev/output/decision.html"; do
+        run "$path"
+        [ "$RC" -eq 0 ] || { echo "  exit $RC: $(cat "$OUT")"; return 1; }
+        [ ! -e "$ARGS" ] || { echo "  sot-fe was run: '$(got)'"; return 1; }
+        grep -qF "Page: $ROW/dev/output/decision.html" "$OUT" || { echo "  no offer line: $(cat "$OUT")"; return 1; }
+    done
 }
-case_a_page_outside_the_row_opens_plain() {
+# A page outside the row's folder cannot be served from the Queue: refused, exit 2, nothing run.
+case_a_page_outside_the_row_is_refused() {
     : > "$ELSEWHERE/report.html"
-    run "$ELSEWHERE/report.html" && expect "docs row-slug $ELSEWHERE/report.html"
-}
-case_an_older_sot_fe_opens_it_plain() {
-    : > "$ROW/page.htm"
-    run page.htm STUB_OLD=1 && expect "docs row-slug $ROW/page.htm"
+    run "$ELSEWHERE/report.html"
+    [ "$RC" -eq 2 ] || { echo "  expected exit 2, got $RC: $(cat "$OUT")"; return 1; }
+    [ ! -e "$ARGS" ] || { echo "  sot-fe was run: '$(got)'"; return 1; }
+    grep -qF "project folder" "$OUT" || { echo "  no reason: $(cat "$OUT")"; return 1; }
 }
 
 check "an image badges through preview, unchanged" case_an_image_badges_through_preview
-check "a page under the row's folder opens with docs --direct, by its absolute path" case_a_page_in_the_row_opens_direct
-check "a page outside the row's folder opens with docs, no scope" case_a_page_outside_the_row_opens_plain
-check "a sot-fe that does not know --direct opens the page plain" case_an_older_sot_fe_opens_it_plain
+check "a page under the row's folder is offered to the Queue and opens nothing" case_a_page_in_the_row_is_offered_and_opens_nothing
+check "a page outside the row's folder is refused and opens nothing" case_a_page_outside_the_row_is_refused
 
 echo
 echo "$PASS passed, $FAIL failed"

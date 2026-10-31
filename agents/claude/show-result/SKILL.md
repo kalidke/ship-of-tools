@@ -1,6 +1,6 @@
 ---
 name: show-result
-description: Surface a result you just produced (plot, image, screenshot, PDF, HTML report, built doc, output file, published page) — badge it into the FE nav/preview pane, or open it in the OS browser. Never merely name a path or URL in text.
+description: Surface a result you just produced (plot, image, screenshot, PDF, HTML report, built doc, output file, published page) — badge it into the FE nav/preview pane, offer an HTML page to the person's Queue, or open a URL in the OS browser. Never merely name a path or URL in text.
 ---
 
 # show-result — put what you made in front of the user
@@ -16,11 +16,16 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 | You produced | Command | Lands in |
 |---|---|---|
 | Image, figure, PDF, markdown, source file | `show-result <path>` | FE nav + preview pane (badge) |
-| A built site, ANY page inside it, or a self-contained `.html` | `show-result <page.html>` (or `sot-fe docs <ws> <abs-path>`) | FE machine's OS browser |
-
-`show-result` on an `.html` page runs `sot-fe docs` for you. A page under your row's own folder opens with `--direct`,
-so a decision page's answer buttons reach you; a page opened any other way cannot answer.
+| A built site, ANY page inside it, or a self-contained `.html` | `Page: <abs-path>` at the end of your closing marker line | the person's Queue (a card) |
 | An http(s) URL — page, PR, CI run, dashboard | `sot-fe open-url <url>` | FE machine's OS browser |
+
+An HTML page is offered, never opened in a new tab (the maintainer, 2026-10-31: "things are still posting pages
+directly to browser, and not to radiant queue"). End your reply's closing marker line with `Page: <absolute path>`:
+`SITREP-QUESTION:` when you ask, `SITREP-WAITING:` while you wait, `SITREP:` when you close. The daemon keeps the page on
+your row's latest stamp and the Queue opens it from its card. The page must lie under your row's project folder (keep
+pages in `dev/output/pages/`). `show-result <page.html>` opens nothing: it prints that line with the absolute path, or
+refuses a page outside the folder. Only when the person asks to see a page now, open it with
+`sot-fe docs <ws> <abs-path>`.
 
 `open-url` puts the address on a command line any account on the box can read: never pass it an address with a
 secret in it (a `wglshow` figure, a Pluto notebook, a docs or video page); `wglshow(fig)` opens a figure itself.
@@ -28,8 +33,8 @@ secret in it (a `wglshow` figure, a Pluto notebook, a docs or video page); `wgls
 path (confined to a workspace root) — use it for anything that must actually
 run (JS/WebGL). A preview reaches every attached window. `docs`, `open-url` and a `wglshow` figure open in ONE
 window, never all: the window in use, the one the user used last. When that window is away (its computer asleep or
-closed), nothing opens and `sot-fe` exits 2 with `NOT SHOWN` naming the computer: tell the user in your reply, and
-never resend it with `--fe` to another window. You never need to check which frontend is active;
+closed) and no other window on its computer is connected, nothing opens, and `sot-fe docs` and `open-url` exit 2 with
+`NOT SHOWN` naming the computer: tell the user in your reply, and never resend it with `--fe` to another window. You never need to check which frontend is active;
 `--fe <host>` targets the FE on that host.
 
 **Point `docs` straight at the SUBPAGE you mean** — a project-log entry, one

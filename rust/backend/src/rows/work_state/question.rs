@@ -10,11 +10,9 @@ pub(crate) struct Parts {
     pub page: String,
 }
 
-/// Page first, then the first Options section, then Recommend[ed][:] [(]letter[)] in any case, a leading "I" or "We"
-/// left out of the last option. An option starts at a mark `(x)` whose letter follows the one before it (the first mark
-/// any letter), so a letter repeated in an option's text stays text; an option with no text is left out.
-pub(crate) fn parts(text: &str) -> Parts {
-    let mut out = Parts::default();
+/// A stamp line's `Page: <path>` clause and the line without it: the first `Page:` followed by whitespace and a word,
+/// a trailing period left off the path. A line with none comes back whole, with an empty path.
+pub(crate) fn split_page(text: &str) -> (String, String) {
     let mut text = text.to_string();
     let page = text.match_indices("Page:").find_map(|(at, _)| {
         let after = at + "Page:".len();
@@ -24,10 +22,19 @@ pub(crate) fn parts(text: &str) -> Parts {
         let end = start + text[start..].find(char::is_whitespace).unwrap_or(text.len() - start);
         (start < end).then_some((at, start, end))
     });
-    if let Some((at, start, end)) = page {
-        out.page = text[start..end].strip_suffix('.').unwrap_or(&text[start..end]).to_string();
-        text.replace_range(at..end, "");
-    }
+    let Some((at, start, end)) = page else { return (text, String::new()) };
+    let path = text[start..end].strip_suffix('.').unwrap_or(&text[start..end]).to_string();
+    text.replace_range(at..end, "");
+    (text, path)
+}
+
+/// Page first (`split_page`), then the first Options section, then Recommend[ed][:] [(]letter[)] in any case, a leading
+/// "I" or "We" left out of the last option. An option starts at a mark `(x)` whose letter follows the one before it (the
+/// first mark any letter), so a letter repeated in an option's text stays text; an option with no text is left out.
+pub(crate) fn parts(text: &str) -> Parts {
+    let mut out = Parts::default();
+    let (text, page) = split_page(text);
+    out.page = page;
     let Some((question, options)) = text.split_once("Options:") else {
         out.question = text.trim().to_string();
         return out;

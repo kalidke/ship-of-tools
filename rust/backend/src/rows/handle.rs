@@ -96,10 +96,9 @@ pub(crate) fn row_of_handle(
         .ok_or_else(|| format!("{handle} has no session entry on daemon {host}"))?;
     let row = rows.iter().find(|ws| bound_handle(ws, rows) == handle)
         .ok_or_else(|| format!("{handle} binds no row on daemon {host}"))?;
-    let question = entry.get("question").and_then(serde_json::Value::as_str).unwrap_or("");
     Ok(crate::pages::site::verbs::RowRef {
         workspace_id: row.workspace_id.clone(), project_root: row.project_root.clone(),
-        page: crate::rows::work_state::question::parts(question).page,
+        page: crate::rows::work_state::offered_page(entry).1,
     })
 }
 

@@ -219,10 +219,11 @@ of each.
   document is ordinary, and the page reads `states.reply_scope` before enabling scoped controls. A scoped page's reply
   is typed directly; an unscoped page's is refused (pages' contract). `tests/test-sot-fe-paths.sh` records the scope in
   the actual request; `tests/test-sot-fe-goto.sh` covers invalid flag combinations.
-- `show-result` opens an `.html` or `.htm` page through `sot-fe docs` by its absolute path, with `--direct` when the
-  page lies under the calling row's project folder (`SOT_WORKSPACE_ROOT`) and plain otherwise or when the installed
-  `sot-fe` lacks the flag: the session opening its own page is the opener `--direct` asks for. Everything else badges
-  through `sot-fe preview` as before. `tests/test-show-result.sh`.
+- `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
+  Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
+  `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,
+  is refused with exit 2. It runs no `sot-fe` for a page; a session opens one only when its person asks, with
+  `sot-fe docs`. Everything else badges through `sot-fe preview` as before. `tests/test-show-result.sh`.
 - Still elsewhere, listed so a reader finds them: the shell daemon client `comm/lib/comm-lib-client.sh`
   (`sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`); the hooks' scripts, the Codex
   skills and plugin, and the two messaging skills (`sot-comm`, `sot-session-start`) in `comm/work_state/` and

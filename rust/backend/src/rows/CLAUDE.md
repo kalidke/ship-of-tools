@@ -242,8 +242,11 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   any row shows changed (`work_state::poll`).
   `work_state::states` supplies pages with this host's registry sessions, sorted by handle, including sessions
   outside any row. It exposes `handle`, `host`, `repo`, `row`, `state`, `summary`, `question`, `options`, `recommend`,
-  `page`, `waiting`, `status_at` and `last_seen`; absent strings are empty. Foreign and unknown-host entries are
-  omitted. `row` is this daemon's row bound by `bound_handle`, else empty, never a registry-supplied row id alone.
+  `page`, `waiting`, `status_at` and `last_seen`; absent strings are empty. `page` is the page the latest stamp line
+  offered (`work_state::offered_page`): the question's `Page:` when it names one, else the summary's (a `SITREP:` or
+  `SITREP-WAITING:` line, a wait, a note), and `summary` is that line without the clause (the maintainer, 2026-10-31:
+  a page offered on a done or waiting row reaches the Queue as a question's does). `row_of_handle` serves the same page.
+  Foreign and unknown-host entries are omitted. `row` is this daemon's row bound by `bound_handle`, else empty, never a registry-supplied row id alone.
   `handle::row_of_handle` applies the same binding and host rule for page actions; a known foreign entry refuses
   naming its daemon. The server reads the registry fresh on a blocking thread for each call. Pages' states reader
   takes a successfully read agents object, so a registry failure cannot become an empty queue; the server propagates

@@ -100,7 +100,7 @@ cannot disagree. No separate status call is needed at turn end.
 
 | Marker | State | The line, then the block |
 |---|---|---|
-| `SITREP: <headline>` | done (blue) | one-line headline, then the chain above |
+| `SITREP: <headline>` (with `Page: <absolute path>` at its end to offer a page) | done (blue) | one-line headline, then the chain above |
 | `SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>` | blocked (red) | the whole convention on one line, then the context to answer it cold: what was being done, what follows from each option, the default if unanswered, what is irreversible |
 | `SITREP-WAITING: <what for>` (only when nothing needs the user; if any item does, use the full question marker above with the jobs listed below it) | waiting (purple) | one sentence, then EVERY armed monitor, background job, subagent and peer request: what it is, what completion looks like, expected duration, the fallback if it never lands, and what happens when it does |
 
@@ -110,7 +110,9 @@ what it does; the card asks the user to acknowledge it before its answer buttons
 answer into the pane. A question carries a decision page (`Page:`, made with `/decision-page`) by default: skip it
 only when the question and a sentence or two of background are everything the user needs to decide. An
 `Irreversible:` question always carries one, and the Stop hook asks for it before stamping. `Page:` is the
-marker's permitted path; keep the prose below it in plain words. The Stop hook nudges an incomplete question once,
+marker's permitted path, on any of the three markers: a page you made for the user to read (a report, a decision page)
+is offered this way, never opened in a browser tab, and the user's Queue opens it from the row's card. Keep the prose
+below the line in plain words. The Stop hook nudges an incomplete question once,
 without stamping it; a stop-hook continuation is allowed to stamp its marker.
 
 The marker starts a line (bold-wrapping it is fine). The block is the last
