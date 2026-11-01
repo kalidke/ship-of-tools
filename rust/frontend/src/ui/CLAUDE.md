@@ -362,13 +362,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   brushes built once per colour before the pass that paints them, the strip logo and nav wordmark (each drawn only
   when it decoded), the help peek's backing, rebuilt only when its alpha changes, and the cell backgrounds' palette,
   one texel per colour, rebuilt before the pass only when the frame's colours change and painted first in the pass
-  in one draw (at most 2048 colours a frame; a run in a colour past that paints no background). Painting is its
-  operation over the `Gpu`; `Gpu` also holds the surface format's clear colour.
+  in one draw (at most 2048 colours a frame have their own texel; a run in a colour past that paints in the nearest
+  colour the palette holds). Its bytes are pre-encoded for a surface that does not encode sRGB on write, so a
+  background shows its own colour on either surface (the other solid brushes still show darker there). Painting is
+  its operation over the `Gpu`; `Gpu` also holds the surface format's clear colour.
 - A terminal cell (the agent pane, the Terminal drawer) is drawn as a terminal draws it: `paint_terminal` carries its
-  background and inverse, and the cell backend (`render/cells.rs`, `cell_colors`) swaps an inverse cell's colours,
-  the default foreground and the surface standing in for the side it leaves unset, so its letter shows on a bar of
-  its foreground; the block cursor is an inverse cell and keeps the letter under it. Backgrounds are rectangles under
-  every figure, selection and glyph (`project_backs`). Tests: `render::cells::tests`, `render::brushes::tests` and
+  background and inverse, and the cell backend (`render/cells.rs`, `cell_colors`) exchanges an inverse cell's
+  resolved colours, the default foreground and the surface standing in for the side it leaves unset, so its letter
+  shows on a bar of its foreground; the block cursor is an inverse cell and keeps the letter under it. Backgrounds are
+  rectangles under every figure, selection and glyph (`project_backs`). The cells a wide glyph covers, which ratatui's
+  diff never sends, are blanked in its style, so its background spans its width. A box-drawing cell's arms are not
+  dimmed by DIM, as its glyph would be (queued). Tests: `render::cells::tests`, `render::brushes::tests` and
   `drawer::terminal::vt::tests::{an_inverse_bar_keeps_its_letters,
   a_cell_background_reaches_the_backend_and_the_cursor_keeps_its_letter}`.
 - `StartupScript` privately owns the harness's one-shots: `--auto-expand`, `--auto-pin` and `--demo-repl-eval` each

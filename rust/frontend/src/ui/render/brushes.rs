@@ -9,20 +9,45 @@ use super::cells::{CellQuad, Rgb};
 use super::gpu::Gpu;
 use super::quad::{Quad, QuadPipeline, SamplerKind, ScreenRect};
 
-/// At most this many cell background colours paint in one frame: the palette texture's width, inside every
-/// adapter's smallest allowed texture. A run in a colour past it paints no background (a full-screen truecolor
-/// gradient would reach it; no program in use does).
+/// At most this many cell background colours a frame have their own texel: the palette texture's width, inside every
+/// adapter's smallest allowed texture. A run in a colour past it paints in the nearest colour the palette holds (a
+/// full-screen truecolor gradient would reach it; no program in use does).
 const MAX_BACK_COLORS: usize = 2048;
 
 /// The frame's cell backgrounds, each rect with the palette point it samples: made by `prepare_backs` for the palette
 /// it built, painted by `paint_backs`.
 pub(in crate::ui) struct CellBacks(Vec<Sampled>);
 
+/// The index of the palette colour nearest `c` (squared distance in sRGB bytes); the palette is full, never empty.
+fn nearest(palette: &[Rgb], c: Rgb) -> usize {
+    let d = |p: &Rgb| {
+        let (dr, dg, db) = (p.0 as i32 - c.0 as i32, p.1 as i32 - c.1 as i32, p.2 as i32 - c.2 as i32);
+        dr * dr + dg * dg + db * db
+    };
+    (0..palette.len()).min_by_key(|&i| d(&palette[i])).unwrap_or(0)
+}
+
+/// The palette's texel bytes. The texture decodes sRGB when sampled; a surface that encodes sRGB on write gives each
+/// colour back exactly, while one that does not would show the linear value, darker. For that surface each byte is
+/// stored pre-encoded once more, so the pixel written is the colour's own byte (as `clear_color_for_surface` does for
+/// the clear colour).
+fn palette_bytes(palette: &[Rgb], srgb_target: bool) -> Vec<u8> {
+    let encode = |c: u8| -> u8 {
+        if srgb_target {
+            return c;
+        }
+        let x = c as f64 / 255.0;
+        let s = if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round() as u8
+    };
+    palette.iter().flat_map(|&(r, g, b)| [encode(r), encode(g), encode(b), 255]).collect()
+}
+
 /// A rect with the palette point it samples.
 type Sampled = (ScreenRect, [f32; 2]);
 
 /// The palette for `rects` (each colour once, in order of first appearance) and each rect with the centre of its
-/// colour's texel; a colour past `MAX_BACK_COLORS` is left out with its rects.
+/// colour's texel; a colour past `MAX_BACK_COLORS` samples the nearest colour the palette holds.
 fn back_palette(rects: &[CellQuad]) -> (Vec<Rgb>, Vec<Sampled>) {
     let mut palette: Vec<Rgb> = Vec::new();
     let mut index: HashMap<Rgb, usize> = HashMap::new();
@@ -35,7 +60,7 @@ fn back_palette(rects: &[CellQuad]) -> (Vec<Rgb>, Vec<Sampled>) {
                 palette.push(q.color);
                 palette.len() - 1
             }
-            None => continue,
+            None => nearest(&palette, q.color),
         };
         texel.push((ScreenRect { x: q.x, y: q.y, w: q.w, h: q.h }, i));
     }
@@ -192,7 +217,7 @@ impl Brushes {
     pub(in crate::ui) fn prepare_backs(&mut self, rects: &[CellQuad], gpu: &Gpu) -> Result<CellBacks> {
         let (palette, sampled) = back_palette(rects);
         if !palette.is_empty() && self.backs.as_ref().map(|(p, _)| p) != Some(&palette) {
-            let rgba: Vec<u8> = palette.iter().flat_map(|&(r, g, b)| [r, g, b, 255]).collect();
+            let rgba = palette_bytes(&palette, gpu.config().format.is_srgb());
             let quad = Quad::from_rgba8_with_sampler(gpu.device(), gpu.queue(), &self.pipeline, &rgba,
                 palette.len() as u32, 1, SamplerKind::Nearest).context("failed to build the cell background palette")?;
             self.backs = Some((palette, quad));

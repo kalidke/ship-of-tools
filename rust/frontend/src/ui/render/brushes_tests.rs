@@ -16,11 +16,27 @@ fn each_colour_takes_one_texel_and_its_rects_sample_the_centre() {
 }
 
 #[test]
-fn a_colour_past_the_cap_paints_no_background() {
-    let rects: Vec<CellQuad> =
-        (0..=MAX_BACK_COLORS as u32).map(|i| cell(i as f32, ((i >> 16) as u8, (i >> 8) as u8, i as u8))).collect();
+fn a_colour_past_the_cap_paints_in_the_nearest_colour_held() {
+    // Colours (0, i >> 8, i & 255) fill the palette, the last (0, 7, 255); one more, (1, 7, 255), takes its texel.
+    let colour = |i: u32| (0u8, (i >> 8) as u8, i as u8);
+    let mut rects: Vec<CellQuad> = (0..MAX_BACK_COLORS as u32).map(|i| cell(i as f32, colour(i))).collect();
+    rects.push(cell(MAX_BACK_COLORS as f32, (1, 7, 255)));
     let (palette, sampled) = back_palette(&rects);
     assert_eq!(palette.len(), MAX_BACK_COLORS);
-    assert_eq!(sampled.len(), MAX_BACK_COLORS);
-    assert!(sampled.iter().all(|(r, _)| r.x < MAX_BACK_COLORS as f32));
+    assert_eq!(sampled.len(), MAX_BACK_COLORS + 1);
+    assert_eq!(sampled[MAX_BACK_COLORS].1, sampled[MAX_BACK_COLORS - 1].1);
+}
+
+#[test]
+fn a_surface_that_does_not_encode_srgb_gets_each_colour_back() {
+    assert_eq!(palette_bytes(&[(128, 0, 255)], true), vec![128, 0, 255, 255]);
+    let stored = palette_bytes(&[(128, 0, 255)], false);
+    assert_eq!(stored, vec![188, 0, 255, 255]);
+    // What the texture's sRGB decode hands a target that writes it unencoded: the colour's own byte.
+    let decode = |s: u8| {
+        let x = s as f64 / 255.0;
+        let l = if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) };
+        (l * 255.0).round() as u8
+    };
+    assert_eq!(decode(stored[0]), 128);
 }

@@ -132,18 +132,16 @@ fn back_rgb(c: Option<Color>) -> Option<Rgb> {
 }
 
 /// What a cell is drawn in: its glyph's colour (`None` is the default foreground) and its background (`None` is the
-/// surface). REVERSED swaps the two as a terminal does, a default standing in for the side the cell leaves unset, so
-/// an inverse cell shows its letter on a bar of its foreground (nano's title and key bars, Claude Code's cursor and
-/// highlighted rows) instead of a block that hides it.
+/// surface). REVERSED exchanges the two resolved colours as a terminal does, a default standing in for the side the
+/// cell leaves unset, so an inverse cell shows its letter on a bar of its foreground (nano's title and key bars,
+/// Claude Code's cursor and highlighted rows) instead of a block that hides it.
 fn cell_colors(cell: &Cell) -> (Option<Rgb>, Option<Rgb>) {
     let style = cell.style();
+    let (glyph, back) = (ratatui_color_to_rgb(style.fg), back_rgb(style.bg));
     if style.add_modifier.contains(Modifier::REVERSED) {
-        (
-            Some(ratatui_color_to_rgb(style.bg).unwrap_or(SURFACE_RGB)),
-            Some(back_rgb(style.fg).unwrap_or(DEFAULT_FG)),
-        )
+        (Some(back.unwrap_or(SURFACE_RGB)), Some(glyph.unwrap_or(DEFAULT_FG)))
     } else {
-        (ratatui_color_to_rgb(style.fg), back_rgb(style.bg))
+        (glyph, back)
     }
 }
 
@@ -476,6 +474,17 @@ impl Backend for WgpuBackend {
         for (col, row, cell) in content {
             if let Some(i) = self.idx(col, row) {
                 self.cells[i] = cell.clone();
+                // ratatui's diff never sends the cells a wide glyph covers, so they would keep whatever an earlier
+                // frame left there: blank them in the wide cell's style, as a terminal does, so its background
+                // spans its width and no stale glyph shows through.
+                let width = unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
+                for k in 1..width {
+                    if let Some(j) = self.idx(col + k, row) {
+                        let mut blank = Cell::default();
+                        blank.set_style(cell.style());
+                        self.cells[j] = blank;
+                    }
+                }
             }
         }
         Ok(())
