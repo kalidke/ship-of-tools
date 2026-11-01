@@ -13,5 +13,7 @@ never gets that shape nudge and stamps as usual. A question that owes a decision
 an `Irreversible:` or `Pane only:` clause with no `Page:`; whether any other question needs one is taught, not
 checked) is refused by the stamp; on a turn's first stop the hook turns that refusal into one nudge to make the page and keeps the row, and a
 continuation stamps the line as written (`COMM_STATUS_PAGE_NUDGED=1`, which `comm-status.sh` passes as
-`--page-nudged`). Any error while checking passes the stop. A parked blocked turn
+`--page-nudged`). A closing `SITREP-WAITING:` line that addresses the person (rows' `question::addresses_person`)
+is refused by the stamp the same way, and on a turn's first stop becomes one nudge: stamp blocked with the question,
+or name the session or job waited on; a continuation stamps it as written. Any error while checking passes the stop. A parked blocked turn
 without a marker is owed this same whole line and then its context. Language rules stay in the sitrep skill.

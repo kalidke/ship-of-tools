@@ -471,10 +471,13 @@ if [ -n "$marker_state" ]; then
     # sentences: rows' question::page_owed) is refused by the stamp. On a turn's
     # first stop that refusal becomes one nudge to make the page; a stop-hook
     # continuation stamps the question as written (COMM_STATUS_PAGE_NUDGED), so
-    # no question is left unstamped.
+    # no question is left unstamped. A wait whose line addresses the person
+    # (rows' question::addresses_person) is refused the same way and nudged
+    # once: waiting on the person is a question, red in the Queue, not purple.
     if [ -x "$STATUS" ]; then
         stamp_rc=0
-        if [ "$marker_state" = blocked ] && [ -n "$marker_summary" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ]; then
+        if { [ "$marker_state" = blocked ] || [ "$marker_state" = waiting ]; } && [ -n "$marker_summary" ] \
+            && [ "$(jqget '.stop_hook_active // false')" != "true" ]; then
             stamp_err="$("$STATUS" "$marker_state" "$marker_summary" 2>&1 >/dev/null)" || stamp_rc=$?
             case "$stamp_rc:$stamp_err" in
                 2:*"blocked refused:"*)
@@ -483,6 +486,15 @@ if [ -n "$marker_state" ]; then
                       reason: ("Your closing question owes a decision page: " + $w + " Make the page with /decision-page, then close again with the whole marker line, Page: included: " + $f + ". The question has not been stamped yet; a stop-hook continuation stamps it as written.")
                     }' 2>/dev/null)" && [ -n "$page_block" ]; then
                         emit_block "$page_block"
+                        exit 0
+                    fi
+                    stamp_rc=0; COMM_STATUS_PAGE_NUDGED=1 "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$? ;;
+                2:*"waiting refused:"*)
+                    if wait_block="$(jq -nc --arg w "$stamp_err" --arg f "$question_form" '{
+                      decision: "block",
+                      reason: ("Your closing SITREP-WAITING line waits on your person: " + $w + " If the person must answer, close again with the question marker line: " + $f + ", and the context to answer it cold below it. If you wait on a session or a job, close again with a SITREP-WAITING line that names it. The line has not been stamped yet; a stop-hook continuation stamps it as written.")
+                    }' 2>/dev/null)" && [ -n "$wait_block" ]; then
+                        emit_block "$wait_block"
                         exit 0
                     fi
                     stamp_rc=0; COMM_STATUS_PAGE_NUDGED=1 "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$? ;;

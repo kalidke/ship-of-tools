@@ -3,9 +3,10 @@
 //! standard input, never from an argument: free text may start with `/`, which Git Bash rewrites in a native program's
 //! argv. Exit 0 when written or when there is nothing to write (no entry, a tick with no turn); 1 when the registry
 //! could not be locked, read or written, with one FAILED line on stderr; 2 for a refused stamp (a question or a wait
-//! with no text, or a question that owes a decision page and names none, `question::page_owed`, with its reason on
-//! stderr) or a bad argument. `--page-nudged` lets that question through: the Stop hook passes it once it has asked the
-//! session for the page, so a question is never left unstamped. `comm-status.sh` keeps its own identity, gate and markers.
+//! with no text, a question that owes a decision page and names none, `question::page_owed`, or a wait whose line
+//! addresses the session's person, `question::addresses_person`, each with its reason on stderr) or a bad argument.
+//! `--page-nudged` lets that question or wait through: the Stop hook passes it once it has nudged the session, so a
+//! closing line is never left unstamped. `comm-status.sh` keeps its own identity, gate and markers.
 
 use std::io::Read;
 use std::time::Duration;
@@ -75,6 +76,16 @@ fn page_refusal(event: &Event, nudged: bool) -> Option<String> {
         with Page: <its absolute path> on the line -- stamp discarded"))
 }
 
+/// Why this wait is refused, as the line to print, or `None`: a wait whose line addresses the session's person is a
+/// question for that person, stamped blocked so the Queue shows it, unless the line names what else it waits on.
+fn wait_refusal(event: &Event, nudged: bool) -> Option<String> {
+    let Event::Declare(Declaration::Waiting, Some(text)) = event else { return None };
+    let word = (!nudged).then(|| super::question::addresses_person(text)).flatten()?;
+    Some(format!("comm-status.sh: waiting refused: the line addresses its person (\"{word}\"), and waiting on the person \
+        is blocked, not waiting. Stamp blocked with the question (Options: and Recommend), or name the session or job \
+        you wait on -- stamp discarded"))
+}
+
 /// Runs the command; the process's exit code.
 pub(crate) fn run(args: &[String]) -> i32 {
     let (event, handle, lock_wait, nudged) = match parse(args, || {
@@ -87,7 +98,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
             return 2;
         }
     };
-    if let Some(line) = page_refusal(&event, nudged) {
+    if let Some(line) = page_refusal(&event, nudged).or_else(|| wait_refusal(&event, nudged)) {
         eprintln!("{line}");
         return 2;
     }

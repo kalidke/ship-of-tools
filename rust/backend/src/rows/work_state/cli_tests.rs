@@ -57,3 +57,17 @@ fn a_blocked_stamp_that_owes_a_page_is_refused_until_nudged() {
     assert!(page_refusal(&Event::Declare(Declaration::Blocked, Some(paged)), false).is_none());
     assert!(page_refusal(&Event::Declare(Declaration::Waiting, Some(merge.into())), false).is_none());
 }
+
+/// A wait whose line addresses the session's person is refused with the fix, unless the Stop hook has nudged once; a
+/// wait that names a session or a job goes through, and so does every other verb with the same words.
+#[test]
+fn a_wait_that_addresses_the_person_is_refused_until_nudged() {
+    let wait = |t: &str| Event::Declare(Declaration::Waiting, Some(t.into()));
+    let line = wait_refusal(&wait("rc.8 is ready: your go to cut it"), false).expect("a wait on the person is refused");
+    assert!(line.contains("\"your\"") && line.contains("blocked") && line.contains("Options:"), "{line}");
+    let (e, _, _, nudged) = parse(&args(&["waiting", "--handle", "h", "--text", "--page-nudged"]), || Ok("your answer".into())).expect("parses");
+    assert!(nudged && wait_refusal(&e, nudged).is_none(), "the hook's stamp after its nudge goes through");
+    assert!(wait_refusal(&wait("the local gate on the branch head; then merge"), false).is_none());
+    assert!(wait_refusal(&wait("the reviewer session's reply on the account move"), false).is_none());
+    assert!(wait_refusal(&Event::Declare(Declaration::Blocked, Some("your go? Options: (a) go; (b) hold. Recommend (a).".into())), false).is_none());
+}

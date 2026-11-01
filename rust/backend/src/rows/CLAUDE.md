@@ -229,9 +229,15 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   and the fix on stderr; `question::page_owed`): one with an `Irreversible:` or `Pane only:` clause. Any other question
   carries a page by default and skips it only when the question and a sentence or two of background are everything
   the person needs (the maintainer, 2026-10-27: the measure is the decision's context, not the question's length), a
-  judgment the sessions are taught and no check makes. `--page-nudged`, which the Stop hook passes only once it has asked the
-  session for the page, lets it through, so no question goes unstamped (`work_state::cli::tests::
-  a_blocked_stamp_that_owes_a_page_is_refused_until_nudged`, `comm/tests/test-status-floor.sh`).
+  judgment the sessions are taught and no check makes. A `waiting` declaration whose line addresses the session's
+  person is refused the same way (`question::addresses_person`: "you" or "your" and their forms as whole words, or
+  "the user", "its person", "the maintainer"): waiting on the person is a question, red in the Queue, not purple (the
+  maintainer, 2026-11-01: "waiting for me is red, not purple", after rows stamped waits such as "your go" for hours
+  with no card); the fix is a blocked question, or a wait that names the session or job it is on. A name is not read.
+  `--page-nudged`, which the Stop hook passes only once it has nudged the session for either, lets it through, so no
+  closing line goes unstamped (`work_state::cli::tests::{a_blocked_stamp_that_owes_a_page_is_refused_until_nudged,
+  a_wait_that_addresses_the_person_is_refused_until_nudged}`, `question::tests::
+  a_line_addresses_the_person_by_you_or_by_naming_them`, `comm/tests/test-status-floor.sh`).
 - One writer path. Every write of a work-state fact is `work_state::apply_event` (through `write_event`), one read-decide-write under the registry lock
   on a fresh read (messaging's `edit_entry`). A session reaches it through `sotd work-state`, which `comm-status.sh`
   runs; the daemon calls it in its own process.

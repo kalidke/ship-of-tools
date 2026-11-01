@@ -182,10 +182,11 @@ ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
 
 # The write: rows' one work-state write, `sotd work-state`. Free text reaches it
 # on stdin, never as an argument (Git Bash rewrites an argument that starts with
-# `/` for a native program). Its rc 2 is a question or a wait with no text, or a
-# question that owes a decision page and names none (sotd prints why and how);
-# COMM_STATUS_PAGE_NUDGED=1, which only the Stop hook sets once it has asked for
-# the page, lets that question through so it is never left unstamped.
+# `/` for a native program). Its rc 2 is a question or a wait with no text, a
+# question that owes a decision page and names none, or a wait whose line
+# addresses the person (sotd prints why and how); COMM_STATUS_PAGE_NUDGED=1,
+# which only the Stop hook sets once it has nudged the session, lets that
+# question or wait through so its closing line is never left unstamped.
 SOTD="$(sot_sotd)" || { echo "comm-status.sh: no sotd found (SOTD_BIN, PATH, the install paths) -- stamp discarded" >&2; exit 1; }
 set -- work-state "$VERB" --handle "$NAME" --origin "$ORIGIN" --lock-wait "$SOT_LOCK_WAIT_SECS"
 [ "${COMM_STATUS_PAGE_NUDGED:-}" = 1 ] && set -- "$@" --page-nudged

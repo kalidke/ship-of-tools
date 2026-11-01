@@ -539,5 +539,7 @@ a row (nano's bars, Claude Code's highlights) showed as white blocks with no let
 as a block of its foreground, and every background was dropped. Since the same day a Windows session's PowerShell
 call of a launcher (`sot-fe`, `show-result`, `ccb`, `sot-gh-auth`) answers at once that it runs from Git Bash, through a
 `.cmd` beside each, after a `sot-fe version` from a session's PowerShell tool waited half an hour with no output right
-after an install (the install was incidental: PowerShell cannot run a bash script).
+after an install (the install was incidental: PowerShell cannot run a bash script). Since the same day a wait whose
+line addresses its person ("your go") is refused, and a closing one is nudged once, to a blocked question or a wait
+that names its session or job, after rows waited on the maintainer in purple for hours with no Queue card.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

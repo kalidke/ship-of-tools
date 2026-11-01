@@ -250,6 +250,8 @@ check "a corrected full question stamps red with its entire line and grammar var
 check "a bare question continuation passes and stamps after its one refusal" case_bare_question_continuation_stamps
 check "a question owing a decision page is nudged once, row kept, then its continuation stamps it" case_a_question_owing_a_page_is_nudged_then_stamped
 check "an explicit blocked stamp owing a page is refused with its reason, and stamps with its page" case_a_blocked_stamp_owing_a_page_is_refused
+check "a closing wait on the person is nudged once, row kept, then its continuation stamps it" case_a_wait_on_the_person_is_nudged_then_stamped
+check "an explicit wait on the person is refused with its reason; a wait on a job stamps" case_an_explicit_wait_on_the_person_is_refused
 check "unread mail outranks an incomplete question marker" case_mail_outranks_the_question_shape_nudge
 check "SITREP-WAITING: alone takes the next line and sets purple" case_marker_waiting_stamps_purple
 check "a marker in a stop-hook continuation still stamps, no nudge" case_marker_in_continuation_still_stamps

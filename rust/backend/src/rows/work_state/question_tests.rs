@@ -42,3 +42,18 @@ fn an_irreversible_question_owes_a_page_and_length_does_not() {
     assert!(!owed("Land v0.7.0-rc.3? Options: (a) yes; (b) no. Recommend (a)."));
     assert!(!owed("The hub is on rc.3. The laptop waits. A third sentence. Cut rc.4? Options: (a) yes; (b) no. Recommend (a)."));
 }
+
+/// A wait's line addresses the person by "you" and its forms as whole words, or by naming the person as such; other
+/// words that contain those letters do not.
+#[test]
+fn a_line_addresses_the_person_by_you_or_by_naming_them() {
+    let by = |t: &str| addresses_person(t);
+    assert_eq!(by("rc.8 is ready: your go").as_deref(), Some("your"));
+    assert_eq!(by("Waiting for YOU to answer").as_deref(), Some("you"));
+    assert_eq!(by("once you\u{2019}re back").as_deref(), Some("you"));
+    assert_eq!(by("the user's answer on the merge").as_deref(), Some("the user"));
+    assert_eq!(by("its person's word").as_deref(), Some("its person"));
+    assert_eq!(by("youth soccer results; layout of the yourt").as_deref(), None);
+    assert_eq!(by("the gate on f60f3ed18, then the hosted runs").as_deref(), None);
+    assert_eq!(by("the users list rebuild").as_deref(), None);
+}

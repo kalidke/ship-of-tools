@@ -83,6 +83,23 @@ pub(crate) fn page_owed(text: &str) -> Option<&'static str> {
         .then_some("an Irreversible question (a merge, a tag, a registration) always carries a decision page")
 }
 
+/// The words by which a wait's line addresses the session's person, or `None`: "you" or "your" and their forms, as whole
+/// words in any case, or the person named as such ("the user", "its person", "the maintainer"). Waiting on the person
+/// is a question for them (the maintainer, 2026-11-01: "waiting for me is red, not purple"), which only a blocked stamp
+/// puts in the Queue. A name is not read: none is in the repository.
+pub(crate) fn addresses_person(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .map(|w| w.strip_suffix("'s").unwrap_or(w))
+        .filter(|w| !w.is_empty())
+        .collect();
+    if let Some(w) = words.iter().find(|w| matches!(**w, "you" | "your" | "yours" | "yourself" | "you're" | "you'll" | "you've")) {
+        return Some((*w).to_string());
+    }
+    words.windows(2).find(|p| matches!(*p, ["the", "user"] | ["its", "person"] | ["the", "maintainer"])).map(|p| p.join(" "))
+}
+
 /// The options before a recommendation, without the word that opens it ("... measured. I recommend (a)").
 fn without_speaker(head: &str) -> &str {
     let head = head.trim_end();

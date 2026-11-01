@@ -270,6 +270,31 @@ case_a_blocked_stamp_owing_a_page_is_refused() {
     jq -e --arg n "$NAME" --arg q "$q Page: /project/decision.html" '.agents[$n].question == $q' "$REGISTRY" >/dev/null \
         || { echo "    the paged question was not kept: '$(row_all)'"; return 1; }
 }
+# A closing wait whose line addresses the person (rows' question::addresses_person) is not stamped at a turn's first
+# stop: the hook nudges once, to stamp blocked with a question or name what is waited on; its continuation stamps it.
+case_a_wait_on_the_person_is_nudged_then_stamped() {
+    seed idle; W "$GENUINE"
+    local before out; before="$(row_all)"
+    out="$(IT "SITREP-WAITING: rc.8 is ready, your go to cut it")"
+    [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason | contains("waits on your person") and contains("SITREP-QUESTION:"))' >/dev/null \
+        || { echo "    no wait nudge: '$out'"; return 1; }
+    [ "$(row_all)" = "$before" ] || { echo "    the nudged wait changed the row"; return 1; }
+    out="$(IT "SITREP-WAITING: rc.8 is ready, your go to cut it" true)"
+    [ -z "$out" ] || { echo "    the continuation blocked: '$out'"; return 1; }
+    expect waiting/-/-/w/- stamped && [ "$(summ)" = "rc.8 is ready, your go to cut it" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+# An explicit wait that addresses the person is refused, rc 2, naming why and the fix; one that names its job stamps.
+case_an_explicit_wait_on_the_person_is_refused() {
+    seed idle
+    local before err rc=0; before="$(row_all)"
+    err="$("$ST" waiting "your answer on the merge" 2>&1 >/dev/null)" || rc=$?
+    [ "$rc" = 2 ] || { echo "    rc $rc (want 2): '$err'"; return 1; }
+    case "$err" in *"waiting refused:"*"Options:"*) ;; *) echo "    stderr: '$err'"; return 1 ;; esac
+    case "$err" in *"needs its text"*) echo "    the refusal was named as missing text: '$err'"; return 1 ;; esac
+    [ "$(row_all)" = "$before" ] || { echo "    the refused stamp changed the row"; return 1; }
+    "$ST" waiting "the local gate on the branch head" >/dev/null || { echo "    a wait on a job failed"; return 1; }
+    expect waiting/-/-/w/- state || return 1
+}
 case_mail_outranks_the_question_shape_nudge() {
     hold_bare_question || return 1
     seed idle; W "$GENUINE"; _mail_reset; _mail_line "$NAME"
