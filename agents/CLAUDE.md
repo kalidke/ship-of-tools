@@ -108,7 +108,7 @@ of each.
 8. **An install removes only exact copies of what an earlier installer placed.** The installer, `ShipTools.update_comm`,
    visits every Claude configuration folder (the install's own, `~/.claude`, each `~/.claude-auth/<name>`). In a skills
    folder it removes a skill directory only when its contents hash to a version of that skill the repo shipped
-   (`comm/legacy-skills.txt`, 307 versions from `git log` of `agents/claude/`, `comm/adapters/claude/` and
+   (`comm/legacy-skills.txt`, 309 versions from `git log` of `agents/claude/`, `comm/adapters/claude/` and
    `.claude/skills/`, made by `scripts/legacy-skill-hashes.sh`; every committed version is listed, so a landing that
    changes a skill's text regenerates the list after its commits, and `test/protect_tests.jl`, which copies the
    current skill, fails until it does), warns about any other
