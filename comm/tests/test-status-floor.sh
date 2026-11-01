@@ -288,6 +288,7 @@ check "a turn that already has its block is never nudged, whatever the block say
 check "a marker naming an unsurfaced result is blocked by the artifact audit" case_marker_artifact_audit_blocks_unsurfaced_result
 check "a marker whose result was read and show-result'd is not blocked" case_marker_artifact_audit_clean_when_shown
 check "the artifact audit does not re-fire in a stop-hook continuation" case_marker_artifact_audit_skipped_in_continuation
+check "the artifact audit never orders a Page: page or the handoff badged" case_marker_artifact_audit_skips_a_page_and_the_handoff
 check "(a) a question turn held on mail ends red with its question" case_a_held_question_turn_ends_red_with_its_question
 check "(b) a waiting or done turn held on mail ends as its marker says" case_a_held_waiting_or_done_turn_ends_as_its_marker
 check "(c) the last marker in a held turn wins" case_the_last_marker_in_a_held_turn_wins

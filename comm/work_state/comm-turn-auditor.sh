@@ -96,8 +96,12 @@ row_state="$( ( . "$(dirname "${BASH_SOURCE[0]}")/comm-lib.sh" >/dev/null 2>&1 |
 # SKILL.md) — the artifact match below is restricted to tool calls that
 # WRITE or RUN, so an .md read alone never trips it (2026-09-14).
 ARTIFACT_RE='\.(png|svg|jpe?g|gif|pdf|mp4|html|md)\b'
+# The paths that can be an unsurfaced result. An .html page reaches its person through the closing marker's Page:
+# (show-result opens no tab for one), and a session's handoff is its own recovery file: neither is a result to badge.
+RESULT_RE='[^][:space:]"`()<>|'"'"'[]*\.(png|svg|jpe?g|gif|pdf|mp4|md)'
 SHOWN_RE='show-result|sot-fe preview|sot-nav'
 candidates=()
+results=""
 
 case "$last_text" in *\?*) checks_enabled question && candidates+=("question") ;; esac
 
@@ -107,7 +111,8 @@ if checks_enabled artifact; then
     # text -- a Read of an ARTIFACT_RE path (e.g. CLAUDE.md) does not count
     # (2026-09-14: reads alone must not fire this, now that .md is in scope).
     artifact_tools="$(printf '%s' "$tools" | grep -E '^(Write|Edit|NotebookEdit|Bash)  ')"
-    if grep -qE "$ARTIFACT_RE" <<<"$artifact_tools"$'\n'"$last_text"; then
+    results="$(grep -oE "$RESULT_RE" <<<"$artifact_tools"$'\n'"$last_text" | grep -vE '(^|/)handoff-[^/]*\.md$' | sort -u)"
+    if [ -n "$results" ]; then
         grep -qE "$SHOWN_RE" <<<"$tools" || candidates+=("artifact")
     fi
 fi
@@ -178,8 +183,10 @@ Q
   it. A design brief, report or plan written to a file for the user IS a
   result; CLAUDE.md/README/skill files edited as part of the work are not.
   Intermediate/temp/test files do not count; when clearly a new result, DO
-  intervene. Finding message: tell the session to badge <path> into the nav
-  pane via the show-result skill NOW.
+  intervene. Only a path under "Candidate results" below can be a finding: an
+  .html page goes to the person through the closing marker's Page:, and a
+  session's handoff is its own recovery file. Finding message: tell the
+  session to badge <path> into the nav pane via the show-result skill NOW.
 A
         ;;
     background) cat <<'B'
@@ -218,6 +225,8 @@ for k in question artifact background stale-waiting blind-badge; do
     checks_enabled "$k" && check_descriptions="$check_descriptions$(describe_check "$k")"$'\n'
 done
 
+result_lines=""
+[ -n "$results" ] && result_lines="Candidate results:"$'\n'"$results"$'\n'
 prompt="$(cat <<EOF
 You audit the END of a coding-assistant session turn for housekeeping misses.
 Be CONSERVATIVE: report a finding ONLY when clearly confident; when unsure, drop
@@ -229,6 +238,7 @@ Checks (only these; candidates pre-flagged by cheap filters — judge each):
 $(printf -- '- %s\n' "${candidates[@]}")
 $check_descriptions
 Work-state registry row: $row_state
+$result_lines
 
 Recent tool calls (name + arg excerpt):
 $tools

@@ -521,13 +521,17 @@ fixed, two stated as limits). Its causes: the second feature joined the landing 
 gate failed because a skill text edit did not regenerate `comm/legacy-skills.txt`, and the second on a real-daemon
 states test that pinned a summary with its page clause, each costing a gate of 10 to 15 minutes. A project chat in
 the window was planned 2026-10-30 (Slack as its carrier, one listener per Slack workspace on the hub through a Ship of
-Tools app of its own, a drawer per row with its history and figures both ways) and approved 2026-10-31: the bot
-package's landing first, the window's five after the 0.7.0 tag. A row's copy reaches the window's clipboard since
+Tools app of its own, a drawer per row with its history and figures both ways) and approved 2026-10-31. On
+2026-11-01 the maintainer chose its route: the daemon speaks Slack itself, in Rust, with no chat child and no bot
+package landing before it; its plan, with its cost, goes to him before any code, and code lands after the 0.7.0 tag.
+A row's copy reaches the window's clipboard since
 2026-10-31: Claude Code's `/copy`, or any program that copies by OSC 52, lands in the clipboard of the window showing
 the row on every system (the terminal parser's bound on such a sequence rose from 1 KiB to 1 MiB, and one past it or
 cancelled is dropped whole), and every copy and paste in the window goes through one clipboard handle kept for its
 life, which the X11 clipboard on Linux needs. A page reply refused at a one-line draft quotes what the box holds
 (seen in rc.6's use) since the same day. A send through the hub still reads "may still be filed" whenever a linked
 box leaves the offer unanswered: a rule that judged by the handle's name which box could hold it was withdrawn before
-main, since a row can be named with any box's name, and the fix waits for the cause of the silent link.
+main, since a row can be named with any box's name, and the fix waits for the cause of the silent link. Since
+2026-11-01 the end-of-turn audit never orders a page badged (an `.html` page reaches its person through the closing
+marker's `Page:`) nor a session's own handoff, after it had ordered both (seen in rc.6's and rc.7's use).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

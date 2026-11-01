@@ -91,6 +91,17 @@ case_marker_artifact_audit_clean_when_shown() {
     [ -z "$out" ] || { echo "    unexpected block: '$out'"; return 1; }
     expect done/-/-/-/d state
 }
+# A page the marker names after Page: goes to its person through the Queue, and the session's handoff is its own
+# recovery file: the stub judge would block either, so the audit must not reach it.
+case_marker_artifact_audit_skips_a_page_and_the_handoff() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge it"}]}' \
+        ITT "Write:::/tmp/row/dev/output/pages/choice.html,Edit:::/tmp/row/dev/output/handoff-$NAME.md" \
+        $'SITREP: wrote the decision page and the handoff\n\nPage: /tmp/row/dev/output/pages/choice.html')"
+    [ -z "$out" ] || { echo "    the audit blocked a page or the handoff: '$out'"; return 1; }
+    expect done/-/-/-/d state
+}
 case_marker_artifact_audit_skipped_in_continuation() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null
     local out
