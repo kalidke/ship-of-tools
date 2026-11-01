@@ -104,3 +104,36 @@ fn list_shows_the_windows_this_computers_daemon_names_and_says_why_when_none() {
     served.join().unwrap();
     assert!(empty.stdout.contains("  (none: no window is attached to this computer's daemon now"), "{}", empty.stdout);
 }
+
+/// A computer that reaches the hub over ssh (a window's computer) lists the hub's rows; the hub itself and a server
+/// sharing its home (a socket relay) do not, since their registry is the hub's.
+#[test]
+fn only_a_computer_that_reaches_the_hub_over_ssh_lists_the_hubs_rows() {
+    assert_eq!(hub_over_ssh("ssh:hub1"), Some("hub1"));
+    assert_eq!(hub_over_ssh("ssh:hub1/hub1"), Some("hub1"));
+    assert_eq!(hub_over_ssh("unix:/run/user/1000/sot/sot.sock"), None);
+    assert_eq!(hub_over_ssh("pipe:\\\\.\\pipe\\sot-local"), None);
+    assert_eq!(hub_over_ssh("ssh:"), None);
+}
+
+/// The hub's rows print each declared handle with its work-state line, leave out a row with no declared handle, and
+/// say so when the hub did not answer, so a session finds a hub handle by name instead of guessing one.
+#[test]
+fn the_hubs_rows_list_each_declared_handle_and_say_why_when_none() {
+    let row = |handle: &str, state: &str, summary: &str| {
+        serde_json::from_value::<sot_protocol::WorkspaceListEntry>(serde_json::json!({
+            "workspace_id": "ws-x", "slug": "x", "label": "x", "project_root": "/p", "session_name": "x",
+            "kernel_running": false, "is_default": false, "agent_handle": handle, "agent_state": state, "agent_summary": summary,
+        }))
+        .expect("a list entry")
+    };
+    let lines = hub_row_lines("hub1", "ssh:hub1", Ok(vec![row("admiral-hub1", "working", "reviewing a merge"), row("", "", "")]), 0);
+    let text = lines.join("\n");
+    assert!(text.contains("the hub's rows (hub1") && text.contains("send to any by its handle"), "{text}");
+    assert!(text.contains("@admiral-hub1") && text.contains("[working] reviewing a merge"), "{text}");
+    assert_eq!(lines.iter().filter(|l| l.starts_with("  @")).count(), 1, "a row with no declared handle is left out: {text}");
+    let lines = hub_row_lines("hub1", "ssh:hub1", Ok(vec![]), 0);
+    assert!(lines.iter().any(|l| l.contains("(none: no row on the hub")), "{lines:?}");
+    let lines = hub_row_lines("hub1", "ssh:hub1", Err("ssh: connect timed out".into()), 0);
+    assert!(lines[0].contains("unknown, since the hub did not answer: ssh: connect timed out"), "{lines:?}");
+}

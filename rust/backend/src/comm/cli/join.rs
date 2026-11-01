@@ -13,7 +13,7 @@ use crate::comm::identity::self_file;
 use crate::comm::registry::registry::{binding, command_lock_wait, iso8601_utc_now, read_doc, unix_now_secs, update, Binding};
 
 /// What a local listing does not show (messaging's Sending: a handle the folder does not list goes to the hub).
-pub(super) const REACH_NOTE: &str = "  Sessions on other computers are not listed here; a send to any handle still reaches them through the hub. Send, and judge reach by its verdict, never by this list.";
+pub(super) const REACH_NOTE: &str = "  Sessions on other computers are not in this registry; on a window's computer `comm-list.sh` also lists the hub's rows by handle. A send to any handle still reaches it through the hub. Send, and judge reach by its verdict, never by a list.";
 
 pub(crate) const HELP: &str = "comm-join.sh \u{2014} register this session in the sot-comm network.
 

@@ -541,5 +541,7 @@ call of a launcher (`sot-fe`, `show-result`, `ccb`, `sot-gh-auth`) answers at on
 `.cmd` beside each, after a `sot-fe version` from a session's PowerShell tool waited half an hour with no output right
 after an install (the install was incidental: PowerShell cannot run a bash script). Since the same day a wait whose
 line addresses its person ("your go") is refused, and a closing one is nudged once, to a blocked question or a wait
-that names its session or job, after rows waited on the maintainer in purple for hours with no Queue card.
+that names its session or job, after rows waited on the maintainer in purple for hours with no Queue card. Since the
+same day `comm-list.sh` on a window's computer also lists the hub's rows by handle, after a session there, asked to
+reach the hub's admiral, could list no hub handle, guessed one and mailed the wrong session.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

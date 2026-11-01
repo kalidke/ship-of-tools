@@ -153,8 +153,8 @@ pub(crate) fn epoch_of(stamp: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
-/// `sotd comm list`: every registered handle with its liveness and work-state line, then the windows attached to
-/// this computer's daemon (`attached_windows`).
+/// `sotd comm list`: every registered handle with its liveness and work-state line, then on a window's computer the
+/// hub's rows (`hub_row_lines`), then the windows attached to this computer's daemon (`attached_windows`).
 pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
     let mut o = Out::default();
     let mut notes = Vec::new();
@@ -202,10 +202,53 @@ pub(crate) fn list(env: &Env, _args: &[String]) -> Out {
         o.out("  (none)");
     }
     o.out("");
+    if let Some(hub) = super::wire::relay_endpoint(env).ok().as_deref().and_then(hub_over_ssh) {
+        let ep = format!("ssh:{hub}");
+        for line in hub_row_lines(hub, &ep, super::wire::workspace_list(env, &ep), now) {
+            o.out(line);
+        }
+    }
     for line in attached_windows(env, now) {
         o.out(line);
     }
     o
+}
+
+/// The hub this computer reaches over ssh (a window's computer), from its relay endpoint `ssh:<hub>[/<host>]`; `None`
+/// on the hub itself and on a computer that shares the hub's home (a server), whose registry above is the hub's.
+fn hub_over_ssh(relay: &str) -> Option<&str> {
+    relay.strip_prefix("ssh:").map(|t| t.split('/').next().unwrap_or(t)).filter(|h| !h.is_empty())
+}
+
+/// The hub's rows as `comm-list.sh` prints them: each row's declared handle with its work-state line, so a session
+/// on a window's computer can find a hub session by name (seen in use: with no list of the hub's handles, a session
+/// guessed one and mailed the wrong session). A row whose session never declared a handle is left out; a hub that did
+/// not answer is one line saying so. Sessions on the hub outside any row are not listed.
+fn hub_row_lines(hub: &str, ep: &str, rows: Result<Vec<sot_protocol::WorkspaceListEntry>, String>, now: u64) -> Vec<String> {
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => return vec![format!("the hub's rows ({hub}): unknown, since the hub did not answer: {e}"), String::new()],
+    };
+    let mut lines = vec![format!("the hub's rows ({hub}, asked through the relay at {ep}); send to any by its handle:")];
+    let mut shown = 0;
+    for r in rows.iter().filter(|r| !r.agent_handle.is_empty()) {
+        shown += 1;
+        let state = Some(r.agent_state.as_str()).filter(|v| !v.is_empty()).unwrap_or("idle");
+        let mut line = format!("  @{:<28} [{state}]", r.agent_handle);
+        if !r.agent_summary.is_empty() {
+            line.push(' ');
+            line.push_str(&r.agent_summary);
+        }
+        if let Some(at) = epoch_of(&r.agent_status_at).filter(|t| *t > 0) {
+            line.push_str(&format!(" \u{b7} {}", fmt_age(now.saturating_sub(at))));
+        }
+        lines.push(line);
+    }
+    if shown == 0 {
+        lines.push("  (none: no row on the hub has a session that declared a handle)".into());
+    }
+    lines.push(String::new());
+    lines
 }
 
 /// The windows attached to this computer's own daemon, asked by one `version.query` (no other program, no text to

@@ -70,6 +70,22 @@ pub(crate) fn version_query(env: &crate::comm::Env, endpoint: &str) -> Result<so
     serde_json::from_value(answer).map_err(|e| format!("the daemon at {endpoint} answered version.query in another shape: {e}"))
 }
 
+/// How long `comm-list.sh` waits for the hub's rows: one op over the relay, which on a window's computer is an ssh login
+/// to the hub, so longer than this computer's own roster.
+pub(crate) const HUB_LIST_WINDOW: Duration = Duration::from_secs(15);
+
+/// One `workspace.list` at `endpoint`: the rows that daemon runs, each with the handle its session declared, or why
+/// there is none.
+pub(crate) fn workspace_list(env: &crate::comm::Env, endpoint: &str) -> Result<Vec<sot_protocol::WorkspaceListEntry>, String> {
+    let answer = call(env, endpoint, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}), HUB_LIST_WINDOW)?;
+    if let Some(e) = answer.get("error") {
+        return Err(format!("the daemon at {endpoint} refused workspace.list: {}", e.as_str().map_or_else(|| e.to_string(), str::to_string)));
+    }
+    serde_json::from_value::<sot_protocol::WorkspaceListRes>(answer)
+        .map(|r| r.workspaces)
+        .map_err(|e| format!("the daemon at {endpoint} answered workspace.list in another shape: {e}"))
+}
+
 /// One request and its answer; `Err` names a refused hello in its own words, else that nothing answered.
 fn call(env: &crate::comm::Env, endpoint: &str, op: &str, payload: serde_json::Value, within: Duration) -> Result<serde_json::Value, String> {
     let me = sot_platform::host::state_dir::host_name_in(env).unwrap_or_default();

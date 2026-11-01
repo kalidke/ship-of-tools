@@ -229,7 +229,12 @@ Unbuilt: a sender's notice when a row keeps refusing the wake (queue item 55); c
   (`ancestors.rs`, also `sotd ancestors`).
 - `identity/`: who the calling process is: the context (`context.rs`), the self file, the derivation, the paths in one
   spelling, and the agent-layer walk (`layers.rs`).
-- `cli/`: `sotd comm <verb>`: send, poll, join, leave, list, session start and the shell door's verbs.
+- `cli/`: `sotd comm <verb>`: send, poll, join, leave, list, session start and the shell door's verbs. `list` shows
+  this computer's registry and, on a computer that reaches the hub over ssh (a window's), the hub's rows by declared
+  handle, from one `workspace.list` through the relay sends use (bounded at 15 s; a hub that does not answer is one line
+  saying so; sessions on the hub outside any row are not listed), so a session finds a hub handle instead of guessing
+  one (seen in use 2026-11-01: a guessed handle mailed the wrong session). Tests: `cli::book::tests::{
+  only_a_computer_that_reaches_the_hub_over_ssh_lists_the_hubs_rows, the_hubs_rows_list_each_declared_handle_and_say_why_when_none}`.
 - `wake/`: the wake tick, the screen reading and the one attach.
 
 ## Start here
