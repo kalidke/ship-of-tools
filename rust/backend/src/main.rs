@@ -12,6 +12,7 @@
 // directory is the access control. Its one field use was the 2026-07-11
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
+mod net_probe;
 mod agents;
 mod clients;
 mod comm;
@@ -254,6 +255,11 @@ fn main() -> Result<()> {
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
                 lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
+            }
+            // Branch-only (the web stack's measurement): one HTTPS GET and one websocket handshake.
+            "net-probe" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(runtime()?.block_on(net_probe::run(&args)));
             }
             // `sotd update stage <folder> --prefix <prefix>`: arm a packed build for an install's converge.
             // `sotd update pointer --prefix <prefix> --target <target>`: may the armed pointer apply onto the install?
