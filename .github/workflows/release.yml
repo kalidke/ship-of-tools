@@ -81,7 +81,7 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
             experimental: false
-          - os: macos-14
+          - os: macos-15
             target: macos-aarch64
             experimental: false
     steps:
@@ -358,7 +358,7 @@ jobs:
     # Unix socket. GUI/frontend smoke still needs real desktop dogfooding.
     name: smoke test (macOS artifact)
     needs: [build]
-    runs-on: macos-14
+    runs-on: macos-15
     # Usually under a minute.
     timeout-minutes: 10
     steps:
@@ -495,7 +495,7 @@ jobs:
     # The same on the macOS runner (--local; no service manager is wired on macOS, so the wrapper starts the daemon).
     name: install smoke (macOS ${{ matrix.scenario }})
     needs: [build, release-before]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     strategy:
       fail-fast: false

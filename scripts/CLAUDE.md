@@ -87,7 +87,7 @@ outside CI; decide what a box installs or how (install, update, apply and launch
 
 Platforms: `release.sh`, the local gate and `pack-build.sh` run on Linux (the gate's two containers are systemd user
 services, `tests/in-container.sh`); `pack-build.ps1` on Windows PowerShell 5.1. release.yml builds on ubuntu-22.04,
-windows-latest and macos-14 and smokes and installs on all three.
+windows-latest and macos-15 (GitHub retires the macos-14 image on 2026-11-02) and smokes and installs on all three.
 
 Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
 writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
