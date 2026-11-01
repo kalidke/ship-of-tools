@@ -87,7 +87,7 @@ fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
+    check_rows(dir.path(), &rows, &read, &write, &mut Runs::default());
     assert_eq!(reads.into_inner(), ["idle", "done", "left"].map(PathBuf::from).to_vec());
     let open = Stamp::Dialog("claude dialog: Do you want to proceed?".into());
     assert_eq!(writes.into_inner(), vec![("idle".to_string(), open.clone()), ("done".to_string(), open)]);
@@ -97,7 +97,7 @@ fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &free_read, &write, &mut HashSet::new());
+    check_rows(dir.path(), &rows, &free_read, &write, &mut Runs::default());
     assert_eq!(writes.into_inner(), vec![("left".to_string(), Stamp::Resumed)]);
 }
 
@@ -108,14 +108,34 @@ fn an_ended_leg_clears_its_fact_and_an_unreachable_one_keeps_it() {
     let registry = json!({"agents": {"gone": {"state": "blocked", "dialog": "x"}, "mute": {"state": "blocked", "dialog": "x"}}});
     std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
     let rows: Vec<(String, PathBuf)> = ["gone", "mute"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
-    let read = |d: &Path| if d == Path::new("gone") { Seen::Ended } else { Seen::Unknown };
+    let read = |d: &Path| if d == Path::new("gone") { Seen::Ended } else { Seen::Unknown("phase starting".to_string()) };
     let writes = std::cell::RefCell::new(Vec::new());
     let write = |h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &read, &write, &mut HashSet::new());
+    check_rows(dir.path(), &rows, &read, &write, &mut Runs::default());
     assert_eq!(writes.into_inner(), vec![("gone".to_string(), Stamp::Resumed)]);
+}
+
+/// A due row whose screen was not read is told once per run, with its reason, and its run ends at the next read that
+/// found its screen or its end; an unreadable registry is told once per run too. Fails if a run is not kept between
+/// ticks (the log would repeat every 5 s) or is never ended (the next run would go untold).
+#[test]
+fn a_row_not_read_and_an_unreadable_registry_are_each_told_once_per_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rows = [("h".to_string(), PathBuf::from("h"))];
+    let write = |_: &str, _: &Stamp| Ok(());
+    let mut runs = Runs::default();
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Ended, &write, &mut runs);
+    assert!(runs.registry, "an unreadable registry was not held as a run");
+    std::fs::write(dir.path().join("registry.json"), json!({"agents": {"h": {"state": "working"}}}).to_string()).expect("registry");
+    let mute = |_: &Path| Seen::Unknown("attach: refused".to_string());
+    check_rows(dir.path(), &rows, &mute, &write, &mut runs);
+    assert!(!runs.registry, "a registry read did not end its run");
+    assert!(runs.unread.contains("h"), "a row not read was not held as a run");
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Screen(free()), &write, &mut runs);
+    assert!(runs.unread.is_empty(), "a screen read did not end the row's run");
 }
 
 /// Pacing: a sweep that runs past the period (30 s on a 5 s tick) is never overlapped, and the ticks it missed are
@@ -168,9 +188,9 @@ fn tick(home: &Path, screen: Vec<String>) -> Vec<Stamp> {
         stamp_dialog(handle, s)
     };
     let rows = [("h".to_string(), PathBuf::from("unused"))];
-    let mut failing = HashSet::new();
-    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &record, &mut failing);
-    assert!(failing.is_empty(), "a write failed");
+    let mut runs = Runs::default();
+    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &record, &mut runs);
+    assert!(runs.failing.is_empty(), "a write failed");
     writes.into_inner()
 }
 

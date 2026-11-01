@@ -274,7 +274,9 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   (`DIALOG_EVERY`, 5 s, plus the sweep), whatever its turn state and on every OS, and within one tick of the dialog
   closing reads what its other facts say. The tick reads every Ready Claude row with a bound handle but one already red
   by its question, one watcher attach each, which takes no pen, resizes nothing and writes no record
-  (`work_state::dialog`). A Codex row's dialog is its own `PermissionRequest` hook's, cleared by the call's return, the
+  (`work_state::dialog`). Each write it makes is logged at info, and so is the first of each run of reads that found
+  nothing on a row (its phase, the attach's refusal or the screen's wait), and an unreadable registry is warned once
+  per run, so a row that sat on a dialog and never read red names the reason in the daemon's log. A Codex row's dialog is its own `PermissionRequest` hook's, cleared by the call's return, the
   turn's end or the next prompt.
 - Limits: a dialog that closes between the tick's read and its write reads red for one more tick; a turn that ends with
   no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working` until its next turn.

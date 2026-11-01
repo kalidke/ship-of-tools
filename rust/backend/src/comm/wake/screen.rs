@@ -240,11 +240,15 @@ fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
 
 /// Whether `line` is a dialog's own footer: it starts, after spaces, with "Enter to select" or "Esc to cancel" and a
 /// middle dot joining the next key hint (`Enter to select · Tab/Arrow keys to navigate · Esc to cancel`, `Esc to cancel
-/// · Tab to amend`). Prose that quotes the words lacks the dot or does not start the line with them: a reply holding
-/// "Do you want to", and one quoting the whole footer mid-line, each false-alarmed a screen watcher that matched less.
+/// · Tab to amend`), or with another "Enter to" hint in a run of hints joined by middle dots, one of them "Esc to
+/// cancel" (the model menu's `Enter to set as default · s to use this session only · Esc to cancel`, Claude Code
+/// 2.1.316). Prose that quotes the words lacks the dot or does not start the line with them: a reply holding "Do you
+/// want to", and one quoting the whole footer mid-line, each false-alarmed a screen watcher that matched less.
 fn is_dialog_footer(line: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with("Enter to select \u{b7}") || line.starts_with("Esc to cancel \u{b7}")
+    line.starts_with("Enter to select \u{b7}")
+        || line.starts_with("Esc to cancel \u{b7}")
+        || (line.starts_with("Enter to ") && line.split(" \u{b7} ").any(|hint| hint.trim_end() == "Esc to cancel"))
 }
 
 /// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively

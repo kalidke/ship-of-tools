@@ -689,6 +689,16 @@ fn a_real_question_menu_reads_as_a_dialog() {
     assert_eq!(dialog_of(&menu, "claude", false), Some("claude dialog open".to_string()));
 }
 
+/// REAL (2026-11-01, Claude Code 2.1.316, a row's `/model` opened at rest): a select menu whose footer leads with its
+/// own Enter hint and ends `Esc to cancel`, drawn where the input box was. Read before the footer rule took an Enter-led
+/// run of hints, it was no dialog and the row stayed as it was while the menu waited.
+#[test]
+fn a_real_model_menu_reads_as_a_dialog() {
+    let menu = real(include_str!("../../../tests/fixtures/comm_wake/real-model-menu.txt"), true);
+    assert_eq!(dialog_of(&menu, "claude", false), Some("claude dialog open".to_string()));
+    assert_eq!(dialog(&["\u{25cf} Enter to set it, then Esc to cancel.", "  done."], false), None, "prose with no middle dot");
+}
+
 /// REAL (captured 2026-10-17, scrubbed the same way, the question, options, countdown and footer kept): a permission
 /// dialog for a Bash command with auto mode's deny countdown, drawn where the input box was. It has no main input box and
 /// its footer is `Esc to cancel · Tab to amend`; the summary is its "Do you want to" line.

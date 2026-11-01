@@ -9,8 +9,9 @@
 //! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
 //! them at 1.2-2.0 s (about 80 ms a read) in a debug build on Linux. [`dialog_of`] reads the screen; the row is
 //! written only where screen and registry disagree ([`stamp_for`]), through work-state's one write, in this process
-//! (`work_state::write_event`). Nothing lives between ticks, so after a restart the first tick clears a fact whose dialog
-//! has gone. A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one
+//! (`work_state::write_event`). Each write is logged at info, and so is the first of each run of reads that found nothing
+//! on a due row, with its reason, so a row that sat on a dialog and never read red names its cause in the log. Only those
+//! runs live between ticks, so after a restart the first tick clears a fact whose dialog has gone. A Codex row is never read: its dialog fact is its own hook's. On a Claude row the daemon is the fact's one
 //! writer (no Claude hook sends it, and this write leaves no marker for a heartbeat to find); a `prompt` or a `stop`
 //! still deletes it in the reduction, and the next tick writes it again while the dialog shows. Limits: a dialog that
 //! closes between a tick's read and its write reads red until the next tick; a turn that ends with no Stop (Esc, a
@@ -63,9 +64,18 @@ fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> 
     }
 }
 
+/// What a sweep leaves for the next, so each run of failures is told once: the handles whose last write failed (warned),
+/// the handles whose last read found nothing (logged), and whether the registry was unreadable (warned).
+#[derive(Debug, Default)]
+struct Runs {
+    failing: HashSet<String>,
+    unread: HashSet<String>,
+    registry: bool,
+}
+
 /// The tick. Runs forever; started once from `server::run`, its sweeps paced by [`every`].
 pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
-    let failing = std::sync::Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+    let runs = std::sync::Arc::new(std::sync::Mutex::new(Runs::default()));
     every(period, || {
         let all = workspaces.list();
         let rows: Vec<(String, PathBuf)> = all
@@ -74,13 +84,13 @@ pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Wor
             .map(|ws| (bound_handle(ws, &all), crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id)))
             .filter(|(handle, _)| !handle.is_empty())
             .collect();
-        let (home, failing) = (comm_home.clone(), failing.clone());
+        let (home, runs) = (comm_home.clone(), runs.clone());
         async move {
             if rows.is_empty() {
                 return;
             }
             let _ = tokio::task::spawn_blocking(move || {
-                let mut held = failing.lock().unwrap_or_else(|e| e.into_inner());
+                let mut held = runs.lock().unwrap_or_else(|e| e.into_inner());
                 check_rows(&home, &rows, &read_screen, &stamp_dialog, &mut held);
             })
             .await;
@@ -105,19 +115,29 @@ where
 }
 
 /// One tick over `rows` (handle, state dir): the registry read once, then each row with an entry read and, where
-/// [`stamp_for`] says so, written. A failed write is warned once per run of failures (`failing` holds the handles).
+/// [`stamp_for`] says so, written. A write is logged; an unreadable registry, a read that found nothing and a failed
+/// write are each told once per run (`runs`).
 fn check_rows(
     home: &Path,
     rows: &[(String, PathBuf)],
     read: &dyn Fn(&Path) -> Seen,
     write: &dyn Fn(&str, &Stamp) -> Result<(), String>,
-    failing: &mut HashSet<String>,
+    runs: &mut Runs,
 ) {
-    let Ok(bytes) = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")) else {
-        return;
-    };
-    let Ok(registry) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return;
+    let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json"))
+        .map_err(|e| format!("{e:?}"))
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| e.to_string()));
+    let registry = match registry {
+        Ok(registry) => {
+            runs.registry = false;
+            registry
+        }
+        Err(e) => {
+            if !std::mem::replace(&mut runs.registry, true) {
+                tracing::warn!("comm dialog: the registry was not read, so no row was ({e})");
+            }
+            return;
+        }
     };
     for (handle, state_dir) in rows {
         let Some(entry) = registry.get("agents").and_then(|a| a.get(handle)).filter(|e| due(e)) else {
@@ -125,19 +145,30 @@ fn check_rows(
         };
         // A leg the probe shows ended shows no dialog any more; one that does not answer keeps its fact.
         let shown = match read(state_dir) {
-            Seen::Screen(lines) => dialog_of(&lines, "claude", cfg!(windows)),
-            Seen::Ended => None,
-            Seen::Unknown => continue,
+            Seen::Unknown(why) => {
+                if runs.unread.insert(handle.clone()) {
+                    tracing::info!(handle = %handle, "comm dialog: the row's screen was not read ({why}); its fact stays as it is");
+                }
+                continue;
+            }
+            seen => {
+                runs.unread.remove(handle);
+                match seen {
+                    Seen::Screen(lines) => dialog_of(&lines, "claude", cfg!(windows)),
+                    _ => None,
+                }
+            }
         };
         let Some(s) = stamp_for(shown, entry) else {
             continue;
         };
         match write(handle, &s) {
             Ok(()) => {
-                failing.remove(handle);
+                runs.failing.remove(handle);
+                tracing::info!(handle = %handle, stamp = ?s, "comm dialog: the row's dialog fact was written");
             }
             Err(e) => {
-                if failing.insert(handle.clone()) {
+                if runs.failing.insert(handle.clone()) {
                     tracing::warn!(handle = %handle, stamp = ?s, "comm dialog: the row's dialog fact was not written ({e})");
                 }
             }
@@ -152,8 +183,8 @@ enum Seen {
     Screen(Vec<String>),
     /// The leg is over (never started, ended with no respawn, terminal): no dialog shows on it.
     Ended,
-    /// Starting, ending, unreachable or foreign, or a screen that did not arrive: nothing is known.
-    Unknown,
+    /// Starting, ending, unreachable or foreign, or a screen that did not arrive: nothing is known, for the reason given.
+    Unknown(String),
 }
 
 /// The row's screen as the wake reads it, from one watcher attach, after one status probe.
@@ -163,10 +194,15 @@ fn read_screen(state_dir: &Path) -> Seen {
     let phase = phase_of(state_dir);
     if phase != phase_str(SP::Ready) {
         let ended = [phase_str(SP::EndedNoRespawn), phase_str(SP::Terminal), crate::rows::run::probe::NEVER_STARTED_PHASE];
-        return if ended.contains(&phase) { Seen::Ended } else { Seen::Unknown };
+        return if ended.contains(&phase) { Seen::Ended } else { Seen::Unknown(format!("phase {phase}")) };
     }
-    let Some(mut client) = attach(state_dir, CONTROLLER_ID).ok().and_then(|c| checkpointed(c, Instant::now() + READ_BUDGET).ok()) else {
-        return Seen::Unknown;
+    let client = match attach(state_dir, CONTROLLER_ID) {
+        Ok(client) => client,
+        Err(e) => return Seen::Unknown(format!("attach: {}", e.detail)),
+    };
+    let mut client = match checkpointed(client, Instant::now() + READ_BUDGET) {
+        Ok(client) => client,
+        Err(e) => return Seen::Unknown(format!("{} within {READ_BUDGET:?}: {}", e.phase, e.detail)),
     };
     let lines = wake_lines(client.screen());
     client.shutdown(SHUTDOWN_WAIT);
