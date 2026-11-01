@@ -32,7 +32,7 @@ pub fn line(text: &str) -> Result<String, Refusal> {
 /// A control or direction character, which page text never carries.
 pub fn unsafe_char(c: char) -> bool {
     c.is_control() || matches!(c,
-        '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
+        '\u{061c}' | '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
         '\u{2060}'..='\u{2069}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{fffe}' | '\u{ffff}')
 }
 

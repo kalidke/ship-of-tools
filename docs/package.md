@@ -526,7 +526,8 @@ package's landing first, the window's five after the 0.7.0 tag. A row's copy rea
 2026-10-31: Claude Code's `/copy`, or any program that copies by OSC 52, lands in the clipboard of the window showing
 the row on every system (the terminal parser's bound on such a sequence rose from 1 KiB to 1 MiB, and one past it or
 cancelled is dropped whole), and every copy and paste in the window goes through one clipboard handle kept for its
-life, which the X11 clipboard on Linux needs. Two defects from rc.6's use landed the same day: a page reply refused
-at a draft quotes what the box holds, and a send through the hub reads "may still be filed" only when a linked box
-that did not answer could hold the handle.
+life, which the X11 clipboard on Linux needs. A page reply refused at a one-line draft quotes what the box holds
+(seen in rc.6's use) since the same day. A send through the hub still reads "may still be filed" whenever a linked
+box leaves the offer unanswered: a rule that judged by the handle's name which box could hold it was withdrawn before
+main, since a row can be named with any box's name, and the fix waits for the cause of the silent link.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

@@ -3,12 +3,12 @@ use super::*;
 #[test]
 fn hostile_text_is_refused_and_plain_text_is_marked() {
     for text in ["", "   ", "a\nb", "a\rb", "\u{1b}[201~x", "\u{1b}", "\u{3}", "\u{7f}", "\u{85}",
-        "\u{2028}", "\u{2029}", "\u{202e}", "\u{2066}", "\u{200b}", "\u{feff}"] {
+        "\u{2028}", "\u{2029}", "\u{202e}", "\u{2066}", "\u{200b}", "\u{feff}", "\u{61c}"] {
         assert!(line(text).is_err(), "accepted {text:?}");
     }
     // Every member of each forbidden range, including C0, DEL and C1.
     for code in (0..=0x1f).chain(0x7f..=0x9f).chain(0x200b..=0x200f).chain(0x2028..=0x202e)
-        .chain(0x2060..=0x2069).chain(0xfff9..=0xfffb).chain([0xfeff, 0xfffe, 0xffff]) {
+        .chain(0x2060..=0x2069).chain(0xfff9..=0xfffb).chain([0x061c, 0xfeff, 0xfffe, 0xffff]) {
         // U+202F is intentionally outside the ranges above.
         let c = char::from_u32(code).unwrap();
         let error = line(&format!("a{c}b")).expect_err("unsafe character");

@@ -33,26 +33,18 @@ pub async fn handle_comm_file(
     // A forwarded request has had its one hop; a link's own request is one.
     if !req.forwarded && matches!(&verdict, Err((code, _)) if code == "not_here") {
         let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
-        let boxes = {
-            let env = env.clone();
-            tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::box_names(&env)).await.context("comm.file topology join")?
-        };
-        if let Some(offered) = links.offer(&req, within, &boxes).await {
+        if let Some(offered) = links.offer(&req, within).await {
             verdict = offered;
         }
-        // A box that should hold a link and holds none may hold the handle: the refusal names it, after the offer's
-        // own clause (a link that did not answer and cannot hold it).
-        if let Err((code, sentence)) = &verdict {
-            if code == "not_here" {
-                let attached = links.hosts();
-                let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&env, &attached))
-                    .await
-                    .context("comm.file topology join")?;
-                if !unlinked.is_empty() {
-                    let silent = sentence.strip_prefix(&not_here(&req.to).1).unwrap_or_default();
-                    let text = format!("no linked box knows that handle: {}; not linked: {}{silent}", req.to, unlinked.join(", "));
-                    verdict = Err(("not_here".into(), text));
-                }
+        // A box that should hold a link and holds none may hold the handle: the refusal names it.
+        if matches!(&verdict, Err((code, _)) if code == "not_here") {
+            let attached = links.hosts();
+            let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&env, &attached))
+                .await
+                .context("comm.file topology join")?;
+            if !unlinked.is_empty() {
+                let text = format!("no linked box knows that handle: {}; not linked: {}", req.to, unlinked.join(", "));
+                verdict = Err(("not_here".into(), text));
             }
         }
     }

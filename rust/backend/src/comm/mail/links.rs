@@ -54,15 +54,13 @@ impl Links {
     /// Offers `req` to every attached link, marked forwarded so each files only into its own folder, and gives each
     /// `within` to answer. `None` when no link is attached. Otherwise the first `ok` is the verdict; with none, a
     /// refusal other than `not_here` (the box that lists the handle refused it), by host; else a link that did not
-    /// answer and could hold the handle ([`could_hold`], `known` naming the boxes besides the links), by host; else
-    /// `not_here`, naming each link that did not answer.
-    pub async fn offer(&self, req: &CommFileReq, within: Duration, known: &[String]) -> Option<Result<(), (String, String)>> {
+    /// answer, by host; else `not_here`.
+    pub async fn offer(&self, req: &CommFileReq, within: Duration) -> Option<Result<(), (String, String)>> {
         let linked: Vec<(String, mpsc::Sender<Offer>)> =
             self.0.lock().unwrap_or_else(PoisonError::into_inner).by_key.values().cloned().collect();
         if linked.is_empty() {
             return None;
         }
-        let known: Vec<String> = known.iter().cloned().chain(linked.iter().map(|(host, _)| host.clone())).collect();
         let mut asks: FuturesUnordered<_> = linked
             .into_iter()
             .map(|(host, tx)| {
@@ -84,22 +82,12 @@ impl Links {
             }
             answers.push((host, answer));
         }
-        Some(Err(refusal(&req.to, answers, within, &known)))
+        Some(Err(refusal(&req.to, answers, within)))
     }
 }
 
-/// Whether the box `host` could hold the handle `to`: a derived handle ends in its box's name as handles spell it
-/// (`identity::derive::handle_host`), so one that ends in another known box's name is that box's, and one that ends in
-/// no known box's name (a handle named at its row's creation) could be any box's.
-fn could_hold(to: &str, host: &str, known: &[String]) -> bool {
-    let ends_in = |box_name: &str| to.ends_with(&format!("-{}", crate::comm::identity::derive::handle_host(box_name)));
-    ends_in(host) || !known.iter().any(|k| ends_in(k))
-}
-
 /// The verdict when no link filed: `(code, sentence)`, the sentence what the sender prints after `FAILED -> @<to>: `.
-/// A link that did not answer makes it uncertain only when its box could hold the handle (HUB-OFFER-SILENT-LINK: a
-/// stalled link on an unrelated box turned "no box knows that handle" into "may still be filed").
-fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, within: Duration, known: &[String]) -> (String, String) {
+fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, within: Duration) -> (String, String) {
     answers.sort_by(|a, b| a.0.cmp(&b.0));
     let field = |a: &serde_json::Value, k: &str| a.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
     for answer in answers.iter().filter_map(|(_, a)| a.as_ref()) {
@@ -109,16 +97,11 @@ fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, with
             _ => {}
         }
     }
-    let secs = within.as_secs();
-    let silent: Vec<&str> = answers.iter().filter(|(_, a)| a.is_none()).map(|(host, _)| host.as_str()).collect();
-    if let Some(host) = silent.iter().find(|host| could_hold(to, host, known)) {
+    if let Some((host, _)) = answers.iter().find(|(_, a)| a.is_none()) {
+        let secs = within.as_secs();
         return ("file_failed".into(), format!("the daemon on {host} did not answer within {secs}s; @{to} may still be filed"));
     }
-    let (code, sentence) = crate::comm::mail::filer::not_here(to);
-    if silent.is_empty() {
-        return (code, sentence);
-    }
-    (code, format!("{sentence}; did not answer within {secs}s, and cannot hold it: {}", silent.join(", ")))
+    crate::comm::mail::filer::not_here(to)
 }
 
 impl LinkEnd {

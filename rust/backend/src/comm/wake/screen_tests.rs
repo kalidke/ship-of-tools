@@ -829,17 +829,19 @@ fn the_cursor_row_trace_names_a_wide_character() {
 }
 
 /// The draft is the cursor's row after the glyph and its no-break space, a dim cell blank: a typed "w" beside a dim
-/// suggestion reads "w", a dim suggestion alone reads empty, and a row with no glyph (a wrapped draft's last row) reads
-/// whole.
+/// suggestion reads "w", a dim suggestion alone reads empty, and a row with no glyph reads whole. On Windows the ASCII
+/// `>` is a glyph too, followed by a plain space.
 #[test]
 fn the_draft_is_the_undimmed_text_after_the_prompt() {
-    let draft = |bytes: &str| {
+    let draft = |bytes: &str, windows: bool| {
         let mut p = vt100_ctt::Parser::new(2, 40, 0);
         p.process(bytes.as_bytes());
-        draft_of(p.screen(), "claude", false)
+        draft_of(p.screen(), "claude", windows)
     };
-    assert_eq!(draft("\u{276f}\u{a0}w\x1b[2m try a suggestion\x1b[0m"), "w");
-    assert_eq!(draft("\u{276f}\u{a0}\x1b[2mtry a suggestion\x1b[0m"), "");
-    assert_eq!(draft("  \u{276f}\u{a0}unsent words  "), "unsent words");
-    assert_eq!(draft("wrapped tail"), "wrapped tail");
+    assert_eq!(draft("\u{276f}\u{a0}w\x1b[2m try a suggestion\x1b[0m", false), "w");
+    assert_eq!(draft("\u{276f}\u{a0}\x1b[2mtry a suggestion\x1b[0m", false), "");
+    assert_eq!(draft("  \u{276f}\u{a0}unsent words  ", false), "unsent words");
+    assert_eq!(draft("no glyph here", false), "no glyph here");
+    assert_eq!(draft("> w\x1b[2m try a suggestion\x1b[0m", true), "w");
+    assert_eq!(draft("> w", false), "> w", "the ASCII glyph is Windows' alone");
 }

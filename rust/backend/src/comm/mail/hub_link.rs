@@ -101,14 +101,6 @@ fn link_target(topo: &sot_topology::Topology, host: &str) -> Result<Option<Strin
     Ok(sot_topology::relay_endpoint(topo, host)?.strip_prefix("ssh:").map(str::to_string))
 }
 
-/// Every box the topology names; empty with no topology.
-pub(crate) fn box_names(env: &crate::comm::Env) -> Vec<String> {
-    match sot_topology::load_in(env) {
-        Ok(Some((_, topo))) => topo.hosts.iter().map(|h| h.name.clone()).collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// On the topology's hub, the boxes that hold a link by `link_target` but have none among `attached`; empty on any
 /// other daemon, or with no topology.
 pub(crate) fn unlinked(env: &crate::comm::Env, attached: &[String]) -> Vec<String> {
