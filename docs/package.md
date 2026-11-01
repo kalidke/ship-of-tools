@@ -536,5 +536,8 @@ main, since a row can be named with any box's name, and the fix waits for the ca
 marker's `Page:`) nor a session's own handoff, after it had ordered both (seen in rc.6's and rc.7's use). Since the
 same day the window draws a terminal cell's background and inverse video as a terminal does, after inverse text in
 a row (nano's bars, Claude Code's highlights) showed as white blocks with no letters: an inverse cell had been drawn
-as a block of its foreground, and every background was dropped.
+as a block of its foreground, and every background was dropped. Since the same day a Windows session's PowerShell
+call of a launcher (`sot-fe`, `show-result`, `ccb`, `sot-gh-auth`) answers at once that it runs from Git Bash, through a
+`.cmd` beside each, after a `sot-fe version` from a session's PowerShell tool waited half an hour with no output right
+after an install (the install was incidental: PowerShell cannot run a bash script).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

@@ -166,7 +166,14 @@ of each.
     (`comm/CLAUDE.md`). Limit: the proof is the hosted run of `scripts/tests/under-bash.sh` on macOS and on a built bash
     3.2.57 on Linux (a new suite joins by its name); it runs a suite's own body in the newer shell and puts bash 3.2
     first on `PATH` for the scripts the suite starts, so the suites' code is not proved under 3.2; no hosted job runs the
-    agents suites under Git Bash, and a local run is under bash 5 and proves nothing of it.
+    agents suites under Git Bash, and a local run is under bash 5 and proves nothing of it. PowerShell and cmd cannot
+    run them: on Windows each launcher in `~/.local/bin` has a `<name>.cmd` beside it (`_launcher_refusal`,
+    `src/launchers.jl`), which PowerShell prefers to the extensionless script in the same folder, and which says to run
+    the tool from Git Bash (Claude Code's Bash tool) and exits 1, starting nothing (seen in use: a session's PowerShell
+    tool ran `sot-fe version` and waited half an hour with no output, never reaching the daemon; over ssh PowerShell
+    refuses such a script at once). Proved on one Windows 11 box: PowerShell picks the `.cmd`, which answers in under
+    0.1 s with exit 1. Limit: a comm script named with its `.sh` from PowerShell still goes to Windows' file
+    association for `.sh`.
 12. **`sot-gh-auth.sh`, the GitHub device-flow sign-in, waits at most a stated time.** Every `curl` call carries
     `CURL_BOUND` (connect 15 s, a call 60 s in all, under 1000 B/s for 60 s), and every `gh` call that reaches GitHub
     runs under comm-lib's `sot_bounded` (`GH_BOUND`, 30 s) and names the expiry on the script's own stderr. The poll's
@@ -283,7 +290,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
 | 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh` |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
-| 11 | the hosted run of `scripts/tests/under-bash.sh` |
+| 11 | the hosted run of `scripts/tests/under-bash.sh`; `test/skills_tests.jl` ("a launcher's Windows shim refuses at once and names Git Bash") |
 | 12 | `tests/test-crlf-gh-auth.sh` |
 | 13 | `test/install_tests.jl` (the agents testset) |
 | 14 | `tests/test-temp-files.sh` |

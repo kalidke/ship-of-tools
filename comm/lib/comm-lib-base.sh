@@ -58,9 +58,8 @@ sot_require_tools() {
 # stderr, and ends it SECS seconds (a whole number above 0) after it starts.
 # The bounded comm calls run under it: sot_ssh_bridge's ssh, sot_dial's bridge,
 # comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and
-# the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls. scripts/install.sh carries a copy for its ssh check, which runs before
-# the checkout holding this library exists; rust/backend/tests/shell_dial.rs runs every case against both and pins the
-# two bodies byte-identical.
+# the PostToolUse heartbeat's comm-context.sh, and agents/sot-gh-auth.sh's gh calls. rust/backend/tests/shell_dial.rs
+# runs its cases against this copy, the only one.
 # One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
 # run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
 # descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
@@ -71,8 +70,9 @@ sot_require_tools() {
 # 128+N when the bound itself was sent signal N; 127 when CMD could not start; 125 when nothing ran (no perl, no
 # process group, or a bound that is not a whole number above 0). Outside it: a descendant that leaves CMD's group
 # (setsid, as ssh's ControlPersist master does). On Windows, Git Bash emulates the group and its signals for its own
-# programs; whether the bound ends a native Windows program (sot_dial's sotd.exe, the auditor's claude) or its
-# children is not established. Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring
+# programs, and it ends a native Windows program at the bound too: PowerShell and PING.EXE, run 30 s under a 3 s bound,
+# returned 124 at 3 s and none was left running (Windows 11 under Git Bash, 2026-11-01, one box); a native program's
+# own children are not established. Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring
 # descendant holding the output, and macOS has none. Only CMD's own process asks for its group, and it trusts the
 # group it is then in, not the call's status: on macOS 26 a setpgid by the parent for the same child, at the same
 # moment, made either call fail with EPERM though the group was made, and CMD never ran (hosted run 39218378845).

@@ -175,5 +175,28 @@ end
         @test !ispath(joinpath(dst, "demo", "sub", "CLAUDE.md"))
         @test isfile(joinpath(home, ".local", "bin", "ccdemo"))
         @test !ispath(joinpath(home, ".local", "bin", "CLAUDE.md"))
+        # On Windows a launcher has a .cmd beside it that PowerShell and cmd run instead.
+        @test isfile(joinpath(home, ".local", "bin", "ccdemo.cmd")) == Sys.iswindows()
+    end
+end
+
+@testset "a launcher's Windows shim refuses at once and names Git Bash" begin
+    # Seen in use: a session's PowerShell tool ran `sot-fe version`, which PowerShell cannot run (a bash script with no
+    # extension), and it waited half an hour with no output and never reached the daemon.
+    mktempdir() do dir
+        src = joinpath(dir, "src")
+        bin = joinpath(dir, "bin")
+        mkpath(src)
+        mkpath(bin)
+        write(joinpath(src, "sot-fe"), "#!/usr/bin/env bash\n")
+        ShipTools._install_launcher_refusals(src, bin, ["sot-fe"])
+        shim = read(joinpath(bin, "sot-fe.cmd"), String)
+        @test shim == "@echo off\r\necho sot-fe: run it from Git Bash (Claude Code's Bash tool); PowerShell and cmd " *
+                      "cannot run this bash script. 1>&2\r\nexit /b 1\r\n"
+        # It starts nothing: no argument of the call reaches a program through cmd's quoting.
+        @test !occursin("%*", shim) && !occursin("bash.exe", shim)
+        # A second install leaves the same text in place.
+        ShipTools._install_launcher_refusals(src, bin, ["sot-fe"])
+        @test read(joinpath(bin, "sot-fe.cmd"), String) == shim
     end
 end
