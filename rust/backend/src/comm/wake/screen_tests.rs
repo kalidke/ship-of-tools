@@ -827,3 +827,19 @@ fn the_cursor_row_trace_names_a_wide_character() {
     p.process("\u{4e2d}".as_bytes());
     assert_eq!(cursor_row_trace(p.screen()), "col 2: U+4E2D cont");
 }
+
+/// The draft is the cursor's row after the glyph and its no-break space, a dim cell blank: a typed "w" beside a dim
+/// suggestion reads "w", a dim suggestion alone reads empty, and a row with no glyph (a wrapped draft's last row) reads
+/// whole.
+#[test]
+fn the_draft_is_the_undimmed_text_after_the_prompt() {
+    let draft = |bytes: &str| {
+        let mut p = vt100_ctt::Parser::new(2, 40, 0);
+        p.process(bytes.as_bytes());
+        draft_of(p.screen(), "claude", false)
+    };
+    assert_eq!(draft("\u{276f}\u{a0}w\x1b[2m try a suggestion\x1b[0m"), "w");
+    assert_eq!(draft("\u{276f}\u{a0}\x1b[2mtry a suggestion\x1b[0m"), "");
+    assert_eq!(draft("  \u{276f}\u{a0}unsent words  "), "unsent words");
+    assert_eq!(draft("wrapped tail"), "wrapped tail");
+}

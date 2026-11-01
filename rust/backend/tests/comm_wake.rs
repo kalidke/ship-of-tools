@@ -971,6 +971,9 @@ async fn page_reply_never_types_into_a_dialog_a_draft_or_a_working_row() {
         let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
         assert_eq!(res["outcome"], "not_free", "{tag}: {res}");
         assert!(!res["detail"].as_str().unwrap().is_empty());
+        if matches!(tag, "pr-draft" | "pr-home") {
+            assert!(res["detail"].as_str().unwrap().ends_with("; the box holds \"unsent words\""), "{tag}: {res}");
+        }
         assert!(!row.screen_has("[sot-page]").await, "{tag}: text reached a guarded pane");
         assert!(received(&row).is_empty(), "{tag}: sent a line");
         row.env.kill_daemon_bounded().await;
@@ -1092,6 +1095,7 @@ async fn a_direct_reply_is_refused_at_a_draft_and_types_nothing() {
     let res = page_reply_held(&mut row, HANDLE, "[sot-page] approve").await;
     assert_eq!(res["outcome"], "refused", "{res}");
     assert!(res["detail"].as_str().unwrap().starts_with("draft"), "{res}");
+    assert!(res["detail"].as_str().unwrap().ends_with("; the box holds \"unsent words\""), "{res}");
     tokio::time::sleep(THREE_TICKS).await;
     assert!(received(&row).is_empty(), "a refused reply reached the pane");
     row.env.kill_daemon_bounded().await;

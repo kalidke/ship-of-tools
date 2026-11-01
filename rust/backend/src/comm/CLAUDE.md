@@ -51,7 +51,10 @@ Sending:
   exit status.
 - Silence is failure: a send waits 5 s for an answer (`cli::wire::FILE_WINDOW`), and a daemon gives a forward or an
   offer the inbox lock's wait plus 1 s (3 s at the default 2 s), inside the sender's 5 s. A daemon too old for the op answers `unknown op: comm.file`,
-  a false failure, never a false success.
+  a false failure, never a false success. A linked daemon that does not answer an offer makes the verdict uncertain
+  (`may still be filed`) only when its box could hold the handle: a derived handle ends in its box's name, so one that
+  ends in another box the topology or a link names is that box's, and the silent box is then named in the `not_here`
+  sentence instead (`mail::links::could_hold`; a handle named at its row's creation could be any box's).
 - Nothing is queued and no second route is tried. A sender never types into another session.
 - A message reaches the send as an argument, from a file (`--file <path>`) or from standard input (`--file -`, or `-`
   as the message), so a sender who chooses a file or stdin never passes it through a shell's quoting.

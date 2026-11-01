@@ -23,15 +23,17 @@ pub fn line(text: &str) -> Result<String, Refusal> {
     if text.len() > MAX_TEXT {
         return Err(Refusal(format!("reply text exceeds {MAX_TEXT} bytes")));
     }
-    for c in text.chars() {
-        if c.is_control() || matches!(c,
-            '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
-            '\u{2060}'..='\u{2069}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{fffe}' | '\u{ffff}')
-        {
-            return Err(Refusal(format!("reply text contains U+{:04X}", u32::from(c))));
-        }
+    if let Some(c) = text.chars().find(|c| unsafe_char(*c)) {
+        return Err(Refusal(format!("reply text contains U+{:04X}", u32::from(c))));
     }
     Ok(format!("{MARK}{text}"))
+}
+
+/// A control or direction character, which page text never carries.
+pub fn unsafe_char(c: char) -> bool {
+    c.is_control() || matches!(c,
+        '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' |
+        '\u{2060}'..='\u{2069}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{fffe}' | '\u{ffff}')
 }
 
 /// A confirmed line must already be exactly the canonical output of `line`.

@@ -192,7 +192,10 @@ Page replies:
   width is not asked: a line wider than the box wraps, and Enter goes once the box's rows hold it (messaging's
   `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. Every attempt logs the handle,
   workspace, marked line and outcome, an early refusal (a gone row, a moved handle, not typeable, not Ready) included,
-  and a held reply that ends untyped (superseded, its question changed) logs that end.
+  and the cursor's row as the gate read it whenever it read the screen (`cursor_row_trace`); a held reply that ends
+  untyped (superseded, its question changed) logs that end. A refusal at a draft quotes what the box holds after the
+  prompt (`screen::draft_of`: dim cells blank, cut at 40 characters, a control or direction character shown as
+  U+FFFD), so the person sees the stray text and not the dim suggestion beside it.
 - Behavior proofs: `tests/page_channel.rs::page_reply_rechecks_the_mark_the_handle_and_the_target_without_resuming_it`,
   and the `page_reply` tests in `tests/comm_wake.rs` (real stub-agent input, refused panes, concurrent typings and a
   changed handle). These tests use scratch homes only.

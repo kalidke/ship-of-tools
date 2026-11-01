@@ -1,15 +1,15 @@
 //! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, wait for it, then Enter.
 
 use super::*;
-use super::screen::{cursor_row_trace, free_test_lines, held_rows, wake_lines, Prompt};
+use super::screen::{cursor_row_trace, draft_of, free_test_lines, held_rows, wake_lines, Prompt};
 use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Client, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WakeOutcome {
     /// The screen was not a free prompt; nothing was typed. `row` is the cursor's row as the gate read it
-    /// ([`cursor_row_trace`]).
-    NotFree { reason: &'static str, row: String },
+    /// ([`cursor_row_trace`]), and `draft` the text it holds after the prompt ([`draft_of`]).
+    NotFree { reason: &'static str, row: String, draft: String },
     /// The line was typed and Enter written.
     Woke,
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
@@ -98,7 +98,7 @@ pub fn wake_if_free(
 ) -> Result<Attempted, HeadlessError> {
     let Some(_typing) = Typing::take(state_dir) else {
         return Ok(Attempted {
-            outcome: WakeOutcome::NotFree { reason: "another typing on this row", row: String::new() },
+            outcome: WakeOutcome::NotFree { reason: "another typing on this row", row: String::new(), draft: String::new() },
             run: String::new(),
         });
     };
@@ -129,7 +129,7 @@ pub fn wake_if_free(
     let out = if ends_here {
         Ok(WakeOutcome::RunChanged)
     } else if first_prompt.is_none() {
-        Ok(WakeOutcome::NotFree { reason: "prompt not free", row: cursor_row_trace(client.screen()) })
+        Ok(not_free("prompt not free", &client, agent))
     } else {
         mark("hold");
         let held_from = Instant::now();
@@ -159,12 +159,17 @@ pub fn wake_if_free(
                 log_typing(handle, sent, &read, &out);
                 Ok(out)
             }
-            _ => Ok(WakeOutcome::NotFree { reason: "moved during the hold", row: cursor_row_trace(client.screen()) }),
+            _ => Ok(not_free("moved during the hold", &client, agent)),
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
     out.map(|outcome| Attempted { outcome, run })
+}
+
+/// A refusal with the screen as the gate read it.
+fn not_free(reason: &'static str, client: &Client, agent: &str) -> WakeOutcome {
+    WakeOutcome::NotFree { reason, row: cursor_row_trace(client.screen()), draft: draft_of(client.screen(), agent, cfg!(windows)) }
 }
 
 /// One attempt per state folder, held from before attach through shutdown, for both callers.

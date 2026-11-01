@@ -68,7 +68,7 @@ fn a_typing_attempt_owns_the_row_until_it_ends() {
     let free = |_: &[String], _: Option<(u16, u16)>, _: &str, _: bool| Some(Prompt::Empty);
     let d = Duration::from_secs(1);
     let attempted = wake_if_free(&row, "test", "h", "line", None, &free, "claude", d, d).unwrap();
-    assert_eq!(attempted.outcome, WakeOutcome::NotFree { reason: "another typing on this row", row: String::new() });
+    assert_eq!(attempted.outcome, WakeOutcome::NotFree { reason: "another typing on this row", row: String::new(), draft: String::new() });
     drop(owned);
     assert!(Typing::take(&row).is_some(), "attempt releases its row on exit");
     drop(independent);
@@ -89,10 +89,10 @@ fn the_prompt_gate_checks_the_supplied_lines_exact_contents_at_any_width() {
 #[test]
 fn a_boot_look_retries_when_another_typing_owns_the_row() {
     let pending = super::super::boot_look_pending;
-    assert_eq!(pending(&Ok(WakeOutcome::NotFree { reason: "another typing on this row", row: String::new() })),
+    assert_eq!(pending(&Ok(WakeOutcome::NotFree { reason: "another typing on this row", row: String::new(), draft: String::new() })),
         Some("another typing on this row"));
     assert_eq!(pending(&Err(HeadlessError { phase: "attach", detail: "unavailable".into(), submitted: false })),
         Some("the row could not be read"));
-    assert_eq!(pending(&Ok(WakeOutcome::NotFree { reason: "dialog", row: String::new() })), None);
+    assert_eq!(pending(&Ok(WakeOutcome::NotFree { reason: "dialog", row: String::new(), draft: String::new() })), None);
     assert_eq!(pending(&Ok(WakeOutcome::Woke)), None);
 }

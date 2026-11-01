@@ -44,31 +44,33 @@ pub(crate) async fn handle_page_reply(req_id: u64, payload: Value, workspaces: &
 /// One typing attempt through the wake's gate, the row's identity checked again under it, logged whatever its outcome.
 /// Blocks.
 fn attempt(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String) {
-    let (outcome, detail) = attempt_unlogged(rows, workspace_id, handle, line);
+    let (outcome, detail, row) = attempt_unlogged(rows, workspace_id, handle, line);
     tracing::info!(target: "page_reply", { handle = %handle, workspace = %workspace_id,
-        line = ?line, outcome, detail = %detail }, "page reply delivery");
+        line = ?line, outcome, detail = %detail, cursor_row = %row }, "page reply delivery");
     (outcome, detail)
 }
 
-fn attempt_unlogged(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String) {
+/// The outcome, its detail and the cursor's row as the gate read it (`cursor_row_trace`; empty when no screen was read).
+fn attempt_unlogged(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String, String) {
+    let early = |outcome, detail: &str| (outcome, detail.to_string(), String::new());
     let Some(ws) = rows.resolve(Some(workspace_id)).filter(|ws| ws.workspace_id == workspace_id) else {
-        return ("refused", "row_gone".into());
+        return early("refused", "row_gone");
     };
     if handle.is_empty() || bound_handle(&ws, &rows.list()) != handle {
-        return ("refused", "handle_changed".into());
+        return early("refused", "handle_changed");
     }
     if ws.runtime != "capsule" || ws.agent() != "claude" {
-        return ("refused", "not_typeable".into());
+        return early("refused", "not_typeable");
     }
     let Some(root) = sot_platform::host::state_dir::sot_state_dir() else {
-        return ("not_ready", "could not resolve the state folder".into());
+        return early("not_ready", "could not resolve the state folder");
     };
     let Some(home) = crate::comm::sot_comm_home() else {
-        return ("not_free", "could not resolve the Stop hook registry".into());
+        return early("not_free", "could not resolve the Stop hook registry");
     };
     let state_dir = crate::rows::spawn::state_root::state_dir_for(&root, workspace_id);
     if crate::rows::run::probe::phase_of(&state_dir) != "ready" {
-        return ("not_ready", "the row is not Ready".into());
+        return early("not_ready", "the row is not Ready");
     }
     let admit = || {
         let current = rows.resolve(Some(workspace_id))
@@ -87,18 +89,37 @@ fn attempt_unlogged(rows: &Workspaces, workspace_id: &str, handle: &str, line: &
     delivery(type_if_free(&home, &state_dir, handle, line, &admit).map(|attempt| attempt.outcome))
 }
 
-fn delivery(result: std::result::Result<WakeOutcome, HeadlessError>) -> (&'static str, String) {
+/// The outcome, its detail and the cursor's row as the gate read it. A refusal at a draft quotes what the box holds.
+fn delivery(result: std::result::Result<WakeOutcome, HeadlessError>) -> (&'static str, String, String) {
+    let unread = |outcome, detail| (outcome, detail, String::new());
     match result {
-        Ok(WakeOutcome::Woke) => ("sent", "the marked line and Enter were recorded".into()),
-        Ok(WakeOutcome::NotFree { reason, .. }) => ("not_free", reason.into()),
-        Ok(WakeOutcome::TypedNoEnter { reason, .. }) => ("typed_not_sent", reason.into()),
-        Ok(WakeOutcome::EnterRefused { detail }) => ("typed_not_sent", detail),
-        Ok(WakeOutcome::Unconfirmed { step: "text", detail }) => ("not_free", detail),
-        Ok(WakeOutcome::Unconfirmed { detail, .. }) | Ok(WakeOutcome::TextUnknown { detail }) => ("unknown", detail),
-        Ok(WakeOutcome::RunChanged) => ("not_free", "the row's run changed".into()),
-        Err(error) if error.submitted => ("unknown", format!("{}: {}", error.phase, error.detail)),
-        Err(error) => ("not_free", format!("{}: {}", error.phase, error.detail)),
+        Ok(WakeOutcome::Woke) => unread("sent", "the marked line and Enter were recorded".into()),
+        Ok(WakeOutcome::NotFree { reason, row, draft }) => ("not_free", with_draft(reason, &draft), row),
+        Ok(WakeOutcome::TypedNoEnter { reason, row, .. }) => ("typed_not_sent", reason.into(), row),
+        Ok(WakeOutcome::EnterRefused { detail }) => unread("typed_not_sent", detail),
+        Ok(WakeOutcome::Unconfirmed { step: "text", detail }) => unread("not_free", detail),
+        Ok(WakeOutcome::Unconfirmed { detail, .. }) | Ok(WakeOutcome::TextUnknown { detail }) => unread("unknown", detail),
+        Ok(WakeOutcome::RunChanged) => unread("not_free", "the row's run changed".into()),
+        Err(error) if error.submitted => unread("unknown", format!("{}: {}", error.phase, error.detail)),
+        Err(error) => unread("not_free", format!("{}: {}", error.phase, error.detail)),
     }
+}
+
+/// The longest quote of a draft in a refusal, in characters.
+const DRAFT_QUOTED: usize = 40;
+
+/// The gate's reason, and for a draft what the box holds, quoted and cut at [`DRAFT_QUOTED`] characters, a control or
+/// direction character shown as U+FFFD: the person sees their stray text, not the suggestion Claude Code draws dim
+/// beside it (PAGE-REPLY-DRAFT-SAYS-WHAT: a typed "w" beside a suggestion read as "unsent text" was taken for the
+/// suggestion).
+fn with_draft(reason: &'static str, draft: &str) -> String {
+    if refusal_name(reason) != "draft" || draft.is_empty() {
+        return reason.into();
+    }
+    let shown: String = draft.chars().take(DRAFT_QUOTED)
+        .map(|c| if sot_protocol::page_reply::unsafe_char(c) { '\u{fffd}' } else { c }).collect();
+    let cut = if draft.chars().count() > DRAFT_QUOTED { "\u{2026}" } else { "" };
+    format!("{reason}; the box holds \"{shown}{cut}\"")
 }
 
 /// A direct reply a busy row keeps until its prompt frees, for the question its row asked when the page answered.
@@ -213,9 +234,9 @@ fn settle(held: Held, outcome: &'static str, detail: String) -> Receipt {
 }
 
 /// The gate's refusals that waiting does not clear: the person's unsent text (in the box, or the cursor past the prompt
-/// after it), and a screen with no input box (a dialog).
+/// after it), and a screen with no input box (a dialog). Read from the gate's words, before any quote ([`with_draft`]).
 fn refusal_name(reason: &str) -> &'static str {
-    match reason {
+    match reason.split_once("; ").map_or(reason, |(gate, _)| gate) {
         "input not empty" | "cursor not at the prompt" => "draft",
         "not in an input box" => "dialog",
         _ => "busy",

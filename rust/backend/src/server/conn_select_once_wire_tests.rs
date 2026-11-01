@@ -187,7 +187,7 @@ async fn a_link_writes_an_offer_as_a_comm_file_request_and_its_response_settles_
     let links = crate::comm::mail::links::Links::default();
     w.link = Some(links.attach("win-b".into()));
     let req = sot_protocol::CommFileReq { from: "s".into(), to: "h".into(), text: "hi".into(), broadcast: false, forwarded: false };
-    let asking = tokio::spawn(async move { links.offer(&req, std::time::Duration::from_secs(4)).await });
+    let asking = tokio::spawn(async move { links.offer(&req, std::time::Duration::from_secs(4), &[]).await });
     assert!(matches!(w.once_on("link").await, Woke::Again));
     let mut rest = &w.buf[..];
     let (f, _) = codec::read_frame(&mut rest).await.expect("one frame");

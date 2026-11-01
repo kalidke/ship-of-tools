@@ -321,6 +321,21 @@ pub(crate) fn cursor_row_trace(screen: &vt100_ctt::Screen) -> String {
     format!("col {col}: {}", tokens.join(" "))
 }
 
+/// What the person reads as unsent text on the cursor's row: the row as [`free_test_lines`] reads it (a dim cell is
+/// blank), after the prompt glyph and the space or no-break space that follows it when the row has one, with blanks
+/// trimmed. Empty when the row holds nothing else. A refusal at a draft quotes it, so the person sees the stray text and
+/// not Claude Code's dim suggestion beside it.
+pub(crate) fn draft_of(screen: &vt100_ctt::Screen, agent: &str, windows: bool) -> String {
+    let row = screen.cursor_position().0 as usize;
+    let lines = free_test_lines(screen);
+    let line = lines.get(row).map(String::as_str).unwrap_or_default().trim_start_matches(' ');
+    let line = match line.strip_prefix(prompt_glyphs(agent, windows)) {
+        Some(rest) => rest.strip_prefix(['\u{a0}', ' ']).unwrap_or(rest),
+        None => line,
+    };
+    line.trim_matches([' ', '\u{a0}']).to_string()
+}
+
 /// One character in [`cursor_row_trace`]: printable ASCII as itself, anything else as its code point.
 fn char_token(ch: char) -> String {
     if ch.is_ascii_graphic() {

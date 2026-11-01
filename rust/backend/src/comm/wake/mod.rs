@@ -391,7 +391,7 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, run: &str, see
     let (reason, border) = seen;
     match out {
         Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false, run: run.to_string() }),
-        Ok(WakeOutcome::NotFree { row, reason: attempt_reason }) => Step::Refused(Refusal { reason: reason.unwrap_or(attempt_reason), border, detail: None, row }),
+        Ok(WakeOutcome::NotFree { row, reason: attempt_reason, .. }) => Step::Refused(Refusal { reason: reason.unwrap_or(attempt_reason), border, detail: None, row }),
         Ok(WakeOutcome::TypedNoEnter { reason, border, row }) => {
             tracing::warn!(handle, border = ?border, row = ?row, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Woke(Woken { line: total, at: now, enter_owed: true, run: run.to_string() })

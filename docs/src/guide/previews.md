@@ -129,7 +129,8 @@ is typed at once at the session's free prompt, or held until the prompt frees, a
 became of it.
 
 The typing rechecks the mark and the target handle and uses the wake's free-prompt gate, sharing one typing attempt
-per row. It refuses a dialog, a menu, unsent text a person typed and an unsupported agent, and holds a reply for a
+per row. It refuses a dialog, a menu, unsent text a person typed (the refusal quotes the text the box holds) and an
+unsupported agent, and holds a reply for a
 working screen or a running Stop hook; only a Ready Claude capsule row is supported. A line wider than the pane wraps
 and is checked across its rows before Enter. A sent line carries the mark in the pane and the transcript.
 `typed_not_sent` means text was typed but Enter withheld, and `unknown` means delivery could not be confirmed; inspect
