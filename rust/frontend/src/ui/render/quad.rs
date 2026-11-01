@@ -324,26 +324,7 @@ impl Quad {
         for r in rects {
             verts.extend_from_slice(&rect_verts(*r, surface_size));
         }
-        let bytes = bytemuck::cast_slice::<Vertex, u8>(&verts);
-        let needed = bytes.len() as wgpu::BufferAddress;
-        if self.vbuf.size() < needed {
-            // Grow with a little headroom so back-to-back resizes are
-            // rare when one frame has 30 rects and the next has 40.
-            let new_size = (needed.next_power_of_two()).max(96);
-            self.vbuf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("quad-vbuf-batched"),
-                size: new_size,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        queue.write_buffer(&self.vbuf, 0, bytes);
-
-        render_pass.set_pipeline(&pipeline.pipeline);
-        render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vbuf.slice(..));
-        render_pass.draw(0..(verts.len() as u32), 0..1);
-        Ok(())
+        self.draw_verts(device, queue, pipeline, render_pass, &verts)
     }
 
     /// Like [`render_many`], but each rect's quad is spun about its own center
@@ -369,9 +350,47 @@ impl Quad {
         for r in rects {
             verts.extend_from_slice(&rect_verts_rotated(*r, surface_size, angle));
         }
-        let bytes = bytemuck::cast_slice::<Vertex, u8>(&verts);
+        self.draw_verts(device, queue, pipeline, render_pass, &verts)
+    }
+
+    /// Like [`render_many`], but every vertex of a rect samples the one
+    /// texture point given with it: with a palette texture (one texel per
+    /// colour) many solid colours paint in one draw. A point at a texel's
+    /// centre gives that texel's colour exactly under either sampler.
+    pub fn render_many_texels(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &QuadPipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        rects: &[(ScreenRect, [f32; 2])],
+        surface_size: (u32, u32),
+    ) -> Result<()> {
+        if rects.is_empty() {
+            return Ok(());
+        }
+        let mut verts: Vec<Vertex> = Vec::with_capacity(rects.len() * 6);
+        for (r, uv) in rects {
+            verts.extend(rect_verts(*r, surface_size).map(|v| Vertex { uv: *uv, ..v }));
+        }
+        self.draw_verts(device, queue, pipeline, render_pass, &verts)
+    }
+
+    /// Upload `verts` in one `queue.write_buffer`, growing `vbuf` if needed,
+    /// and issue a single draw: the batched paths share it.
+    fn draw_verts(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &QuadPipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        verts: &[Vertex],
+    ) -> Result<()> {
+        let bytes = bytemuck::cast_slice::<Vertex, u8>(verts);
         let needed = bytes.len() as wgpu::BufferAddress;
         if self.vbuf.size() < needed {
+            // Grow with a little headroom so back-to-back resizes are
+            // rare when one frame has 30 rects and the next has 40.
             let new_size = (needed.next_power_of_two()).max(96);
             self.vbuf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("quad-vbuf-batched"),

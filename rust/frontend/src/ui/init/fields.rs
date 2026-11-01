@@ -156,14 +156,7 @@ impl State {
 }
 
 fn initial_background(surface_format: wgpu::TextureFormat) -> wgpu::Color {
-    clear_color_for_surface(
-        // Deep midnight navy — clearly blue (not the previous
-        // neutral near-black) while staying dim enough that
-        // foreground glyphs and the yellow selection rect read
-        // unambiguously on top.
-        (0.020, 0.035, 0.090),
-        surface_format.is_srgb(),
-    )
+    clear_color_for_surface(SURFACE_SRGB, surface_format.is_srgb())
 }
 
 fn initial_bl_pane_target(

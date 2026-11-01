@@ -533,5 +533,8 @@ life, which the X11 clipboard on Linux needs. A page reply refused at a one-line
 box leaves the offer unanswered: a rule that judged by the handle's name which box could hold it was withdrawn before
 main, since a row can be named with any box's name, and the fix waits for the cause of the silent link. Since
 2026-11-01 the end-of-turn audit never orders a page badged (an `.html` page reaches its person through the closing
-marker's `Page:`) nor a session's own handoff, after it had ordered both (seen in rc.6's and rc.7's use).
+marker's `Page:`) nor a session's own handoff, after it had ordered both (seen in rc.6's and rc.7's use). Since the
+same day the window draws a terminal cell's background and inverse video as a terminal does, after inverse text in
+a row (nano's bars, Claude Code's highlights) showed as white blocks with no letters: an inverse cell had been drawn
+as a block of its foreground, and every background was dropped.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

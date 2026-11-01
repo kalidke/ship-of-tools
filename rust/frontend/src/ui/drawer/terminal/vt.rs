@@ -81,10 +81,10 @@ pub(in crate::ui) fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool, super_
 
 /// Paint the vt100 terminal grid into `rect`. Each cell of the
 /// emulator screen at (row, col) is written at (rect.x + col,
-/// rect.y + row) with the cell's foreground colour and bold/italic
-/// attributes mapped onto ratatui Style. Background colour is
-/// dropped for now — the chrome pipeline doesn't carry it yet
-/// (planned bg colour + underline modifiers).
+/// rect.y + row) with the cell's foreground and background colours,
+/// bold/dim/italic and inverse mapped onto ratatui Style; the cell
+/// backend draws the background and swaps the colours of an inverse
+/// cell (`render::cells`). Underline is not carried yet.
 pub(in crate::ui) fn paint_terminal(
     buf: &mut ratatui::buffer::Buffer,
     rect: ratatui::layout::Rect,
@@ -114,7 +114,7 @@ pub(in crate::ui) fn paint_terminal(
             if cell.dim() && matches!(fg, Color::Reset) {
                 fg = Color::Gray;
             }
-            let mut style = Style::default().fg(fg);
+            let mut style = Style::default().fg(fg).bg(vt100_color_to_ratatui(cell.bgcolor()));
             if cell.bold() {
                 style = style.add_modifier(Modifier::BOLD);
             }
@@ -127,7 +127,8 @@ pub(in crate::ui) fn paint_terminal(
             // Block cursor XOR's REVERSED with the cell's existing
             // inverse state — so a cursor sitting on an inverse status-bar
             // cell flips back to non-reversed instead of disappearing,
-            // matching how xterm/alacritty draw their block cursors.
+            // matching how xterm/alacritty draw their block cursors; the
+            // letter under it stays, drawn in the cell's background.
             // Selection visibility lives on the GPU side as a yellow
             // quad rendered before text, not in this REVERSED flag —
             // REVERSED inverted both fg and bg, which made selected text

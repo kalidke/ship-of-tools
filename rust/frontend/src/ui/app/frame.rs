@@ -9,7 +9,7 @@ impl State {
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
             owed_drawn, leaving_drawn, presentation_candidate) = self.draw_chrome()?;
-        let (lines, border_rects_by_color, strip_logo_rects) = self.project_chrome()?;
+        let (lines, border_rects_by_color, strip_logo_rects, cell_backs) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
         let cell_w = self.canvas.cell_w();
@@ -70,6 +70,7 @@ impl State {
                 occlusion_query_set: None,
                 timestamp_writes: None,
             });
+            self.paint_cell_backs(&mut rpass, &cell_backs)?;
             self.paint_preview_png(&mut rpass, png_rect, image_rect)?;
             self.paint_figure_bands(&mut rpass, image_rect, preview_rect, &scalebar_draw, &caption_draw, svg_rect)?;
             self.paint_monitor_chart(&mut rpass)?;

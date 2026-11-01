@@ -351,13 +351,13 @@ impl TextLayer {
         }
 
         let chrome_areas = self.buffers.iter().zip(lines.iter()).map(|(buf, line)| {
-            // Default fg sits at (204, 204, 204) — the VS Code Dark+ /
+            // Default fg sits at `cells::DEFAULT_FG`, (204, 204, 204) — the VS Code Dark+ /
             // GitHub Dark default-foreground tone. Full-white (238+)
             // looks bright-white over a near-black background and is
             // fatiguing in long sessions; reserve that for explicit ANSI
             // 15 / Color::White from the chrome. DIM ≈ 65% gets you
             // ~133-grey, still above the contrast cliff at 14px mono.
-            let (mut r, mut g, mut b) = line.color.unwrap_or((204, 204, 204));
+            let (mut r, mut g, mut b) = line.color.unwrap_or(super::cells::DEFAULT_FG);
             if line.dim {
                 r = ((r as u16 * 65) / 100) as u8;
                 g = ((g as u16 * 65) / 100) as u8;
@@ -506,7 +506,7 @@ impl TextLayer {
                 // Same default-fg / DIM conventions as the main chrome
                 // areas so an overlay row is colour-identical to the
                 // underlying row it covers.
-                let (mut r, mut g, mut b) = line.color.unwrap_or((204, 204, 204));
+                let (mut r, mut g, mut b) = line.color.unwrap_or(super::cells::DEFAULT_FG);
                 if line.dim {
                     r = ((r as u16 * 65) / 100) as u8;
                     g = ((g as u16 * 65) / 100) as u8;

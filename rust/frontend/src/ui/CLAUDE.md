@@ -39,8 +39,8 @@ owns the status text and the hold a pushed notify keeps on it; `chrome::BatteryG
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
 connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
 surface, device, queue and surface configuration; `render::canvas::Canvas` owns the glyph text layer, the chrome's
-cell grid and the cell metrics; `render::brushes::Brushes` owns the quad pipeline, the solid brushes, the logos and
-the help peek's backing; `app::startup::StartupScript` owns the harness's command-line one-shots;
+cell grid and the cell metrics; `render::brushes::Brushes` owns the quad pipeline, the solid brushes, the cell
+backgrounds' palette, the logos and the help peek's backing; `app::startup::StartupScript` owns the harness's command-line one-shots;
 `render::capture_run::CaptureRun` owns the capture harness's run; `app::pacing::FramePacer` owns the frame-rate cap
 and the first frame's focus.
 Each of these owners lives in a module (or a module tree) that holds no `impl State`, so the compiler, not
@@ -360,8 +360,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `Brushes` privately owns the render resources' quad stage: the pipeline (lent immutably to whoever builds a quad of
   its own), one solid brush per colour drawn in a pass (a paint rewrites its brush's vertex buffer), the border
   brushes built once per colour before the pass that paints them, the strip logo and nav wordmark (each drawn only
-  when it decoded) and the help peek's backing, rebuilt only when its alpha changes. Painting is its operation over
-  the `Gpu`; `Gpu` also holds the surface format's clear colour.
+  when it decoded), the help peek's backing, rebuilt only when its alpha changes, and the cell backgrounds' palette,
+  one texel per colour, rebuilt before the pass only when the frame's colours change and painted first in the pass
+  in one draw (at most 2048 colours a frame; a run in a colour past that paints no background). Painting is its
+  operation over the `Gpu`; `Gpu` also holds the surface format's clear colour.
+- A terminal cell (the agent pane, the Terminal drawer) is drawn as a terminal draws it: `paint_terminal` carries its
+  background and inverse, and the cell backend (`render/cells.rs`, `cell_colors`) swaps an inverse cell's colours,
+  the default foreground and the surface standing in for the side it leaves unset, so its letter shows on a bar of
+  its foreground; the block cursor is an inverse cell and keeps the letter under it. Backgrounds are rectangles under
+  every figure, selection and glyph (`project_backs`). Tests: `render::cells::tests`, `render::brushes::tests` and
+  `drawer::terminal::vt::tests::{an_inverse_bar_keeps_its_letters,
+  a_cell_background_reaches_the_backend_and_the_cursor_keeps_its_letter}`.
 - `StartupScript` privately owns the harness's one-shots: `--auto-expand`, `--auto-pin` and `--demo-repl-eval` each
   fire once when the startup selection has landed on a non-empty tree (taken whether or not their action queues),
   `--demo-function-methods` once its row appears, and the `--start-path` walk's target and frontier memo, ended on

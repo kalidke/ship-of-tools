@@ -5,8 +5,44 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
+use super::cells::{CellQuad, Rgb};
 use super::gpu::Gpu;
-use super::quad::{Quad, QuadPipeline, ScreenRect};
+use super::quad::{Quad, QuadPipeline, SamplerKind, ScreenRect};
+
+/// At most this many cell background colours paint in one frame: the palette texture's width, inside every
+/// adapter's smallest allowed texture. A run in a colour past it paints no background (a full-screen truecolor
+/// gradient would reach it; no program in use does).
+const MAX_BACK_COLORS: usize = 2048;
+
+/// The frame's cell backgrounds, each rect with the palette point it samples: made by `prepare_backs` for the palette
+/// it built, painted by `paint_backs`.
+pub(in crate::ui) struct CellBacks(Vec<Sampled>);
+
+/// A rect with the palette point it samples.
+type Sampled = (ScreenRect, [f32; 2]);
+
+/// The palette for `rects` (each colour once, in order of first appearance) and each rect with the centre of its
+/// colour's texel; a colour past `MAX_BACK_COLORS` is left out with its rects.
+fn back_palette(rects: &[CellQuad]) -> (Vec<Rgb>, Vec<Sampled>) {
+    let mut palette: Vec<Rgb> = Vec::new();
+    let mut index: HashMap<Rgb, usize> = HashMap::new();
+    let mut texel: Vec<(ScreenRect, usize)> = Vec::with_capacity(rects.len());
+    for q in rects {
+        let i = match index.get(&q.color) {
+            Some(&i) => i,
+            None if palette.len() < MAX_BACK_COLORS => {
+                index.insert(q.color, palette.len());
+                palette.push(q.color);
+                palette.len() - 1
+            }
+            None => continue,
+        };
+        texel.push((ScreenRect { x: q.x, y: q.y, w: q.w, h: q.h }, i));
+    }
+    let n = palette.len() as f32;
+    let sampled = texel.into_iter().map(|(r, i)| (r, [(i as f32 + 0.5) / n, 0.5])).collect();
+    (palette, sampled)
+}
 
 /// The solid brushes each drawing stage paints rects with.
 #[derive(Clone, Copy)]
@@ -87,6 +123,9 @@ pub(in crate::ui) struct Brushes {
     /// the embedded PNG fails to decode.
     wordmark: Option<(Quad, u32, u32)>,
     help_back: Option<(u8, Quad)>,
+    /// The cell backgrounds' palette, one texel per colour, and the colours it holds: rebuilt before a pass only
+    /// when the frame's colours differ from the last frame's (`prepare_backs`).
+    backs: Option<(Vec<Rgb>, Quad)>,
 }
 
 impl Brushes {
@@ -98,7 +137,7 @@ impl Brushes {
     ) -> Self {
         Self {
             pipeline, selection_bg, overlay_back, code_bg, code_border, strike_line, borders: HashMap::new(),
-            scalebar_bar, scalebar_back, caption_back, logo, wordmark, help_back: None,
+            scalebar_bar, scalebar_back, caption_back, logo, wordmark, help_back: None, backs: None,
         }
     }
 
@@ -148,6 +187,28 @@ impl Brushes {
         Ok(())
     }
 
+    /// Build the palette for this frame's cell backgrounds, before the pass that paints them, and return the rects
+    /// with the points they sample. The palette is rebuilt only when the colours changed.
+    pub(in crate::ui) fn prepare_backs(&mut self, rects: &[CellQuad], gpu: &Gpu) -> Result<CellBacks> {
+        let (palette, sampled) = back_palette(rects);
+        if !palette.is_empty() && self.backs.as_ref().map(|(p, _)| p) != Some(&palette) {
+            let rgba: Vec<u8> = palette.iter().flat_map(|&(r, g, b)| [r, g, b, 255]).collect();
+            let quad = Quad::from_rgba8_with_sampler(gpu.device(), gpu.queue(), &self.pipeline, &rgba,
+                palette.len() as u32, 1, SamplerKind::Nearest).context("failed to build the cell background palette")?;
+            self.backs = Some((palette, quad));
+        }
+        Ok(CellBacks(sampled))
+    }
+
+    /// Paint the cell backgrounds `prepare_backs` returned this frame, in one draw.
+    pub(in crate::ui) fn paint_backs(&mut self, gpu: &Gpu, rpass: &mut wgpu::RenderPass<'_>, backs: &CellBacks) -> Result<()> {
+        match self.backs.as_mut() {
+            Some((_, quad)) => quad.render_many_texels(gpu.device(), gpu.queue(), &self.pipeline, rpass, &backs.0,
+                (gpu.config().width, gpu.config().height)),
+            None => Ok(()),
+        }
+    }
+
     /// The strip logo's native size, when it decoded.
     pub(in crate::ui) fn logo_size(&self) -> Option<(u32, u32)> { self.logo.as_ref().map(|(_, w, h)| (*w, *h)) }
 
@@ -190,3 +251,7 @@ impl Brushes {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "brushes_tests.rs"]
+mod tests;

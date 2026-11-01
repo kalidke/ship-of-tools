@@ -22,6 +22,17 @@ impl ReplImagePainter<Quad> for ReplQuadPainter<'_, '_> {
 }
 
 impl State {
+    pub(in crate::ui) fn paint_cell_backs(
+        &mut self,
+        mut rpass: &mut wgpu::RenderPass<'_>,
+        cell_backs: &crate::ui::render::brushes::CellBacks,
+    ) -> Result<()> {
+        // Cell backgrounds (a terminal's colours and inverse cells, a
+        // chrome span's bg) — first in the pass, so every figure, selection
+        // and glyph in the same cells draws on top.
+        self.brushes.paint_backs(&self.gpu, &mut rpass, cell_backs)
+    }
+
     pub(in crate::ui) fn paint_monitor_chart(&self, mut rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
         // Ctrl+M monitor chart: paint the rasterised SVG quad over the
         // drawer rect (ADR 0020), reusing the same resvg→wgpu-quad path as

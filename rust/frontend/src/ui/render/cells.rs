@@ -8,8 +8,9 @@
 // Limitations of this step (deliberate — keep the spike scope tight):
 //   - Foreground color is honoured (per-cell, projected into runs of
 //     same-colour cells so each run becomes a coloured TextArea).
-//   - Background colour is dropped: the grid records it, but `project_lines`
-//     emits the foreground and four modifiers only (`run_signature`).
+//   - Background colour is honoured as solid rectangles under the text
+//     (`project_backs`), and REVERSED swaps a cell's two colours as a terminal
+//     does (`cell_colors`), so an inverse cell keeps its letter.
 //   - Per-cell glyph width is approximated as a constant; we trust monospace
 //     metrics from cosmic-text rather than per-cell measuring.
 //   - The cursor position is tracked but not rendered.
@@ -21,7 +22,23 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::{Color, Modifier};
 
+use crate::ui::render::surface::SURFACE_SRGB;
 use crate::ui::render::text::Line;
+
+/// A colour as sRGB bytes.
+pub(crate) type Rgb = (u8, u8, u8);
+
+/// The default foreground: what a glyph with no colour of its own is drawn in (the text layer's fallback, the VS Code
+/// Dark+ default-foreground tone), and the background of an inverse cell with no foreground.
+pub(crate) const DEFAULT_FG: Rgb = (204, 204, 204);
+
+/// The surface's colour in bytes: what a cell with no background shows, and the glyph colour of an inverse cell
+/// with no background.
+pub(crate) const SURFACE_RGB: Rgb = (
+    (SURFACE_SRGB.0 * 255.0 + 0.5) as u8,
+    (SURFACE_SRGB.1 * 255.0 + 0.5) as u8,
+    (SURFACE_SRGB.2 * 255.0 + 0.5) as u8,
+);
 
 /// xterm 256-colour palette → RGB. 0..=15 mirror the named ANSI palette
 /// (we hand those off to `Color::Gray` etc. upstream, but the table here
@@ -105,6 +122,31 @@ pub(crate) fn ratatui_color_to_rgb(c: Option<Color>) -> Option<(u8, u8, u8)> {
     }
 }
 
+/// Map a ratatui colour to a background's RGB: as `ratatui_color_to_rgb`, except that Black is black (its
+/// promotion is for glyphs, which would vanish on the surface; a black background is meant to sit near it).
+fn back_rgb(c: Option<Color>) -> Option<Rgb> {
+    match c? {
+        Color::Black => Some((0, 0, 0)),
+        other => ratatui_color_to_rgb(Some(other)),
+    }
+}
+
+/// What a cell is drawn in: its glyph's colour (`None` is the default foreground) and its background (`None` is the
+/// surface). REVERSED swaps the two as a terminal does, a default standing in for the side the cell leaves unset, so
+/// an inverse cell shows its letter on a bar of its foreground (nano's title and key bars, Claude Code's cursor and
+/// highlighted rows) instead of a block that hides it.
+fn cell_colors(cell: &Cell) -> (Option<Rgb>, Option<Rgb>) {
+    let style = cell.style();
+    if style.add_modifier.contains(Modifier::REVERSED) {
+        (
+            Some(ratatui_color_to_rgb(style.bg).unwrap_or(SURFACE_RGB)),
+            Some(back_rgb(style.fg).unwrap_or(DEFAULT_FG)),
+        )
+    } else {
+        (ratatui_color_to_rgb(style.fg), back_rgb(style.bg))
+    }
+}
+
 /// The four possible arms of a box-drawing glyph, measured *from the cell
 /// centre*. A glyph lights the arms toward the edges it connects to: `│`
 /// has up+down, `┌` has down+right, `┼` all four, and so on.
@@ -116,14 +158,15 @@ pub struct Arms {
     pub right: bool,
 }
 
-/// A solid-colour rectangle (physical px, origin top-left) emitted for a
-/// single box-drawing cell. Rendered as a quad sized to the exact cell so
-/// stacked borders tile seamlessly — font metrics never enter the picture,
-/// which is what fixes the sub-cell gaps cosmic-text leaves between stacked
-/// `│` glyphs (the resolved monospace font doesn't fill the leading-padded
-/// cell). See `project_border_quads`.
-#[derive(Clone, Copy, Debug)]
-pub struct BorderQuad {
+/// A solid-colour rectangle (physical px, origin top-left): an arm of a
+/// box-drawing cell, or a run of cells' background. Rendered as a quad sized
+/// to the exact cells so stacked borders and backgrounds tile seamlessly —
+/// font metrics never enter the picture, which is what fixes the sub-cell
+/// gaps cosmic-text leaves between stacked `│` glyphs (the resolved monospace
+/// font doesn't fill the leading-padded cell). See `project_border_quads`
+/// and `project_backs`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellQuad {
     pub x: f32,
     pub y: f32,
     pub w: f32,
@@ -257,37 +300,12 @@ impl WgpuBackend {
                 let i = row_start + col as usize;
                 let sym = self.cells[i].symbol();
                 let run_style = run_signature(&self.cells[i]);
-                let (fg, bold, italic, dim, reversed) = run_style;
-                // REVERSED cells get a `█` full-block in the cell's fg
-                // colour — the chrome's TextLayer doesn't honour the
-                // REVERSED modifier (no bg-colour quad pipeline yet),
-                // so we substitute a foreground-colour glyph that's
-                // visible at the cell position. Per-cell so multi-cell
-                // REVERSED runs (tmux status bar) stay aligned with
-                // cell_w even if the bare block has slight advance
-                // mismatch. The underlying glyph is lost; for the
-                // cursor cell that's expected (typical xterm/alacritty
-                // block-cursor behaviour).
-                if reversed {
-                    out.push(Line {
-                        text: "\u{2588}".to_string(),
-                        x: origin_x + col as f32 * cell_w,
-                        y,
-                        color: ratatui_color_to_rgb(fg),
-                        bold,
-                        italic,
-                        dim,
-                    });
-                    col += 1;
-                    continue;
-                }
+                let (color, bold, italic, dim) = run_style;
                 // Box-drawing chars (│ ─ ┌ …) are rendered as solid quads by
                 // `project_border_quads` — font-independent and gap-free by
                 // construction — so skip emitting a glyph Line for them here
                 // to avoid double-rendering. Non-box non-ASCII (emoji, other
                 // symbols) still falls through to the glyph path below.
-                // Reversed box cells were already handled as a block above,
-                // so they don't reach here.
                 if box_arms_of_symbol(sym).is_some() {
                     col += 1;
                     continue;
@@ -297,7 +315,7 @@ impl WgpuBackend {
                         text: sym.to_string(),
                         x: origin_x + col as f32 * cell_w,
                         y,
-                        color: ratatui_color_to_rgb(fg),
+                        color,
                         bold,
                         italic,
                         dim,
@@ -320,7 +338,7 @@ impl WgpuBackend {
                     text,
                     x: origin_x + run_start_col as f32 * cell_w,
                     y,
-                    color: ratatui_color_to_rgb(fg),
+                    color,
                     bold,
                     italic,
                     dim,
@@ -330,7 +348,7 @@ impl WgpuBackend {
         out
     }
 
-    /// Project every box-drawing cell onto solid-colour `BorderQuad`s using
+    /// Project every box-drawing cell onto solid-colour `CellQuad`s using
     /// the ARMS-FROM-CENTRE model: each lit arm spans from the cell centre
     /// out to the cell edge. A run of `│` cells therefore produces vertical
     /// rects that meet exactly on the shared cell boundary (no font-leading
@@ -340,8 +358,8 @@ impl WgpuBackend {
     /// The origin / cell size MUST match the `project_lines` call for the same
     /// frame so the quads land on the glyph grid exactly. Cells whose symbol
     /// isn't a covered box char are skipped (they still render as glyphs via
-    /// `project_lines`); REVERSED cells are skipped too, since `project_lines`
-    /// already substitutes a full block for them.
+    /// `project_lines`). An arm takes the cell's glyph colour, so an inverse
+    /// box cell draws its arms in its background over its `project_backs` bar.
     pub fn project_border_quads(
         &self,
         origin_x: f32,
@@ -349,19 +367,13 @@ impl WgpuBackend {
         cell_w: f32,
         cell_h: f32,
         thickness: f32,
-    ) -> Vec<BorderQuad> {
+    ) -> Vec<CellQuad> {
         let t = thickness.max(1.0);
         let mut out = Vec::new();
         for row in 0..self.rows {
             let row_start = row as usize * self.cols as usize;
             for col in 0..self.cols {
                 let cell = &self.cells[row_start + col as usize];
-                // REVERSED box cells render as a full block via project_lines;
-                // leave them to that path so a box char under the cursor /
-                // selection stays a block, not a hairline.
-                if cell.style().add_modifier.contains(Modifier::REVERSED) {
-                    continue;
-                }
                 let Some(arms) = box_arms_of_symbol(cell.symbol()) else {
                     continue;
                 };
@@ -369,14 +381,14 @@ impl WgpuBackend {
                 let y0 = origin_y + row as f32 * cell_h;
                 let cx = x0 + cell_w * 0.5;
                 let cy = y0 + cell_h * 0.5;
-                // Default fg (204,204,204) matches project_lines'/text layer's
+                // The default foreground matches project_lines'/text layer's
                 // fallback when the cell carries no explicit colour.
-                let color = ratatui_color_to_rgb(cell.style().fg).unwrap_or((204, 204, 204));
+                let color = cell_colors(cell).0.unwrap_or(DEFAULT_FG);
                 // Vertical bar (up and/or down arm).
                 if arms.up || arms.down {
                     let top = if arms.up { y0 } else { cy - t * 0.5 };
                     let bottom = if arms.down { y0 + cell_h } else { cy + t * 0.5 };
-                    out.push(BorderQuad {
+                    out.push(CellQuad {
                         x: cx - t * 0.5,
                         y: top,
                         w: t,
@@ -388,7 +400,7 @@ impl WgpuBackend {
                 if arms.left || arms.right {
                     let left = if arms.left { x0 } else { cx - t * 0.5 };
                     let right = if arms.right { x0 + cell_w } else { cx + t * 0.5 };
-                    out.push(BorderQuad {
+                    out.push(CellQuad {
                         x: left,
                         y: cy - t * 0.5,
                         w: right - left,
@@ -400,23 +412,59 @@ impl WgpuBackend {
         }
         out
     }
+
+    /// Project every cell with a background (its own, or an inverse cell's
+    /// foreground) onto solid rectangles, one per run of adjacent cells in a
+    /// row that share the colour, at the same origin and cell size as
+    /// `project_lines`. They are painted under the text and the selection, so
+    /// a highlighted cell keeps its letter on top.
+    pub fn project_backs(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        cell_w: f32,
+        cell_h: f32,
+    ) -> Vec<CellQuad> {
+        let mut out = Vec::new();
+        for row in 0..self.rows {
+            let row_start = row as usize * self.cols as usize;
+            let y = origin_y + row as f32 * cell_h;
+            let mut col: u16 = 0;
+            while col < self.cols {
+                let Some(color) = cell_colors(&self.cells[row_start + col as usize]).1 else {
+                    col += 1;
+                    continue;
+                };
+                let start = col;
+                while col < self.cols && cell_colors(&self.cells[row_start + col as usize]).1 == Some(color) {
+                    col += 1;
+                }
+                out.push(CellQuad {
+                    x: origin_x + start as f32 * cell_w,
+                    y,
+                    w: (col - start) as f32 * cell_w,
+                    h: cell_h,
+                    color,
+                });
+            }
+        }
+        out
+    }
 }
 
-/// `(fg, bold, italic, dim, reversed)` tuple — what defines a `Line` run
+/// `(glyph colour, bold, italic, dim)` tuple — what defines a `Line` run
 /// boundary. We don't include underline/strikethrough yet because
-/// cosmic-text's Attrs doesn't expose them; add when needed. REVERSED
-/// joins the tuple so the cursor cell (paint_terminal flips REVERSED
-/// on for the vt100 cursor position) gets its own Line and can be
-/// rendered as a visible block glyph in project_lines.
-fn run_signature(cell: &Cell) -> (Option<Color>, bool, bool, bool, bool) {
-    let style = cell.style();
-    let mods = style.add_modifier;
+/// cosmic-text's Attrs doesn't expose them; add when needed. The colour is
+/// the resolved glyph colour (`cell_colors`), so an inverse cell's letter is
+/// drawn in its background; the background itself is `project_backs`'s and
+/// does not split a run.
+fn run_signature(cell: &Cell) -> (Option<Rgb>, bool, bool, bool) {
+    let mods = cell.style().add_modifier;
     (
-        style.fg,
+        cell_colors(cell).0,
         mods.contains(Modifier::BOLD),
         mods.contains(Modifier::ITALIC),
         mods.contains(Modifier::DIM),
-        mods.contains(Modifier::REVERSED),
     )
 }
 
@@ -517,3 +565,7 @@ impl Backend for WgpuBackend {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "cells_tests.rs"]
+mod tests;

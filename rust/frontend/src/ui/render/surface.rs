@@ -26,6 +26,11 @@ pub(in crate::ui) const BASE_CELL_H: f32 = 18.0;
 pub(in crate::ui) const BASE_CHROME_ORIGIN_X: f32 = 12.0;
 pub(in crate::ui) const BASE_CHROME_ORIGIN_Y: f32 = 12.0;
 
+/// The surface's visible colour (sRGB, 0..1): deep midnight navy, clearly blue while dim enough that foreground
+/// glyphs and the yellow selection rect read unambiguously on top. A cell with no background shows it, and an inverse
+/// cell with no background draws its letter in it (`cells::SURFACE_RGB`).
+pub(in crate::ui) const SURFACE_SRGB: (f64, f64, f64) = (0.020, 0.035, 0.090);
+
 /// Translate a "desired visible sRGB colour" into the `wgpu::Color` that
 /// `LoadOp::Clear` should carry, so the same painted bg appears the same
 /// across machines.
