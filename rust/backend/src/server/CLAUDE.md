@@ -143,6 +143,11 @@ of each.
     opens nowhere for this reason tells its REPL run nothing (queued); a tie between a live window and the window away
     goes to the one away; a window's use lands on every connection of it, and only a named `fe` connection's use is
     remembered (`Inner::report`).
+    An untargeted `docs` open with a reply scope additionally needs person input in the chosen window within
+    `SCOPED_OPEN_WINDOW` (30 minutes, `clients_show.rs`). Otherwise it publishes nothing and refuses with
+    `no_recent_frontend`, naming `--fe`; the away window still prevents fallback to another computer. An ordinary
+    open and an explicit `--fe` keep their routing. Test: `clients_tests.rs::
+    a_scoped_open_requires_recent_person_input_unless_a_window_is_named` through `handle_fe_command_send`.
     A page's command instead goes to the window that opened its site: `Clients::window_connection(owner)` selects
     that owner's newest live named `fe` connection, and `PageVerbs` publishes with its name and serial. The bus writer
     writes only to that serial, so another window and an older redial receive nothing. No live connection answers

@@ -3,9 +3,11 @@
 //! included, to one window, the window in use, or to none when the window a person used last is away.
 
 use super::{ActiveFrontend, ClientInfo, ClientsSnapshot};
+use std::time::Duration;
 
 /// The commands that put something in the preview pane: every window gets them, so none is chosen.
 const PANE: &[&str] = &["preview", "reveal"];
+const SCOPED_OPEN_WINDOW: Duration = Duration::from_secs(30 * 60);
 
 /// Where an untargeted `fe.command` goes (`window_for`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,27 @@ pub enum Route {
 }
 
 impl ClientsSnapshot {
+    pub fn scoped_open_refusal(&self, cmd: &str, args: &serde_json::Value, route: &Route) -> Option<String> {
+        use sot_protocol::ReplyScope;
+
+        let scoped = cmd == "docs" && args.get("direct").is_some_and(|value| {
+            serde_json::from_value::<ReplyScope>(value.clone()).is_ok_and(|scope| scope != ReplyScope::None)
+        });
+        if !scoped {
+            return None;
+        }
+        if let Route::One(to, _) = route {
+            let input = self.clients.iter().find(|c| c.serial == to.serial).and_then(|c| c.last_person_input_at);
+            if input.is_some_and(|at| at.elapsed() <= SCOPED_OPEN_WINDOW) {
+                return None;
+            }
+        }
+        Some(format!(
+            "A page with reply scope needs a window with person input in the last {} minutes; name a window with --fe.",
+            SCOPED_OPEN_WINDOW.as_secs() / 60,
+        ))
+    }
+
     /// Where an untargeted `fe.command` `cmd` goes (`handle_fe_command_send`). `relaunch` goes to the active frontend
     /// alone (`used`; nowhere when no window was used within `ACTIVE_WINDOW`); a preview-pane command (`PANE`) to every
     /// window; any other command, a browser open included, to `in_use`, or nowhere when it has none.

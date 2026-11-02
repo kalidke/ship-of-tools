@@ -517,6 +517,57 @@ mod fe_command_send_tests {
             .map(|n| n as usize)
     }
 
+    #[tokio::test]
+    async fn a_scoped_open_requires_recent_person_input_unless_a_window_is_named() {
+        use std::time::{Duration, Instant};
+
+        let open = |scope: serde_json::Value, target: Option<&str>| serde_json::json!({
+            "cmd": "docs", "args": {"workspace": "w", "path": "/site/index.html", "direct": scope}, "target": target,
+        });
+        for scope in [serde_json::json!({"scope": "row", "workspace_id": "w"}), serde_json::json!({"scope": "all"})] {
+            let clients = Clients::new();
+            let window = |host: &str| clients.register(
+                "c", "0.7.0", 4, "fe".into(), Some(host.into()), Some(host.into()), Some(format!("fe@{host}")),
+            );
+            let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+            let out = handle_fe_command_send(1, open(scope.clone(), None), &tx, &clients).await.unwrap();
+            assert!(out[0].0.payload["error"].as_str().unwrap().contains("--fe"), "no window is refused too");
+            assert!(rx.try_recv().is_err());
+            let desk = window("desk");
+            for age in [None, Some(Duration::from_secs(30 * 60 + 1))] {
+                if let Some(age) = age {
+                    clients.inner.lock().unwrap().report(desk.serial(), Instant::now() - age);
+                }
+                let out = handle_fe_command_send(1, open(scope.clone(), None), &tx, &clients).await.unwrap();
+                let error = out[0].0.payload["error"].as_str().expect("refused");
+                assert!(error.contains("30 minutes") && error.contains("--fe"), "{error}");
+                assert!(rx.try_recv().is_err(), "a scoped open must publish nothing");
+            }
+            let out = handle_fe_command_send(1, open(scope.clone(), Some("fe@desk")), &tx, &clients).await.unwrap();
+            assert_eq!(delivered_to_of(&out), Some(1), "an explicit window needs no recent input");
+            assert_eq!(rx.try_recv().unwrap().target_serial, None);
+
+            clients.inner.lock().unwrap().report(desk.serial(), Instant::now() - Duration::from_secs(29 * 60));
+            let out = handle_fe_command_send(1, open(scope.clone(), None), &tx, &clients).await.unwrap();
+            assert_eq!(delivered_to_of(&out), Some(1));
+            assert_eq!(rx.try_recv().unwrap().target_serial, Some(desk.serial()));
+
+            clients.inner.lock().unwrap().report(desk.serial(), Instant::now() - Duration::from_secs(3600));
+            let out = handle_fe_command_send(1, open(serde_json::json!({"scope": "none"}), None), &tx, &clients).await.unwrap();
+            assert_eq!(delivered_to_of(&out), Some(1), "an ordinary open keeps its routing");
+            assert_eq!(rx.try_recv().unwrap().target_serial, Some(desk.serial()));
+
+            clients.touch_person_input(desk.serial());
+            let laptop = window("laptop");
+            clients.touch_person_input(laptop.serial());
+            drop(laptop);
+            let out = handle_fe_command_send(1, open(scope, None), &tx, &clients).await.unwrap();
+            assert_eq!(delivered_to_of(&out), Some(0));
+            assert_eq!(out[0].0.payload["away"], "laptop");
+            assert!(rx.try_recv().is_err(), "never fall back from an away window");
+        }
+    }
+
     /// Two connections share one handle (a relaunched frontend whose
     /// predecessor has not been reaped yet) and one of them is active.
     /// Delivery is by SERIAL, so exactly one connection acts — and

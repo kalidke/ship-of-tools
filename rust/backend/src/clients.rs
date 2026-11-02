@@ -621,7 +621,14 @@ pub async fn handle_fe_command_send(
     let forwarded = |key: &str| req.args.get(key).and_then(serde_json::Value::as_str);
     let (workspace, path) = (forwarded("workspace"), forwarded("path"));
     if req.target.is_none() {
-        match snap.window_for(&req.cmd) {
+        let route = snap.window_for(&req.cmd);
+        if let Some(error) = snap.scoped_open_refusal(&req.cmd, &req.args, &route) {
+            let away = if let show::Route::Nowhere(away) = route { away } else { None };
+            return Ok(vec![(Frame::res(req_id, op::FE_COMMAND_SEND, serde_json::json!({
+                "error": error, "code": "no_recent_frontend", "delivered_to": 0, "away": away,
+            })), None)]);
+        }
+        match route {
             show::Route::Every => {}
             show::Route::One(to, reason) => {
                 req.target = Some(to.handle);
