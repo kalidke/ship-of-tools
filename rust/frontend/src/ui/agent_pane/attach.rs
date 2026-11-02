@@ -35,8 +35,9 @@ impl<C> WarmAttachPool<C> {
     }
 }
 
-pub(in crate::ui) fn shutdown_detached(clients: Vec<PaneAttachClient>) {
+pub(in crate::ui) fn shutdown_detached(clients: Vec<PaneAttachClient>, reason: &'static str) {
     for mut c in clients {
+        c.set_shutdown_reason(reason);
         std::thread::spawn(move || { c.shutdown(Duration::from_millis(250)); });
     }
 }
@@ -129,7 +130,7 @@ impl<C: PaneClient> AgentPane<C> {
                     client.set_viewed(false);
                     retired = self.warm_attach.park(key, client, bound);
                 }
-                _ => {} // Preserve the departing uncheckpointed/dead client's ordinary drop.
+                _ => client.set_shutdown_reason("switch away"),
             }
         }
         self.pane_dial_error = None;
@@ -271,7 +272,7 @@ impl State {
         let bound = self.agent_pane.target().and_then(|(h, _)| self.row_directory.rows(&h)
             .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())).unwrap_or(1);
         let plan = self.agent_pane.begin_switch(key, origin, bound);
-        shutdown_detached(plan.retired);
+        shutdown_detached(plan.retired, "warm pool eviction");
         if let Some(status) = plan.status {
             self.status.set(status);
             self.window.request_redraw();
@@ -294,7 +295,7 @@ impl State {
 
     pub(in crate::ui) fn spawn_pane_attach_term(&mut self, target: AdmittedAttach) {
         let (plan, retired) = self.agent_pane.prepare_attach(target);
-        shutdown_detached(retired);
+        shutdown_detached(retired, "dead warm client");
         let hosts = &mut self.hosts;
         let wake = self.wake.clone();
         let effect = install_pane_attach(&mut self.agent_pane, plan, |host, target, (cols, rows)| {
@@ -303,7 +304,7 @@ impl State {
             let link = hosts.links.entry(host.clone()).or_default().clone();
             let (dial, token) = lane_dial(config, resolved, &link).ok_or(AttachFailure::Unusable)?;
             let endpoint = sot_topology::lane_client::DaemonLaneEndpoint::new(dial, token);
-            PaneAttachClient::attach(endpoint, target.to_string(), cols, rows, Box::new(move || wake.wake()))
+            PaneAttachClient::attach_on_host(endpoint, host.to_string(), target.to_string(), cols, rows, Box::new(move || wake.wake()))
                 .map_err(|e| AttachFailure::Startup(e.to_string()))
         }, Instant::now, |trace| match trace {
             AttachTrace::Warm(since_request_ms) => tracing::info!(since_request_ms, "session pane: warm capsule client reused"),
@@ -354,7 +355,7 @@ impl State {
 
     pub(in crate::ui) fn prune_warm_attach(&mut self, host: &HostKey) {
         let live = self.row_directory.rows(host).map(|l| l.iter().map(|w| w.session_name.clone()).collect()).unwrap_or_default();
-        shutdown_detached(self.agent_pane.prune_warm(host, &live));
+        shutdown_detached(self.agent_pane.prune_warm(host, &live), "row removed");
     }
 }
 

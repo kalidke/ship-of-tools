@@ -272,6 +272,13 @@ fn silence_bound() -> std::time::Duration {
 /// ended, else 1 with the reason on one stderr line.
 fn route(hello: sot_protocol::Frame, client: Bridged, path: std::path::PathBuf) -> i32 {
     use sot_topology::link::router::{Connector, Duplex};
+    // This offline command returns before daemon logging is initialized. Its stderr travels over ssh or to the
+    // relay unit's journal; stdout belongs exclusively to the link. Only the copy records go by default: the window
+    // reads this stderr for the line that names a dead login.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("sot::router_copy=info"));
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).without_time()
+        .with_writer(|| sot_platform::secret::RedactingWriter(std::io::stderr())).finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {

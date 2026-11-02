@@ -564,7 +564,7 @@ async fn a_login_that_ends_before_its_answer_names_its_stderr_line() {
 #[tokio::test]
 async fn the_stderr_drain_keeps_the_last_non_empty_line() {
     async fn drained(input: &'static [u8]) -> Option<String> {
-        let cell = super::window::drain_stderr(input);
+        let cell = super::window::drain_stderr(input, "example-route".into());
         tokio::time::timeout(BOUND, async {
             while Arc::strong_count(&cell) != 1 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -578,4 +578,72 @@ async fn the_stderr_drain_keeps_the_last_non_empty_line() {
     assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
     assert_eq!(drained(b"\n  \n").await, None);
     assert_eq!(drained(b"Banner \xe9t\xe9\nPermission denied (publickey).\n").await.as_deref(), Some("Permission denied (publickey)."));
+}
+
+#[tokio::test]
+async fn a_router_copy_end_names_direction_counts_and_result() {
+    use super::table::{Shared, Side};
+    let log = sot_platform::test_log::capture();
+    let shared = Shared::new(Side::Router);
+    // A flush waits for the link's writer, so this stands in for it.
+    let writer = {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            loop {
+                shared.with(|t| while t.next_out().is_some() {});
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+    };
+    let channel = Channel::new(shared, 0);
+    let (local, mut daemon) = tokio::io::duplex(64);
+    daemon.write_all(b"abc").await.unwrap();
+    daemon.shutdown().await.unwrap();
+    tokio::time::timeout(BOUND, super::io::pump(channel, Box::new(local))).await.unwrap();
+    writer.abort();
+    let text = log.text();
+    assert!(text.contains("DEBUG") && text.contains("router channel copy ended"), "{text}");
+    for field in ["channel=0", "first=daemon_to_link", "daemon_to_link_bytes=3", "link_to_daemon_bytes=0", "result=ok", "elapsed_since_copy_start_ms="] {
+        assert!(text.contains(field), "missing {field}: {text}");
+    }
+
+    struct Broken { written: usize }
+    impl tokio::io::AsyncRead for Broken {
+        fn poll_read(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, _: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+            if self.written == 5 {
+                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "fixture copy reset")))
+            } else {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }
+    }
+    impl tokio::io::AsyncWrite for Broken {
+        fn poll_write(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, bytes: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+            let n = bytes.len().min(2);
+            self.written += n;
+            std::task::Poll::Ready(Ok(n))
+        }
+        fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> { std::task::Poll::Ready(Ok(())) }
+        fn poll_shutdown(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> { std::task::Poll::Ready(Ok(())) }
+    }
+    let shared = Shared::new(Side::Router);
+    shared.with(|t| t.on_data(0, b"abcde".to_vec())).unwrap();
+    tokio::time::timeout(BOUND, super::io::pump(Channel::new(shared, 0), Box::new(Broken { written: 0 }))).await.unwrap();
+    let text = log.text();
+    let error = text.lines().find(|line| line.contains("fixture copy reset")).expect(&text);
+    assert!(error.contains("INFO") && error.contains("first=daemon_to_link") && error.contains("link_to_daemon_bytes=5") && error.contains("result=error"), "{error}");
+    assert!(!error.contains("abcde"), "copied bytes leaked: {error}");
+
+    let shared = Shared::new(Side::Router);
+    let (local, _daemon) = tokio::io::duplex(64);
+    assert!(tokio::time::timeout(Duration::from_millis(10), super::io::pump(Channel::new(shared, 0), Box::new(local))).await.is_err());
+    assert!(log.text().lines().any(|line| line.contains("DEBUG") && line.contains("first=cancelled") && line.contains("result=cancelled")), "{}", log.text());
+
+    // The exact stderr format the offline router writes must be readable while the link is still up.
+    let record = format!("{error}\n");
+    let cell = super::window::drain_stderr(std::io::Cursor::new(record.into_bytes()), "example-route".into());
+    until("the forwarded stderr record", || log.text().contains("far router copy")).await;
+    assert!(log.text().lines().any(|line| line.contains("INFO") && line.contains("far router copy") && line.contains("fixture copy reset")), "{}", log.text());
+    assert!(cell.lock().unwrap().is_none(), "a router record replaced the login's last line");
 }

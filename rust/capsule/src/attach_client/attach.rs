@@ -70,6 +70,8 @@ enum Command {
 struct Shared {
     viewed: AtomicBool,
     shutdown: AtomicBool,
+    shutdown_reason: Mutex<&'static str>,
+    host: String,
     attached: AtomicBool,
     /// Bytes of input in the command queue.
     queued_input: AtomicUsize,
@@ -90,6 +92,8 @@ impl Shared {
         Self {
             viewed: AtomicBool::new(viewed),
             shutdown: AtomicBool::new(false),
+            shutdown_reason: Mutex::new("drop"),
+            host: String::new(),
             attached: AtomicBool::new(false),
             queued_input: AtomicUsize::new(0),
             discarded: AtomicUsize::new(0),
@@ -130,7 +134,20 @@ impl AttachWorker {
         E::Client: 'static,
         S: Fn(WorkerEvent) + Send + 'static,
     {
-        let shared = Arc::new(Shared::new(cols, rows, true));
+        let host = sot_platform::host::state_dir::host_name().unwrap_or_else(|e| format!("local host unavailable: {e}"));
+        Self::spawn_on_host(endpoint, host, row, cols, rows, headless, sink)
+    }
+
+    /// As [`Self::spawn`], with the dial host's name for the window's diagnostics.
+    pub fn spawn_on_host<E, S>(endpoint: E, host: String, row: String, cols: u16, rows: u16, headless: bool, sink: S) -> std::io::Result<Self>
+    where
+        E: Endpoint + Send + 'static,
+        E::Client: 'static,
+        S: Fn(WorkerEvent) + Send + 'static,
+    {
+        let mut state = Shared::new(cols, rows, true);
+        state.host = host;
+        let shared = Arc::new(state);
         let (commands, inbox) = mpsc::channel();
         let handle = {
             let shared = Arc::clone(&shared);
@@ -209,8 +226,17 @@ impl AttachWorker {
         let _ = self.shared.sink_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| Some(held.saturating_sub(bytes)));
     }
 
+    /// Names a caller's intentional retirement without changing when the worker ends.
+    pub fn set_shutdown_reason(&self, reason: &'static str) {
+        *self.shared.shutdown_reason.lock().unwrap_or_else(|p| p.into_inner()) = reason;
+    }
+
     /// Ends the worker and waits up to `wait` for its thread; `true` when it ended.
     pub fn shutdown(&self, wait: Duration) -> bool {
+        {
+            let mut reason = self.shared.shutdown_reason.lock().unwrap_or_else(|p| p.into_inner());
+            if *reason == "drop" { *reason = "shutdown"; }
+        }
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.wake();
         let Some(handle) = self.handle.lock().unwrap_or_else(|p| p.into_inner()).take() else { return true };
@@ -246,7 +272,20 @@ struct Worker<E: Endpoint, S> {
 /// How one connection ended.
 enum Ended {
     Shutdown,
-    Lost,
+    Lost(RowError),
+}
+
+struct AttemptLog {
+    started: Instant,
+    stage: &'static str,
+    error: String,
+}
+
+impl AttemptLog {
+    fn row_error(&mut self, e: RowError) -> Attempt {
+        self.error = e.diagnostic();
+        row_error(e)
+    }
 }
 
 /// How one attempt to connect and attach ended before it served.
@@ -269,22 +308,46 @@ where
     fn run(self) {
         let mut redial = Redial::new(REDIAL_FLOOR, REDIAL_CAP);
         let mut absent_since: Option<Instant> = None;
+        static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
+        let client_id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
+        let mut attempt = 0u64;
         loop {
             if !self.wait_until_ready() {
                 return;
             }
-            let started = Instant::now();
-            let lasted = match self.attempt() {
+            attempt += 1;
+            let mut log = AttemptLog { started: Instant::now(), stage: "connecting", error: String::new() };
+            let result = self.attempt(&mut log);
+            let result = match result {
                 Ok((mut client, driver)) => {
-                    absent_since = None;
+                    log.stage = "service";
                     let ended = self.serve(&mut client, driver);
+                    if let Ended::Lost(e) = &ended { log.error = e.diagnostic(); }
                     self.shared.attached.store(false, Ordering::Release);
                     *self.shared.waker.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    Ok(ended)
+                }
+                Err(e) => Err(e),
+            };
+            let shutdown = self.stopping() || matches!(result, Ok(Ended::Shutdown));
+            let cause = if shutdown { *self.shared.shutdown_reason.lock().unwrap_or_else(|p| p.into_inner()) } else { "connection lost" };
+            // A headless client lives for one transaction, several a minute per row: only its loss is news.
+            if !(self.headless && shutdown) {
+                tracing::info!(
+                    host = ?self.shared.host, row = ?self.row, client = client_id, attempt, stage = %log.stage,
+                    end = %if shutdown { "shutdown" } else { "lost" }, cause = ?cause,
+                    elapsed_since_attempt_start_ms = log.started.elapsed().as_millis() as u64,
+                    error = ?log.error, "row attach ended"
+                );
+            }
+            let lasted = match result {
+                Ok(ended) => {
+                    absent_since = None;
                     if matches!(ended, Ended::Shutdown) {
                         return;
                     }
                     (self.sink)(WorkerEvent::Status("redialing\u{2026}".into()));
-                    started.elapsed()
+                    log.started.elapsed()
                 }
                 Err(Attempt::Terminal(reason)) => {
                     (self.sink)(WorkerEvent::Terminal(reason));
@@ -329,15 +392,21 @@ where
     }
 
     /// Dials, proves the row, attaches and sends the snapshot to the sink.
-    fn attempt(&self) -> Result<(RowClient<E::Client>, bool), Attempt> {
+    fn attempt(&self, log: &mut AttemptLog) -> Result<(RowClient<E::Client>, bool), Attempt> {
         // The login (an ssh one has a budget of its own, topology's) is the endpoint's to bound; the row's hello has its
         // own, which starts when the stream is up.
-        let conn = self.endpoint.connect_row_unchallenged(&self.row).map_err(dial_error)?;
+        let conn = self.endpoint.connect_row_unchallenged(&self.row).map_err(|e| {
+            log.error = format!("{e:#}");
+            dial_error(e)
+        })?;
+        log.stage = "hello";
         let deadline = Instant::now() + HELLO_BOUND;
-        let mut client = RowClient::over(&self.endpoint, conn, "fe-attach", deadline).map_err(row_error)?;
+        let mut client = RowClient::over(&self.endpoint, conn, "fe-attach", deadline).map_err(|e| log.row_error(e))?;
+        log.stage = "attach";
         let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
         let mut driver = !self.headless;
-        let run = client.attach(cols, rows, driver).map_err(row_error)?;
+        let run = client.attach(cols, rows, driver).map_err(|e| log.row_error(e))?;
+        log.stage = "snapshot";
         *self.shared.run.lock().unwrap_or_else(|p| p.into_inner()) = run;
         *self.shared.waker.lock().unwrap_or_else(|p| p.into_inner()) = Some(client.waker());
         // The snapshot comes before the first output, in chunks the last of which is flagged.
@@ -347,7 +416,7 @@ where
             if self.stopping() {
                 return Err(Attempt::Retry { reason: "ending".into(), absent: false });
             }
-            match client.next_event(EVENT_TICK).map_err(row_error)? {
+            match client.next_event(EVENT_TICK).map_err(|e| log.row_error(e))? {
                 Some(RowEvent::Snapshot { bytes, last }) => {
                     snapshot.extend_from_slice(&bytes);
                     if last {
@@ -361,6 +430,7 @@ where
                 Some(RowEvent::Output(_) | RowEvent::Phase(_) | RowEvent::Exiting(_)) => {}
                 None => {
                     if Instant::now() >= deadline {
+                        log.error = "the row sent no screen".into();
                         return Err(Attempt::Retry { reason: "the row sent no screen".into(), absent: false });
                     }
                 }
@@ -398,14 +468,14 @@ where
                         }
                     }
                     Ok(None | Some(RowEvent::Phase(_) | RowEvent::Exiting(_))) => {}
-                    Err(_) => return Ended::Lost,
+                    Err(e) => return Ended::Lost(e),
                 }
             }
             // Output dropped while a request waited: ask the row for the screen as it is, which arrives as a snapshot.
             if client.take_lost_output() {
                 let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
-                if client.attach(cols, rows, driver).is_err() {
-                    return Ended::Lost;
+                if let Err(e) = client.attach(cols, rows, driver) {
+                    return Ended::Lost(e);
                 }
             }
             while let Ok(command) = self.inbox.try_recv() {
@@ -456,9 +526,9 @@ where
                     self.settle(InputOutcome::RefusedStale);
                     return Ok(());
                 }
-                Err(_) => {
+                Err(e) => {
                     self.settle(InputOutcome::DeliveryUnknown);
-                    return Err(Ended::Lost);
+                    return Err(Ended::Lost(e));
                 }
             }
         }
@@ -481,9 +551,9 @@ where
                 self.settle(InputOutcome::DeliveryUnknown);
                 Ok(())
             }
-            Err(_) => {
+            Err(e) => {
                 self.settle(InputOutcome::DeliveryUnknown);
-                Err(Ended::Lost)
+                Err(Ended::Lost(e))
             }
         }
     }
@@ -521,3 +591,7 @@ fn row_error(e: RowError) -> Attempt {
         other => Attempt::Retry { reason: other.to_string(), absent: false },
     }
 }
+
+#[cfg(test)]
+#[path = "attach_end_tests.rs"]
+mod end_tests;

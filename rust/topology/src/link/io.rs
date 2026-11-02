@@ -5,6 +5,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -172,19 +173,106 @@ async fn connect_channel(shared: Arc<Shared>, ch: u32, id: u64, connector: Conne
 /// bytes before it), and the local connection with it.
 pub(super) async fn pump(channel: Channel, local: Box<dyn Duplex>) {
     use tokio::io::AsyncWriteExt;
+    let log = CopyEnd {
+        channel: channel.id(), started: Instant::now(),
+        up: AtomicU64::new(0), down: AtomicU64::new(0),
+        results: Mutex::new(CopyResults { first: "cancelled", up: None, down: None }),
+    };
     let (mut from_link, mut to_link) = channel.into_split();
     let (mut from_local, mut to_local) = tokio::io::split(local);
-    let up = async {
-        let _ = tokio::io::copy(&mut from_link, &mut to_local).await;
-        let _ = to_local.shutdown().await;
-    };
-    let down = async {
-        let _ = tokio::io::copy(&mut from_local, &mut to_link).await;
-        let _ = to_link.shutdown().await;
-    };
-    tokio::select! {
-        () = up => {}
-        () = down => {}
+    {
+        let up = async {
+            let mut writer = CountWrites { inner: &mut to_local, bytes: &log.up };
+            let copied = tokio::io::copy(&mut from_link, &mut writer).await;
+            log.completed(true, copied.map(|_| ()));
+            if let Err(e) = writer.shutdown().await { log.completed(true, Err(e)); }
+        };
+        let down = async {
+            let mut writer = CountWrites { inner: &mut to_link, bytes: &log.down };
+            let copied = tokio::io::copy(&mut from_local, &mut writer).await;
+            log.completed(false, copied.map(|_| ()));
+            if let Err(e) = writer.shutdown().await { log.completed(false, Err(e)); }
+        };
+        tokio::select! {
+            () = up => {},
+            () = down => {},
+        }
+    }
+}
+
+/// Counts accepted writes, including progress made by the direction cancelled when its peer ends.
+struct CountWrites<'a, W> {
+    inner: &'a mut W,
+    bytes: &'a AtomicU64,
+}
+
+impl<W: AsyncWrite + Unpin> AsyncWrite for CountWrites<'_, W> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut *self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = &result {
+            self.bytes.fetch_add(*n as u64, Ordering::Relaxed);
+        }
+        result
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut *self.inner).poll_shutdown(cx)
+    }
+}
+
+struct CopyEnd {
+    channel: u32,
+    started: Instant,
+    up: AtomicU64,
+    down: AtomicU64,
+    results: Mutex<CopyResults>,
+}
+
+struct CopyResults {
+    first: &'static str,
+    up: Option<Result<(), String>>,
+    down: Option<Result<(), String>>,
+}
+
+impl CopyEnd {
+    fn completed(&self, up: bool, result: std::io::Result<()>) {
+        let mut results = self.results.lock().unwrap_or_else(|p| p.into_inner());
+        if results.first == "cancelled" {
+            results.first = if up { "link_to_daemon" } else { "daemon_to_link" };
+        }
+        let slot = if up { &mut results.up } else { &mut results.down };
+        if !matches!(slot, Some(Err(_))) { *slot = Some(result.map_err(|e| e.to_string())); }
+    }
+}
+
+impl Drop for CopyEnd {
+    fn drop(&mut self) {
+        let results = self.results.lock().unwrap_or_else(|p| p.into_inner());
+        let describe = |result: &Option<Result<(), String>>| match result {
+            Some(Ok(())) => "ok".to_string(),
+            Some(Err(e)) => e.clone(),
+            None => "cancelled".to_string(),
+        };
+        let link_to_daemon_result = describe(&results.up);
+        let daemon_to_link_result = describe(&results.down);
+        let failed = matches!(&results.up, Some(Err(_))) || matches!(&results.down, Some(Err(_)));
+        let result = if failed { "error" } else if results.first == "cancelled" { "cancelled" } else { "ok" };
+        let link_to_daemon_bytes = self.up.load(Ordering::Relaxed);
+        let daemon_to_link_bytes = self.down.load(Ordering::Relaxed);
+        let elapsed_since_copy_start_ms = self.started.elapsed().as_millis() as u64;
+        if failed {
+            tracing::info!(target: "sot::router_copy", channel = self.channel, first = %results.first,
+                link_to_daemon_bytes, daemon_to_link_bytes, elapsed_since_copy_start_ms, result = %result,
+                link_to_daemon_result = ?link_to_daemon_result, daemon_to_link_result = ?daemon_to_link_result,
+                "router channel copy ended");
+        } else {
+            tracing::debug!(target: "sot::router_copy", channel = self.channel, first = %results.first,
+                link_to_daemon_bytes, daemon_to_link_bytes, elapsed_since_copy_start_ms, result = %result,
+                link_to_daemon_result = ?link_to_daemon_result, daemon_to_link_result = ?daemon_to_link_result,
+                "router channel copy ended");
+        }
     }
 }
 

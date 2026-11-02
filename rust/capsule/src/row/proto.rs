@@ -47,10 +47,25 @@ pub enum RowError {
     DeliveryUnknown,
     #[error("the connection is closed")]
     Closed,
+    /// A reader failure keeps its codec/I/O cause for diagnostics; the status text stays the closed-connection text.
+    #[error("the connection is closed")]
+    Read(String),
     #[error("timed out: {0}")]
     Timeout(&'static str),
     #[error("protocol: {0}")]
     Protocol(String),
+    #[error("protocol: {0}")]
+    Decode(#[source] serde_json::Error),
+}
+
+impl RowError {
+    pub(crate) fn diagnostic(&self) -> String {
+        match self {
+            Self::Read(detail) => detail.clone(),
+            Self::Decode(e) => format!("protocol: {}", sot_protocol::codec::unparsed(e, 0)),
+            _ => self.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

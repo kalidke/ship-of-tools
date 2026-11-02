@@ -249,10 +249,23 @@ fn accept_loop(
                 // Another account's peer is dropped before a byte is read.
                 match peer_euid(stream.as_raw_fd()) {
                     Ok(uid) if uid == own_uid => {}
-                    _ => continue,
+                    Ok(_) => {
+                        crate::supervisor::note(format_args!("row connection refused: peer is another account"));
+                        continue;
+                    }
+                    Err(e) => {
+                        crate::supervisor::note(format_args!("row connection refused: peer credentials: {e:?}"));
+                        continue;
+                    }
                 }
                 let _ = stream.set_nonblocking(false);
-                let Ok(closer_stream) = stream.try_clone() else { continue };
+                let closer_stream = match stream.try_clone() {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        crate::supervisor::note(format_args!("row connection refused: clone for closer: {e:?}"));
+                        continue;
+                    }
+                };
                 let closer: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                     let _ = closer_stream.shutdown(std::net::Shutdown::Both);
                 });
@@ -265,7 +278,10 @@ fn accept_loop(
                 match spawned {
                     Ok(handle) => keep(&threads, handle),
                     // The closure, and with it the slot, is gone; the registration is not.
-                    Err(_) => run.close(id),
+                    Err(e) => {
+                        crate::supervisor::note(format_args!("row connection {id} refused: start reader thread: {e:?}"));
+                        run.close(id);
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -324,7 +340,10 @@ fn accept_loop(
                     .spawn(move || serve(stream, closed, id, rx, slot, &conn_run));
                 match spawned {
                     Ok(handle) => keep(&threads, handle),
-                    Err(_) => run.close(id),
+                    Err(e) => {
+                        crate::supervisor::note(format_args!("row connection {id} refused: start reader thread: {e:?}"));
+                        run.close(id);
+                    }
                 }
             }
             Err(e) => match accept_policy(&e) {
@@ -373,13 +392,20 @@ impl std::io::Read for HelloDeadline {
 
 #[cfg(unix)]
 fn serve(stream: std::os::unix::net::UnixStream, id: ConnId, rx: Arc<OutQueue>, slot: Slot, hello_bound: Duration, run: &Arc<RowRun>) {
-    let Ok(write_half) = stream.try_clone() else {
-        run.close(id);
-        return;
+    let write_half = match stream.try_clone() {
+        Ok(stream) => stream,
+        Err(e) => {
+            crate::supervisor::note(format_args!("row connection {id} refused: clone for writer: {e:?}"));
+            run.close(id);
+            return;
+        }
     };
     let _ = write_half.set_write_timeout(Some(WRITE_BOUND));
     let admitted = Arc::new(AtomicBool::new(false));
     let closer = stream.try_clone();
+    if let Err(e) = &closer {
+        crate::supervisor::note(format_args!("row connection {id}: clone for writer's closer failed: {e:?}"));
+    }
     let reader = HelloDeadline { stream, deadline: Instant::now() + hello_bound, admitted: Arc::clone(&admitted), cleared: false };
     serve_io(
         BufReader::new(reader),
@@ -489,11 +515,15 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
         }
         closer();
     });
-    let Ok(writer) = spawned else {
-        run.close(id);
-        run.released(id);
-        drop(slot);
-        return;
+    let writer = match spawned {
+        Ok(writer) => writer,
+        Err(e) => {
+            crate::supervisor::note(format_args!("row connection {id} refused: start writer thread: {e:?}"));
+            run.close(id);
+            run.released(id);
+            drop(slot);
+            return;
+        }
     };
     if admit(&mut reader, id, run) {
         after_admit();
@@ -510,14 +540,36 @@ fn serve_io<R: BufRead, W: Write + Send + 'static>(
 /// The hello: the first frame, before anything is served. The reply names this row, so a client with another row number
 /// can say so; a peer that wants another row number gets the reply and is then dropped.
 fn admit<R: std::io::BufRead>(reader: &mut R, id: ConnId, run: &Arc<RowRun>) -> bool {
-    let Ok(frame) = read_frame_blocking(reader) else { return false };
+    let frame = match read_frame_blocking(reader) {
+        Ok(frame) => frame,
+        Err(e) => {
+            crate::supervisor::note(format_args!("row connection {id} refused: hello read: {:?}", format!("{e:#}")));
+            return false;
+        }
+    };
     if frame.kind != Kind::Req || frame.op != OP_HELLO {
+        crate::supervisor::note(format_args!("row connection {id} refused: first frame is not a row.hello request"));
         return false;
     }
-    let Ok(req) = serde_json::from_value::<HelloReq>(frame.payload.clone()) else { return false };
-    let Ok((pid, created)) = super::run::self_identity() else { return false };
+    let req = match serde_json::from_value::<HelloReq>(frame.payload.clone()) {
+        Ok(req) => req,
+        Err(e) => {
+            crate::supervisor::note(format_args!("row connection {id} refused: hello payload: {}", sot_protocol::codec::unparsed(&e, 0)));
+            return false;
+        }
+    };
+    let (pid, created) = match super::run::self_identity() {
+        Ok(identity) => identity,
+        Err(e) => {
+            crate::supervisor::note(format_args!("row connection {id} refused: own identity: {e:?}"));
+            return false;
+        }
+    };
     let res = HelloRes { pid, created, phase: run.phase(), run: run.run_id(), row: ROW_PROTOCOL };
     run.send(id, Frame::res(frame.id, OP_HELLO, serde_json::to_value(res).unwrap_or_default()), None);
+    if req.row != ROW_PROTOCOL {
+        crate::supervisor::note(format_args!("row connection {id} refused: row protocol {} differs from {ROW_PROTOCOL}", req.row));
+    }
     req.row == ROW_PROTOCOL
 }
 

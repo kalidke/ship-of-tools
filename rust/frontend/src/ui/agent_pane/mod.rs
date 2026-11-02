@@ -33,6 +33,7 @@ pub(in crate::ui) trait PaneClient {
     fn scroll(&mut self, rows: i32);
     fn mouse_tracking_on(&self) -> bool;
     fn set_viewed(&self, viewed: bool);
+    fn set_shutdown_reason(&self, _reason: &'static str) {}
     /// The latest OSC 52 copy the row's output asked for since the last take, as base64.
     fn take_copy(&mut self) -> Option<Vec<u8>>;
     /// The last pump emptied the output that waited for it.
@@ -55,6 +56,7 @@ impl PaneClient for PaneAttachClient {
     fn scroll(&mut self, rows: i32) { scroll_ring(self.screen_mut(), rows); }
     fn mouse_tracking_on(&self) -> bool { self.mouse_tracking_on() }
     fn set_viewed(&self, viewed: bool) { self.set_viewed(viewed); }
+    fn set_shutdown_reason(&self, reason: &'static str) { self.set_shutdown_reason(reason); }
     fn take_copy(&mut self) -> Option<Vec<u8>> { self.take_copy() }
     fn backlog_drained(&self) -> bool { self.backlog_drained() }
     fn at_ground(&self) -> bool { self.at_ground() }

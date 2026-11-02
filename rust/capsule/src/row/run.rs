@@ -464,6 +464,7 @@ impl RowRun {
     pub(super) fn open(self: &Arc<Self>, closer: Arc<dyn Fn() + Send + Sync>) -> Option<(ConnId, Arc<OutQueue>, Slot)> {
         let mut inner = self.lock();
         if inner.slots >= MAX_CONNECTIONS {
+            crate::supervisor::note(format_args!("row connection refused: occupied={} limit={MAX_CONNECTIONS}", inner.slots));
             return None;
         }
         inner.slots += 1;
@@ -714,3 +715,31 @@ impl std::fmt::Debug for RowRun {
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod admission_log_tests {
+    use super::*;
+    #[test]
+    fn a_ninth_connection_names_occupied_slots_and_limit() {
+        const NAME: &str = "row::run::admission_log_tests::a_ninth_connection_names_occupied_slots_and_limit";
+        use sot_platform::test_isolated::{drain, enter, test_command};
+        enter(NAME);
+        if std::env::var_os("SOT_TEST_ADMISSION_LOG_CHILD").is_none() {
+            let (mut command, entry) = test_command(NAME);
+            command.env("SOT_TEST_ADMISSION_LOG_CHILD", "1")
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            #[allow(clippy::disallowed_methods, reason = "test: own short-lived child captures production supervisor stderr")]
+            let child = command.spawn().unwrap();
+            let pid = child.id();
+            let (status, stdout, stderr) = drain(child).wait_within(Duration::from_secs(5));
+            entry.assert_once(pid);
+            assert!(status.success(), "stdout: {stdout}\nstderr: {stderr}");
+            assert!(stderr.contains("occupied=8") && stderr.contains("limit=8"), "{stderr}");
+            return;
+        }
+        let run = RowRun::new("one", "ready");
+        let held: Vec<_> = (0..MAX_CONNECTIONS).map(|_| run.open(Arc::new(|| {})).unwrap()).collect();
+        assert!(run.open(Arc::new(|| {})).is_none());
+        drop(held);
+    }
+}

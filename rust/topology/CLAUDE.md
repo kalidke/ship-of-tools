@@ -168,6 +168,26 @@ of each.
     opened the channel (the hello's host and account are declarations, as today), and any process of the same account
     on that computer may still connect to its daemon directly, as today. The router reads no channel byte.
 
+## Copy diagnostics
+Each far-router channel pump writes one `sot::router_copy` record when it ends, including cancellation with its
+link: channel id, the first copy direction to finish (`link_to_daemon` or `daemon_to_link`, or `cancelled` when
+neither finished), bytes accepted by each opposite writer, both direction results and the overall result. Partial
+writes in the direction cancelled by its peer are counted too; these counts are local writes, not proof of remote
+receipt. `elapsed_since_copy_start_ms` starts when this router's pump begins, after its local connection and channel
+are ready; it is independent of the window's attach-attempt clock. Copy and shutdown errors log at info; a clean
+end or cancellation without an error logs at debug, since page connections use these channels too. No copied bytes,
+frame payload, page secret or lane token is logged, and the stream, half-close and cancellation behavior is unchanged.
+
+`sotd stdio-bridge` initializes a stderr-only subscriber for routing (it returns before daemon logging starts), using
+`RUST_LOG` when set, otherwise only these records at info, and the page-secret redacting writer. On a direct SSH route
+the window mirrors these stderr records into its own log while the link is live, preserving info/debug and naming the
+route, and they never replace the last stderr line that names a dead login.
+On a hub relay route stderr belongs to the hub's per-connection `sot-host-relay-<host>@*.service` journal
+(`StandardError=journal`); read it with `journalctl --user -u 'sot-host-relay-<host>@*'`. A directly run bridge emits
+the same records on its stderr. Clean records require debug enabled at the router and, for mirroring, the window.
+The production pump's counts, clean/error levels and live stderr forwarding are exercised by
+`link/tests.rs::a_router_copy_end_names_direction_counts_and_result`.
+
 ## Owns
 hosts.toml's grammar, search rule, edits and status table; this box's own endpoint, the label, `slug` and the plain
 host-name grammar; the ssh recipe, `SSH_OPTS`, `SSH_LOGIN_BOUND`; the link runtime (`link/`: the channel

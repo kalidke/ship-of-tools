@@ -152,8 +152,8 @@ impl<C: Client + 'static> RowClient<C> {
                             return;
                         }
                     }
-                    Err(_) => {
-                        let _ = tx.send(Incoming::Ended(RowError::Closed));
+                    Err(e) => {
+                        let _ = tx.send(Incoming::Ended(RowError::Read(format!("{e:#}"))));
                         return;
                     }
                 }
@@ -192,7 +192,7 @@ impl<C: Client + 'static> RowClient<C> {
     pub fn attach(&mut self, cols: u16, rows: u16, driver: bool) -> Result<String, RowError> {
         let req = serde_json::to_value(AttachReq { cols, rows, driver }).unwrap_or_default();
         let res = self.request(OP_ATTACH, req, None)?;
-        let res: AttachRes = serde_json::from_value(res.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
+        let res: AttachRes = serde_json::from_value(res.payload).map_err(RowError::Decode)?;
         self.run.clone_from(&res.run);
         Ok(res.run)
     }
@@ -223,7 +223,7 @@ impl<C: Client + 'static> RowClient<C> {
     /// [`RowEvent::Phase`], ending with [`RowEvent::Exiting`] before a controlled exit.
     pub fn watch(&mut self) -> Result<StatusRes, RowError> {
         let res = self.request(OP_WATCH, serde_json::json!({}), None)?;
-        serde_json::from_value(res.payload).map_err(|e| RowError::Protocol(e.to_string()))
+        serde_json::from_value(res.payload).map_err(RowError::Decode)
     }
 
     /// Becomes the driver; the one before is demoted.
@@ -244,7 +244,7 @@ impl<C: Client + 'static> RowClient<C> {
             payload["run"] = serde_json::json!(run);
         }
         let res = self.request(OP_INPUT, payload, Some(bytes))?;
-        let res: InputRes = serde_json::from_value(res.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
+        let res: InputRes = serde_json::from_value(res.payload).map_err(RowError::Decode)?;
         Ok(res.written as usize)
     }
 
@@ -329,14 +329,14 @@ fn event_of(frame: Frame, blob: Option<Vec<u8>>) -> Result<Option<RowEvent>, Row
     }
     Ok(match frame.op.as_str() {
         OP_SNAPSHOT => {
-            let evt: SnapshotEvt = serde_json::from_value(frame.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
+            let evt: SnapshotEvt = serde_json::from_value(frame.payload).map_err(RowError::Decode)?;
             Some(RowEvent::Snapshot { bytes: blob.unwrap_or_default(), last: evt.last })
         }
         OP_OUTPUT => Some(RowEvent::Output(blob.unwrap_or_default())),
         OP_DEMOTED => Some(RowEvent::Demoted),
-        OP_PHASE => Some(RowEvent::Phase(serde_json::from_value(frame.payload).map_err(|e| RowError::Protocol(e.to_string()))?)),
+        OP_PHASE => Some(RowEvent::Phase(serde_json::from_value(frame.payload).map_err(RowError::Decode)?)),
         OP_EXITING => {
-            let evt: ExitingEvt = serde_json::from_value(frame.payload).map_err(|e| RowError::Protocol(e.to_string()))?;
+            let evt: ExitingEvt = serde_json::from_value(frame.payload).map_err(RowError::Decode)?;
             Some(RowEvent::Exiting(evt.code))
         }
         _ => None,

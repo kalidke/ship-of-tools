@@ -86,12 +86,25 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    has been absent, though the daemon answers, for 120 s; anything else is retried. Limit: scrollback in a screen is
    at most 200 rows (a client accumulates up to 5,000 while it stays attached); the ConPTY fidelity of a mid-stream cut
    is proved on the hosted Windows run only.
+   Every started attach attempt writes one `row attach ended` info record to its caller's log: dial host, row,
+   client id and attempt number, last stage (`connecting`, `hello`, `attach`, `snapshot`, `service`), intentional
+   shutdown or loss, the caller's retirement cause, elapsed milliseconds since this worker began the attempt,
+   and the error text. The window supplies its dial host and labels switches away and evictions/retirements;
+   an ordinary drop and an explicit shutdown are named too. The daemon's headless clients, one per transaction,
+   record only a loss. Reader codec/I/O errors retain their full cause
+   chain in that record, while the pane's existing closed-connection and retry status strings stay unchanged.
+   Errors are escaped onto one physical line; codec parse errors describe category and position without frame
+   contents; payload-decode errors keep the same status text but use that content-free description in diagnostics.
+   No input, output, snapshot or credential is recorded.
 6. **One driver, and eight real connections.** Input and resize are taken only from the connection attached as driver:
    a watcher's is refused by name and writes nothing; a second driver (an attach as driver, or `row.take`) demotes the
    first with `row.demoted`; a reattach as a watcher gives up the pen; a resize is accepted from 2x2 to 512x256. At
    most `MAX_CONNECTIONS` (8) connections are served and the ninth gets no slot; a connection has a reader and a writer
    thread, its slot returns only when both have ended, and `RowServer::shutdown` stops the acceptor, ends every
    connection's stream and joins every connection thread. The daemon's own calls share the eight with the viewers.
+   A refused ninth connection names occupied slots and the limit in the supervisor's stderr diagnostic (the row
+   prefix comes from `supervisor::note`); descriptor-clone and reader/writer-thread-start failures name the operation
+   and OS error there, as do peer and hello refusals.
    Limits: two windows on one row trade the pen by typing; a Windows pipe stays open until its last owner lets go, so
    the dropped-watch slot test runs on Linux only.
 7. **Input is written at most once, into the run it names, or reported.** `row.input` answers `written` once the bytes
@@ -285,6 +298,11 @@ run writes no record besides its two files) and `src/capsule/{join,output}_tests
 handshake, close-on-exec pty births, an executable that resolves); platform's transport clients against the row
 acceptor (`tests/socket_unix/`, `tests/pipe_win/`, `tests/macos_kernel_facts/`: platform's guarantees 6 and 13, kept here
 because they need a real `RowServer` or the `sot-capsule` binary, `../platform/CLAUDE.md`).
+
+The attach-end diagnostics are exercised through `Worker::run` and the production `RowClient` reader by
+`src/attach_client/attach_end_tests.rs::{every_attach_end_names_its_stage_and_intent_once,
+a_headless_client_records_only_a_loss, a_service_read_error_keeps_its_cause_and_the_old_status}`. Slot-refusal stderr is exercised by
+`src/row/run.rs::admission_log_tests::a_ninth_connection_names_occupied_slots_and_limit`.
 
 Gaps, stated: no capsule test makes `preflight_volume` refuse a run's start (guarantee 1); the Windows arms of
 guarantees 4, 5, 6 and 10 are proved by the hosted Windows run alone, and the Linux-only suites above are cross-checked

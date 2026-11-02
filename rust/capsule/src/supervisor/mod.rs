@@ -535,7 +535,7 @@ static NOTE_PREFIX: OnceLock<String> = OnceLock::new();
 
 /// One complete diagnostic line, as one `write_all` on stderr: `O_APPEND` keeps a single `write(2)` intact between
 /// processes appending to the same file, and nothing else does.
-fn note(args: fmt::Arguments<'_>) {
+pub(crate) fn note(args: fmt::Arguments<'_>) {
     let prefix = NOTE_PREFIX.get().map(String::as_str).unwrap_or("sot-capsule supervise");
     let line = format!("{prefix}: {args}\n");
     let _ = std::io::stderr().write_all(line.as_bytes());

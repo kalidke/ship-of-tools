@@ -74,7 +74,16 @@ impl FeAttachClient {
         E: Endpoint + Send + 'static,
         E::Client: 'static,
     {
-        Self::start(endpoint, row, cols, rows, wake, false)
+        Self::start(endpoint, None, row, cols, rows, wake, false)
+    }
+
+    /// As [`Self::attach`], naming the dial host in each attempt's end record.
+    pub fn attach_on_host<E>(endpoint: E, host: String, row: String, cols: u16, rows: u16, wake: Box<dyn Fn() + Send + 'static>) -> Result<Self, FeAttachError>
+    where
+        E: Endpoint + Send + 'static,
+        E::Client: 'static,
+    {
+        Self::start(endpoint, Some(host), row, cols, rows, wake, false)
     }
 
     /// A headless attach: the daemon's own client on a row (the wake, the dialog tick, `pty.input`, `pty.screen`),
@@ -86,10 +95,10 @@ impl FeAttachClient {
     {
         // Placeholder viewport: the first snapshot replaces it and its size is adopted.
         const PLACEHOLDER_SIZE: u16 = 24;
-        Self::start(endpoint, row, PLACEHOLDER_SIZE, PLACEHOLDER_SIZE, Box::new(|| {}), true)
+        Self::start(endpoint, None, row, PLACEHOLDER_SIZE, PLACEHOLDER_SIZE, Box::new(|| {}), true)
     }
 
-    fn start<E>(endpoint: E, row: String, cols: u16, rows: u16, wake: Box<dyn Fn() + Send + 'static>, headless: bool) -> Result<Self, FeAttachError>
+    fn start<E>(endpoint: E, host: Option<String>, row: String, cols: u16, rows: u16, wake: Box<dyn Fn() + Send + 'static>, headless: bool) -> Result<Self, FeAttachError>
     where
         E: Endpoint + Send + 'static,
         E::Client: 'static,
@@ -101,7 +110,8 @@ impl FeAttachClient {
             let _ = events_tx.send(e);
             wake();
         };
-        let worker = AttachWorker::spawn(endpoint, row, cols, rows, headless, sink).map_err(FeAttachError::SpawnWorkerThread)?;
+        let host = host.unwrap_or_else(|| sot_platform::host::state_dir::host_name().unwrap_or_else(|e| format!("local host unavailable: {e}")));
+        let worker = AttachWorker::spawn_on_host(endpoint, host, row, cols, rows, headless, sink).map_err(FeAttachError::SpawnWorkerThread)?;
         Ok(Self::with_worker(worker, events_rx, rows, cols, headless))
     }
 
@@ -266,6 +276,11 @@ impl FeAttachClient {
     /// The run the row declared at the last attach; empty before the first.
     pub fn run(&self) -> String {
         self.worker.run()
+    }
+
+    /// Names an intentional retirement in the attempt's diagnostic; does not end it.
+    pub fn set_shutdown_reason(&self, reason: &'static str) {
+        self.worker.set_shutdown_reason(reason);
     }
 
     /// Ends the worker (as [`Drop`] does) and waits up to `wait` for its thread: `true` when it ended.

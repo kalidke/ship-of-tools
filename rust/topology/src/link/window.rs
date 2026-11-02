@@ -103,7 +103,7 @@ impl Link {
                 let mut child = spawned.map_err(|e| LinkStartError::Failed(format!("spawn ssh {recipe}: {e}")))?;
                 let stdin = child.stdin.take().expect("spawned with a piped stdin");
                 let stdout = child.stdout.take().expect("spawned with a piped stdout");
-                let last_stderr = drain_stderr(child.stderr.take().expect("spawned with a piped stderr"));
+                let last_stderr = drain_stderr(child.stderr.take().expect("spawned with a piped stderr"), route.to_string());
                 match Self::over_within(stdout, stdin, super::SILENCE_BOUND).await {
                     Ok(mut link) => {
                         link.child = Some(child);
@@ -213,13 +213,24 @@ fn hello_answer(answer: Frame) -> Result<String, LinkStartError> {
 /// The child's last non-empty stderr line, drained on its own task for as long as the child writes: ssh's own
 /// complaint ("Permission denied", or `unrecognised argument: --host` from a hub whose `sotd` predates it) is the
 /// diagnosis a dead login leaves behind.
-pub(super) fn drain_stderr<R: AsyncRead + Unpin + Send + 'static>(stderr: R) -> Arc<Mutex<Option<String>>> {
+pub(super) fn drain_stderr<R: AsyncRead + Unpin + Send + 'static>(stderr: R, route: String) -> Arc<Mutex<Option<String>>> {
     let last = Arc::new(Mutex::new(None::<String>));
     let cell = Arc::clone(&last);
     tokio::spawn(async move {
         let mut lines = sot_protocol::child_lines::ChildLines::new(stderr);
         while let Ok(Some(line)) = lines.next_line().await {
             if !line.trim().is_empty() {
+                // The router's records are mirrored at their own level and are never the login's last word: a link
+                // that dies ends its channels too, and those lines must not hide what ssh said.
+                let record = line.trim_start();
+                if let Some(record) = record.strip_prefix("INFO sot::router_copy: ") {
+                    tracing::info!(target: "sot::link", %route, diagnostic = ?record, "far router copy");
+                    continue;
+                }
+                if let Some(record) = record.strip_prefix("DEBUG sot::router_copy: ") {
+                    tracing::debug!(target: "sot::link", %route, diagnostic = ?record, "far router copy");
+                    continue;
+                }
                 *cell.lock().unwrap_or_else(|p| p.into_inner()) = Some(line);
             }
         }
