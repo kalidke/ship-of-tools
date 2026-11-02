@@ -39,7 +39,7 @@ fn a_draft_refusal_quotes_the_box_and_is_still_refused() {
     assert_eq!(not_free("stop hook running", "w").1, "stop hook running");
     assert_eq!(not_free("cursor not at the prompt", "").1, "cursor not at the prompt");
     let held = Held { request_id: "draft-quote".into(), workspace_id: "ws-draft-quote".into(), handle: "h".into(),
-        line: "[sot-page] a".into(), question: String::new() };
+        line: "[sot-page] a".into(), question: String::new(), last_attempt: None };
     let receipt = settle(held, outcome, detail);
     assert_eq!((receipt.outcome, receipt.detail.as_str()), ("refused", "draft: cursor not at the prompt; the box holds \"w\""));
 }

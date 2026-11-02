@@ -190,9 +190,10 @@ Page replies:
   `typed_not_sent` (text typed, Enter withheld) or `unknown` (delivery may have occurred). A reply is never owed Enter
   by a wake, and one without `hold` is never retried; a line left unsent is for the person to inspect. The pane's
   width is not asked: a line wider than the box wraps, and Enter goes once the box's rows hold it (messaging's
-  `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. Every attempt logs the handle,
+  `screen::holds_wrapped`). The wake's screen and read-to-input race limits apply. The first attempt logs the handle,
   workspace, marked line and outcome, an early refusal (a gone row, a moved handle, not typeable, not Ready) included,
-  and the cursor's row as the gate read it whenever it read the screen (`cursor_row_trace`); a held reply that ends
+  and the cursor's row as the gate read it whenever it read the screen (`cursor_row_trace`). A held reply logs a retry
+  when its outcome or detail changes from its last attempt, and always logs its final outcome; a held reply that ends
   untyped (superseded, its question changed) logs that end. A refusal at a draft quotes what the cursor's row holds
   after the prompt (`screen::draft_of`: dim cells blank, cut at 40 characters, a control or direction character shown
   as U+FFFD), so the person sees the stray text and not the dim suggestion beside it. Limit: a draft that wraps or

@@ -1079,9 +1079,24 @@ async fn a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees() 
     let res = page_reply_held(&mut row, HANDLE, "[sot-page] approve").await;
     assert_eq!(res["outcome"], "held", "{res}");
     assert!(received(&row).is_empty(), "typed into a working row");
+    let deliveries = || daemon_log(&row.env).lines().filter(|line| line.contains("page reply delivery")).map(String::from).collect::<Vec<_>>();
+    assert_eq!(deliveries().len(), 1, "the first attempt is logged");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(deliveries().len(), 1, "unchanged held attempts must stay quiet");
+    set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws, "stop_at": iso_at(0)}));
+    wait_for("the changed held detail", || deliveries().iter().any(|line| line.contains("stop hook running"))).await;
+    assert_eq!(deliveries().len(), 2, "a changed detail must be logged");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(deliveries().len(), 2, "the new unchanged detail must stay quiet");
+    set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
     std::fs::remove_file(&row.spin).unwrap();
     wait_for("the held reply", || !received(&row).is_empty()).await;
     assert_eq!(received(&row), ["[sot-page] approve"]);
+    let sent = |lines: &[String]| lines.last().is_some_and(|line| line.contains("outcome=\"sent\"") || line.contains("outcome=sent"));
+    wait_for("the final reply outcome", || sent(&deliveries())).await;
+    let logged = deliveries();
+    assert!(logged.len() >= 3, "the final attempt is logged: {logged:?}");
+    assert!(sent(&logged), "{logged:?}");
     row.env.kill_daemon_bounded().await;
 }
 

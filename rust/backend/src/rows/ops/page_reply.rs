@@ -36,17 +36,20 @@ pub(crate) async fn handle_page_reply(req_id: u64, payload: Value, workspaces: &
     }
     let rows = workspaces.clone();
     tokio::task::spawn_blocking(move || {
-        let (outcome, detail) = attempt(&rows, &req.workspace_id, &req.handle, &req.line);
+        let (outcome, detail) = attempt(&rows, &req.workspace_id, &req.handle, &req.line, None);
         answer(req_id, outcome, detail)
     }).await.context("page.reply typing task")
 }
 
-/// One typing attempt through the wake's gate, the row's identity checked again under it, logged whatever its outcome.
+/// One typing attempt through the wake's gate. An unchanged held attempt stays quiet; every final outcome is logged.
 /// Blocks.
-fn attempt(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str) -> (&'static str, String) {
+fn attempt(rows: &Workspaces, workspace_id: &str, handle: &str, line: &str, last: Option<&(&'static str, String)>) -> (&'static str, String) {
     let (outcome, detail, row) = attempt_unlogged(rows, workspace_id, handle, line);
-    tracing::info!(target: "page_reply", { handle = %handle, workspace = %workspace_id,
-        line = ?line, outcome, detail = %detail, cursor_row = %row }, "page reply delivery");
+    let unchanged = last.is_some_and(|(prior_outcome, prior_detail)| *prior_outcome == outcome && *prior_detail == detail);
+    if !stays_held(outcome, &detail) || !unchanged {
+        tracing::info!(target: "page_reply", { handle = %handle, workspace = %workspace_id,
+            line = ?line, outcome, detail = %detail, cursor_row = %row }, "page reply delivery");
+    }
     (outcome, detail)
 }
 
@@ -130,6 +133,7 @@ struct Held {
     handle: String,
     line: String,
     question: String,
+    last_attempt: Option<(&'static str, String)>,
 }
 
 /// What a direct reply came to, by its request id: `sent`, `held`, `refused` or `unknown`, and why.
@@ -164,9 +168,9 @@ pub(crate) async fn submit(rows: Workspaces, request_id: String, workspace_id: S
     }
     tokio::task::spawn_blocking(move || {
         let question = question_of(&handle).unwrap_or_default();
-        let held = Held { request_id, workspace_id, handle, line, question };
+        let held = Held { request_id, workspace_id, handle, line, question, last_attempt: None };
         supersede(&held);
-        let (outcome, detail) = attempt(&rows, &held.workspace_id, &held.handle, &held.line);
+        let (outcome, detail) = attempt(&rows, &held.workspace_id, &held.handle, &held.line, None);
         settle(held, outcome, detail)
     }).await.context("page reply submission")
 }
@@ -185,7 +189,7 @@ pub(crate) async fn release(rows: &Workspaces) {
                 settle(held, "refused", "question_changed: the row's question is not the one answered".into());
                 return;
             }
-            let (outcome, detail) = attempt(&rows, &held.workspace_id, &held.handle, &held.line);
+            let (outcome, detail) = attempt(&rows, &held.workspace_id, &held.handle, &held.line, held.last_attempt.as_ref());
             settle(held, outcome, detail);
         }).await;
     }
@@ -208,8 +212,8 @@ fn supersede(new: &Held) {
 }
 
 /// A busy row keeps the reply (while it is still the row's held one); anything else ends it with its receipt.
-fn settle(held: Held, outcome: &'static str, detail: String) -> Receipt {
-    let busy = matches!(outcome, "not_free" | "not_ready") && refusal_name(&detail) == "busy";
+fn settle(mut held: Held, outcome: &'static str, detail: String) -> Receipt {
+    let busy = stays_held(outcome, &detail);
     let mut map = HELD.lock().unwrap_or_else(|p| p.into_inner());
     let current = map.get(&held.workspace_id).map(|h| h.request_id.clone());
     if busy {
@@ -217,6 +221,7 @@ fn settle(held: Held, outcome: &'static str, detail: String) -> Receipt {
             drop(map);
             return record(receipt(&held, "refused", "superseded: a newer reply replaced it".into()));
         }
+        held.last_attempt = Some((outcome, detail.clone()));
         map.insert(held.workspace_id.clone(), held.clone());
         drop(map);
         return record(receipt(&held, "held", detail));
@@ -231,6 +236,10 @@ fn settle(held: Held, outcome: &'static str, detail: String) -> Receipt {
         other => ("refused", format!("{other}: {detail}")),
     };
     record(receipt(&held, outcome, detail))
+}
+
+fn stays_held(outcome: &str, detail: &str) -> bool {
+    matches!(outcome, "not_free" | "not_ready") && refusal_name(detail) == "busy"
 }
 
 /// The gate's refusals that waiting does not clear: the person's unsent text (in the box, or the cursor past the prompt
