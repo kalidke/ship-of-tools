@@ -42,6 +42,8 @@ fn a_repeat_install_judges_the_connected_local_window_not_the_record() {
                     Err(e) => panic!("accept: {e}"),
                 }
             };
+            // macOS hands an accepted socket the listener's nonblocking mode.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());

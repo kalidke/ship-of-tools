@@ -62,6 +62,9 @@ def witness(case):
                                           asset=asset, asset_sha256=hashlib.sha256(b"archive\n").hexdigest()),
                                       indent=2) + "\n", encoding="ascii")
         if windows:
+            # A hosted step's pwsh leaves PowerShell 7's module path, where 5.1's Get-FileHash fails to load.
+            system = Path(os.environ["SystemRoot"]) / "System32"
+            env["PSModulePath"] = str(system / "WindowsPowerShell/v1.0/Modules")
             command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
                        str(repo / "scripts/sot-apply.ps1"), "-Prefix", str(prefix)]
         else:
