@@ -293,9 +293,16 @@ pub(crate) fn offered_page(entry: &Value) -> (String, String) {
     (summary.trim().to_string(), if asked.is_empty() { page } else { asked })
 }
 
-/// The page view of this daemon's registry sessions, including sessions outside any row, sorted by handle.
-/// The server supplies a fresh registry read on a blocking thread, as it does for the window's read.
-pub(crate) fn states(rows: &[Arc<Workspace>], agents: &serde_json::Map<String, Value>, host: &str) -> Vec<crate::pages::site::verbs::PageRow> {
+/// The page view of this daemon's registry sessions, including sessions outside any row, then each session a connected
+/// window's computer declared that the registry does not hold, sorted by handle. The server supplies a fresh registry
+/// read on a blocking thread, as it does for the window's read.
+///
+/// A declared session has no row, options or page here: its answer and its page live on its own computer, so its card
+/// says where it waits and offers nothing this daemon could not deliver.
+pub(crate) fn states(
+    rows: &[Arc<Workspace>], agents: &serde_json::Map<String, Value>, host: &str,
+    declared: &[(String, sot_protocol::DeclaredSession)],
+) -> Vec<crate::pages::site::verbs::PageRow> {
     let mut out = Vec::new();
     for (handle, entry) in agents.iter().filter(|(_, entry)| host_matches(entry, host)) {
         let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();
@@ -308,6 +315,17 @@ pub(crate) fn states(rows: &[Arc<Workspace>], agents: &serde_json::Map<String, V
             state: field("state"), summary, question: parts.question,
             options: parts.options, recommend: parts.recommend, page,
             waiting: field("waiting"), status_at: field("status_at"), last_seen: field("last_seen"),
+        });
+    }
+    for (computer, session) in declared {
+        if out.iter().any(|row| row.handle == session.handle) { continue; }
+        let (summary, _) = question::split_page(&session.summary);
+        let question = if session.state == "blocked" { question::parts(&session.summary).question } else { String::new() };
+        out.push(crate::pages::site::verbs::PageRow {
+            handle: session.handle.clone(), host: computer.clone(), repo: String::new(), row: String::new(),
+            state: session.state.clone(), summary: summary.trim().to_string(), question,
+            options: Vec::new(), recommend: String::new(), page: String::new(),
+            waiting: String::new(), status_at: session.status_at.clone(), last_seen: String::new(),
         });
     }
     out.sort_by(|a, b| a.handle.cmp(&b.handle));

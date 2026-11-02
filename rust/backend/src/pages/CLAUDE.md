@@ -92,9 +92,12 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   actually ends, including after that answer; no late command is sent. Four stalled actions never spend a polling
   slot, and four stalled polls never spend an action slot. A stalled registry can occupy all four polling slots
   indefinitely; new polls are then refused, while action capacity and file requests remain independent.
-- `states` returns this daemon's registry sessions, including sessions outside rows, sorted by handle. Foreign and
-  unknown-host entries are omitted. Rows owns the question parsing and the binding to a local row. States needs no
-  live window. An unreadable, missing or malformed registry (including a missing/non-object `agents`) answers JSON
+- `states` returns this daemon's registry sessions, including sessions outside rows, then each session a connected
+  window's computer declared that the registry does not hold, sorted by handle. Foreign and unknown-host registry
+  entries are omitted. A declared session carries its computer as `host` and no row, options or page, so its card is
+  read only and its answer is given on that computer; a computer whose window is not connected declares nothing, and
+  such a session has no card. Rows owns the question parsing and the binding to a local row. States needs no live
+  window. An unreadable, missing or malformed registry (including a missing/non-object `agents`) answers JSON
   500 `handler_error`, never a successful empty queue. `goto` resolves a handle fresh and sends
   `goto_workspace {workspace}`. `open` takes only the handle and reads the question's `Page:` fresh. Its absolute
   page must canonicalize under that row's canonical project root, which must not hold the home folder. It grants a

@@ -243,7 +243,7 @@ fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
         "foreign": {"host": "host-b", "workspace_id": declared.workspace_id},
         "unknown": {"state": "idle"}
     });
-    let view = states(&rows, agents.as_object().unwrap(), "host-a");
+    let view = states(&rows, agents.as_object().unwrap(), "host-a", &[]);
     assert_eq!(view.iter().map(|r| r.handle.as_str()).collect::<Vec<_>>(), ["moved", "outside"]);
     assert_eq!(view[0].row, declared.workspace_id);
     assert_eq!(view[1].row, "");
@@ -254,7 +254,32 @@ fn page_states_and_lookup_share_the_windows_handle_and_host_rule() {
     assert_eq!(found.page, "/p/context.html");
     assert!(crate::rows::handle::row_of_handle(&rows, "foreign", Some(&agents), "host-a").err().unwrap().contains("host-b"));
     assert!(crate::rows::handle::row_of_handle(&rows, "outside", Some(&agents), "host-a").is_err());
-    assert!(states(&rows, &serde_json::Map::new(), "host-a").is_empty());
+    assert!(states(&rows, &serde_json::Map::new(), "host-a", &[]).is_empty());
+}
+
+/// A session blocked on another computer has a card on this daemon's page, naming where it waits and offering nothing
+/// this daemon could not deliver (seen in use: blocked 20 hours on a laptop, listed by `comm-list.sh`, with no card).
+#[test]
+fn a_session_another_computer_declared_reaches_states_with_no_row() {
+    let declared = |handle: &str, state: &str, summary: &str| ("host-b".to_string(), sot_protocol::DeclaredSession {
+        handle: handle.into(), state: state.into(), summary: summary.into(), status_at: "2026-11-02T00:00:00Z".into(),
+    });
+    let agents = json!({"held": {"host": "host-a", "state": "idle", "summary": "the registry's own"}});
+    let view = states(&[], agents.as_object().unwrap(), "host-a", &[
+        declared("far", "blocked", "Run it? Options: (a) yes; (b) no. Recommend (a). Page: /far/q.html"),
+        declared("held", "blocked", "a window's copy of a session this daemon holds"),
+        declared("busy", "working", "training"),
+    ]);
+    assert_eq!(view.iter().map(|r| r.handle.as_str()).collect::<Vec<_>>(), ["busy", "far", "held"]);
+    let by = |h: &str| view.iter().find(|r| r.handle == h).expect("its row");
+    let far = by("far");
+    assert_eq!((far.host.as_str(), far.state.as_str(), far.row.as_str()), ("host-b", "blocked", ""));
+    assert_eq!(far.question, "Run it?");
+    assert!(far.summary.contains("Run it?") && !far.summary.contains("/far/q.html"), "{}", far.summary);
+    assert!(far.options.is_empty() && far.recommend.is_empty() && far.page.is_empty());
+    assert_eq!(far.status_at, "2026-11-02T00:00:00Z");
+    assert_eq!((by("held").host.as_str(), by("held").state.as_str()), ("host-a", "idle"), "the registry's entry wins");
+    assert_eq!(by("busy").question, "", "only a blocked session asks");
 }
 
 /// A page offered on a stamp that is not a question (a `SITREP:` line's note, a wait) reaches the page channel as a
@@ -272,7 +297,7 @@ fn a_page_on_a_done_or_waiting_stamp_reaches_states_and_the_lookup() {
         "asked": {"host": "host-a", "state": "blocked", "question": "Merge? Options: (a) yes; (b) no. Page: /p/q.html",
                   "summary": "Merge? Options: (a) yes; (b) no. Page: /p/q.html"}
     });
-    let view = states(&rows, agents.as_object().unwrap(), "host-a");
+    let view = states(&rows, agents.as_object().unwrap(), "host-a", &[]);
     let by = |h: &str| view.iter().find(|r| r.handle == h).expect("its row");
     assert_eq!((by("landed").page.as_str(), by("landed").summary.as_str()), ("/p/report.html", "The fix landed."));
     assert_eq!((by("gating").page.as_str(), by("gating").summary.as_str()), ("/p/gate.html", "gate running"));

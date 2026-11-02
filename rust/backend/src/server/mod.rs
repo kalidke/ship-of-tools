@@ -220,10 +220,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     let handle_rows = workspaces.clone();
     let reply_rows = workspaces.clone();
     let page_windows = clients.clone();
+    let declaring_windows = clients.clone();
     start_page_servers(Arc::new(crate::pages::site::verbs::PageVerbs::new(
         Arc::new(move || {
             let agents = crate::comm::registry::registry::try_read_comm_agents().map_err(anyhow::Error::msg)?;
-            Ok(crate::rows::work_state::states(&states_rows.list(), &agents, &store::declared_host()))
+            Ok(crate::rows::work_state::states(&states_rows.list(), &agents, &store::declared_host(), &declaring_windows.declared_sessions()))
         }),
         Arc::new(move |handle| {
             let agents = serde_json::Value::Object(crate::comm::registry::registry::try_read_comm_agents()?);

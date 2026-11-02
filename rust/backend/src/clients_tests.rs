@@ -107,6 +107,22 @@
     }
 
     #[test]
+    fn declared_sessions_name_their_computer_and_end_with_their_connection() {
+        let clients = Clients::new();
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), Some("host-a".into()), None, Some("fe@host-a".into()));
+        let unnamed = clients.register("client-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        clients.declare_sessions(g.serial(), vec![declared_session("far", "blocked")]);
+        clients.declare_sessions(unnamed.serial(), vec![declared_session("nowhere", "blocked")]);
+
+        let declared = clients.declared_sessions();
+        assert_eq!(declared.len(), 1, "a declarer with no computer cannot be attributed");
+        assert_eq!((declared[0].0.as_str(), declared[0].1.handle.as_str()), ("host-a", "far"));
+
+        drop(g);
+        assert!(clients.declared_sessions().is_empty(), "a dropped connection takes its sessions with it");
+    }
+
+    #[test]
     fn declare_sessions_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
         let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));

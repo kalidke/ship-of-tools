@@ -549,5 +549,7 @@ another account is refused, after one test hello that borrowed a computer's name
 computer's window out of the hub until the daemon was restarted. Since 2026-11-02 every attach's end in the window
 names its stage, its cause and its full error, a row logs why it refused a connection, and the far router logs each
 copy that ends in an error, after keys were lost during attaches in rc.7's use and the logs could not say why
-connections closed about 100 ms after they opened.
+connections closed about 100 ms after they opened. Since the same day the Queue shows a session blocked on another
+computer whose window is connected, as a read-only card naming that computer, after a session waited 20 hours on a
+laptop with no card.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

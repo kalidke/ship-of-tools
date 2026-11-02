@@ -286,6 +286,17 @@ impl Clients {
         }
     }
 
+    /// Every session a connected window has declared, with that window's computer: what this daemon knows of rows
+    /// whose registry it does not read. A dropped connection takes its sessions with it, so a computer asleep shows
+    /// none. A declarer that named no computer cannot be attributed and is left out.
+    pub fn declared_sessions(&self) -> Vec<(String, sot_protocol::DeclaredSession)> {
+        let g = self.inner.lock().unwrap();
+        g.by_conn.values()
+            .filter_map(|c| Some((c.host.as_ref()?, c.sessions.as_ref()?)))
+            .flat_map(|(host, sessions)| sessions.iter().map(move |s| (host.clone(), s.clone())))
+            .collect()
+    }
+
     /// This connection's declared hello `name`, read with its own lock
     /// acquisition — `handle_fe_sessions` checks this BEFORE calling
     /// `declare_sessions`, because an unnamed declarer cannot be
