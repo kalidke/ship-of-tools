@@ -1,6 +1,25 @@
 use super::*;
 use crate::install::options::RoleFlag;
 
+#[test]
+fn adding_a_declared_frontends_own_daemon_is_a_checked_detail() {
+    let topo = sot_topology::parse("hub = \"hub\"\n[host.hub]\ndaemon = true\n[host.desk]\nfrontend = true\n").unwrap();
+    let declared = from_status(&sot_topology::status_table(&topo), "desk");
+    for (before, pending) in [("{\"daemon\": false, \"frontend\": true}", true), ("{\"daemon\": true, \"frontend\": true}", false), ("", false)] {
+        let mut found = super::super::verdict::Found { pass: "installed".into(), ..Default::default() };
+        note_widening(declared, record::boolean(before, "daemon"), &mut found);
+        let (line, code) = super::super::verdict::line(&found, "");
+        assert!(code == 0 && line.starts_with("PASS:") && found.steps.is_empty(), "{line}");
+        assert_eq!(line.contains("added this declared frontend's own daemon"), pending, "{line}");
+    }
+    let text = crate::topology::status::render_text(&crate::topology::status::report(&topo, &Default::default()));
+    assert!(text.contains("desk frontend own, not dialed"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&crate::topology::status::render_json(
+        &crate::topology::status::report(&topo, &Default::default()),
+    )).unwrap();
+    assert_eq!(json["rows"][1]["daemon_state"], "own_not_dialed");
+}
+
 /// The role is declared: the role rule and the unit's host pin agree on who runs sotd (for every host of one hosts.toml
 /// the install puts a daemon exactly where `sotd_hosts` lets the unit start; a frontend runs its own); with no flag and
 /// no entry the role is what install.json recorded; a plan that dials another daemon host gets the dialing launcher.

@@ -62,6 +62,7 @@ struct Plan {
     windows_before: bool,
     live: daemon::Work,
     rows_unknown: bool,
+    pre_daemon: Option<bool>,
 }
 
 impl Plan {
@@ -114,6 +115,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     let (restarted, state) = wire(&plan, &mut found)?;
     write_record(&plan)?;
     check(&plan, restarted, state, &mut found);
+    role::note_widening(plan.topo_named.then_some(plan.role), plan.pre_daemon, &mut found);
     enrolled.check(&mut found);
     checks::guard_items(&mut found);
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
@@ -328,6 +330,7 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
         windows_before,
         live: daemon::Work::default(),
         rows_unknown: false,
+        pre_daemon: record::boolean(&pre_text, "daemon"),
     };
     // A repair changes nothing in the record but its pin: a run of the same build that changes the role or the hub
     // is an install over it.

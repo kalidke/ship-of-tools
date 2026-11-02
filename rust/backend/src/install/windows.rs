@@ -109,6 +109,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     };
     let pin = if named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
     let installed = super::installed_version(&ctx.prefix);
+    let had_daemon = record::boolean(&record::read(&ctx.record_path()), "daemon");
     let mut dir = String::new();
     let way = super::meet(&installed, ctx.sotd().is_file(), || {
         step("direction");
@@ -132,9 +133,14 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     if let Some(step) = pending {
         // The update stays armed for a start: the run ends with that step.
         found.step(step);
-        publish.pending(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
+        let published = publish.pending(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found);
+        verdict::set_tail(pin.clone());
+        owned_stage(&ctx.prefix, &ctx.version_dir, &local_app_data().join("sot\\config"), &ctx.pointer())?;
+        verdict::set_tail(armed_tail(&ctx));
+        published?;
         return Ok((found, pin));
     }
+    own_files(&ctx)?;
     let enrolled = publish.enroll(&ctx.version_dir, &ctx.pack.commit, &ctx.base, &mut found)?;
     if julia::which("julia").is_some() {
         step("julia");
@@ -149,7 +155,14 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     shortcut(&ctx, &mut found)?;
     let refusal = sync_hub(&ctx);
     write_record(&ctx)?;
+    own_files(&ctx)?;
     end_state(&ctx, &mut found);
+    let declared = sot_platform::host::state_dir::host_name().ok().and_then(|me| {
+        sot_topology::load().ok().flatten().and_then(|(_, topo)| {
+            topo.host(&me).map(|h| super::role::Role { daemon: h.daemon || h.frontend, frontend: h.frontend })
+        })
+    });
+    super::role::note_widening(declared, had_daemon, &mut found);
     enrolled.check(&mut found);
     if let Some(hub) = refusal {
         let me = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
@@ -161,6 +174,77 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
 fn armed_tail(ctx: &Ctx) -> String {
     let pin = if ctx.named { verdict::pin_tail(&ctx.pack.version) } else { String::new() };
     format!("; the update to {} stays armed: the next start applies it{pin}", ctx.pack.tag())
+}
+
+fn own_files(ctx: &Ctx) -> Result<(), Stop> {
+    owned_checkout(&ctx.prefix, &ctx.version_dir, &local_app_data().join("sot\\config"))
+}
+
+fn owned_stage(prefix: &Path, checkout: &Path, config: &Path, pointer: &Path) -> Result<(), Stop> {
+    if let Err(mut stop) = owned_checkout(prefix, checkout, config) {
+        if let Err(error) = std::fs::remove_file(pointer) {
+            stop.detail.push_str(&format!("; could not drop {}: {error}", pointer.display()));
+        }
+        return Err(stop);
+    }
+    Ok(())
+}
+
+/// An elevated logon's default owner may be Administrators, so only an elevated run walks the install, and it never
+/// follows the current junction or another reparse point. An unelevated run cannot change an owner, and old files an
+/// elevated run left must not fail it. Every run reads the checkout's owner back.
+fn owned_checkout(prefix: &Path, checkout: &Path, config: &Path) -> Result<(), Stop> {
+    let mut c = powershell(&["-Command", r"
+$ErrorActionPreference = 'Stop'
+$me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$problem = ''
+$elevated = (New-Object System.Security.Principal.WindowsPrincipal($me)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+try {
+    $todo = New-Object 'System.Collections.Generic.Stack[string]'
+    if ($elevated) { $todo.Push($env:SOT_OWNER_PREFIX) }
+    if ($elevated -and (Test-Path -LiteralPath $env:SOT_OWNER_CONFIG) -and
+        -not $env:SOT_OWNER_CONFIG.StartsWith($env:SOT_OWNER_PREFIX + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        $todo.Push($env:SOT_OWNER_CONFIG)
+    }
+    while ($todo.Count -gt 0) {
+        $path = $todo.Pop()
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        $acl = Get-Acl -LiteralPath $path
+        if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $me.User) {
+            $acl.SetOwner($me.User)
+            Set-Acl -LiteralPath $path -AclObject $acl
+        }
+        if ($item.PSIsContainer) {
+            foreach ($child in Get-ChildItem -LiteralPath $path -Force) { $todo.Push($child.FullName) }
+        }
+    }
+} catch { $problem = $_.Exception.Message }
+$owner = 'unreadable'
+$same = $false
+try {
+    $item = Get-Item -LiteralPath $env:SOT_OWNER_CHECKOUT -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'checkout is a reparse point' }
+    $acl = Get-Acl -LiteralPath $env:SOT_OWNER_CHECKOUT
+    $owner = $acl.Owner
+    $same = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $me.User
+} catch { $problem = ($problem + ' ' + $_.Exception.Message).Trim() }
+@{account=$me.Name; owner=$owner; same=$same; error=$problem} | ConvertTo-Json -Compress
+if (-not $same -or $problem) { exit 1 }
+"]);
+    c.env("SOT_OWNER_PREFIX", prefix).env("SOT_OWNER_CHECKOUT", checkout).env("SOT_OWNER_CONFIG", config);
+    let ran = cmd::output_within(&mut c, Duration::from_secs(300));
+    let facts: serde_json::Value = serde_json::from_str(ran.out.trim()).unwrap_or_default();
+    if ran.ok() && facts["same"] == true {
+        return Ok(());
+    }
+    let owner = facts["owner"].as_str().unwrap_or("unreadable");
+    let account = facts["account"].as_str().unwrap_or("the running account");
+    let why = facts["error"].as_str().filter(|s| !s.is_empty()).map_or_else(|| {
+        if facts.is_object() { "ownership read-back did not confirm the running account".into() } else { ran.last_said() }
+    }, String::from);
+    let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
+    Err(Stop::at("ownership", 1, format!("checkout {} owner is {owner}, expected {account}: {why}; run the installer again unelevated as the account that uses Ship of Tools", checkout.display())))
 }
 
 /// Copy the binaries, clone the base and add the version folder.
@@ -304,10 +388,8 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
     write_pin(ctx, ctx.named)?;
     println!("staging and preparing {} (this can take many minutes)", ctx.pack.tag());
     let ran = cmd::output(Command::new(new_sotd).args(["update", "stage"]).arg(&ctx.pack.dir).arg("--prefix").arg(&ctx.prefix));
-    for l in ran.out.lines() {
-        println!("  {l}");
-    }
     if !ran.ok() {
+        for l in ran.out.lines() { println!("  {l}"); }
         let mut detail = ran.last_said();
         if detail.is_empty() {
             detail = format!("sotd update stage ended with exit {}", ran.code.map_or("none".into(), |c| c.to_string()));
@@ -319,6 +401,8 @@ fn update(ctx: &mut Ctx, new_sotd: &Path, installed: &str) -> Result<Option<Stri
         verdict::set_tail(String::new());
         return Err(Stop::new(1, detail));
     }
+    owned_stage(&ctx.prefix, &ctx.version_dir, &local_app_data().join("sot\\config"), &ctx.pointer())?;
+    for l in ran.out.lines() { println!("  {l}"); }
     verdict::set_tail(armed_tail(ctx));
     let all = match armed_listing(procs::snapshot(), &ctx.pack.tag()) {
         Ok(all) => all,
@@ -601,6 +685,11 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         State::Unknown => found.fail("daemon", format!("a daemon runs on {} and could not be told its version ({why})", ctx.pipe)),
         State::Other | State::Held => found.fail("daemon", format!("the daemon on {} still runs another version than {v}", ctx.pipe)),
         _ => {}
+    }
+    if let Ok(me) = sot_platform::host::state_dir::host_name() {
+        if let Some(restart) = super::window::restart_step(&ctx.endpoint(), &me, v) {
+            found.step(restart);
+        }
     }
 }
 

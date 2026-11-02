@@ -378,9 +378,13 @@ if (Test-Path -LiteralPath $filesSha) {
 if (-not (Test-Path -LiteralPath $checkout)) {
     Write-ApplyLog "prepared checkout $checkout missing -- dropping pointer"; Remove-Pending; Exit-Apply 0
 }
-$head = (git -C $checkout rev-parse HEAD 2>$null | Select-Object -First 1)
-if ("$head".Trim() -ne $commit) {
-    Write-ApplyLog "prepared checkout HEAD ($head) != pinned commit ($commit) -- dropping pointer"; Remove-Pending; Exit-Apply 0
+$headRead = @(git -C $checkout rev-parse HEAD 2>&1)
+$headCode = $LASTEXITCODE
+$head = ($headRead | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | Select-Object -First 1)
+$gitSaid = (($headRead | ForEach-Object { "$_" }) -join ' ') -replace '\s+', ' '
+if ($headCode -ne 0 -or "$head".Trim() -ne $commit) {
+    $head = "$head" -replace '\s+', ' '
+    Write-ApplyLog "prepared checkout HEAD ($head) != pinned commit ($commit); git exit ${headCode}: $gitSaid -- dropping pointer"; Remove-Pending; Exit-Apply 0
 }
 $dirty = (git -C $checkout status --porcelain -uno 2>$null)
 if ($dirty) {

@@ -110,6 +110,9 @@ of each.
     is tested in `rust/backend/tests/unit_pin.rs`; the generated relay socket units still carry an
     `[Install]` section, so `systemctl --user enable` and `disable` change a link in the home that every host shares,
     which the pin does not stop (the boot-start rule of `sotd.service` has not been applied to them; queue item 17).
+    `sotd status` names a host declared only `frontend` as `own, not dialed` in its daemon column
+    (`own_not_dialed` in JSON): its own daemon is part of the role, while the status probes still follow
+    `dial_endpoints`. This describes the declaration, without claiming a liveness probe of that daemon.
 11. **Every `systemctl` call topology makes is given a wait budget, and a stuck manager is a named failure.** Each call
     runs through `sot_containment::process().output` with `SYSTEMCTL_BOUND` (30 s) and fails `did not exit within`
     that bound; `apply` collects each unit's failure and runs the rest, `refresh` collects all but a failed reload and

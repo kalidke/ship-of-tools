@@ -273,6 +273,11 @@ jobs:
         run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
 
+      - name: Test prepared checkout HEAD diagnostics
+        timeout-minutes: 2
+        run: python -B scripts/tests/installer-head-error.py
+        working-directory: .
+
       # install-manifest.ps1 drops the pointer armed over the install it replaces, and keeps it across a same-version
       # rewrite. A stand-in sot.exe built with the runner's csc.exe, a scratch git repo, no network.
       - name: Test install-manifest.ps1
@@ -436,6 +441,11 @@ jobs:
         env:
           SOT_TEST_SOTD: "${{ github.workspace }}/rust/target/debug/sotd"
         run: bash scripts/tests/installer-apply.sh
+        working-directory: .
+
+      - name: Test prepared checkout HEAD diagnostics
+        timeout-minutes: 2
+        run: python3 -B scripts/tests/installer-head-error.py
         working-directory: .
 
       # A home several hosts share: an update's re-render of sotd.service pins it to the hosts that run sotd before the

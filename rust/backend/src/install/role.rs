@@ -14,6 +14,12 @@ pub(super) struct Role {
     pub frontend: bool,
 }
 
+pub(super) fn note_widening(declared: Option<Role>, had_daemon: Option<bool>, found: &mut super::verdict::Found) {
+    if declared.is_some_and(|r| r.frontend && r.daemon) && had_daemon == Some(false) {
+        found.checked("added this declared frontend's own daemon (the frontend runs a daemon on this computer)");
+    }
+}
+
 /// This host's entry in `sotd topology status`'s table (a header line, then `HOST DECLARED`, the declared words joined
 /// by commas), or `None` when the table does not list it.
 pub(super) fn from_status(table: &str, me: &str) -> Option<Role> {
@@ -209,6 +215,6 @@ pub(super) fn pin_hosts(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "role_tests.rs"]
 mod tests;

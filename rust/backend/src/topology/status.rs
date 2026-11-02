@@ -87,6 +87,7 @@ pub struct ClientGroup {
 pub enum DaemonCell {
     /// No `daemon = true` here — nothing to ask.
     NotDeclared,
+    OwnNotDialed,
     NotDialable,
     Unreachable(String),
     Up { build: String, reported_host: String },
@@ -163,6 +164,7 @@ pub fn report(topo: &Topology, probes: &BTreeMap<String, Probe>) -> Report {
 fn host_row(topo: &Topology, h: &HostDecl, probe: Option<&Probe>, hub_clients: Option<&[ClientVersion]>) -> Row {
     let declared = topology::declared_words(topo, h).join(",");
     let (daemon, rows, own_clients) = match (h.daemon, probe) {
+        (false, _) if h.frontend => (DaemonCell::OwnNotDialed, None, None),
         (false, _) => (DaemonCell::NotDeclared, None, None),
         (true, None) => (DaemonCell::NotDialable, None, None),
         (true, Some(Probe::Unreachable(reason))) => (DaemonCell::Unreachable(reason.clone()), None, None),
@@ -225,6 +227,7 @@ pub fn render_text(r: &Report) -> String {
     for row in &r.rows {
         let daemon = match &row.daemon {
             DaemonCell::NotDeclared => "-".to_string(),
+            DaemonCell::OwnNotDialed => "own, not dialed".to_string(),
             DaemonCell::NotDialable => "not dialable here".to_string(),
             DaemonCell::Unreachable(reason) => format!("unreachable: {reason}"),
             DaemonCell::Up { build, reported_host } => format!("{build} up (host: {reported_host})"),
@@ -295,6 +298,7 @@ pub fn render_json(r: &Report) -> String {
         .map(|row| {
             let (state, build, host, reason) = match &row.daemon {
                 DaemonCell::NotDeclared => ("not_declared", None, None, None),
+                DaemonCell::OwnNotDialed => ("own_not_dialed", None, None, None),
                 DaemonCell::NotDialable => ("not_dialable", None, None, None),
                 DaemonCell::Unreachable(why) => ("unreachable", None, None, Some(why.as_str())),
                 DaemonCell::Up { build, reported_host } => ("up", Some(build.as_str()), Some(reported_host.as_str()), None),

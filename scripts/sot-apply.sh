@@ -157,7 +157,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     exit 0
 fi
 printf '%s@%s#sh\n' "$$" "$(hostname 2>/dev/null || echo unknown)" > "$LOCK/owner" 2>/dev/null || true
-cleanup() { rm -f "${LOCK:?}/owner" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
+cleanup() { rm -f "${LOCK:?}/owner" "${LOCK:?}/head-error" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
 # Put back the unit and wrapper the latest apply backed up. A backup exists
@@ -318,8 +318,11 @@ fi
 
 # Prepared worktree: exact commit, and no modified tracked files.
 [ -d "$CHECKOUT" ] || { log "prepared checkout $CHECKOUT missing — dropping pointer"; drop_pending; exit 0; }
-HEAD="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null)"
-[ "$HEAD" = "$COMMIT" ] || { log "prepared checkout HEAD ($HEAD) != pinned commit ($COMMIT) — dropping pointer"; drop_pending; exit 0; }
+HEAD="$(git -C "$CHECKOUT" rev-parse HEAD 2>"$LOCK/head-error")"
+HEAD_STATUS=$?
+HEAD_ERROR="$(awk '{gsub(/\r/, " ")} NF {$1=$1; printf "%s%s", sep, $0; sep=" "}' "$LOCK/head-error")"
+HEAD="$(printf '%s' "$HEAD" | awk '{gsub(/\r/, " ")} NF {$1=$1; printf "%s%s", sep, $0; sep=" "}')"
+[ "$HEAD_STATUS" = 0 ] && [ "$HEAD" = "$COMMIT" ] || { log "prepared checkout HEAD ($HEAD) != pinned commit ($COMMIT); git exit $HEAD_STATUS: $HEAD_ERROR — dropping pointer"; drop_pending; exit 0; }
 DIRTY="$(git -C "$CHECKOUT" status --porcelain -uno 2>/dev/null)"
 [ -z "$DIRTY" ] || { log "prepared checkout has modified tracked files — dropping pointer"; drop_pending; exit 0; }
 

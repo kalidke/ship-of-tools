@@ -82,10 +82,13 @@ pub(super) fn check(plan: &Plan, restarted: bool, state: Option<state::Choice>, 
     let left = matches!(after, State::Held | State::Other);
     let live = &plan.live;
     let mut window_step = false;
-    if plan.windows_before && changed {
+    // A window seen before a restart may not have reconnected yet, so the connected ones add to it, never replace it.
+    let connected = super::super::window::restart_step(&format!("unix:{}", plan.socket), &plan.me, version);
+    if connected.is_some() || (plan.windows_before && changed) {
         let note = if left { daemon::rows_note(&live.rows, live.pluto, plan.rows_unknown) } else { String::new() };
         let old = if plan.pre_version.is_empty() { "the old version" } else { &plan.pre_version };
-        found.step(format!("quit Ship of Tools and start it again: its window still runs {old}{}", if note.is_empty() { String::new() } else { format!(" ({note})") }));
+        let restart = connected.unwrap_or_else(|| format!("quit Ship of Tools and start it again: its window still runs {old}"));
+        found.step(format!("{restart}{}", if note.is_empty() { String::new() } else { format!(" ({note})") }));
         window_step = true;
     }
     if left && !window_step {

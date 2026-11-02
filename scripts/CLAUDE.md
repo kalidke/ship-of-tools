@@ -180,6 +180,8 @@ Guarantees, each with the mechanism it rests on. Install:
   sotd on never writes over an install at the prefix, a run never replaces another install's unit, wrapper or desktop
   entry, and under a declared topology a run never records less than install.json does (`--force-role-change` waives
   the three; an unrecognized file is never overwritten).
+  When a declared frontend's previous record says it had no daemon, adding its own daemon is named as a checked
+  detail in the verdict, with no step for the person.
 - The unit is pinned before any reload (Unix). `sotd topology pin` (`--claim` for this host with no hosts.toml) writes
   the unit's host pin before the unit is written, reloaded or started; a pin that fails stops the run with no unit
   written, and a retire's pin that fails stops it with nothing stopped or reloaded. Boot start is the drop-in, never `enable` (on a shared home an enable links the unit for every host): wired
@@ -218,6 +220,20 @@ Guarantees, each with the mechanism it rests on. Install:
   Claude Code through agents' executable resolver with the installer's PATH and home, and the daemon's answer;
   missing Claude Code gives ONE STEP LEFT to install it on this computer;
   a step only a person takes (a window on the old version, a daemon a window holds) is ONE STEP LEFT.
+  On every completed install or repair, Unix and Windows use one shared check to ask this computer's own daemon
+  once through `version.query`, within 3 s. A connected `fe` whose declared host is this computer and whose
+  nonempty `app_version` differs from the installed version adds a restart step naming both versions, regardless
+  of whether the install record changed. No daemon, no reply or an unreadable reply adds nothing and fails nothing.
+  On Unix this adds to the step a window seen before the run earns when the record moved, since such a window may
+  not have reconnected yet.
+- Windows files belong to the running account. After staging, before reporting the update armed or applying it, an
+  elevated run corrects any different owners recursively under its prefix and config folder, skipping reparse
+  points; an unelevated run cannot change an owner and walks nothing, so an old file an elevated run left does not
+  fail it. Every run then reads the checkout's owner back. The correction and read-back share a 300 s bounded process.
+  Fresh installs and repairs receive the same check, repeated after the final files are written. A failure drops
+  the staged pointer (a failed drop is named), reports FAIL with the owner found or that it was unreadable, and
+  tells the person to run the installer again unelevated as the account that uses Ship of Tools; it never reports
+  the update armed on that path.
 - Bounded waits. curl runs with `--connect-timeout 15 --speed-limit 1000 --speed-time 60`, every git call with
   `http.lowSpeedLimit=1000` and `http.lowSpeedTime=60`, ssh with the tree's `SSH_OPTS` under a 30 s bound; a converge
   waits at most `SOT_INSTALL_CONVERGE_WAIT_S` (1800 s), a restarted daemon `SOT_INSTALL_RESTART_WAIT_S` (Unix, 30 s) or
@@ -248,6 +264,8 @@ Apply (`sot-apply.sh`, `sot-apply.ps1`):
   rollback marks the bad tag so it is never armed again; comm follows every apply (fail-open, bounded by `timeout`).
 - A pointer applies only onto the install it was armed over: the installed `sotd update pointer` answers above the
   hand-off, and a refused pointer is dropped under the lock (`--drop-only`/`-DropOnly` apply nothing).
+- When the prepared checkout's HEAD cannot be read or disagrees with the pinned commit, apply keeps Git's output
+  and exit code on the one log line that drops the pointer. It still leaves the install and staged files alone.
 - A release runs its own apply at every later update: the installed apply hands off once to the staged release's
   (`SOT_APPLY_REEXECED`; Unix: the archive's executable `sot-apply`, which reads the prefix from where the stage sits).
 
@@ -322,6 +340,11 @@ hands off to the staged release's), update-implicit (no arguments against the re
 release before that clears its pin, then the run's release stages as newer) and a repair run, each judged by its
 verdict and the state it left; the apply, library and wrapper suites (`tests/installer-*.sh`, `tests/test-*.ps1`); the
 integration tests `shell_dial`, `unit_pin`, `same_version`, `window_start`.
+The HEAD diagnostic regression (`tests/installer-head-error.py`) runs native apply with real Git on Linux/macOS
+and Windows PowerShell 5.1. `install::window`'s regression uses a private Unix socket on Linux/macOS to exercise
+the shared version query and verdict. `install::role`'s regression exercises the declared-role notice and status
+rendering on Unix. Windows' ignored ownership regression needs an elevated Windows PowerShell 5.1 account to
+seed Administrators-owned fixture files; it runs the production ownership correction and reads the owners back.
 
 ## Publish guard (landings A and B; B execution evidence pending)
 
