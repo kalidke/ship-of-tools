@@ -156,8 +156,7 @@ case_matching_pair_prints_the_phase_verbatim() {
 
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
     contains "$VER_OUT" "unix:$SOCK" || { echo "  daemon row must be labeled by the resolved endpoint: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "abc1234def" || { echo "  missing daemon lane_build: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "lane proto 1" || { echo "  missing daemon lane_proto: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "protocol 1" || { echo "  missing daemon protocol: $VER_OUT"; return 1; }
     contains "$VER_OUT" "client fe-1" || { echo "  missing attached-client row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "row research" || { echo "  missing capsule row: $VER_OUT"; return 1; }
     contains "$VER_OUT" "ready" || { echo "  expected the row's phase printed verbatim: $VER_OUT"; return 1; }
@@ -165,11 +164,20 @@ case_matching_pair_prints_the_phase_verbatim() {
     return 0
 }
 
-case_legacy_daemon_without_lane_proto_prints_a_placeholder() {
-    # A daemon new enough to answer version.query but predating ADR 0045's
-    # lane_proto field (`#[serde(default)]` on the Rust side; here, simply
-    # omitted from the staged JSON) must still exit 0 -- and the build
-    # column falls back to "lane proto ?" rather than a blank or a crash.
+case_current_daemon_prints_no_empty_build_cell() {
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.7.0+abc1234","protocol":4,"lane_build":"","host":"host-a"},"clients":[]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    contains "$VER_OUT" "protocol 4 (host host-a" || { echo "  missing the daemon's protocol and host: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "lane proto" && { echo "  obsolete lane field: $VER_OUT"; return 1; }
+    return 0
+}
+
+case_legacy_daemon_prints_its_wire_protocol() {
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.6.0-dev+abc1234","protocol":1,"lane_build":"abc1234def"},"clients":[]}}'
     stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
     start_stub_daemon
@@ -177,8 +185,8 @@ case_legacy_daemon_without_lane_proto_prints_a_placeholder() {
     stop_stub_daemon
 
     [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
-    contains "$VER_OUT" "abc1234def" || { echo "  missing daemon lane_build: $VER_OUT"; return 1; }
-    contains "$VER_OUT" "lane proto ?" || { echo "  expected a lane proto ? placeholder: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "protocol 1" || { echo "  missing daemon protocol: $VER_OUT"; return 1; }
+    contains "$VER_OUT" "lane proto" && { echo "  obsolete lane field: $VER_OUT"; return 1; }
     return 0
 }
 
@@ -495,7 +503,8 @@ case_declared_empty_sessions_prints_no_sessions_not_nothing() {
 # --- run ---------------------------------------------------------------
 
 check "a matching pair prints daemon/client rows and the row's phase verbatim, no verdict" case_matching_pair_prints_the_phase_verbatim
-check "a daemon predating lane_proto prints a 'lane proto ?' placeholder and still exits 0" case_legacy_daemon_without_lane_proto_prints_a_placeholder
+check "a current daemon prints its protocol and host, with no empty build cell"           case_current_daemon_prints_no_empty_build_cell
+check "an older daemon prints its wire protocol and still exits 0" case_legacy_daemon_prints_its_wire_protocol
 check "an active and an idle frontend print their role@host and active|idle state"          case_active_and_idle_frontends_print_their_state
 check "the version reply names the daemon's own declared host"                             case_version_names_the_daemons_own_host
 check "a daemon predating the host field prints a placeholder and still exits 0"           case_version_daemon_predating_host_field_prints_a_placeholder

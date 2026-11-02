@@ -170,8 +170,8 @@
 #              self-reported name prints as `client <id>` instead, and one
 #              declaring a name but no host falls back to `<role> <name>`),
 #              one row labeled by the RESOLVED
-#              ENDPOINT with its app_version + lane_build + the daemon's own
-#              declared host,
+#              ENDPOINT with its app_version, wire protocol, declared host
+#              and uptime when supplied,
 #              `row <slug>` per capsule workspace with its phase and no
 #              derived verdict (this script never challenged the lane —
 #              "foreign" already IS the verdict), and `comm scripts` from

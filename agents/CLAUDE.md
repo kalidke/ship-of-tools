@@ -140,7 +140,9 @@ of each.
    and the spawn leaves the inbox to the daemon's first append. Limits: a tool keeps files of its own in the comm folder
    (`bin/`, written by the installer; `probe/`; `gh-device-auth.json`), and `sot-fe version` prints the install's
    `VERSION` file; `ccx` reads and appends to Codex's own `config.toml`, which is Codex's and not the daemon's; the
-   tools' hello is checked by the server (messaging's and the server's contracts), not here. **Shipped tools outside this
+   tools' hello is checked by the server (messaging's and the server's contracts), not here. `sot-fe version` prints
+   the daemon's product version, wire protocol, declared host and supplied uptime, without the retired lane fields;
+   older replies may omit host and uptime. **Shipped tools outside this
    folder's ownership still open daemon-owned paths, and this guarantee does not cover them:** the work-state hooks
    (`comm-status.sh`, `comm-status-heartbeat.sh`, `comm-status-idle.sh`) and the turn auditor, rows' and messaging's, test
    the registry and the inbox and keep turn marks and a signature under the comm folder's `state/` (queued under rows:

@@ -19,7 +19,7 @@ send_version() {
         exit 2
     fi
     verr="$(printf '%s' "$vresp" | jq -r '.payload.error // empty')"
-    local daemon_version daemon_build daemon_lane_proto daemon_host
+    local daemon_version daemon_build daemon_protocol daemon_host
     if [ -n "$verr" ]; then
         # The ONE shape every daemon this verb must never fail against:
         # the generic unknown-op reply (server/dispatch.rs's `other =>` catch-all,
@@ -36,15 +36,11 @@ send_version() {
         fi
     else
         daemon_version="$(printf '%s' "$vresp" | jq -r '.payload.daemon.app_version')"
-        daemon_build="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_build')"
-        daemon_lane_proto="$(printf '%s' "$vresp" | jq -r '.payload.daemon.lane_proto // "?"')"
-        # topology plan §F step 1: `DaemonVersion.host`, `#[serde(default)]`
-        # on the Rust side -- a daemon predating this field answers without
-        # it, so `// "?"` mirrors the lane_proto placeholder rather than a
-        # blank cell.
+        daemon_protocol="$(printf '%s' "$vresp" | jq -r '.payload.daemon.protocol // "unknown"')"
+        # Older daemons may omit their host.
         daemon_host="$(printf '%s' "$vresp" | jq -r '.payload.daemon.host // "?"')"
         [ -n "$daemon_host" ] || daemon_host="?"
-        daemon_build="${daemon_build} (lane proto ${daemon_lane_proto}, host ${daemon_host}"
+        daemon_build="protocol ${daemon_protocol} (host ${daemon_host}"
         # Session-listing brief: `uptime_s` is what makes a daemon
         # restart's forgetting of the `disconnected` map VISIBLE rather
         # than silently read as "no sessions" -- omitted (not "up 0")
@@ -169,7 +165,7 @@ send_version() {
     # guess (Codex review: an explicit local unix endpoint and a remote
     # endpoint from an env fallback are indistinguishable from here). The
     # build cell also carries the daemon's own declared host (topology
-    # plan §F step 1) alongside lane proto -- same 3-cell row shape as
+    # plan §F step 1) alongside its wire protocol -- same 3-cell row shape as
     # every other line, no new column.
     printf '%-20s %-28s %s\n' "$ENDPOINT" "$daemon_version" "$daemon_build"
 
