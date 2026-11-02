@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # test-bash32.sh: bash32.sh builds bash 3.2.57 with make, and the tarball's parse.y is newer than its y.tab.c, so make
 # runs yacc. A host with none of bison, yacc or byacc must stop before the download, and a DIR that already holds a built
-# bash is reused with no yacc at all. Nothing is downloaded: curl is a stub that records its call and fails. Exit: failed
-# checks.
+# bash is reused with no yacc at all. A failed GNU download tries the mirror, and a corrupt mirror response fails its
+# checksum before extraction. Nothing is downloaded: curl is a recording stub. Exit: failed checks.
 set -u
 script=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash32.sh
 # macOS's TMPDIR ends in a slash: strip it, or the paths below hold `//`.
@@ -47,5 +47,30 @@ for y in bison yacc byacc; do
     run "$b" "$work/$y/bash-3.2.57"
     check "a $y on PATH: the build goes on to its download, which fails here" '[ -e "$work/$y/curl.called" ] && [[ $out == *"build failed"* ]]'
 done
+
+# case 4: GNU is unavailable, the mirror returns corrupt bytes, and the real checksum check refuses extraction
+b=$(bin_for mirror)
+stub "$b/yacc"
+cat > "$b/curl" <<'CURL'
+#!/bin/sh
+for url do :; done
+printf '%s\n' "$url" >> "$BASH32_DOWNLOADS"
+case "$url" in
+    https://ftp.gnu.org/*) exit 1 ;;
+    https://mirrors.kernel.org/*) printf 'corrupt archive\n' > bash-3.2.57.tar.gz ;;
+    *) exit 2 ;;
+esac
+CURL
+mv "$b/tar" "$b/tar-real"
+cat > "$b/tar" <<'TAR'
+#!/bin/sh
+: > "$BASH32_EXTRACTED"
+exit 1
+TAR
+chmod +x "$b/curl" "$b/tar"
+export BASH32_DOWNLOADS=$work/downloads BASH32_EXTRACTED=$work/extracted
+run "$b" "$work/mirror/bash-3.2.57"
+check "download failure tries GNU then the fallback mirror" '[ "$(cat "$BASH32_DOWNLOADS")" = "https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz${nl}https://mirrors.kernel.org/gnu/bash/bash-3.2.57.tar.gz" ]'
+check "a corrupt mirror download fails the checksum before extraction" '[ "$rc" = 2 ] && [[ $out == *"checksum did NOT match"* ]] && [ ! -e "$BASH32_EXTRACTED" ]'
 echo "failed: $fail"
 exit "$fail"

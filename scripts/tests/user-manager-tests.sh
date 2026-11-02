@@ -8,8 +8,9 @@
 # rc-gate.sh runs every test in a container that reaches no user manager, where these five print SKIPPED and pass, and
 # no hosted runner has one; until the cut stopped running the workspace suite, it was the one place they ran. Each
 # test's rows run in systemd scopes of their own, outside the container, and the test ends them. Linux only. Reads
-# CARGO_TARGET_DIR (required: not rc-gate's while that runs, since these builds replace the `sotd` and `sot-capsule` in
-# it), HOME, PATH and the user manager's address; every SOT_ variable of the caller is dropped. Each test's log is
+# CARGO_TARGET_DIR (required; locked with flock for the whole run, as rc-gate.sh also does, so a second gate on it
+# fails immediately and names the folder), HOME, PATH and the user manager's address; every SOT_ variable of the caller
+# is dropped. Each test's log is
 # <logdir>/<test binary>__<name>.log, and <logdir>/summary.txt holds one `<binary> <name> rc=<n>` line per test, then
 # ALLDONE or ALLDONE FAILED. A test passes only when its exact body ran and passed (lib-test-body.sh). Exit: 0 when
 # every test passed, 1 when any failed, 2 on bad arguments or setup.
@@ -30,6 +31,8 @@ if [ $# -ne 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ]; then
     exit 2
 fi
 D=$(cd "$1" && pwd) || exit 2
+source "$(dirname "$SELF")/lib-gate-target.sh" || exit 2
+gate_target_lock || exit 2
 systemctl --user show-environment > /dev/null 2>&1 ||
     { echo "user-manager-tests: no user manager answers: run it under in-container.sh --user-manager" >&2; exit 2; }
 if [ -d "$2" ] && [ -n "$(ls -A "$2")" ]; then

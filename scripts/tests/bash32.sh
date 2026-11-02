@@ -4,8 +4,9 @@
 # a DIR that already holds a built bash is reused. The build runs in a folder of its own and is moved to DIR whole, so a
 # second run racing this one never sees half a build. Needs curl, tar, make, a C compiler, one of bison, yacc or byacc
 # (the tarball's parse.y is newer than its y.tab.c, so make runs yacc) and no sudo; a DIR that already holds a built
-# bash needs none of them. rust.yml's bash32-linux job and rc-gate.sh both call it. Exit 2 when a need is missing or the
-# build fails.
+# bash needs none of them. Hosted Linux jobs cache the executable by version and runner image; a cache miss tries
+# GNU, then a fallback mirror, verifying the pinned checksum before extraction. rc-gate.sh also calls it.
+# Exit 2 when a need is missing or the build fails.
 set -u
 dir=${1:-/scratch/$(id -un)/bash-3.2.57}
 if [ ! -x "$dir/bash" ]; then
@@ -21,7 +22,10 @@ if [ ! -x "$dir/bash" ]; then
     trap 'rm -rf "${work:?}"' EXIT
     {
         cd "$work" &&
-        curl -fsSL --retry 3 -o bash-3.2.57.tar.gz https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz &&
+        { curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 -o bash-3.2.57.tar.gz \
+            https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz ||
+          curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 -o bash-3.2.57.tar.gz \
+            https://mirrors.kernel.org/gnu/bash/bash-3.2.57.tar.gz; } &&
         echo "3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4  bash-3.2.57.tar.gz" | sha256sum -c - &&
         tar -xzf bash-3.2.57.tar.gz &&
         cd bash-3.2.57 &&

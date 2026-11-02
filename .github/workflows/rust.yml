@@ -64,6 +64,16 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - name: Key bash 3.2 (Linux)
+        if: runner.os == 'Linux'
+        id: bash32-key
+        run: echo "key=bash-3.2.57-${{ runner.arch }}-${ImageOS}-${ImageVersion}-v1" >> "$GITHUB_OUTPUT"
+      - name: Cache bash 3.2 (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bash-3.2.57/bash
+          key: ${{ steps.bash32-key.outputs.key }}
       - name: Build bash 3.2 (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -102,7 +112,8 @@ jobs:
     needs: plan
     runs-on: ${{ matrix.os }}
     # Linux/macOS sotd-c jobs also drive fresh/repair installer publish enrollment.
-    timeout-minutes: ${{ matrix.os != 'windows-latest' && contains(matrix.shard, 'sotd-c') && 25 || 12 }}
+    # Windows keeps its original 12 minutes in addition to Julia setup's five-minute allowance.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 17 || contains(matrix.shard, 'sotd-c') && 25 || 12 }}
     strategy:
       fail-fast: false
       matrix:
@@ -135,11 +146,14 @@ jobs:
           cache-dependency-path: rust/backend/sidecars/mathjax/package-lock.json
       - name: Install the MathJax helper's modules
         if: contains(matrix.shard, 'sotd') || matrix.shard == 'gate-wgl'
+        timeout-minutes: 3
         working-directory: rust/backend/sidecars/mathjax
         run: npm ci
       # The tests that start Julia (the sidecar tests in sotd, the daemon suites in wake and rest that send kernel, preview or
       # REPL ops) run the 1.13 every system has.
-      - uses: julia-actions/setup-julia@v3
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v3
+        timeout-minutes: 5
         with:
           version: '1.13'
       # sotd and sot-capsule sit in the target dir the backend tests spawn them from.
@@ -364,6 +378,10 @@ jobs:
         working-directory: .
         run: bash scripts/tests/test-rc-gate-target.sh
 
+      - name: Test the gate target lock
+        working-directory: .
+        run: python3 scripts/tests/test-gate-target-lock.py
+
       - name: Test bash32.sh's build needs
         working-directory: .
         run: bash scripts/tests/test-bash32.sh
@@ -375,6 +393,10 @@ jobs:
       - name: Test the rc gate's job logs
         working-directory: .
         run: bash scripts/tests/test-rc-gate-logs.sh
+
+      - name: Test the rc gate's installer jobs
+        working-directory: .
+        run: bash scripts/tests/test-rc-gate-installer.sh
 
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.

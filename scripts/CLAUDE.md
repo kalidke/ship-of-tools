@@ -39,6 +39,11 @@ Guarantees, each with the mechanism it rests on:
   that sleep on the clock (the lifetime harness, `window_start`, `window_lease`, the `lane_bridge` outage cases,
   `fe_client`'s health window) and the page test that needs a prepared Julia depot run only in release-gate.yml, or here
   with `RCG_FULL` set.
+- The Linux local gate builds `sotd`, `sot` and `sot-capsule` before its jobs, then runs
+  `installer-publish-guard.py` for `fresh` and `repair`, each with its own log, result and named summary line.
+  `tests/test-rc-gate-installer.sh` proves both jobs execute and retain their own status through the real pipeline.
+  The full `install-smoke.sh` still needs a release archive containing the packed apply script; a debug build alone
+  cannot run it. Its artifact-backed scenarios remain in release.yml.
 - The hosted runs are two. rust.yml, on main after each batch of merges (since 2026-10-26, the maintainer's decision; a
   red run is fixed forward in the next landing or its landing reverted), is the build and the unit tests sharded on all three systems by
   `.github/test-shards.txt`; its `release SYSTEM shard...` lines defer selected shards to that system's release gate.
@@ -51,6 +56,7 @@ Guarantees, each with the mechanism it rests on:
   proofs (`inst` plus fresh/repair orchestration), the launcher's suites on Windows, the Windows ignored-containment
   and ConPTY runs, and the shell suites under bash 3.2
   (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
+- rust.yml's MathJax `npm ci` step has its own three-minute bound, so a registry stall fails under that step's name.
 - A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,
   so only a tag run's binaries carry the bare version (`is_release_build`); a branch dispatch's and a local pack's carry
   a `+`. The smokes check that each updater-bearing binary says the run's version, that the Linux `sotd` and `sot-capsule`
@@ -89,10 +95,19 @@ Platforms: `release.sh`, the local gate and `pack-build.sh` run on Linux (the ga
 services, `tests/in-container.sh`); `pack-build.ps1` on Windows PowerShell 5.1. release.yml builds on ubuntu-22.04,
 windows-latest and macos-15 (GitHub retires the macos-14 image on 2026-11-02) and smokes and installs on all three.
 
+Both Linux gate entries acquire the same nonblocking `flock` on `<CARGO_TARGET_DIR>/gate.lock` inside their
+container, before setup or builds, and retain its descriptor through the run. A second gate on that folder
+fails immediately naming the folder; a different target can run concurrently. The lock file is never unlinked.
+`tests/test-gate-target-lock.py` exercises both entry points against each other, target aliases, separate targets
+and lock release using recording setup tools, with no build or user manager.
+
 Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
 writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
 a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites;
 release-gate.yml's slow checks job runs the comm and agents suites.
+
+rust.yml's Julia setup step has a five-minute bound. Windows build/test jobs allow 17 minutes, preserving their
+original 12-minute budget after setup; a stalled extraction fails in the named setup step.
 
 ## Installers (contract; pass 1b)
 A box runs one tagged release, laid under `$PREFIX` and recorded in `$PREFIX/install.json`. Install puts a release
@@ -432,6 +447,10 @@ Platforms: Bash 3.2 and ordinary Git/awk/od/tr/sed on Linux/macOS and Git for Wi
 uses Windows PowerShell without profiles. Hook and shim check out at LF even with autocrlf. The Linux CI matrix builds
 bash 3.2 and rewrites only scratch hook shebangs; macOS uses `/bin/bash`; Windows retains shipped shebangs and actual
 Git-launched hooks. The matrix needs no product binary or secret and runs in `rust.yml` at landings and branch dispatch.
+
+Hosted Linux publish guards and the release gate cache the built Bash 3.2.57 executable by version, architecture
+and runner image. A cache miss downloads from GNU with a kernel.org mirror fallback, with bounded curl attempts
+and the pinned SHA-256 checked before extraction (`tests/test-bash32.sh` covers reuse, fallback and corrupt bytes).
 
 Windows fixture limits are reported with named `skip:` lines, never counted as passing coverage:
 

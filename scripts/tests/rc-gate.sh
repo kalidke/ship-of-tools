@@ -20,6 +20,8 @@
 # CARGO_PROFILE_DEV_DEBUG when set. The gate's julia is the Julia binary `julia` starts, asked once under the runner's
 # HOME and named on summary.txt's third line: the Julia suites and the lifetime harness run it, and the Rust jobs get its
 # folder on their PATH, as rust.yml's test jobs get setup-julia's, so a test daemon runs it (`support::julia_binary`).
+# Both gate entries hold the target's gate.lock with flock for their whole run, acquired inside the container before
+# setup or builds. A second gate using that target fails immediately and names the folder.
 # CARGO_TARGET_DIR is the gate's alone while it runs: its jobs run the binaries in it (the
 # tests.tsv paths, `sotd`, `sot-capsule`), and summary.txt's first line names one head and tree; a build of another
 # checkout into it would replace them mid-run. It belongs to one checkout for good: the first run names that checkout in
@@ -174,6 +176,16 @@ job_shell() {
   fin "$k" $?
 }
 
+job_installer_publish() {
+  local scenario=$1 key=installer-publish-$1
+  st "$key"
+  logged "$L/$key.log" "$L/$key.log" "${TO[@]}" "${SE[@]}" \
+    python3 "$D/scripts/tests/installer-publish-guard.py" --repo "$D" --scenario "$scenario" \
+      --sotd "$CARGO_TARGET_DIR/debug/sotd" --sot "$CARGO_TARGET_DIR/debug/sot" \
+      --capsule "$CARGO_TARGET_DIR/debug/sot-capsule"
+  fin "$key" $?
+}
+
 # job_lifetime: the daemon lifetime harness as rust.yml's Linux job runs it: Pluto's environment prepared in the gate's
 # depot with one notebook run (fixtures/warm_pluto.jl) and handed to the cases, then every case one at a time, the Julia
 # ones on the gate's julia
@@ -289,6 +301,9 @@ producer() {
   emit cargo-chain cargo-chain
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
   [ -n "${RCG_BASH32:-}" ] && emit under-bash under-bash "$L/steps/under-bash.rc"
+  for s in fresh repair; do
+    emit "installer-publish:$s" "$(printf 'installer-publish\t%s' "$s")" "$L/steps/installer-publish-$s.rc"
+  done
   [ "$BUILD_RC" -eq 0 ] && st rust-workspace
 
   # list the four slow binaries; a split binary runs only per test
@@ -414,6 +429,7 @@ if [ "${1:-}" = --job ]; then
     lint) job_lint "$a" ;;
     under-bash) job_under_bash ;;
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
+    installer-publish) job_installer_publish "$a" ;;
     bin) job_test "$a" "$b" "$c" ;;
     one) job_test "$a" "$b" "$c" "$d" ;;
     part) job_part "$a" "$b" "$c" "$d" ;;
@@ -439,6 +455,8 @@ if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ 
 fi
 # One target per checkout, for good: the first run names its checkout in the target; a run for another is refused.
 D=$(cd "$1" && pwd) || exit 2
+source "$(dirname "$SELF")/lib-gate-target.sh" || exit 2
+gate_target_lock || exit 2
 CLAIM=$CARGO_TARGET_DIR/rc-gate-checkout
 if [ -e "$CLAIM" ] && [ "$(cat "$CLAIM")" != "$D" ]; then
   echo "rc-gate: $CARGO_TARGET_DIR holds the build of $(cat "$CLAIM"); give $D a target of its own" >&2
@@ -515,9 +533,10 @@ census() {
 T0=$(date +%s)
 M=$D/rust/Cargo.toml
 BUILD_RC=0
-st build-capsule
-"${CE[@]}" cargo build --manifest-path "$M" -p sot-capsule --bin sot-capsule --locked > "$L/build-capsule.log" 2>&1
-r=$?; rc build-capsule $r; [ $r -ne 0 ] && BUILD_RC=$r
+st build-install-binaries
+"${CE[@]}" cargo build --manifest-path "$M" -p sot-backend -p sot-frontend -p sot-capsule \
+  --bin sotd --bin sot --bin sot-capsule --locked > "$L/build-install-binaries.log" 2>&1
+r=$?; rc build-install-binaries $r; [ $r -ne 0 ] && BUILD_RC=$r
 : > "$L/tests.tsv"
 if [ "$INTR" -eq 0 ]; then
   st rust-build

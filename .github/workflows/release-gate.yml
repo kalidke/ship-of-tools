@@ -533,6 +533,14 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+      - name: Key bash 3.2.57
+        id: bash32-key
+        run: echo "key=bash-3.2.57-${{ runner.arch }}-${ImageOS}-${ImageVersion}-v1" >> "$GITHUB_OUTPUT"
+      - name: Cache bash 3.2.57
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/bash-3.2.57/bash
+          key: ${{ steps.bash32-key.outputs.key }}
       - name: Build bash 3.2.57
         run: bash scripts/tests/bash32.sh "$RUNNER_TEMP/bash-3.2.57" > /dev/null
       # A session's work-state write is rows' `sotd work-state`: the suites' stub sotd hands it to this build
