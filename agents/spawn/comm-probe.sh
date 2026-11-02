@@ -126,18 +126,17 @@ probe_wait_join() {
 # handle the row expects: the row's start writes it into the row's self file
 # (`self_file::pin_row`), and the responder declares it by joining from inside
 # the row (see the note in `serve`), never from the caller's shell.
-# A fresh project folder and label prevent a same-slug create from refreshing another row.
+# A same-slug create refreshes a `probe-…` row only while it is not in use; one
+# in use is refused (`label_in_use`). The slug comes from the label, so this
+# never adopts someone else's row.
 probe_create() {
     local handle="$1" req resp wsid root
     root="$(probe_root "$handle")" || return 1
-    # A same-slug create can refresh someone else's row. A fresh folder gives this create its own root and label.
-    root="$(mktemp -d "$root/row-XXXXXXXX")" || return 1
-    local label="$handle-${root##*/}"
     # The root goes to the daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon gets its own
     # spelling (sot_daemon_path).
     root="$(sot_daemon_path "$root")" || { echo "comm-probe.sh: cannot give $root in the spelling of the daemon at $ENDPOINT" >&2; return 1; }
     # The root can start with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
-    req="$(printf '%s' "$root" | jq -Rsc --arg l "$label" --arg an "$handle" \
+    req="$(printf '%s' "$root" | jq -Rsc --arg l "$handle" --arg an "$handle" \
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:.,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
     resp="$(probe_request "$req" workspace.create)" || return 1
     wsid="$(printf '%s' "$resp" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null)"

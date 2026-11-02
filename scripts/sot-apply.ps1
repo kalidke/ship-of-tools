@@ -381,7 +381,8 @@ if (-not (Test-Path -LiteralPath $checkout)) {
 $headRead = @(git -C $checkout rev-parse HEAD 2>&1)
 $headCode = $LASTEXITCODE
 $head = ($headRead | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | Select-Object -First 1)
-$gitSaid = (($headRead | ForEach-Object { "$_" }) -join ' ') -replace '\s+', ' '
+# PowerShell 5.1 renders a blank stderr line as this type's name.
+$gitSaid = (($headRead | ForEach-Object { "$_" } | Where-Object { $_ -ne 'System.Management.Automation.RemoteException' }) -join ' ') -replace '\s+', ' '
 if ($headCode -ne 0 -or "$head".Trim() -ne $commit) {
     $head = "$head" -replace '\s+', ' '
     Write-ApplyLog "prepared checkout HEAD ($head) != pinned commit ($commit); git exit ${headCode}: $gitSaid -- dropping pointer"; Remove-Pending; Exit-Apply 0
