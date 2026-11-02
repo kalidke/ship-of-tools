@@ -62,10 +62,10 @@ pub struct HelloReq {
     pub name: Option<String>,
     /// The OS account this client runs as (`sot_platform::identity::os_account::own_account_id()`: `uid:<n>` on Unix,
     /// the token user's SID on Windows). Required with `host`: a hello missing either is refused
-    /// (`identity_missing`). A detector, never a credential (ADR 0049 `## User isolation`): a daemon that sees one
-    /// declared `host` say hello as two different accounts refuses that host until it restarts, so two OS accounts
-    /// sharing one hub account are refused instead of receiving each other's mail. Never an address, never part of
-    /// a handle, never written anywhere.
+    /// (`identity_missing`). A detector, never a credential (ADR 0049 `## User isolation`): a daemon remembers the
+    /// first account each declared `host` says hello as and refuses that host's hellos as any other until it
+    /// restarts, so two OS accounts sharing one hub account are refused instead of receiving each other's mail.
+    /// Never an address, never part of a handle, never written anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_user: Option<String>,
 }

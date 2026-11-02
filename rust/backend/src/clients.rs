@@ -118,20 +118,12 @@ pub struct ClientInfo {
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
 }
 
-/// A hello refused because its declared host has said hello to this daemon as two different OS accounts: two
-/// accounts on one computer that share this daemon's hub account would otherwise receive each other's mail (ADR
-/// 0049 `## User isolation`). Names the host only, never an account.
+/// A hello refused because its declared host said hello to this daemon first as another OS account: two accounts
+/// on one computer that share this daemon's hub account would otherwise receive each other's mail (ADR 0049
+/// `## User isolation`). Names the host only, never an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsUserConflict {
     pub host: String,
-}
-
-/// The OS accounts one declared host has said hello as, for this daemon's life: one, or several. `Several` is
-/// never left until the daemon restarts.
-#[derive(Debug, PartialEq, Eq)]
-enum HostAccounts {
-    One(String),
-    Several,
 }
 
 #[derive(Default)]
@@ -150,9 +142,9 @@ struct Inner {
     /// again on every daemon restart (accepted limit — see `uptime`,
     /// which is what makes that limit visible rather than silent).
     disconnected: HashMap<String, Instant>,
-    /// Declared host -> the OS account(s) that said hello for it, live or long gone. In memory only, empty again
+    /// Declared host -> the first OS account that said hello for it, live or long gone. In memory only, empty again
     /// on every daemon restart.
-    hosts: HashMap<String, HostAccounts>,
+    hosts: HashMap<String, String>,
     /// Each window's state across its connections, live and away (`clients_window.rs`). In memory only.
     windows: HashMap<window::WindowKey, window::Window>,
 }
@@ -186,24 +178,19 @@ impl Clients {
         Instant::now().saturating_duration_since(self.started_at)
     }
 
-    /// Admits `host`'s hello as `os_user`, or refuses it: the first account to say hello for a host is remembered;
-    /// the first time another account does, the host becomes `Several` and that hello is refused, and so is every
-    /// later hello for the host, whichever account, until the daemon restarts. Connections already registered for
-    /// the host are left alone. The check and the record are one step under the roster's lock, so two accounts
-    /// connecting at the same instant cannot both pass.
+    /// Admits `host`'s hello as `os_user`, or refuses it: the first account to say hello for a host is remembered
+    /// and served; a hello for the host as any other account is refused, until the daemon restarts. A refusal
+    /// changes nothing, so one stray hello never locks out the account that holds the host. The check and the
+    /// record are one step under the roster's lock, so two accounts connecting at the same instant cannot both pass.
     pub fn admit_account(&self, host: &str, os_user: &str) -> Result<(), OsUserConflict> {
         let mut g = self.inner.lock().unwrap();
         match g.hosts.get(host) {
             None => {
-                g.hosts.insert(host.to_string(), HostAccounts::One(os_user.to_string()));
+                g.hosts.insert(host.to_string(), os_user.to_string());
                 Ok(())
             }
-            Some(HostAccounts::One(first)) if first == os_user => Ok(()),
-            Some(HostAccounts::One(_)) => {
-                g.hosts.insert(host.to_string(), HostAccounts::Several);
-                Err(OsUserConflict { host: host.to_string() })
-            }
-            Some(HostAccounts::Several) => Err(OsUserConflict { host: host.to_string() }),
+            Some(first) if first == os_user => Ok(()),
+            Some(_) => Err(OsUserConflict { host: host.to_string() }),
         }
     }
 

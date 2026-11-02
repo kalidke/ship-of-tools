@@ -135,7 +135,10 @@ such a peer is served and holds no lease. A
 hello whose role is `handoff` leaves the control loop after its reply for the one frame
 it carried behind it (`proxy.connect`, `lane.connect` or `fe.lease`). A daemon refuses,
 with `os_user_conflict` and a close, every hello for a host that has said hello as two
-OS accounts, until it restarts, and leaves connections already open alone. The account
+OS accounts, until it restarts, and leaves connections already open alone (amended
+2026-11-01: the first account a host says hello as holds it and is still served, and only
+a hello as another account is refused, so one stray hello no longer locks a computer out
+until a restart). The account
 a hello names is the one its client read from its own operating system (`uid:<euid>`,
 or the user's SID on Windows), so the refusal catches two accounts sharing one hub
 account through Ship of Tools' own clients; a client changed to name another account

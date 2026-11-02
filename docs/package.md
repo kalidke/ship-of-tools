@@ -543,5 +543,8 @@ after an install (the install was incidental: PowerShell cannot run a bash scrip
 line addresses its person ("your go") is refused, and a closing one is nudged once, to a blocked question or a wait
 that names its session or job, after rows waited on the maintainer in purple for hours with no Queue card. Since the
 same day `comm-list.sh` on a window's computer also lists the hub's rows by handle, after a session there, asked to
-reach the hub's admiral, could list no hub handle, guessed one and mailed the wrong session.
+reach the hub's admiral, could list no hub handle, guessed one and mailed the wrong session. Since the same day the
+first OS account a computer says hello to a daemon as holds that computer and is still served, and only a hello as
+another account is refused, after one test hello that borrowed a computer's name under the hub's account locked that
+computer's window out of the hub until the daemon was restarted.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

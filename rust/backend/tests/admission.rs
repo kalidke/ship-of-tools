@@ -206,9 +206,10 @@ async fn a_link_hello_sent_to_a_daemon_is_refused_unauthenticated() {
 }
 
 /// ADR 0049 `## User isolation`: "Two OS users on one hub account get a loud refusal". The second account to say
-/// hello for a host is refused with `os_user_conflict` and the end; the host is then refused for either account, as
-/// control and as handoff, until the daemon restarts; another host is served; the first account's open connection
-/// is left alone; and no refusal names an account.
+/// hello for a host is refused with `os_user_conflict` and the end, and so is every later hello as it, as control and
+/// as handoff, until the daemon restarts; the first account's open connection is left alone and its new hellos are
+/// still served, so one stray hello never locks a computer out; another host is served; and no refusal names an
+/// account.
 #[tokio::test]
 async fn a_second_os_account_on_one_host_is_refused_loudly() {
     let _serial = SERIAL.lock().await;
@@ -222,19 +223,18 @@ async fn a_second_os_account_on_one_host_is_refused_loudly() {
     for account in ["900001", "900002"] {
         assert!(!refusal.to_string().contains(account), "the refusal names an account: {refusal}");
     }
-    for (client, account, role) in [
-        ("again-a", ACCOUNT_A, "cli"),
-        ("again-b", ACCOUNT_B, "cli"),
-        ("hand-a", ACCOUNT_A, HANDOFF),
-        ("hand-b", ACCOUNT_B, HANDOFF),
-    ] {
-        assert_refused(&env, hello(client, "host-h", account, role), "os_user_conflict").await;
+    for (client, role) in [("again-b", "cli"), ("hand-b", HANDOFF)] {
+        assert_refused(&env, hello(client, "host-h", ACCOUNT_B, role), "os_user_conflict").await;
     }
+    let (_again_a, reply) = said_hello(&env, hello("again-a", "host-h", ACCOUNT_A, "cli")).await;
+    assert!(reply.get("error").is_none(), "the first account's new hello is still served: {reply}");
+    let (_hand_a, reply) = said_hello(&env, hello("hand-a", "host-h", ACCOUNT_A, HANDOFF)).await;
+    assert!(reply.get("error").is_none(), "the first account's handoff is still served: {reply}");
     let (mut other, reply) = said_hello(&env, hello("acct-g", "host-g", ACCOUNT_B, "cli")).await;
     assert!(reply.get("error").is_none(), "another host is served: {reply}");
     let version = call(&mut other, 2, op::VERSION_QUERY, json!({})).await;
-    assert!(listed(&version, "acct-a") && listed(&version, "acct-g"), "{:?}", version.payload);
-    for refused in ["acct-b", "again-a", "again-b", "hand-a", "hand-b"] {
+    assert!(listed(&version, "acct-a") && listed(&version, "again-a") && listed(&version, "acct-g"), "{:?}", version.payload);
+    for refused in ["acct-b", "again-b", "hand-b"] {
         assert!(!listed(&version, refused), "{refused} was refused and must not be listed: {:?}", version.payload);
     }
     let still = call(&mut a, 2, op::VERSION_QUERY, json!({})).await;

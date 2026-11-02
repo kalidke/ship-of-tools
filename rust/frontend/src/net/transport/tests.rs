@@ -401,7 +401,7 @@ async fn a_refused_hello_leaves_the_link_down() {
 async fn a_refused_hello_is_shown_whatever_its_code() {
     let _env = crate::net::state::test_env::set_test_env();
     for (code, error) in [
-        ("os_user_conflict", "host h has said hello to this daemon as more than one OS account"),
+        ("os_user_conflict", "host h said hello to this daemon first as another OS account"),
         ("identity_missing", "a hello must name its host and the OS account it runs as"),
         ("unauthenticated", "send a hello first"),
         ("protocol_mismatch", "protocol mismatch: update the older side"),

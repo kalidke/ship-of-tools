@@ -71,9 +71,9 @@ pub(super) fn parse_first_frame(frame: &Frame) -> Result<HelloReq, HelloRefusal>
 /// The one admission every connection passes after its process was admitted at accept: its hello, in this order. The
 /// protocol gate (ADR 0030 §2: a structured `{error, code}` envelope that does NOT deserialize as `HelloRes`, so the
 /// frontend surfaces a clear "update needed" screen), the declared host and OS account both present, and the host's
-/// account record (ADR 0049 `## User isolation`: a host that has said hello as two accounts is refused until the
-/// daemon restarts, and the refusal names the host and the remedy, never an account). A refused hello is one reply,
-/// then the connection's end.
+/// account record (ADR 0049 `## User isolation`: a hello for a host as another account than the first is refused
+/// until the daemon restarts, the first still served, and the refusal names the host and the remedy, never an
+/// account). A refused hello is one reply, then the connection's end.
 pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, HelloRefusal> {
     if protocol_gate(req.protocol) == ProtocolGate::Reject {
         let frontend_version = if req.app_version.is_empty() { "<pre-versioning>" } else { req.app_version.as_str() };
@@ -87,6 +87,7 @@ pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, 
         );
         tracing::warn!(
             client_id = %req.client_id,
+            host = ?req.host,
             client_protocol = req.protocol,
             backend_protocol = sot_protocol::PROTOCOL_VERSION,
             "hello rejected: {message}"
@@ -110,12 +111,18 @@ pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, 
     match clients.admit_account(&host, &os_user) {
         Ok(()) => Ok(Admitted(req)),
         Err(conflict) => {
-            tracing::warn!(host = %conflict.host, client_id = %req.client_id, "hello refused: the host has said hello as two OS accounts");
+            tracing::warn!(
+                host = %conflict.host,
+                client_id = %req.client_id,
+                role = %req.role,
+                app_version = %req.app_version,
+                "hello refused: the host said hello first as another OS account, which is still served"
+            );
             Err(HelloRefusal::new(
                 "os_user_conflict",
                 format!(
-                    "host {} has said hello to this daemon as more than one OS account; each OS account enrols its \
-                     own hub account, then restart this daemon",
+                    "host {} said hello to this daemon first as another OS account; each OS account enrols its own \
+                     hub account (a restart of this daemon forgets the first)",
                     conflict.host
                 ),
             ))
