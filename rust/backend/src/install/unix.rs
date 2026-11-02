@@ -111,7 +111,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     let enrolled = publish.enroll(&plan.checkout, &plan.pack.commit, &plan.prefix.join("repo/base"), &mut found)?;
     julia_and_comm(&plan, &mut found)?;
     configure(&plan)?;
-    let (restarted, state) = wire(&plan)?;
+    let (restarted, state) = wire(&plan, &mut found)?;
     write_record(&plan)?;
     check(&plan, restarted, state, &mut found);
     enrolled.check(&mut found);
@@ -907,7 +907,7 @@ pub(super) fn retire_local_service(u: &Units, declared: bool, kernel_host: &str)
 
 /// The unit, the launcher and the restart; whether the run restarted the daemon, and the state folder a daemon of this
 /// computer keeps its rows in (none when it runs no daemon).
-fn wire(plan: &Plan) -> Result<(bool, Option<state::Choice>), Stop> {
+fn wire(plan: &Plan, found: &mut Found) -> Result<(bool, Option<state::Choice>), Stop> {
     step("service");
     if plan.role.daemon && plan.no_service && !plan.macos {
         say("skipping systemd unit (--no-service) — supervise sotd yourself, e.g.:");
@@ -922,12 +922,14 @@ fn wire(plan: &Plan) -> Result<(bool, Option<state::Choice>), Stop> {
     let env = sot_platform::host::env::Env::process().with("HOME", &plan.home);
     let mut state = None;
     let state_changed = if plan.unit_managed() {
-        enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, |unit_state| {
+        let changed = enable_local_service(&plan.units_ctx(), &plan.pack.bin.join("sotd.service"), &plan.socket, |unit_state| {
             let env = daemon_env(env, unit_state);
             let (choice, changed) = state::setup(&env, Some(&plan.units()), Path::new("/scratch"), &service_user())?;
             state = Some(choice);
             Ok(changed)
-        })?
+        })?;
+        enable_linger(plan.units_ctx().loginctl, &service_user(), found);
+        changed
     } else {
         if plan.role.daemon {
             state = Some(state::setup(&env, None, Path::new("/scratch"), "")?.0);
@@ -957,6 +959,20 @@ fn restart_service(u: &Units, version_changed: bool, state_changed: bool) -> boo
 /// The state candidate and linger use the same account name.
 fn service_user() -> String {
     std::env::var("USER").unwrap_or_else(|_| cmd::output(Command::new("id").arg("-un")).first_line())
+}
+
+/// Linger is needed after logout, but a refusal must not stop an otherwise usable install.
+fn enable_linger(loginctl: &str, user: &str, found: &mut Found) {
+    let bound = std::time::Duration::from_secs(30);
+    let current = cmd::output_within(Command::new(loginctl).args(["show-user", user, "--property=Linger", "--value"]), bound);
+    if current.ok() && current.first_line() == "yes" {
+        return;
+    }
+    let enabled = cmd::output_within(Command::new(loginctl).args(["enable-linger", user]), bound);
+    if !enabled.ok() {
+        let quoted_user = user.replace('\'', "'\\''");
+        found.step(format!("run loginctl enable-linger '{quoted_user}' so sotd survives logout (enable-linger failed: {})", enabled.last_said()));
+    }
 }
 
 /// The environment the unit's daemon resolves its state root from: this run's export of `XDG_STATE_HOME`, even an empty
@@ -1035,8 +1051,6 @@ pub(super) fn enable_local_service(u: &Units, template: &Path, socket: &str, sta
             return Err(Stop::new(1, format!("systemctl --user {} failed: {}", args.join(" "), ran.last_said())));
         }
     }
-    let user = service_user();
-    let _ = cmd::output(Command::new(u.loginctl).args(["enable-linger", &user]));
     say(&format!("sotd running: {} (socket {socket})", u.systemctl(&["is-active", "sotd.service"]).first_line()));
     Ok(state_changed)
 }

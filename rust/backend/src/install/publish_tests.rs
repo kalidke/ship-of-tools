@@ -123,7 +123,7 @@ fn installer_enrolls_distinct_clones_and_repair_restores_its_missing_hook() {
 }
 
 #[test]
-fn installer_records_platform_location_without_creating_policy_and_reports_one_step() {
+fn installer_records_missing_policy_as_a_detail_and_still_refuses_pushes() {
     let f = Fixture::new();
     let plan = f.plan(&f.caller);
     let expected = f.dir.path().join(if cfg!(windows) { "local/sot/config/publish-list.txt" } else { "config/sot/publish-list.txt" });
@@ -137,9 +137,14 @@ fn installer_records_platform_location_without_creating_policy_and_reports_one_s
     assert!(!plan.list.exists());
     let (line, code) = super::super::verdict::line(&found, "");
     assert_eq!(code, 0);
-    assert!(line.starts_with("ONE STEP LEFT:") && line.contains("provision"), "{line}");
-    assert_checked_clone(&line, "caller", &f.caller, "guard installed; policy needs provisioning");
+    assert!(found.fail.is_none() && found.steps.is_empty(), "{found:?}");
+    assert!(line.starts_with("PASS:"), "{line}");
+    assert_checked_clone(&line, "caller", &f.caller, "guard installed; pushes refused until a valid publish-list.txt exists on this computer");
     assert!(!line.contains(": ready"), "{line}");
+    found.step("restart the window");
+    let (line, code) = super::super::verdict::line(&found, "");
+    assert_eq!(code, 0);
+    assert!(line.starts_with("ONE STEP LEFT: restart the window; publish guard"), "{line}");
     let denied = f.git(&f.caller, &["push", f.dir.path().join("remote").to_str().unwrap(), "HEAD:refs/heads/clean"]);
     assert_refused(&denied, "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push");
     assert!(f.git(&f.dir.path().join("remote"), &["for-each-ref"]).ok().stdout.is_empty());

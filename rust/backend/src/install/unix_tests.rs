@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn linger_failures_are_steps_and_an_already_lingering_account_needs_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let loginctl = dir.path().join("loginctl");
+    let log = dir.path().join("calls");
+    for (body, pending, already) in [
+        ("exit 1", true, false),
+        ("case \"$1\" in show-user) echo yes ;; *) exit 1 ;; esac", false, true),
+        ("case \"$1\" in show-user) echo no ;; enable-linger) exit 0 ;; esac", false, false),
+    ] {
+        sot_platform::test_exec::write_executable(&loginctl, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n", log.display()));
+        let mut found = Found::default();
+        enable_linger(loginctl.to_str().unwrap(), "fixture-account", &mut found);
+        let (line, code) = verdict::line(&found, "");
+        assert_eq!(code, 0, "{line}");
+        assert!(found.fail.is_none());
+        assert_eq!(found.steps.len(), usize::from(pending), "{found:?}");
+        if pending {
+            assert!(line.starts_with("ONE STEP LEFT:") && line.contains("loginctl enable-linger 'fixture-account'"), "{line}");
+        }
+        let enables = std::fs::read_to_string(&log).unwrap().lines().filter(|line| line.starts_with("enable-linger")).count();
+        assert_eq!(enables, usize::from(!already), "an already lingering account needs no enable call");
+        std::fs::remove_file(&log).unwrap();
+    }
+    let mut found = Found::default();
+    enable_linger(dir.path().join("missing").to_str().unwrap(), "fixture-account", &mut found);
+    let (line, code) = verdict::line(&found, "");
+    assert!(code == 0 && found.fail.is_none() && line.starts_with("ONE STEP LEFT:"), "{line}");
+    assert!(line.contains("loginctl enable-linger 'fixture-account'"), "{line}");
+}
+
+#[test]
 fn a_state_dropin_is_written_after_the_pin_before_reload_and_restarted_even_on_a_repair() {
     let f = Fixture::new("me");
     let mut written_at = 0;
@@ -82,12 +113,12 @@ fn claude_and_publish_checks_add_honest_items_and_keep_their_steps() {
     // The guard's ready clones become ok lines; its other records stay the verdict's, untouched.
     f.checked("publish guard scope: installed base only");
     f.checked("publish guard checked base /fixture/base: ready");
-    f.checked("publish guard checked caller /fixture/clone: not ready");
-    f.step("provision a valid private publish-list.txt");
+    f.checked("publish guard checked caller /fixture/clone: preserved conflict");
+    f.step("resolve the preserved publish hook conflict");
     checks::guard_items(&mut f);
     assert_eq!(f.items[1..], [(Mark::Ok, "publish guard checked base /fixture/base: ready".to_string())]);
     assert_eq!(f.checked.len(), 3);
-    assert_eq!(f.steps, ["provision a valid private publish-list.txt"]);
+    assert_eq!(f.steps, ["resolve the preserved publish hook conflict"]);
 }
 
 /// A scratch home and prefix whose `sotd`, `systemctl` and `loginctl` stand-ins append their argv to one log, in call

@@ -48,8 +48,9 @@ document — argue changes in the diff, not in side channels. See the
 Before a direct build or push, [enroll the clone's publish guard](start/install.md#publish-guard-setup) and provision
 its external policy. The gate, release and pack entries ensure enrollment before their substantive work. Raw Cargo
 commands and direct pushes from never-enrolled clones do not. The release installer enrolls its installed base and a
-recognized caller clone, without discovering others; run it from inside the clone and resolve its publish-guard
-`ONE STEP LEFT` before publishing. Landing B's execution validation is pending.
+recognized caller clone, without discovering others; run it from inside the clone. A missing publish list is a
+checked detail in the verdict, and pushes stay refused until a valid list exists on this computer. Resolve any
+preserved hook conflict reported as `ONE STEP LEFT` before publishing. Landing B's execution validation is pending.
 
 The repository is a Julia umbrella package with a Rust workspace inside it.
 

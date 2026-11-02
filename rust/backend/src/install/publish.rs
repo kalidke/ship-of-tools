@@ -285,8 +285,7 @@ impl Enrolled<'_> {
                     say(&format!("publish guard: ready for {}", clone.checkout.display()));
                 }
                 Some(3) => {
-                    self.plan.note(found, &self.base, clone, "guard installed; policy needs provisioning");
-                    found.step(format!("provision a valid private publish-list.txt in the platform config folder, then run this installer again (guard installed for {}; pushes refuse until ready)", clone.checkout.display()));
+                    self.plan.note(found, &self.base, clone, "guard installed; pushes refused until a valid publish-list.txt exists on this computer");
                 }
                 _ => { found.fail("publish guard", format!("enrolled state changed or could not be checked for {}", clone.checkout.display())); return; }
             }

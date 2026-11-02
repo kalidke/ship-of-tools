@@ -171,6 +171,10 @@ Guarantees, each with the mechanism it rests on. Install:
   for a unit the run finds new, kept over an existing one only where a link or the drop-in was. A retire never
   disables the shared unit or removes its file, and drops the boot start only where the pin names this host alone.
   The pin command the retire tells a person to run is the install's own arguments (`pin_args`), by construction.
+- A managed Linux daemon survives logout through user linger. The installer checks `loginctl show-user` first and
+  runs `loginctl enable-linger` only when linger is not already reported enabled. Each call is bounded at 30 s through
+  the installer's bounded runner. A failed or unrunnable enable does not stop install: it adds ONE STEP LEFT with
+  the exact `loginctl enable-linger` command for this account, also printed as a `todo` in the checklist.
 - The state folder qualifies by the row launcher's own `qualify_state_root`, never a second filesystem list. Unix
   resolves it with `sot_state_dir_in` from the installer's environment, where an exported `XDG_STATE_HOME` decides
   even when empty; with none exported, a managed unit's own `XDG_STATE_HOME` (a person's drop-in), read after the
@@ -383,9 +387,10 @@ Guarantees and boundaries:
   `$HOME/.config/sot` on Linux/macOS, `%LOCALAPPDATA%\sot\config` on Windows. A shared Linux home shares that file.
   Setup can record an explicitly supplied absolute `--list` path and check `--require-ready`; it never creates policy
   entries. Development enrollment never invents a location or an empty replacement. Placement without provisioning is
-  reported explicitly and pushes remain refused. Installer provisioning/custom-hook migration aggregate through the
-  existing `ONE STEP LEFT` verdict. A Windows update left armed uses the verified staged setup when available to
-  enroll the known clones, and checks only the state it actually placed; it does not claim the release was applied.
+  reported explicitly and pushes remain refused. An absent or invalid list is a checked detail in the installer's
+  verdict, never a step: each clone's pushes are refused until a valid list exists on this computer. Preserved hook
+  choices that need migration still give `ONE STEP LEFT`. A Windows update left armed uses the verified staged setup
+  when available to enroll the known clones, and checks only the state it actually placed; it does not claim the release was applied.
   If that setup is unavailable, the verdict names base/caller enrollment as pending until apply and a repeated install.
   Every ordinary fresh/repair run enrolls again and checks readiness without repairing during the final check.
 - Setup's installer interface is `--installer --list ABSOLUTE_PATH`: exit 0 means placed and policy ready, 3 means

@@ -551,5 +551,6 @@ names its stage, its cause and its full error, a row logs why it refused a conne
 copy that ends in an error, after keys were lost during attaches in rc.7's use and the logs could not say why
 connections closed about 100 ms after they opened. Since the same day the Queue shows a session blocked on another
 computer whose window is connected, as a read-only card naming that computer, after a session waited 20 hours on a
-laptop with no card.
+laptop with no card. Since the same day a failed `loginctl enable-linger` is a step naming its command, and a missing
+publish list is a checked detail, never a step, so a lab user's install no longer ends on a maintainer's tool.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

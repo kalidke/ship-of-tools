@@ -144,8 +144,9 @@ move it aside and re-run.
 
 Everything below is written under your home directory, with one exception:
 on Linux backend roles the installer runs `loginctl enable-linger` for your
-user, a systemd setting kept outside your home (it continues without it if
-that call is refused). Nothing needs root. The default prefix is
+user, a systemd setting kept outside your home. If enabling linger fails or
+cannot run, installation continues and ends `ONE STEP LEFT` with the exact
+command to retry; an account already lingering needs no step. Nothing needs root. The default prefix is
 `~/.local/share/sot` (`--prefix` moves it). There is no uninstall script;
 [Uninstall](@ref install-uninstall) lists the commands to remove each item by hand.
 
@@ -438,8 +439,9 @@ character that is not a letter or digit (ASCII `[A-Za-z0-9]`), or by the start o
 entry, including dotted names: paths, host labels, `@`, hyphens and punctuation supply boundaries; longer words do not.
 Matching folds ASCII letters only; a non-ASCII entry matches identical UTF-8 bytes, without Unicode case folding or
 normalization. Agents never print or copy the live list.
-The installer records that platform location without creating or changing the file. Its single final verdict is
-`ONE STEP LEFT` while policy needs provisioning or a preserved hook choice needs migration; a setup/Git-write or
+The installer records that platform location without creating or changing the file. An absent or invalid list is a
+checked detail in the final verdict, never a step: the clone's pushes are refused until a valid list exists on this
+computer. A preserved hook choice that needs migration gives `ONE STEP LEFT`; a setup/Git-write or
 final-state failure is `FAIL`. A Windows update left armed uses verified staged setup if available; otherwise the
 verdict names enrollment as pending after apply and a repeated install. An armed update is never reported as applied.
 Once provisioned, record its absolute location in a clone enrolled manually and check readiness:
