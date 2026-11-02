@@ -34,7 +34,7 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (no '$3' in: $2)" ;; esac; }
 
 # The stubs, run by the bash on PATH (bash 3.2 under under-bash.sh). A create adds an unjoined row named for the
 # handle; a typed line is recorded as `<row id> TAB <text>`.
-export ROWS="$WORK/rows.json" TYPED="$WORK/typed" REGS="$WORK/regs.json"
+export ROWS="$WORK/rows.json" TYPED="$WORK/typed" REGS="$WORK/regs.json" ENDED="$WORK/ended"
 cat > "$WORK/stubs.sh" <<'EOF'
 probe_request() {
     local name
@@ -45,6 +45,15 @@ probe_request() {
             jq --arg n "$name" '. + [{workspace_id: ("ws-" + $n), agent_name: $n, agent_handle: ""}]' "$ROWS" \
                 > "$ROWS.new" && mv "$ROWS.new" "$ROWS"
             printf '{"payload":{"workspace_id":"ws-%s"}}\n' "$name" ;;
+        workspace.destroy)
+            name="$(printf '%s' "$1" | jq -r .payload.workspace_id)"
+            printf '%s\t%s\n' "$ENDPOINT" "$name" >> "$ENDED"
+            if [ "$name" = "${FAIL_END:-}" ]; then
+                printf '{"payload":{"error":"end not confirmed"}}\n'
+                return 0
+            fi
+            jq --arg w "$name" 'map(select(.workspace_id != $w))' "$ROWS" > "$ROWS.new" && mv "$ROWS.new" "$ROWS"
+            printf '{"payload":{"workspace_id":"%s"}}\n' "$name" ;;
         *) return 1 ;;
     esac
 }
@@ -99,6 +108,23 @@ check "up: exits 0 once both rows have joined" "$RC" 0
 has "up: says each row has joined" "$OUT" "@probe2-testhost has joined"
 check "up (unix): types bash with the script into each new row" "$(typed 2)" \
     "bash '$SCRIPTS_DIR/comm-probe.sh' serve bash '$SCRIPTS_DIR/comm-probe.sh' serve"
+: > "$ENDED"
+FAIL_END=ws-probe-testhost probe "$PATH" unix:x 'probe_down'
+check "down: a failed end fails shutdown" "$RC" 1
+has "down: prints the failed end" "$OUT" "end not confirmed"
+check "down: still attempts the next row" "$(cut -f2 "$ENDED" | tr '\n' ' ')" "ws-probe-testhost ws-probe2-testhost "
+probe "$PATH" unix:other 'probe_down'
+check "down: retries the failed end" "$RC" 0
+check "down: uses the endpoint where it created the row" "$(tail -1 "$ENDED" | cut -f1)" unix:x
+check "down: no row it created remains" "$(jq length "$ROWS")" 0
+rows "[$JOINED]"; : > "$ENDED"
+probe "$PATH" unix:x 'probe_up'
+: > "$TYPED"
+probe "$PATH" unix:x 'probe_down'
+check "down: a reused row it did not create remains" "$(jq -r '.[].workspace_id' "$ROWS")" ws-2
+check "down: only the row it created was ended" "$(cut -f2 "$ENDED")" ws-probe2-testhost
+check "down: types nothing into a reused row" "$(cat "$TYPED")" ""
+rows '[]'; probe "$PATH" unix:x 'probe_down'
 rows "[$UNJOINED,"'{"workspace_id":"ws-4","agent_name":"probe2-testhost","agent_handle":""}]'
 probe "$PATH" unix:x 'probe_up'
 check "up: restarts the responder in each row that never joined, creating none" "$(typed 1)" "ws-1 ws-4"
@@ -106,6 +132,8 @@ check "up: rows that never joined, restarted, exit 0" "$RC" 0
 rows '[]'; NOJOIN=1 SOT_PROBE_READY_WAIT=0 probe "$PATH" unix:x 'probe_up'
 check "up: a responder that never joins fails up" "$RC" 1
 has "up: the failure names the row and the handle" "$OUT" "row ws-probe-testhost did not join as @probe-testhost"
+probe "$PATH" unix:x 'probe_down'
+check "down: also ends rows whose responder never joined" "$(jq length "$ROWS")" 0
 
 # A row that joined in an earlier run keeps its handle and registry row. A start line that starts nothing must not read
 # as a join: `up` fails, and the stop line went before the start line.

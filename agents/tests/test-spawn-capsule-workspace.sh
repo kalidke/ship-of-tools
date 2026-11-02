@@ -192,6 +192,10 @@ case_capsule_reaches_ready_on_second_poll() {
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     [ "$create" = '["claude","spawn-ready",true]' ] || { echo "  workspace.create [agent, agent_name, autostart_claude]: $create"; return 1; }
     contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
+    contains "$SPAWN_OUT" "If the row does not appear in comm-list.sh within a minute, open the row: its agent may be waiting for a login." \
+        || { echo "  no login guidance: $SPAWN_OUT"; return 1; }
+    ! contains "$SPAWN_OUT" "joins comm (~1 min)" && ! contains "$SPAWN_OUT" "replies (~1 min" \
+        || { echo "  promised a join or reply: $SPAWN_OUT"; return 1; }
     registry_has_row "spawn-ready" || { echo "  registry row missing after success"; return 1; }
     return 0
 }

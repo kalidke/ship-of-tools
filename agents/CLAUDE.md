@@ -128,7 +128,7 @@ of each.
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
    `workspace.reauth`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
-   `workspace.create`, `pty.input`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
+   `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
    (`ccb`), `sotd session-socket-path` and `sotd topology relay-endpoint` (where the daemon is). (c) The tool's own work
    in its own folder or in git (the /worktree scripts). The endpoint is the one thing a tool finds: an explicit one,

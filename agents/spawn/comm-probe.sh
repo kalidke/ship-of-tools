@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # comm-probe.sh — the per-box responder for the cross-machine comm acceptance
-# matrix (comm/tests/comm-matrix.sh). Every box keeps two rows that run no
+# matrix (comm/tests/comm-matrix.sh). Every box creates two rows that run no
 # agent, `probe-<host>` and `probe2-<host>`; the second exists only so a
 # same-box send has a separate sender and receiver, which is where the Windows
 # two-inbox fault lives.
@@ -8,7 +8,7 @@
 #   comm-probe.sh up     create the two rows if missing, restart the responder
 #                        in each (stop line, then start line) and wait until
 #                        each has joined again
-#   comm-probe.sh down    stop the responders, leaving the rows
+#   comm-probe.sh down    end the rows this probe created
 #   comm-probe.sh serve   the responder itself: the FOREGROUND process of a
 #                         probe row. Not a daemon, not a watcher.
 #   comm-probe.sh status  print the two handles, their row ids and whether the
@@ -126,22 +126,28 @@ probe_wait_join() {
 # handle the row expects: the row's start writes it into the row's self file
 # (`self_file::pin_row`), and the responder declares it by joining from inside
 # the row (see the note in `serve`), never from the caller's shell.
-# A same-slug create refreshes a `probe-…` row only while it is not in use; one
-# in use is refused (`label_in_use`). The slug comes from the label, so this
-# never adopts someone else's row.
+# A fresh project folder and label prevent a same-slug create from refreshing another row.
 probe_create() {
     local handle="$1" req resp wsid root
     root="$(probe_root "$handle")" || return 1
+    # A same-slug create can refresh someone else's row. A fresh folder gives this create its own root and label.
+    root="$(mktemp -d "$root/row-XXXXXXXX")" || return 1
+    local label="$handle-${root##*/}"
     # The root goes to the daemon inside a JSON payload, where Git Bash converts nothing: a pipe: daemon gets its own
     # spelling (sot_daemon_path).
     root="$(sot_daemon_path "$root")" || { echo "comm-probe.sh: cannot give $root in the spelling of the daemon at $ENDPOINT" >&2; return 1; }
     # The root can start with "/": it reaches jq on stdin (comm-lib-base.sh, free text and jq).
-    req="$(printf '%s' "$root" | jq -Rsc --arg l "$handle" --arg an "$handle" \
+    req="$(printf '%s' "$root" | jq -Rsc --arg l "$label" --arg an "$handle" \
         '{v:1,id:1,kind:"req",op:"workspace.create",payload:{label:$l,project_root:.,autostart_claude:false,agent:"none",agent_name:$an,task:"",boot:true}}')"
     resp="$(probe_request "$req" workspace.create)" || return 1
     wsid="$(printf '%s' "$resp" | sot_jq -r '.payload.workspace_id // empty' 2>/dev/null)"
     [ -n "$wsid" ] || {
         echo "comm-probe.sh: workspace.create for @$handle failed: $(printf '%s' "$resp" | jq -c '.payload' 2>/dev/null || echo 'no reply')" >&2
+        return 1
+    }
+    jq -nc --arg id "$wsid" --arg endpoint "$ENDPOINT" '{workspace_id:$id,endpoint:$endpoint}' \
+        >> "$COMM_HOME/probe/$handle/created-rows" || {
+        echo "comm-probe.sh: could not record created row $wsid for @$handle" >&2
         return 1
     }
     printf '%s\n' "$wsid"
@@ -232,16 +238,33 @@ probe_up() {
 }
 
 probe_down() {
-    local handle wsid rc=0
+    local handle wsid record entry req resp failed ENDPOINT rc=0
     while IFS= read -r handle; do
         probe_handle_ok "$handle" || probe_die "refusing to stop a row named '$handle' — probe rows only"
-        wsid="$(probe_row_id "$handle")" || probe_die "cannot reach this box's daemon"
-        [ -n "$wsid" ] || { echo "no row declares @$handle"; continue; }
-        # The stop travels the SAME typed path a probe does, so it needs no
-        # signal, no pidfile and no process lookup: a live responder reads it and
-        # returns; a dead one leaves a harmless "command not found" in a shell.
-        probe_type "$wsid" "$PROBE_STOP_LINE" || rc=1
-        echo "stopped @$handle ($wsid)"
+        record="$COMM_HOME/probe/$handle/created-rows"
+        [ -f "$record" ] || continue
+        failed=""
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            wsid="$(printf '%s' "$entry" | jq -er '.workspace_id | select(type == "string" and length > 0)')" || wsid=""
+            ENDPOINT="$(printf '%s' "$entry" | jq -er '.endpoint | select(type == "string" and length > 0)')" || ENDPOINT=""
+            if [ -z "$wsid" ] || [ -z "$ENDPOINT" ]; then
+                echo "comm-probe.sh: invalid created-row record: $entry" >&2
+                failed="${failed}${entry}"$'\n'
+                rc=1
+                continue
+            fi
+            req="$(jq -nc --arg id "$wsid" '{v:1,id:1,kind:"req",op:"workspace.destroy",payload:{workspace_id:$id}}')"
+            resp="$(probe_request "$req" workspace.destroy)" || resp=""
+            if printf '%s' "$resp" | jq -e --arg id "$wsid" '.payload.workspace_id == $id and .payload.error == null and .payload.kept == null' >/dev/null 2>&1; then
+                echo "ended @$handle ($wsid)"
+            else
+                echo "comm-probe.sh: failed to end @$handle ($wsid): ${resp:-no reply}" >&2
+                failed="${failed}${entry}"$'\n'
+                rc=1
+            fi
+        done < "$record"
+        printf '%s' "$failed" > "$record" || { echo "comm-probe.sh: could not update $record" >&2; rc=1; }
     done < <(probe_handles)
     return $rc
 }

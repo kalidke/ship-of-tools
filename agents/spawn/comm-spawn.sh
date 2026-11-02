@@ -705,13 +705,14 @@ sot_say "Spawned @${NAME} as workspace '${SLUG}' on ${REPO_NAME} (agent=${AGENT}
 # can fail: a handle with no row here is not addressable here yet.
 if [ "$SPAWN_IS_LOCAL" = false ]; then
     sot_say "@${NAME} runs on ${SPAWN_HOST}, so this box wrote NO registry row for it — it is not addressable from here yet."
-    sot_say "It becomes reachable once it joins comm on ${SPAWN_HOST} (~1 min); sends from here then route over the relay."
+    sot_say "If it joins comm on ${SPAWN_HOST}, sends from here route over the relay."
 fi
 if [ -n "$SPAWNER" ]; then
-    sot_say "The row runs ${AGENT} now; the agent joins comm (~1 min) and reports to @${SPAWNER}."
+    sot_say "The row runs ${AGENT}; its reply target is @${SPAWNER}."
 else
-    sot_say "The row runs ${AGENT} now; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
+    sot_say "The row runs ${AGENT}. This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
 fi
+sot_say "If the row does not appear in comm-list.sh within a minute, open the row: its agent may be waiting for a login."
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
 # it queues in the agent's inbox now and is read with comm-poll once the daemon
 # tells the agent of mail.
@@ -732,6 +733,6 @@ if [ -n "$TASKMSG" ]; then
 fi
 if [ "$SPAWN_IS_LOCAL" = true ]; then
     sot_say "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} '...' queues durably in its inbox,"
-    sot_say "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after it starts)."
+    sot_say "and the agent can read it with comm-poll after joining comm."
 fi
 sot_say "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"

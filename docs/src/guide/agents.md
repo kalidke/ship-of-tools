@@ -62,6 +62,10 @@ package and has it report back to you over the comm relay. Combined with
 [agent messaging](messaging.md), one session can fan work out to several
 others and collect their answers.
 
+If the new row does not appear in `comm-list.sh` within a minute, open the
+row: its agent may be waiting for a login. A ready row does not promise that
+its agent has joined comm.
+
 `comm-spawn.sh <folder> --agent none` starts a shell row instead, with no
 agent: it prints the row's workspace id and the `comm-despawn.sh` command that
 ends it. A row made this way appears in the session strip without moving the
