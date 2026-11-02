@@ -37,21 +37,16 @@ pub(crate) fn bind(tag: &str) -> (Bound, PathBuf) {
 }
 
 fn bind_with(tag: &str, before_bind: impl FnOnce(&std::path::Path)) -> (Bound, PathBuf) {
-    let unique = format!(
-        "sot-lease-test-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
+    // Parallel tests bind the same tags: the name is unique by count, never by the clock, whose ticks two threads share.
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
     #[cfg(windows)]
-    let (path, folder) = (PathBuf::from(format!(r"\\.\pipe\{unique}")), Folder(None));
+    let (path, folder) = (
+        PathBuf::from(format!(r"\\.\pipe\sot-lease-test-{tag}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed))),
+        Folder(None),
+    );
     #[cfg(not(windows))]
     let (path, folder) = {
         // macOS's temp_dir() is long enough to overflow sun_path
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let _ = &unique;
         // A private folder of the test's own: no other account on a shared host reaches the socket.
         use std::os::unix::fs::DirBuilderExt;
         let dir = PathBuf::from(format!(
