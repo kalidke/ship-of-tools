@@ -488,10 +488,11 @@ impl Workspace {
     ) -> Self {
         let slug = paths::slug(label);
         let session_name = super::session_name(label);
-        let workspace_id = format!(
-            "ws-{slug}-{:x}",
-            std::process::id() as u64 ^ now_unix() as u64
-        );
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEED: OnceLock<u64> = OnceLock::new();
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let seed = *SEED.get_or_init(|| std::process::id() as u64 ^ now_unix() as u64);
+        let workspace_id = format!("ws-{slug}-{:x}", seed + SEQUENCE.fetch_add(1, Ordering::Relaxed));
         // `agent_name` is stored EXACTLY as given — empty is a real,
         // supported case: no synthesized default is written here. A row
         // with a name has it written into its pinned self file at its

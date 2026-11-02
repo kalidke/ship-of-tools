@@ -10,6 +10,31 @@ fn workspace_from_label_uses_slug_and_tmux_convention() {
 }
 
 #[test]
+fn repeated_and_concurrent_mints_of_one_slug_have_distinct_ids() {
+    let ids = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+            (0..64).map(|_| {
+                let row = Workspace::from_label("same-label", PathBuf::from("/project"), false,
+                    "none".into(), String::new(), String::new());
+                (row.workspace_id, row.created)
+            }).collect::<Vec<_>>()
+        })).collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap()).collect::<Vec<_>>()
+    });
+    let seconds: std::collections::HashSet<_> = ids.iter().map(|(_, created)| created).collect();
+    assert!(seconds.len() < ids.len(), "setup: at least two mints occurred within one second");
+    let unique: std::collections::HashSet<_> = ids.iter().map(|(id, _)| id).collect();
+    assert_eq!(unique.len(), ids.len(), "each mint must have its own identity");
+    for (id, _) in ids {
+        assert!(crate::rows::state_folder::is_row_folder_name(&id), "{id}");
+        let suffix = id.strip_prefix("ws-same-label-").expect("the id keeps its slug prefix");
+        assert!(!suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        let leaf = crate::comm::identity::self_file::slot_leaf("box", &id).unwrap();
+        assert_eq!(crate::comm::identity::self_file::row_of(std::path::Path::new(&leaf), "box"), Some(id));
+    }
+}
+
+#[test]
 fn workspace_kernel_built_reflects_lazy_construction() {
     // Fresh workspace: handle not yet constructed.
     let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());

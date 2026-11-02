@@ -15,6 +15,9 @@ Identity:
   `workspace.create` of a slug (`Workspace::from_label`), written in the row's toml (`store::save`), loaded at boot
   (`store::scan_disk`), and `Workspaces::insert` keeps the id of a slug already registered. The toml is a projection of
   the registry: only `store::save` writes it, and a row changes through an op, never through its file.
+- Fresh ids keep `ws-<slug>-<hex>`: a counter added to a seed from the process id and its start time makes each mint
+  unique within the process. Across restarts a repeat is unlikely, not impossible. Test:
+  `workspace::tests::repeated_and_concurrent_mints_of_one_slug_have_distinct_ids`.
 - A row's comm handle has one answer, and no two rows hold one handle. The answer is `bound_handle`: the
   handle the row's session declared (`agent.join`), else the name the row was created with, unless another row declares
   that name. A join moves a handle: `set_agent_handle` clears it from every other row under the registry's write lock;
