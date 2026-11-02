@@ -146,7 +146,7 @@ impl State {
         // for the SAME page — a reply for a different page is a
         // real navigation (page turn / cursor move) and resets the
         // view to fit.
-        let reraster_zoom = self.preview_requests.settle_page_reply(self.pages.page().map(|(page, _)| page));
+        let reraster_zoom = self.preview_requests.settle_page_reply(self.pages.page());
         self.pages.settle_reply(reraster_zoom);
         if matches!(mime.as_str(), "text/markdown" | "text/x-markdown") {
             // A fresh preview.get REPLY landing here (as
@@ -197,6 +197,7 @@ impl State {
         let matches_req =
             node_id.as_deref() == self.preview_requests.fired_target();
         self.shaped.settle_anchor(is_code && matches_req);
+        requests::continue_page_request(self);
     }
 
     pub(crate) fn on_concept_write_done(
@@ -482,6 +483,9 @@ impl State {
             .unwrap_or("preview")
             .to_string();
         self.status.set(format!("preview failed · {name}: {message}"));
+        if self.preview_requests.fail_page_reply() {
+            requests::continue_page_request(self);
+        }
         self.window.request_redraw();
     }
 }

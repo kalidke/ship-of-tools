@@ -24,58 +24,10 @@ pub(in crate::ui) fn preview_key(state: &mut State, key: KeyPress<'_>, label: St
 }
 
 fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
-    let KeyPress { event, action, .. } = key;
-    // Page transport for paginated previews (ADR 0021):
-    // n/p and PgDn/PgUp re-fire preview.get for the
-    // *shown* node at page ± 1 (clamped). Driven purely
-    // by the reply's page extras — the chrome never
-    // knows it's a PDF. Consumed even at the clamp edges
-    // so a stray press on page 1/N doesn't leak into
-    // other handlers; on NON-paginated previews PgUp/
-    // PgDn fall through to the text-scroll arms below.
-    // No autorepeat: each page is a fresh pdftoppm run.
-    if let Some((page, count)) = state.pages.page() {
-        if count > 1 && !event.repeat {
-            {
-                let next = match action {
-                    Some(Action::PageNext) => Some(page.saturating_add(1).min(count)),
-                    Some(Action::PagePrev) => Some(page.saturating_sub(1).max(1)),
-                    _ => None,
-                };
-                if let Some(np) = next {
-                    if np != page {
-                        if let Some(node_id) =
-                            state.preview_requests.fired_target().map(str::to_owned)
-                        {
-                            // New page opens at fit; drop
-                            // any pending zoom re-raster.
-                            state.preview_requests.cancel_reraster();
-                            let (fit_w, fit_h) = state.preview_fit_px();
-                            let generation = state.next_preview_gen();
-                            if let Err(e) = state.send(
-                                crate::net::transport::OutgoingReq::PreviewGet {
-                                    node_id,
-                                    workspace_id: state
-                                        .selected
-                                        .workspace_id()
-                                        .clone(),
-                                    page: Some(np),
-                                    fit_w,
-                                    fit_h,
-                                    generation,
-                                },
-                            ) {
-                                tracing::warn!(error = %e,
-                                    "drop page-turn preview.get — channel closed");
-                            }
-                        }
-                    }
-                    state.last_key = Some(label);
-                    state.window.request_redraw();
-                    return Break(());
-                }
-            }
-        }
+    if super::requests::continue_page_key(state, key.action) {
+        state.last_key = Some(label);
+        state.window.request_redraw();
+        return Break(());
     }
     Continue(())
 }

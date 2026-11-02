@@ -1,6 +1,7 @@
 //! Image view geometry: letterbox, zoom bounds, pan and ROI mapping to source pixels.
 
 use crate::ui::*;
+use crate::ui::preview::requests::PageRequestContext;
 
 /// The visible region of an image preview in source-image pixel coords
 /// (ADR 0022). Recomputed each draw; drives `capture_roi` + the `fe-state.json`
@@ -277,13 +278,15 @@ impl State {
     /// linear-downsamples the existing higher-res bitmap. The GPU keeps
     /// showing the stretched texture until the sharper reply swaps in.
     pub(in crate::ui) fn maybe_reraster_page(&mut self) {
-        let Some((page, _count)) = self.pages.page() else {
+        if self.preview_requests.page_request_pending() {
+            return;
+        }
+        let Some((page, _count)) = self.shown_page() else {
             return;
         };
         let target = self.raster.zoom().max(1.0);
         let have = self.pages.raster_zoom();
-        let pending = self.preview_requests.reraster_zoom();
-        if target <= have.max(pending) * 1.2 {
+        if target <= have * 1.2 {
             return;
         }
         let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {

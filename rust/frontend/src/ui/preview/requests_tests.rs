@@ -346,3 +346,143 @@ fn concept_send_diagnostics_keep_target_fields_and_order() {
     assert_eq!(cx.events.last().map(String::as_str), Some("forget-parse"));
     assert!(!cx.parsed.contains("B.jl"));
 }
+
+struct RecordingPages {
+    requests: PreviewRequests,
+    shown: Option<(u32, u32)>,
+    sent: Vec<(u32, u64)>,
+    host: HostKey,
+    workspace: Option<String>,
+    fail_send: bool,
+}
+
+impl RecordingPages {
+    fn new() -> Self {
+        let mut requests = PreviewRequests::default();
+        requests.issue_preview();
+        requests.record_fired("files:document.pdf".into());
+        requests.settle_page_reply(Some((1, 8)));
+        Self { requests, shown: Some((1, 8)), sent: Vec::new(), host: "active".into(),
+            workspace: Some("row".into()), fail_send: false }
+    }
+
+    fn key(&mut self, next: bool) {
+        let action = if next { crate::ui::Action::PageNext } else { crate::ui::Action::PagePrev };
+        assert!(continue_page_key(self, Some(action)));
+    }
+
+    fn reply(&mut self, generation: u64, page: u32, count: u32) {
+        let host = self.host.clone();
+        let workspace = self.workspace.clone();
+        continue_preview_reply(self, host, workspace, generation, (page, count));
+    }
+
+    fn pages_sent(&self) -> Vec<u32> { self.sent.iter().map(|(page, _)| *page).collect() }
+}
+
+impl PageRequestContext for RecordingPages {
+    fn page_requests(&mut self) -> &mut PreviewRequests { &mut self.requests }
+    fn shown_page(&self) -> Option<(u32, u32)> { self.shown }
+    fn send_page_request(&mut self, page: u32, generation: u64) -> Result<(), String> {
+        self.sent.push((page, generation));
+        if std::mem::take(&mut self.fail_send) { Err("closed channel".into()) } else { Ok(()) }
+    }
+}
+
+impl RequestReplyContext for RecordingPages {
+    type Preview = (u32, u32);
+    type Concept = ();
+    type Failure = ();
+    fn requests(&self) -> &PreviewRequests { &self.requests }
+    fn active_host(&self) -> &HostKey { &self.host }
+    fn active_workspace(&self) -> &Option<String> { &self.workspace }
+    fn install_preview(&mut self, page: Self::Preview) {
+        self.shown = Some(page);
+        self.requests.settle_page_reply(self.shown);
+        continue_page_request(self);
+    }
+    fn stale_editor_target(&self) -> Option<&str> { None }
+    fn reload_editor(&mut self, _: &()) { unreachable!() }
+    fn install_concept(&mut self, _: String, _: ()) { unreachable!() }
+    fn preview_failed(&mut self, _: ()) {
+        if self.requests.fail_page_reply() { continue_page_request(self); }
+    }
+}
+
+#[test]
+fn page_presses_and_repeats_coalesce_until_the_latest_target_is_shown() {
+    let mut cx = RecordingPages::new();
+    cx.key(true);
+    for _ in 0..3 { cx.key(true); }
+    assert_eq!(cx.pages_sent(), [2]);
+    let first = cx.sent[0].1;
+    for (host, row, generation) in [("other", Some("row"), first), ("active", None, first),
+        ("active", Some("row"), first - 1)]
+    {
+        continue_preview_reply(&mut cx, host.into(), row.map(str::to_owned), generation, (2, 8));
+        assert_eq!(cx.shown, Some((1, 8)));
+        assert_eq!(cx.pages_sent(), [2]);
+    }
+    cx.reply(first, 2, 8);
+    assert_eq!(cx.shown, Some((2, 8)), "an intermediate page may draw");
+    assert_eq!(cx.pages_sent(), [2, 5]);
+    cx.key(true);
+    let fifth = cx.sent[1].1;
+    cx.reply(fifth, 5, 8);
+    assert_eq!(cx.pages_sent(), [2, 5, 6], "the reply must not move the target back");
+    for _ in 0..20 { cx.key(true); }
+    cx.reply(cx.sent[2].1, 6, 8);
+    assert_eq!(cx.pages_sent(), [2, 5, 6, 8]);
+    cx.reply(cx.sent[3].1, 8, 8);
+    cx.key(true);
+    assert_eq!(cx.pages_sent(), [2, 5, 6, 8], "the upper edge sends nothing");
+    for _ in 0..20 { cx.key(false); }
+    assert_eq!(cx.pages_sent(), [2, 5, 6, 8, 7]);
+    cx.reply(cx.sent[4].1, 7, 8);
+    assert_eq!(cx.pages_sent(), [2, 5, 6, 8, 7, 1]);
+    cx.reply(cx.sent[5].1, 1, 8);
+    cx.key(false);
+    assert_eq!(cx.sent.len(), 6, "the lower edge sends nothing");
+
+    let mut reversed = RecordingPages::new();
+    reversed.key(true);
+    reversed.key(true);
+    reversed.key(false);
+    reversed.reply(reversed.sent[0].1, 2, 8);
+    assert_eq!(reversed.pages_sent(), [2], "reversing to the in-flight page needs no extra request");
+
+    let mut zoom = RecordingPages::new();
+    zoom.requests.issue_preview();
+    zoom.requests.arm_reraster(1, 2.0);
+    zoom.key(true);
+    assert!(zoom.sent.is_empty(), "a page turn waits for the zoom request too");
+    zoom.reply(zoom.requests.preview_generation(), 1, 8);
+    assert_eq!(zoom.pages_sent(), [2]);
+
+    let mut failed = RecordingPages::new();
+    failed.key(true);
+    failed.key(true);
+    let generation = failed.requests.preview_generation();
+    continue_preview_failure(&mut failed, "active".into(), Some("row".into()), generation, ());
+    assert_eq!(failed.pages_sent(), [2, 3], "a failed old target releases the latest");
+    let generation = failed.requests.preview_generation();
+    continue_preview_failure(&mut failed, "active".into(), Some("row".into()), generation, ());
+    assert_eq!(failed.pages_sent(), [2, 3], "a failed latest target must not loop");
+    failed.fail_send = true;
+    failed.key(true);
+    failed.key(true);
+    assert_eq!(failed.pages_sent(), [2, 3, 4, 5], "a failed send must not leave the slot busy");
+    failed.reply(failed.sent[3].1, 3, 3);
+    assert_eq!(failed.sent.len(), 4, "a shorter document clamps the target");
+
+    let mut changed = RecordingPages::new();
+    changed.key(true);
+    changed.key(true);
+    let old = changed.sent[0].1;
+    changed.requests.issue_preview();
+    changed.requests.record_fired("files:other.pdf".into());
+    changed.reply(old, 2, 8);
+    assert_eq!(changed.sent.len(), 1, "an old document's reply cannot release its queued page");
+    changed.shown = None;
+    assert!(!continue_page_key(&mut changed, Some(crate::ui::Action::PageNext)));
+}

@@ -2,7 +2,7 @@
 //! driven-preview suppression, and the crop, scale-save and `--roi` aim transactions.
 
 use crate::net::transport::OutgoingReq;
-use crate::ui::{HostKey, WsKey};
+use crate::ui::{Action, HostKey, WsKey};
 use super::concept::{change_effect, ChangeEffect};
 use super::image::view::RoiAim;
 
@@ -16,6 +16,8 @@ pub(in crate::ui) struct PreviewRequests {
     preview_target_fired: Option<String>,
     /// `(page, zoom)` of an in-flight zoom re-raster of the shown page.
     page_raster_pending: Option<(u32, f32)>,
+    page_target: Option<u32>,
+    page_in_flight: Option<u32>,
     /// The host a crop was sent to; whichever crop reply lands first takes it.
     crop_host: Option<HostKey>,
     /// `(node_id, typed value)` of an in-flight `preview.set_scale`.
@@ -42,6 +44,11 @@ pub(in crate::ui) struct ClearConceptCaches;
 
 impl PreviewRequests {
     pub(in crate::ui) fn issue_preview(&mut self) -> u64 {
+        self.clear_page_requests();
+        self.advance_preview_generation()
+    }
+
+    fn advance_preview_generation(&mut self) -> u64 {
         self.preview_req_gen += 1;
         self.preview_req_gen
     }
@@ -138,6 +145,7 @@ impl PreviewRequests {
 
     pub(in crate::ui) fn leave_row(&mut self) {
         self.driven_preview_hold_cursor = None;
+        self.clear_page_requests();
     }
 
     pub(in crate::ui) fn fired_target(&self) -> Option<&str> { self.preview_target_fired.as_deref() }
@@ -150,11 +158,43 @@ impl PreviewRequests {
     /// Forget the fired target, so the next cursor follow fetches the cursored node again.
     pub(in crate::ui) fn forget_fired(&mut self) {
         self.preview_target_fired = None;
+        self.clear_page_requests();
     }
 
     /// A row's snapshot restores the target it had fired when it was left.
     pub(in crate::ui) fn restore_fired(&mut self, node_id: Option<String>) {
         self.preview_target_fired = node_id;
+        self.clear_page_requests();
+    }
+
+    fn clear_page_requests(&mut self) {
+        self.page_target = None;
+        self.page_in_flight = None;
+        self.page_raster_pending = None;
+    }
+
+    fn turn_page(&mut self, shown: u32, count: u32, next: bool) {
+        let target = self.page_target.unwrap_or(shown);
+        let page = if next { target.saturating_add(1) } else { target.saturating_sub(1) }.clamp(1, count);
+        self.page_target = Some(page);
+        if page != target { self.cancel_reraster(); }
+    }
+
+    fn next_page_request(&mut self, shown: u32) -> Option<(u32, u64)> {
+        let target = self.page_target?;
+        if self.page_in_flight.is_some() || target == shown {
+            return None;
+        }
+        self.page_in_flight = Some(target);
+        Some((target, self.advance_preview_generation()))
+    }
+
+    pub(in crate::ui) fn page_request_pending(&self) -> bool { self.page_in_flight.is_some() }
+
+    /// A failure releases the slot, but only a newer target may be tried automatically.
+    pub(in crate::ui) fn fail_page_reply(&mut self) -> bool {
+        self.page_raster_pending = None;
+        self.page_in_flight.take().is_some_and(|page| self.page_target.is_some_and(|target| target != page))
     }
 
     /// A fetch of a new target or a page turn: a pending re-raster's reply must not be taken for it.
@@ -162,20 +202,20 @@ impl PreviewRequests {
         self.page_raster_pending = None;
     }
 
-    /// The zoom an in-flight re-raster asked for, 0.0 when none is.
-    pub(in crate::ui) fn reraster_zoom(&self) -> f32 {
-        self.page_raster_pending.map(|(_, z)| z).unwrap_or(0.0)
-    }
-
     /// Called after the re-raster request was sent.
     pub(in crate::ui) fn arm_reraster(&mut self, page: u32, zoom: f32) {
         self.page_raster_pending = Some((page, zoom));
+        self.page_in_flight = Some(page);
+        self.page_target = Some(page);
     }
 
     /// An admitted preview reply ends any pending re-raster: its zoom when the reply shows the pending page, else
     /// `None`, a real navigation that resets the view.
-    pub(in crate::ui) fn settle_page_reply(&mut self, shown_page: Option<u32>) -> Option<f32> {
-        match (self.page_raster_pending.take(), shown_page) {
+    pub(in crate::ui) fn settle_page_reply(&mut self, shown_page: Option<(u32, u32)>) -> Option<f32> {
+        self.page_in_flight = None;
+        self.page_target = shown_page.filter(|(_, count)| *count > 0)
+            .map(|(page, count)| self.page_target.unwrap_or(page).clamp(1, count));
+        match (self.page_raster_pending.take(), shown_page.map(|(page, _)| page)) {
             (Some((pending, zoom)), Some(shown)) if pending == shown => Some(zoom),
             _ => None,
         }
@@ -253,6 +293,34 @@ impl PreviewRequests {
 
     #[cfg(all(test, feature = "test-window-progress"))]
     pub(in crate::ui) fn roi_aim(&self) -> Option<&RoiAim> { self.roi_aim.as_ref() }
+}
+
+/// The window supplies the shown page and transport; the request owner holds the target and the one occupied slot.
+pub(in crate::ui) trait PageRequestContext {
+    fn page_requests(&mut self) -> &mut PreviewRequests;
+    fn shown_page(&self) -> Option<(u32, u32)>;
+    fn send_page_request(&mut self, page: u32, generation: u64) -> Result<(), String>;
+}
+
+pub(in crate::ui) fn continue_page_key(cx: &mut impl PageRequestContext, action: Option<Action>) -> bool {
+    let Some((page, count)) = cx.shown_page().filter(|(_, count)| *count > 1) else { return false };
+    let next = match action {
+        Some(Action::PageNext) => true,
+        Some(Action::PagePrev) => false,
+        _ => return false,
+    };
+    cx.page_requests().turn_page(page, count, next);
+    continue_page_request(cx);
+    true
+}
+
+pub(in crate::ui) fn continue_page_request(cx: &mut impl PageRequestContext) {
+    let Some((shown, _)) = cx.shown_page() else { return };
+    let Some((page, generation)) = cx.page_requests().next_page_request(shown) else { return };
+    if let Err(e) = cx.send_page_request(page, generation) {
+        cx.page_requests().fail_page_reply();
+        tracing::warn!(error = %e, "drop page-turn preview.get — channel closed");
+    }
 }
 
 /// The coordinator supplies transport and drift caches; no owner operation takes State.

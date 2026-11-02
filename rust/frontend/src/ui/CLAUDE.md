@@ -9,7 +9,7 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 `input::LayoutHelp` owns drawer selection, maximize/wide flags, Help browsing, return origin and startup requests.
-`preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page re-raster, concept
+`preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page transport, concept
 follow commitment, the driven-preview hold, and the crop, scale-save and `--roi` aim transactions.
 `preview::source::InstalledPreviewSource` owns the installed preview bytes, their node, scale and markdown origin.
 `session::ParkedViews` owns the rows' parked views (`WorkspaceUiSnapshot`), keyed by row.
@@ -138,9 +138,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `session::result_ledger::tests::result_attempt_allocates_exactly_once_only_after_admission`; retained admission
   characterizations are `preview::fetch::tests`. These describe existing behavior, not a newly corrected defect.
 - It also privately owns the fired preview target (the node the latest request asked for, distinct from the installed
-  source's node), the in-flight page re-raster, the crop host pin, the scale-save marker and the one `--roi` aim. A
-  new cursor target and a page turn cancel a pending re-raster; an admitted reply ends it, keeping the view only when
-  it shows the pending page. Crop still takes its host pin before comparing, so a wrong host consumes it and two
+  source's node), the target page, the one in-flight page request (turn or zoom re-raster), the crop host pin, the
+  scale-save marker and the one `--roi` aim. Every page press, repeats included, advances the target within the
+  document's bounds; it never advances from an intermediate shown page. While a page request is in flight, presses
+  only change the target. Its admitted reply may draw an intermediate page, then only the latest target is requested
+  if it differs. A reply clamps the target to a changed page count but never moves it back to the shown page.
+  A new preview generation for a file or a scale save, forgetting/restoring the fired target, and leaving the row
+  clear page intent and flight state. A turn cancels a re-raster's keep-view but waits for its reply; other re-rasters
+  wait for the occupied page slot. An admitted failure releases the slot and tries only a target newer than the failed
+  one, preventing error retries from looping; a failed send also releases it. Portable behavior test in the existing
+  frontend unit suite: `preview::requests::tests::page_presses_and_repeats_coalesce_until_the_latest_target_is_shown`.
+  Crop still takes its host pin before comparing, so a wrong host consumes it and two
   same-host crops are indistinguishable. Save success still requires current preview admission and target equality;
   ScaleSetFailed remains unfenced and clears its marker unconditionally. An aim is certified by an installed raster
   for its row and node, retired by a non-raster install, and consumed by the render pass only while it is still the

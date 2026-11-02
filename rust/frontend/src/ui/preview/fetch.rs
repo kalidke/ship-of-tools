@@ -1,6 +1,24 @@
 //! The cursor-follow preview fetch: preview.get requests and their generations.
 
 use crate::ui::*;
+use super::requests::{PageRequestContext, PreviewRequests};
+
+impl PageRequestContext for State {
+    fn page_requests(&mut self) -> &mut PreviewRequests { &mut self.preview_requests }
+
+    fn shown_page(&self) -> Option<(u32, u32)> {
+        if self.preview_source.node_id()? != self.preview_requests.fired_target()? { return None; }
+        self.pages.page()
+    }
+
+    fn send_page_request(&mut self, page: u32, generation: u64) -> Result<(), String> {
+        let node_id = self.preview_requests.fired_target().ok_or("no preview target")?.to_string();
+        let (fit_w, fit_h) = self.preview_fit_px();
+        self.send(OutgoingReq::PreviewGet {
+            node_id, workspace_id: self.selected.workspace_id().clone(), page: Some(page), fit_w, fit_h, generation,
+        }).map_err(|e| e.to_string())
+    }
+}
 
 impl State {
     /// Whether the current preview source is a code shaper (`new_tokens` /
