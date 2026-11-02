@@ -65,6 +65,33 @@ end
 # zoom-rerasterize (future) stays under GPU texture caps and wire bloat.
 const MAX_RASTER_PX = 4096
 
+# The kernel serves one request at a time, so these caches need no lock or background task.
+const PAGE_CACHE_LIMIT = 64 * 1024^2
+const PageKey = Tuple{String,Float64,Int,Tuple}
+const PAGE_CACHE = Dict{PageKey,Vector{UInt8}}()
+const PAGE_ORDER = PageKey[] # Least recently used first.
+const PAGE_BYTES = Ref(0)
+const PDF_INFO = Dict{String,Tuple{Float64,Union{Nothing,Tuple{Int,Float64,Float64}}}}()
+
+function _cached_page(key::PageKey)
+    png = get(PAGE_CACHE, key, nothing)
+    png === nothing && return nothing
+    deleteat!(PAGE_ORDER, findfirst(==(key), PAGE_ORDER))
+    push!(PAGE_ORDER, key)
+    png
+end
+
+function _cache_page(key::PageKey, png::Vector{UInt8})
+    length(png) > PAGE_CACHE_LIMIT && return
+    while PAGE_BYTES[] + length(png) > PAGE_CACHE_LIMIT
+        oldest = popfirst!(PAGE_ORDER)
+        PAGE_BYTES[] -= length(pop!(PAGE_CACHE, oldest))
+    end
+    PAGE_CACHE[key] = png
+    push!(PAGE_ORDER, key)
+    PAGE_BYTES[] += length(png)
+end
+
 function _preview_page(path::AbstractString, page::Int;
                        fit_w::Union{Int,Nothing}=nothing,
                        fit_h::Union{Int,Nothing}=nothing)
@@ -74,7 +101,16 @@ function _preview_page(path::AbstractString, page::Int;
         # No quiet fallback: name the gap and the fix.
         return _note("poppler (`pdftoppm`/`pdfinfo`) not found on the kernel host — install poppler-utils to render PDF pages.")
     end
-    info = _pdf_info(pdfinfo, path)
+    path = abspath(path)
+    modified = mtime(path)
+    cached_info = get(PDF_INFO, path, nothing)
+    info = if cached_info !== nothing && first(cached_info) == modified
+        last(cached_info)
+    else
+        read_info = _pdf_info(pdfinfo, path)
+        PDF_INFO[path] = (modified, read_info)
+        read_info
+    end
     if info === nothing
         return _note("`pdfinfo` couldn't read this file — it may be corrupt or encrypted.")
     end
@@ -96,18 +132,23 @@ function _preview_page(path::AbstractString, page::Int;
     else
         `-r $RASTER_DPI`
     end
-    png = try
-        # -f/-l bound rasterization to the one page. Stdout streaming is
-        # poppler-quirky (caught on first deploy): `-singlefile` with NO
-        # output-root argument writes the PNG to stdout; a trailing `-`
-        # root yields 0 bytes silently, and without `-singlefile` the `-`
-        # is treated as a filename prefix (`./--1.png` in the cwd). `-png`
-        # keeps the frontend's existing image path.
-        ConceptExplorerCore.read_within(`$pdftoppm -png $scale_args -f $p -l $p -singlefile $path`, TOOL_BOUND)
-    catch e
-        return _note("Couldn't rasterize page $p: $(sprint(showerror, e))")
+    key = (path, modified, p, Tuple(scale_args))
+    png = _cached_page(key)
+    if png === nothing
+        png = try
+            # -f/-l bound rasterization to the one page. Stdout streaming is
+            # poppler-quirky (caught on first deploy): `-singlefile` with NO
+            # output-root argument writes the PNG to stdout; a trailing `-`
+            # root yields 0 bytes silently, and without `-singlefile` the `-`
+            # is treated as a filename prefix (`./--1.png` in the cwd). `-png`
+            # keeps the frontend's existing image path.
+            ConceptExplorerCore.read_within(`$pdftoppm -png $scale_args -f $p -l $p -singlefile $path`, TOOL_BOUND)
+        catch e
+            return _note("Couldn't rasterize page $p: $(sprint(showerror, e))")
+        end
+        isempty(png) && return _note("Rasterizing page $p produced no output.")
+        _cache_page(key, png)
     end
-    isempty(png) && return _note("Rasterizing page $p produced no output.")
     ConceptExplorerCore.PreviewPayload(
         "image/png", png,
         Dict{String,Any}("page" => p, "page_count" => page_count),

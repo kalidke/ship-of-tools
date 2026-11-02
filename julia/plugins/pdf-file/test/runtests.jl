@@ -15,6 +15,77 @@ const PNG_MAGIC = UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         end
     end
 
+    @testset "page cache through preview" begin
+        mktempdir() do dir
+            tools = joinpath(dir, "bin")
+            mkdir(tools)
+            info_log, render_log = joinpath(dir, "info"), joinpath(dir, "render")
+            write(info_log, "")
+            write(render_log, "")
+            write(joinpath(tools, "pdfinfo"), raw"""#!/bin/sh
+                printf '%s\n' "$*" >> "$PDF_TEST_INFO"
+                printf 'Pages: 4\nPage size: 600 x 800 pts\n'
+                """)
+            write(joinpath(tools, "pdftoppm"), raw"""#!/bin/sh
+                printf '%s\n' "$*" >> "$PDF_TEST_RENDER"
+                printf '%s' "$*"
+                if [ "${PDF_TEST_BYTES:-0}" -gt 0 ]; then
+                    dd if=/dev/zero bs="$PDF_TEST_BYTES" count=1 2>/dev/null
+                fi
+                """)
+            chmod(joinpath(tools, "pdfinfo"), 0o755)
+            chmod(joinpath(tools, "pdftoppm"), 0o755)
+            sample = joinpath(dir, "cache.pdf")
+            other = joinpath(dir, "other.pdf")
+            write(sample, "first")
+            write(other, "other")
+            turns(path, page; w=400, h=800) = ConceptExplorerCore.preview(P, path,
+                Dict{String,Any}("page" => page, "fit_w" => w, "fit_h" => h))
+            infos() = length(readlines(info_log))
+            renders() = length(readlines(render_log))
+            withenv("PATH" => tools * (Sys.iswindows() ? ";" : ":") * ENV["PATH"],
+                    "PDF_TEST_INFO" => info_log, "PDF_TEST_RENDER" => render_log) do
+                one = turns(sample, 1)
+                @test one.mime == "image/png"
+                @test renders() == 1 # No neighboring page is prefetched.
+                @test turns(sample, 2).extras["page"] == 2
+                again = turns(sample, 1)
+                @test again.data == one.data
+                @test again.extras == one.extras
+                @test (infos(), renders()) == (1, 2)
+                turns(sample, 1; w=200)
+                @test (infos(), renders()) == (1, 3)
+                turns(other, 1)
+                @test (infos(), renders()) == (2, 4)
+                run(`touch -m -t 200001010000 $sample`)
+                turns(sample, 1)
+                @test (infos(), renders()) == (3, 5)
+
+                # Three pages exceed the byte bound; a hit makes page 1 newer than page 2.
+                large = joinpath(dir, "large.pdf")
+                write(large, "large")
+                withenv("PDF_TEST_BYTES" => string(div(ShipToolsPDFFile.PAGE_CACHE_LIMIT, 3) + 1)) do
+                    turns(large, 1)
+                    turns(large, 2)
+                    turns(large, 1)
+                    turns(large, 3)
+                    @test renders() == 8
+                    turns(large, 1)
+                    @test renders() == 8
+                    turns(large, 2)
+                    @test renders() == 9
+                end
+                oversized = joinpath(dir, "oversized.pdf")
+                write(oversized, "oversized")
+                withenv("PDF_TEST_BYTES" => string(ShipToolsPDFFile.PAGE_CACHE_LIMIT + 1)) do
+                    turns(oversized, 1)
+                    turns(oversized, 1)
+                    @test renders() == 11
+                end
+            end
+        end
+    end
+
     # A real rasterize needs poppler + a sample; generate a 2-page PDF with
     # ghostscript if available, else skip (CI hosts vary).
     sample = joinpath(mktempdir(), "sample.pdf")

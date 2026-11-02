@@ -556,5 +556,7 @@ publish list is a checked detail, never a step, so a lab user's install no longe
 same day a PDF page press advances a target and one page request runs at a time, a PNG's print density gives no scale
 bar, and a row id is unique within a process by count. Since the same day a Windows checkout whose owner is not the
 account that will use it is never reported armed, after an install over an elevated ssh login said armed and the update
-was dropped in silence, and a repeat install judges a connected window, not only the record.
+was dropped in silence, and a repeat install judges a connected window, not only the record. Since the same day a page
+opened with reply rights and no named window needs person input in the last 30 minutes, the PDF plugin keeps rendered pages,
+64 MiB at most, and a spawn no longer promises a join.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

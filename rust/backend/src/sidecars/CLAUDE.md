@@ -196,7 +196,11 @@ of each.
     `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, attempted at most once per kernel (`preview.jl:29`, the
     `LAZY_PLUGIN_FOR_EXT` table); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
     a preview answers a payload or an error, never an exception to the wire (`preview.jl:99`); an external tool a plugin
-    runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). Limits: a lazy load that failed is not retried until the
+    runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). The PDF plugin keeps rendered pages in memory up to
+    `PAGE_CACHE_LIMIT` (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime,
+    page and render size. It reads `pdfinfo` once per path and mtime and never prefetches. The existing package suite,
+    `julia/plugins/pdf-file/test/runtests.jl`, checks hits, path/mtime/size misses and byte eviction through `preview`.
+    Limits: a lazy load that failed is not retried until the
     kernel restarts; nothing discovers a user's packages as plugins (see the root CLAUDE.md); a plugin's own code is the
     plugin's.
 
