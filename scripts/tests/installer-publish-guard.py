@@ -334,7 +334,7 @@ def main():
             assert "config --local --unset-all core.hooksPath" in result.stdout, result.stdout
             assert (caller / ".git/config").read_bytes() == before
             g(caller, "config", "--unset-all", "core.hooksPath")
-        # Removing only this fixture's synthetic list forces provisioning, never a replacement policy.
+        # Removing only this fixture's synthetic list leaves pushes refused and is no step, never a replacement policy.
         if args.case in ["all", "policy"]:
             policy.unlink()
             result, verdict = install()
@@ -343,7 +343,8 @@ def main():
             refused = g(caller, "push", remote, f"{clean}:refs/heads/missing-policy", ok=False)
             after_refs = g(remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
             expected = "pre-push: sot.publishList must name a readable regular file without a symlink; refusing the push"
-            assert (verdict.startswith("ONE STEP LEFT:") and "provision" in verdict
+            assert ("pushes refused until a valid publish-list.txt exists on this computer" in verdict
+                    and "provision" not in verdict
                     and refused_with(refused, expected) and before_refs == after_refs), (
                 f"{result.stdout}\npolicy refusal: exit {refused.returncode}\n{refused.stdout}"
                 f"\nrefs before: {before_refs}\nrefs after: {after_refs}")
