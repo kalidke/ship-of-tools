@@ -174,6 +174,29 @@ fn merge_fills_only_when_sidecar_did_not() {
     assert_eq!(both["physical_scale"]["axes"][0]["nm_per_px"], 10.0);
 }
 
+#[test]
+fn print_density_is_not_a_physical_scale_even_with_writer_metadata() {
+    for (ppm, nm) in [(7559, None), (99_999, None), (100_000, Some(10_000.0)),
+        (209_270_692, Some(1e9 / 209_270_692.0))]
+    {
+        let png = png_with(&[
+            chunk(b"IHDR", &[0; 13]),
+            chunk(b"tEXt", b"Software\0CairoMakie"),
+            chunk(b"pHYs", &phys_data(ppm, ppm, 1)),
+            chunk(b"tEXt", b"Description\0Microscope image"),
+            chunk(b"IDAT", &[0; 4]),
+            chunk(b"IEND", &[]),
+        ]);
+        let extras = serde_json::json!({"caption": "figure"});
+        let got = merge_png_phys_scale(&png, "image/png", Some(extras.clone()), true).unwrap();
+        assert_eq!(got["caption"], "figure");
+        match nm {
+            Some(nm) => assert_eq!(got["physical_scale"]["axes"][0]["nm_per_px"], nm),
+            None => assert_eq!(got, extras, "print density {ppm} must not create a scale"),
+        }
+    }
+}
+
 /// The tiers as `build_preview_payload` runs them: sidecar, then embedded `pHYs`.
 fn resolved(
     img: &std::path::Path,

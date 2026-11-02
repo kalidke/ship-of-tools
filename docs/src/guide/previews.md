@@ -44,6 +44,11 @@ The plugin module and MIME type behind each row are listed under
 PNG (and other raster images) render directly through the frontend's image quad
 path — the same path the PDF and video plugins reuse by returning `image/png`.
 
+A PNG's embedded pHYs density supplies a scale bar only when both axes have the same metre-unit density of at least
+100,000 pixels per metre (10 micrometres per pixel at the cutoff). Lower densities, including CairoMakie's print DPI,
+give no scale bar. A calibrated `.scale.json` sidecar takes priority; use `Primary+s` to enter the pixel size in nm
+when scale is unknown.
+
 A few notes on the table:
 
 - **Julia source** is tokenized on the kernel side into `{spans: [{text, kind}]}`,

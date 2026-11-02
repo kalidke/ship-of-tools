@@ -10,6 +10,9 @@ use sot_protocol::physical_scale::parse_physical_scale;
 /// image within one microsecond get DISTINCT temp names (see below).
 static SCALE_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// Lower densities describe printing, not the subject's physical pixel size.
+const MIN_PHYSICAL_PIXELS_PER_METRE: u32 = 100_000;
+
 /// Write `sidecar` (already built + workspace-confined by the caller) atomically:
 /// a UNIQUE, `O_EXCL`-created temp in the same dir + rename. The `physical_scale`
 /// is written VERBATIM — it is the per-original-px value the user typed; never
@@ -231,7 +234,8 @@ pub(super) fn merge_scale_sidecar(
 /// ADR 0034 resolver tier 2 (embedded metadata), PNG half: read a `pHYs`
 /// chunk's pixels-per-metre as `nm_per_px`. Returns `(x_nm_per_px,
 /// y_nm_per_px)` when the PNG declares a metre-unit density (`unit == 1`)
-/// with nonzero counts; `None` for an absent/other-unit `pHYs` (unit 0 is
+/// with both densities at least `MIN_PHYSICAL_PIXELS_PER_METRE`; `None` for print density,
+/// an absent/other-unit `pHYs` (unit 0 is
 /// aspect ratio only, dimensionless) or a malformed stream. Read-only: SoT
 /// never WRITES `pHYs` (u32 px/metre quantizes nm-scale values — the
 /// sidecar is the exact write channel; ADR 0034 §5).
@@ -293,7 +297,10 @@ fn png_phys_nm_per_px(bytes: &[u8]) -> Option<(f64, f64)> {
                 // unit 0 is a legal chunk carrying only an aspect ratio, so
                 // it yields no scale but is not a malformed stream — keep
                 // walking so a duplicate after it is still caught.
-                if d[8] == 1 && ppm_x != 0 && ppm_y != 0 {
+                if d[8] == 1
+                    && ppm_x >= MIN_PHYSICAL_PIXELS_PER_METRE
+                    && ppm_y >= MIN_PHYSICAL_PIXELS_PER_METRE
+                {
                     scale = Some((1e9 / ppm_x as f64, 1e9 / ppm_y as f64));
                 }
             }
