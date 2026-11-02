@@ -6,7 +6,7 @@ description: One command for the whole Ship of Tools system — every host, its 
 # sot-status — the whole system, one command
 
 ```bash
-sotd status
+"${SOTD_BIN:-sotd}" status
 ```
 
 Declared (from `hosts.toml`, the one list) fused with LIVE (asked of every
@@ -20,12 +20,12 @@ marked `ACTIVE`), then a final line naming the hub's own active frontend.
 **Read the table — never a log, never a systemd unit state.** A session
 being "live on the relay" is derived from the hub's own client roster
 (a `bridge`-role connection declaring that host), which is exactly what
-`sotd status` already did for you; a unit can be green while the thing
+`"${SOTD_BIN:-sotd}" status` already did for you; a unit can be green while the thing
 behind it is dead.
 
-`sotd topology status` is a DIFFERENT, narrower command — declared only, no
-network I/O, safe to run from a shell profile. Reach for `sotd status` for
-"what's actually happening"; reach for `topology status` only when you want
+`"${SOTD_BIN:-sotd}" topology status` is a DIFFERENT, narrower command — declared only, no
+network I/O, safe to run from a shell profile. Reach for `"${SOTD_BIN:-sotd}" status` for
+"what's actually happening"; reach for `"${SOTD_BIN:-sotd}" topology status` only when you want
 the raw declared list with nothing asked.
 
 `sot-fe version` still answers the single-daemon question ("what build is
