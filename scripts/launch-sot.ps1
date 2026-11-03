@@ -894,7 +894,7 @@ $HandoverBoundSeconds = 60
 # only Close-SotLeases empties it, after closing each stream.
 if ($null -eq $global:SotLeases) { $global:SotLeases = @() }
 # The bridge process of every lease request the daemon has not answered (Open-SotLease), each kept with its streams for
-# this process's life, since closing one would read as a close if the daemon granted it later. Append with +=, never
+# this process's life, since closing one would start a bounded handover if the daemon granted it later. Append with +=, never
 # reset; Close-SotLeases leaves each one's stream open.
 if ($null -eq $global:SotLeasesUnanswered) { $global:SotLeasesUnanswered = @() }
 
@@ -1208,7 +1208,7 @@ try {
             # predates the lease list, or that cannot be read is never invoked:
             # this pass carries on with the code it has. Every check is caught:
             # a throw here would end this process while it holds the leases,
-            # and their end reads as a close.
+            # and their unannounced end starts a bounded handover.
             $onDiskCodeId = Get-SotLauncherCodeId -ScriptsDir $PSScriptRoot
             if (-not $onDiskCodeId) {
                 Write-SupLog 'WARNING: converge: a launcher file on disk cannot be read - this pass carries on with the code it has'

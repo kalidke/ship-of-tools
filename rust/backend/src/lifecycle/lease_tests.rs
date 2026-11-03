@@ -233,7 +233,7 @@ async fn departure_table() {
     let closing = Some(HeldRecord { closing: true, ..empty() });
     let handover = Some(HeldRecord { handover_until_ms: Some(T0 + handover_bound_ms()), ..empty() });
     let wants = [
-        (Decision::Shutdown, closing.clone()),
+        (Decision::None, handover.clone()),
         (Decision::Shutdown, closing),
         (Decision::None, Option::None),
         (Decision::None, handover),
@@ -614,10 +614,15 @@ async fn failed_grant_reply_still_departs() {
     let (ours, theirs) = tokio::io::duplex(4096);
     drop(theirs);
     assert!(hold_over(ours, id(1), &f.leases).await.is_err(), "the grant's reply was written");
-    assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "a failed grant reply left its lease held");
+    // With no intent received, the departure is a handover (ADR 0050, 2026-11-03): released, bounded, not closing.
+    let record = f.on_disk().expect("a departed lease leaves its record");
     assert!(
-        tokio::time::timeout(Duration::from_millis(50), f.leases.gone()).await.is_ok(),
-        "the last lease's failed grant reply decided no shutdown"
+        record.holders.is_empty() && record.handover_until_ms.is_some() && !record.closing,
+        "a failed grant reply left its lease held or did not depart as a handover: {record:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), f.leases.gone()).await.is_err(),
+        "the last lease's failed grant reply, which carried no intent, shut down at once"
     );
 
     // A Keep received, then its reply fails: the departure stays a Keep.

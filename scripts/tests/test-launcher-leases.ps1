@@ -277,10 +277,10 @@ try {
             }
 
             # (g) a request the daemon has not answered is kept open with its bridge process, and its handover is
-            # written behind it, so a grant that comes later departs as that handover, not as a close (ADR 0050). The
+            # written behind it, so a grant that comes later receives that intent (ADR 0050). The
             # fake holds its hello reply and its lease reply until the test creates each one's file. Once the late hello
             # reply is read, only the kept process holds the bridge's output: a collection must not close it, or the
-            # bridge ends on the lease reply, before any handover, and the daemon reads that end as a close.
+            # bridge ends on the lease reply, before the requested intent can arrive.
             $pipe11g = New-TestPipeName
             $log11g = Join-Path $root 'lease11g.log'
             $hold11g = Join-Path $root 'hold11g'
@@ -344,6 +344,30 @@ try {
                     $child11g.Dispose()
                 }
                 if ($fake11g -and -not $fake11g.HasExited) { Stop-Process -Id $fake11g.Id -Force -ErrorAction SilentlyContinue }
+                Clear-FakeEnv
+            }
+
+            # (h) a deliberate shutdown sends Close explicitly, before EOF; EOF alone is now a handover.
+            $pipe11h = New-TestPipeName
+            $log11h = Join-Path $root 'lease11h.log'
+            $fake11h = Start-LeaseFake $pipe11h $log11h
+            try {
+                Check '11h: the fake pipe is up' (Wait-Pipe $pipe11h) 'pipe never answered'
+                $global:SotLeases = @(Open-SotLease (Get-PipePath $pipe11h) $realSotd)
+                Check '11h: the shutdown holds a lease' ($global:SotLeases.Count -eq 1) "count $($global:SotLeases.Count)"
+                Close-SotLeases -Intent close
+                $wait11h = [System.Diagnostics.Stopwatch]::StartNew()
+                do {
+                    $lines11h = @(Get-Content -LiteralPath $log11h -ErrorAction SilentlyContinue)
+                    if ($lines11h.Count -ge 4) { break }
+                    Start-Sleep -Milliseconds 50
+                } while ($wait11h.ElapsedMilliseconds -lt 10000)
+                $close11h = '{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"close"}}'
+                Check '11h: Close reaches the daemon before EOF' (($lines11h.Count -ge 4) -and ($lines11h[2] -ceq $close11h) -and ($lines11h[3] -ceq 'eof')) "lines: $($lines11h -join ' | ')"
+            } finally {
+                foreach ($stream11h in @($global:SotLeases)) { try { $stream11h.Dispose() } catch { } }
+                $global:SotLeases = @()
+                if ($fake11h -and -not $fake11h.HasExited) { Stop-Process -Id $fake11h.Id -Force -ErrorAction SilentlyContinue }
                 Clear-FakeEnv
             }
 

@@ -8,6 +8,30 @@
 
 **Date:** 2026-10-02
 
+## Amendment (2026-11-03): an unannounced lease end is a handover
+
+The maintainer's decision: a lease whose connection ends without `fe.leaving` is a `Handover`, including a window
+crash or a process ended from outside. This replaces the original Departure rule that treated no intent as Close.
+The sessions stay up for `HANDOVER_BOUND` (60 s); a new granted lease within that bound clears the handover, and with
+none the existing ticker starts shutdown at expiry. An explicit Close still starts shutdown immediately when the
+last lease departs. Keep remains the only open-ended keep.
+
+The title bar, OS close and Ctrl+Q's No send Close explicitly and wait for its answer. A close during a relaunch
+supersedes Handover with Close and exit code 0; a second close while already closing only waits for queued delivery.
+The macOS native Quit menu still bypasses the prompt; its termination callback now sends Close explicitly and waits
+for queued delivery, without waiting for the daemon's answer. A headless test proves that delivery before EOF; the
+native menu route itself has not been exercised by this change.
+Keep and Handover still keep an unanswered lease request open (lifecycle guarantee 8): dropping a late grant would
+start a bounded handover and cannot promise an open-ended Keep. The Windows shutdown helper holds its own local
+lease through teardown, explicitly sends Close after the windows and supervisor have left, and waits for the daemon
+to exit rather than reading the lease answer. The launcher's normal relaunch and converge still explicitly hand
+their leases over; a supervisor or window that crashes sends no Close.
+
+Behavior proofs: the departure table, `unannounced_disconnect_is_a_handover` (real rows survive an unannounced
+disconnect and a returning window, or end after expiry), `lease_end_any_way_departs` (partial input and a killed
+window), the frontend's `second_close_during_handover_exits_zero_on_every_path`, and the Windows launcher's case 11h
+(Close before EOF). Tests that deliberately close a daemon now send Close instead of relying on EOF.
+
 ## Decision
 
 Closing the last window on a computer ends the sessions of the backend that runs on that

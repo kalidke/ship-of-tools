@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn native_quit_delivers_close_before_the_transport_ends() {
+    use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, finish, is_leave}};
+    let daemon = tokio::runtime::Runtime::new().unwrap();
+    let window = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let (log, _, fake, path) = daemon.block_on(async {
+        let (listener, path) = bind("nativeclose");
+        let (log, replied, fake) = leave_fake(listener, None, None, std::time::Duration::ZERO);
+        (log, replied, fake, path)
+    });
+    let host = "local".to_string();
+    let leases = crate::lease::Leases::new(false, vec![host.clone()]);
+    window.block_on(leases.before_data_connection(&host, &path, None, |_| {})).unwrap();
+    native_close(&leases);
+    drop(window);
+    drop(leases);
+    let seen = daemon.block_on(finish(fake, &log));
+    assert!(seen.len() == 2 && is_leave(&seen[0], "close"), "native Quit must send Close before EOF: {seen:?}");
+}
+
+#[test]
 fn redraw_exit_table() {
     // A leaving window exits only from `about_to_wait`.
     assert!(!redraw_exits(true, true, false));

@@ -25,18 +25,16 @@ pub(crate) enum ExitStep {
     Ignore,
 }
 
-/// What an exit request does. A window already leaving exits at once, with
-/// 0, on a second close, except that an X or OS close during a Keep
-/// supersedes it with a Close: the user's latest intent wins, so a second
-/// close during a Handover never relaunches. A relaunch then defers to the
-/// leave in progress. `request_quit` first offers a Ctrl+Q's `Now` to the
-/// stay (`Leases::stay`).
+/// What an exit request does. An X or OS close during a Keep, or any close during a Handover, sends a new Close
+/// and waits for its answer with code 0. A second close while already closing exits at once. A relaunch defers to
+/// the leave in progress. `request_quit` first offers a Ctrl+Q during a Keep or Handover to the stay (`Leases::stay`).
 pub(crate) fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
     match (reason, leaving) {
         (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
         (ExitReason::QuitKey, None) => ExitStep::Ask,
         (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
-        (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
+        (ExitReason::WindowClose, Some(LeaveIntent::Keep | LeaveIntent::Handover))
+        | (ExitReason::QuitKey, Some(LeaveIntent::Handover)) => ExitStep::Supersede,
         (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
         (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
     }
@@ -81,7 +79,7 @@ impl Leases {
 
 impl Leaving {
     /// A Keep or a Handover with a lease handshake in flight that has not settled (`late` still open): exiting would
-    /// drop a request the daemon may still grant, and that grant would depart as a Close.
+    /// drop a request the daemon may still grant, and that grant would start a bounded handover.
     pub(super) fn must_stay(&self) -> bool {
         self.late.is_some() && self.intent != LeaveIntent::Close
     }

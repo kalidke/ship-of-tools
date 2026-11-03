@@ -21,8 +21,8 @@
 #                                          the "FE not detaching on close" bug.
 #   5. Wait for the LOCAL sotd (ADR     - LAST, only after the FE (its only
 #      0042 L1c) via                      possible local client) is already
-#      sot-local-daemon.ps1 -Stop         gone. Killing the FE ends its
-#                                          lease, so this computer's daemon
+#      sot-local-daemon.ps1 -Stop         gone. This script holds a lease
+#                                          and explicitly sends Close, so the daemon
 #                                          ends every local session and
 #                                          exits by itself; -Stop waits up
 #                                          to 150 s for that and kills it
@@ -38,7 +38,7 @@
 # transport - and, per step 5, the LOCAL sotd - never remote state.
 #
 # The LOCAL sotd's own capsule WORKSPACES end with it: when the frontend's
-# lease ends, the daemon ends every local session and exits, and step 5 waits
+# lease ends and this script sends Close, the daemon ends every local session and exits, and step 5 waits
 # for that (up to 150 s) before forcing anything. The remote sotd and its
 # sessions are untouched, as before.
 #
@@ -158,6 +158,23 @@ function Get-DaemonDisconnect([string]$Alias, [int]$Lines, [int]$Seconds = 30) {
 }
 
 W "=== shutdown-sot start (ports=$($tunnelPorts -join ','), host=$SshAlias) ==="
+# Hold the local daemon through teardown, then explicitly Close as its last holder: a lease that ends with no intent
+# is a handover. An unanswered request stays open with Close queued behind it; the stop helper below waits for the
+# daemon's exit instead of the lease reply. A lease that cannot be held (no local sotd, no daemon running) never
+# stops the teardown: a live daemon then ends its sessions when its handover bound passes, inside -Stop's wait.
+$LeaseReplyWaitMs = 5000
+$HandoverBoundSeconds = 60
+if ($null -eq $global:SotLeases) { $global:SotLeases = @() }
+if ($null -eq $global:SotLeasesUnanswered) { $global:SotLeasesUnanswered = @() }
+function Write-SupLog { param([string]$Message) W $Message }
+$pipeQuery = if ($sotdForPlan) { Invoke-SotWithin 5 $sotdForPlan @('session-socket-path', 'local') } else { $null }
+if (-not $pipeQuery -or $pipeQuery.Code -ne 0 -or -not $pipeQuery.Stdout.Trim()) {
+    W 'WARNING: no local daemon endpoint to send Close to; a live daemon ends its sessions when its handover bound passes'
+} else {
+    $shutdownLeases = @(Open-SotLease ($pipeQuery.Stdout.Trim()) $sotdForPlan)
+    if ($shutdownLeases.Count -eq 0) { W 'WARNING: the local daemon held no lease for this shutdown; a live daemon ends its sessions when its handover bound passes' }
+    $global:SotLeases += $shutdownLeases
+}
 W ("pre: FE=[{0}] supervisor=[{1}] tunnel=[{2}]" -f `
     ((Get-FE | ForEach-Object ProcessId) -join ','),
     ((Get-Sup | ForEach-Object ProcessId) -join ','),
@@ -174,8 +191,7 @@ if (-not $SkipDaemonVerify) {
     } catch { W "daemon pre-check skipped: $($_.Exception.Message)" }
 }
 
-# 1. Supervisor first - stop the respawn/race. A converge supervisor holds a
-#    lease, so its kill is a lease end like a window's: it sets $feKilled too.
+# 1. Supervisor first - stop the respawn/race. This script's lease keeps the daemon held throughout.
 $feKilled = $false
 foreach ($s in Get-Sup) { W "kill supervisor pid=$($s.ProcessId)"; Stop-Process -Id $s.ProcessId -Force -ErrorAction SilentlyContinue; $feKilled = $true }
 
@@ -199,11 +215,10 @@ if (-not $SkipDaemonVerify -and $feKilled) {
 
 foreach ($t in Get-Tun) { W "kill tunnel pid=$($t.ProcessId)"; Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue }
 
-# 5. Stop the LOCAL sotd (ADR 0042 L1c) - only now, after the FE/tunnel are
-#    down. Capsule workspace supervisors are NOT stopped here - they are the
-#    point (separate detached processes; sotd re-adopts them on its next
-#    start). Delegated to sot-local-daemon.ps1 so the pipe-name/process-match
-#    logic has ONE home -- its own -Stop exit code (0 = confirmed down) is
+# 5. Send Close to the LOCAL sotd after the FE and supervisor leases are gone. The write is flushed without waiting
+#    for the lease reply; -Stop waits for the daemon's own shutdown and exit, including every local capsule row.
+Close-SotLeases -Intent close
+#    The stop helper's own exit code (0 = confirmed down) is
 #    what step 6 reports below, not a second CIM query of the same process.
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 $localDaemonDown = $false

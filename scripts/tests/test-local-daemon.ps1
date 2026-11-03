@@ -237,11 +237,10 @@ try {
 
         } catch { Check '5: section ran' $false $_.Exception.Message }
         try {
-        Write-Host "`n=== 5b. the launcher's lease against a real daemon of its own: its handoff hello is admitted, the lease granted, and its end shuts the daemon down (ADR 0049) ===" -ForegroundColor Cyan
+        Write-Host "`n=== 5b. the launcher's lease against a real daemon of its own: its handoff hello is admitted, the lease granted, and explicit Close shuts the daemon down (ADR 0049) ===" -ForegroundColor Cyan
         # Open-SotLease (scripts/sot-lease.ps1) writes the hello the daemon admits every connection by and the lease
         # line in one write. This is the launcher's lease against the real admission, which no fake can vouch for. The
-        # daemon is a fresh one on its own pipe (a handover would keep it for its 60 s bound), and the lease's plain end
-        # departs as a Close, which shuts it down.
+        # daemon is a fresh one on its own pipe. EOF alone is a handover, so the helper must explicitly send Close.
         . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
         $LeaseReplyWaitMs = 5000
         $HandoverBoundSeconds = 60
@@ -253,10 +252,11 @@ try {
         Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
         $streams5b = @(Open-SotLease (Get-PipePath $pipe5b) $realSotd)
         Check '5b: the real daemon grants the launcher a lease' (($streams5b.Count -eq 1) -and (($script:supLines5b -join ' ') -match 'lease granted')) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
-        # Only a granted lease has an end that shuts the daemon down.
+        # Only a granted lease can request the close.
         if ($streams5b.Count -eq 1) {
-            foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
-            Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+            $global:SotLeases = $streams5b
+            Close-SotLeases -Intent close
+            Check '5b: explicit Close shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
         }
         Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 

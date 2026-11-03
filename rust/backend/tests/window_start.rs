@@ -595,7 +595,7 @@ async fn unremovable_registration_is_never_resumed() {
     let env = Env::new("unremovable");
     env.spawn_sotd_with_env(&[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]);
     let row = ready_row(&env, "unremovable-row", None).await;
-    let conn = granted_lease(&env).await;
+    let mut conn = granted_lease(&env).await;
 
     let toml = row_toml(&env, &row.slug);
     let dir = toml.parent().unwrap().to_path_buf();
@@ -606,7 +606,8 @@ async fn unremovable_registration_is_never_resumed() {
         "directory permissions are not enforced for this user (root?); this test would prove nothing"
     );
 
-    // The last lease's EOF is a Close.
+    // A deliberate close sends its intent; EOF alone is a handover.
+    leaving(&mut conn, 2, "close").await;
     drop(conn);
     let status = wait_exit(&env, BOUND).expect("no shutdown after the last lease left");
     assert_eq!(status.code(), Some(0), "the shutdown's exit: {status:?}");

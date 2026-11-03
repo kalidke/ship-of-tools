@@ -127,6 +127,14 @@ pub(in crate::ui) fn terminal_close(deadline: &ExitDeadline, leases: &crate::lea
     code
 }
 
+/// macOS's native Quit menu terminates without the normal quit dispatcher. Announce Close while the transport
+/// still runs, giving its queued writes the forced-exit's bound; the OS will not run another ack-poll callback.
+#[cfg(any(test, target_os = "macos"))]
+pub(in crate::ui) fn native_close(leases: &crate::lease::Leases) {
+    let _leaving = leases.leave_all(LeaveIntent::Close, 0, std::time::Instant::now());
+    leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
+}
+
 /// The window's last act: arm the deadline, then end the loop. A nonzero code (a relaunch) ends the process at once.
 pub(in crate::ui) fn end_loop(deadline: &ExitDeadline, code: i32, end: impl FnOnce()) {
     deadline.arm(code);
@@ -202,7 +210,12 @@ impl State {
                 self.finish_exit(event_loop, code);
             }
             ExitStep::Ignore => {}
-            ExitStep::Supersede => self.leave(event_loop, LeaveIntent::Close, 0),
+            ExitStep::Supersede => {
+                if matches!(reason, ExitReason::QuitKey) && self.stay_open(std::time::Instant::now()) {
+                    return;
+                }
+                self.leave(event_loop, LeaveIntent::Close, 0);
+            }
             ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code),
         }
     }
@@ -224,7 +237,7 @@ impl State {
     }
 
     /// A Keep or Handover still waiting on an unanswered lease request (`confirm_stay`): exiting would drop the
-    /// request, and a later grant would end this computer's sessions, so the window stays open. False when a grant
+    /// request, and a later grant would start a bounded handover, so the window stays open. False when a grant
     /// took the leave first.
     pub(in crate::ui) fn stay_open(&mut self, now: std::time::Instant) -> bool {
         let stayed = confirm_stay(&self.leases, &mut self.focus_prompts, &mut self.leaving, &mut self.should_exit,

@@ -318,7 +318,7 @@ impl Leases {
     }
 
     /// A lease's end: `intent` is its well-formed `fe.leaving`, `None` for
-    /// an EOF or io error (which means `Close`). Only the last lease's end
+    /// an EOF or io error (which means `Handover`). Only the last lease's end
     /// decides anything; an unknown or already-removed generation is a
     /// no-op.
     pub(crate) fn depart(&self, gen: u64, intent: Option<LeaveIntent>, now_ms: u64) -> Decision {
@@ -345,7 +345,7 @@ impl Leases {
             st.persist_or_log();
             return Decision::None;
         }
-        match intent.unwrap_or(LeaveIntent::Close) {
+        match intent.unwrap_or(LeaveIntent::Handover) {
             LeaveIntent::Close => {
                 st.close();
                 st.closer_waits = intent.is_some();
@@ -551,7 +551,7 @@ async fn read_line<R: AsyncBufRead + Unpin>(rx: &mut R) -> std::io::Result<Line>
 /// One lease connection, from its `fe.lease` to its end (1.2, 1.3). The
 /// grant's answer carries the state root's hash and the unacked count. A
 /// granted lease departs at its well-formed `fe.leaving`, at EOF or at an
-/// io error (both `Close`); any other line is answered with an error and
+/// io error (both `Handover` when no intent arrived); any other line is answered with an error and
 /// the lease continues, and the daemon never closes it. A
 /// `fe.leaving{close}` that decided the shutdown is answered after it,
 /// with the count not ended. From the grant on there is one exit, so a
@@ -594,7 +594,7 @@ where
                 }
                 Ok(Line::End) => break,
                 Err(e) => {
-                    tracing::info!(error = %e, "lease connection read failed: it departs as a close");
+                    tracing::info!(error = %e, "lease connection read failed: an unannounced departure is a handover");
                     break;
                 }
             };
@@ -642,7 +642,7 @@ where
     }
     .await;
     // Every `fe.leaving` departs on receipt, so a lease still held here
-    // received none: it departs as a close.
+    // received none: it departs as a handover.
     if let Some(gen) = held {
         leases.depart(gen, None, now_ms());
     }

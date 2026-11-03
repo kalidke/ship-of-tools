@@ -26,13 +26,23 @@ of each.
    the record can lag the daemon's state until the next write. Limit: a clock set backwards extends a persisted
    deadline by the step.
 3. **Only the last lease's departure decides, and the latest intent wins until a `Close` commits.** A lease ends by `fe.leaving` or by its
-   connection's end (an end with no intent means `Close`). While another lease is held nothing is decided. The last one
+   connection's end (an end with no intent means `Handover`, including a crash or an outside kill). While another lease is held nothing is decided. The last one
    out: `Close` ends the sessions (`Leases::gone` fires and the daemon shuts down), `Keep` leaves them up with no bound,
    `Handover` leaves them up for `HANDOVER_BOUND` (the ticker turns an expired handover with no lease into a shutdown).
    A later `fe.leaving` on a lease that already departed replaces its earlier intent, unless a `Close` has already
    committed: closing is irreversible, and a later `Keep` or `Handover` does not undo it. A lease's generation fences its own
    removal (an unknown or already-removed one decides nothing). A malformed lease line and a lane connection's end
    depart nothing. The lease ops and bounds are `sot_protocol::ops::lease`'s.
+   Deliberate window closes send `Close` explicitly: the title bar and OS close, Ctrl+Q's No, and a close that
+   supersedes a Keep or Handover all use `State::leave` and await the answer up to `CLOSE_ACK_WAIT` (125 s). A second
+   close while already closing forces exit after bounded delivery of the queued Close, without waiting for its
+   answer. macOS's native Quit menu bypasses that dispatcher: `App::exiting` calls `native_close` when no leave was
+   chosen, sends Close and waits only for queued delivery, not the daemon's answer. Ctrl+Q's Yes sends Keep; a
+   second Ctrl+Q during that Keep retains the chosen Keep. The Windows
+   `shutdown-sot.ps1` holds its own lease while removing the windows and supervisor, then sends Close through
+   `Close-SotLeases -Intent close`; it does not read the lease answer, but waits for the daemon's exit through the
+   stop helper. The Windows launcher's relaunch and converge send Handover through `Close-SotLeases` without
+   waiting for an answer; its ordinary window exit already sent its own intent, and a crash sends none.
 4. **A start's plan is a function of the record and this boot alone.** `startup_plan` is Resume, Pending or Cleanup and
    never looks a process up, so a reused pid cannot resume or hold a row: an unreadable record, a closing record, a
    record of another boot (two non-empty, different boot ids) or an expired handover plans Cleanup; a handover not yet
@@ -76,7 +86,8 @@ of each.
    gets the leave and its own ack wait), and the Windows supervisor keeps an unanswered request open (`Open-SotLease`).
    A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (`lease_exempt`). The window's forced
    `deliver_queued` wait covers the writes already queued to all holders by one `Instant` deadline and does not wait for
-   daemon acknowledgements.
+   daemon acknowledgements. Dropping an unanswered request could still start a handover when a late grant arrives,
+   so an open-ended Keep still requires the answer and a relaunch still keeps its unanswered request open.
 9. **A lease outcome is named truthfully.** `Foreign` names a refused identity claim, not an absent backend or a proved
    different account; notice precedence is Undetermined, Unsupported, Foreign, then Unreached after granted, pending and
    exempt suppression (a host whose lease request is still out is pending); when the standings name no cause the notice
@@ -123,7 +134,7 @@ One per guarantee. Paths are under `rust/backend/` (`src/lifecycle/` unless they
 |---|---|---|
 | 1 | grant only to the OS's peer | `lease_tests.rs`: `lease_claim_table`, `boots_match_table`, `grant_refused_when_record_cannot_be_written` |
 | 2 | one record | `lease_tests.rs`: `record_roundtrip_and_empty_file_is_deleted`, `record_write_syncs_its_directory`, `record_survives_other_windows_keep`, `pending_deadline_is_persisted_once`; `tests/window_lease/lease.rs`: `closing_flag_spans_shutdown` |
-| 3 | the last departure decides | `lease_tests.rs`: `departure_table`, `handover_table`, `latest_intent_wins_table`, `lease_generation_fences_removal`, `pending_expiry_shuts_down`; `tests/window_lease/lease.rs`: `last_one_out_two_windows`, `keep_is_open_ended`, `relaunch_handover_expires_then_shuts_down`, `lease_end_any_way_departs`, `malformed_lease_line_does_not_depart`, `lane_connection_close_does_not_shut_down`, `close_after_keep_on_one_lease_shuts_down` |
+| 3 | the last departure decides | `lease_tests.rs`: `departure_table`, `handover_table`, `latest_intent_wins_table`, `lease_generation_fences_removal`, `pending_expiry_shuts_down`; `tests/window_lease/lease.rs`: `last_one_out_two_windows`, `keep_is_open_ended`, `relaunch_handover_expires_then_shuts_down`, `unannounced_disconnect_is_a_handover`, `lease_end_any_way_departs`, `malformed_lease_line_does_not_depart`, `lane_connection_close_does_not_shut_down`, `close_after_keep_on_one_lease_shuts_down`; frontend `ui/app/exit_tests.rs`: `native_quit_delivers_close_before_the_transport_ends` (headless delivery, native menu not exercised); `scripts/tests/test-launcher-leases.ps1` case 11h (explicit shutdown Close before EOF) |
 | 4 | the start plan | `lease_tests.rs`: `startup_plan_table`, `startup_plan_boot_row_compares_only_two_nonempty_boots`, `lease_during_startup_cleanup_keeps_the_record`; `startup_tests.rs`: `failed_forget_removal_is_kept_for_the_next_start`; `src/rows/ops/create_tests.rs` (the Cleanup's slug claim) |
 | 5 | the close and its bound | `lease_tests.rs`: `not_ended_survives_restart_until_acked`, `shutdown_keeps_an_unacked_loaded_count`, `close_during_startup_cleanup_writes_closing`; `src/update_tests.rs`: `a_committed_update_is_not_undone_by_a_later_close`; `tests/window_lease/lease.rs`: `create_during_shutdown_refused`, `shutdown_bound_is_end_to_end`, `never_run_rows_count_as_ended`, `shutdown_ends_a_child_that_left_the_agents_process_group`; `tests/daemon_lifetime/outcomes.rs`: `a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_trees` |
 | 6 | one terminal | `shutdown_tests.rs`: `the_first_controlled_exit_decides_the_code`, `the_terminal_does_not_wait_for_a_stalled_creation`, `a_terminal_with_no_thread_to_fire_on_exits_without_the_fire`, `the_terminal_removes_the_folders_within_their_wait_before_it_exits`; `tests/daemon_lifetime/outcomes.rs`: `a_main_outcome_becomes_the_launched_status`, `early_commands_and_boot_refusals_keep_their_statuses`, `a_service_manager_counts_int_and_term_as_a_clean_stop` |

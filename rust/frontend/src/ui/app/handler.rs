@@ -5,6 +5,14 @@ use crate::ui::input::mouse::{cursor_moved, mouse_input, mouse_wheel};
 use crate::ui::input::keypress::keyboard_input;
 
 impl ApplicationHandler for App {
+    #[cfg(target_os = "macos")]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // A native Quit bypasses request_quit. Preserve a leave already chosen through that dispatcher.
+        if self.state.as_ref().is_some_and(|state| !state.should_exit) {
+            native_close(&self.leases);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;

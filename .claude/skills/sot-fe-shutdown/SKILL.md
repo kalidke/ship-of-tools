@@ -5,13 +5,15 @@ description: Deterministically shut down the LOCAL Ship of Tools frontend and lo
 
 # sot-fe-shutdown
 
-Deterministic teardown of the **local** frontend, its transport, and (ADR
-0042 L1c) the **local** `sotd` — order: **supervisor → FE → wait → tunnels →
-local sotd**. The REMOTE `sotd` and all backend state (workspaces, tmux
-sessions, kernel + REPL) are **left running on purpose** (ADR 0010/0013
-persistent-backend model). Capsule workspace supervisors (`sot-capsule.exe`)
-are NOT stopped here on either host — they are separate detached processes
-the daemon re-adopts via `--resume` on its next start.
+Deterministic teardown of the **local** frontend, its transport and its **local** `sotd`.
+The script first holds a local lease, then removes the supervisor and window, sends
+`fe.leaving{close}` on its own lease and waits for the daemon's shutdown. The local
+daemon ends every local session, including its capsule supervisor. A killed window's
+EOF alone is a 60-second handover (ADR 0050, 2026-11-03), so it is never used as the
+shutdown intent. A lease request that has not yet been answered stays open with Close
+queued behind it. If no shutdown lease can be held, the teardown still runs, and a live
+local daemon ends its sessions when the 60-second handover passes, inside the stop step's wait.
+Remote daemons and their sessions keep running.
 
 Full ordering rationale + the self-suicide problem (this session runs
 *inside* the FE's Terminal drawer, so the teardown must run detached):
@@ -49,8 +51,7 @@ Full ordering rationale + the self-suicide problem (this session runs
 
 - Kill the REMOTE `sotd`, tmux sessions, or workspaces — that breaks resume.
   A deliberate remote-backend-down is a separate, explicit step there.
-- Stop a capsule workspace's supervisor (`sot-capsule.exe`) on either host —
-  it outlives its daemon by design and is re-adopted on the next `--resume`.
+- End a capsule supervisor directly — the local daemon owns the deliberate end of its sessions.
 - Assume this touches an unrelated `ssh`/`sotd.exe` — each tunnel is matched
   by its own `-L <port>` forward, and the local daemon by process name AND
   its per-user pipe name in the command line.

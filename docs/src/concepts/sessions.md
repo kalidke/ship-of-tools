@@ -54,7 +54,8 @@ daemon starts capsules and lists them, but does not hold them up.
 | What goes away | What happens to the session |
 |----------------|-----------------------------|
 | the network, or the laptop lid | nothing — the frontend reconnects on its own when the network is back; `F5` retries at once |
-| the last window on this computer (closed, crashed or killed) | it ends, with the backend; the next window starts with none. `Ctrl+Q` asks first and can keep them running |
+| the last window on this computer is deliberately closed | it ends, with the backend; the next window starts with none. `Ctrl+Q` asks first and can keep them running |
+| the last window on this computer crashes or is killed from outside | it keeps running for one minute; a window returning within that minute keeps it, otherwise the backend ends it |
 | one of two windows on this computer | nothing — sessions end with the last window |
 | a window relaunch (update) | nothing, if the new window opens within a minute |
 | a window on another computer | nothing — the next window reattaches |

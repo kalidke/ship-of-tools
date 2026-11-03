@@ -539,7 +539,7 @@ fn not_ended_status_line() {
 
     let (_tx, rx) = oneshot::channel::<LeaveOutcome>();
     let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
-    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open"));
+    assert_eq!(l.line().as_deref(), Some("closing: waiting for this computer's backend to keep the sessions running; if the window is killed before it answers, reopen it within one minute to keep them"));
     assert_eq!(l.poll(t0 + s(10)), LeaveStep::Show);
     assert_eq!(l.line().as_deref(), Some(LEAVE_UNCONFIRMED_KEEP));
 
@@ -626,33 +626,41 @@ fn exit_intent_table() {
     assert_eq!(exit_intent(WindowClose, keep), Supersede);
     // A second close exits 0: during a Handover it never relaunches.
     assert_eq!(exit_intent(WindowClose, close), Now { code: 0 });
-    assert_eq!(exit_intent(WindowClose, handover), Now { code: 0 });
+    assert_eq!(exit_intent(WindowClose, handover), Supersede);
+    assert_eq!(exit_intent(QuitKey, handover), Supersede);
+    assert_eq!(exit_intent(QuitKey, keep), Now { code: 0 });
+    assert_eq!(exit_intent(QuitKey, close), Now { code: 0 });
     for leaving in [keep, close, handover] {
-        assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
         assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
     }
 }
 
-#[test]
-fn second_close_during_handover_exits_zero_on_every_path() {
-    use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
-    let t0 = std::time::Instant::now();
-    let (ack, rx) = tokio::sync::oneshot::channel();
-    let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
-    // The second close, as `request_quit` applies it.
-    let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
-        panic!("a second close exits at once");
-    };
-    assert_eq!(close_now(leaving.as_mut(), code), 0);
-    // The handover's ack is then ready, and winit still runs
-    // `about_to_wait`: its poll exits with the leave's code.
-    ack.send(LeaveOutcome::Replied(0)).unwrap();
-    assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
-    assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
+#[tokio::test]
+async fn second_close_during_handover_exits_zero_on_every_path() {
+    for reason in [ExitReason::WindowClose, ExitReason::QuitKey] {
+        let (listener, path) = bind("handoverclose");
+        let (log, _, fake) = leave_fake(listener, None, Some("close"), Duration::from_millis(300));
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        leases.before_data_connection(&host, &path, None, |_| {}).await.unwrap();
+        let handover = leases.leave_all(LeaveIntent::Handover, 75, Instant::now()).unwrap();
+        assert_eq!(logged(&log, 1).await.len(), 1);
+        assert_eq!(exit_intent(reason, Some(handover.intent)), ExitStep::Supersede);
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        drop(handover);
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "the close waits for its own answer");
+        let seen = logged(&log, 2).await;
+        assert!(is_leave(&seen[0], "handover") && is_leave(&seen[1], "close"), "{seen:?}");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
+        assert_eq!(leaving.exit_code, 0, "the handover's relaunch code must not survive the close");
+        assert_eq!(close_now(Some(&mut leaving), 0), 0);
+        drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 3);
+    }
 }
 
 /// LEASE-ABANDON-EXIT: a Keep or a Handover whose lease request is still unanswered at its ack wait stays open, since
-/// exiting would drop a request the daemon may still grant, and that grant would depart as a Close. A Close still
+/// exiting would drop a request the daemon may still grant, and that grant would start a bounded handover. A Close still
 /// leaves at its own deadline.
 #[tokio::test]
 async fn an_unanswered_keep_or_handover_stays_at_the_deadline() {

@@ -20,8 +20,9 @@ async fn last_one_out_two_windows() {
     assert!(daemon.still_up(), "the daemon shut down while a window still held a lease: {}", daemon.said());
     assert!(row_toml(&env, "last-one").exists(), "a row ended while a window still held a lease");
 
+    assert_eq!(b.ask("close", EXIT_WITHIN).await["not_ended"], 0);
     b.eof().await;
-    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the last window's EOF is a close: {}", daemon.said());
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the last window's explicit close: {}", daemon.said());
     assert!(!env.socket_path.exists(), "the socket outlived the daemon");
     assert!(!row_toml(&env, "last-one").exists(), "the row's toml outlived the close");
     #[cfg(target_os = "linux")]
@@ -34,7 +35,7 @@ async fn lease_end_any_way_departs() {
     let _serial = SERIAL.lock().await;
     for how in ["close", "half", "kill"] {
         let env = Env::new(&format!("dep{how}"));
-        let mut daemon = Daemon::start(&env, &[]).await;
+        let mut daemon = Daemon::start(&env, &[("SOT_TEST_HANDOVER_BOUND_MS", "3000")]).await;
         let (mut w, lease) = Window::open(&env.socket_path).await;
         assert_eq!(lease["outcome"], "granted", "{how}: {lease:?}");
         match how {
@@ -48,7 +49,53 @@ async fn lease_end_any_way_departs() {
             }
             _ => w.child.kill().await.expect("SIGKILL the window"),
         }
+        if how != "close" {
+            poll_until(
+                || async { held_record(&env).filter(|r| r["handover_until_ms"].is_u64()) },
+                BOUND,
+                "the unannounced departure to record its handover",
+            ).await;
+            assert!(daemon.still_up(), "{how}: an unannounced departure closed immediately: {}", daemon.said());
+        }
         assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{how}: the lease's end did not shut down: {}", daemon.said());
+    }
+}
+
+#[tokio::test]
+async fn unannounced_disconnect_is_a_handover() {
+    let _serial = SERIAL.lock().await;
+    for in_time in [false, true] {
+        let env = Env::new(if in_time { "crashin" } else { "crashout" });
+        let mut daemon = Daemon::start(&env, &[("SOT_TEST_HANDOVER_BOUND_MS", "3000")]).await;
+        let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+        let (id, state_dir) = create_row(&env, &mut conn, &mut next_id, "crash-row").await;
+        let (mut w, lease) = Window::open(&env.socket_path).await;
+        assert_eq!(lease["outcome"], "granted", "{lease:?}");
+        w.eof().await; // No fe.leaving, as when the window crashes.
+        poll_until(
+            || async { held_record(&env).filter(|r| r["handover_until_ms"].is_u64()) },
+            BOUND,
+            "the lost window's handover to be recorded",
+        ).await;
+        assert!(daemon.still_up(), "the lost window shut down the daemon: {}", daemon.said());
+        let rows = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        assert_eq!(find_row(&rows, &id).expect("the row survived the disconnect")["phase"], "ready");
+        if in_time {
+            let (mut next, lease) = Window::open(&env.socket_path).await;
+            assert_eq!(lease["outcome"], "granted", "{lease:?}");
+            assert!(held_record(&env).is_some_and(|r| r["handover_until_ms"].is_null()));
+            assert_eq!(daemon.exit_within(Duration::from_secs(6)).await, None, "a returning window lost the rows: {}", daemon.said());
+            let rows = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+            let row = find_row(&rows, &id).expect("the returning window kept the row");
+            assert_eq!(row["phase"], "ready");
+            assert_eq!(row["state_dir"].as_str(), state_dir.to_str());
+            assert_eq!(next.ask("close", EXIT_WITHIN).await["not_ended"], 0);
+            assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0));
+        } else {
+            assert_eq!(daemon.exit_within(Duration::from_secs(20)).await, Some(0), "an expired crash handover did not shut down: {}", daemon.said());
+        }
+        assert!(!row_toml(&env, "crash-row").exists(), "the shutdown left the row registered");
     }
 }
 
@@ -113,6 +160,7 @@ async fn lane_connection_close_does_not_shut_down() {
     drop(try_connect(&env.socket_path).await.expect("redial"));
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(daemon.still_up(), "a non-lease connection's end shut the daemon down: {}", daemon.said());
+    assert_eq!(w.ask("close", EXIT_WITHIN).await["not_ended"], 0);
     w.eof().await;
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease was no longer held: {}", daemon.said());
 }
@@ -321,9 +369,13 @@ async fn malformed_lease_line_does_not_depart() {
         let r = w.ask(cmd, BOUND).await;
         assert!(r.get("error").is_some(), "{cmd}: a malformed lease line is answered with an error: {r:?}");
     }
-    // The window is the only lease, so a departure would have been a shutdown.
+    // A malformed line must leave the lease held, with no handover deadline.
     tokio::time::sleep(Duration::from_secs(2)).await;
+    let rec = held_record(&env).expect("the lease is recorded");
+    assert_eq!(rec["holders"].as_array().map(Vec::len), Some(1));
+    assert!(rec["handover_until_ms"].is_null(), "a malformed line departed the lease: {rec}");
     assert!(daemon.still_up(), "a malformed lease line departed the lease: {}", daemon.said());
+    assert_eq!(w.ask("close", EXIT_WITHIN).await["not_ended"], 0);
     w.eof().await;
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease was no longer held: {}", daemon.said());
 }
@@ -340,6 +392,7 @@ async fn lease_end_while_data_conn_busy() {
     // The data connection's handler is now mid-read of a frame.
     conn.write_all(b"{\"v\":2,\"id\":").await.expect("write the half frame");
     conn.flush().await.expect("flush the half frame");
+    assert_eq!(w.ask("close", EXIT_WITHIN).await["not_ended"], 0);
     w.eof().await;
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease's end did not decide: {}", daemon.said());
     assert!(!row_toml(&env, "busy-row").exists(), "the row outlived the close");
@@ -373,6 +426,7 @@ async fn non_lease_fe_never_decides() {
     refused(&env, &me).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(daemon.still_up(), "a refused lease's end departed the granted window: {}", daemon.said());
+    assert_eq!(w.ask("close", EXIT_WITHIN).await["not_ended"], 0);
     w.eof().await;
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease was no longer held: {}", daemon.said());
 }

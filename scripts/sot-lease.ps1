@@ -90,7 +90,7 @@ function Stop-SotTree([System.Diagnostics.Process]$Proc) {
 # account, the process token's user SID); the lease line follows in the same write and the two replies are read in
 # order. A lease not granted is logged with the bridge's own stderr line, when it wrote one. A request the daemon has
 # not answered within $LeaseReplyWaitMs ('no reply', thrown only once both lines are written) is never closed: the
-# daemon may still grant it, and a granted lease whose connection ends departs as a close (ADR 0050). Its stream is
+# daemon may still grant it, and a granted lease whose connection ends starts a bounded handover (ADR 0050). Its stream is
 # emitted like a granted one; its bridge process is kept in $global:SotLeasesUnanswered, and with it the bridge's
 # output, which the collector would otherwise close and so end the bridge.
 function Open-SotLease([string]$PipePath, [string]$SotdExe) {
@@ -128,7 +128,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
         $why = $_.Exception.Message
     }
     if ($why -eq 'no reply') {
-        Write-SupLog "WARNING: relaunch: the backend has not answered the lease in $LeaseReplyWaitMs ms - keeping the request open, since closing it could end this computer's sessions"
+        Write-SupLog "WARNING: relaunch: the backend has not answered the lease in $LeaseReplyWaitMs ms - keeping the request open, since closing it would start a bounded handover"
         $global:SotLeasesUnanswered += @($bridge)
         return $in
     }
@@ -151,17 +151,19 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     Write-SupLog "WARNING: relaunch: lease not granted ($why) - this computer's sessions end if no window holds the backend within $HandoverBoundSeconds s"
 }
 
-# Hand every lease this process holds over to the frontend just spawned: say so, then drop them. A request still
-# unanswered (its bridge in $global:SotLeasesUnanswered) stays open behind its handover line: the daemon reads the
-# handover once it grants, and closing it first would read as a close.
+# Hand every lease this process holds over to the frontend just spawned, or explicitly close for shutdown-sot.ps1.
+# These writes do not wait for the daemon's answer; shutdown-sot.ps1 waits for the daemon's exit instead. A request still
+# unanswered (its bridge in $global:SotLeasesUnanswered) stays open behind its intent line: the daemon reads it once it
+# grants. Closing it first would start a bounded handover instead of delivering the requested intent.
 function Close-SotLeases {
+    param([ValidateSet('handover', 'close')][string]$Intent = 'handover')
     $kept = @(foreach ($b in $global:SotLeasesUnanswered) { try { $b.StandardInput.BaseStream } catch { } })
     foreach ($c in @($global:SotLeases)) {
         try {
-            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":4,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"' + $Intent + '"}}' + "`n")
             $c.Write($bytes, 0, $bytes.Length)
             $c.Flush()
-        } catch { }
+        } catch { Write-SupLog "WARNING: lease ${Intent} was not written: $($_.Exception.Message)" }
         if ($kept -notcontains $c) {
             try { $c.Dispose() } catch { }
         }

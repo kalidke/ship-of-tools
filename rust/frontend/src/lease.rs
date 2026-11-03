@@ -40,7 +40,7 @@ const LEAVE_UNCONFIRMED_CLOSE: &str =
 const LEAVE_UNCONFIRMED_KEEP: &str =
     "keep was not confirmed: this computer's backend may have ended the sessions";
 const LEAVE_WAIT_CLOSE: &str = "closing: waiting for this computer's backend; it ends the sessions only when no other window is open on this computer";
-const LEAVE_WAIT_KEEP: &str = "closing: waiting for this computer's backend to keep the sessions running; killing the window before it answers ends them when no other window is open";
+const LEAVE_WAIT_KEEP: &str = "closing: waiting for this computer's backend to keep the sessions running; if the window is killed before it answers, reopen it within one minute to keep them";
 
 /// What the daemon sent back to the hello and the lease request: the lease's own reply, or the hello's refusal.
 enum Replies {
@@ -262,8 +262,8 @@ impl Leases {
         // daemon. The hello (a handoff, ADR 0049 `## User isolation`) and the
         // lease go out in one write. Once they are written the replies are
         // awaited for as long as the connection lasts, since the daemon may
-        // still grant the lease and a dropped granted connection departs as a
-        // Close.
+        // still grant the lease and a dropped granted connection starts a
+        // bounded handover instead of an open-ended keep.
         let sent = tokio::time::timeout(lease::LEASE_REPLY_WAIT, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
@@ -300,7 +300,7 @@ impl Leases {
             match tokio::time::timeout(self.reply_wait, &mut read).await {
                 Ok(r) => r,
                 Err(_) => {
-                    tracing::warn!(%host, waited = ?self.reply_wait, "window lease: no reply yet; still waiting, since dropping the request would read as a close");
+                    tracing::warn!(%host, waited = ?self.reply_wait, "window lease: no reply yet; still waiting, since dropping the request would start a bounded handover");
                     unanswered(self.reply_wait);
                     read.await
                 }
