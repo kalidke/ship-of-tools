@@ -85,8 +85,8 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         return Err(Stop::new(1, "sot-comm needs jq, which is not on PATH: install it with `winget install jqlang.jq`, then run this installer again"));
     }
     step("fetch");
-    let implicit = super::implicit_run() && !opts.named();
-    let named = opts.named() || (super::bootstrap_tag().is_some() && !implicit);
+    let implicit = super::implicit_run(&opts);
+    let named = !implicit;
     let want = opts.version.clone().or_else(|| if opts.archive.is_none() { super::bootstrap_tag() } else { None });
     let pack = super::pack::read(&opts.pack, TARGET, want.as_deref()).map_err(|why| Stop::new(1, why))?;
     pack.check_binary("sot").map_err(|why| Stop::new(1, why))?;

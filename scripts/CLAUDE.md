@@ -148,8 +148,12 @@ Guarantees, each with the mechanism it rests on. Install:
   target `compare_versions` calls older, or one it cannot compare while the installed version is readable (the
   record's, else the installed `sotd --version`'s). A `+` build is told by ancestry (its commit against the pack's
   `COMMIT`, in `repo/base`) which way the newest release moves it, and stops. `--version`/`--archive` moves either way.
-- The pin. A run that names its target pins the install (`"pinned": true`); one that names none removes the pin; the
-  automatic writers never arm over a pin or over a record that cannot be read (`InstalledBuild::admits`). Every
+- The pin. Only a run's own version or archive argument (`--version`/`--archive`, `-Version`/`-Archive`) names its
+  target and pins the install (`"pinned": true`); one that names none removes the pin and is implicit for the
+  never-backwards rule too. `SOT_INSTALL_TAG` selects the release's body and never pins it, including when an older
+  prelude passes it without `SOT_INSTALL_IMPLICIT`. Current preludes keep sending `SOT_INSTALL_IMPLICIT` for older
+  bodies that read it; this body needs no marker. The automatic writers never arm over a pin or over a record that
+  cannot be read (`InstalledBuild::admits`). Every
   verdict line of a pinning run says so once the pin is written.
 - A repair run moves nothing. A named run of the installed version and commit that would change nothing else the
   readable record says (the role, the hub, the prefix; `record::keeps`), with no daemon on another version, writes the
@@ -330,7 +334,9 @@ Windows PowerShell 5.1 with ASCII-only string literals and call native commands 
 checkout rather than keeping a copy; the bounds the launcher and the daemon share live
 in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`).
 
-Tests: one test per guarantee: a Rust unit test in `rust/backend/src/install/*_tests.rs` (`cargo test -p sot-backend
+Tests: `install::tests::only_a_runs_arguments_pin_it_even_with_a_bootstrap_tag` checks the record's pin, verdict and
+downgrade guard with a bootstrap tag and no implicit marker, and with either marker value, on all systems.
+One test per guarantee: a Rust unit test in `rust/backend/src/install/*_tests.rs` (`cargo test -p sot-backend
 install::`), named for its guarantee, for what `sotd install` decides; a case of `tests/installer-entry.sh` for the
 bootstrap's share and for what needs the real `sotd install` as a process (the binaries a backend-only run starts, a
 signal); the install smokes (`tests/install-smoke.sh`, `tests/install-smoke.ps1`, the jobs

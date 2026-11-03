@@ -144,7 +144,7 @@ check "every curl call carries the connect and stall bound" "0" \
 case_start "entry_checks_the_pack_before_anything_of_it_runs"
 d="$WORK/e-pack"; entry_fixture "$d"; entry_pack "$d" v3.0.0
 entry_run "$d" SOT_INSTALL_TAG=v3.0.0 --be-only
-check "a named release is downloaded, checked and its own sotd install runs with --pack and the arguments" "0 1" \
+check "a bootstrap tag selects the checked pack and forwards only the person's arguments to sotd install" "0 1" \
     "$ENTRY_RC $(grep -c 'sotd install --pack .* --be-only \[' "$d/net.log" || true)"
 check "the pack it ran from holds SHA256SUMS, the archive, COMMIT and the unpacked folder" "[COMMIT SHA256SUMS sot-3.0.0-$TGT sot-3.0.0-$TGT.tar.gz ]" \
     "$(sed -n 's/^sotd install.*\(\[.*\]\)$/\1/p' "$d/net.log" | head -1)"

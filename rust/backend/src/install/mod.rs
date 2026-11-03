@@ -190,11 +190,12 @@ pub(super) fn is_commit(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The variables the run reads that the bootstrap sets: the tag its prelude resolved, and whether the person named it.
-pub(super) fn implicit_run() -> bool {
-    std::env::var("SOT_INSTALL_IMPLICIT").as_deref() == Ok("1")
+/// Only this run's arguments name its target. Bootstrap variables select the body, never consent to a pin or downgrade.
+pub(super) fn implicit_run(opts: &options::Options) -> bool {
+    !opts.named()
 }
 
+/// The tag whose body the bootstrap selected, including a handoff from a prelude that sends no implicit marker.
 pub(super) fn bootstrap_tag() -> Option<String> {
     std::env::var("SOT_INSTALL_TAG").ok().filter(|t| !t.is_empty())
 }

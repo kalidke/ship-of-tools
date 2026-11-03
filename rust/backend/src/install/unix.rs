@@ -165,8 +165,8 @@ fn decide(opts: Options, prefix: PathBuf, home: PathBuf) -> Result<Plan, Stop> {
     if let Some(libc) = &pack.libc {
         say(&format!("archive sotd libc: {libc}"));
     }
-    let implicit = super::implicit_run() && !opts.named();
-    let named = opts.named() || (super::bootstrap_tag().is_some() && !implicit);
+    let implicit = super::implicit_run(&opts);
+    let named = !implicit;
     say(&format!("installing Ship of Tools {} into {}", pack.tag(), prefix.display()));
     let scratch = pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);

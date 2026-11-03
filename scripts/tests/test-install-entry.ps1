@@ -86,7 +86,7 @@ try {
     $pack7 = New-Pack7 'v3.0.0' $SotdPath
     $env:SOT_INSTALL_TAG = 'v3.0.0'
     Invoke-Run7 @('-Frob')
-    Check '7: a named release is fetched, checked and its own sotd install runs, whose refusal is the one line' ($script:Code7 -eq 2 -and $script:Verdicts7 -eq 1 -and $script:Last7 -eq 'FAIL: options: unknown option: -Frob') "$($script:Code7): $($script:Lines7 -join ' | ')"
+    Check '7: a bootstrap tag selects the checked pack without a version argument; sotd install gives the one refusal' ($script:Code7 -eq 2 -and $script:Verdicts7 -eq 1 -and $script:Last7 -eq 'FAIL: options: unknown option: -Frob') "$($script:Code7): $($script:Lines7 -join ' | ')"
     [System.IO.File]::AppendAllText((Join-Path $pack7 'sot-3.0.0-windows-x86_64.zip'), 'tampered')
     Invoke-Run7 @('-Frob')
     Check '7: an archive that does not match SHA256SUMS: FAIL before its sotd runs' ($script:Code7 -eq 1 -and $script:Last7 -like 'FAIL: verify: sot-3.0.0-windows-x86_64.zip does not match its SHA256SUMS entry*') "$($script:Code7): $($script:Last7)"
