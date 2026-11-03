@@ -3,7 +3,7 @@
 
   shards.py plan landing|gate   the jobs of one workflow, as a JSON list of {os, shard} (a job matrix reads it); a shard
                                 is a name, or names joined by + for the shards one job runs in turn (`fold` lines)
-  shards.py build JOB           link the test executables of a job's rest shards (outside the timed step)
+  shards.py build JOB           link the test executables of a job's shards (outside the timed step)
   shards.py run JOB             run one job's shards from the workspace folder (rust/)
   shards.py check               fail, naming it, a test that runs in no shard or in two
   shards.py gated TARGET        read test names on stdin, print those no gate-* shard runs (rc-gate.sh, which leaves the
@@ -152,11 +152,16 @@ def selection_of(shard, table):
 
 
 def build(job):
-    """Link what the job's rest shards run, outside the timed test step."""
+    """Link every test executable the job's shards run, with the run's own cargo arguments, outside the timed test
+    step: a compile inside the bound fails a slow runner's shard on build time, not test time."""
     table = rows()
     for shard in job.split('+'):
         if shard in REST:
             subprocess.run(['cargo', 'test', '--workspace', '--locked', '--no-run', *selection_of(shard, table)], check=True)
+            continue
+        for kind, target in dict.fromkeys((kind, target) for name, kind, target, _ in table if name == shard):
+            selection = ['-p', target.replace('_', '-'), '--lib'] if kind == 'lib' else ['--workspace', '--' + kind, target]
+            subprocess.run(['cargo', 'test', *selection, '--locked', '--no-run'], check=True)
 
 
 def run(job):

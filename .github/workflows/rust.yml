@@ -175,10 +175,10 @@ jobs:
         with:
           proofs: --portable
 
-      # The rest shards link every test executable they run; that is build, not test, so it is outside the bound.
+      # Every shard links the test executables it runs here; that is build, not test, so it is outside the bound (a macOS
+      # runner at half speed spent 2 of the shard's 5 minutes compiling the sotd test binary).
       - name: Build the test executables
         shell: bash
-        if: contains(matrix.shard, 'rest')
         run: python3 ../scripts/tests/shards.py build ${{ matrix.shard }}
       # --nocapture: tests that report on stdout (the fault sweeps' hit counts, the PASS lines other lanes read) print
       # here. --no-fail-fast: one failing test binary must not hide the others.
