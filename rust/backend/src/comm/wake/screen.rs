@@ -126,7 +126,8 @@ enum Expect<'a> {
 /// the glyph, nothing before it, [`panel_refusal`] below) except the cursor column, then after the glyph the
 /// NBSP (a space where the NBSP is not required), exactly `text`, and spaces. A `text` wider than the box wraps: the
 /// glyph's row is then the first under the upper rule, the cursor's the last above the lower, and the rows between
-/// hold `text` as [`holds_wrapped`] reads it. Enter goes only when this holds.
+/// hold `text` as [`holds_wrapped`] reads it. On Windows the console host can repaint the typed text directly after
+/// the glyph, replacing the separator; that exact text also passes. Enter goes only when this holds.
 pub(crate) fn typed_refusal(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Option<&'static str> {
     input_refused(lines, cursor, agent, windows, Expect::Typed(text))
 }
@@ -174,6 +175,7 @@ fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, wind
             let after = match rest.first() {
                 Some('\u{a0}') => &rest[1..],
                 Some(' ') if !nbsp_required(windows) => &rest[1..],
+                _ if windows => rest,
                 _ => return Some("typed text not in main's input box"),
             };
             let want: Vec<char> = text.chars().collect();

@@ -36,6 +36,30 @@ fn a_box_holding_the_wake_line_names_it() {
     assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Err("input not empty"));
 }
 
+#[test]
+fn a_windows_10_repaint_without_the_separator_holds_the_typed_line() {
+    // Captured on Windows 10 build 19045: the console host overwrote the prompt's NBSP with the typed line.
+    let rule = "\u{2500}".repeat(116);
+    let cursor = Some((1, 43));
+    for glyph in [">", "\u{276f}"] {
+        let row = format!("{glyph}{WAKE_LINE}");
+        let rows = vec![rule.clone(), format!("{row:<116}"), rule.clone()];
+        assert_eq!(typed_refusal(&rows, cursor, "claude", true, WAKE_LINE), None);
+        // Both an owed Enter and a restarted daemon's boot look use this exact-line check.
+        assert_eq!(prompt_of(&rows, cursor, "claude", true), Ok(Prompt::HoldsLine));
+        assert!(typed_refusal(&rows, cursor, "claude", false, WAKE_LINE).is_some());
+        assert!(prompt_of(&rows, cursor, "claude", false).is_err());
+        assert!(!prompt_free_on(&rows, cursor, "claude", true));
+        for other in [format!("{WAKE_LINE} and more"), WAKE_LINE[..WAKE_LINE.len() - 1].to_string()] {
+            assert!(typed_refusal(&rows, cursor, "claude", true, &other).is_some());
+        }
+    }
+    // Page replies share the supplied-text gate, including this repaint.
+    let reply = "[sot-page] Continue with the change.";
+    let rows = vec![rule.clone(), format!(">{reply:<115}"), rule];
+    assert_eq!(typed_refusal(&rows, Some((1, 1 + reply.len() as u16)), "claude", true, reply), None);
+}
+
 fn bfree(line: &str, col: u16, windows: bool) -> bool {
     prompt_free_on(&boxed(line), Some((1, col)), "claude", windows)
 }
@@ -522,11 +546,11 @@ fn typed_into_main_table() {
     let top = format!("{} background task \u{2500}", "\u{2500}".repeat(62));
     let viewing = ["  ◯ main", "❯ ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
     assert!(!typed(&top, &line, F_SELECT, viewing, at(2), false));
-    // Windows: either glyph; the NBSP or, while it is not required there, a space.
+    // Windows: either glyph; the NBSP, a space while it is not required, or a repaint without the separator.
     for glyph in ["\u{276f}", ">"] {
         assert!(typed(&rule80(), &format!("{glyph}\u{a0}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
         assert_eq!(typed(&rule80(), &format!("{glyph} {L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true), !nbsp_required(true));
-        assert!(!typed(&rule80(), &format!("{glyph}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
+        assert!(typed(&rule80(), &format!("{glyph}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
         assert!(!typed(&rule80(), &format!("{glyph}\u{a0}{L} x"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
     }
     // The line followed by Claude Code's dim suggestion: dim cells read blank, so the line still sits alone.

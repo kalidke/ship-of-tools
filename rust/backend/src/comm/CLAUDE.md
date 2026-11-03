@@ -94,7 +94,11 @@ Waking:
   dim and is not free wherever the cursor sits, on one row or on several (a draft that wraps or holds a newline puts
   the cursor's row out of the box's one line), so the wake types nothing into it, appends nothing to it and sends no
   Enter for it. Enter goes only after a fresh read shows the wake line alone in main's input box; a box that holds
-  anything else gets nothing. A line the wake typed that did not send is sent by a later tick, Enter alone, only once
+  anything else gets nothing. On Windows, typed text directly after the glyph also passes when it is exactly the
+  supplied line: the console host sometimes repaints it in the no-break space's column. The same exact-content check
+  serves the typed gate, the owed Enter and the restarted daemon's boot look, and the typed gate for page replies
+  through `wake::type_if_free` (`screen::tests::a_windows_10_repaint_without_the_separator_holds_the_typed_line`).
+  A line the wake typed that did not send is sent by a later tick, Enter alone, only once
   main's box holds just that line. That owed Enter belongs to the run whose box held the line: a new run (its agent died
   with its supervisor) has a fresh box and owes nothing. The debt keeps the run the typing's attach named (the headless
   client's `run()`), and a later tick whose attach names another run drops it: with mail unread the same attempt goes on
@@ -197,12 +201,18 @@ Platforms: one implementation on all three. Linux reads the mount table for the 
 `local_lock=none`, `local <machine-id>` on a local disk) and `/proc` for the walk; macOS and Windows are always
 `none@<machine id>`, one machine's own lock, and macOS walks with `ps`; Windows' wrappers run under Git Bash and pass the
 MSYS table, and paths compare with `/c/...`, `C:/...` and `C:\...` as one spelling and without case. The wake's
-no-break-space test is off on Windows until a Windows screen shows it survives ConPTY. Without it, what keeps a person's
-unsent text untouched on Windows is the rest of the free test: anything but blanks after the glyph, after a plain space
+no-break-space requirement remains off on Windows (`NBSP_ON_WINDOWS`). Screens from a Windows 10 computer (build
+19045) and a Windows 11 computer show that at rest the no-break space survives the console host on both. After typing,
+Windows 10 sometimes drops it and paints the typed text directly after the glyph; the typed and exact-line completion
+checks accept that row on Windows only when it holds exactly the supplied text. Windows 11 woke a row 13 times out of
+13; the Windows 10 failure was seen twice. The empty-box, free-prompt and dialog tests are unchanged. Without the
+no-break-space requirement, what keeps a person's unsent text untouched on Windows is the rest of the free test:
+anything but blanks after the glyph, after a plain space
 or after the ASCII `>` reads not free (`screen::tests::a_draft_reads_not_free_wherever_its_cursor_sits`, which runs the
 Windows reading on every system). What it costs there is the dialog side: a dialog input drawn as a glyph and a space
 can read as the main box, so on Windows "never a dialog" rests on the dialog reader and the box's rules alone, unproven
-on a Windows screen until one is captured (queue item 65).
+for Windows dialogs (queue item 65: at-rest screens confirmed on Windows 10 and 11, the Windows 10 typed repaint
+accepted; the dialog gap remains).
 
 The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_platform::host::env`),
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
