@@ -723,6 +723,31 @@ fn a_real_model_menu_reads_as_a_dialog() {
     assert_eq!(dialog(&["\u{25cf} Enter to set it, then Esc to cancel.", "  done."], false), None, "prose with no middle dot");
 }
 
+/// REAL (Windows 11, ConPTY, 80x24): the folder-trust dialog has an ASCII menu cursor and an Enter-led footer.
+#[test]
+fn a_real_folder_trust_dialog_reads_on_windows() {
+    let screen = real(include_str!("../../../tests/fixtures/comm_wake/win11-trust-dialog.txt"), true);
+    assert_eq!(screen.len(), 24);
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&screen, "claude", windows), Some("claude dialog open".to_string()));
+    }
+}
+
+/// First-run dialogs stay at the top of a tall pane. Trailing blanks cannot hide the footer or its question.
+#[test]
+fn a_dialog_at_the_top_of_a_tall_pane_reads_with_its_summary() {
+    let trust = real(include_str!("../../../tests/fixtures/comm_wake/win11-trust-dialog.txt"), true);
+    for (screen, summary) in [(trust, "claude dialog open"), (perm_screen(&PERM_MENU), "claude dialog: Do you want to proceed?")] {
+        for blank in [String::new(), " ".repeat(186)] {
+            let mut tall = screen.clone();
+            tall.resize(68, blank);
+            for windows in [false, true] {
+                assert_eq!(dialog_of(&tall, "claude", windows).as_deref(), Some(summary));
+            }
+        }
+    }
+}
+
 /// REAL (captured 2026-10-17, scrubbed the same way, the question, options, countdown and footer kept): a permission
 /// dialog for a Bash command with auto mode's deny countdown, drawn where the input box was. It has no main input box and
 /// its footer is `Esc to cancel · Tab to amend`; the summary is its "Do you want to" line.

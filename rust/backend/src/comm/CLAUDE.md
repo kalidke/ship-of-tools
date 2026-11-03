@@ -113,6 +113,9 @@ Waking:
   `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).
   Each typing, the line or Enter alone, is one INFO log event: the handle, what was
   sent, the cursor's row and the box's rows as the gate read them (escaped), and the outcome.
+- Rows' dialog tick reads the screen through `wake::screen::dialog_of`: with no main input box, a dialog's own footer
+  identifies it in the last 30 rows after trailing empty or space-only rows are dropped. Its summary search uses those
+  same rows, so a first-run dialog drawn at the top of a tall pane is still read.
 - The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,
   1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its
   exact-content check; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an

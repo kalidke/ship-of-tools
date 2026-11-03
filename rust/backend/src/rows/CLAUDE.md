@@ -282,7 +282,9 @@ Work-state. A row with a joined agent has one work-state, which the window shows
 - A row waiting on its person reads red. A Ready Claude row whose screen shows a dialog that waits on a person (a
   permission prompt, a select menu) reads red with the dialog's question as its summary within one dialog tick
   (`DIALOG_EVERY`, 5 s, plus the sweep), whatever its turn state and on every OS, and within one tick of the dialog
-  closing reads what its other facts say. The tick reads every Ready Claude row with a bound handle but one already red
+  closing reads what its other facts say. The screen reader drops trailing empty or space-only rows before reading the
+  last 30 rows for a dialog's footer and summary, so a first-run dialog at the top of a tall pane still reads red.
+  The tick reads every Ready Claude row with a bound handle but one already red
   by its question, one watcher attach each, which takes no pen, resizes nothing and writes no record
   (`work_state::dialog`). Each write it makes is logged at info, and so is the first of each run of reads that found
   nothing on a row (its phase, the attach's refusal or the screen's wait), and an unreadable registry is warned once

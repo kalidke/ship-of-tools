@@ -112,6 +112,44 @@ async fn a_row_at_its_agents_permission_prompt_reads_waiting_on_its_person() {
     env.kill_daemon_bounded().await;
 }
 
+/// A Claude row whose session never joined (stopped at Claude Code's first-run trust dialog, or before a login) has only
+/// the spawn's placeholder entry (`status: spawning`, no workspace id) under the name it was created with. A dialog on
+/// its screen still reads waiting on its person within the dialog tick: the person is the only one who can answer it.
+#[tokio::test]
+async fn a_row_at_a_dialog_before_its_session_joins_reads_waiting_on_its_person() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first");
+    let env = Env::new("cwpj");
+    let dialog = env._tmp.path().join("dialog");
+    std::fs::write(&dialog, b"").expect("the dialog shows from the start");
+    let stub = write_dialog_claude(&env._tmp.path().join("stubbin"), &dialog);
+    env.spawn_sotd_with_path_and_env(&stub, &[]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    // The spawn's placeholder, as `comm-spawn.sh` writes it before the row exists.
+    let entry = serde_json::json!({"host": TEST_STATE_HOST, "status": "spawning", "workspace_id": "", "expertise": [],
+        "joined": "2026-11-03T19:57:23Z", "last_seen": "2026-11-03T19:57:23Z"});
+    support::write_registry(&env.comm_root, |doc| *doc = serde_json::json!({"agents": {"cwpj-h": entry}}));
+    let create = serde_json::json!({
+        "label": "cwpj-row",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "claude",
+        "agent_name": "cwpj-h",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    next_id += 1;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+    let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
+    let got = poll_work_state(&mut conn, &mut next_id, &ws, Duration::from_secs(20), |s, _| s == "blocked").await;
+    assert_eq!(
+        got,
+        ("blocked".to_string(), "claude dialog: Do you want to proceed?".to_string()),
+        "a row at a dialog before its session joins reads waiting on its person"
+    );
+    env.kill_daemon_bounded().await;
+}
+
 /// A row loaded from its toml at boot is observed by its id; a same-label `workspace.create` refreshes it (a new row
 /// under the same id) and starts its supervisor. The refreshed row's phase follows that supervisor: once its authority
 /// stops, `workspace.list` stops reading `ready` (queue item 58: before the fix, the observer kept feeding the replaced

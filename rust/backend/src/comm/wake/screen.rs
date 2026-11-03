@@ -213,7 +213,7 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
     None
 }
 
-/// How many rows from the bottom of the screen [`dialog_of`] reads for a dialog's own text.
+/// How many rows [`dialog_of`] reads for a dialog's own text, after dropping trailing empty or space-only rows.
 const DIALOG_ROWS: usize = 30;
 
 /// The longest `dialog` summary [`dialog_of`] returns, in characters.
@@ -255,16 +255,17 @@ fn is_dialog_footer(line: &str) -> bool {
 
 /// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
 /// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
-/// last [`DIALOG_ROWS`] rows is the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can
-/// sit below it. The summary is the "Do you want to" line nearest the footer when the last rows hold one (a reply's
-/// line above the dialog is not it); the line alone identifies nothing. An agent with no prompt glyphs is never read.
-/// The footers are those of two real captures (a permission dialog's and a question menu's), each a fixture.
+/// last [`DIALOG_ROWS`] rows, trailing empty or space-only rows aside, is the dialog's footer ([`is_dialog_footer`]),
+/// anywhere in them, since an agents panel can sit below it. The summary is the "Do you want to" line nearest the
+/// footer when those rows hold one (a reply's line above the dialog is not it); the line alone identifies nothing.
+/// An agent with no prompt glyphs is never read. The dialog footers come from real captures, each a fixture.
 pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
     let glyphs = prompt_glyphs(agent, windows);
     if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
         return None;
     }
-    let tail = &lines[lines.len().saturating_sub(DIALOG_ROWS)..];
+    let end = lines.iter().rposition(|l| !l.trim_matches(' ').is_empty()).map_or(0, |row| row + 1);
+    let tail = &lines[end.saturating_sub(DIALOG_ROWS)..end];
     if !tail.iter().any(|l| is_dialog_footer(l)) {
         return None;
     }
