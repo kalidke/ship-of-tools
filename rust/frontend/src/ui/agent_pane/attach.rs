@@ -119,6 +119,7 @@ impl<C: PaneClient> AgentPane<C> {
         if self.is_target(&next) {
             return PaneSwitch { open: None, retired: vec![], status: Some(format!("already attached · {}", next.1)) };
         }
+        self.clear_live();
         self.pane_inputs_discarded = 0;
         self.pane_attach_requested_at = origin;
         self.pane_presentation.begin(origin);
@@ -191,6 +192,7 @@ impl<C: PaneClient> AgentPane<C> {
 
     fn finish_attach(&mut self, pending: PendingAttach<C>, now: impl FnOnce() -> Instant) -> AttachEffect {
         if let Some(c) = pending.client {
+            self.clear_live();
             let warm = matches!(pending.effect.trace, AttachTrace::Warm(_));
             if warm {
                 c.set_viewed(true);
@@ -254,10 +256,12 @@ impl<C: PaneClient> AgentPane<C> {
         if changed {
             effect.status = Some(input_outcome_notice(t.last_input_outcome()).map_or_else(|| t.status_line().to_string(), str::to_string));
         }
+        self.refresh_live();
         effect
     }
 
     pub(in crate::ui) fn prune_warm(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
+        self.held_keys.retain(|(h, row), _| h != host || live.contains(row));
         self.warm_attach.retain_rows(host, live)
     }
 }

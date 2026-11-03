@@ -10,27 +10,31 @@ type Pane = AgentPane<Scripted>;
 struct Wire {
     inputs: Vec<Vec<u8>>, sizes: Vec<(u16, u16)>, viewed: Vec<bool>,
     scrolls: Vec<i32>, resets: usize, dead: bool, steps: VecDeque<Step>,
+    input_runs: Vec<String>, run: String,
 }
 #[derive(Default)]
 struct Step {
     status: Option<&'static str>, checkpoint: bool, dead: bool,
     outcome: Option<InputOutcome>, output: &'static [u8],
     copy: Option<&'static [u8]>, backlog: bool, mid_sequence: bool,
+    screen_run: Option<&'static str>,
 }
 type Handle = Rc<RefCell<Wire>>;
 struct Scripted {
     wire: Handle, parser: vt100::Parser, status: String,
     checkpoint: bool, dead: bool, outcome: Option<InputOutcome>,
     copy: Option<Vec<u8>>, drained: bool, ground: bool,
+    screen_run: String,
 }
 impl Scripted {
     fn new(text: &[u8], ready: bool) -> (Self, Handle) { Self::at_size(text, ready, 80, 24) }
     fn at_size(text: &[u8], ready: bool, cols: u16, rows: u16) -> (Self, Handle) {
-        let wire = Rc::new(RefCell::new(Wire::default()));
+        let wire = Rc::new(RefCell::new(Wire { run: "first".into(), ..Default::default() }));
         let mut parser = vt100::Parser::new(rows, cols, 100);
         parser.process(text);
         (Self { wire: wire.clone(), parser, status: if ready { "attached" } else { "connecting…" }.into(),
-            checkpoint: ready, dead: false, outcome: None, copy: None, drained: true, ground: true }, wire)
+            checkpoint: ready, dead: false, outcome: None, copy: None, drained: true, ground: true,
+            screen_run: if ready { "first" } else { "" }.into() }, wire)
     }
 }
 impl PaneClient for Scripted {
@@ -42,6 +46,7 @@ impl PaneClient for Scripted {
         let Some(s) = self.wire.borrow_mut().steps.pop_front() else { return false };
         if let Some(status) = s.status { self.status = status.into(); }
         self.checkpoint |= s.checkpoint;
+        if s.checkpoint { self.screen_run = s.screen_run.unwrap_or("first").into(); }
         self.dead |= s.dead;
         if s.outcome.is_some() { self.outcome = s.outcome; }
         self.parser.process(s.output);
@@ -52,7 +57,13 @@ impl PaneClient for Scripted {
     }
     fn last_input_outcome(&self) -> Option<InputOutcome> { self.outcome }
     fn inputs_discarded(&self) -> usize { 0 }
-    fn send_input(&mut self, bytes: &[u8]) { self.wire.borrow_mut().inputs.push(bytes.to_vec()); }
+    fn screen_run(&self) -> &str { &self.screen_run }
+    fn run(&self) -> String { self.wire.borrow().run.clone() }
+    fn send_input_in_run(&mut self, bytes: &[u8], run: &str) {
+        let mut wire = self.wire.borrow_mut();
+        wire.inputs.push(bytes.to_vec());
+        wire.input_runs.push(run.into());
+    }
     fn resize(&mut self, cols: u16, rows: u16) {
         self.wire.borrow_mut().sizes.push((cols, rows));
         self.parser.screen_mut().set_size(rows, cols);
@@ -102,6 +113,14 @@ fn candidate(p: &mut Pane, area: (u16, u16)) -> Option<PresentationCandidate> {
     let claim = p.view(None).2?;
     p.painted_candidate(claim, area)
 }
+fn present(p: &mut Pane, at: Instant) {
+    let receipt = candidate(p, (80, 24));
+    p.live_frame_presented(at);
+    if let Some(receipt) = receipt { p.presented(receipt, at); }
+}
+fn held_key(p: &mut Pane, key: NamedKey, repeat: bool, at: Instant) -> String {
+    p.held_key(&Key::Named(key), repeat, true, at).expect("held key consumed")
+}
 fn pixels(p: &mut Pane) -> (PaneScreen, String) {
     let choice = p.view(None).0;
     (choice, p.painted_screen(choice).map(|s| s.contents()).unwrap_or_default())
@@ -149,9 +168,9 @@ fn a_failed_open_send_does_not_commit_the_target() {
     assert!(p.finish_open(switch.open.unwrap(), false).is_none(), "failure has no persist/redraw success effect");
     assert_eq!(p.target(), Some(key("a", "row")));
     assert_eq!(pixels(&mut p), (PaneScreen::Hold, "old".into()));
-    p.send_input(b"lost");
+    p.send_input(b"held");
     assert!(old.borrow().inputs.is_empty());
-    assert!(p.view(None).1.iter().any(|s| s.starts_with("1 keystroke")));
+    assert!(p.view(None).1.iter().any(|s| s.contains("held, not sent (1 keys): held")));
     let switch = p.begin_switch(key("b", "row"), Some(after(t, 2)), 2);
     assert!(p.finish_open(switch.open.unwrap(), true).is_some());
     assert_eq!(p.target(), Some(key("b", "row")));
@@ -171,10 +190,11 @@ fn pane_input_reaches_only_the_selected_client_or_is_counted() {
     install(&mut p, "a", "two", c, t);
     p.send_input(b"before checkpoint");
     assert!(a.borrow().inputs.is_empty());
-    assert_eq!(b.borrow().inputs, vec![b"before checkpoint".to_vec()], "no Pending input is replayed");
-    assert!(p.view(None).1.iter().any(|s| s.starts_with("1 keystroke")));
+    assert!(b.borrow().inputs.is_empty(), "input before a checkpoint stays local");
+    assert!(p.view(None).1.iter().any(|s| s.contains("pendingbefore checkpoint")));
     step(&mut p, &b, Step { status: Some("attached"), ..Default::default() }, t);
     assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")));
+    assert!(b.borrow().inputs.is_empty());
 }
 
 #[test]
@@ -190,7 +210,245 @@ fn a_held_screen_is_never_an_input_destination() {
     assert_eq!(pixels(&mut p).0, PaneScreen::Hold);
     p.send_input(b"selected");
     assert!(a.borrow().inputs.is_empty());
-    assert_eq!(b.borrow().inputs, vec![b"selected".to_vec()]);
+    assert!(b.borrow().inputs.is_empty());
+    assert!(p.view(None).1.iter().any(|s| s.contains("unresolvedselected")));
+}
+
+#[test]
+fn keys_typed_while_a_row_connects_are_held_and_sent_only_on_an_armed_enter() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(b"pending");
+    held_key(&mut p, NamedKey::Enter, false, t);
+    let (c, wire) = Scripted::new(b"", false);
+    install(&mut p, "h", "row", c, t);
+    p.send_input(b"installed");
+    held_key(&mut p, NamedKey::Enter, false, t);
+    assert!(wire.borrow().inputs.is_empty());
+    assert!(p.view(None).1.iter().any(|s| s == "held, not sent (4 keys): pending⏎installed⏎"));
+    step(&mut p, &wire, Step { checkpoint: true, status: Some("attached"), ..Default::default() }, t);
+    // A draw that never reaches present cannot make Enter send, even after the dwell.
+    drop(candidate(&mut p, (80, 24)));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 2000));
+    assert!(wire.borrow().inputs.is_empty());
+    present(&mut p, after(t, 2000));
+    assert!(wire.borrow().inputs.is_empty(), "presentation never flushes held input");
+    p.send_input(b"later");
+    p.send_input(b"\x1b[200~paste\x1b[201~");
+    assert!(held_key(&mut p, NamedKey::Enter, false, after(t, 2999)).contains("wait"));
+    assert!(wire.borrow().inputs.is_empty());
+    held_key(&mut p, NamedKey::Enter, false, after(t, 3000));
+    assert_eq!(wire.borrow().inputs, vec![b"pending\rinstalled\r\rlater\x1b[200~paste\x1b[201~".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["first"]);
+    assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
+    p.send_input(b"plain");
+    assert_eq!(wire.borrow().inputs, vec![b"pending\rinstalled\r\rlater\x1b[200~paste\x1b[201~".to_vec(), b"plain".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["first", "first"]);
+    assert!(p.held_key(&Key::Named(NamedKey::Enter), false, true, after(t, 3001)).is_none());
+}
+
+#[test]
+fn held_keys_stay_with_their_row_across_a_switch() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let a = ready(&mut p, "h", "a", b"a", t);
+    p.send_input(b"for a");
+    let b = ready(&mut p, "h", "b", b"b", t);
+    p.send_input(b"for b");
+    assert!(p.view(None).1.iter().any(|s| s.ends_with("for b")));
+    select(&mut p, "h", "a", t, 2);
+    let (plan, _) = prepare(&mut p, key("h", "a"));
+    start(&mut p, plan, |_, _, _| panic!("warm a"), || t);
+    assert!(p.view(None).1.iter().any(|s| s.ends_with("for a")));
+    assert!(a.borrow().inputs.is_empty() && b.borrow().inputs.is_empty());
+    present(&mut p, t);
+    held_key(&mut p, NamedKey::Enter, false, after(t, 1000));
+    assert_eq!(a.borrow().inputs, vec![b"for a".to_vec()]);
+    assert!(b.borrow().inputs.is_empty());
+    select(&mut p, "h", "b", t, 2);
+    let (plan, _) = prepare(&mut p, key("h", "b"));
+    start(&mut p, plan, |_, _, _| panic!("warm b"), || t);
+    assert!(p.view(None).1.iter().any(|s| s.ends_with("for b")));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 2000));
+    assert!(b.borrow().inputs.is_empty(), "a warm screen must be presented again before sending");
+}
+
+#[test]
+fn held_keys_are_not_sent_into_a_run_the_screen_did_not_show() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"first", t);
+    p.send_input(b"held");
+    present(&mut p, t);
+    wire.borrow_mut().run = "replacement".into();
+    assert!(held_key(&mut p, NamedKey::Enter, false, after(t, 1000)).contains("restarted"));
+    assert!(wire.borrow().inputs.is_empty());
+    assert!(p.view(None).1.iter().any(|s| s.ends_with("held")));
+    // Applying the replacement checkpoint is insufficient without presentation and a new dwell.
+    step(&mut p, &wire, Step { checkpoint: true, screen_run: Some("replacement"), ..Default::default() }, after(t, 1100));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 2000));
+    assert!(wire.borrow().inputs.is_empty());
+    present(&mut p, after(t, 2000));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 2999));
+    assert!(wire.borrow().inputs.is_empty());
+    held_key(&mut p, NamedKey::Enter, false, after(t, 3000));
+    assert_eq!(wire.borrow().inputs, vec![b"held\r".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["replacement"]);
+}
+
+#[test]
+fn held_keys_past_the_bound_are_refused_and_counted() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert!(p.view(None).1.iter().any(|s| s.starts_with("1 keystroke")));
+    assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP - 1]);
+    p.send_input(b"\x1b[200~paste\x1b[201~");
+    p.send_input(b"\r"); // Exactly the cap is kept; the paste was refused whole.
+    p.send_input(b"y");
+    assert!(p.view(None).1.iter().any(|s| s == "3 keystrokes discarded, not sent"));
+    let wire = Scripted::new(b"", true);
+    let handle = wire.1;
+    install(&mut p, "h", "row", wire.0, t);
+    present(&mut p, t);
+    held_key(&mut p, NamedKey::Enter, false, after(t, 1000));
+    let mut expected = vec![b'x'; HELD_INPUT_CAP - 1];
+    expected.push(b'\r');
+    assert_eq!(handle.borrow().inputs, vec![expected]);
+}
+
+#[test]
+fn esc_drops_and_backspace_removes_the_last_held_key() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    p.send_input(b"first");
+    p.send_input(b"\x1b[200~last paste\x1b[201~");
+    assert!(p.held_key(&Key::Named(NamedKey::Escape), false, false, t).is_none(), "a chord follows the ordinary path");
+    held_key(&mut p, NamedKey::Backspace, false, t);
+    assert!(p.view(None).1.iter().any(|s| s == "held, not sent (1 keys): first"));
+    present(&mut p, t);
+    assert!(held_key(&mut p, NamedKey::Escape, false, t).contains("1 held"));
+    assert!(wire.borrow().inputs.is_empty());
+    p.send_input(b"ordinary");
+    assert_eq!(wire.borrow().inputs, vec![b"ordinary".to_vec()]);
+    for key in [NamedKey::Enter, NamedKey::Escape, NamedKey::Backspace] {
+        assert!(p.held_key(&Key::Named(key), false, true, t).is_none());
+    }
+    step(&mut p, &wire, Step { status: Some("redialing…"), ..Default::default() }, t);
+    p.send_input(b"last");
+    held_key(&mut p, NamedKey::Backspace, false, t);
+    assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
+}
+
+#[test]
+fn a_repeated_enter_never_sends_held_keys() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    p.send_input(b"held");
+    present(&mut p, t);
+    assert!(held_key(&mut p, NamedKey::Enter, true, after(t, 1000)).contains("release"));
+    assert!(wire.borrow().inputs.is_empty());
+    held_key(&mut p, NamedKey::Enter, false, after(t, 1001));
+    assert_eq!(wire.borrow().inputs, vec![b"held".to_vec()]);
+}
+
+#[test]
+fn a_wheel_while_connecting_holds_nothing() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    assert!(matches!(p.wheel(3), WheelEffect::Pending));
+    let (c, wire) = Scripted::new(b"\x1b[?1000h", false);
+    install(&mut p, "h", "row", c, t);
+    assert!(matches!(p.wheel(3), WheelEffect::Redraw));
+    assert_eq!(wire.borrow().scrolls, vec![3]);
+    assert!(wire.borrow().inputs.is_empty());
+    assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
+    step(&mut p, &wire, Step { checkpoint: true, status: Some("attached"), ..Default::default() }, t);
+    p.wheel(2);
+    assert!(wire.borrow().inputs.is_empty(), "mouse tracking waits for a presented screen too");
+    present(&mut p, t);
+    p.wheel(-1);
+    assert_eq!(wire.borrow().inputs, vec![b"\x1b[<65;1;1M".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["first"]);
+}
+
+#[test]
+fn held_keys_show_safe_text_and_the_tail_that_fits() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(b"\x03");
+    p.send_input(b"\x1b");
+    p.send_input(b"\r");
+    p.send_input("\x1b[200~paste\n\t\u{85}\u{2028}\u{2029}\u{202e}\u{2066}尾\x1b[201~".as_bytes());
+    let overlay = p.view(None).1;
+    let held = overlay.iter().find(|s| s.starts_with("held, not sent")).unwrap();
+    assert!(held.contains("^C^[⏎paste^J^I"));
+    assert!(!held.contains("[200~") && !held.contains("[201~"));
+    assert!(!held.contains(|c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202e}' | '\u{2066}')));
+    let prefix = "held, not sent (4 keys): ";
+    assert_eq!(pane_overlay_row(held, prefix.len() + 2), format!("{prefix}尾"));
+    assert_eq!(pane_overlay_row(held, prefix.len() + 1), prefix);
+}
+
+#[test]
+fn a_redial_or_new_screen_run_requires_another_presented_frame() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    present(&mut p, t); // The receipt is consumed, but later frames still certify liveness.
+    step(&mut p, &wire, Step { status: Some("redialing…"), ..Default::default() }, t);
+    p.send_input(b"during redial");
+    step(&mut p, &wire, Step { status: Some("attached"), ..Default::default() }, t);
+    held_key(&mut p, NamedKey::Enter, false, after(t, 1000));
+    assert!(wire.borrow().inputs.is_empty());
+    present(&mut p, after(t, 1000));
+    // A different checkpoint run resets the dwell even without a status edge.
+    wire.borrow_mut().run = "replacement".into();
+    step(&mut p, &wire, Step { checkpoint: true, screen_run: Some("replacement"), ..Default::default() }, after(t, 1100));
+    p.view(None);
+    held_key(&mut p, NamedKey::Enter, false, after(t, 2100));
+    assert!(wire.borrow().inputs.is_empty());
+    present(&mut p, after(t, 2100));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 3100));
+    assert_eq!(wire.borrow().inputs, vec![b"during redial\r\r".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["replacement"]);
+}
+
+#[test]
+fn ordinary_input_and_wheel_name_the_shown_run() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"\x1b[?1000h", t);
+    present(&mut p, t);
+    wire.borrow_mut().run = "unshown".into();
+    p.send_input(b"key");
+    p.send_input(b"\x1b[200~paste\x1b[201~");
+    p.wheel(1);
+    assert_eq!(wire.borrow().inputs, vec![b"key".to_vec(), b"\x1b[200~paste\x1b[201~".to_vec(), b"\x1b[<64;1;1M".to_vec()]);
+    assert_eq!(wire.borrow().input_runs, vec!["first"; 3]);
+}
+
+#[test]
+fn pruning_drops_only_the_removed_hosts_held_rows() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "a", "same", t, 2);
+    p.send_input(b"removed");
+    select(&mut p, "b", "same", t, 2);
+    p.send_input(b"kept");
+    p.prune_warm(&"a".into(), &HashSet::new());
+    p.prune_warm(&"b".into(), &HashSet::from(["same".into()]));
+    assert!(p.view(None).1.iter().any(|s| s.ends_with("kept")));
+    select(&mut p, "a", "same", t, 2);
+    assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
 }
 
 #[test]
@@ -345,6 +603,7 @@ fn warm_overflow_retires_the_oldest_host_local_client_and_reuses_the_survivor() 
     assert!(rejected.is_empty());
     start(&mut p, plan, |_, _, _| panic!("the surviving client must be reused"), || t);
     assert_eq!(pixels(&mut p), (PaneScreen::Client, "survivor".into()));
+    present(&mut p, t);
     p.send_input(b"selected survivor");
     assert_eq!(survivor.borrow().viewed, vec![false, true]);
     assert_eq!(survivor.borrow().inputs, vec![b"selected survivor".to_vec()]);
@@ -368,7 +627,9 @@ fn warm_reuse_is_bounded_and_uses_the_exact_host_target() {
     start(&mut p, plan, |_, _, _| panic!("exact warm key"), || t);
     assert_eq!(a.borrow().viewed, vec![false, true]);
     assert_eq!(a.borrow().sizes, vec![(90, 30)]);
+    present(&mut p, t);
     p.send_input(b"a only");
+    assert_eq!(a.borrow().inputs, vec![b"a only".to_vec()]);
     assert!(b.borrow().inputs.is_empty());
     // A worker can end while its checkpointed client is parked.
     ready(&mut p, "a", "other", b"", t);
@@ -559,6 +820,7 @@ fn paging_and_wheel_preserve_terminal_modes() {
     assert!(matches!(p.wheel(-2), WheelEffect::Redraw));
     assert_eq!(a.borrow().scrolls, vec![8, -1, -2]);
     step(&mut p, &a, Step { output: b"\x1b[?1049h", ..Default::default() }, t);
+    present(&mut p, t);
     assert!(!p.page(true, 24), "alternate-screen page falls through to raw key input");
     p.send_input(b"\x1b[5~");
     step(&mut p, &a, Step { output: b"\x1b[?1000h", ..Default::default() }, t);
@@ -567,6 +829,7 @@ fn paging_and_wheel_preserve_terminal_modes() {
     assert_eq!(a.borrow().inputs[0], b"\x1b[5~");
     assert_eq!(a.borrow().inputs[1..9], vec![b"\x1b[<64;1;1M".to_vec(); 8]);
     assert_eq!(a.borrow().inputs[9], b"\x1b[<65;1;1M");
+    assert_eq!(a.borrow().input_runs, vec!["first"; 10]);
     select(&mut p, "h", "b", t, 2);
     p.wheel(5);
     assert_eq!(a.borrow().inputs.len(), 10, "Pending wheel never reaches a parked mouse client");
@@ -617,7 +880,7 @@ fn kept_row_invalidation_preserves_the_existing_scope() {
     let a = ready(&mut p, "h", "a", b"hold", t);
     ready(&mut p, "h", "b", b"selected", t);
     select(&mut p, "h", "c", t, 2);
-    p.send_input(b"discard");
+    p.send_input(b"held");
     let (c, current) = Scripted::new(b"not yet painted", false);
     install(&mut p, "h", "c", c, t);
     p.press(Some((0, 0)));
@@ -636,6 +899,8 @@ fn kept_row_invalidation_preserves_the_existing_scope() {
     let (plan, _) = prepare(&mut p, key("h", "a"));
     start(&mut p, plan, |_, _, _| panic!("kept outcome preserves warm storage"), || t);
     assert_eq!(a.borrow().viewed.last(), Some(&true));
+    select(&mut p, "h", "c", t, 2);
+    assert!(p.view(None).1.iter().any(|s| s.contains("held, not sent (1 keys): held")), "kept-row invalidation keeps held keys");
     // Native kept-default controls separately prove State retains its ledger, view and snapshots.
 }
 

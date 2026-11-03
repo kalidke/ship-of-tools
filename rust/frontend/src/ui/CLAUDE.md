@@ -491,8 +491,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `app::handler::idle_tests::peek_deadlines_wake_fade_and_expire_without_postponement`. Native Monitor fixtures use
   public selection operations with independent subscription setup; fresh Windows/macOS release gates cover 7g/7h.
 - `AgentPane` privately owns the host/attachment target, size, selection/drag, selected client, host-bounded warm
-  pool, hold, dial reason, request/client clocks, warning count, feed, discarded-input count and composed
-  `PanePresentation`. Its operations never take State or expose mutable clients/screens/storage. The narrow
+  pool, held keys by row, presented live run and dwell, hold, dial reason, request/client clocks, warning count, feed,
+  discarded-input count and composed `PanePresentation`. Its operations never take State or expose mutable
+  clients/screens/storage. The narrow
   `PaneClient` port uses `FeAttachClient` in production and a scripted client in `agent_pane/owner_tests.rs`.
   State applies owned effects for transport sends, asynchronous retirement, logging, redraw, clipboard and persistence;
   it keeps host/dial configuration, pointer geometry/residue, create origins and multi-owner event ordering.
@@ -503,7 +504,30 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   open failures retain reasons. Warnings count changed failure-status edges and reset on each installed client.
   The coordinator logs a prepared attach before warm resume and before sampling the installed client's start clock;
   the request clock keeps its earlier origin. Direct-reply admission already guarantees an empty active slot.
-- Input reaches only the selected pane client or is counted once per call; Pending input is discarded without replay.
+- Typed keys and pastes for a selected row are held locally until its installed Capsule client is checkpointed,
+  attached, alive and its screen has been presented. Held input has a visible count and safe text tail, followed by
+  the Enter/Esc hint. Once input is held, further typing stays behind it; only a fresh, plain Enter after a presented
+  live screen and the one-second `HELD_SEND_DWELL` sends exactly the held bytes, as one input. Enter before the screen
+  is live is held as CR; an early or repeated live Enter sends and adds nothing. Esc drops the held inputs and reports
+  their count; Backspace removes the last key or whole paste. Keys are interpreted logically and without modifiers.
+  Held keys belong to the host/attachment `WsKey`, survive switches, warm eviction and kept-row invalidation, and are
+  removed by host-local row pruning. The total held bytes per row are bounded by capsule's `HELD_INPUT_CAP`; an input
+  over that bound is refused whole and counted once, as is input with no selected target. The overlay makes every
+  control, separator and bidi control safe for a cell and strips bracketed-paste markers from its displayed text.
+  `live_since` starts only after present and is cleared on a nonlive observation, switch, installation or changed
+  screen run. Every live key, paste and mouse sequence names the checkpoint's `screen_run` through
+  `send_input_in_run`. Before sending held keys, a different worker `run()` keeps them and clears the dwell, reporting
+  that the restarted row's screen must show again. Limit: a worker that moves after this check can still reject the
+  send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically. The worker's
+  own pre-attach queue remains bounded independently; the pane no longer relies on it. A wheel while nonlive only
+  scrolls locally or reports Pending and never holds mouse bytes. Behavior tests in `agent_pane::owner_tests`:
+  `keys_typed_while_a_row_connects_are_held_and_sent_only_on_an_armed_enter`,
+  `held_keys_stay_with_their_row_across_a_switch`, `held_keys_are_not_sent_into_a_run_the_screen_did_not_show`,
+  `held_keys_past_the_bound_are_refused_and_counted`, `esc_drops_and_backspace_removes_the_last_held_key`,
+  `a_repeated_enter_never_sends_held_keys`, `a_wheel_while_connecting_holds_nothing`,
+  `held_keys_show_safe_text_and_the_tail_that_fits`, `a_redial_or_new_screen_run_requires_another_presented_frame`,
+  `ordinary_input_and_wheel_name_the_shown_run`, `pruning_drops_only_the_removed_hosts_held_rows` and
+  `kept_row_invalidation_preserves_the_existing_scope`.
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's

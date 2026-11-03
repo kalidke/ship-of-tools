@@ -27,7 +27,9 @@ pub(in crate::ui) trait PaneClient {
     fn pump(&mut self) -> bool;
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome>;
     fn inputs_discarded(&self) -> usize;
-    fn send_input(&mut self, bytes: &[u8]);
+    fn screen_run(&self) -> &str;
+    fn run(&self) -> String;
+    fn send_input_in_run(&mut self, bytes: &[u8], run: &str);
     fn resize(&mut self, cols: u16, rows: u16);
     fn reset_scroll(&mut self);
     fn scroll(&mut self, rows: i32);
@@ -50,7 +52,9 @@ impl PaneClient for PaneAttachClient {
     fn pump(&mut self) -> bool { self.pump() }
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome> { self.last_input_outcome() }
     fn inputs_discarded(&self) -> usize { self.inputs_discarded() }
-    fn send_input(&mut self, bytes: &[u8]) { self.send_input(bytes); }
+    fn screen_run(&self) -> &str { self.screen_run() }
+    fn run(&self) -> String { self.run() }
+    fn send_input_in_run(&mut self, bytes: &[u8], run: &str) { self.send_input_in_run(bytes, run); }
     fn resize(&mut self, cols: u16, rows: u16) { self.resize(cols, rows); }
     fn reset_scroll(&mut self) { self.screen_mut().set_scrollback(0); }
     fn scroll(&mut self, rows: i32) { scroll_ring(self.screen_mut(), rows); }
@@ -83,6 +87,11 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     pane_presentation: PanePresentation,
     pane_feed: PaneFeed,
     pane_inputs_discarded: usize,
+    held_keys: std::collections::HashMap<WsKey, input::HeldKeys>,
+    live_since: Option<Instant>,
+    live_run: Option<String>,
+    /// The current draw's client screen, certified only by the post-present hook.
+    painted_live_run: Option<String>,
     /// Copies are not taken from the installed client until it has drained the output that waited for it: what it read
     /// while off screen (a warm client's backlog) is an earlier view of the row, not a copy its person just asked for.
     copy_quiet: bool,
@@ -99,6 +108,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_dial_error: None, pane_attach_requested_at: None, pane_attach_started_at: None,
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
             pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, copy_quiet: false, copy_tail: false,
+            held_keys: std::collections::HashMap::new(), live_since: None, live_run: None, painted_live_run: None,
         }
     }
 
@@ -106,6 +116,7 @@ impl<C: PaneClient> AgentPane<C> {
     pub(in crate::ui) fn target(&self) -> Option<WsKey> { self.bl_pane_target.clone() }
     pub(in crate::ui) fn snapshot_target(&self) -> Option<String> { self.bl_pane_target.as_ref().map(|(_, s)| s.clone()) }
     pub(in crate::ui) fn restore_snapshot_target(&mut self, host: HostKey, target: Option<String>) {
+        self.clear_live();
         self.bl_pane_target = target.map(|s| (host, s));
     }
     pub(in crate::ui) fn size(&self) -> Option<(u16, u16)> { self.pty_size }
@@ -123,6 +134,7 @@ impl<C: PaneClient> AgentPane<C> {
 
     /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
+        self.clear_live();
         self.pane_attach_term = None;
         self.pane_inputs_discarded = 0;
         self.bl_pane_target = None;

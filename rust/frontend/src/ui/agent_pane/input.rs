@@ -1,30 +1,86 @@
-//! The agent pane's input: bytes to the selected row's client, and mouse selection over its screen.
+//! The agent pane's input: held keys by row, sends into the shown run, and local mouse selection.
 
 use super::*;
 
+pub(in crate::ui) const HELD_SEND_DWELL: Duration = Duration::from_secs(1);
+
+/// One entry per typed key or paste, so Backspace removes exactly the last input.
+#[derive(Default)]
+pub(super) struct HeldKeys {
+    pub(super) entries: Vec<Vec<u8>>,
+    pub(super) bytes: usize,
+}
+
 impl<C: PaneClient> AgentPane<C> {
-    /// ADR 0042 slice L1b fix 2/3, narrowed post-notmux (every row is a
-    /// capsule; there is no tmux fallback anymore): routes session-pane
-    /// input bytes to the capsule client's own `send_input`, or counts them
-    /// as discarded while resolution is still `Pending`. The
-    /// ONE routing point every input source (typed keystrokes, LLM-pane
-    /// paste, ROI paste) shares, so a future source only has to call
-    /// this rather than re-derive the branch.
+    /// The one routing point for typed keys and every paste. Unshown input stays with its row;
+    /// once a row has held keys, later typing cannot pass them. Only an armed Enter releases them.
     pub(in crate::ui) fn send_input(&mut self, bytes: &[u8]) {
-        match self.pane_feed {
-            PaneFeed::Capsule => {
-                if let Some(t) = self.pane_attach_term.as_mut() {
-                    t.send_input(bytes);
-                } else {
-                    // (a logic bug) `pane_feed` says Capsule but there's
-                    // no live client — count the drop, never silent.
-                    self.pane_inputs_discarded += 1;
-                }
-            }
-            PaneFeed::Pending => {
+        let live = self.refresh_live();
+        let Some(target) = self.bl_pane_target.clone() else {
+            self.pane_inputs_discarded += 1;
+            return;
+        };
+        if !live || self.held_keys.contains_key(&target) {
+            let held_bytes = self.held_keys.get(&target).map_or(0, |h| h.bytes);
+            if held_bytes.saturating_add(bytes.len()) > sot_capsule::attach_client::attach::HELD_INPUT_CAP {
                 self.pane_inputs_discarded += 1;
+            } else if !bytes.is_empty() {
+                let held = self.held_keys.entry(target).or_default();
+                held.bytes += bytes.len();
+                held.entries.push(bytes.to_vec());
             }
+        } else {
+            let c = self.pane_attach_term.as_mut().expect("live client");
+            let run = c.screen_run().to_owned();
+            c.send_input_in_run(bytes, &run);
         }
+    }
+
+    /// A plain logical key takes the held-input path before ordinary terminal encoding.
+    /// `None` leaves the key to the usual path, including Enter/Esc/Backspace with nothing held.
+    pub(in crate::ui) fn held_key(&mut self, logical: &Key, repeat: bool, unmodified: bool, now: Instant) -> Option<String> {
+        let target = self.bl_pane_target.clone()?;
+        let count = self.held_keys.get(&target)?.entries.len();
+        if !unmodified { return None; }
+        match logical {
+            Key::Named(NamedKey::Escape) => {
+                self.held_keys.remove(&target);
+                Some(format!("dropped {count} held inputs, not sent"))
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let held = self.held_keys.get_mut(&target).expect("selected held keys");
+                if let Some(last) = held.entries.pop() { held.bytes -= last.len(); }
+                if held.entries.is_empty() { self.held_keys.remove(&target); }
+                Some("removed the last held key or paste".into())
+            }
+            Key::Named(NamedKey::Enter) => {
+                if !self.refresh_live() {
+                    let discarded = self.pane_inputs_discarded;
+                    self.send_input(b"\r");
+                    if self.pane_inputs_discarded != discarded {
+                        return Some("Enter refused: held keys are full".into());
+                    }
+                    return Some("Enter held, not sent; wait for the row's screen".into());
+                }
+                let c = self.pane_attach_term.as_ref().expect("live client");
+                if c.run() != c.screen_run() {
+                    self.clear_live();
+                    return Some("row restarted: held keys kept; the screen must show again".into());
+                }
+                if repeat { return Some("held keys not sent: release Enter and press it again".into()); }
+                if !self.held_armed(now) { return Some("held keys not sent: wait for Enter to arm".into()); }
+                let held = self.held_keys.remove(&target).expect("selected held keys");
+                let c = self.pane_attach_term.as_mut().expect("live client");
+                let run = c.screen_run().to_owned();
+                c.send_input_in_run(&held.entries.concat(), &run);
+                Some(format!("sent {count} held inputs"))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn held_armed(&self, now: Instant) -> bool {
+        self.live_since.is_some_and(|since| now.saturating_duration_since(since) >= HELD_SEND_DWELL)
     }
 
     /// Inclusive linear range from client-or-blank, with each line's trailing spaces trimmed.
@@ -122,12 +178,14 @@ impl<C: PaneClient> AgentPane<C> {
         true
     }
     pub(in crate::ui) fn wheel(&mut self, rows: i32) -> WheelEffect {
+        let live = self.refresh_live();
         if self.pane_feed == PaneFeed::Pending { return WheelEffect::Pending; }
         let Some(c) = self.pane_attach_term.as_mut() else { return WheelEffect::ClearResidue };
-        if c.mouse_tracking_on() {
+        if live && c.mouse_tracking_on() {
             let button = if rows > 0 { 64 } else { 65 };
             let seq = format!("\x1b[<{button};1;1M");
-            for _ in 0..rows.unsigned_abs().min(8) { c.send_input(seq.as_bytes()); }
+            let run = c.screen_run().to_owned();
+            for _ in 0..rows.unsigned_abs().min(8) { c.send_input_in_run(seq.as_bytes(), &run); }
         } else { c.scroll(rows); }
         WheelEffect::Redraw
     }

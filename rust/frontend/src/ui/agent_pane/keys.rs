@@ -1,11 +1,18 @@
-//! What a key does in the agent pane: copy, paste and paging, else bytes to its session.
+//! What a key does in the agent pane: edit or send held keys, copy, paste, page, or type into the shown run.
 
 use super::*;
 use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
 
 pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
-    let KeyPress { event, action, ctrl, shift, super_, .. } = key;
+    let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
+    if let Some(status) = state.agent_pane.held_key(&event.logical_key, event.repeat,
+        !(ctrl || alt || shift || super_), Instant::now()) {
+        state.status.set(status);
+        state.last_key = Some(label);
+        state.window.request_redraw();
+        return Break(());
+    }
     // Unhandled keys reach the selected client; Ctrl+Arrow leaves this pane.
     //
     // Paste shortcut interception: Ctrl+V / Cmd+V /

@@ -38,8 +38,8 @@ const EVENT_TICK: Duration = Duration::from_millis(250);
 /// What the worker tells its sink.
 #[derive(Debug)]
 pub enum WorkerEvent {
-    /// The row's screen at attach, whole.
-    Checkpoint(Vec<u8>),
+    /// The row's screen at attach or resync, whole, and the run it shows.
+    Checkpoint { bytes: Vec<u8>, run: String },
     Output(Vec<u8>),
     Status(String),
     /// The episode has ended for good; the text says why.
@@ -436,7 +436,7 @@ where
                 }
             }
         }
-        (self.sink)(WorkerEvent::Checkpoint(snapshot));
+        (self.sink)(WorkerEvent::Checkpoint { bytes: snapshot, run: self.shared.current_run() });
         (self.sink)(WorkerEvent::Status("attached".into()));
         self.shared.attached.store(true, Ordering::Release);
         Ok((client, driver))
@@ -464,7 +464,9 @@ where
                     Ok(Some(RowEvent::Snapshot { bytes, last })) => {
                         resync.extend_from_slice(&bytes);
                         if last {
-                            (self.sink)(WorkerEvent::Checkpoint(std::mem::take(&mut resync)));
+                            (self.sink)(WorkerEvent::Checkpoint {
+                                bytes: std::mem::take(&mut resync), run: self.shared.current_run(),
+                            });
                         }
                     }
                     Ok(None | Some(RowEvent::Phase(_) | RowEvent::Exiting(_))) => {}
@@ -474,8 +476,9 @@ where
             // Output dropped while a request waited: ask the row for the screen as it is, which arrives as a snapshot.
             if client.take_lost_output() {
                 let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
-                if let Err(e) = client.attach(cols, rows, driver) {
-                    return Ended::Lost(e);
+                match client.attach(cols, rows, driver) {
+                    Ok(run) => *self.shared.run.lock().unwrap_or_else(|p| p.into_inner()) = run,
+                    Err(e) => return Ended::Lost(e),
                 }
             }
             while let Ok(command) = self.inbox.try_recv() {
@@ -539,6 +542,7 @@ where
                 Ok(())
             }
             Err(RowError::Refused(msg)) if msg.starts_with("run ended") => {
+                self.shared.discarded.fetch_add(1, Ordering::AcqRel);
                 self.settle(InputOutcome::RunEnded);
                 Ok(())
             }

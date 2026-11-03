@@ -226,7 +226,8 @@ connection set and `session-<host>.json`. Does not: touch view state.
 
 **fe-ui.** Guarantees: daemon events are applied only on the UI thread at the top of a frame, one arm per event kind
 with no wildcard; other threads only wake the window; untrusted text reaches the shaper one bidi paragraph per line;
-input goes only to the selected row's live client or is counted; showing a result never steals the view. Rests on:
+input for an unshown row is held visibly for Enter, and sent input names the run its screen showed; showing a result
+never steals the view. Rests on:
 fe-net, capsule's attach client, winit and wgpu. Owns: all view state and UI persistence. Decision D4.
 
 **distribution.** Both contracts are settled, in `scripts/CLAUDE.md`. The release path (pass 1a): the cut tags only
@@ -560,5 +561,7 @@ was dropped in silence, and a repeat install judges a connected window, not only
 opened with reply rights and no named window needs person input in the last 30 minutes, the PDF plugin keeps rendered pages,
 64 MiB at most, and a spawn no longer promises a join. Since the same day a hub holds one link per computer, its newest,
 and a send that rests on a silent link also names the boxes with no link, after a send named only an unrelated silent box
-while the handle's own box was not linked.
+while the handle's own box was not linked. Since the same day keys typed while a row connects are held in a line on
+the pane and sent only by an Enter after the row's screen has shown, into the run it showed, after keys were lost
+during attaches in rc.7's use.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

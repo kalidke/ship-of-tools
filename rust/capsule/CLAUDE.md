@@ -86,6 +86,9 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    has been absent, though the daemon answers, for 120 s; anything else is retried. Limit: scrollback in a screen is
    at most 200 rows (a client accumulates up to 5,000 while it stays attached); the ConPTY fidelity of a mid-stream cut
    is proved on the hosted Windows run only.
+   The worker's `Checkpoint` event carries its snapshot bytes and the attached run, for both attach and resync.
+   `FeAttachClient::pump` records that run with the parser as `screen_run`, including a failed restore, independently
+   of the worker's latest `run()`. Proof: `src/attach_client/client_tests.rs::a_checkpoint_records_the_run_it_shows`.
    Every started attach attempt writes one `row attach ended` info record to its caller's log: dial host, row,
    client id and attempt number, last stage (`connecting`, `hello`, `attach`, `snapshot`, `service`), intentional
    shutdown or loss, the caller's retirement cause, elapsed milliseconds since this worker began the attempt,
@@ -117,7 +120,8 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    host's DA1 reply, goes through that one thread (`row/input.rs`), so the main loop never blocks on a terminal whose agent reads nothing; the
    run retires it within 2 s of its end. The loop drains at most 16 requests a pass and keeps at most one wake pending,
    so output, ticks and exit checks still run under a flood. The client tags each input with the run it was typed into
-   and answers one left over when the connection comes back to another run `run ended`, counted, never written; input
+   and answers one left over when the connection comes back to another run `run ended`, counted, never written; a
+   `run ended` the row itself answers is counted the same way, and a resync's attach records the run it returns; input
    typed before the attach is held (8 KiB at most) and sent after it. A headless client takes the pen once per run: its
    Enter never takes it in a replacement run, and in the same run after another driver took it back it does not fight
    for it. The window says unknown delivery in its status line. Limits: written is not read, the agent may never read

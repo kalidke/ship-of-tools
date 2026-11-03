@@ -1,4 +1,4 @@
-//! Which screen the agent pane paints: the held, client and blank choice, the reason overlay and the discard notice.
+//! The agent pane's screen choice, held-input overlay, discard notice and evidence from presented frames.
 
 use super::*;
 use std::time::Instant;
@@ -172,10 +172,86 @@ pub(in crate::ui) fn pane_discard_notice(pane: usize, client: usize) -> Option<S
 
 
 /// A frame-local, opaque claim for the exact request and eligible client lent to the draw.
-pub(in crate::ui) struct PaintedClient(PresentationCandidate);
+pub(in crate::ui) struct PaintedClient {
+    receipt: Option<PresentationCandidate>,
+    run: String,
+}
+
+/// Fit the held line to its actual painted width, keeping the count and the most recent text.
+pub(in crate::ui) fn pane_overlay_row(line: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let Some((label, text)) = line.strip_prefix("held, not sent (").and_then(|s| s.split_once("): ")) else {
+        return line.to_owned();
+    };
+    let prefix = format!("held, not sent ({label}): ");
+    let room = width.saturating_sub(prefix.width());
+    let mut used = 0;
+    let mut start = text.len();
+    for (i, ch) in text.char_indices().rev() {
+        let cells = ch.width().unwrap_or(0);
+        if used + cells > room { break; }
+        used += cells;
+        start = i;
+    }
+    format!("{prefix}{}", &text[start..])
+}
+
+/// Terminal bytes are shown as text, never interpreted by the chrome or its shaper.
+fn held_text(entries: &[Vec<u8>]) -> String {
+    let mut out = String::new();
+    for entry in entries {
+        let text = entry.strip_prefix(b"\x1b[200~").and_then(|s| s.strip_suffix(b"\x1b[201~")).unwrap_or(entry);
+        for ch in String::from_utf8_lossy(text).chars() {
+            match ch {
+                '\r' => out.push('⏎'),
+                '\0'..='\u{1f}' => { out.push('^'); out.push(char::from_u32(ch as u32 + 64).expect("ASCII control")); }
+                '\u{7f}' => out.push_str("^?"),
+                '\u{2028}' | '\u{2029}' | '\u{61c}' | '\u{200e}' | '\u{200f}' |
+                '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => out.push(' '),
+                c if c.is_control() => out.push(' '),
+                c => out.push(c),
+            }
+        }
+    }
+    out
+}
 
 impl<C: PaneClient> AgentPane<C> {
+    pub(super) fn clear_live(&mut self) {
+        self.live_since = None;
+        self.live_run = None;
+        self.painted_live_run = None;
+    }
+
+    fn screen_ready(&mut self) -> bool {
+        self.pane_feed == PaneFeed::Capsule && self.bl_pane_target.is_some()
+            && self.pane_attach_term.as_mut().is_some_and(|c|
+                c.is_checkpointed() && c.status_line() == "attached" && !c.is_dead())
+    }
+
+    /// Every observation invalidates the dwell as soon as the selected screen stops being live or changes run.
+    pub(super) fn refresh_live(&mut self) -> bool {
+        if !self.screen_ready() || self.pane_attach_term.as_ref().map(|c| c.screen_run()) != self.live_run.as_deref() {
+            self.clear_live();
+        }
+        self.live_since.is_some()
+    }
+
+    fn held_overlay_lines(&self, now: Instant) -> Vec<String> {
+        let Some(held) = self.bl_pane_target.as_ref().and_then(|k| self.held_keys.get(k)) else { return vec![] };
+        let hint = if self.live_since.is_none() {
+            "Enter sends after the row's screen shows; Esc drops them"
+        } else if self.held_armed(now) {
+            "Enter sends them; Esc drops them"
+        } else {
+            "Enter sends them in a second; Esc drops them"
+        };
+        vec![format!("held, not sent ({} keys): {}", held.entries.len(), held_text(&held.entries)), hint.into()]
+    }
+
     pub(in crate::ui) fn view(&mut self, mismatch: Option<&str>) -> (PaneScreen, Vec<String>, Option<PaintedClient>) {
+        self.painted_live_run = None;
+        self.refresh_live();
         // Pump precedes this operation. Drawing then borrows the chosen screen immutably,
         // releases that borrow, synchronizes geometry and offers this frame's opaque claim.
         let pane_attach_has_client = self.pane_attach_term.is_some();
@@ -202,18 +278,22 @@ impl<C: PaneClient> AgentPane<C> {
             ),
             self.pane_dial_error.as_deref(),
         );
-        let pane_overlay = pane_overlay_lines(
+        let mut pane_overlay = pane_overlay_lines(
             pane_terminal_reason,
             pane_discard_notice(
                 self.pane_inputs_discarded,
                 self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
             ),
         );
+        pane_overlay.splice(0..0, self.held_overlay_lines(Instant::now()));
         // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
-        let facts = (pane_screen == PaneScreen::Client).then(|| PaneFacts {
+        let facts = (self.pane_feed == PaneFeed::Capsule && pane_screen == PaneScreen::Client).then(|| PaneFacts {
             checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead,
         });
-        let facts = facts.and_then(|f| self.pane_presentation.candidate(f, (1, 1))).map(PaintedClient);
+        let facts = facts.filter(|f| f.checkpointed && f.attached && f.live).map(|f| PaintedClient {
+            receipt: self.pane_presentation.candidate(f, (1, 1)),
+            run: self.pane_attach_term.as_ref().expect("client screen").screen_run().to_owned(),
+        });
         (pane_screen, pane_overlay, facts)
     }
 
@@ -225,8 +305,20 @@ impl<C: PaneClient> AgentPane<C> {
         }
     }
 
-    pub(in crate::ui) fn painted_candidate(&self, claim: PaintedClient, area: (u16, u16)) -> Option<PresentationCandidate> {
-        (area.0 > 0 && area.1 > 0).then_some(claim.0)
+    pub(in crate::ui) fn painted_candidate(&mut self, claim: PaintedClient, area: (u16, u16)) -> Option<PresentationCandidate> {
+        if area.0 == 0 || area.1 == 0 { return None; }
+        self.painted_live_run = Some(claim.run);
+        claim.receipt
+    }
+
+    /// Called after present on every frame, including frames after the one-shot receipt was consumed.
+    pub(in crate::ui) fn live_frame_presented(&mut self, now: Instant) {
+        let Some(run) = self.painted_live_run.take() else { return };
+        self.refresh_live();
+        if self.screen_ready() && self.pane_attach_term.as_ref().is_some_and(|c| c.screen_run() == run) {
+            self.live_run = Some(run);
+            self.live_since.get_or_insert(now);
+        }
     }
 
     /// Called only after the frame has been submitted and presented.

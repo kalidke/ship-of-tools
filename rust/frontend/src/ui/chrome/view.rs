@@ -596,11 +596,12 @@ impl ChromeView<'_> {
         // this originally covered.
         if llm_rect.width > 2 {
             for (row, line) in pane_overlay.iter().enumerate().take(llm_rect.height as usize) {
+                let line = pane_overlay_row(line, llm_rect.width.saturating_sub(2) as usize);
                 write_title(
                     buf,
                     llm_rect.x + 1,
                     llm_rect.y + row as u16,
-                    line,
+                    &line,
                     llm_rect.width - 2,
                     Style::default().fg(Color::Yellow),
                 );

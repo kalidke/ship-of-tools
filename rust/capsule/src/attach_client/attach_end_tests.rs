@@ -135,7 +135,7 @@ fn drive_as(
     let statuses = Mutex::new(Vec::new());
     let (_tx, inbox) = mpsc::channel();
     let sink = |event| match event {
-        WorkerEvent::Checkpoint(_) if purposeful => {
+        WorkerEvent::Checkpoint { .. } if purposeful => {
             shared.shutdown.store(true, Ordering::Release);
         }
         WorkerEvent::Status(text) if text != "attached" => {

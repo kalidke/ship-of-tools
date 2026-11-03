@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn pane_discard_notice_counts_every_discarded_input() {
-    // The frontend's count (Pending-arm inputs, +1 each) plus the
+    // The frontend's count (untargeted or over-bound inputs, +1 each) plus the
     // attach client's own count; absent at 0, singular at 1.
     assert_eq!(pane_discard_notice(0, 0), None);
     assert_eq!(

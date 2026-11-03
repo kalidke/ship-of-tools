@@ -14,7 +14,7 @@ fn snapshot(rows: u16, cols: u16) -> Vec<u8> {
 fn a_snapshot_marks_the_client_checkpointed() {
     let (mut client, events) = client(false);
     assert!(!client.is_checkpointed(), "a fresh client must not report checkpointed");
-    events.send(WorkerEvent::Checkpoint(snapshot(24, 80))).unwrap();
+    events.send(WorkerEvent::Checkpoint { bytes: snapshot(24, 80), run: "first".into() }).unwrap();
     client.pump();
     assert!(client.is_checkpointed());
 }
@@ -22,23 +22,44 @@ fn a_snapshot_marks_the_client_checkpointed() {
 #[test]
 fn a_snapshot_that_does_not_restore_marks_checkpointed_and_says_so() {
     let (mut client, events) = client(false);
-    events.send(WorkerEvent::Checkpoint(vec![0xff; 4])).unwrap();
+    events.send(WorkerEvent::Checkpoint { bytes: vec![0xff; 4], run: "failed".into() }).unwrap();
     events.send(WorkerEvent::Status("attached".into())).unwrap();
     client.pump();
     assert!(client.is_checkpointed(), "the snapshot event landed either way");
+    assert_eq!(client.screen_run(), "failed");
     assert!(client.status_line().starts_with("checkpoint restore failed"), "{}", client.status_line());
 }
 
 #[test]
 fn a_window_reflows_a_snapshot_to_its_pane_and_a_headless_client_adopts_its_size() {
     let (mut window, events) = client(false);
-    events.send(WorkerEvent::Checkpoint(snapshot(30, 100))).unwrap();
+    events.send(WorkerEvent::Checkpoint { bytes: snapshot(30, 100), run: "window".into() }).unwrap();
     window.pump();
     assert_eq!(window.screen().size(), (24, 80));
     let (mut headless, events) = client(true);
-    events.send(WorkerEvent::Checkpoint(snapshot(30, 100))).unwrap();
+    events.send(WorkerEvent::Checkpoint { bytes: snapshot(30, 100), run: "headless".into() }).unwrap();
     headless.pump();
     assert_eq!(headless.screen().size(), (30, 100));
+}
+
+#[test]
+fn a_checkpoint_records_the_run_it_shows() {
+    let (mut client, events) = client(false);
+    assert_eq!(client.screen_run(), "");
+    for run in ["first", "replacement"] {
+        let mut parser = vt100_ctt::Parser::new(24, 80, 100);
+        parser.process(run.as_bytes());
+        events.send(WorkerEvent::Checkpoint { bytes: parser.screen().checkpoint().unwrap(), run: run.into() }).unwrap();
+        assert!(client.pump());
+        assert_eq!(client.screen_run(), run);
+        assert_eq!(client.screen().contents(), run);
+        assert_eq!(client.run(), "", "the parser's run is independent of the worker's latest attach");
+    }
+    events.send(WorkerEvent::Checkpoint { bytes: vec![0xff; 4], run: "failed".into() }).unwrap();
+    events.send(WorkerEvent::Status("attached".into())).unwrap();
+    client.pump();
+    assert_eq!(client.screen_run(), "failed");
+    assert!(client.status_line().starts_with("checkpoint restore failed"));
 }
 
 #[test]

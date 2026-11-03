@@ -60,6 +60,8 @@ pub struct FeAttachClient {
     dead: bool,
     /// A snapshot has been applied to `parser`, whether or not it restored.
     checkpointed: bool,
+    /// The run of the checkpoint applied to the parser, apart from the worker's latest attach.
+    screen_run: String,
     /// A client with no viewport adopts the snapshot's own size instead of reflowing it.
     headless: bool,
     /// The last `pump()` emptied the worker's queue, rather than stopping at its byte cap.
@@ -124,6 +126,7 @@ impl FeAttachClient {
             status: "connecting\u{2026}".to_string(),
             dead: false,
             checkpointed: false,
+            screen_run: String::new(),
             headless,
             drained: true,
         }
@@ -137,7 +140,8 @@ impl FeAttachClient {
         self.drained = false;
         while drained_output_bytes < PUMP_DRAIN_CAP_BYTES {
             match self.events_rx.try_recv() {
-                Ok(WorkerEvent::Checkpoint(bytes)) => {
+                Ok(WorkerEvent::Checkpoint { bytes, run }) => {
+                    self.screen_run = run;
                     let restored = self.parser.restore_screen(&bytes);
                     if let Err(e) = restored {
                         self.status = format!("{CHECKPOINT_RESTORE_FAILED_PREFIX}: {e:?}");
@@ -261,6 +265,11 @@ impl FeAttachClient {
     /// watcher's snapshot arrives once per attach, so this never goes back to `false`.
     pub fn is_checkpointed(&self) -> bool {
         self.checkpointed
+    }
+
+    /// The run of the last checkpoint applied to the parser, even if restoring it failed; empty before the first.
+    pub fn screen_run(&self) -> &str {
+        &self.screen_run
     }
 
     /// Bytes the row has written to the terminal for this client, summed.
