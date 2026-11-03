@@ -570,5 +570,11 @@ without its no-break space; a dialog drawn at the top of a tall pane (Claude Cod
 a row whose Claude Code is not logged in read red, joined or not; only `--version` or `--archive` pins an install, never
 the tag an older installer hands off; `sot-fe version` says a computer's link is its mail link; the owner correction of
 an elevated Windows install runs on a hosted Windows runner at every landing; and a microscope image's scale bar is
-proven from its real header to the window.
+proven from its real header to the window. Since the same day (the maintainer's decision) a window lease that ends
+with no intent, a crash or a kill, is a handover: the sessions wait one minute for a window to return, and only a
+deliberate close, which now always sends its intent, ends them at once, after a Windows window panicked 16 s into a
+REPL run and every session on its computer ended although a new window started 21 s later; the Windows launcher keeps
+a window's output across its next start (`frontend.stdout.prev.log`, `frontend.stderr.prev.log`), since the panic's
+message was lost; and every landing shard links its test programs before its timed step, after a macOS runner at half
+speed ran out of its five minutes compiling, with no test failed.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
