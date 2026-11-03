@@ -563,5 +563,12 @@ opened with reply rights and no named window needs person input in the last 30 m
 and a send that rests on a silent link also names the boxes with no link, after a send named only an unrelated silent box
 while the handle's own box was not linked. Since the same day keys typed while a row connects are held in a line on
 the pane and sent only by an Enter after the row's screen has shown, into the run it showed, after keys were lost
-during attaches in rc.7's use.
+during attaches in rc.7's use. Since 2026-11-03 a row's Julia kernel starts on Windows: its load path was joined with
+`:`, which Julia on Windows reads as one entry, so Julia-aware previews had failed at every start on every Windows
+computer since 0.7. Since the same day, on Windows 10, the wake sends the line it typed when the console host repaints it
+without its no-break space; a dialog drawn at the top of a tall pane (Claude Code's folder-trust dialog among them) and
+a row whose Claude Code is not logged in read red, joined or not; only `--version` or `--archive` pins an install, never
+the tag an older installer hands off; `sot-fe version` says a computer's link is its mail link; the owner correction of
+an elevated Windows install runs on a hosted Windows runner at every landing; and a microscope image's scale bar is
+proven from its real header to the window.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
