@@ -36,15 +36,21 @@ pub async fn handle_comm_file(
         if let Some(offered) = links.offer(&req, within).await {
             verdict = offered;
         }
-        // A box that should hold a link and holds none may hold the handle: the refusal names it.
-        if matches!(&verdict, Err((code, _)) if code == "not_here") {
+        // A box that should hold a link and holds none may hold the handle: the refusal names it, and so does a verdict
+        // that rests on a silent link, whose box need not be the one that matters.
+        let no_answer = crate::comm::mail::links::NO_ANSWER;
+        if matches!(&verdict, Err((code, _)) if code == "not_here" || code == no_answer) {
             let attached = links.hosts();
             let unlinked = tokio::task::spawn_blocking(move || crate::comm::mail::hub_link::unlinked(&env, &attached))
                 .await
                 .context("comm.file topology join")?;
             if !unlinked.is_empty() {
-                let text = format!("no linked box knows that handle: {}; not linked: {}", req.to, unlinked.join(", "));
-                verdict = Err(("not_here".into(), text));
+                let unlinked = unlinked.join(", ");
+                verdict = verdict.map_err(|(code, error)| if code == no_answer {
+                    (code, format!("{error}; not linked: {unlinked}"))
+                } else {
+                    ("not_here".into(), format!("no linked box knows that handle: {}; not linked: {unlinked}", req.to))
+                });
             }
         }
     }

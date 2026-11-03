@@ -68,8 +68,20 @@ async fn a_silent_link_is_named_and_an_ok_elsewhere_still_wins() {
     assert_eq!(links.offer(&req("live"), WITHIN).await, Some(Ok(())));
     assert_eq!(
         links.offer(&req("nobody"), WITHIN).await,
-        Some(Err(("file_failed".into(), "the daemon on a did not answer within 4s; @nobody may still be filed".into())))
+        Some(Err((NO_ANSWER.into(), "the daemon on a did not answer within 4s; @nobody may still be filed".into())))
     );
+}
+
+/// A box that slept and came back links again: its old, dead link must not answer for it.
+#[tokio::test(start_paused = true)]
+async fn a_new_link_from_a_computer_replaces_its_silent_one() {
+    let links = Links::default();
+    let _stale = serve(&links, "a", |_| None);
+    tokio::task::yield_now().await;
+    let _fresh = serve(&links, "a", not_here);
+    assert_eq!(links.hosts(), ["a"]);
+    let verdict = links.offer(&req("nobody"), WITHIN).await.expect("a link is attached");
+    assert_eq!(verdict.unwrap_err().0, "not_here");
 }
 
 #[tokio::test]
@@ -86,7 +98,7 @@ async fn a_dropped_link_leaves_and_its_owed_answers_end() {
     drop(link);
     assert_eq!(
         asking.await.unwrap(),
-        Some(Err(("file_failed".into(), "the daemon on a did not answer within 4s; @live may still be filed".into())))
+        Some(Err((NO_ANSWER.into(), "the daemon on a did not answer within 4s; @live may still be filed".into())))
     );
     assert_eq!(links.offer(&req("live"), WITHIN).await, None, "the dropped link is no longer attached");
 }

@@ -39,7 +39,10 @@ Address:
 
 Sending:
 - A send ends in `filed -> @h` (exit 0) or `FAILED -> @h: <reason>` (exit 1), and nothing else. `FAILED` appended
-  nothing; with no answer, nothing is known to have been appended.
+  nothing; with no answer, nothing is known to have been appended. A hub holds one link per computer, its newest, and
+  a verdict that rests on a silent link also names the boxes that should hold a link and hold none. An offer still goes
+  to every link, so a silent link on an unrelated box can still leave a send uncertain: the hub does not know which
+  box holds a handle (a stated limit).
 - `filed` is said only by the appender, after the line is on disk, for a live handle. The one append is
   `mail::inbox::file_frame`: the kernel's file lock on `inbox/<h>.lock`, an unterminated tail cut back first, the line
   written whole and synced, a failed write cut back. Live means the registry's `last_seen` for the handle is a

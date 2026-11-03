@@ -9,6 +9,9 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use sot_protocol::{op, CommFileReq, Frame};
 use tokio::sync::{mpsc, oneshot};
 
+/// The code of a refusal that rests on a link that never answered: the handle may still have been filed.
+pub const NO_ANSWER: &str = "no_answer";
+
 /// One `comm.file` the hub offers a linked daemon, and where that daemon's answer goes.
 pub struct Offer {
     req: CommFileReq,
@@ -36,10 +39,13 @@ pub struct LinkEnd {
 }
 
 impl Links {
-    /// Enters a `link`-role connection that declared `host`.
+    /// Enters a `link`-role connection that declared `host`. A computer holds one link, its newest: a box that slept
+    /// and came back must not leave a dead link answering for it. The older connection gets no more offers, and ends
+    /// by its own close or silence.
     pub fn attach(&self, host: String) -> LinkEnd {
         let (tx, offers) = mpsc::channel(16);
         let mut attached = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        attached.by_key.retain(|_, (held, _)| *held != host);
         let key = attached.next_key;
         attached.next_key += 1;
         attached.by_key.insert(key, (host, tx));
@@ -99,7 +105,7 @@ fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, with
     }
     if let Some((host, _)) = answers.iter().find(|(_, a)| a.is_none()) {
         let secs = within.as_secs();
-        return ("file_failed".into(), format!("the daemon on {host} did not answer within {secs}s; @{to} may still be filed"));
+        return (NO_ANSWER.into(), format!("the daemon on {host} did not answer within {secs}s; @{to} may still be filed"));
     }
     crate::comm::mail::filer::not_here(to)
 }
@@ -128,13 +134,16 @@ impl Drop for LinkEnd {
     }
 }
 
-/// The next offer for a connection that may be a link: pending forever for any other connection. A link's channel
-/// never closes while its end lives: `Links` holds the sender until the end drops.
+/// The next offer for a connection that may be a link: pending forever for any other connection, and for a link a
+/// newer one from its computer replaced, whose channel closed.
 pub async fn next_offer(link: &mut Option<LinkEnd>) -> Offer {
     let Some(end) = link else {
         return std::future::pending().await;
     };
-    end.offers.recv().await.expect("Links holds this end's sender until the end drops")
+    match end.offers.recv().await {
+        Some(offer) => offer,
+        None => std::future::pending().await,
+    }
 }
 
 #[cfg(test)]

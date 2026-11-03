@@ -558,5 +558,7 @@ bar, and a row id is unique within a process by count. Since the same day a Wind
 account that will use it is never reported armed, after an install over an elevated ssh login said armed and the update
 was dropped in silence, and a repeat install judges a connected window, not only the record. Since the same day a page
 opened with reply rights and no named window needs person input in the last 30 minutes, the PDF plugin keeps rendered pages,
-64 MiB at most, and a spawn no longer promises a join.
+64 MiB at most, and a spawn no longer promises a join. Since the same day a hub holds one link per computer, its newest,
+and a send that rests on a silent link also names the boxes with no link, after a send named only an unrelated silent box
+while the handle's own box was not linked.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

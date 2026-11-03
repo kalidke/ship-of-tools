@@ -111,6 +111,23 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
     conn
 }
 
+/// A `link`-role connection declaring `host` that reads no offer and answers none.
+async fn silent_link(socket_path: &Path, host: &str) -> Conn {
+    let fs_name = socket_path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+    let stream = LocalStream::connect(fs_name).await.expect("connect the link");
+    let mut conn = tokio::io::BufReader::new(stream);
+    let name = format!("link@{host}");
+    let hello = HelloReq {
+        name: Some(name.clone()),
+        host: Some(host.to_string()),
+        ..HelloReq::this_process(&name, "link", Some("hub-a".to_string())).expect("this process's account")
+    };
+    codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
+    let (reply, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn)).await.expect("the hello reply").expect("read hello reply");
+    assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
+    conn
+}
+
 /// Sends one `comm.file` for `to` to the hub and returns the payload of its answer, which comes within `BOUND`.
 async fn comm_file(conn: &mut Conn, id: u64, to: &str) -> serde_json::Value {
     let req = serde_json::json!({"from": "sender-a", "to": to, "text": format!("hi {id}")});
@@ -243,6 +260,20 @@ async fn the_hub_files_into_a_linked_box_and_answers_with_its_verdict() {
 
 // A box the topology says holds a link, with none attached, may hold the handle: the hub's `not_here` names it, and
 // once every such box is linked the refusal is the plain one (the step after the link is up, in the test above).
+// A silent link on an unrelated box must not hide the box the handle is likelier on (seen: a send named the silent box
+// alone, with the handle's own box unlinked).
+#[tokio::test]
+async fn a_silent_links_verdict_also_names_the_boxes_that_hold_no_link() {
+    let hub = Env::start("silenthub", "hub-a", None);
+    let mut sender = connect_and_hello(&hub.socket_path, "sender-a").await;
+    let _silent = silent_link(&hub.socket_path, "quiet-c").await;
+    let answer = comm_file(&mut sender, 2, "nobody").await;
+    assert_eq!(answer["code"], "no_answer", "{answer}");
+    let error = answer["error"].as_str().unwrap();
+    assert!(error.contains("the daemon on quiet-c did not answer"), "{error}");
+    assert!(error.contains("@nobody may still be filed; not linked: win-b"), "{error}");
+}
+
 #[tokio::test]
 async fn not_here_names_the_boxes_that_hold_no_link() {
     let hub = Env::start("lonehub", "hub-a", None);
