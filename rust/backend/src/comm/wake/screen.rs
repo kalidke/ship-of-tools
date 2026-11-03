@@ -219,11 +219,11 @@ const DIALOG_ROWS: usize = 30;
 /// The longest `dialog` summary [`dialog_of`] returns, in characters.
 const DIALOG_TEXT_MAX: usize = 120;
 
-/// Whether the main input box is on screen, wherever the cursor is: a line directly between two borders whose glyph,
+/// The main input box's glyph row, wherever the cursor is: a line directly between two borders whose glyph,
 /// after nothing but spaces, is followed by U+00A0, the main prompt's own mark, or, where the NBSP is not required
 /// ([`NBSP_ON_WINDOWS`]), by a space or nothing. Menus and dialog inputs draw an ASCII space after the glyph.
-fn main_box_shown(lines: &[String], glyphs: &[char], windows: bool) -> bool {
-    (1..lines.len().saturating_sub(1)).any(|row| {
+fn main_box_row(lines: &[String], glyphs: &[char], windows: bool) -> Option<usize> {
+    (1..lines.len().saturating_sub(1)).find(|&row| {
         if !is_border(&lines[row - 1]) || !is_border(&lines[row + 1]) {
             return false;
         }
@@ -253,16 +253,24 @@ fn is_dialog_footer(line: &str) -> bool {
         || (line.starts_with("Enter to ") && line.split(" \u{b7} ").any(|hint| hint.trim_end() == "Esc to cancel"))
 }
 
-/// The dialog the screen shows that waits on a person, as the row's `dialog` summary, or `None`. It is positively
-/// identified, both of: (a) no main input box is on screen ([`main_box_shown`]): a dialog replaces it; (b) one of the
-/// last [`DIALOG_ROWS`] rows, trailing empty or space-only rows aside, is the dialog's footer ([`is_dialog_footer`]),
-/// anywhere in them, since an agents panel can sit below it. The summary is the "Do you want to" line nearest the
-/// footer when those rows hold one (a reply's line above the dialog is not it); the line alone identifies nothing.
-/// An agent with no prompt glyphs is never read. The dialog footers come from real captures, each a fixture.
+/// What the screen shows that waits on a person, as the row's `dialog` summary, or `None`. A main input box
+/// ([`main_box_row`]) with "Not logged in · Run /login" below its lower rule waits on a login; output above the box
+/// is never read for those words. Otherwise a dialog is positively identified, both of: (a) no main input box is on
+/// screen: a dialog replaces it; (b) one of the last [`DIALOG_ROWS`] rows, trailing empty or space-only rows aside, is
+/// the dialog's footer ([`is_dialog_footer`]), anywhere in them, since an agents panel can sit below it. The summary
+/// is the "Do you want to" line nearest the footer when those rows hold one (a reply's line above the dialog is not it);
+/// the line alone identifies nothing. An agent with no prompt glyphs is never read. The dialog footers come from real
+/// captures, each a fixture.
 pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<String> {
     let glyphs = prompt_glyphs(agent, windows);
-    if glyphs.is_empty() || main_box_shown(lines, glyphs, windows) {
+    if glyphs.is_empty() {
         return None;
+    }
+    if let Some(row) = main_box_row(lines, glyphs, windows) {
+        return lines[row + 2..]
+            .iter()
+            .any(|l| l.contains("Not logged in · Run /login"))
+            .then(|| "claude: not logged in; run /login in this row".to_string());
     }
     let end = lines.iter().rposition(|l| !l.trim_matches(' ').is_empty()).map_or(0, |row| row + 1);
     let tail = &lines[end.saturating_sub(DIALOG_ROWS)..end];

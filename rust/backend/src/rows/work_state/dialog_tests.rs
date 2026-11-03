@@ -226,6 +226,27 @@ fn a_dialog_on_a_row_at_rest_reads_red_then_idle() {
     assert_eq!((row(h)["state"].as_str(), row(h)["summary"].as_str()), (Some("idle"), Some("ready")));
 }
 
+/// A Ready screen can need its person's login before the session ever joins. The ordinary tick writes the dialog
+/// fact, making the row red and visible to the Queue; removing the notice clears the fact on the next tick.
+#[test]
+fn a_not_logged_in_row_gets_the_dialog_stamp_and_reads_red() {
+    let (_serial, _env, home) = home_with(json!({"state": "idle", "summary": "ready", "note": "ready"}));
+    let h = home.path();
+    let mut screen: Vec<String> = include_str!("../../../tests/fixtures/comm_wake/linux-not-logged-in.txt")
+        .lines()
+        .map(|l| if l == "\u{276f}" { "\u{276f}\u{a0}".to_string() } else { l.to_string() })
+        .collect();
+    let summary = "claude: not logged in; run /login in this row";
+    assert_eq!(tick(h, screen.clone()), vec![Stamp::Dialog(summary.into())]);
+    let entry = row(h);
+    assert_eq!((entry["state"].as_str(), entry["dialog"].as_str(), entry["summary"].as_str()), (Some("blocked"), Some(summary), Some(summary)));
+    screen.retain(|l| !l.contains("Not logged in · Run /login"));
+    assert_eq!(tick(h, screen), vec![Stamp::Resumed]);
+    let entry = row(h);
+    assert_eq!(entry["state"].as_str(), Some("idle"));
+    assert!(entry.get("dialog").is_none());
+}
+
 /// After a restart the first tick clears a fact whose dialog has gone; nothing is kept between ticks.
 #[test]
 fn a_fact_left_by_a_former_run_clears_on_the_first_tick() {

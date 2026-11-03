@@ -116,6 +116,10 @@ Waking:
 - Rows' dialog tick reads the screen through `wake::screen::dialog_of`: with no main input box, a dialog's own footer
   identifies it in the last 30 rows after trailing empty or space-only rows are dropped. Its summary search uses those
   same rows, so a first-run dialog drawn at the top of a tall pane is still read.
+  A main input box normally means no dialog; the exception is a line containing `Not logged in · Run /login` under
+  its lower rule, which returns `claude: not logged in; run /login in this row`. Output above the box never supplies
+  that notice. This stays in `dialog_of` so one reader identifies the main box and what waits on the person; the
+  wake's free-prompt test does not change.
 - The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,
   1.5 s stillness, fresh Stop-mark and run-fenced text/Enter gates. `screen::prompt_of` takes that line for its
   exact-content check; the wake supplies `WAKE_LINE`. A page reply requires an empty box and never completes an

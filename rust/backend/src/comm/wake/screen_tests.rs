@@ -748,6 +748,35 @@ fn a_dialog_at_the_top_of_a_tall_pane_reads_with_its_summary() {
     }
 }
 
+/// REAL (Linux, Claude Code 2.1.317): the main box is empty, but its footer asks the person to log in.
+#[test]
+fn a_not_logged_in_footer_waits_on_the_person() {
+    let screen = real(include_str!("../../../tests/fixtures/comm_wake/linux-not-logged-in.txt"), true);
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&screen, "claude", windows).as_deref(), Some("claude: not logged in; run /login in this row"));
+    }
+}
+
+#[test]
+fn a_main_box_without_the_login_footer_shows_no_dialog() {
+    let mut screen = real(include_str!("../../../tests/fixtures/comm_wake/linux-not-logged-in.txt"), true);
+    screen.retain(|l| !l.contains("Not logged in · Run /login"));
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&screen, "claude", windows), None);
+    }
+}
+
+/// A reply can quote the login notice above the box; only the footer is evidence that this row needs a login.
+#[test]
+fn login_words_in_output_above_the_box_show_no_dialog() {
+    let text = include_str!("../../../tests/fixtures/comm_wake/linux-not-logged-in.txt").replace("Not logged in · Run /login", "");
+    let mut screen = real(&text, true);
+    screen.insert(0, "Not logged in · Run /login".to_string());
+    for windows in [false, true] {
+        assert_eq!(dialog_of(&screen, "claude", windows), None);
+    }
+}
+
 /// REAL (captured 2026-10-17, scrubbed the same way, the question, options, countdown and footer kept): a permission
 /// dialog for a Bash command with auto mode's deny countdown, drawn where the input box was. It has no main input box and
 /// its footer is `Esc to cancel · Tab to amend`; the summary is its "Do you want to" line.

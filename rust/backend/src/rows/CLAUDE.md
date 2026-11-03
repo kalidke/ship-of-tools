@@ -214,7 +214,8 @@ Page replies:
   a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees` and
   `a_direct_reply_is_refused_at_a_draft_and_types_nothing`.
 
-Work-state. A row with a joined agent has one work-state, which the window shows as the color of its name:
+Work-state. A row with a bound handle and a registry entry has one work-state, which the window shows as the color of
+its name:
 
 | state | color | means | summary |
 |---|---|---|---|
@@ -284,6 +285,10 @@ Work-state. A row with a joined agent has one work-state, which the window shows
   (`DIALOG_EVERY`, 5 s, plus the sweep), whatever its turn state and on every OS, and within one tick of the dialog
   closing reads what its other facts say. The screen reader drops trailing empty or space-only rows before reading the
   last 30 rows for a dialog's footer and summary, so a first-run dialog at the top of a tall pane still reads red.
+  The same `dialog_of` reader also recognizes a main input box with `Not logged in · Run /login` on a line under its
+  lower rule, never above it. The tick writes the same `dialog` fact with `claude: not logged in; run /login in this row`,
+  so even a session that has not joined yet reads red in the window and appears in the person's Queue when its row
+  has a bound handle and registry entry. Removing the notice clears the fact within one tick.
   The tick reads every Ready Claude row with a bound handle but one already red
   by its question, one watcher attach each, which takes no pen, resizes nothing and writes no record
   (`work_state::dialog`). Each write it makes is logged at info, and so is the first of each run of reads that found
