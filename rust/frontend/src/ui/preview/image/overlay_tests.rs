@@ -151,6 +151,38 @@ fn parse_physical_scale_reads_axes_and_unit() {
 }
 
 #[test]
+fn microscope_scalebar_uses_served_pixels_when_the_texture_is_downscaled() {
+    let extras = serde_json::json!({
+        "physical_scale": {
+            "axes": [
+                {"name": "x", "nm_per_px": 1e9 / 209_270_692.0},
+                {"name": "y", "nm_per_px": 1e9 / 209_270_692.0}
+            ],
+            "unit": "nm"
+        }
+    });
+    let scale = parse_physical_scale(&extras).unwrap();
+    let served_dims = (5120, 5120);
+    let rect = ScreenRect { x: 0.0, y: 0.0, w: 1024.0, h: 1024.0 };
+    // Decoded dimensions retained by png.rs and RasterView::install; the texture fits a smaller GPU cap.
+    for cap in [1024, 2048] {
+        let texture_dims = (cap, cap);
+        for zoom in [1.0, 2.0] {
+            let (nm, screen_px) = scalebar_length(
+                &scale, Some(served_dims), texture_dims, zoom, rect, rect,
+            ).expect("a calibrated microscope image has a visible bar");
+            let nm_per_screen_px = nm / screen_px as f64;
+            let expected = scale.axes[0].nm_per_px * served_dims.0 as f64 / (rect.w * zoom) as f64;
+            assert!((nm_per_screen_px - expected).abs() < 1e-4);
+            let texture_based = scale.axes[0].nm_per_px * cap as f64 / (rect.w * zoom) as f64;
+            assert!((nm_per_screen_px - texture_based).abs() > 1.0);
+            assert!(screen_px > 1.0 && screen_px <= rect.w);
+            assert_eq!(fmt_scale_label(nm, &scale.unit), if zoom == 1.0 { "5 µm" } else { "2 µm" });
+        }
+    }
+}
+
+#[test]
 fn invalid_scale_is_not_displayable() {
     for ps in [
         serde_json::json!({"axes": [{"name": "x", "nm_per_px": 2.0}]}),

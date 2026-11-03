@@ -171,6 +171,45 @@ pub(in crate::ui) struct CaptionDraw {
     pub(in crate::ui) clip_bottom: f32,
 }
 
+/// The physical length and screen width the overlay draws, using the served image's pixels even when its
+/// texture was shrunk to the GPU limit. Kept separate from label shaping so the mapping needs no GPU to test.
+fn scalebar_length(
+    scale: &PhysicalScale,
+    served_dims: Option<(u32, u32)>,
+    quad_px: (u32, u32),
+    zoom: f32,
+    letterbox_rect: ScreenRect,
+    image_rect: ScreenRect,
+) -> Option<(f64, f32)> {
+    let axis = scale.axes.first()?;
+    if axis.nm_per_px <= 0.0 {
+        return None;
+    }
+    // Source→screen mapping (must match the draw block's `canvas_w`).
+    let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad_px);
+    let zoom = zoom.clamp(1.0, zoom_max);
+    let canvas_w = letterbox_rect.w * zoom;
+    // The wire's nm_per_px describes served pixels; the texture may have fewer pixels for the same canvas.
+    let (src_w, _src_h) = served_dims.unwrap_or(quad_px);
+    if src_w == 0 || canvas_w <= 0.0 {
+        return None;
+    }
+    let screen_px_per_src_px = canvas_w / src_w as f32;
+    let screen_px_per_unit = screen_px_per_src_px / axis.nm_per_px as f32;
+    if !screen_px_per_unit.is_finite() || screen_px_per_unit <= 0.0 {
+        return None;
+    }
+    // Adaptive length: aim ~15% of the pane, snap to 1/2/5×10ⁿ.
+    let target_px = image_rect.w * 0.15;
+    let nice = snap_1_2_5((target_px / screen_px_per_unit) as f64);
+    let bar_len = nice as f32 * screen_px_per_unit;
+    // Skip a degenerate / pane-overflowing bar (e.g. absurd scale value).
+    if bar_len <= 1.0 || bar_len > image_rect.w {
+        return None;
+    }
+    Some((nice, bar_len))
+}
+
 impl State {
     /// Compute the dynamic scalebar's bar + label geometry for this frame and
     /// shape its label buffer (ADR 0034). Called once per render, BEFORE the
@@ -219,39 +258,11 @@ impl State {
         let Some(scale) = self.preview_source.scale().cloned() else {
             return clear_and_none(self);
         };
-        let Some(axis) = scale.axes.first() else {
+        let Some((nice, bar_len)) = scalebar_length(
+            &scale, self.raster.served_dims(), quad_px, self.raster.zoom(), letterbox_rect, image_rect,
+        ) else {
             return clear_and_none(self);
         };
-        if axis.nm_per_px <= 0.0 {
-            return clear_and_none(self);
-        }
-        // Source→screen mapping (must match the draw block's `canvas_w`).
-        let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad_px);
-        let zoom = self.raster.zoom().clamp(1.0, zoom_max);
-        let canvas_w = letterbox_rect.w * zoom;
-        // Measure against the AS-SERVED width, not the texture width: an image
-        // over `max_texture_dimension_2d` is GPU-downsampled for display, but
-        // the wire's `nm_per_px` still describes the served pixels. `canvas_w`
-        // spans the whole image either way, so pairing it with the served width
-        // is what keeps the bar physically true (Codex review R2 — a 20000 px
-        // raster capped to 16384 otherwise reads ~1.22x short).
-        let (src_w, _src_h) = self.raster.served_dims().unwrap_or(quad_px);
-        if src_w == 0 || canvas_w <= 0.0 {
-            return clear_and_none(self);
-        }
-        let screen_px_per_src_px = canvas_w / src_w as f32;
-        let screen_px_per_unit = screen_px_per_src_px / axis.nm_per_px as f32;
-        if !screen_px_per_unit.is_finite() || screen_px_per_unit <= 0.0 {
-            return clear_and_none(self);
-        }
-        // Adaptive length: aim ~15% of the pane, snap to 1/2/5×10ⁿ.
-        let target_px = image_rect.w * 0.15;
-        let nice = snap_1_2_5((target_px / screen_px_per_unit) as f64);
-        let bar_len = nice as f32 * screen_px_per_unit;
-        // Skip a degenerate / pane-overflowing bar (e.g. absurd scale value).
-        if bar_len <= 1.0 || bar_len > image_rect.w {
-            return clear_and_none(self);
-        }
         // Shape the label OUTSIDE the render pass (a persistent buffer on self).
         let scale_f = self.canvas.scale();
         let label = fmt_scale_label(nice, &scale.unit);
