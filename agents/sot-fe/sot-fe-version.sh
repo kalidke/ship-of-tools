@@ -76,7 +76,8 @@ send_version() {
         # as "sot-comm") keeps the pre-existing collapse: identical
         # (client_id, version) pairs fold into one row with a count, since
         # a busy backend has a dozen of those at once.
-        # Session-listing brief decision 2: a named row ALSO carries
+        # A daemon's link carries mail; its window declares sessions.
+        # Session-listing brief decision 2: a named window row ALSO carries
         # `.sessions` (the handles that box's OWN daemon owns, `None`
         # for an older frontend or a frontend box with no daemon at all,
         # `Some([])` for one that's declared and has nothing to report).
@@ -92,7 +93,9 @@ send_version() {
                                else $x.role + " " + $x.name end)
                       + "\t" + $x.app_version + "\t"
                       + (if $x.active then "active" else "idle" end) ),
-                  ( if ($x.sessions == null) then
+                  ( if $x.role == "link" then
+                      "maillink"
+                    elif ($x.sessions == null) then
                       "nosess"
                     elif ($x.sessions | length) == 0 then
                       "emptysess"
@@ -111,6 +114,9 @@ send_version() {
             | while IFS=$'\t' read -r kind a b c d; do
                 case "$kind" in
                     row) printf '%-20s %-28s %s\n' "$a" "$b" "$c" ;;
+                    maillink)
+                        echo "  (this computer's daemon's mail link; its sessions are listed under its window)"
+                        ;;
                     nosess)
                         echo "  (declares no sessions — older frontend, or no daemon on that box)"
                         ;;

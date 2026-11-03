@@ -142,7 +142,9 @@ of each.
    `VERSION` file; `ccx` reads and appends to Codex's own `config.toml`, which is Codex's and not the daemon's; the
    tools' hello is checked by the server (messaging's and the server's contracts), not here. `sot-fe version` prints
    the daemon's product version, wire protocol, declared host and supplied uptime, without the retired lane fields;
-   older replies may omit host and uptime. **Shipped tools outside this
+   older replies may omit host and uptime. A `link` row explains that it is the computer's daemon's mail link and
+   points to its window for sessions; a window (`fe`) with no session declaration keeps the "declares no sessions"
+   line, and other roles keep their existing output (`tests/test-sot-fe-version.sh`). **Shipped tools outside this
    folder's ownership still open daemon-owned paths, and this guarantee does not cover them:** the work-state hooks
    (`comm-status.sh`, `comm-status-heartbeat.sh`, `comm-status-idle.sh`) and the turn auditor, rows' and messaging's, test
    the registry and the inbox and keep turn marks and a signature under the comm folder's `state/` (queued under rows:

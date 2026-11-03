@@ -418,6 +418,26 @@ case_absent_sessions_key_prints_the_declares_no_sessions_placeholder() {
     return 0
 }
 
+case_a_mail_link_does_not_claim_its_computer_declares_no_sessions() {
+    stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":{"app_version":"0.7.0","protocol":1},"clients":[{"client_id":"fe-a","app_version":"0.7.0","host":"host-a","role":"fe","name":"fe@host-a","active":true,"sessions":null},{"client_id":"link-a","app_version":"0.7.0","host":"host-a","role":"link","name":"link@host-a","active":false,"sessions":null}]}}'
+    stage_reply "workspace.list" '{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    start_stub_daemon
+    run_version
+    stop_stub_daemon
+
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    local window_detail link_detail
+    window_detail="$(printf '%s\n' "$VER_OUT" | awk '/^fe@host-a[[:space:]]/ { getline; print; exit }')"
+    link_detail="$(printf '%s\n' "$VER_OUT" | awk '/^link@host-a[[:space:]]/ { getline; print; exit }')"
+    contains "$window_detail" "declares no sessions" \
+        || { echo "  the window keeps its undeclared-sessions line: $VER_OUT"; return 1; }
+    contains "$link_detail" "declares no sessions" \
+        && { echo "  a mail link declares no session list: $VER_OUT"; return 1; }
+    contains "$link_detail" "mail link; its sessions are listed under its window" \
+        || { echo "  the link must explain where to find its sessions: $VER_OUT"; return 1; }
+    return 0
+}
+
 case_daemon_uptime_prints_in_the_build_column() {
     # Session-listing brief: `uptime_s` is what makes a daemon restart's
     # forgetting of the disconnected-box map VISIBLE -- 10800s = 3h.
@@ -518,6 +538,7 @@ check "the comm scripts row reads the installed \$SOT_COMM_HOME/VERSION file"   
 check "the comm scripts row prints 'unknown' when the VERSION stamp is missing"            case_comm_scripts_row_prints_unknown_when_the_stamp_is_missing
 check "declared sessions print indented under their fe row, columns stay intact"           case_declared_sessions_print_indented_under_their_fe_row_and_columns_stay_intact
 check "an absent sessions key prints the never-declared placeholder line"                  case_absent_sessions_key_prints_the_declares_no_sessions_placeholder
+check "a mail link points to its window while the window keeps its missing-sessions line" case_a_mail_link_does_not_claim_its_computer_declares_no_sessions
 check "the daemon's uptime prints in the build column"                                     case_daemon_uptime_prints_in_the_build_column
 check "a daemon predating the uptime field prints no 'up' suffix"                          case_daemon_predating_uptime_field_prints_no_up_suffix
 check "a disconnected box prints its own fe line with no sessions beneath it"               case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it
