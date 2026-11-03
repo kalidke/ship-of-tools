@@ -190,6 +190,17 @@ jobs:
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: python3 ${{ github.workspace }}/scripts/tests/test-binary-bound.py 900
         run: python3 ../scripts/tests/shards.py run ${{ matrix.shard }}
+      # The owner correction of an elevated install needs an elevated Windows process, which a hosted Windows runner is
+      # and a person's login usually is not, so the test is ignored elsewhere and run here by name. Exactly one test must
+      # pass: a filter that matches nothing is a failure, not a pass.
+      - name: Test the owner correction of an elevated install (Windows)
+        if: runner.os == 'Windows' && contains(matrix.shard, 'sotd-c')
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          out="$(cargo test -p sot-backend --bin sotd --locked install::windows::tests::an_elevated_stage_is_owned_by_the_running_account_before_it_stays_armed -- --ignored --exact 2>&1)" && rc=0 || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "test result: ok. 1 passed"
       # Windows runs these slow proofs once per release, with inst in release-gate.yml. Its three guard shell suites
       # stay in this workflow at every landing. Run this witness after the Rust shard to preserve the unit results.
       - name: Test installer publish enrollment (fresh and repair)

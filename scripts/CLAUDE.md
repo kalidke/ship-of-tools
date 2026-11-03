@@ -350,7 +350,9 @@ The HEAD diagnostic regression (`tests/installer-head-error.py`) runs native app
 and Windows PowerShell 5.1. `install::window`'s regression uses a private Unix socket on Linux/macOS to exercise
 the shared version query and verdict. `install::role`'s regression exercises the declared-role notice and status
 rendering on Unix. Windows' ignored ownership regression needs an elevated Windows PowerShell 5.1 account to
-seed Administrators-owned fixture files; it runs the production ownership correction and reads the owners back.
+seed Administrators-owned fixture files; it runs the production ownership correction and reads the owners back. A
+hosted Windows runner is elevated, so `rust.yml`'s Windows `sotd-c` job runs it by its exact name at every landing and
+fails unless exactly that one test passed.
 
 ## Publish guard (landings A and B; B execution evidence pending)
 
