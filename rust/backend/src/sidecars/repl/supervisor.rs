@@ -42,7 +42,7 @@ struct WireEnvelope {
 /// `--project`) FIRST so a dependency the workspace shares with the shim (e.g.
 /// JSON3) resolves from the WORKSPACE's version, then the REPL project (where
 /// `ShipToolsRepl` lives) as a fallback for the shim's own deps, then the
-/// default load path (stdlib, etc.) via the trailing colon so `using` of
+/// default load path (stdlib, etc.) via the trailing separator (`;` on Windows, `:` elsewhere) so `using` of
 /// standard packages still works inside the user code.
 pub(super) async fn spawn_supervisor(
     user_project: &Path,
@@ -70,11 +70,8 @@ pub(super) async fn spawn_supervisor(
     // `using ShipToolsRepl` still resolves. Trailing separator preserves the
     // default `["@", "@v#.#", "@stdlib"]` entries (stdlib etc.) via the empty
     // token.
-    #[cfg(windows)]
-    let sep = ";";
-    #[cfg(not(windows))]
-    let sep = ":";
-    let load_path = format!("@{sep}{}{sep}", repl_project.display());
+    let load_path = crate::sidecars::julia::load_path(&[Path::new("@"), &repl_project, Path::new("")])
+        .context("REPL JULIA_LOAD_PATH")?;
 
     let tmp = crate::sidecars::child::ChildTmp::for_user_code(sig).await.context("repl child temporary folder")?;
     let mut cmd = Command::new(&julia_bin);
@@ -102,8 +99,8 @@ pub(super) async fn spawn_supervisor(
         .stderr(Stdio::piped());
     let mut contained = sig.spawn(&mut cmd).with_context(|| {
         format!(
-            "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
-            user_project.display()
+            "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={})",
+            user_project.display(), load_path.to_string_lossy()
         )
     })?;
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::sidecars::contract_tests::executable;
+use crate::sidecars::contract_tests::{depot_path, executable, isolated};
 
 /// A kernel project whose `ShipToolsKernel` answers the hello and then every request with the root it was given and
 /// its `LOAD_PATH`, run by the real julia: what reaches the child is what the generation's argv and environment say.
@@ -35,6 +35,7 @@ end
 /// One request to a kernel started on `root`; its answer.
 async fn ask(root: &Path) -> Value {
     let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("JULIA_DEPOT_PATH", depot_path(&dir.path().join("depot"), None));
     let project = echo_kernel(dir.path());
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (status, mut status_rx) = watch::channel(Status::Starting);
@@ -58,8 +59,12 @@ async fn ask(root: &Path) -> Value {
 
 /// The workspace root reaches the kernel as data. The case that would break it: the root spliced into the Julia source
 /// the child runs, where `$(...)` is code and a quote or backslash is syntax.
+#[cfg(unix)] // The adversarial root contains a quote, which Windows filenames cannot carry.
 #[tokio::test]
 async fn a_workspace_root_reaches_the_kernel_as_data_not_as_source() {
+    if !isolated("sidecars::kernel::root_tests::a_workspace_root_reaches_the_kernel_as_data_not_as_source", Duration::from_secs(90)) {
+        return;
+    }
     let parent = tempfile::tempdir().unwrap();
     let root = parent.path().join("r$(error(123))\"q\\z");
     std::fs::create_dir(&root).unwrap();
@@ -71,8 +76,12 @@ async fn a_workspace_root_reaches_the_kernel_as_data_not_as_source() {
 /// `JULIA_LOAD_PATH` the daemon inherited.
 #[tokio::test]
 async fn the_kernel_s_load_path_holds_no_user_environment() {
+    if !isolated("sidecars::kernel::root_tests::the_kernel_s_load_path_holds_no_user_environment", Duration::from_secs(90)) {
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
+    std::env::set_var("JULIA_LOAD_PATH", root.path().join("user-environment"));
     let answer = ask(root.path()).await;
     let entries: Vec<&str> = answer["load_path"].as_array().expect("load_path").iter().map(|e| e.as_str().unwrap()).collect();
-    assert!(entries.iter().all(|e| *e == "@" || *e == "@stdlib"), "{entries:?}");
+    assert_eq!(entries, ["@", "@stdlib"]);
 }

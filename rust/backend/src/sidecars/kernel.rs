@@ -350,6 +350,11 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
     crate::sidecars::julia::resolve_bin().map_err(|e| e.to_string())
 }
 
+/// The active kernel project and stdlib only, without the user's default environment.
+fn load_path() -> std::ffi::OsString {
+    super::julia::load_path(&[Path::new("@"), Path::new("@stdlib")]).expect("fixed kernel load path")
+}
+
 /// Resolve + spawn one child, fold `kernel.hello` into the same
 /// request/response loop every other op uses (no separate raw exchange),
 /// publish `Running` the moment it answers, then keep serving until it
@@ -393,7 +398,7 @@ async fn run_one_generation(
     let mut cmd = Command::new(&julia_bin);
     tmp.apply(&mut cmd);
     // The load path is the project and the standard library: the user's default environment (`@v#.#`) is not in it.
-    cmd.env("JULIA_LOAD_PATH", "@:@stdlib").env("SOT_KERNEL_PROJECT_ROOT", project_root_str);
+    cmd.env("JULIA_LOAD_PATH", load_path()).env("SOT_KERNEL_PROJECT_ROOT", project_root_str);
     cmd.arg(format!("--project={}", kernel_project.display()))
         .arg("--startup-file=no")
         .arg("-e")
@@ -727,6 +732,6 @@ mod deadline_tests;
 mod stream_tests;
 
 /// The root and the load path the kernel's child is given, seen by a real julia.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "kernel_root_tests.rs"]
 mod root_tests;

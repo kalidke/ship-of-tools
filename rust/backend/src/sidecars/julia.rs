@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+/// A Julia child's load path, using the platform's separator and preserving empty entries and their order.
+pub(super) fn load_path(entries: &[&Path]) -> Result<std::ffi::OsString, std::env::JoinPathsError> {
+    std::env::join_paths(entries)
+}
+
 /// Julia's executable file name on this target, for the PATH search and the juliaup layout.
 const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 

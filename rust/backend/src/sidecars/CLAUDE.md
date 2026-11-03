@@ -29,8 +29,9 @@ of each.
    are refused; a folder called `WindowsApps` is not evidence of an alias). MathJax does not use it: it runs
    `SOT_NODE_BIN` or the name `node`, a PATH search at spawn (`MathJax::new`).
 2. **The kernel is not given the user's startup files or default environment, and its root is data.** It starts as
-   `julia --startup-file=no --project=<julia/kernel>` with `JULIA_LOAD_PATH=@:@stdlib`, so no startup file's prints
-   land on its wire and the user's default environment (`@v#.#`) and any inherited `JULIA_LOAD_PATH` are not in its
+   `julia --startup-file=no --project=<julia/kernel>` with `JULIA_LOAD_PATH` holding `@` and `@stdlib`, joined with
+   the platform's separator (`;` on Windows, `:` elsewhere) by `julia::load_path`, the REPL's builder too. No startup
+   file's prints land on its wire and the user's default environment (`@v#.#`) and any inherited `JULIA_LOAD_PATH` are not in its
    load path; the workspace root reaches it as the environment variable `SOT_KERNEL_PROJECT_ROOT`, never as text of the
    Julia source it runs. A kernel whose project folder is missing is dead without a spawn. Limits: the child still
    inherits the rest of the daemon's environment, so the depots and other `JULIA_*` variables are the daemon's; a root
@@ -362,7 +363,7 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 | # | guarantee | test |
 |---|---|---|
 | 1 | julia choice | `julia_tests.rs`: `sot_julia_bin_wins_outright_when_absolute`, `sot_julia_bin_relative_is_a_hard_error`, `falls_back_to_juliaup_default_channel_when_no_override`, `falls_back_to_path_when_juliaup_absent`, `every_path_candidate_rejected_is_an_error_not_a_bare_name_fallback`, `no_julia_anywhere_is_an_error_not_a_bare_name`, `a_juliaup_default_whose_binary_is_gone_is_a_refusal_not_a_miss`, `an_app_bundle_wins_over_bin_when_both_layouts_exist`; Windows: `path_skips_alternate_alias`, `alternate_alias_override_is_refused` |
-| 2 | no user environment, root as data | `kernel_tests.rs`: `the_kernel_spawn_passes_startup_file_no`, `missing_kernel_project_reports_dead_without_spawning`; `kernel_root_tests.rs` (a real julia): `a_workspace_root_reaches_the_kernel_as_data_not_as_source`, `the_kernel_s_load_path_holds_no_user_environment` |
+| 2 | no user environment, root as data | `kernel_tests.rs`: `the_kernel_load_path_is_the_active_project_and_stdlib_on_this_platform` (all systems, splits by the platform's rule), `the_kernel_spawn_passes_startup_file_no`, `missing_kernel_project_reports_dead_without_spawning`; `kernel_root_tests.rs` (a real julia): `the_kernel_s_load_path_holds_no_user_environment` (all systems), `a_workspace_root_reaches_the_kernel_as_data_not_as_source` (Unix: its root contains a quote) |
 | 3 | a caller's bound | `kernel_deadline_tests.rs`: `a_full_channel_still_answers_within_the_bound`, `a_wedged_kernel_is_named_and_replaced`; `kernel_tests.rs`: `kernel_unavailable_display_is_composable`; `ops_tests.rs`: `a_kernel_that_is_unavailable_answers_its_own_code_for_each_way_it_is`, `a_kernel_request_that_fails_for_another_reason_is_not_called_unavailable` |
 | 4 | replaced on a backoff | `kernel_tests.rs`: `a_kernel_that_answers_and_dies_is_respawned_on_the_doubling_wait`, `a_kernel_whose_precompile_outlasts_stable_without_serving_backs_off`; `kernel_deadline_tests.rs`: `a_kernel_that_never_says_hello_is_replaced`, `a_kernel_answering_slowly_but_steadily_is_kept` |
 | 5 | Pluto's start and open bounds | `pluto_open_bound_tests.rs`: `an_open_the_child_never_answers_fails_at_its_bound` (the next open starts a second server), `an_open_whose_server_fails_its_boot_answers_with_its_stderr`, `an_open_behind_a_server_still_starting_says_so_and_the_next_joins_it`; `pluto_port_parse_tests.rs`: `a_pluto_ready_after_the_old_180s_bound_is_served` |
