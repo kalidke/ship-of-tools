@@ -83,7 +83,9 @@ The Windows shortcut runs the launcher hidden, so an early failure can look like
 - `%LOCALAPPDATA%\sot\logs\launch-status.txt` — last launcher phase or fatal
   status.
 - `%LOCALAPPDATA%\sot\logs\supervisor.log` — detailed launcher, rebuild,
-  and frontend respawn log.
+  and frontend respawn log. An abnormal window exit names its two output files here.
+- `%LOCALAPPDATA%\sot\logs\frontend.stdout.log` and `frontend.stderr.log` in the same folder — the current window's output, including panic messages on stderr.
+- `frontend.stdout.prev.log` and `frontend.stderr.prev.log` in that folder — the last nonempty output of each stream, kept before every window start, including a relaunch. An empty log does not replace its backup; a later nonempty run does.
 - `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar` —
   the pinned `.lnk`; stale pins can still point at an old binary or an old
   checkout.

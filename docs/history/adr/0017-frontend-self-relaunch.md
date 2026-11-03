@@ -14,6 +14,19 @@ the session-start re-arm) is RETIRED by ADR 0041 (P3 FE-local capsules);
 >
 > **Amended 2026-10-03 (0.6.6): a converge runs the launcher that is on disk.** The supervisor logs the code id of the launcher it parsed on its `supervisor start` line (`Get-SotLauncherCodeId` in `scripts/sot-install-layout.ps1`: the SHA-256 of `launch-sot.ps1` and of the two files it dot-sources). After a converge's apply and prelude, if the files on disk have another code id, it re-invokes the launcher in the same process with `-Relaunched` and exits when that returns, as the fresh path's post-apply handover does (ADR 0030). A copy that does not parse, or that does not use `$global:SotLeases`, is never invoked. The leases the process holds live in `$global:SotLeases`: every launcher version appends to it, never resets it, and empties it only in `Close-SotLeases` once its window is spawned. The supervisor leases after every relaunch's daemon ensure, not only a converge's. Each re-invoke nests one script frame, so the depth is the number of code changes in one supervisor's life. The supervisor start line logs that depth and the process working set. A supervisor started before this release cannot do any of this; only a quit and a fresh start replaces it.
 
+## Amendment (2026-11-03): keep the previous Windows window's output
+
+Before every window start, including the first start, -Local and every relaunch or converge, the Windows launcher
+renames nonempty `frontend.stdout.log` and `frontend.stderr.log` to `frontend.stdout.prev.log` and
+`frontend.stderr.prev.log`, replacing older backups. An empty stream leaves its backup alone. A move that fails is
+logged and the window still starts. An exit other than 0, 75 or 76 names both current output
+files on its `supervisor.log` exit line; the next start moves their nonempty contents to the previous files.
+
+`scripts/tests/test-launcher-leases.ps1` case 17 runs the supervisor and -Local paths with a stand-in window that
+writes stderr and exits 101, then proves the next start keeps it. It also covers empty output, replacement of older
+backups, and the 75 and 76 respawn paths. Linux and macOS output remains in the desktop session's log and is outside
+this change.
+
 ## Context
 
 The frontend now hosts a local terminal (ADR 0016), and the user wants to dogfood DevEnv *from inside DevEnv* — drive development (including a `claude` session) in the Terminal drawer, rebuild the frontend, and have it relaunch into the new binary without dropping to an external terminal. That requires the app to restart itself.

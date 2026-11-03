@@ -107,7 +107,7 @@ $script:sotPinned = Test-SotPinnedCheckout -RepoPath $repo.Path -Prefix $prefixD
 
 # Logs FIRST — so the progress splash and status writes can come up before any
 # slow pull/build/ssh work. Append-only supervisor log: unlike the frontend
-# stdout/stderr logs (which Start-Process truncates on every respawn), this
+# stdout/stderr logs (rotated before Start-Process opens them), this
 # survives across exit-75 respawns so the relaunch path — frontend exit codes,
 # restage, respawn, tunnel flaps — is diagnosable after the fact. ADR 0017.
 $logDir = Join-Path $env:LOCALAPPDATA 'sot\logs'
@@ -115,14 +115,21 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $frontendStdout = Join-Path $logDir 'frontend.stdout.log'
 $frontendStderr = Join-Path $logDir 'frontend.stderr.log'
 $supervisorLog  = Join-Path $logDir 'supervisor.log'
-# The frontend's stdout/stderr are TRUNCATED by Start-Process on every spawn,
-# which erased the evidence of a pane freeze the moment the user relaunched to
-# recover from it. Keep exactly one previous generation as .prev (both spawn
-# sites below call this first); a crash-loop still overwrites .prev each time,
-# which is the right bound for a log that is only ever read by hand.
+$RelaunchExitCode = 75
+$ConvergeExitCode = 76
+# Keep the last nonempty output of each stream as frontend.{stdout,stderr}.prev.log before every window start,
+# including the first start of a new launcher. An empty run must not erase the previous crash's evidence. A move that
+# fails (the log held open elsewhere) is logged and the window still starts: a lost log is cheaper than no window.
 function Rotate-FrontendLogs {
     foreach ($f in @($frontendStdout, $frontendStderr)) {
-        if (Test-Path $f) { Move-Item -Path $f -Destination "$f.prev" -Force -ErrorAction SilentlyContinue }
+        if ((Test-Path -LiteralPath $f) -and (Get-Item -LiteralPath $f).Length -gt 0) {
+            $previous = Join-Path (Split-Path $f -Parent) ([System.IO.Path]::GetFileNameWithoutExtension($f) + '.prev.log')
+            try {
+                Move-Item -LiteralPath $f -Destination $previous -Force -ErrorAction Stop
+            } catch {
+                Write-SupLog "WARNING: could not keep $f as ${previous}: $($_.Exception.Message) - the window starts anyway"
+            }
+        }
     }
 }
 function Write-SupLog {
@@ -131,6 +138,13 @@ function Write-SupLog {
         "$(Get-Date -Format o)  pid=$PID  $Message" |
             Out-File -FilePath $supervisorLog -Append -Encoding utf8
     } catch { }
+}
+function Write-FrontendExit([System.Diagnostics.Process]$Process, [timespan]$Uptime, [bool]$RelaunchNext = $false, [bool]$Converge = $false) {
+    $outputFiles = ''
+    if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne $RelaunchExitCode -and $Process.ExitCode -ne $ConvergeExitCode) {
+        $outputFiles = " stdout=$frontendStdout stderr=$frontendStderr"
+    }
+    Write-SupLog "frontend pid=$($Process.Id) exited code=$($Process.ExitCode) uptime=$([int]$Uptime.TotalSeconds)s -> relaunchNext=$RelaunchNext converge=$Converge$outputFiles"
 }
 
 # ---------------------------------------------------------------------------
@@ -850,12 +864,16 @@ if ($Local) {
     }
     Rotate-FrontendLogs
     $localOnlyArgs = if ($localSocket) { @('--socket', $localSocket) } else { @() }
-    Start-Process -FilePath $frontendExe `
+    $feStartedAt = Get-Date
+    $frontend = Start-Process -FilePath $frontendExe `
         -ArgumentList $localOnlyArgs `
         -RedirectStandardOutput $frontendStdout `
         -RedirectStandardError $frontendStderr `
         -WindowStyle Hidden `
-        -Wait
+        -PassThru
+    $null = $frontend.Handle
+    $frontend.WaitForExit()
+    Write-FrontendExit $frontend ((Get-Date) - $feStartedAt)
     exit 0
 }
 if (-not $localDaemonReady) {
@@ -872,15 +890,13 @@ if (-not $localDaemonReady) {
 # FreshnessPass + Invoke-LocalDaemonEnsure -- relaunch-sot.ps1 -Converge
 # writes `converge` as the sentinel file's content instead of a bare
 # timestamp, and the frontend's watcher (rust/frontend/src/relaunch.rs) reads
-# that back to pick 76 over 75. Any other exit code = real quit. See
+# that back to pick 76 over 75. Any other exit code stops this supervisor; an unannounced lease end is a handover. See
 # docs/history/adr/0017-frontend-self-relaunch.md's 76 amendment.
 # A converge that finds the launcher code on disk changed re-invokes the
 # launcher in this process instead of finishing the pass (ADR 0017, 0.6.6).
 #
 # SOT_REPO_DIR lets the frontend find the local repo (the Terminal
 # drawer's cwd, and the build dir for the relaunch helper).
-$RelaunchExitCode = 75
-$ConvergeExitCode = 76
 # The supervisor holds a lease on the local daemon across every window-less
 # stretch of a relaunch (contract 1.8): LEASE_REPLY_WAIT and HANDOVER_BOUND in
 # rust/protocol/src/ops/lease.rs.
@@ -1128,13 +1144,13 @@ try {
         }
 
         # Determine whether this was a relaunch request (75), a converge
-        # request (76), or a real quit. WaitForExit() guarantees ExitCode is
+        # request (76), or another exit. WaitForExit() guarantees ExitCode is
         # populated after the poll loop.
         $frontend.WaitForExit()
         $feUptime = (Get-Date) - $feStartedAt
         $convergeRequested = ($frontend.ExitCode -eq $ConvergeExitCode)
         $relaunchNext = ($frontend.ExitCode -eq $RelaunchExitCode) -or $convergeRequested
-        Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext converge=$convergeRequested"
+        Write-FrontendExit $frontend $feUptime $relaunchNext $convergeRequested
 
         # A healthy run closes the crash-loop health window -- the twin of
         # scripts/lib/sot-daemon.sh's `[ "$RUNTIME" -ge 60 ] && rm -f "$MARKER"`, same

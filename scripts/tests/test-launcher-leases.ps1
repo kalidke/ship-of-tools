@@ -496,6 +496,127 @@ try {
         }
     }
 } catch { Check '16: section ran' $false $_.Exception.Message }
+
+try {
+    Write-Host "`n=== 17. WindowOutputSurvives: execute the supervisor and -Local paths with a stand-in window ===" -ForegroundColor Cyan
+    $output17 = Join-Path $root 'output17'
+    New-Item -ItemType Directory -Force -Path $output17 | Out-Null
+    $window17 = Join-Path $output17 'window.exe'
+    Add-Type -OutputAssembly $window17 -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+public static class OutputWindow {
+    public static int Main(string[] args) {
+        string path = string.Join(" ", args, 1, args.Length - 1);
+        string[] codes = File.ReadAllLines(path);
+        int code = int.Parse(codes[0]);
+        File.WriteAllLines(path, new ArraySegment<string>(codes, 1, codes.Length - 1));
+        if (code != 0) {
+            Console.WriteLine("window stdout " + code);
+            Console.Error.WriteLine("window stderr " + code);
+        }
+        Thread.Sleep(200);
+        return code;
+    }
+}
+'@
+    # Extract executable production blocks, then run them with only the daemon/update dependencies replaced.
+    # Assertions below observe processes, files and log lines, never source spellings or call order.
+    $harness17 = Join-Path $output17 'supervisor.ps1'
+    $setup17 = @'
+param([string]$FixtureRoot, [string]$WindowExe, [string]$CodesPath, [switch]$LocalOnly)
+$ErrorActionPreference = 'Stop'
+$frontendStdout = Join-Path $FixtureRoot 'frontend.stdout.log'
+$frontendStderr = Join-Path $FixtureRoot 'frontend.stderr.log'
+$supervisorLog = Join-Path $FixtureRoot 'supervisor.log'
+$RelaunchExitCode = 75
+$ConvergeExitCode = 76
+$frontendExe = if ($LocalOnly) { $WindowExe } else { Join-Path $FixtureRoot 'absent.exe' }
+$stagedExe = $WindowExe
+$localSocket = $CodesPath
+$localDaemonReady = $true
+$Local = [bool]$LocalOnly
+$prefixDir = $FixtureRoot
+$applyMarker = Join-Path $FixtureRoot 'no-apply-marker'
+$relaunchNext = $false
+$rolledBackOnce = $false
+$splash = $null
+$splashDismissed = $true
+$plan = [pscustomobject]@{ Dials = @(); Self = '' }
+$script:launcherCodeId = 'fixture'
+$global:SotLeases = @()
+function Invoke-LocalDaemonEnsure { $true }
+function Get-SotLocalPipePath { $CodesPath }
+function Get-SotLocalSotdExe { 'unused' }
+function Open-SotLease { }
+function Set-LaunchStatus { }
+function Start-Splash { }
+function Invoke-SelfUpdatePrelude { }
+function Invoke-FreshnessPass { }
+function Update-SotTopologyPlan { }
+function Update-SotRemoteDial { }
+function Set-LaunchNoticeEnv { }
+function Get-SotLauncherCodeId { 'fixture' }
+'@
+    $blocks17 = @($setup17)
+    foreach ($name17 in @('Rotate-FrontendLogs', 'Write-SupLog', 'Write-FrontendExit')) {
+        $definition17 = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $name17 }, $true)
+        if ($definition17) { $blocks17 += $definition17.Extent.Text }
+    }
+    $blocks17 += $ifLocal9[0].Extent.Text
+    $blocks17 += $loop10[0].Extent.Text
+    $blocks17 += 'exit 0'
+    Set-Content -LiteralPath $harness17 -Value ($blocks17 -join "`r`n") -Encoding ASCII
+    $codes17 = Join-Path $output17 'codes.txt'
+    function Run-WindowOutput17([int[]]$Codes, [switch]$LocalOnly) {
+        Set-Content -LiteralPath $codes17 -Value $Codes -Encoding ASCII
+        $arguments17 = '-NoProfile -ExecutionPolicy Bypass -File "' + $harness17 + '" -FixtureRoot "' + $output17 + '" -WindowExe "' + $window17 + '" -CodesPath "' + $codes17 + '"'
+        if ($LocalOnly) { $arguments17 += ' -LocalOnly' }
+        $process17 = Start-Process powershell.exe -ArgumentList $arguments17 -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $output17 'harness.out') -RedirectStandardError (Join-Path $output17 'harness.err')
+        $null = $process17.Handle
+        try {
+            if (-not $process17.WaitForExit(30000)) {
+                $process17.Kill() # Only the process returned by this test's own spawn.
+                throw 'the isolated supervisor did not exit within 30 s'
+            }
+            if ($process17.ExitCode -ne 0) {
+                throw ("isolated supervisor exited $($process17.ExitCode): " + (Get-Content -Raw -LiteralPath (Join-Path $output17 'harness.err')))
+            }
+        } finally { $process17.Dispose() }
+    }
+    foreach ($stream17 in @('stdout', 'stderr')) {
+        Set-Content -LiteralPath (Join-Path $output17 "frontend.$stream17.log") -Value "before first start $stream17" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $output17 "frontend.$stream17.prev.log") -Value 'older generation' -Encoding ASCII
+    }
+    Run-WindowOutput17 @(101)
+    foreach ($stream17 in @('stdout', 'stderr')) {
+        $previous17 = Get-Content -Raw -LiteralPath (Join-Path $output17 "frontend.$stream17.prev.log")
+        Check "17: first start rotates $stream17 and replaces the older backup" ($previous17.Trim() -eq "before first start $stream17") $previous17
+    }
+    $crash17 = @(Get-Content -LiteralPath (Join-Path $output17 'supervisor.log') | Where-Object { $_ -like '*exited code=101*' }) -join ' '
+    Check '17: the abnormal exit line names both current output files' ($crash17.Contains((Join-Path $output17 'frontend.stdout.log')) -and $crash17.Contains((Join-Path $output17 'frontend.stderr.log'))) $crash17
+    Run-WindowOutput17 @(0)
+    Run-WindowOutput17 @(0)
+    foreach ($stream17 in @('stdout', 'stderr')) {
+        $previous17 = Get-Content -Raw -LiteralPath (Join-Path $output17 "frontend.$stream17.prev.log")
+        Check "17: exit 101's $stream17 survives the next start and an empty run" ($previous17.Contains("window $stream17 101")) $previous17
+    }
+    foreach ($code17 in @(75, 76)) {
+        Run-WindowOutput17 @($code17, 0)
+        foreach ($stream17 in @('stdout', 'stderr')) {
+            $previous17 = Get-Content -Raw -LiteralPath (Join-Path $output17 "frontend.$stream17.prev.log")
+            Check "17: exit $code17's relaunch rotates $stream17" ($previous17.Contains("window $stream17 $code17")) $previous17
+        }
+    }
+    Run-WindowOutput17 @(101) -LocalOnly
+    Run-WindowOutput17 @(0) -LocalOnly
+    $previous17 = Get-Content -Raw -LiteralPath (Join-Path $output17 'frontend.stderr.prev.log')
+    Check '17: -Local keeps the crashed window''s stderr at the next start' ($previous17.Contains('window stderr 101')) $previous17
+    $crashes17 = @(Get-Content -LiteralPath (Join-Path $output17 'supervisor.log') | Where-Object { $_ -like '*exited code=101*' })
+    Check '17: -Local also logs the abnormal exit and both output files' (($crashes17.Count -eq 2) -and $crashes17[1].Contains((Join-Path $output17 'frontend.stdout.log')) -and $crashes17[1].Contains((Join-Path $output17 'frontend.stderr.log'))) ($crashes17 -join ' | ')
+} catch { Check '17: section ran' $false $_.Exception.Message }
 } finally { Complete-LocalDaemonTest }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

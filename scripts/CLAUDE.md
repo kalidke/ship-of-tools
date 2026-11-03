@@ -280,6 +280,13 @@ Launch (`launch-sot.sh`, the rendered `sot-launch`, `lib/sot-daemon.sh`, `launch
   executes it, locally or hosted), and carries on.
 - It keeps this computer's daemon only when it runs the launch's version, unless a window holds it (`sotd
   same-version` exit 4); one launcher per user; on Windows no window spawns without a lease held across the gap.
+- On Windows, before every window start (the first, -Local and each relaunch), nonempty `frontend.stdout.log` and
+  `frontend.stderr.log` move to `frontend.stdout.prev.log` and `frontend.stderr.prev.log`, replacing older backups.
+  Empty logs leave the backups alone; a failed move is logged in `supervisor.log` and the window still starts.
+  `supervisor.log` names both current output files on an exit other than 0, 75 (relaunch) or 76 (converge).
+  `tests/test-launcher-leases.ps1` case 17 executes both spawn paths and the relaunch loop with a stand-in window:
+  exit 101's stderr survives the next start, empty output preserves it, and 75 and 76 rotate before respawning.
+  Linux and macOS log rotation is out of scope: the window's output goes to the desktop session's log.
 - A script reaches a daemon only through `sotd stdio-bridge --endpoint` and finds it by its socket or pipe owner,
   never by a pattern over command lines; socket and pipe paths come from `sotd session-socket-path`.
 
