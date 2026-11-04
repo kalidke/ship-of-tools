@@ -374,6 +374,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   colour the palette holds). Its bytes are pre-encoded for a surface that does not encode sRGB on write, so a
   background shows its own colour on either surface (the other solid brushes still show darker there). Painting is
   its operation over the `Gpu`; `Gpu` also holds the surface format's clear colour.
+  Every texture is made through `Quad::from_rgba8_with_sampler`, which refuses one past the GPU's
+  `max_texture_dimension_2d` or of zero size with an error naming its size, so no caller's size can panic the window
+  (`a_texture_past_the_gpu_limit_is_refused_not_panicked`).
 - A terminal cell (the agent pane, the Terminal drawer) is drawn as a terminal draws it: `paint_terminal` carries its
   background and inverse, and the cell backend (`render/cells.rs`, `cell_colors`) exchanges an inverse cell's
   resolved colours, the default foreground and the surface standing in for the side it leaves unset, so its letter

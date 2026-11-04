@@ -202,6 +202,11 @@ impl Quad {
         height: u32,
         sampler: SamplerKind,
     ) -> Result<Self> {
+        if let Some(message) =
+            texture_extent_error(width, height, device.limits().max_texture_dimension_2d)
+        {
+            anyhow::bail!(message);
+        }
         if (rgba.len() as u32) < width * height * 4 {
             anyhow::bail!(
                 "rgba buffer too small: {} bytes for {}x{} (need {})",
@@ -468,4 +473,30 @@ fn _assert_quad_send_sync()
 where
     Quad: Send + Sync,
 {
+}
+
+/// Why a texture of this size cannot be made, or `None` when it can: a zero side or one past the GPU's
+/// `max_texture_dimension_2d` is a validation error that panics the window if it reaches wgpu.
+fn texture_extent_error(width: u32, height: u32, max: u32) -> Option<String> {
+    if width == 0 || height == 0 || width > max || height > max {
+        Some(format!(
+            "texture {width}x{height} is zero-sized or exceeds the GPU limit of {max}"
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::texture_extent_error;
+
+    #[test]
+    fn a_texture_past_the_gpu_limit_is_refused_not_panicked() {
+        let message = texture_extent_error(100748, 40, 16384).expect("refused");
+        assert!(message.contains("100748") && message.contains("16384"), "{message}");
+        assert!(texture_extent_error(16384, 16384, 16384).is_none());
+        assert!(texture_extent_error(0, 10, 16384).is_some());
+        assert!(texture_extent_error(10, 0, 16384).is_some());
+    }
 }
