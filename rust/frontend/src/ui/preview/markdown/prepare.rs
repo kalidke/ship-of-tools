@@ -68,20 +68,16 @@ impl State {
                 (Some(w_ex), Some(h_ex)) => {
                     let nat_w = (w_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
                     let nat_h = (h_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
-                    let max_w = rect.w.max(1.0);
-                    let max_h = rect.h.max(1.0);
-                    // Uniform downscale only — never enlarge past natural.
-                    let s = (max_w / nat_w).min(max_h / nat_h).min(1.0).max(0.001);
-                    (
-                        (nat_w * s).ceil().max(1.0) as u32,
-                        (nat_h * s).ceil().max(1.0) as u32,
-                    )
+                    math_raster_size(nat_w, nat_h, rect.w.min(md_rect.w), rect.h)
                 }
                 _ => {
                     // Pre-fix fallback: no parsed dims, letterbox into
                     // the row reservation. Should be rare — the SVG's
                     // root tag is well-formed in every observed case.
-                    ((rect.w as u32).max(1), (rect.h as u32).max(1))
+                    (
+                        (rect.w.min(md_rect.w) as u32).max(1),
+                        (rect.h as u32).max(1),
+                    )
                 }
             };
             match quad_from_svg_bytes(
@@ -277,5 +273,32 @@ impl State {
 
         self.canvas.prepare_text(&self.gpu, &lines, &extras)?;
         Ok((scalebar_draw, media_paint_targets))
+    }
+}
+
+/// The largest size of the formula's aspect that fits `max_w` x `max_h`, never
+/// enlarged past natural, each side at least 1. No scale floor, so a very wide
+/// formula can never exceed the pane.
+fn math_raster_size(nat_w: f32, nat_h: f32, max_w: f32, max_h: f32) -> (u32, u32) {
+    let nat_w = nat_w.max(1.0);
+    let nat_h = nat_h.max(1.0);
+    let s = (max_w.max(1.0) / nat_w).min(max_h.max(1.0) / nat_h).min(1.0);
+    let w = ((nat_w * s).floor().max(1.0) as u32).min(max_w.max(1.0) as u32);
+    let h = ((nat_h * s).ceil().max(1.0) as u32).min(max_h.max(1.0) as u32);
+    (w, h)
+}
+
+#[cfg(test)]
+mod math_raster_tests {
+    use super::math_raster_size;
+
+    #[test]
+    fn a_formula_wider_than_the_pane_rasterizes_at_the_pane_width() {
+        let (w, h) = math_raster_size(100_748.0, 40.0, 1200.0, 400.0);
+        assert!(w <= 1200 && w > 1000, "w={w}");
+        assert!(h >= 1, "h={h}");
+        assert_eq!(math_raster_size(300.0, 40.0, 1200.0, 400.0), (300, 40));
+        let (w, h) = math_raster_size(1e9, 1.0, 1200.0, 400.0);
+        assert!(w <= 1200 && h <= 1 && h >= 1, "{w}x{h}");
     }
 }

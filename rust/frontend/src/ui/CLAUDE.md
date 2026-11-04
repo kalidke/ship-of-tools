@@ -262,7 +262,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
   no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
   buffers are rebuilt only when their sources change, which also returns the shared horizontal scroll to the left;
-  the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size.
+  the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size; an inline math raster is sized to fit the preview pane's width and its reservation's height, never wider than the pane (`a_formula_wider_than_the_pane_rasterizes_at_the_pane_width`).
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
