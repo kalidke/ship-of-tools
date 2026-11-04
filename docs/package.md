@@ -576,5 +576,8 @@ deliberate close, which now always sends its intent, ends them at once, after a 
 REPL run and every session on its computer ended although a new window started 21 s later; the Windows launcher keeps
 a window's output across its next start (`frontend.stdout.prev.log`, `frontend.stderr.prev.log`), since the panic's
 message was lost; and every landing shard links its test programs before its timed step, after a macOS runner at half
-speed ran out of its five minutes compiling, with no test failed.
+speed ran out of its five minutes compiling, with no test failed. v0.7.0-rc.8 was cut 2026-11-03 from these. Since
+2026-11-04 a texture the GPU cannot hold is refused with an error, never a window panic, and an inline math raster is
+never wider than the preview pane, after a Windows window on 0.7.0-rc.7 panicked twice in one morning on a
+100,748-pixel-wide math texture from a markdown preview full of dollar signs (the kept window output named it).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
