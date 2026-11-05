@@ -208,7 +208,11 @@ sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c
 # write, a death bash runs no EXIT trap for, after its row was ready and before its task was sent. Ignored, the write
 # fails instead, in the tool and in what it starts, and sot_say lets it fail where errexit would end the tool, so the
 # steps and the exit status are the same whoever reads. A line that ends the tool with its error stays a plain echo.
-sot_say() { printf '%s\n' "$*" 2>/dev/null || :; }
+# The write is a program's, through env, never the shell's builtin: a builtin's write the closed pipe refuses stays in
+# the shell's own output buffer under macOS's libc, and its bash 3.2 then hands those bytes to every later command
+# substitution, which flushes them into the value it captures (the despawn's own line inside a folder name, seen in
+# agents/tests/test-despawn-resolve.sh D6b on macOS only).
+sot_say() { env printf '%s\n' "$*" 2>/dev/null || :; }
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, S1/S2): the ONE resolver matching
