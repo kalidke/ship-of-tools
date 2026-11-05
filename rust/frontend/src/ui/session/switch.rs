@@ -258,6 +258,7 @@ impl State {
             // figure_failed, which would collapse figures that are
             // perfectly healthy here.
             self.preview_source = Default::default();
+            self.pages.set_page(None);
             self.figures.clear_failed();
             self.raster.hide();
             self.shaped.clear_svg();

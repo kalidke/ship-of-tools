@@ -258,7 +258,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
-  resets the raster zoom to fit. `FigureOverlays` privately owns what is drawn over a figure: the sticky scalebar
+  resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint
+  (a first visit clears it), so a restored document keeps its sampler, its page keys and its title
+  (`a_restored_row_keeps_its_pdf_page_and_a_row_without_pages_gets_none`). `FigureOverlays` privately owns what is drawn over a figure: the sticky scalebar
   toggle (disabled when a scale save fails), the caption store, the labels shaped each frame outside the render pass
   (cleared whenever their overlay is not drawn), and the caption band published before the image rect is derived, so
   the keyboard zoom ceiling uses the same reduced pane.

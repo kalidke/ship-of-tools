@@ -51,6 +51,9 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// its bytes fed back through `render_preview_source` to rebuild the
     /// preview pane without a fresh `preview.get`.
     source: InstalledPreviewSource,
+    /// `(page, count)` of the bytes in `source` (`PageView`), `None` when unpaged: restored before the repaint, so
+    /// the repaint picks the paged sampler and the page keys and title come back with the document.
+    page: Option<(u32, u32)>,
     /// Terminally-failed figure URLs for the markdown doc in `source` —
     /// MUST travel with it (round-2 review finding: a provenance companion
     /// of the shown doc, not global state). Without snapshotting it, a
@@ -100,6 +103,7 @@ impl State {
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
+                page: self.pages.page(),
                 figure_failed: self.figures.park_failed(),
                 concept: self.concept.park(),
                 edit_state: self.editor.park(),
@@ -160,6 +164,8 @@ impl State {
         // figure_failed is restored first too, since that branch reads it
         // (via figure_already_handled).
         self.preview_source = snap.source.clone();
+        // The page of those bytes, never the departed row's: before the repaint, which picks its sampler from it.
+        self.pages.set_page(snap.page);
         self.figures.restore_failed(snap.figure_failed.clone());
         if let Some((mime, bytes)) = self.preview_source.source_copy() {
             self.render_preview_source(&mime, &bytes);
