@@ -121,6 +121,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `pane.restore` | `Escape` | Undo maximization, then wide preview, one layer at a time. |
 | `layout.wide_preview` | `Alt++` | Hide or show the agent column to give the preview more room. |
 | `view.selfie` | `Primary+Shift+S` | Save a PNG of the whole frontend window. |
+| `strip.cycle_order` | `Primary+Shift+O` | Cycle the session strip's order: by state, alphabetical, by recent activity. |
 | `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
 | `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
 | `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |

@@ -79,6 +79,7 @@ impl State {
         }
         apply_harness_flags(&mut state, cli);
         apply_startup_font_scale(&mut state, cli);
+        apply_startup_strip_order(&mut state);
         Ok(state)
     }
 }
@@ -389,6 +390,17 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
     // prefill, as every later one does (`State::resubscribe_monitor`).
     if cli.start_monitor {
         state.hold_monitor_subscription();
+    }
+}
+
+/// The strip's saved order, applied before the first listing. Harness runs skip it, as they skip the saved zoom.
+fn apply_startup_strip_order(state: &mut State) {
+    if state.ephemeral {
+        return;
+    }
+    if let Some(name) = crate::ui::persist::resume::load().strip_order {
+        let order = crate::ui::session::StripOrder::parse(&name);
+        state.row_presentation.set_order(order, std::collections::HashSet::new());
     }
 }
 

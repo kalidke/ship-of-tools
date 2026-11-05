@@ -93,6 +93,7 @@ actions! {
     RestoreLayout, "pane.restore", ["Escape"], "Restore layout", "Undo maximization, then wide preview, one layer at a time.", "Window", Restore;
     ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
     Selfie, "view.selfie", ["Primary+Shift+S"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
+    StripCycleOrder, "strip.cycle_order", ["Primary+Shift+O"], "Session order", "Cycle the session strip's order: by state, alphabetical, by recent activity.", "Window", Global;
     ToggleReplDrawer, "drawer.repl", ["Primary+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
     ToggleTerminalDrawer, "drawer.terminal", ["Primary+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
     ToggleMonitorDrawer, "drawer.monitor", ["Primary+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;

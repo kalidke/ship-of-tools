@@ -72,6 +72,7 @@ fn save_then_load_round_trips() {
         window_h: None,
         fullscreen: Some(true),
         font_scale: Some(1.3),
+        strip_order: Some("recent".to_string()),
         nav_selected_id: Some("files:src/foo.jl".to_string()),
         nav_scroll: Some(7),
     };
@@ -82,6 +83,7 @@ fn save_then_load_round_trips() {
     assert_eq!(loaded.last_host.as_deref(), Some("myhost"));
     assert_eq!(loaded.fullscreen, Some(true));
     assert_eq!(loaded.font_scale, Some(1.3));
+    assert_eq!(loaded.strip_order.as_deref(), Some("recent"));
     assert_eq!(loaded.nav_selected_id.as_deref(), Some("files:src/foo.jl"));
     assert_eq!(loaded.nav_scroll, Some(7));
 }
@@ -111,4 +113,11 @@ fn load_tolerates_garbage_lines() {
     .unwrap();
     let s = load();
     assert_eq!(s.last_mode.as_deref(), Some("files"));
+}
+
+#[test]
+fn a_state_file_without_strip_order_loads_as_none() {
+    let _g = set_test_env();
+    save(&GlobalState { last_mode: Some("sessions".to_string()), ..Default::default() });
+    assert!(load().strip_order.is_none());
 }

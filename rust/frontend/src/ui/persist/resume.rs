@@ -70,6 +70,9 @@ pub struct GlobalState {
     /// last save, so a self-relaunch (ADR 0017) comes back at the same
     /// zoom instead of resetting to 1.0. `None` → default 1.0.
     pub font_scale: Option<f64>,
+    /// The session strip's order at last save: `state`, `alphabetical` or
+    /// `recent`. `None` → the default, by state.
+    pub strip_order: Option<String>,
     /// Nav cursor's selected node id at last save (e.g.
     /// `files:rust/frontend/src/ui/mod.rs`), restored best-effort when that
     /// row is present in the reloaded tree. `None` → land on the default
@@ -144,6 +147,7 @@ pub fn load() -> GlobalState {
             "window_y" => g.window_y = value.parse().ok(),
             "fullscreen" => g.fullscreen = value.parse().ok(),
             "font_scale" => g.font_scale = value.parse().ok(),
+            "strip_order" => g.strip_order = Some(value.to_string()),
             "nav_selected_id" => g.nav_selected_id = Some(value.to_string()),
             "nav_scroll" => g.nav_scroll = value.parse().ok(),
             _ => {}
@@ -193,6 +197,9 @@ pub fn save(state: &GlobalState) {
     }
     if let Some(v) = state.font_scale {
         body.push_str(&format!("font_scale = {v}\n"));
+    }
+    if let Some(v) = &state.strip_order {
+        body.push_str(&format!("strip_order = {}\n", toml_quote(v)));
     }
     if let Some(id) = &state.nav_selected_id {
         body.push_str(&format!("nav_selected_id = {}\n", toml_quote(id)));

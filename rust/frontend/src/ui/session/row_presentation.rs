@@ -7,8 +7,45 @@ use super::row_directory::RowDirectory;
 use crate::net::dial::HostKey;
 use crate::ui::WsKey;
 
+/// How a host's block of the strip is sorted; the host blocks themselves never change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::ui) enum StripOrder {
+    #[default]
+    State,
+    Alphabetical,
+    Recent,
+}
+
+impl StripOrder {
+    pub(in crate::ui) fn next(self) -> Self {
+        match self {
+            Self::State => Self::Alphabetical,
+            Self::Alphabetical => Self::Recent,
+            Self::Recent => Self::State,
+        }
+    }
+
+    pub(in crate::ui) fn name(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Alphabetical => "alphabetical",
+            Self::Recent => "recent",
+        }
+    }
+
+    /// Anything but a known name is the default order.
+    pub(in crate::ui) fn parse(name: &str) -> Self {
+        match name.trim() {
+            "alphabetical" => Self::Alphabetical,
+            "recent" => Self::Recent,
+            _ => Self::State,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(in crate::ui) struct RowPresentation {
+    order: StripOrder,
     workspace_labels: HashMap<WsKey, String>,
     workspace_project_roots: HashMap<WsKey, String>,
     workspace_states: HashMap<WsKey, (String, String)>,
@@ -87,8 +124,10 @@ impl RowPresentation {
         }
         let selected = selected_key(active_host, active_slug, default_slug.as_deref());
         self.workspace_slugs = activity_order(
+            self.order,
             &slugs,
             &states,
+            &labels,
             &badged,
             &self.workspace_slugs,
             selected.as_ref(),
@@ -109,11 +148,31 @@ impl RowPresentation {
     pub(in crate::ui) fn resort(&mut self, host: &str, slug: Option<&str>, badged: HashSet<WsKey>) {
         let selected = self.selected_key(host, slug);
         self.workspace_slugs = activity_order(
+            self.order,
             &self.workspace_slugs,
             &self.workspace_states,
+            &self.workspace_labels,
             &badged,
             &self.workspace_slugs,
             selected.as_ref(),
+        );
+    }
+
+    pub(in crate::ui) fn order(&self) -> StripOrder {
+        self.order
+    }
+
+    /// A change of order sorts at once and without the pin: the selection lands where the order puts it.
+    pub(in crate::ui) fn set_order(&mut self, order: StripOrder, badged: HashSet<WsKey>) {
+        self.order = order;
+        self.workspace_slugs = activity_order(
+            order,
+            &self.workspace_slugs,
+            &self.workspace_states,
+            &self.workspace_labels,
+            &badged,
+            &self.workspace_slugs,
+            None,
         );
     }
 
@@ -277,12 +336,16 @@ fn activity_rank(state: &str, badged: bool) -> u8 {
 }
 
 fn activity_order(
+    order: StripOrder,
     slugs: &[WsKey],
     states: &HashMap<WsKey, (String, String)>,
+    labels: &HashMap<WsKey, String>,
     badged: &std::collections::HashSet<WsKey>,
     prev: &[WsKey],
     pinned: Option<&WsKey>,
 ) -> Vec<WsKey> {
+    // Alphabetical moves only when rows come or go, so it has no pin.
+    let pinned = pinned.filter(|_| order != StripOrder::Alphabetical);
     let prev_pos = |k: &WsKey| prev.iter().position(|p| p == k).unwrap_or(usize::MAX);
     let sort_key = |k: &WsKey| {
         let (state, at) = states
@@ -293,11 +356,29 @@ fn activity_order(
             .ok()
             .map(|t| t.timestamp_millis())
             .unwrap_or(i64::MIN);
-        (
-            activity_rank(state, badged.contains(k)),
-            std::cmp::Reverse(stamp),
-            prev_pos(k),
-        )
+        match order {
+            StripOrder::State => (
+                activity_rank(state, badged.contains(k)),
+                std::cmp::Reverse(stamp),
+                prev_pos(k),
+                String::new(),
+                String::new(),
+            ),
+            StripOrder::Alphabetical => (
+                0,
+                std::cmp::Reverse(0),
+                0,
+                labels.get(k).unwrap_or(&k.1).to_lowercase(),
+                k.1.clone(),
+            ),
+            StripOrder::Recent => (
+                0,
+                std::cmp::Reverse(stamp),
+                prev_pos(k),
+                String::new(),
+                String::new(),
+            ),
+        }
     };
     let mut out: Vec<WsKey> = Vec::with_capacity(slugs.len());
     let mut start = 0;

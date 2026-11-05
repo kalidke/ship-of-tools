@@ -40,6 +40,16 @@ impl State {
         self.row_presentation.resort(self.selected.host(), self.selected.workspace_id().as_deref(), badged);
     }
 
+    /// Take the strip's next order, sort by it at once with the current badges, and keep the choice.
+    pub(in crate::ui) fn cycle_strip_order(&mut self) {
+        let order = self.row_presentation.order().next();
+        let badged = self.badged_keys();
+        self.row_presentation.set_order(order, badged);
+        self.persist_resume_state();
+        self.status.set(format!("Session order: {}", order.name()));
+        self.status.hold();
+    }
+
     /// Apply listing effects in order: badges/presentation, REPL catch-up, default migration, status.
     /// The owner pins using the fresh default, preserves missing-row history, and exports migration
     /// on every applicable refresh: a late reply can have created another raw-slug entry.

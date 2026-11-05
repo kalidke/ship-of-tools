@@ -98,12 +98,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `RowPresentation` privately owns labels, canonical-root fallbacks, state/stamp pairs, transition history,
   flashes, strip order and the active host's default. Projections use only `ordered_hosts` and listed host/slug keys;
   inert defaults retain metadata. None selections use hello metadata; unknown nondefaults get no root fallback.
-  Stable host blocks rank blocked, badge, done, working, waiting, rest and pin the selection's previous slot.
+  Stable host blocks, in `ordered_hosts` order, are sorted by a `StripOrder`, default `State`: rank blocked, badge,
+  done, working, waiting, rest, then newest stamp, pinning the selection's previous slot. `Alphabetical` sorts a block
+  by shown label without case, then slug, with no pin. `Recent` sorts by newest `agent_status_at` (an unreadable stamp
+  last) and pins like `State`. `set_order` re-sorts at once without the pin; the key action `strip.cycle_order`
+  (`Primary+Shift+O`) cycles state, alphabetical, recent and the choice is kept as `strip_order` in the resume state,
+  applied at startup before the first listing.
   Known changes flash; missing rows retain history. Sessions/strip share the 600 ms fade. Destroy forgets only
   labels/roots; capture supports flashes without demo rows.
   The clock is sampled separately at each changed-row insertion after projection and at each explicit demo flash
   after capture seeding, preserving the timing of `1bc65e054`.
-  Behavior tests: `workspace_list::tests` and `row_presentation::tests`.
+  Behavior tests: `workspace_list::tests` and `row_presentation::tests` (among them
+  `alphabetical_order_sorts_each_host_block_by_label_and_ignores_state`,
+  `recent_order_puts_the_newest_status_first_and_keeps_the_selection_in_its_slot`,
+  `changing_the_order_resorts_at_once_and_does_not_pin`, `the_order_cycles_state_alphabetical_recent`,
+  `next_row_follows_the_chosen_order`), and the resume round trip in `persist::resume_tests`.
 - `ResultLedger` privately owns canonical owed results, the listed badge index, both checked serials and the
   hostless issuing reveal token. Replacements reset attempts; retries advance independently, and neither beginning
   an attempt, releasing reveal ownership nor abandoning an unsent attempt consumes the owed result. Admission
@@ -339,7 +348,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   switches move the baseline without arming. The draw publishes the overflowing rows it collected; the idle tick
   expires the deadline once, with a repaint.
 - `StatusLine` privately owns the status line: every write replaces the text; a pushed notify (and the launch
-  notice, a capture's result, an interrupted upload, the fullscreen pin) also holds it for `NOTIFY_STICKY`, during
+  notice, a capture's result, an interrupted upload, the fullscreen pin, the session order) also holds it for `NOTIFY_STICKY`, during
   which `rebuild_connection_status` leaves it; the idle tick expires the hold once and rebuilds the line.
 - `BatteryGauge` privately owns the battery readout: the OS is asked at most every 30 s, the label is `None` with
   no battery or on an error (never a fake reading), and every frame between queries reuses it.

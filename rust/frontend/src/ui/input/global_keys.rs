@@ -210,6 +210,12 @@ pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: 
             state.window.request_redraw();
             return Break(());
         }
+        if action == Some(Action::StripCycleOrder) {
+            state.cycle_strip_order();
+            state.last_key = Some(label);
+            state.window.request_redraw();
+            return Break(());
+        }
     }
     Continue(())
 }

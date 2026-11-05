@@ -393,3 +393,156 @@ fn capture_samples_time_only_for_each_explicit_flash() {
     assert!((p.flash_factor_for("demo", "one", at) - 0.5).abs() < 1e-6);
     assert_eq!(p.flash_factor_for("demo", "two", at), 1.0);
 }
+
+fn labeled(slug: &str, label: &str, state: &str, at: &str) -> WorkspaceInfo {
+    let mut r = row(slug, state, at);
+    r.label = label.into();
+    r
+}
+
+fn refresh_selected(p: &mut RowPresentation, d: &RowDirectory, slug: &str) {
+    p.refresh(
+        d,
+        &["a".into(), "b".into()],
+        "a",
+        Some(slug),
+        HashSet::new(),
+        Instant::now,
+    );
+}
+
+fn slugs(p: &RowPresentation) -> Vec<String> {
+    p.keys().iter().map(|(h, s)| format!("{h}/{s}")).collect()
+}
+
+#[test]
+fn alphabetical_order_sorts_each_host_block_by_label_and_ignores_state() {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            labeled("a1", "bravo", "blocked", "2026-09-08T09:00:00Z"),
+            labeled("a2", "Alpha", "idle", "2026-09-08T09:05:00Z"),
+            labeled("a3", "charlie", "working", "2026-09-08T09:01:00Z"),
+        ],
+    );
+    replace(
+        &mut d,
+        "b",
+        vec![
+            labeled("b1", "Zulu", "idle", ""),
+            labeled("b2", "yankee", "blocked", ""),
+            labeled("b3", "", "done", ""),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    refresh(&mut p, &d, Instant::now());
+    p.set_order(StripOrder::Alphabetical, HashSet::new());
+    // b3 has no label, so its slug stands in.
+    assert_eq!(
+        slugs(&p),
+        ["a/a2", "a/a1", "a/a3", "b/b3", "b/b2", "b/b1"]
+    );
+    // A refresh under the same order keeps it, even with a selection.
+    refresh_selected(&mut p, &d, "a3");
+    assert_eq!(
+        slugs(&p),
+        ["a/a2", "a/a1", "a/a3", "b/b3", "b/b2", "b/b1"]
+    );
+}
+
+#[test]
+fn recent_order_puts_the_newest_status_first_and_keeps_the_selection_in_its_slot() {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            row("a1", "idle", "2026-09-08T09:01:00Z"),
+            row("a2", "blocked", "2026-09-08T09:03:00Z"),
+            row("a3", "working", "2026-09-08T09:02:00Z"),
+            row("a4", "working", "malformed"),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    refresh(&mut p, &d, Instant::now());
+    p.set_order(StripOrder::Recent, HashSet::new());
+    assert_eq!(slugs(&p), ["a/a2", "a/a3", "a/a1", "a/a4"]);
+    refresh_selected(&mut p, &d, "a3");
+    assert_eq!(slugs(&p), ["a/a2", "a/a3", "a/a1", "a/a4"]);
+    replace(
+        &mut d,
+        "a",
+        vec![
+            row("a1", "idle", "2026-09-08T09:09:00Z"),
+            row("a2", "blocked", "2026-09-08T09:03:00Z"),
+            row("a3", "working", "2026-09-08T09:02:00Z"),
+            row("a4", "working", "malformed"),
+        ],
+    );
+    refresh_selected(&mut p, &d, "a3");
+    // a3 stays in slot 1; the others follow their stamps around it.
+    assert_eq!(slugs(&p), ["a/a1", "a/a3", "a/a2", "a/a4"]);
+}
+
+#[test]
+fn changing_the_order_resorts_at_once_and_does_not_pin() {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            labeled("a1", "zed", "working", "2026-09-08T09:00:00Z"),
+            labeled("a2", "alpha", "blocked", "2026-09-08T09:00:00Z"),
+            labeled("a3", "mid", "idle", "2026-09-08T09:00:00Z"),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    refresh_selected(&mut p, &d, "a1");
+    assert_eq!(slugs(&p), ["a/a2", "a/a1", "a/a3"]);
+    p.set_order(StripOrder::Alphabetical, HashSet::new());
+    assert_eq!(p.order(), StripOrder::Alphabetical);
+    assert_eq!(slugs(&p), ["a/a2", "a/a3", "a/a1"]);
+    p.set_order(StripOrder::State, HashSet::new());
+    assert_eq!(slugs(&p), ["a/a2", "a/a1", "a/a3"]);
+}
+
+#[test]
+fn the_order_cycles_state_alphabetical_recent() {
+    let mut o = StripOrder::default();
+    assert_eq!(o, StripOrder::State);
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        seen.push(o.name());
+        o = o.next();
+    }
+    assert_eq!(seen, ["state", "alphabetical", "recent", "state"]);
+    for o in [StripOrder::State, StripOrder::Alphabetical, StripOrder::Recent] {
+        assert_eq!(StripOrder::parse(o.name()), o);
+    }
+    assert_eq!(StripOrder::parse("newest"), StripOrder::State);
+    assert_eq!(StripOrder::parse(""), StripOrder::State);
+}
+
+#[test]
+fn next_row_follows_the_chosen_order() {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            labeled("a1", "c", "blocked", ""),
+            labeled("a2", "a", "idle", ""),
+            labeled("a3", "b", "working", ""),
+        ],
+    );
+    let mut p = RowPresentation::default();
+    refresh(&mut p, &d, Instant::now());
+    assert_eq!(p.next_row(1, "a", Some("a1")), Some(("a".into(), "a3".into())));
+    p.set_order(StripOrder::Alphabetical, HashSet::new());
+    assert_eq!(slugs(&p), ["a/a2", "a/a3", "a/a1"]);
+    assert_eq!(p.next_row(1, "a", Some("a1")), Some(("a".into(), "a2".into())));
+    assert_eq!(p.next_row(1, "a", Some("a2")), Some(("a".into(), "a3".into())));
+    assert_eq!(p.next_row(-1, "a", Some("a2")), Some(("a".into(), "a1".into())));
+}

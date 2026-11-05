@@ -29,5 +29,5 @@ pub(in crate::ui) use row_directory::{
     ResolvedWorkspace, ResultRowIdentity, RowDirectory, RowDirectoryUpdate,
 };
 pub(in crate::ui) use workspace_list::*;
-pub(in crate::ui) use row_presentation::RowPresentation;
+pub(in crate::ui) use row_presentation::{RowPresentation, StripOrder};
 pub(in crate::ui) use selected::SelectedRow;

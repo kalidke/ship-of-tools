@@ -66,6 +66,7 @@ impl State {
             window_y: pos.as_ref().map(|p| p.y),
             fullscreen: Some(self.window.fullscreen().is_some()),
             font_scale: Some(self.canvas.text_scale_mult() as f64),
+            strip_order: Some(self.row_presentation.order().name().to_string()),
             nav_selected_id: self
                 .nav.tree()
                 .rows()
