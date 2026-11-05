@@ -48,7 +48,9 @@ Guarantees, each with the mechanism it rests on:
   red run is fixed forward in the next landing or its landing reverted), is the build and the unit tests sharded on all three systems by
   `.github/test-shards.txt`; its `release SYSTEM shard...` lines defer selected shards to that system's release gate.
   Each job is bound by `timeout-minutes`, with a check that every test of a named target runs in
-  exactly one shard (`tests/shards.py check`), in five to seven minutes. CI.yml's preview tools (ghostscript, poppler, ffmpeg) come from a cache keyed by the runner
+  exactly one shard (`tests/shards.py check`), in five to seven minutes. In the build+test job every step has its own
+  bound and the job's is their sum plus two minutes, so a slow runner fails in the step it slowed, named, never as a
+  job ceiling with every step green (seen 2026-11-03 on a macOS runner at a quarter speed). CI.yml's preview tools (ghostscript, poppler, ffmpeg) come from a cache keyed by the runner
   image and the package list, so a landing does not wait on a package mirror. release-gate.yml, dispatched by hand at the
   release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
   that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
