@@ -588,5 +588,8 @@ a result only when the closing text names it, after it ordered a session's own w
 twice. Since the same day the installer's comm step loads ShipTools with `--compiled-modules=no`, after an elevated
 Windows install failed there: Julia's loader stat'd the source path a ShipTools cache had recorded through the
 person's `repo\current` junction, which an elevated process cannot traverse, and threw instead of skipping the cache
-(reproduced on that computer; with caches off the module loads in 0.4 s).
+(reproduced on that computer; with caches off the module loads in 0.4 s). Since the same day the spawn's and the
+despawn's lines (`sot_say`) are written by a program, not the shell's builtin, after the release gate's macOS bash 3.2
+job failed the despawn test whose caller stops reading: the builtin's refused write stayed in the shell's output
+buffer, and every later command substitution captured it (the fix is proven at the next release gate's macOS job).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
