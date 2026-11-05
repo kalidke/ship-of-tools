@@ -247,10 +247,17 @@ pub(super) fn stale_manifests(checkout: &Path, repair: bool) -> Vec<(&'static st
         .collect()
 }
 
+/// The comm step's arguments. `--compiled-modules=no` makes the step read no precompile cache: a cache another process
+/// compiled through a path this one cannot stat (an elevated run and the person's `repo\current` junction) would fail it.
+/// ShipTools uses only Base, so compiling it from source takes under a second.
+fn comm_args(checkout: &Path) -> Vec<String> {
+    vec![format!("--project={}", checkout.display()), "--compiled-modules=no".into(), "-e".into(), "using ShipTools; ShipTools.update_comm()".into()]
+}
+
 /// Bring the comm install to the checkout: `ShipTools.update_comm()` from the checkout's project.
 pub(super) fn update_comm(checkout: &Path, selected: Option<&str>, scratch: &Path) -> bool {
-    let project = format!("--project={}", checkout.display());
-    step(selected, scratch, &[&project, "-e", "using ShipTools; ShipTools.update_comm()"])
+    let args = comm_args(checkout);
+    step(selected, scratch, &args.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 #[cfg(test)]

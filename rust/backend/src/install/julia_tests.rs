@@ -39,3 +39,12 @@ fn a_julia_below_the_floor_is_named_with_its_fix() {
     let Judged::Step(line) = judge(&facts(Source::Bin(Some("1.12.0".into())), None)) else { panic!() };
     assert!(line.starts_with("the Julia the comm refresh runs could not be asked") && line.ends_with("ahead of /usr/bin/julia on PATH"), "{line}");
 }
+
+/// The comm step reads no precompile cache: its arguments name the checkout's project, carry `--compiled-modules=no`
+/// before `-e`, and keep the same `-e` expression.
+#[test]
+fn the_comm_step_reads_no_precompile_cache() {
+    let checkout = Path::new("/checkout");
+    let want = [format!("--project={}", checkout.display()), "--compiled-modules=no".to_string(), "-e".to_string(), "using ShipTools; ShipTools.update_comm()".to_string()];
+    assert_eq!(comm_args(checkout), want);
+}

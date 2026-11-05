@@ -218,7 +218,9 @@ Guarantees, each with the mechanism it rests on. Install:
 - The Julia the daemon will run meets the kernel's floor (`[compat] julia` of `julia/kernel/Project.toml`): the
   daemon's (`SOT_JULIA_BIN`, else juliaup's default read from `juliaup.json`, else PATH) and the comm refresh's (PATH).
   Below it the run ends ONE STEP LEFT naming the fix; a PATH julia below it ends the run before a Julia step. Julia
-  steps run with `TMPDIR` inside the run's scratch folder, which the run removes.
+  steps run with `TMPDIR` inside the run's scratch folder, which the run removes. The comm step runs with
+  `--compiled-modules=no`, so a ShipTools cache compiled through `repo\current` cannot fail an elevated run on a
+  Windows 11 computer (`the_comm_step_reads_no_precompile_cache`).
 - What it left is checked. The verdict reads the disk and the processes: the binaries' versions, the record,
   `repo/current`, no pointer armed again, the comm stamp, the Julia manifests of a daemon role, the state folder,
   Claude Code through agents' executable resolver with the installer's PATH and home, and the daemon's answer;
