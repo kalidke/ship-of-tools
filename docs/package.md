@@ -585,5 +585,8 @@ every red card left the person's Queue: the leg's bootstrap prompt had counted a
 question, and the join wrote the whole registry entry; the bootstrap is now a machine turn, a join of the same row
 keeps its question, and the session start names it. Since the same day the end-of-turn audit counts a markdown file as
 a result only when the closing text names it, after it ordered a session's own working queue badged into the window
-twice.
+twice. Since the same day the installer's comm step loads ShipTools with `--compiled-modules=no`, after an elevated
+Windows install failed there: Julia's loader stat'd the source path a ShipTools cache had recorded through the
+person's `repo\current` junction, which an elevated process cannot traverse, and threw instead of skipping the cache
+(reproduced on that computer; with caches off the module loads in 0.4 s).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
