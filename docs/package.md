@@ -592,4 +592,8 @@ person's `repo\current` junction, which an elevated process cannot traverse, and
 despawn's lines (`sot_say`) are written by a program, not the shell's builtin, after the release gate's macOS bash 3.2
 job failed the despawn test whose caller stops reading: the builtin's refused write stayed in the shell's output
 buffer, and every later command substitution captured it (the fix is proven at the next release gate's macOS job).
+Since the same day every folder-trust preparation is one log line naming its outcome, a recorded or already-trusted
+entry at info with the trust file, after a move of 23 rows to another account left 3 at Claude Code's trust dialog
+and the log could not say whether their entries had been written (the restart that recovers such a row is planned,
+not built).
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
