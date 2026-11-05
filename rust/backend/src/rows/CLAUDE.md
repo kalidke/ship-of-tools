@@ -243,6 +243,12 @@ its name:
   closing line goes unstamped (`work_state::cli::tests::{a_blocked_stamp_that_owes_a_page_is_refused_until_nudged,
   a_wait_that_addresses_the_person_is_refused_until_nudged}`, `question::tests::
   a_line_addresses_the_person_by_you_or_by_naming_them`, `comm/tests/test-status-floor.sh`).
+- A row's question outlives its session. The leg's bootstrap prompt (`/sot-session-start`) is a machine turn, the same
+  row's join keeps the question (messaging's join), and the session start prints it on an `OPEN QUESTION` line; it reads
+  red until the person answers or the session stamps working, idle or done. Seen 2026-11-05, when a host restart cleared
+  every red card (`join::tests::a_join_of_the_same_row_keeps_its_open_question_and_nothing_else`, `join::tests::
+  a_join_over_another_computers_entry_keeps_nothing`, `start::tests::a_session_start_names_the_question_its_row_kept`,
+  and the status-floor case `case_a_restarted_legs_session_keeps_its_rows_question`).
 - One writer path. Every write of a work-state fact is `work_state::apply_event` (through `write_event`), one read-decide-write under the registry lock
   on a fresh read (messaging's `edit_entry`). A session reaches it through `sotd work-state`, which `comm-status.sh`
   runs; the daemon calls it in its own process.

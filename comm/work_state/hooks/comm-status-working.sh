@@ -51,6 +51,9 @@ case "$prompt" in
     # of them owes a closing block at turn end.
     "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
         ORIGIN=machine ;;
+    # The launcher's bootstrap, typed by no person, answers nothing.
+    "/sot-session-start"*|*"<command-name>/sot-session-start</command-name>"*)
+        ORIGIN=machine ;;
 esac
 COMM_STATUS_ORIGIN="$ORIGIN" "$STATUS" prompt >/dev/null 2>&1 || true
 exit 0

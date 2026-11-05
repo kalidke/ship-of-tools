@@ -271,13 +271,17 @@ case_the_joining_turn_is_green_until_its_stop() {
     I; expect idle/-/-/-/- end || rc=1
     return "$rc"
 }
-case_a_resumed_joining_turn_is_green_and_ends() {
-    local rc=0
-    seed_facts '{"question":"old?","note":"old"}'
-    W '{"prompt":"/sot-session-start"}'; expect working/user/-/-/- prompt || rc=1
+# A row's open question outlives its session (seen 2026-11-05, when a host restart cleared every red card): the
+# leg's bootstrap prompt is a machine turn that answers nothing, the same row's join keeps the question, and the
+# turn's end leaves the row blocked on it with the question as its summary.
+case_a_restarted_legs_session_keeps_its_rows_question() {
+    local rc=0 host; host="$("$SCRIPTS_DIR/comm-context.sh" 2>/dev/null | sed -n 's/^HOST=//p')"
+    seed_facts "$(jq -cn --arg h "$host" --arg r "$PROJECT_ROOT" '{host:$h, workspace_id:"", root:$r, question:"old?", note:"old"}')"
+    W '{"prompt":"/sot-session-start"}'; expect working/machine/q/-/- prompt || rc=1
     "$SCRIPTS_DIR/comm-session-start.sh" >/dev/null 2>&1
-    expect working/machine/-/-/- joined || rc=1
-    I; expect idle/-/-/-/- end || rc=1
+    expect working/machine/q/-/- joined || rc=1
+    I; expect blocked/-/q/-/- end || rc=1
+    [ "$(summ)" = "old?" ] || { echo "    summary: want 'old?', got '$(summ)'"; rc=1; }
     return "$rc"
 }
 # A floor needs the Stop that ends it, so a join starts one only from a turn

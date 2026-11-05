@@ -100,7 +100,7 @@ pub(crate) fn outside_clearance(env: &Env, ctx: &Context, h: &str) -> Result<Str
     Ok(ws)
 }
 
-/// The entry a join writes: the whole entry, as 0.6.6's join replaced it.
+/// The entry a join writes: the whole entry, as 0.6.6's join replaced it, except what `carried` keeps.
 fn entry_for(ctx: &Context, expertise: &str) -> Value {
     let ts = iso8601_utc_now();
     let exp: Vec<String> = expertise.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
@@ -108,6 +108,25 @@ fn entry_for(ctx: &Context, expertise: &str) -> Value {
         "host": ctx.host, "workspace_id": ctx.row_id, "repo": ctx.repo, "root": ctx.project_root,
         "expertise": exp, "status": "idle", "joined": ts, "last_seen": ts,
     })
+}
+
+/// The same row's open question outlives its session: when `old` binds the row `new` does (equal host, row id and
+/// root) and holds a question, `new` carries it as rows' reduction reads a question alone (`state` blocked, `summary`
+/// the text, `status_at` as it was). Nothing else of `old` is kept.
+fn carried(old: Option<&Value>, mut new: Value) -> Value {
+    let Some(old) = old else { return new };
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    if ["host", "workspace_id", "root"].iter().any(|k| text(old, k).is_none() || text(old, k) != text(&new, k)) {
+        return new;
+    }
+    let Some(q) = text(old, "question").filter(|q| !q.is_empty()) else { return new };
+    new["question"] = json!(q);
+    new["state"] = json!("blocked");
+    new["summary"] = json!(q);
+    if let Some(at) = text(old, "status_at") {
+        new["status_at"] = json!(at);
+    }
+    new
 }
 
 pub(crate) fn join(env: &Env, args: &[String]) -> Out {
@@ -190,13 +209,15 @@ fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
         if derived {
             let mut lines = Vec::new();
             let d = derive(Mode::Reclaim, &ctx.project_root, &ctx.handle_host, ctx.kind, agents, outside.then_some(&cleared[..]), &mut lines)?;
-            agents.insert(d.name.clone(), obj.clone());
+            let entry = carried(agents.get(&d.name), obj.clone());
+            agents.insert(d.name.clone(), entry);
             Ok(((Some(d), lines), true))
         } else {
             if outside && !still_cleared(agents, &name, &cleared) {
                 return Err(format!("comm-join.sh: REFUSING to join: @{name} was taken by a row while this join ran; nothing was written"));
             }
-            agents.insert(name.clone(), obj.clone());
+            let entry = carried(agents.get(&name), obj.clone());
+            agents.insert(name.clone(), entry);
             Ok(((None, Vec::new()), true))
         }
     });

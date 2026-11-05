@@ -74,3 +74,43 @@ fn outside_any_row_a_handle_bound_to_a_row_elsewhere_is_refused() {
     assert_eq!(o.code, 0, "{}", o.stderr);
     assert!(o.stderr.contains("is held by a row; a session outside any row joins as"), "{}", o.stderr);
 }
+
+/// An entry a row's earlier session left: its address-book fields and work-state facts.
+fn old_entry(host: &str, root: &str) -> serde_json::Value {
+    serde_json::json!({
+        "host": host, "workspace_id": "", "root": root, "repo": "old",
+        "question": "which one?", "floor": 5, "note": "n", "waiting": "w", "done": true,
+        "state": "working", "summary": "s", "status_at": "2026-11-05T01:02:03Z",
+    })
+}
+
+/// A join writes the whole entry, except that the same row's open question outlives its session.
+#[test]
+fn a_join_of_the_same_row_keeps_its_open_question_and_nothing_else() {
+    let t = TestHome::new();
+    let h = tier1(&t);
+    t.put(&h, old_entry("box1", &t.root()));
+    let o = join(&t.env, &[]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let e = &t.agents()[&h];
+    assert_eq!(e["question"].as_str(), Some("which one?"), "{e}");
+    assert_eq!(e["state"].as_str(), Some("blocked"), "{e}");
+    assert_eq!(e["summary"].as_str(), Some("which one?"), "{e}");
+    assert_eq!(e["status_at"].as_str(), Some("2026-11-05T01:02:03Z"), "{e}");
+    for k in ["floor", "note", "waiting", "done"] {
+        assert!(e.get(k).is_none(), "{k} is not kept: {e}");
+    }
+}
+
+/// An entry of another computer is replaced whole.
+#[test]
+fn a_join_over_another_computers_entry_keeps_nothing() {
+    let t = TestHome::new();
+    t.put("taken-box1", old_entry("box2", &t.root()));
+    crate::comm::identity::self_file::write(&t.nopane(), "taken-box1", &t.repo(), &t.root()).unwrap();
+    let o = join(&t.env, &[]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let e = &t.agents()["taken-box1"];
+    assert_eq!(e["host"].as_str(), Some("box1"), "{e}");
+    assert!(e.get("question").is_none() && e.get("state").is_none(), "{e}");
+}

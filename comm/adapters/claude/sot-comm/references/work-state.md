@@ -20,11 +20,15 @@ A row is a small SET OF FACTS, not one state you set directly:
 | field | value | set by | cleared by |
 |---|---|---|---|
 | `floor` | `user` \| `machine` | the `prompt` event, to the origin; the `join` event, `machine`, when the join runs inside a turn whose `prompt` came before the row | the `stop` event |
-| `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
+| `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`, a person's (the leg's `/sot-session-start` is a machine prompt); `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
 | `dialog` | the dialog's text | `dialog "<t>"`: a Codex row's `PermissionRequest` hook; for a Claude row, the daemon, from the row's screen, in its own process | `resumed`; `prompt` and `stop` |
 | `note` | the declaration's own line | `working`/`idle`/`done` with a summary | `working`/`idle`/`done` with `""`; `blocked` or `waiting` with text |
+
+A row's question survives its next session: the leg's bootstrap prompt answers nothing, the same row's join keeps the
+question, and the session start prints it on an `OPEN QUESTION` line. Stamp working, idle or done only once it is
+answered or moot.
 
 Every write (event or declaration) re-reduces `state` and `summary` from
 whatever facts remain, in ONE place, rows' `sotd work-state` (`work_state::reduce`),

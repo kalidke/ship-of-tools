@@ -164,6 +164,10 @@ The registry:
   absent and never repairs it. Daemon readers share those fresh bytes: `try_read_comm_agents` returns an agents
   object or an error (missing/unreadable file, malformed JSON or absent/non-object agents), which the page queue
   reports as a failure. The window's existing `read_comm_agents` wrapper deliberately turns a failure into `None`.
+- A join writes the whole entry, except that a join of the same row (equal host, row id and root) keeps that row's
+  open question, read as rows' reduction reads a question alone (`state` blocked, `summary` the text, `status_at` as it
+  was); nothing else of the old entry is kept (`join::tests::
+  a_join_of_the_same_row_keeps_its_open_question_and_nothing_else`).
 
 The install (0.7.0):
 - The formats do not change: the inbox line, the cursor, the registry and its fields, the registry lock's record, the

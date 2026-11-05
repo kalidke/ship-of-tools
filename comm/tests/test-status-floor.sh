@@ -223,7 +223,7 @@ check "explicit done clears an open question and wait" case_explicit_done_clears
 check "explicit done then stop stays done" case_explicit_done_then_stop_stays_done
 check "explicit idle then stop stays idle" case_explicit_idle_then_stop_stays_idle
 check "a row opened with a task reads working from its join until that turn's stop, then idle" case_the_joining_turn_is_green_until_its_stop
-check "a resumed session's joining turn reads working and does not stay working after its stop" case_a_resumed_joining_turn_is_green_and_ends
+check "a restarted leg's bootstrap prompt and join keep the row's open question, which its turn end leaves red" case_a_restarted_legs_session_keeps_its_rows_question
 check "with SOT_COMM_HOOKS=off a session's join leaves the row idle, never working" case_a_join_with_hooks_off_starts_no_floor
 check "a hooks-off resume drops the floor a dead turn left and starts none" case_a_hooks_off_resume_drops_a_dead_turns_floor
 check "a join with no prompt event (no hooks installed, ccx, a probe row) leaves the row idle, never working" case_a_join_with_no_prompt_event_starts_no_floor

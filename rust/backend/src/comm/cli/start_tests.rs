@@ -40,3 +40,16 @@ fn a_session_start_refuses_a_slot_another_project_holds() {
     assert!(o.stdout.starts_with("BOOTSTRAP-ARM handle=none identity=FAIL"), "{}", o.stdout);
     assert!(o.stderr.contains("REFUSED:"), "{}", o.stderr);
 }
+
+/// A row's open question outlives its session, and the new session is told.
+#[test]
+fn a_session_start_names_the_question_its_row_kept() {
+    let t = TestHome::new();
+    let h = crate::comm::identity::derive::tier(1, &t.root(), "box1", Default::default()).1;
+    let o = session_start(&t.env, &[]);
+    assert!(!o.stdout.contains("OPEN QUESTION"), "{}", o.stdout);
+    t.put(&h, serde_json::json!({"host": "box1", "workspace_id": "", "root": t.root(), "question": "which one?"}));
+    let o = session_start(&t.env, &[]);
+    let line = o.stdout.lines().find(|l| l.starts_with("OPEN QUESTION")).unwrap_or_else(|| panic!("{}", o.stdout));
+    assert!(line.contains("): which one? Your person's answer arrives as a prompt in this pane."), "{line}");
+}

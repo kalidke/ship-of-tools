@@ -89,12 +89,22 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     if let Some(line) = handoff_line(&handle, &std::env::current_dir().unwrap_or_default()) {
         o.out(line);
     }
+    if let Some(line) = open_question_line(&ctx, &handle) {
+        o.out(line);
+    }
     o.out(WORKSTATE_RULE);
     o.out(CAPABILITIES);
     if let Some(line) = row_note(env) {
         o.out(line);
     }
     o
+}
+
+/// The question the row's last session left open, which the join kept (rows' work-state: it reads red until answered).
+fn open_question_line(ctx: &crate::comm::identity::context::Context, handle: &str) -> Option<String> {
+    let doc = crate::comm::registry::registry::read_doc(&ctx.registry()).ok()?;
+    let q = doc["agents"][handle]["question"].as_str().filter(|q| !q.is_empty())?;
+    Some(format!("OPEN QUESTION (kept from this row's last session; it is red in your person's Waiting on You): {q} Your person's answer arrives as a prompt in this pane. A stamp of working, idle or done withdraws it, so stamp one only once it is answered or moot."))
 }
 
 /// `IN_A_ROW` for a session the daemon started in a row (its leg carries `SOT_WORKSPACE_ID`), else nothing.

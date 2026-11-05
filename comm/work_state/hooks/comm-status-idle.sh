@@ -564,6 +564,9 @@ case "$prompt_text" in
         origin=machine ;;
     "Another Claude session sent a message"*|*"<teammate-message"*|*"<agent-message"*|*"<cross-session-message"*|"Stop hook feedback:"*)
         origin=machine ;;
+    # The launcher's bootstrap, typed by no person, answers nothing.
+    "/sot-session-start"*|*"<command-name>/sot-session-start</command-name>"*)
+        origin=machine ;;
 esac
 # Correct the registry too, not just this run's decision, so the plain
 # turn-end `stop` (reached on every OTHER path below) also floors gray
