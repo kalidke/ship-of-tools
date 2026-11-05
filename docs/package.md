@@ -583,5 +583,7 @@ never wider than the preview pane, after a Windows window on 0.7.0-rc.7 panicked
 2026-11-05 a row's open question outlives its session, after a host restart started every row's agent afresh and
 every red card left the person's Queue: the leg's bootstrap prompt had counted as a person's, which answers a
 question, and the join wrote the whole registry entry; the bootstrap is now a machine turn, a join of the same row
-keeps its question, and the session start names it.
+keeps its question, and the session start names it. Since the same day the end-of-turn audit counts a markdown file as
+a result only when the closing text names it, after it ordered a session's own working queue badged into the window
+twice.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
