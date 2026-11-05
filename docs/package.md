@@ -599,5 +599,7 @@ not built). Since the same day every step of rust.yml's build+test job has its o
 their sum, after a macOS runner at a quarter speed ran out a job's ceiling with every step green. Since the same day
 (the maintainer's request) the session strip's order is a choice, cycled by `Primary+Shift+O` and kept across
 restarts: by state (the default, as before), alphabetical, or by recent work-state change, each within its
-computer's block.
+computer's block. Since the same day a row's PDF page comes back from a row switch with its page and count, after the
+maintainer found a PDF "terrible" and deaf to PageDown on 0.7.0-rc.8: the parked view kept the page's bytes but not
+its page, so the restore drew it with the standalone raster's nearest sampler and the paging keys were not admitted.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
