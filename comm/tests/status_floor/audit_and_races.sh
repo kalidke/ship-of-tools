@@ -102,6 +102,17 @@ case_marker_artifact_audit_skips_a_page_and_the_handoff() {
     [ -z "$out" ] || { echo "    the audit blocked a page or the handoff: '$out'"; return 1; }
     expect done/-/-/-/d state
 }
+# A markdown record the turn wrote (a queue, a brief for an agent) is a result only when the closing text names it: the
+# stub judge would block these two, so the audit must not reach them.
+case_marker_artifact_audit_skips_a_markdown_record_the_text_does_not_name() {
+    seed idle; W "$GENUINE"
+    local out
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge it"}]}' \
+        ITT "Edit:::/tmp/row/dev/output/queue.md,Write:::/tmp/row/dev/output/briefs/next.md" \
+        $'SITREP: queued two items\n\nBoth wait for the next pass.')"
+    [ -z "$out" ] || { echo "    the audit blocked a markdown record the text does not name: '$out'"; return 1; }
+    expect done/-/-/-/d state
+}
 case_marker_artifact_audit_skipped_in_continuation() {
     seed idle; W "$GENUINE"; "$ST" blocked "q?" >/dev/null
     local out

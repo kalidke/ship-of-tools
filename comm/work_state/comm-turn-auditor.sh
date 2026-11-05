@@ -110,8 +110,11 @@ if checks_enabled artifact; then
     # NotebookEdit), produced via a Bash command, or named in the final
     # text -- a Read of an ARTIFACT_RE path (e.g. CLAUDE.md) does not count
     # (2026-09-14: reads alone must not fire this, now that .md is in scope).
+    # A .md file is the exception: it counts only when the final text names
+    # it, since a queue or a brief the session wrote for its own work is not a
+    # result (2026-11-04: a working queue was badged into the window twice).
     artifact_tools="$(printf '%s' "$tools" | grep -E '^(Write|Edit|NotebookEdit|Bash)  ')"
-    results="$(grep -oE "$RESULT_RE" <<<"$artifact_tools"$'\n'"$last_text" | grep -vE '(^|/)handoff-[^/]*\.md$' | sort -u)"
+    results="$({ grep -oE "$RESULT_RE" <<<"$last_text"; grep -oE "$RESULT_RE" <<<"$artifact_tools" | grep -vE '\.md$'; } | grep -vE '(^|/)handoff-[^/]*\.md$' | sort -u)"
     if [ -n "$results" ]; then
         grep -qE "$SHOWN_RE" <<<"$tools" || candidates+=("artifact")
     fi
@@ -185,8 +188,10 @@ Q
   Intermediate/temp/test files do not count; when clearly a new result, DO
   intervene. Only a path under "Candidate results" below can be a finding: an
   .html page goes to the person through the closing marker's Page:, and a
-  session's handoff is its own recovery file. Finding message: tell the
-  session to badge <path> into the nav pane via the show-result skill NOW.
+  session's handoff is its own recovery file. A markdown file the session
+  keeps for its own work (a queue, a brief written for an agent, notes) is not
+  a result. Finding message: tell the session to badge <path> into the nav pane
+  via the show-result skill NOW.
 A
         ;;
     background) cat <<'B'

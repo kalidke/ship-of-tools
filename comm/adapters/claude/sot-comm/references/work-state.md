@@ -209,7 +209,8 @@ misses:
 - a real turn-ending question without `blocked` set,
 - a user-facing artifact (plot/PDF/screenshot) never surfaced via
   `show-result` (an `.html` page, which reaches its person through the
-  closing marker's `Page:`, and your own handoff never count),
+  closing marker's `Page:`, and your own handoff never count; a markdown
+  file counts only when the closing text names it),
 - a background job armed without `waiting` set.
 
 A confirmed finding comes back as a Stop nudge ("Turn-end audit: …"); you
