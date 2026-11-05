@@ -239,8 +239,8 @@ pub(crate) fn account_spawn_env(
                     })
                 });
                 match prepared {
-                    Ok((TrustOutcome::Outside, prefix, _)) => tracing::warn!(
-                        workspace_id, cwd = ?cwd, prefix = ?prefix,
+                    Ok((TrustOutcome::Outside, prefix, file)) => tracing::info!(
+                        workspace_id, cwd = ?cwd, prefix = ?prefix, trust_file = ?file,
                         outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
                     ),
                     Ok((TrustOutcome::NotDeclared, _, _)) => tracing::warn!(
@@ -248,7 +248,7 @@ pub(crate) fn account_spawn_env(
                         outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
                     ),
                     Ok((outcome, _, file)) => {
-                        tracing::debug!(workspace_id, cwd = ?cwd, outcome = ?outcome, trust_file = ?file, "folder trust preparation")
+                        tracing::info!(workspace_id, cwd = ?cwd, outcome = ?outcome, trust_file = ?file, "folder trust preparation")
                     }
                     Err(msg) => tracing::warn!(
                         workspace_id, cwd = ?cwd, error = %msg,

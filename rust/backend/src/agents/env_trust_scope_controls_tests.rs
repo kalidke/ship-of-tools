@@ -92,3 +92,51 @@ fn absent_declaration_is_observable_and_preserves_the_account_env() {
     scope_case("undeclared");
     println!("W1 C2 NotDeclared PASS: declaration file field; account env unchanged");
 }
+
+#[test]
+fn a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file() {
+    if !sot_platform::test_isolated::run_isolated(
+        "agents::env::trust_scope_controls::a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file",
+    ) {
+        return;
+    }
+    let _guard = self_file_env_guarded();
+    let temp = tempfile::tempdir().unwrap();
+    let home = platform_spelling(temp.path());
+    std::env::set_var("HOME", &home);
+    std::env::set_var("USERPROFILE", &home);
+    std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+    std::env::set_var("LOCALAPPDATA", home.join("local"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    let prefix = home.join("projects");
+    let inside = prefix.join("repo");
+    std::fs::create_dir_all(&inside).unwrap();
+    let config = crate::rows::store::app_config_dir();
+    std::fs::create_dir_all(&config).unwrap();
+    let text = toml::to_string(
+        &serde_json::json!({"trust": {"root_prefix": prefix.to_str().unwrap()}}),
+    )
+    .unwrap();
+    std::fs::write(config.join("settings.toml"), text).unwrap();
+    let trust_file = home.join(".claude.json");
+    let named = format!("{:?}", trust_file);
+
+    let first = sot_platform::test_log::capture();
+    account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
+    let recorded = first.text();
+    drop(first);
+    assert!(trust_file.exists(), "a first spawn inside the prefix records the entry");
+    let lines: Vec<&str> = recorded.lines().filter(|l| l.contains("folder trust")).collect();
+    assert_eq!(lines.len(), 1, "one folder trust line per preparation: {recorded}");
+    assert!(lines[0].contains("INFO") && lines[0].contains("outcome=Recorded"), "{}", lines[0]);
+    assert!(lines[0].contains(&named) && lines[0].contains("fixture-row"), "{}", lines[0]);
+
+    let second = sot_platform::test_log::capture();
+    account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
+    let already = second.text();
+    drop(second);
+    let lines: Vec<&str> = already.lines().filter(|l| l.contains("folder trust")).collect();
+    assert_eq!(lines.len(), 1, "one folder trust line per preparation: {already}");
+    assert!(lines[0].contains("INFO") && lines[0].contains("outcome=AlreadyTrusted"), "{}", lines[0]);
+    assert!(lines[0].contains(&named) && lines[0].contains("fixture-row"), "{}", lines[0]);
+}

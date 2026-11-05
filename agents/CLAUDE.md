@@ -76,8 +76,9 @@ of each.
    home-level file) only when the OS-resolved folder lies under the OS-resolved prefix; the key keeps the child
    cwd's own spelling (forward slashes on Windows); an entry already accepted is not rewritten; other keys and other
    projects are preserved; this daemon's preparations are serialized and each publishes through a temporary name of its
-   own; a file it cannot read or parse is refused, never clobbered. Outside the prefix, with no
-   declaration, and on a failed preparation the outcome is logged and the agent still starts. Limits: preparation is
+   own; a file it cannot read or parse is refused, never clobbered. Every preparation is one log line
+   naming its outcome: recorded, already trusted and outside at info, each with the trust file; no declaration at warn,
+   with the declaration file; a failure at warn, with its error; the agent starts whatever it says. Limits: preparation is
    proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
 7. **A skill and a work-state hook exist only where a leg of the recipe runs, except four onboarding skills.** The
    installer puts every Claude skill but four under `<comm home>/claude-layer/.claude/skills/`. The four, `sot-gh-auth`,
@@ -288,7 +289,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
-| 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*`, `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
+| 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`), `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*`;
 `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh`; `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
