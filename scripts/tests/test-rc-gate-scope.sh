@@ -111,6 +111,7 @@ fixture() { # <name>: a stand-in repo with two shell groups, two crates with a t
     mkdir -p "$repo/scripts/tests" "$repo/comm/tests" "$repo/agents/tests" "$repo/rust/platform" "$repo/rust/backend" \
         "$repo/.github" "$repo/julia/kernel" "$logs/rust" "$logs/steps" "$logs/home" "$work/tools" "$work/run" "$work/target/debug"
     : > "$repo/rust/platform/Cargo.toml"; : > "$repo/rust/backend/Cargo.toml"
+    mkdir -p "$repo/rust/platform/src" && : > "$repo/rust/platform/src/lib.rs" # backend is binary-only, as the real one is
     : > "$repo/Project.toml"; : > "$repo/julia/kernel/Project.toml"
     cp "$here/shards.py" "$repo/scripts/tests/shards.py"
     : > "$repo/.github/test-shards.txt"
@@ -150,6 +151,11 @@ check "scoped: no julia job without a julia piece" '! ls "$work"/L-sc1/steps/jul
 check "scoped: all three lints still run" '[ "$(rcof sc1 steps/lint-lib-bins)$(rcof sc1 steps/lint-all-targets)$(rcof sc1 steps/lint-windows-tests)" = 000 ]'
 check "scoped: both cross checks still run" '[ "$(rcof sc1 steps/win-check)" = 0 ] && [ "$(rcof sc1 steps/darwin-check)" = 0 ]'
 check "scoped: the doc tests run for the touched crate alone" 'grep -q "^cargo test --manifest-path $work/sc1/rust/platform/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q "rust/backend/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q -- "--workspace --locked --doc" "$work/tools/cargo.log"'
+
+fixture sc5; pipeline sc5 b $'rust backend'
+check "scoped: a binary-only crate is asked no doc test and has no doc result" '[ "$(rcof sc5 rust/bin-backend)" = 0 ] && ! grep -q -- "--doc" "$work/tools/cargo.log" && [ ! -e "$work/L-sc5/rust/doc.rc" ]'
+fixture sc6; pipeline sc6 b $'rust backend\nrust platform'
+check "scoped: of two crates only the one with a library target is asked doc tests" 'grep -q "platform/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q "backend/Cargo.toml --locked --doc" "$work/tools/cargo.log" && [ "$(rcof sc6 rust/doc)" = 0 ]'
 
 fixture sc2; pipeline sc2 b $'julia julia/kernel\ndocs docs'
 check "scoped julia: only the selected package has a result" '[ "$(rcof sc2 steps/julia-julia-kernel)" = 0 ] && [ ! -e "$work/L-sc2/steps/julia-root.rc" ] && [ ! -e "$work/L-sc2/steps/julia-core.rc" ]'

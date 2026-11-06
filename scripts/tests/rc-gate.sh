@@ -127,17 +127,26 @@ job_julia() {
   done
 }
 
+# doc_crates: the crates a scoped run asks doc tests of: the touched ones that have a library target (cargo ends
+# "no library targets found" for a crate that has none), decided from the crate itself
+doc_crates() {
+  local _ c
+  while read -r _ c; do
+    if [ -f "$D/rust/$c/src/lib.rs" ] || grep -q '^\[lib\]' "$D/rust/$c/Cargo.toml" 2> /dev/null; then echo "$c"; fi
+  done < <(grep '^rust ' <<< "$RCG_SCOPE_SEL")
+}
+
 job_cargo_chain() {
   local M="$D/rust/Cargo.toml" r c
-  if want_kind rust; then
+  if ! narrow || [ -n "$(doc_crates)" ]; then
     st rust-doc
     r=0
     if narrow; then
       # a scoped run tests the touched crates' doc tests only
-      while read -r _ c; do
+      while read -r c; do
         logged "$L/rust/doc.log" "$L/rust/doc.log" \
           "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$D/rust/$c/Cargo.toml" --locked --doc --no-fail-fast || r=$?
-      done < <(grep '^rust ' <<< "$RCG_SCOPE_SEL")
+      done < <(doc_crates)
     else
       logged "$L/rust/doc.log" "$L/rust/doc.log" \
         "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast
@@ -330,7 +339,7 @@ producer() {
   want julia root && echo unrun > "$L/steps/julia-root.rc"
   for s in "${JULIA_PKGS[@]}"; do want julia "$s" && echo unrun > "$L/steps/julia-${s//\//-}.rc"; done
   want_kind julia && emit julia julia
-  want_kind rust && echo unrun > "$L/rust/doc.rc"
+  { ! narrow || [ -n "$(doc_crates)" ]; } && echo unrun > "$L/rust/doc.rc"
   echo unrun > "$L/steps/win-check.rc"
   echo unrun > "$L/steps/darwin-check.rc"
   emit cargo-chain cargo-chain
