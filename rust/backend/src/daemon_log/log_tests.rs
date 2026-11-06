@@ -7,7 +7,8 @@ fn the_daemon_log_masks_page_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sotd.log");
     let file = std::fs::File::create(&path).unwrap();
-    let subscriber = log_subscriber(EnvFilter::new("trace"), Some(Arc::new(Mutex::new(LogFile { file, path: path.clone(), cap: LOG_ROLL_BYTES, retry_above: 0 }))));
+    let file = Some(Arc::new(Mutex::new(LogFile { file, path: path.clone(), cap: LOG_ROLL_BYTES, retry_above: 0 })));
+    let subscriber = log_subscriber(EnvFilter::new("trace"), move || TeeWriter { file: file.clone(), stdout: false });
     let token = "0123456789abcdef0123456789abcdef";
     let _log = sot_platform::test_log::install(subscriber);
     tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
@@ -179,4 +180,90 @@ fn a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap
     assert_eq!(std::fs::metadata(&rolled).unwrap().len(), 4096);
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
     assert_eq!(log.retry_above, 0, "a success clears the latch");
+}
+
+/// A writer that holds what the real subscriber wrote, shared so a test reads it after.
+#[derive(Clone, Default)]
+struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Capture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// The real subscriber, writing through `TeeWriter::write_to` so the file and stdout copies are both captured.
+fn captured(filter: &str, dir: &std::path::Path) -> (impl tracing::Subscriber + Send + Sync, std::path::PathBuf, Capture) {
+    let path = dir.join("sotd.log");
+    let file = tee(&path, LOG_ROLL_BYTES).file;
+    let out = Capture::default();
+    let sink = out.clone();
+    let subscriber = log_subscriber(EnvFilter::new(filter), move || {
+        struct Both(TeeWriter, Capture);
+        impl Write for Both {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                Ok(self.0.write_to(&mut self.1, buf))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        Both(TeeWriter { file: file.clone(), stdout: true }, sink.clone())
+    });
+    (subscriber, path, out)
+}
+
+/// A Slack token and a page secret an event carries reach neither the file nor stdout, whatever else the event holds.
+#[test]
+fn daemon_log_masks_slack_and_page_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let (subscriber, path, out) = captured("trace", dir.path());
+    let _log = sot_platform::test_log::install(subscriber);
+    let padding = "pad-zz ".repeat(700);
+    tracing::error!(
+        bot = "xoxb-not-a-real-token",
+        app = %"xapp-not-a-real-token",
+        other = 7,
+        "open http://127.0.0.1:1/x?secret=Ab12Cd34&id=1 {padding}"
+    );
+    for (sink, text) in [("file", std::fs::read_to_string(&path).unwrap()), ("stdout", out.text())] {
+        assert!(text.contains("<redacted>"), "{sink}: the event did not arrive: {text}");
+        assert!(text.contains("pad-zz"), "{sink}: the padding is gone");
+        for sentinel in ["xoxb-not-a-real-token", "xapp-not-a-real-token", "Ab12Cd34"] {
+            assert!(!text.contains(sentinel), "{sink} holds {sentinel}: {text}");
+        }
+    }
+}
+
+/// No `RUST_LOG` setting, a directive naming the library included, lets a network library's own events in; this
+/// crate's still arrive at the level the filter admits.
+#[test]
+fn no_log_level_lets_a_network_library_into_the_log() {
+    for filter in ["trace", "hyper=trace", "hyper::client=trace"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (subscriber, path, out) = captured(filter, dir.path());
+        let _log = sot_platform::test_log::install(subscriber);
+        tracing::error!(target: "hyper::client", "from-hyper");
+        tracing::error!(target: "tungstenite::handshake", "from-tungstenite");
+        tracing::error!(target: "reqwest", "from-reqwest");
+        tracing::error!(target: "sotd::probe", "from-us");
+        let file = std::fs::read_to_string(&path).unwrap();
+        for text in [file, out.text()] {
+            for library in ["from-hyper", "from-tungstenite", "from-reqwest"] {
+                assert!(!text.contains(library), "{filter}: {library} reached the log: {text}");
+            }
+            // A directive naming only a network library admits no event of ours; the others do.
+            assert_eq!(text.contains("from-us"), !filter.starts_with("hyper"), "{filter}: {text}");
+        }
+    }
 }

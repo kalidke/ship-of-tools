@@ -104,9 +104,10 @@ where each lives).
     a later call reaches the OS again; the latch test, `rust/capsule/tests/socket_unix/client.rs`, is Unix-only); an attempt or wait in progress finishes before the bound is read (a 20 ms sleep, a 200 ms pipe wait), so
     the bound is not an exact elapsed time; Windows `connect_own` opens at identification level but cannot refuse a
     pipe before that open.
-14. **A page secret is masked in the logs written through `RedactingWriter`.** `secret::redact` replaces the value after every
-    `secret=` (up to the first delimiter) and every maximal run of exactly 32 lowercase hex characters with
-    `<redacted>`, and leaves every other byte unchanged (borrowed when nothing matched); `RedactingWriter` applies it
+14. **A page secret or a Slack token is masked in the logs written through `RedactingWriter`.** `secret::redact` replaces the value after every
+    `secret=` (up to the first delimiter), every maximal run of exactly 32 lowercase hex characters and every Slack
+    token (`xapp-`, or `xox`, a lowercase letter and `-`, then a value ending at the same delimiters, prefix
+    included; a bare prefix is left; by form, with no list of values) with `<redacted>`, and leaves every other byte unchanged (borrowed when nothing matched); `RedactingWriter` applies it
     to each write and reports the whole buffer written. Wired through it: the daemon's log and the window's log. Limits:
     the supervisor's own diagnostics go straight to its stderr and are not masked; a secret split across two writes is
     not seen (each write is masked alone).
@@ -189,7 +190,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 11 | private dir | `host/state_dir_is_private_dir_tests.rs`; `host/paths_secure_private_dir_tests.rs`: `a_missing_parent_is_created_and_the_leaf_is_private`, `ensure_private_dir_makes_an_owner_only_folder_that_is_private` |
 | 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
-| 14 | secret masking | `secret_tests.rs`: `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
+| 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter

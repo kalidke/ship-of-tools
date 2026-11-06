@@ -61,7 +61,7 @@ after the challenge; storage exhaustion is known by its native code; a volume is
 restart is paced; a directory pin opens only a directory, and private means private (both on Unix; on Windows each is
 a stated gap); since 6d-1 a local connection is bounded, cancellable and reaches only this account (`transport::connect_own`
 and the Unix socket and Windows pipe clients, moved from the capsule, with the Windows and macOS limits the contract
-states), and a page secret is masked in the logs written through `RedactingWriter` (the daemon's and the window's).
+states), and a page secret or a Slack token is masked in the logs written through `RedactingWriter` (the daemon's and the window's).
 It also holds the shared test support, under its `test-support` feature. Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it
 hands out.
 
@@ -614,5 +614,7 @@ v0.7.0-rc.9 was cut 2026-11-05 from these and installed from its draft on two of
 he saw no issue in use; v0.7.0 was cut from the same code and published the same day on his word, and a plain install
 (no version named) moves a computer to it and ends its rc pin. main carries 0.7.1-DEV. The chat's preparation P2
 landed 2026-11-06: wire's `op_table!` declares each op once and gives `op::ALL`, so a declared op joins the first-frame
-refusal test with no list to keep, and no test reads the op table's source.
+refusal test with no list to keep, and no test reads the op table's source. Its P4 landed the same day: a Slack
+token is masked whole, by its form, in every log written through `RedactingWriter`, and no `RUST_LOG` setting lets a
+network library's own diagnostics into the daemon's log.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

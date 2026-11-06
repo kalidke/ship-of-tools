@@ -179,16 +179,28 @@ fn copies_to_stdout(file_open: bool, stdout_is_file: bool) -> bool {
     !file_open || !stdout_is_file
 }
 
-/// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
-/// (`sot_platform::secret`) and written, without colour codes, through `TeeWriter` to the private file and, unless that file is
-/// open and stdout is a regular file, to stdout.
-fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<LogFile>>>) -> impl tracing::Subscriber + Send + Sync {
-    let stdout = copies_to_stdout(file.is_some(), stdout_is_file());
+/// Crates whose own diagnostics never reach the daemon's log, whatever `RUST_LOG` says: the chat's web libraries log
+/// requests, and so their headers, at debug and trace, where a token travels.
+const NETWORK_LIBRARIES: &[&str] =
+    &["h2", "hyper", "hyper_util", "reqwest", "rustls", "tokio_rustls", "tokio_tungstenite", "tungstenite"];
+
+/// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`) except
+/// those of [`NETWORK_LIBRARIES`], which no filter admits; each masked of page secrets and Slack tokens
+/// (`sot_platform::secret`) and written, without colour codes, through the writer `make_writer` makes (in `init`, a
+/// `TeeWriter`: the private file and, unless that file is open and stdout is a regular file, stdout).
+fn log_subscriber<W: std::io::Write + 'static>(
+    filter: EnvFilter,
+    make_writer: impl Fn() -> W + Send + Sync + 'static,
+) -> impl tracing::Subscriber + Send + Sync {
+    use tracing_subscriber::layer::SubscriberExt;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
-        .with_writer(move || RedactingWriter(TeeWriter { file: file.clone(), stdout }))
+        .with_writer(move || RedactingWriter(make_writer()))
         .finish()
+        .with(tracing_subscriber::filter::filter_fn(|meta| {
+            !NETWORK_LIBRARIES.contains(&meta.target().split("::").next().unwrap_or_default())
+        }))
 }
 
 /// Starts the daemon's log. When the private file is open and stdout is a regular file, which then holds only stderr,
@@ -200,7 +212,8 @@ pub fn init(filter: EnvFilter) {
             eprintln!("sotd: stdout is a file; log lines go to {}", f.path.display());
         }
     }
-    log_subscriber(filter, file).init();
+    let stdout = copies_to_stdout(file.is_some(), stdout_is_file());
+    log_subscriber(filter, move || TeeWriter { file: file.clone(), stdout }).init();
 }
 
 #[cfg(test)]

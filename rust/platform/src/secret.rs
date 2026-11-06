@@ -1,10 +1,12 @@
-//! Masking of page secrets in log output (ADR 0049, User isolation): `redact` and the writer that applies it.
+//! Masking of page secrets and Slack tokens in log output (ADR 0049, User isolation): `redact` and the writer that applies it.
 
 use std::borrow::Cow;
 
 /// `bytes` with the value after every `secret=` (up to the first `&`, `#`, whitespace, `"`, `'`, `<`, `>`, `)`, `\`,
-/// or the end) and every maximal run of exactly 32 characters in `[0-9a-f]` replaced by `<redacted>`; every other
-/// byte unchanged; borrowed when nothing matched.
+/// or the end), every maximal run of exactly 32 characters in `[0-9a-f]` and every Slack token (`xapp-`, or `xox`, a
+/// lowercase letter and `-`, then a value ending as a `secret=` value does; the whole token is replaced, prefix
+/// included, and a prefix with no value after it is left) replaced by `<redacted>`; every other byte unchanged;
+/// borrowed when nothing matched.
 pub fn redact(bytes: &[u8]) -> Cow<'_, [u8]> {
     let mut out: Option<Vec<u8>> = None;
     let mut done = 0; // bytes[..done] has been copied to `out`
@@ -14,6 +16,10 @@ pub fn redact(bytes: &[u8]) -> Cow<'_, [u8]> {
             let start = i + MARKER.len();
             let end = bytes[start..].iter().position(|&b| ends_value(b)).map_or(bytes.len(), |n| start + n);
             (start..end, end)
+        } else if let Some(prefix) = slack_prefix(&bytes[i..]) {
+            let start = i + prefix;
+            let end = bytes[start..].iter().position(|&b| ends_value(b)).map_or(bytes.len(), |n| start + n);
+            (if end > start { i..end } else { 0..0 }, end)
         } else if is_hex(bytes[i]) {
             let end = bytes[i..].iter().position(|&b| !is_hex(b)).map_or(bytes.len(), |n| i + n);
             (if end - i == RUN { i..end } else { 0..0 }, end)
@@ -42,6 +48,12 @@ const MARKER: &[u8] = b"secret=";
 const MASK: &[u8] = b"<redacted>";
 /// The length of a token `random_token` mints: 128 bits as lowercase hex.
 const RUN: usize = 32;
+
+/// The length of the Slack token prefix `bytes` begins with (`xapp-` or `xox`, one lowercase letter, `-`: five bytes).
+fn slack_prefix(bytes: &[u8]) -> Option<usize> {
+    let slack = bytes.starts_with(b"xapp-") || (bytes.starts_with(b"xox") && matches!(bytes.get(3), Some(b'a'..=b'z')) && bytes.get(4) == Some(&b'-'));
+    slack.then_some(5)
+}
 
 fn is_hex(b: u8) -> bool {
     matches!(b, b'0'..=b'9' | b'a'..=b'f')

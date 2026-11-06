@@ -94,3 +94,31 @@ fn one_write_call_masks_the_whole_buffer_and_reports_it_all_written() {
     assert_eq!(n, 13);
     assert_eq!(sink, format!("u?secret={MARK}\n").into_bytes());
 }
+
+/// A Slack token (`xapp-`, or `xox`, a lowercase letter and `-`) is masked whole, prefix included, by its form alone,
+/// up to the same end a `secret=` value has; a prefix with no value after it is left as it is.
+#[test]
+fn a_slack_token_is_masked_whole_and_a_bare_prefix_is_not() {
+    let table: &[(&str, &str)] = &[
+        ("xoxb-not-a-real-token", MARK),
+        ("xapp-not-a-real-token", MARK),
+        ("xoxp-not-a-real-token", MARK),
+        ("Authorization: Bearer xoxb-not-a-real-token", "Authorization: Bearer <redacted>"),
+        ("GET /x?t=xoxb-not-a-real-token&id=1", "GET /x?t=<redacted>&id=1"),
+        ("a xoxb-not-a-real-token#frag", "a <redacted>#frag"),
+        ("\"xoxb-not-a-real-token\"", "\"<redacted>\""),
+        ("'xapp-not-a-real-token'", "'<redacted>'"),
+        ("<xapp-not-a-real-token>", "<<redacted>>"),
+        ("(xoxb-not-a-real-token)", "(<redacted>)"),
+        ("path\\xoxb-not-a-real-token\\x", "path\\<redacted>\\x"),
+        ("xoxb-not-a-real-token tail", "<redacted> tail"),
+        ("url?secret=Ab12Cd34 tok xapp-not-a-real-token", "url?secret=<redacted> tok <redacted>"),
+        ("xoxb- and xapp- end", "xoxb- and xapp- end"),
+        ("ends xoxb-", "ends xoxb-"),
+        ("ends xapp-", "ends xapp-"),
+        ("xapp and XOXB-value and xoxB-value", "xapp and XOXB-value and xoxB-value"),
+    ];
+    for (input, want) in table {
+        assert_eq!(red(input), *want, "input: {input}");
+    }
+}
