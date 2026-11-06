@@ -3,7 +3,7 @@
 
 use super::native_children::{HarnessTick, NativeChild};
 use super::*;
-use crate::net::transport::{observe_native_fan_in, run_native_progress_transport, IncomingEvt};
+use crate::net::transport::{observe_native_fan_in, run_native_progress_transport, IncomingEvt, Outbox};
 use std::collections::{BTreeMap, BTreeSet};
 use std::cell::Cell;
 use std::io::Write;
@@ -403,7 +403,7 @@ impl PeerTasks {
     fn start(
         wake: impl crate::net::transport::Redraw + Send + Sync + 'static,
         sender: std::sync::mpsc::Sender<(HostKey, IncomingEvt)>,
-        mut outgoing: tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        outgoing: tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
         ledger: Arc<Mutex<NativeProgressLedger>>,
         proxy: EventLoopProxy<()>,
         harness_tick: HarnessTick,
@@ -422,7 +422,7 @@ impl PeerTasks {
                 tx,
                 HOST.to_string(),
                 &sender,
-                &mut outgoing,
+                &mut Outbox::new(outgoing),
                 &wake,
             )
             .await;

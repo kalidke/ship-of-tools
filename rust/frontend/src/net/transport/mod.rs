@@ -63,7 +63,7 @@ use hello::{accept_hello, read_hello, send_hello, HelloRefused};
 use ops::*;
 use preamble::{preamble_preview, preamble_tree_root};
 use reply::{eval_running, handle_response_frame, PendingGuard, PendingKind};
-use outbox::Outbox;
+pub(crate) use outbox::Outbox;
 use request::send_request;
 
 // The transport's interface: what code outside this folder names.
