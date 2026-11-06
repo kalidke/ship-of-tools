@@ -533,14 +533,16 @@ async fn the_product_client_builds_and_refuses_off_port_plain_and_ip_destination
 }
 
 /// Proxy variables name a dead address. The environment of a threaded test process is not safe to set, so the test
-/// re-runs itself as a child with the variables set (the child sees `CHILD`) and the parent waits within a bound. A
-/// child whose body passes exits 77; a filter that matched no test exits 0 and a failed body 101, so neither passes.
-/// The parent does not use `sot_platform::test_isolated`, which needs a manifest change this change does not carry;
-/// the socket landing, which changes the manifest, moves this test to the helper.
+/// re-runs itself as a child with the variables set (the child sees `CHILD`) through `sot_platform::test_isolated`,
+/// which bounds the wait, and fails the parent when the child did not enter this body exactly once (a filter that
+/// matched no test) or did not exit 0 (a failed body).
 #[tokio::test]
 async fn an_ambient_proxy_variable_is_ignored() {
+    use sot_platform::test_isolated::{enter, test_command, wait_within};
+    const NAME: &str = "http_tests::an_ambient_proxy_variable_is_ignored";
     const CHILD: &str = "SOT_CHAT_PROXY_CHILD";
     if std::env::var_os(CHILD).is_some() {
+        enter(NAME);
         bounded(async {
             let fake = FakeSlack::start(Identity::Trusted, |_, _| Reply::ok(b"direct")).await;
             let response = fake
@@ -553,18 +555,10 @@ async fn an_ambient_proxy_variable_is_ignored() {
             fake.shutdown().await;
         })
         .await;
-        std::process::exit(77);
+        return;
     }
-    let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
-    command
-        .args([
-            "--exact",
-            "http_tests::an_ambient_proxy_variable_is_ignored",
-            "--test-threads",
-            "1",
-        ])
-        .env(CHILD, "1")
-        .stdin(std::process::Stdio::null());
+    let (mut command, entry) = test_command(NAME);
+    command.env(CHILD, "1").stdin(std::process::Stdio::null());
     for name in [
         "HTTPS_PROXY",
         "https_proxy",
@@ -581,27 +575,7 @@ async fn an_ambient_proxy_variable_is_ignored() {
         reason = "the test re-runs its own binary with proxy variables; the wait below is bounded and kills the child"
     )]
     let mut child = command.spawn().expect("spawn the test binary");
-    let end = Instant::now() + Duration::from_secs(90);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("waiting for the child test failed");
-            }
-        }
-        if Instant::now() > end {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("the child test exceeded its bound");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(
-        status.code(),
-        Some(77),
-        "the child did not run its body to the end: {status}"
-    );
+    let status = wait_within(&mut child, Duration::from_secs(90));
+    entry.assert_once(child.id());
+    assert!(status.success(), "the child's body failed: {status}");
 }

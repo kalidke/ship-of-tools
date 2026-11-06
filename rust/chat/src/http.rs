@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, LOCATION};
 use reqwest::{Method, StatusCode, Url};
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{oneshot, Semaphore};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// Operations admitted at once; the next one is `Busy`.
 pub const MAX_OPERATIONS: usize = 16;
@@ -23,6 +26,11 @@ pub const MAX_BODY: usize = 1 << 20;
 pub const MAX_REDIRECTS: usize = 3;
 /// The only port a product destination may name.
 const HTTPS_PORT: u16 = 443;
+/// A websocket message, enforced by the library from the frame header on, before a message is read whole.
+pub const MAX_MESSAGE: usize = 1 << 20;
+
+/// A connected websocket, over the one TLS policy.
+pub(crate) type Websocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// A credential (cloned only into the requests that carry it). It formats as a fixed mask, so no log, error or debug print of anything holding one shows it.
 #[derive(Clone)]
@@ -206,6 +214,11 @@ struct Inner {
     /// The one port a destination may name: 443, or the fixture's under test.
     port: u16,
     permits: Arc<Semaphore>,
+    /// The one rustls configuration: the client above and every websocket share it.
+    tls: Arc<rustls::ClientConfig>,
+    /// Under test, the logical hosts that dial loopback; every other name is refused.
+    #[cfg(test)]
+    hosts: &'static [&'static str],
 }
 
 impl Http {
@@ -213,7 +226,7 @@ impl Http {
     pub fn new() -> Result<Http, HttpError> {
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        Http::build(roots, HTTPS_PORT, None)
+        Http::build(roots, HTTPS_PORT, None, &[])
     }
 
     /// The test client: the fixture's CA as the only root, its port as the only port, and a resolver that maps the
@@ -226,14 +239,20 @@ impl Http {
     ) -> Http {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(ca).expect("test CA");
-        Http::build(roots, port, Some(Arc::new(test_resolver::Loopback(hosts))))
-            .expect("test client")
+        Http::build(
+            roots,
+            port,
+            Some(Arc::new(test_resolver::Loopback(hosts))),
+            hosts,
+        )
+        .expect("test client")
     }
 
     fn build(
         roots: rustls::RootCertStore,
         port: u16,
         resolver: Option<Arc<dyn reqwest::dns::Resolve>>,
+        _hosts: &'static [&'static str],
     ) -> Result<Http, HttpError> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let tls = rustls::ClientConfig::builder_with_provider(provider)
@@ -244,7 +263,7 @@ impl Http {
         // No idle connection is kept, so no request can be re-sent on a stale pooled connection; HTTP/1 has no
         // protocol-level retry; redirects and ambient proxies are off and the library's retry policy is "never".
         let mut builder = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls)
+            .tls_backend_preconfigured(tls.clone())
             .https_only(true)
             .http1_only()
             .redirect(reqwest::redirect::Policy::none())
@@ -260,6 +279,9 @@ impl Http {
                 client,
                 port,
                 permits: Arc::new(Semaphore::new(MAX_OPERATIONS)),
+                tls: Arc::new(tls),
+                #[cfg(test)]
+                hosts: _hosts,
             }),
         })
     }
@@ -285,6 +307,39 @@ impl Http {
         });
         // The task ends only by returning or by the runtime's shutdown; the latter is a lost answer.
         rx.await.unwrap_or(Err(HttpError::Protocol))
+    }
+
+    /// Open a websocket: the same destination policy as a request (scheme `wss`), the same TLS configuration, no
+    /// ambient proxy, the connection and handshake together under `deadline`, and messages bounded by `MAX_MESSAGE`.
+    /// The URL may be private; it reaches no error.
+    pub(crate) async fn websocket(
+        &self,
+        url: &str,
+        deadline: Duration,
+    ) -> Result<Websocket, HttpError> {
+        let url = Url::parse(url).map_err(|_| HttpError::Destination)?;
+        self.inner.check_url(&url, "wss")?;
+        let host = url.domain().ok_or(HttpError::Destination)?.to_string();
+        let inner = self.inner.clone();
+        let handshake = async {
+            let tcp = inner.dial(&host).await?;
+            let config = WebSocketConfig::default()
+                .max_message_size(Some(MAX_MESSAGE))
+                .max_frame_size(Some(MAX_MESSAGE));
+            let connector = Connector::Rustls(inner.tls.clone());
+            tokio_tungstenite::client_async_tls_with_config(
+                url.as_str(),
+                tcp,
+                Some(config),
+                Some(connector),
+            )
+            .await
+            .map(|(ws, _)| ws)
+            .map_err(classify_ws)
+        };
+        tokio::time::timeout(deadline, handshake)
+            .await
+            .unwrap_or(Err(HttpError::Timeout))
     }
 }
 
@@ -342,8 +397,12 @@ impl Inner {
     /// HTTPS, no userinfo, the one port, and a Slack host: refused before any connection, for the first URL and for
     /// each redirect alike. Bot authorization rides on exactly the hops this admits.
     fn check_destination(&self, url: &Url) -> Result<(), HttpError> {
-        let plain =
-            url.scheme() == "https" && url.username().is_empty() && url.password().is_none();
+        self.check_url(url, "https")
+    }
+
+    /// `check_destination` for a scheme: `https` for a request, `wss` for a websocket.
+    fn check_url(&self, url: &Url, scheme: &str) -> Result<(), HttpError> {
+        let plain = url.scheme() == scheme && url.username().is_empty() && url.password().is_none();
         match url.domain() {
             Some(host)
                 if plain
@@ -353,6 +412,44 @@ impl Inner {
                 Ok(())
             }
             _ => Err(HttpError::Destination),
+        }
+    }
+}
+
+impl Inner {
+    /// A TCP connection to a host already admitted by `check_url`, on the one port. Direct: no proxy.
+    async fn dial(&self, host: &str) -> Result<TcpStream, HttpError> {
+        let addr = self.address(host).await?;
+        // A TcpSocket, not TcpStream::connect: the workspace's rule against inheritable sockets on Windows.
+        let socket = if addr.is_ipv4() {
+            TcpSocket::new_v4()
+        } else {
+            TcpSocket::new_v6()
+        }
+        .map_err(|_| HttpError::Connect)?;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the chat's one outbound dial, to a validated Slack host over TLS: not the control plane (ADR 0049); the library cannot be given the fixture's loopback mapping otherwise"
+        )]
+        let connected = socket.connect(addr).await;
+        connected.map_err(|_| HttpError::Connect)
+    }
+
+    #[cfg(not(test))]
+    async fn address(&self, host: &str) -> Result<std::net::SocketAddr, HttpError> {
+        let mut addrs = tokio::net::lookup_host((host, self.port))
+            .await
+            .map_err(|_| HttpError::Connect)?;
+        addrs.next().ok_or(HttpError::Connect)
+    }
+
+    /// The fixture's logical hosts are loopback; every other name is refused.
+    #[cfg(test)]
+    async fn address(&self, host: &str) -> Result<std::net::SocketAddr, HttpError> {
+        if self.hosts.contains(&host) {
+            Ok(std::net::SocketAddr::from(([127, 0, 0, 1], self.port)))
+        } else {
+            Err(HttpError::Connect)
         }
     }
 }
@@ -385,6 +482,24 @@ fn classify(error: reqwest::Error) -> HttpError {
         HttpError::Timeout
     } else {
         HttpError::Protocol
+    }
+}
+
+/// A websocket library error becomes a fixed code; its text, which can hold a URL, is dropped here.
+fn classify_ws(error: tokio_tungstenite::tungstenite::Error) -> HttpError {
+    use tokio_tungstenite::tungstenite::Error;
+    match error {
+        Error::Io(io) => {
+            if is_tls(&io) {
+                HttpError::Tls
+            } else {
+                HttpError::Connect
+            }
+        }
+        Error::Tls(_) => HttpError::Tls,
+        Error::Capacity(_) => HttpError::TooLarge,
+        Error::Url(_) => HttpError::Destination,
+        _ => HttpError::Protocol,
     }
 }
 
