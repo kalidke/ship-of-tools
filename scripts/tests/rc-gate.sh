@@ -132,7 +132,7 @@ job_julia() {
 doc_crates() {
   local _ c
   while read -r _ c; do
-    if [ -f "$D/rust/$c/src/lib.rs" ] || grep -q '^\[lib\]' "$D/rust/$c/Cargo.toml" 2> /dev/null; then echo "$c"; fi
+    if [ -f "$D/rust/$c/src/lib.rs" ] || grep -q '^[[:space:]]*\(\[[[:space:]"]*lib\b\|lib\.\)' "$D/rust/$c/Cargo.toml" 2> /dev/null; then echo "$c"; fi
   done < <(grep '^rust ' <<< "$RCG_SCOPE_SEL")
 }
 

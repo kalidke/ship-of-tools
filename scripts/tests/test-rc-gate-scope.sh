@@ -139,6 +139,7 @@ pipeline() { # <name> <scope base or -> <scope lines>
 rcof() { cat "$work/L-$1/$2.rc" 2> /dev/null; }
 
 fixture none; pipeline none -
+check "unscoped: the workspace doc tests run and pass" 'grep -q -- "--workspace --locked --doc" "$work/tools/cargo.log" && [ "$(rcof none rust/doc)" = 0 ]'
 check "unscoped: both crates' test binaries run" '[ "$(rcof none rust/bin-platform)" = 0 ] && [ "$(rcof none rust/bin-backend)" = 0 ]'
 check "unscoped: both shell groups run" '[ -e "$work/L-none/steps/comm-tests-test-c.rc" ] && [ -e "$work/L-none/steps/agents-tests-test-a.rc" ]'
 check "unscoped: every julia job has a result" '[ -e "$work/L-none/steps/julia-root.rc" ] && [ -e "$work/L-none/steps/julia-julia-kernel.rc" ] && [ -e "$work/L-none/steps/julia-core.rc" ]'
@@ -157,6 +158,9 @@ check "scoped: a binary-only crate is asked no doc test and has no doc result" '
 fixture sc6; pipeline sc6 b $'rust backend\nrust platform'
 check "scoped: of two crates only the one with a library target is asked doc tests" 'grep -q "platform/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q "backend/Cargo.toml --locked --doc" "$work/tools/cargo.log" && [ "$(rcof sc6 rust/doc)" = 0 ]'
 
+fixture sc7; mkdir -p "$work/sc7/rust/libonly" && printf '[package]\nname = "x"\n\n[ lib ]\npath = "x.rs"\n' > "$work/sc7/rust/libonly/Cargo.toml"
+pipeline sc7 b $'rust libonly'
+check "scoped: a crate whose library is only a [lib] table is asked doc tests" 'grep -q "libonly/Cargo.toml --locked --doc" "$work/tools/cargo.log"'
 fixture sc2; pipeline sc2 b $'julia julia/kernel\ndocs docs'
 check "scoped julia: only the selected package has a result" '[ "$(rcof sc2 steps/julia-julia-kernel)" = 0 ] && [ ! -e "$work/L-sc2/steps/julia-root.rc" ] && [ ! -e "$work/L-sc2/steps/julia-core.rc" ]'
 check "scoped julia: no crate test and no doc test" '! ls "$work"/L-sc2/rust/*.rc > /dev/null 2>&1 && ! grep -q -- "--doc" "$work/tools/cargo.log"'

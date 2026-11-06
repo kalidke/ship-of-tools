@@ -50,7 +50,7 @@ Guarantees, each with the mechanism it rests on:
   scripts (`tests/` outside the shell suites, `setup-publish-guard.sh`, `hooks/`, `lib/`), `.github/`, `.claude/`,
   `julia/pluto`, `examples/`, `dev/`, and an empty diff. Docs alone (`docs/`, markdown outside the pieces) select no test.
   The workspace build, all three clippy lines and both cross checks run in every scope; only test jobs narrow: a touched
-  crate's tests and doc tests (not its dependents', which the hosted run on main still tests), the Julia packages
+  crate's tests, and its doc tests when it has a library target (a binary-only crate has no doc job and no doc result) but not its dependents' tests, which the hosted run on main still runs; the Julia packages
   touched, the shell suites of the touched group and the bash 3.2 job when a shell piece is touched, and the
   installer-publish jobs when `scripts` or any crate is touched. `user-manager-tests.sh` runs when the scope selects
   `backend`, `capsule`, `platform` or `containment`, since its five tests are the backend's over those. A job the scope
