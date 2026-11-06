@@ -602,3 +602,12 @@ A landing's record goes here, with its measured times; the package page holds on
   failing-first run could not: most tests failed at one shared setup call, so their red said little. The suite went from 51 s to 4 s
   by driving the name cache directly instead of 1,100 TLS handshakes. The last three test fixes took no further review: the reviewer
   had proved each kills its mutant, and a fifth mutation round would only find smaller gaps.
+- B1d, the Socket Mode listener, 2026-11-06: 14:12 to main 15:00, 48 minutes, a miss, stopped and written up here. 19 of change
+  against a twelve-minute target, 10 of review beside a 10-minute whole gate, which passed, then 5 of fix, 11 of second review and 9
+  of a gate the lint file widened to whole. The first review stopped it on three blockers, two of them product defects no test had
+  caught: each ping rebuilt the idle timeout, so the idle bound never fired, and a reconciliation during an outage cleared a gap
+  nothing latched again. A budget of ten mutants aimed at named rules found these in 10 minutes. The second review found no
+  blocker. Its should-fixes are open: tests for a frame resetting the clock and for the hello latching over a held gap, a stale
+  comment on `Timing::idle`, and the wording of the dial rule. 14 new lock entries, among them a second `webpki-roots` that the
+  websocket feature pulls in and nothing uses at run time. The 30 s ping and 90 s idle are unobserved; a wrong value fails safe.
+  C14 moved to B2, where the configuration and the service live. B1 is whole, without file transfer.

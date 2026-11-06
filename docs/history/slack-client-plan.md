@@ -402,7 +402,7 @@ Chat remains **B1 → B2 → B3 → B4 → B5 → separately owned channel hando
 Amended 2026-11-06: B1 is too large for one landing and lands in four: B1a the crate, the wire record and normalization;
 B1b the web stack, `http.rs` and the fake Slack; B1c `api.rs`; B1d `socket.rs`. `transfer.rs` (C9, C10) moves to B4, since
 figures wait for the maintainer's word and nothing before them calls it, so a first drawer built before B4 shows file stubs
-and no thumbnails.
+and no thumbnails. C14, the duplicate listener and its lock, moves to B2, where the configuration and the service live.
 
 | Landing | Chat-specific contents | Product / test lines |
 |---|---|---:|
