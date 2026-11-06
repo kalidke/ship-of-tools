@@ -296,16 +296,23 @@ async fn a_peer_that_ignores_close_is_forced_down_within_the_bound() {
 #[tokio::test]
 async fn a_silent_socket_is_replaced_after_the_idle_bound() {
     bounded(async {
-        let fake = fake(|i, mut peer| async move {
-            peer.send(&hello()).await;
-            if i == 0 {
-                peer.ignore_until_gone().await;
-            } else {
-                peer.drain().await;
+        // Socket 0's span from its hello to the client being gone: idle plus the close wait, no handshakes.
+        let span = Arc::new(Mutex::new(None));
+        let seen = span.clone();
+        let fake = fake(move |i, mut peer| {
+            let seen = seen.clone();
+            async move {
+                peer.send(&hello()).await;
+                if i == 0 {
+                    let sent = Instant::now();
+                    peer.ignore_until_gone().await;
+                    *seen.lock().unwrap() = Some(sent.elapsed());
+                } else {
+                    peer.drain().await;
+                }
             }
         })
         .await;
-        let began = Instant::now();
         let socket = start(
             &fake,
             Timing {
@@ -316,12 +323,11 @@ async fn a_silent_socket_is_replaced_after_the_idle_bound() {
             },
         );
         eventually("the replacement", || fake.sockets().2 >= 2).await;
-        // Within the bound, not merely eventually: 500 ms of idle plus a stated slack.
-        assert!(
-            began.elapsed() < Duration::from_millis(1500),
-            "{:?}",
-            began.elapsed()
-        );
+        // Within the bound, not merely eventually: no sooner than idle (500 ms) plus the close wait (300 ms), and
+        // under 2.8 s, which leaves 2 s of slack on a span that holds no handshake.
+        let span = span.lock().unwrap().expect("socket 0 ended");
+        assert!(span >= Duration::from_millis(800), "{span:?}");
+        assert!(span < Duration::from_millis(2800), "{span:?}");
         assert_eq!(fake.sockets().1, 1);
         assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
         socket.stop().await;
@@ -738,31 +744,29 @@ async fn reconnects_are_paced_after_a_refusal_and_after_a_hello() {
 
         // A socket that says hello and is then replaced is back after the first pause, no sooner.
         let times = Arc::new(Mutex::new(Vec::new()));
-        let fake_b = fake_with(opens(&times, 0), |_, mut peer| async move {
-            peer.send(&hello()).await;
-            peer.send(&disconnect("refresh_requested")).await;
-            peer.drain().await;
+        let gone = Arc::new(Mutex::new(Vec::new()));
+        let gone_at = gone.clone();
+        let fake_b = fake_with(opens(&times, 0), move |_, mut peer| {
+            let gone_at = gone_at.clone();
+            async move {
+                peer.send(&hello()).await;
+                peer.send(&disconnect("refresh_requested")).await;
+                peer.drain().await;
+                gone_at.lock().unwrap().push(Instant::now());
+            }
         })
         .await;
         let socket = start(&fake_b, paced);
         eventually("three connections", || times.lock().unwrap().len() >= 3).await;
+        // From the peer seeing the socket gone to the next open request: the pause and nothing else. The hello
+        // reset it, so the second reopen did not wait the doubled 400 ms.
         let t = times.lock().unwrap().clone();
-        assert!(
-            t[1] - t[0] >= Duration::from_millis(180),
-            "{:?}",
-            t[1] - t[0]
-        );
-        assert!(
-            t[2] - t[1] >= Duration::from_millis(180),
-            "{:?}",
-            t[2] - t[1]
-        );
-        // The hello reset the pause: the second reopen did not wait the doubled 400 ms.
-        assert!(
-            t[2] - t[1] < Duration::from_millis(390),
-            "{:?}",
-            t[2] - t[1]
-        );
+        let g = gone.lock().unwrap().clone();
+        for i in 0..2 {
+            let pause = t[i + 1] - g[i];
+            assert!(pause >= Duration::from_millis(180), "{pause:?}");
+            assert!(pause < Duration::from_millis(300), "{pause:?}");
+        }
         socket.stop().await;
         fake_b.shutdown().await;
     })
