@@ -612,5 +612,7 @@ maintainer found a PDF "terrible" and deaf to PageDown on 0.7.0-rc.8: the parked
 its page, so the restore drew it with the standalone raster's nearest sampler and the paging keys were not admitted.
 v0.7.0-rc.9 was cut 2026-11-05 from these and installed from its draft on two of the maintainer's computers, where
 he saw no issue in use; v0.7.0 was cut from the same code and published the same day on his word, and a plain install
-(no version named) moves a computer to it and ends its rc pin. main carries 0.7.1-DEV.
+(no version named) moves a computer to it and ends its rc pin. main carries 0.7.1-DEV. The chat's preparation P2
+landed 2026-11-06: wire's `op_table!` declares each op once and gives `op::ALL`, so a declared op joins the first-frame
+refusal test with no list to keep, and no test reads the op table's source.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

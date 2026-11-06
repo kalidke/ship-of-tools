@@ -81,7 +81,7 @@ name is in this crate's one op table.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
-names and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
+names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
 `WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
@@ -93,7 +93,7 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 
 ## Calls out
 `Frame`, `read_frame`, `read_envelope`, `write_frame` and their blocking forms, `ChildLines`, `blocking_child_lines`,
-`PROTOCOL_VERSION`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
+`PROTOCOL_VERSION`, `op::ALL`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
 `is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
 `video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`; the shell twin `sot_hello_frame`

@@ -9,6 +9,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::ir::{BlobDescriptor, TreeNode};
 
+// `op_table!` declares each op's wire name once, as a `pub const` in `pub mod op`, and emits `op::ALL`: every
+// declared name in declaration order. A test over `op::ALL` covers each new op with no list to keep.
+macro_rules! op_table {
+    (
+        $(#[$m:meta])*
+        pub mod op {
+            $(
+                $(#[$c:meta])*
+                pub const $name:ident: &str = $wire:literal;
+            )*
+        }
+    ) => {
+        $(#[$m])*
+        pub mod op {
+            $(
+                $(#[$c])*
+                pub const $name: &str = $wire;
+            )*
+
+            /// Every op verb the table declares, once each, in declaration order. The server's first-frame refusal
+            /// test reads this, so a declared op joins that test with no list to keep.
+            pub const ALL: &[&str] = &[$($name),*];
+        }
+    };
+}
+
+op_table! {
 /// Op verbs as constants so frontend/backend can match on `frame.op` against
 /// the same source-of-truth strings.
 pub mod op {
@@ -485,6 +512,11 @@ pub mod op {
     /// A channel's end, both ways: [`crate::ops::link::LinkCloseEvt`].
     pub const LINK_CLOSE: &str = "link.close";
 }
+}
+
+#[cfg(test)]
+#[path = "op_table_tests.rs"]
+mod op_table_tests;
 
 mod session;
 pub use session::*;

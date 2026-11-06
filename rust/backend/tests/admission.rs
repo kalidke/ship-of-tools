@@ -112,32 +112,13 @@ fn listed(version: &Frame, client_id: &str) -> bool {
     clients.iter().any(|c| c.get("client_id").and_then(Value::as_str) == Some(client_id))
 }
 
-/// Every op name of `sot_protocol::op` but `hello`, read from the op module's source (`pub const NAME: &str = "op";`
-/// lines between `pub mod op {` and its closing brace), so an op added to it is in the done test the day it is added.
-fn op_names() -> Vec<String> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../protocol/src/ops/mod.rs");
-    let source = std::fs::read_to_string(path).expect("read the op module");
-    let module = source.split("pub mod op {").nth(1).expect("`pub mod op {`");
-    let module = module.split("\n}\n").next().expect("the op module's end");
-    let names: Vec<String> = module
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub const ")?.split_once(": &str = \"")?.1.strip_suffix("\";").map(str::to_string))
-        .filter(|name| name != op::HELLO)
-        .collect();
-    assert!(names.len() >= 60, "found only {} op names: {names:?}", names.len());
-    for named in [op::PROXY_CONNECT, op::LANE_CONNECT, op::FE_LEASE, op::FILE_READ, op::AGENT_SEND] {
-        assert!(names.iter().any(|n| n == named), "the scan missed {named}");
-    }
-    names
-}
-
 /// Part (a): every op as frame 1 of its own connection gets one `unauthenticated` reply, then the end, and nothing else.
 async fn every_op_as_a_first_frame_is_refused(env: &Env, payloads: &[(&str, Value)]) {
-    for name in op_names() {
+    for name in op::ALL.iter().copied().filter(|name| *name != op::HELLO) {
         let payload = payloads.iter().find(|(n, _)| *n == name).map_or_else(|| json!({}), |(_, p)| p.clone());
         let mut conn = open(env).await;
-        write_together(&mut conn, &[Frame::req(1, &name, payload)]).await;
-        let seen = until_closed(&mut conn, &name).await;
+        write_together(&mut conn, &[Frame::req(1, name, payload)]).await;
+        let seen = until_closed(&mut conn, name).await;
         assert_eq!(seen.len(), 1, "{name}: exactly one reply: {seen:?}");
         assert_eq!(code(&seen[0].payload), Some("unauthenticated"), "{name}: {:?}", seen[0].payload);
     }
@@ -371,5 +352,25 @@ async fn a_connection_that_says_nothing_is_closed() {
     );
     assert!(first.is_empty(), "a connection that said nothing was sent {first:?}");
     assert!(second.is_empty(), "a handoff connection was sent more than its hello's reply: {second:?}");
+    env.kill_daemon_bounded().await;
+}
+
+/// A first frame that names no op of any table is refused `unauthenticated` and closed, one reply and no more; a first
+/// line that is not JSON is closed with nothing sent.
+#[tokio::test]
+async fn an_unknown_or_malformed_first_frame_is_refused_and_closed() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("admit-unknown-op");
+    env.spawn_sotd();
+    let mut conn = open(&env).await;
+    write_together(&mut conn, &[Frame::req(1, "no.such.op", json!({}))]).await;
+    let seen = until_closed(&mut conn, "an unknown op first").await;
+    assert_eq!(seen.len(), 1, "exactly one reply: {seen:?}");
+    assert_eq!(code(&seen[0].payload), Some("unauthenticated"), "{:?}", seen[0].payload);
+    let mut conn = open(&env).await;
+    tokio::io::AsyncWriteExt::write_all(&mut conn, b"not json\n").await.expect("write the line");
+    tokio::io::AsyncWriteExt::flush(&mut conn).await.expect("flush the line");
+    let seen = until_closed(&mut conn, "a first line that is not JSON").await;
+    assert!(seen.is_empty(), "a line that is not an envelope was sent {seen:?}");
     env.kill_daemon_bounded().await;
 }
