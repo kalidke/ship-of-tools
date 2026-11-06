@@ -63,7 +63,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   passes' measured history (`passes.md`) and the project chat's plan of record (`slack-client-plan.md`); no page loads
   them.
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
-- `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
+- `integration.md`: how the subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.
 - `ownership.md`: the one table of who owns each state file, process, op, setting and lock, and the pairs of copies that remain.
 - `package.md`: the package page, loaded by the root CLAUDE.md: the subsystems, their guarantees and dependencies, the

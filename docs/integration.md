@@ -1,6 +1,6 @@
 # docs/integration.md: how the subsystems connect
 
-Ship of Tools has sixteen subsystems, each with a charter page in the folder that owns most of it. This page is the one
+Ship of Tools has subsystems, each with a charter page in the folder that owns most of it. This page is the one
 place that says how they connect: a table of every connection, then six walk-throughs that follow one action across
 processes with a file and a function at every hop. Each charter's `## Connections` points here and says only which rows
 it provides and which it uses.
@@ -26,6 +26,7 @@ Each name below is the one used in the tables, with the folder of its charter pa
 | agents | `agents/CLAUDE.md` | fe-net | `rust/frontend/src/net/CLAUDE.md` |
 | capsule | `rust/capsule/CLAUDE.md` | distribution | `scripts/CLAUDE.md` |
 | platform | `rust/platform/CLAUDE.md` | records | `docs/CLAUDE.md` |
+| chat | `rust/chat/CLAUDE.md` | | |
 
 ## Connections
 Sorted by provider, in the order the Subsystems table lists them (down its left column, then its right). A wire op is
@@ -47,6 +48,7 @@ page (`Rules`), its `## Idea` or a code comment, and the row says which in its l
 | wire | files, fe-ui | PhysicalScale and parse_physical_scale | Scale reads, writes and display accept the same schema; an invalid higher tier cannot suppress valid lower-tier metadata. |
 | wire | pages, rows, fe-ui | `page_reply::{MARK, MAX_TEXT, line, check_line}`, `op::PAGE_REPLY`, `PageReplyReq`, `PageReplyRes` | One parser trims ASCII spaces, refuses empty text, text over 512 UTF-8 bytes, controls and invisible formatting characters, and adds `[sot-page] `. A confirmed line must already be canonical and marked. `page.reply` carries workspace id, handle and line; its response carries outcome and detail. |
 | wire | pages, fe-ui | sot_protocol::video_path::video_mime | The same final-filename suffix decision selects a Rust video open, bounded preview and served MIME; grants still decide what may be served. |
+| wire | chat | `sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts}` | The one normalized chat record: workspace and channel in every record, `ts` a decimal string of exactly `<seconds>.<six digits>` that deserializing refuses otherwise, no private URL, defaulted optional fields, `PROTOCOL_VERSION` unchanged. Wire does not check the record's bounds on decode; chat's normalization holds them (wire charter guarantee 11). |
 | topology | fe-net | `SshRecipe::new`, `is_plain_host_name` (checked by `parse_dial_arg`) | `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar. |
 | topology | fe-net | relay_host_for_path | Only the complete generated path classifies a hub relay; dial labels and filesystem probes do not decide locality. |
 | topology | fe-net, pages, capsule | the window's link: `Link::start` (fe-net's `connect_and_run`, its one caller), `LinkHandle` (`set_up` and `set_down` by fe-net alone; `open` by the page proxy, `open_blocking` by the lane dial, `is_up` by the attach worker), `Channel` | A remote host costs the window one login; its control is channel 0 and every page connection and lane dial a channel. An open on a down link fails `LinkDown` at once and sends nothing; the link's end fails every channel after its queued bytes; flow control is per channel, so a stalled one never stops another. |

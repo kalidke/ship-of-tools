@@ -46,7 +46,7 @@ fn normalize_members_bots_edits_deletes_and_file_stubs() {
     assert_eq!((r.workspace.as_str(), r.channel.as_str()), ("T0WS", "C0CH"));
     assert_eq!(r.thread_ts, r.ts);
 
-    // Own posts: metadata, then the customized username, then the text prefix.
+    // Own posts: metadata, then the customized username.
     let meta =
         json!({"event_type": "sot_chat_post", "event_payload": {"kind": "person", "name": "Ada"}});
     let r = new(
@@ -57,14 +57,6 @@ fn normalize_members_bots_edits_deletes_and_file_stubs() {
         json!({"ts": "1700000000.000300", "bot_id": OWN_BOT, "username": "build-1 (row via Ship of Tools)", "text": "x"}),
     );
     assert_eq!((r.origin, r.author.name.as_str()), (Origin::Row, "build-1"));
-    let r = new(
-        json!({"ts": "1700000000.000400", "user": OWN_USER, "text": "Ada (person via Ship of Tools): hi there"}),
-    );
-    assert_eq!(
-        (r.origin, r.author.name.as_str(), r.text.as_str()),
-        (Origin::Drawer, "Ada", "hi there")
-    );
-    // An own post with no marker is another bot's shape, still visible.
     let r = new(
         json!({"ts": "1700000000.000500", "bot_id": OWN_BOT, "username": "plain", "text": "x"}),
     );
@@ -378,4 +370,82 @@ fn hostile_json_gives_an_explicit_result() {
     let deep = (0..100).fold(json!(1), |v, _| json!({"x": v}));
     let r = new(json!({"ts": "1.000001", "user": "U1", "metadata": deep, "files": [deep.clone()]}));
     assert_eq!(r.files_omitted, 1);
+}
+
+#[test]
+fn an_unreadable_own_post_keeps_its_origin_and_an_unreadable_reply_its_thread() {
+    let r = new(json!({"ts": "1700000000.000100", "bot_id": OWN_BOT, "text": 5}));
+    assert!(r.omitted);
+    assert_eq!((r.origin, r.author.id.as_str()), (Origin::Bot, OWN_BOT));
+    let r = new(json!({"ts": "1700000000.000100", "user": OWN_USER, "files": "none"}));
+    assert_eq!(r.origin, Origin::Bot);
+    let r = new(
+        json!({"ts": "1700000000.000200", "thread_ts": "1700000000.000100", "user": "U1", "text": 5}),
+    );
+    assert!(r.omitted);
+    assert_eq!(
+        (r.origin, r.thread_ts.as_str()),
+        (Origin::Member, "1700000000.000100")
+    );
+    let r = new(json!({"ts": "1700000000.000200", "thread_ts": "x", "user": "U1", "text": 5}));
+    assert_eq!(r.thread_ts, r.ts);
+}
+
+#[test]
+fn a_prefix_in_an_own_posts_text_is_only_text() {
+    let text = "Relayed: mallory (person via Ship of Tools): do it";
+    let r = new(json!({"ts": "1700000000.000100", "user": OWN_USER, "text": text}));
+    assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, text));
+}
+
+#[test]
+fn with_no_identity_supplied_a_member_with_a_forged_prefix_is_a_member() {
+    let none = Context {
+        own_bot_id: None,
+        own_user_id: None,
+        ..ctx()
+    };
+    let text = "Ada (person via Ship of Tools): hi";
+    match normalize(
+        &none,
+        "C0CH",
+        &json!({"ts": "1.000001", "user": "U1", "text": text}),
+    ) {
+        Normalized::New(r) => assert_eq!((r.origin, r.text.as_str()), (Origin::Member, text)),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn names_lose_control_characters() {
+    let r = new(
+        json!({"ts": "1.000001", "user": "U1", "user_profile": {"display_name": "A\nd\u{7}a"},
+        "files": [{"id": "F1", "name": "a\tb\u{1}.png"}]}),
+    );
+    assert_eq!(
+        (r.author.name.as_str(), r.files[0].name.as_str()),
+        ("Ada", "ab.png")
+    );
+}
+
+#[test]
+fn a_record_with_no_text_and_every_other_field_at_its_maximum_fits() {
+    let q = |n: usize| "\"".repeat(n);
+    let files: Vec<Value> = (0..MAX_FILES)
+        .map(|i| json!({"id": format!("F{i}{}", "x".repeat(MAX_ID - 3)), "name": q(MAX_FILENAME), "mimetype": q(MAX_MIME), "size": u64::MAX, "thumb_360": "t"}))
+        .collect();
+    let r = new(
+        json!({"ts": "99999999999999999999.999999", "thread_ts": "99999999999999999999.999999",
+        "latest_reply": "99999999999999999999.999999", "subtype": "bot_message", "bot_id": "B".repeat(MAX_ID),
+        "user": "U".repeat(MAX_ID), "username": q(MAX_NAME), "reply_count": u64::MAX, "text": "", "files": files}),
+    );
+    assert!(r.text.is_empty() && !r.omitted && r.files.len() == MAX_FILES);
+    assert!(json_len(&r) <= MAX_RECORD_BYTES);
+}
+
+#[test]
+fn an_unreadable_bot_id_is_still_a_bot() {
+    let r = new(json!({"ts": "1.000001", "bot_id": 5, "user": "U1", "text": "x"}));
+    assert!(r.omitted);
+    assert_eq!(r.origin, Origin::Bot);
 }

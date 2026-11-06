@@ -50,8 +50,6 @@ pub enum Unrepresentable {
     Timestamp,
     /// A field of the wrong type where the shape must be known (`subtype`, the edit's `message`).
     Shape,
-    /// Not reachable with the bounds above; refused rather than emitted over the cap.
-    TooLarge,
 }
 
 pub fn normalize(ctx: &Context, channel: &str, raw: &Value) -> Normalized {
@@ -165,14 +163,13 @@ fn build(
         .ok_or(Unrepresentable::Timestamp)?;
     let mut rec = match content(ctx, channel, o, &ts) {
         Ok(rec) => rec,
-        Err(()) => identity_only(ctx, channel, &ts),
+        Err(()) => identity_only(ctx, channel, o, &ts),
     };
     rec.limited = ctx.limited;
     // Escaped control characters can multiply text six-fold, so the text alone is cut until the record fits.
-    while serde_json::to_string(&rec).map_or(usize::MAX, |s| s.len()) > MAX_RECORD_BYTES {
-        if rec.text.is_empty() {
-            return Err(Unrepresentable::TooLarge);
-        }
+    while !rec.text.is_empty()
+        && serde_json::to_string(&rec).map_or(usize::MAX, |s| s.len()) > MAX_RECORD_BYTES
+    {
         let (t, _) = cut(&rec.text, rec.text.len() / 2);
         rec.text = t.to_string();
         rec.truncated = true;
@@ -180,18 +177,45 @@ fn build(
     Ok(rec)
 }
 
+/// Origin and thread are read field by field, so the one unreadable field does not lose them: an own post stays
+/// off `Member` (it is `Bot`, display only), and a reply stays in its thread.
+fn lenient_id<'a>(o: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
+    o.get(k).and_then(Value::as_str).filter(|s| valid_id(s))
+}
+
+fn lenient_ts(o: &Map<String, Value>, k: &str) -> Option<Ts> {
+    o.get(k)
+        .and_then(Value::as_str)
+        .and_then(|s| Ts::parse(s).ok())
+}
+
+/// Own-app is decided by the supplied bot identity alone; an identity not supplied matches nothing.
+fn is_own(ctx: &Context, user: Option<&str>, bot_id: Option<&str>) -> bool {
+    (ctx.own_bot_id.is_some() && bot_id == ctx.own_bot_id)
+        || (ctx.own_user_id.is_some() && user == ctx.own_user_id)
+}
+
 /// A message whose identity is known but whose content could not be read: kept, and marked.
-fn identity_only(ctx: &Context, channel: &str, ts: &Ts) -> ChatRecord {
+fn identity_only(ctx: &Context, channel: &str, o: &Map<String, Value>, ts: &Ts) -> ChatRecord {
+    let user = lenient_id(o, "user");
+    let bot_id = lenient_id(o, "bot_id");
+    let subtype_bot = o.get("subtype").and_then(Value::as_str) == Some("bot_message");
+    let bot_key = o.get("bot_id").is_some_and(|v| !v.is_null());
+    let origin = if is_own(ctx, user, bot_id) || bot_key || subtype_bot {
+        Origin::Bot
+    } else {
+        Origin::Member
+    };
     ChatRecord {
         workspace: ctx.workspace.into(),
         channel: channel.into(),
         ts: ts.clone(),
-        thread_ts: ts.clone(),
+        thread_ts: lenient_ts(o, "thread_ts").unwrap_or_else(|| ts.clone()),
         author: ChatAuthor {
-            id: String::new(),
+            id: user.or(bot_id).unwrap_or("").into(),
             name: String::new(),
         },
-        origin: Origin::Member,
+        origin,
         text: String::new(),
         truncated: false,
         reply_count: 0,
@@ -221,16 +245,11 @@ fn content(
             .map_or(Err(()), |n| Ok(u32::try_from(n).unwrap_or(u32::MAX)))?,
     };
     let (files, files_omitted, mut truncated) = files(o.get("files"))?;
-    let own = (ctx.own_bot_id.is_some() && bot_id == ctx.own_bot_id)
-        || (ctx.own_user_id.is_some() && user == ctx.own_user_id);
+    let own = is_own(ctx, user, bot_id);
     let is_bot = bot_id.is_some() || opt_str(o, "subtype")? == Some("bot_message");
-    let mut text = text;
     let (origin, name) = if own {
-        match own_origin(o, text)? {
-            Some((origin, name, rest)) => {
-                text = rest;
-                (origin, name)
-            }
+        match own_origin(o)? {
+            Some(found) => found,
             None => (Origin::Bot, bot_name(o)?),
         }
     } else if is_bot {
@@ -262,12 +281,12 @@ fn content(
     })
 }
 
-/// The origin, the cleaned name (with whether it was cut) and the text left after a prefix is removed.
-type Recovered<'a> = (Origin, (String, bool), &'a str);
+/// The origin and the cleaned name (with whether it was cut).
+type Recovered = (Origin, (String, bool));
 
-/// Own-app origin, in the order metadata, customized username suffix, text prefix. `Ok(None)`: none of them
+/// Own-app origin and cleaned name, in the order metadata, then the customized username suffix. `Ok(None)`: neither
 /// recovers it. Only called for a message the bot identity already marked as the app's own.
-fn own_origin<'a>(o: &Map<String, Value>, text: &'a str) -> Result<Option<Recovered<'a>>, ()> {
+fn own_origin(o: &Map<String, Value>) -> Result<Option<Recovered>, ()> {
     if let Some(m) = o.get("metadata").and_then(Value::as_object) {
         if m.get("event_type").and_then(Value::as_str) == Some("sot_chat_post") {
             if let Some(p) = m.get("event_payload").and_then(Value::as_object) {
@@ -278,7 +297,7 @@ fn own_origin<'a>(o: &Map<String, Value>, text: &'a str) -> Result<Option<Recove
                     .map(|n| clean(n, MAX_NAME));
                 if let (Some(k), Some(n)) = (kind, name) {
                     if !n.0.is_empty() {
-                        return Ok(Some((k, n, text)));
+                        return Ok(Some((k, n)));
                     }
                 }
             }
@@ -289,29 +308,9 @@ fn own_origin<'a>(o: &Map<String, Value>, text: &'a str) -> Result<Option<Recove
             if let Some(name) = u.strip_suffix(&format!(" ({kind} via Ship of Tools)")) {
                 let n = clean(name, MAX_NAME);
                 if !n.0.is_empty() {
-                    return Ok(Some((kind_origin(kind).ok_or(())?, n, text)));
+                    return Ok(Some((kind_origin(kind).ok_or(())?, n)));
                 }
             }
-        }
-    }
-    let found = ["person", "row"]
-        .iter()
-        .filter_map(|k| {
-            let marker = format!(" ({k} via Ship of Tools): ");
-            text.find(&marker).map(|i| (i, *k, marker.len()))
-        })
-        .min_by_key(|(i, _, _)| *i);
-    if let Some((i, kind, len)) = found {
-        let name = &text[..i];
-        let plain = !name
-            .chars()
-            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}');
-        if plain && !name.trim().is_empty() && name.len() <= MAX_NAME {
-            return Ok(Some((
-                kind_origin(kind).ok_or(())?,
-                clean(name, MAX_NAME),
-                &text[i + len..],
-            )));
         }
     }
     Ok(None)
