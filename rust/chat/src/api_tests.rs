@@ -164,7 +164,7 @@ async fn history_pages_exact_query_without_silent_completion() {
                             reply("1700000101.000000"),
                             reply("1700000102.000000"),
                         ],
-                        None,
+                        Some("t1"),
                     ))
                 }
                 ("C0THRX", _) if thread => Reply::json(&page(
@@ -348,6 +348,16 @@ async fn history_pages_exact_query_without_silent_completion() {
         };
         let replies = api.history(&thr("C0THR"), None).await.unwrap();
         assert_eq!(replies.records.len(), 3);
+        // A thread's continuation belongs to that thread alone.
+        let other =
+            HistoryQuery::new("C0THR", Some("1700000100.000001"), Bounds::default(), 2).unwrap();
+        assert_eq!(
+            api.history(&other, replies.next.as_ref())
+                .await
+                .unwrap_err(),
+            ApiError::Altered,
+            "only the thread differs"
+        );
         let asked = fake
             .seen()
             .into_iter()
@@ -730,7 +740,7 @@ async fn names_fall_back_to_ids_without_unbounded_cache() {
         assert_eq!(api.names_cached(), MAX_NAMES);
         assert!(!api.is_cached("U1X75"), "the oldest entries left");
         assert!(api.is_cached("U1X76") && api.is_cached(&format!("U1X{}", MAX_NAMES + 75)));
-        api.remember("U1X76", "again");
+        api.remember("U1X500", "again");
         assert_eq!(api.names_cached(), MAX_NAMES, "a known id evicts nothing");
         assert!(api.is_cached("U1X76") && api.is_cached(&format!("U1X{}", MAX_NAMES + 75)));
 
@@ -795,6 +805,10 @@ async fn name_lookups_together_end_at_the_names_deadline() {
         );
         let names: Vec<&str> = records.iter().map(|r| r.author.name.as_str()).collect();
         assert_eq!(names, ids);
+        assert!(
+            calls(&fake, "users.info") <= 1,
+            "the first hung lookup used the whole group's time"
+        );
         fake.shutdown().await;
     })
     .await;
