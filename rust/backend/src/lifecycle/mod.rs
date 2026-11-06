@@ -2,6 +2,7 @@
 //! plan and the close.
 
 pub(crate) mod lease;
+pub(crate) mod retire;
 pub(crate) mod shutdown;
 pub(crate) mod signal_exit;
 pub(crate) mod startup;

@@ -618,5 +618,7 @@ refusal test with no list to keep, and no test reads the op table's source. Its 
 token is masked whole, by its form, in every log written through `RedactingWriter`, and no `RUST_LOG` setting lets a
 network library's own diagnostics into the daemon's log. Its P10 landed the same day: the daemon's services are one
 value, `Services`, built once in `run`, in place of 17 to 19 positional parameters; each handler is still given only
-what it uses.
+what it uses. Its P11 landed the same day: a controlled end retires the in-process services registered with lifecycle,
+admission closed, stop asked and completion awaited within 1 s of the terminal's unchanged budget, and one that does
+not finish is named and never changes the exit code; nothing is registered until the chat lands.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

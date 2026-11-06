@@ -94,10 +94,10 @@ pub(crate) async fn run(
 }
 
 /// How long the exit waits for the fire to answer before it exits anyway.
-const FIRE_WAIT: Duration = Duration::from_secs(2);
+pub(super) const FIRE_WAIT: Duration = Duration::from_secs(2);
 
 /// How long the exit waits, after the fire, for its children's temporary folders to go before it exits anyway.
-const FOLDERS_WAIT: Duration = Duration::from_secs(2);
+pub(super) const FOLDERS_WAIT: Duration = Duration::from_secs(2);
 
 /// Fire the child signal, remove the children's temporary folders, and then take the one raw daemon exit. A controlled
 /// exit of the serving daemon (the close, the backstop, an update restart, a handled signal, the main result) comes here,
@@ -142,11 +142,28 @@ pub(super) fn terminal<T>(
     remove_folders: impl FnOnce(Duration),
     terminate: impl FnOnce(i32) -> T,
 ) -> T {
+    terminal_retiring(super::retire::participants(), signal, code, remove_folders, terminate)
+}
+
+/// [`terminal`] over a registry of its own: after the claim, the registered in-process services retire for at most
+/// [`RETIRE_WAIT`](super::retire::RETIRE_WAIT) (admission closed, stop asked, completion awaited), then the fire runs
+/// with what remains of [`FIRE_WAIT`], so the terminal's bound is unchanged. The code is chosen before retirement and
+/// nothing it reports alters it.
+pub(super) fn terminal_retiring<T>(
+    registry: &super::retire::Registry,
+    signal: &'static sot_containment::Signal,
+    code: i32,
+    remove_folders: impl FnOnce(Duration),
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
     if !signal.claim_exit() {
         loop {
             std::thread::park();
         }
     }
+    let began = std::time::Instant::now();
+    super::retire::retire(registry, super::retire::RETIRE_WAIT);
+    let fire_wait = FIRE_WAIT.saturating_sub(began.elapsed());
     let (sent, answered) = std::sync::mpsc::channel();
     let started = std::thread::Builder::new()
         .name("sotd-fire".into())
@@ -154,7 +171,7 @@ pub(super) fn terminal<T>(
             let _ = sent.send(signal.fire());
         });
     let fired = match started {
-        Ok(_) => answered.recv_timeout(FIRE_WAIT).ok(),
+        Ok(_) => answered.recv_timeout(fire_wait).ok(),
         // No thread to run it on: no fire. Fired here it could wait without bound on a creation stalled in the OS (the
         // registry mutex), and this caller holds the exit's claim, so nothing else could exit either; on Linux the guard
         // ends what the daemon started.
@@ -172,8 +189,8 @@ pub(super) fn terminal<T>(
             eprintln!("sotd: terminal child fire failed: {error}");
         }
         None => {
-            tracing::error!("terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
-            eprintln!("sotd: terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
+            tracing::error!("terminal child fire still running after {fire_wait:?}: exiting with {code} regardless");
+            eprintln!("sotd: terminal child fire still running after {fire_wait:?}: exiting with {code} regardless");
         }
     }
     remove_folders(FOLDERS_WAIT);

@@ -68,6 +68,12 @@ of each.
    signal on a thread of its own and waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed or unanswered fire,
    removes its Julia children's temporary folders waiting at most `FOLDERS_WAIT` (2 s) (`sidecars::child::remove_own`),
    then makes the process's one raw exit; when no thread can be started for the fire it exits without it, logging that.
+   Between the claim and the fire the terminal retires the in-process services registered with
+   `retire::participants()` (the project chat is the first; nothing else is migrated): every participant's admission
+   closes, then every stop is asked, then each is awaited, all by one bound, `RETIRE_WAIT` (1 s), on a thread of its
+   own. The fire waits only what is left of `FIRE_WAIT`, so the terminal's total stays `FIRE_WAIT` + `FOLDERS_WAIT`.
+   A participant not confirmed retired is named and logged as incomplete; the code is chosen before retirement and
+   never changes, and a registrant after retirement began is refused. With none registered the terminal is what it was.
    Codes: 0 (a finished close, an Ok main result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec`
    recipe), 75 (the update restart), 78 (no config directory), 101 (a panic of the main future, turned into its code
    while the runtime still exists, `complete_main`); INT and TERM take the same fire and folders and then end the daemon
@@ -97,7 +103,8 @@ of each.
 The window leases and `<state>/held.json` (`lease.rs`: `Leases`, `HeldRecord`, `read_record`, `write_or_delete`, the
 ticker); the lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`); the start plan and its acting
 (`startup.rs`, `lease::startup_plan`); the close and its backstop (`shutdown::run`); the daemon's terminal and its
-bounds (`shutdown::exit`, `exit_by_signal`, `terminal`, `FIRE_WAIT`, `FOLDERS_WAIT`); `signal_exit::install`; the held
+bounds (`shutdown::exit`, `exit_by_signal`, `terminal`, `FIRE_WAIT`, `FOLDERS_WAIT`); the retirement of in-process
+services (`retire.rs`: `Participant`, `Registry`, `retire`, `RETIRE_WAIT`); `signal_exit::install`; the held
 points of the daemon-lifetime harness (`test_gates.rs`, feature `daemon-lifetime-faults`); the bounds and exit codes in
 `sot_protocol::ops::lease` (the window and the launcher share them: `launcher_bounds_match_ops`); the window's lease
 half (`rust/frontend/src/lease.rs`, `lease_exit.rs`) and `scripts/sot-lease.ps1`. Test seams: `SOT_TEST_SHUTDOWN_BOUND_MS`
@@ -137,7 +144,7 @@ One per guarantee. Paths are under `rust/backend/` (`src/lifecycle/` unless they
 | 3 | the last departure decides | `lease_tests.rs`: `departure_table`, `handover_table`, `latest_intent_wins_table`, `lease_generation_fences_removal`, `pending_expiry_shuts_down`; `tests/window_lease/lease.rs`: `last_one_out_two_windows`, `keep_is_open_ended`, `relaunch_handover_expires_then_shuts_down`, `unannounced_disconnect_is_a_handover`, `lease_end_any_way_departs`, `malformed_lease_line_does_not_depart`, `lane_connection_close_does_not_shut_down`, `close_after_keep_on_one_lease_shuts_down`; frontend `ui/app/exit_tests.rs`: `native_quit_delivers_close_before_the_transport_ends` (headless delivery, native menu not exercised); `scripts/tests/test-launcher-leases.ps1` case 11h (explicit shutdown Close before EOF) |
 | 4 | the start plan | `lease_tests.rs`: `startup_plan_table`, `startup_plan_boot_row_compares_only_two_nonempty_boots`, `lease_during_startup_cleanup_keeps_the_record`; `startup_tests.rs`: `failed_forget_removal_is_kept_for_the_next_start`; `src/rows/ops/create_tests.rs` (the Cleanup's slug claim) |
 | 5 | the close and its bound | `lease_tests.rs`: `not_ended_survives_restart_until_acked`, `shutdown_keeps_an_unacked_loaded_count`, `close_during_startup_cleanup_writes_closing`; `src/update_tests.rs`: `a_committed_update_is_not_undone_by_a_later_close`; `tests/window_lease/lease.rs`: `create_during_shutdown_refused`, `shutdown_bound_is_end_to_end`, `never_run_rows_count_as_ended`, `shutdown_ends_a_child_that_left_the_agents_process_group`; `tests/daemon_lifetime/outcomes.rs`: `a_close_that_outlasts_its_bound_ends_with_1_and_takes_the_ephemeral_trees` |
-| 6 | one terminal | `shutdown_tests.rs`: `the_first_controlled_exit_decides_the_code`, `the_terminal_does_not_wait_for_a_stalled_creation`, `a_terminal_with_no_thread_to_fire_on_exits_without_the_fire`, `the_terminal_removes_the_folders_within_their_wait_before_it_exits`; `tests/daemon_lifetime/outcomes.rs`: `a_main_outcome_becomes_the_launched_status`, `early_commands_and_boot_refusals_keep_their_statuses`, `a_service_manager_counts_int_and_term_as_a_clean_stop` |
+| 6 | one terminal | `shutdown_tests.rs`: `the_first_controlled_exit_decides_the_code`, `the_terminal_does_not_wait_for_a_stalled_creation`, `a_terminal_with_no_thread_to_fire_on_exits_without_the_fire`, `the_terminal_removes_the_folders_within_their_wait_before_it_exits`; `retire_tests.rs`: `participants_close_stop_complete_and_then_the_terminal_runs`, `a_stalled_participant_is_reported_incomplete_within_the_bound_and_the_exit_stands`, `no_participant_means_nothing_to_retire`; `tests/daemon_lifetime/outcomes.rs`: `a_main_outcome_becomes_the_launched_status`, `early_commands_and_boot_refusals_keep_their_statuses`, `a_service_manager_counts_int_and_term_as_a_clean_stop` |
 | 7 | INT and TERM | `signal_exit.rs`: `an_installation_failure_is_a_concrete_failure_exit`; `tests/daemon_lifetime/outcomes.rs`: `int_and_term_end_a_stalled_daemon_whatever_mask_it_inherited` |
 | 8 | the window keeps an unanswered request | `lease_leave_tests.rs`: `leave_failure_table`, `second_close_during_handover_exits_zero_on_every_path`, `forced_exit_delivers_the_queued_close`; `lease_grant_tests.rs`: `an_unanswered_lease_is_named_and_held_until_its_answer`, `harness_never_leases`; `scripts/sot-lease.ps1` (Windows: `Open-SotLease` keeps an unanswered request) is held by `scripts/tests/test-launcher-leases.ps1` case 11g (`an unanswered lease is kept`); `lease_delivery_tests.rs`: `frozen_worker_and_multiple_holders_share_one_deadline`, `held_book_does_not_extend_forced_delivery` |
 | 9 | the notice | `lease_grant_tests.rs`: `no_lease_status_line`; `lease_leave_tests.rs`: `mixed_outcomes_show_the_sum`, `not_ended_status_line` |
