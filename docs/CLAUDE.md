@@ -46,7 +46,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `SCREENSHOTS.md`: how the docs media are regenerated.
 - `SESSION.md`: what every session but a subagent reads at its start; the root `CLAUDE.md` names it.
 - `USING.md`: the entry page for a user with a local checkout.
-- `history/`: the decision records (`history/adr/`, with their `README.md` index) and the retired folder pages; no page loads them.
+- `history/`: the decision records (`history/adr/`, with their `README.md` index), the retired folder pages, the
+  passes' measured history (`passes.md`) and the project chat's plan of record (`slack-client-plan.md`); no page loads
+  them.
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
 - `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.

@@ -524,7 +524,14 @@ states test that pinned a summary with its page clause, each costing a gate of 1
 the window was planned 2026-10-30 (Slack as its carrier, one listener per Slack workspace on the hub through a Ship of
 Tools app of its own, a drawer per row with its history and figures both ways) and approved 2026-10-31. On
 2026-11-01 the maintainer chose its route: the daemon speaks Slack itself, in Rust, with no chat child and no bot
-package landing before it; its plan, with its cost, goes to him before any code, and code lands after the 0.7.0 tag.
+package landing before it. Its plan, with its cost, went to him the same day, and he approved it, relayed by the
+captain, at its fourth count (about 4,420 product and 6,730 test lines, preparations included), staged; the plan of
+record is `docs/history/slack-client-plan.md`. Its web stack was measured and accepted (the branch that measured it
+never lands), and the live Slack tests closed 2026-11-02 in his workspace: one workspace (a second is refused at load),
+a person's post under a custom author with the app badge, and no text-prefix path. After the 0.7.0 tag the first stage
+lands in this order, each piece alone within the half hour: P2, P4, P10, P11, P5, P6, P9, P1, then B1, B2, B5. Figures
+(B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for his word after the first stage is measured, and P14's lock
+order is settled in its planning. SlackClaw's pause switch (its PR 18) merges on his word when the first channel moves.
 A row's copy reaches the window's clipboard since
 2026-10-31: Claude Code's `/copy`, or any program that copies by OSC 52, lands in the clipboard of the window showing
 the row on every system (the terminal parser's bound on such a sequence rose from 1 KiB to 1 MiB, and one past it or
@@ -588,10 +595,11 @@ a result only when the closing text names it, after it ordered a session's own w
 twice. Since the same day the installer's comm step loads ShipTools with `--compiled-modules=no`, after an elevated
 Windows install failed there: Julia's loader stat'd the source path a ShipTools cache had recorded through the
 person's `repo\current` junction, which an elevated process cannot traverse, and threw instead of skipping the cache
-(reproduced on that computer; with caches off the module loads in 0.4 s). Since the same day the spawn's and the
+(reproduced on that computer; with caches off the module loads in 0.4 s; proven when 0.7.0's install over the same
+elevated login passed its comm step). Since the same day the spawn's and the
 despawn's lines (`sot_say`) are written by a program, not the shell's builtin, after the release gate's macOS bash 3.2
 job failed the despawn test whose caller stops reading: the builtin's refused write stayed in the shell's output
-buffer, and every later command substitution captured it (the fix is proven at the next release gate's macOS job).
+buffer, and every later command substitution captured it (proven by the release gate's macOS job on 0.7.0's code).
 Since the same day every folder-trust preparation is one log line naming its outcome, a recorded or already-trusted
 entry at info with the trust file, after a move of 23 rows to another account left 3 at Claude Code's trust dialog
 and the log could not say whether their entries had been written (the restart that recovers such a row is planned,
@@ -602,4 +610,7 @@ restarts: by state (the default, as before), alphabetical, or by recent work-sta
 computer's block. Since the same day a row's PDF page comes back from a row switch with its page and count, after the
 maintainer found a PDF "terrible" and deaf to PageDown on 0.7.0-rc.8: the parked view kept the page's bytes but not
 its page, so the restore drew it with the standalone raster's nearest sampler and the paging keys were not admitted.
+v0.7.0-rc.9 was cut 2026-11-05 from these and installed from its draft on two of the maintainer's computers, where
+he saw no issue in use; v0.7.0 was cut from the same code and published the same day on his word, and a plain install
+(no version named) moves a computer to it and ends its rc pin. main carries 0.7.1-DEV.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
