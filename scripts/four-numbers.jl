@@ -37,7 +37,7 @@ const PREFIXES = [
     ".github/" => "distribution", "deploy/" => "distribution",
     "docs/" => "records",
 ]
-# The integration tests, assigned by file stem as the package page's "Integration tests" section lists them.
+# The integration tests, assigned by file stem as `docs/history/passes.md` lists them ("Integration tests: which pass reduces each").
 const TEST_STEMS = Dict{String,Vector{String}}(
     "distribution" => ["shell_dial", "unit_pin", "same_version", "window_start"],
     "rows" => ["capsule_workspaces"],
