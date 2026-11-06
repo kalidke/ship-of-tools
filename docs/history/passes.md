@@ -620,3 +620,16 @@ A landing's record goes here, with its measured times; the package page holds on
   on the green run before it, with no test failing and the step cut off near its end; Windows and macOS passed. The job had 5.5 s
   of headroom and the next run grew 9.4 s across its binaries, 1.1 s of that in the chat crate. The run after it, on 2b80b78e3, took
   297 s and passed, so the job sat on the bound rather than past it. The fold moved, the bound stayed.
+- The fold split, 2026-11-06: 15:26 to main 15:40, 14 minutes. One line of `.github/test-shards.txt`, a whole gate of 10 minutes and a
+  short review, which stopped it on a wrong cause in the record: it had blamed the chat tests, and the two run logs showed no headroom
+  instead. The corrected records took a scoped gate based on the whole-gated commit. Hosted, the widest Linux job is now 234 s.
+- The ping landing, 2026-11-06: 15:30 to main 15:44, 14 minutes, first gate passed, review without a blocker. A live measurement
+  replaced the two guessed numbers: Slack pings a quiet socket about every 10.2 s, answers ours, and drops a link that sends it
+  nothing within a minute, as a bare end of stream. The listener already answered every ping under a stalled consumer and a full
+  queue, so the tests are new and the one product change is the idle bound, 90 s to 45 s. The reviewer's probes bounded a held pong at
+  the 5 s write bound; the one false sentence it found was the contract's, on what can hold a pong.
+- The macOS check and the chat dependency, 2026-11-06: 15:40 to main 15:58, 18 minutes, first gate passed, whole, review without a
+  blocker. `ring`'s build script now meets a stand-in C compiler in that one gate step, so `sot-backend` can depend on `sot-chat` and
+  the step still type-checks macOS code; `cargo check` links nothing. The review showed the builder's word "links" was too strong: no
+  daemon code names the crate, so `sotd` holds none of it, and the old-glibc pack and the Windows link have not met it yet. Their
+  first proof is the first call, at B2e. Every manifest change of the stage is in this landing.
