@@ -136,12 +136,12 @@ bot identity, read-pacing instant and name cache, and a `Socket`'s one task, que
 21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
    workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
    `chat-secrets.toml` (`workspace`, `bot_token`, `app_token`) are in platform's config folder (`config_dir`); only the
-   named keys are accepted. Each file is read by `read_file` alone: a regular file (checked on the open handle, the open
-   non-blocking so a planted FIFO returns at once; a device or directory is refused) of at most 64 KiB (`MAX_FILE`), text,
+   named keys are accepted. Each file is read by `read_file` alone: a regular file (checked on the open handle; on Unix the open is non-blocking, so a planted FIFO returns at once, and a device or
+   directory is refused; Windows applies no such flag and has no such test) of at most 64 KiB (`MAX_FILE`), text,
    read to at most one byte over the cap. The cap's job is to end a stall and bound the work a planted file causes (the
    channel check is quadratic and each mapping asks rows), not to be large. A second workspace (a list, a table, a mapping
    or the secrets naming another) and a repeated channel are refused at load. The bot token starts `xoxb-` and the app
-   token `xapp-`, then printable ASCII, 512 bytes at most: a swap or equal tokens are refused, and every admitted token
+   token `xapp-`, then letters, digits and hyphens, 512 bytes at most (a character platform's masker ends a token at, such as a quote or a parenthesis, is refused, so no tail of an admitted token prints in clear): a swap or equal tokens are refused, and every admitted token
    is a form platform's log masker knows. Mappings are admitted against supplied row facts (`Rows`: a folder's canonical
    spelling and whether it is the inert anchor; chat resolves no row): an unknown folder, the inert anchor, a channel not
    listed, two entries for one canonical folder (an alias, or the same pair twice) and one channel for two folders are

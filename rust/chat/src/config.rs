@@ -26,7 +26,7 @@ pub type Reader<'a> = &'a dyn Fn(&Path) -> io::Result<String>;
 
 /// The most either file may hold. The cap's job is to end a stall and bound the work a planted file can cause (the
 /// channel check is quadratic, and each mapping asks rows); 64 KiB holds thousands of mappings.
-pub const MAX_FILE: u64 = 64 * 1024;
+pub(crate) const MAX_FILE: u64 = 64 * 1024;
 
 /// `O_NONBLOCK`, so opening a FIFO a session planted returns at once instead of waiting for a writer.
 #[cfg(unix)]
@@ -102,7 +102,7 @@ impl ConfigError {
             ConfigError::Malformed(_) => "a chat file is not valid: it must be text of at most 64 KiB, hold only the documented keys, each of the documented type",
             ConfigError::BadId => "a workspace or channel id is not a Slack id (capital letters and digits)",
             ConfigError::BadMailAfter => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
-            ConfigError::BadToken => "a token in chat-secrets.toml is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then printable ASCII, at most 512 bytes in all",
+            ConfigError::BadToken => "a token in chat-secrets.toml is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
             ConfigError::UnknownFolder(_) => "a mapping names a folder no row knows: use the project folder's canonical path",
@@ -289,13 +289,23 @@ impl Resolution {
         )
     }
 
-    /// A fixed explanation of the state, for whoever asks why a folder has no chat.
+    /// A fixed explanation of the state; [`fmt::Display`] adds the place of a refusal.
     pub fn explain(&self) -> &'static str {
         match self {
             Resolution::Mapped { mail_after: Some(_), .. } => "the folder has a channel and mail is on for messages after mail_after",
             Resolution::Mapped { mail_after: None, .. } => "the folder has a channel and mail is off: set mail_after in chat.toml to a Slack timestamp to turn it on",
             Resolution::Unmapped => "the folder has no channel: add a [[mapping]] with its canonical folder and a channel to chat.toml",
             Resolution::Invalid(e) => e.explain(),
+        }
+    }
+}
+
+impl fmt::Display for Resolution {
+    /// The explanation, with a refusal's mapping ordinal or line, for whoever asks why a folder has no chat.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Resolution::Invalid(e) => e.fmt(f),
+            _ => f.write_str(self.explain()),
         }
     }
 }
@@ -323,7 +333,7 @@ pub struct Credentials {
     pub app: Secret,
 }
 
-/// A token of the form `prefix` (the forms platform's log masker knows) then printable ASCII, at most 512 bytes.
+/// A token of the form `prefix` (the forms platform's log masker knows) then letters, digits and hyphens (the characters platform's masker reads as one token), at most 512 bytes.
 fn token(t: &toml::Table, key: &str, prefix: &str) -> Result<Secret, ConfigError> {
     let s = t
         .get(key)
@@ -332,7 +342,7 @@ fn token(t: &toml::Table, key: &str, prefix: &str) -> Result<Secret, ConfigError
     if s.len() > prefix.len()
         && s.len() <= 512
         && s.starts_with(prefix)
-        && s.bytes().all(|b| b.is_ascii_graphic())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         Ok(Secret::new(s))
     } else {

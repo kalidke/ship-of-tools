@@ -124,6 +124,12 @@ fn resolve_explains_unmapped_invalid_and_disabled_delivery() {
             assert_ne!(a, b);
         }
     }
+    // The person asking sees where a refusal is.
+    let bad_at = parse("a = 1\nb = 2\nthis is [");
+    assert!(resolve(&bad_at, "/work/a")
+        .to_string()
+        .ends_with("(line 3)"));
+    assert_eq!(r_unmapped.to_string(), r_unmapped.explain());
     assert!(r_off.explain().contains("mail_after"));
     assert!(r_unmapped.explain().contains("[[mapping]]"));
     assert!(r_missing.explain().contains("chat.toml"));
@@ -265,6 +271,26 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
             Err(E::BadToken),
         ),
         (
+            "a character the masker ends a token at",
+            creds(&secrets_with(&format!("{})tail", bot()), &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "id starting with a digit",
+            parse("workspace = \"0AAAAA\"\nchannels = []\n").map(drop),
+            Err(E::BadId),
+        ),
+        (
+            "no channels key",
+            parse("workspace = \"T0AAAA\"\n").map(drop),
+            Err(E::Malformed(None)),
+        ),
+        (
+            "a mapping with no folder",
+            parse(&chat("[[mapping]]\nchannel = \"C0AAAA\"\n")).map(drop),
+            Err(E::Malformed(None)),
+        ),
+        (
             "non-ASCII in a token",
             creds(&secrets_with(&format!("{}\u{e9}", bot()), &app())).map(drop),
             Err(E::BadToken),
@@ -334,6 +360,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
     assert!(E::UnknownFolder(2).to_string().ends_with("(mapping 2)"));
     assert_eq!(E::Missing.to_string(), E::Missing.explain());
     // The files are named as the contract names them.
+    assert_eq!(MAX_FILE, 64 * 1024);
     assert_eq!(CONFIG_FILE, "chat.toml");
     assert_eq!(SECRETS_FILE, "chat-secrets.toml");
 }
@@ -357,6 +384,24 @@ fn a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load() {
         parse(&chat("mail_after = 5\n")).unwrap_err(),
         E::Malformed(None)
     );
+}
+
+#[test]
+fn an_admitted_token_is_masked_whole_by_the_log_masker() {
+    // Every character the masker ends a value at is refused, so no tail of an admitted token can print.
+    let ends = ['"', '\'', ')', '\\', '&', '#', '<', '>', ' ', '\t'];
+    for c in ends {
+        // The character, escaped for a TOML string.
+        let esc = c.escape_default().to_string().replace("\\'", "'");
+        let text = secrets_with(&format!("{}{esc}x", bot()), &app());
+        assert_eq!(creds(&text).unwrap_err(), E::BadToken, "{c:?}");
+    }
+    for token in [bot(), app(), format!("{}-A1-b2-{}", "xoxb", "z".repeat(40))] {
+        let line = format!("event token={token} end");
+        let shown = sot_platform::secret::redact(line.as_bytes());
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(!shown.contains(&token[5..]), "{shown}");
+    }
 }
 
 #[test]
@@ -496,11 +541,6 @@ fn the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else() {
 fn a_planted_fifo_or_device_is_refused_without_a_wait() {
     let s = Scratch::new("fifo");
     let fifo = s.0.join(CONFIG_FILE);
-    // A short-lived tool that runs to its end, not a daemon child: the allow says why.
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a test makes a FIFO with a tool that runs to its end; no daemon runs here"
-    )]
     let made = std::process::Command::new("mkfifo")
         .arg(&fifo)
         .status()
