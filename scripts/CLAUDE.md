@@ -69,8 +69,19 @@ Guarantees, each with the mechanism it rests on:
 - The Linux local gate builds `sotd`, `sot` and `sot-capsule` before its jobs, then runs
   `installer-publish-guard.py` for `fresh` and `repair`, each with its own log, result and named summary line.
   `tests/test-rc-gate-installer.sh` proves both jobs execute and retain their own status through the real pipeline.
-  The full `install-smoke.sh` still needs a release archive containing the packed apply script; a debug build alone
-  cannot run it. Its artifact-backed scenarios remain in release.yml.
+  The `install-smoke` job runs `install-smoke.sh fresh-local` (a fresh install, then a repair run, each judged by its
+  verdict line, so a `ONE STEP LEFT` fails it) on a pack the job makes from the gate's own build of the checkout: the
+  three binaries, the unit and `sot-apply`, under the built `sotd`'s version. The smoke installs into a scratch home in a
+  folder of the job's own (its `TMPDIR`), removed when the job ends. Its git fetch of the pack's commit is rewritten to
+  the gate's checkout, which may be detached at a fetched commit. The job gets the Julia the gate found and the Julia
+  depot the gate was started with (`JULIA_DEPOT_PATH`, passed on, never derived), so the installer's Julia environments
+  come from that depot; the installer may still reach the network for a package the depot lacks. A whole run does the
+  job. A scoped run does it when the scope selects the `shell scripts` piece, which `lib-gate-scope.sh` gives every
+  `scripts/` path (the gate's own scripts widen the run to whole) and the Rust paths the installer is built from
+  (`install`, `update`, `topology`, `updater`, `main.rs` and the files beside it); a change only to the pack's own
+  inputs, such as `rust/capsule` or `rust/platform`, does not trigger it. Measured on a warm depot: 2 minutes of its own,
+  run beside the other jobs. Its limit: it is a debug build on the gate host's libc, not the release archive, and
+  `fresh-be-only`, the update scenarios and the Windows smoke stay in release.yml.
 - The hosted runs are two. rust.yml, on main after each batch of merges (since 2026-10-26, the maintainer's decision; a
   red run is fixed forward in the next landing or its landing reverted), is the build and the unit tests sharded on all three systems by
   `.github/test-shards.txt`; its `release SYSTEM shard...` lines defer selected shards to that system's release gate.

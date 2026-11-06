@@ -216,6 +216,33 @@ job_installer_publish() {
   fin "$key" $?
 }
 
+# job_install_smoke: the release run's Linux install smoke (install-smoke.sh, fresh-local: a fresh install and a repair run,
+# each judged by its verdict line) on a pack made here from the gate's own build of this checkout: the three binaries the
+# main flow built, the unit, and the checkout's sot-apply, under the version the built sotd says. The smoke's installs go
+# to a scratch home under the job's own folder (TMPDIR), which goes with the job; the git fetch of the pack's commit comes
+# from this checkout through git's own url rewrite. The Julia depot is the one the gate was started with, as the Julia
+# jobs get it: the smoke's home is not the gate's, so without it the installer's environments would resolve cold. The
+# result is the smoke's own status.
+job_install_smoke() {
+  local key=install-smoke w r
+  st "$key"
+  w=$(mktemp -d "$XDG_RUNTIME_DIR/rc-gate-smoke-XXXXXX") && mkdir "$w/tmp" || { fin "$key" 2; return; }
+  logged "$L/$key.log" "$L/$key.log" "${TO[@]}" "${SE[@]}" TMPDIR="$w/tmp" ${JULIA_DEPOT_PATH:+JULIA_DEPOT_PATH="$JULIA_DEPOT_PATH"} PATH="$RCG_JULIA_DIR:${RCG_TOOLS:+$RCG_TOOLS:}/usr/bin:/bin" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$D.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://github.com/kalidke/ship-of-tools" bash -c '
+      set -eu
+      d=$1 w=$2 t=$3
+      v=$("$t/debug/sotd" --version | cut -d" " -f2)
+      n=sot-$v-linux-x86_64
+      mkdir -p "$w/pack" "$w/stage/$n"
+      cp "$t/debug/sotd" "$t/debug/sot" "$t/debug/sot-capsule" "$d/deploy/sotd.service" "$w/stage/$n/"
+      cp "$d/scripts/sot-apply.sh" "$w/stage/$n/sot-apply"
+      tar -czf "$w/pack/$n.tar.gz" -C "$w/stage" "$n"
+      bash "$d/scripts/tests/install-smoke.sh" fresh-local "$w/pack" "$d"' _ "$D" "$w" "$CARGO_TARGET_DIR"
+  r=$?
+  rm -rf "${w:?}"
+  fin "$key" $r
+}
+
 # job_lifetime: the daemon lifetime harness as rust.yml's Linux job runs it: Pluto's environment prepared in the gate's
 # depot with one notebook run (fixtures/warm_pluto.jl) and handed to the cases, then every case one at a time, the Julia
 # ones on the gate's julia
@@ -350,6 +377,8 @@ producer() {
     narrow && ! want shell scripts && ! want_kind rust && continue
     emit "installer-publish:$s" "$(printf 'installer-publish\t%s' "$s")" "$L/steps/installer-publish-$s.rc"
   done
+  # the install smoke runs on the installer's own piece: every path the scope maps to `shell scripts` (lib-gate-scope.sh)
+  want shell scripts && emit install-smoke install-smoke "$L/steps/install-smoke.rc"
   [ "$BUILD_RC" -eq 0 ] && st rust-workspace
 
   # list the four slow binaries; a split binary runs only per test
@@ -491,6 +520,7 @@ if [ "${1:-}" = --job ]; then
     under-bash) job_under_bash ;;
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     installer-publish) job_installer_publish "$a" ;;
+    install-smoke) job_install_smoke ;;
     bin) job_test "$a" "$b" "$c" ;;
     one) job_test "$a" "$b" "$c" "$d" ;;
     part) job_part "$a" "$b" "$c" "$d" ;;

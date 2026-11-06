@@ -154,6 +154,27 @@ check "scoped: all three lints still run" '[ "$(rcof sc1 steps/lint-lib-bins)$(r
 check "scoped: both cross checks still run" '[ "$(rcof sc1 steps/win-check)" = 0 ] && [ "$(rcof sc1 steps/darwin-check)" = 0 ]'
 check "scoped: the doc tests run for the touched crate alone" 'grep -q "^cargo test --manifest-path $work/sc1/rust/platform/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q "rust/backend/Cargo.toml --locked --doc" "$work/tools/cargo.log" && ! grep -q -- "--workspace --locked --doc" "$work/tools/cargo.log"'
 
+fixture sc8; pipeline sc8 b $'rust platform\nshell scripts'
+check "scoped: an installer piece gets the install smoke job, with its result and log" '[ -e "$work/L-sc8/steps/install-smoke.rc" ] && [ -e "$work/L-sc8/install-smoke.log" ]'
+check "scoped: a piece other than the installer's has no install smoke" '[ ! -e "$work/L-sc1/steps/install-smoke.rc" ] && [ ! -e "$work/L-sc1/install-smoke.log" ]'
+check "unscoped: the install smoke runs" '[ -e "$work/L-none/steps/install-smoke.rc" ]'
+
+# the install smoke job's body, over a stand-in smoke that records what it was given and fails
+fixture sm
+mkdir -p "$work/sm/deploy"; : > "$work/sm/deploy/sotd.service"; printf '#!/bin/sh\nexit 0\n' > "$work/sm/scripts/sot-apply.sh"
+printf '#!/bin/sh\necho "sotd 1.2.3 (abc)"\n' > "$work/target/debug/sotd"; cp "$work/target/debug/sotd" "$work/target/debug/sot"
+cp "$work/target/debug/sotd" "$work/target/debug/sot-capsule"; chmod +x "$work/target/debug"/*
+cat > "$work/sm/scripts/tests/install-smoke.sh" <<'STUB'
+#!/bin/bash
+{ echo "args $*"; echo "depot ${JULIA_DEPOT_PATH-unset}"; echo "tmp $TMPDIR"; echo "rewrite $GIT_CONFIG_COUNT $GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"
+  tar -tzf "$2"/sot-1.2.3-linux-x86_64.tar.gz; } > "$(dirname "$0")/../../smoke.rec"
+echo "install-smoke: FAIL: stand-in"; exit 7
+STUB
+JULIA_DEPOT_PATH=/depot-from-env pipeline sm - ""
+check "install smoke job: the pack holds the built binaries, the unit and the apply" 'grep -q "^args fresh-local .*/pack $work/sm$" "$work/sm/smoke.rec" && grep -q "sot-1.2.3-linux-x86_64/sotd$" "$work/sm/smoke.rec" && grep -q "/sotd.service$" "$work/sm/smoke.rec" && grep -q "/sot-apply$" "$work/sm/smoke.rec"'
+check "install smoke job: it gets the gate's depot, a TMPDIR of its own and the url rewrite to the checkout" 'grep -qx "depot /depot-from-env" "$work/sm/smoke.rec" && grep -q "^tmp $work/run/rc-gate-smoke-.*/tmp$" "$work/sm/smoke.rec" && grep -qx "rewrite 1 url.$work/sm.insteadOf=https://github.com/kalidke/ship-of-tools" "$work/sm/smoke.rec"'
+check "install smoke job: a failing smoke is the step's rc, named in the summary, and its folder is gone" '[ "$(rcof sm steps/install-smoke)" = 7 ] && grep -qx "install-smoke rc=7 " "$work/L-sm/summary.txt" && grep -q "FAIL: stand-in" "$work/L-sm/install-smoke.log" && ! ls -d "$work"/run/rc-gate-smoke-* > /dev/null 2>&1'
+
 fixture sc5; pipeline sc5 b $'rust backend'
 check "scoped: a binary-only crate is asked no doc test and has no doc result" '[ "$(rcof sc5 rust/bin-backend)" = 0 ] && ! grep -q -- "--doc" "$work/tools/cargo.log" && [ ! -e "$work/L-sc5/rust/doc.rc" ]'
 fixture sc6; pipeline sc6 b $'rust backend\nrust platform'
@@ -170,6 +191,8 @@ check "the defects check runs unscoped, scoped to a crate and scoped to docs alo
 
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'
 check "widened: everything runs as unscoped" '[ "$(rcof sc3 rust/bin-backend)" = 0 ] && [ -e "$work/L-sc3/steps/agents-tests-test-a.rc" ] && [ -e "$work/L-sc3/steps/julia-root.rc" ]'
+
+check "widened: the install smoke runs" '[ -e "$work/L-sc3/steps/install-smoke.rc" ]'
 
 fixture sc4; rm "$work/sc4/julia/kernel/Project.toml"; rm "$work/sc4/agents/tests/test-a.sh"
 pipeline sc4 b $'julia julia/kernel\nshell agents'
