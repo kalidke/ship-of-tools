@@ -78,6 +78,13 @@ name is in this crate's one op table.
    guarantee 4) and closes, and the window opens no channel before `link.hello` is answered, so no channel byte reaches
    an old reader. Limits: the family's previous-shape test is its own (`ops/link_tests.rs`); `v` on a link frame is the
    protocol integer as on every frame, and no link reader checks it (the link number does).
+10. **A lost bus is told by one status evt, `bus.lost`.** `BusLostEvt { bus, skipped }` (`ops/bus.rs`): `bus` is the
+    op the lost events travel as, `skipped` the count the daemon's receiver reports (defaulted 0). Mechanism: one new
+    op in `op_table!` and a payload that grows only by defaulted fields; the envelope and every existing payload are
+    unchanged, so guarantee 3 needs no raise. What an older window does: it reads an evt of an op it does not know as
+    the generic `IncomingEvt::Event`, whose handler logs the op at debug and does nothing, so it keeps working against a
+    newer daemon (`reply_tests::an_unknown_evt_op_reaches_the_generic_event_path`). Limit: a status only, no replay.
+    Test `ops/bus_tests.rs`: `bus_lost_keeps_its_shape_and_a_missing_count_reads_as_zero`.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op

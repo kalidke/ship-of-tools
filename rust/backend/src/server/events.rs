@@ -15,6 +15,18 @@ pub(super) async fn recv_or_pending<T: Clone>(
     }
 }
 
+/// Tells the client its connection lost `skipped` events on the bus whose events travel as `bus` (an op name): one
+/// `bus.lost` evt through the connection's own writer, so a failed write ends the connection as any other does.
+/// Always `Ok(true)`: a frame was written.
+async fn write_bus_lost<W>(tx: &mut W, bus: &str, skipped: u64) -> Result<bool>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let payload = serde_json::to_value(sot_protocol::ops::BusLostEvt { bus: bus.to_string(), skipped })?;
+    write_frame_to(tx, &Frame::evt(op::BUS_LOST, payload), None).await?;
+    Ok(true)
+}
+
 /// Whether a `preview.changed` event should reach a connection whose active
 /// workspace is `active_workspace_id` — the CANONICAL id from this
 /// connection's last `workspace.activate` (see `active_workspace`'s
@@ -82,9 +94,9 @@ fn preview_changed_visible(
 /// here, before a frame decode/JSON-parse/redraw is spent on the frontend
 /// for traffic it would have discarded anyway (the measured flood this
 /// filter exists for). Returns `Ok(true)` if a frame was written, `Ok(false)`
-/// if the receiver was lagged/closed, or if the event was filtered for this
+/// if the receiver was closed, or if the event was filtered for this
 /// connection's active workspace (skip and keep the connection alive either
-/// way).
+/// way). A lagged receiver writes a `bus.lost` frame and also returns `Ok(true)`.
 ///
 /// No `.with_rev(...)` on the outgoing frame, deliberately: `preview.changed`
 /// is NOT part of the session revision ring (`watcher.rs` never calls
@@ -121,7 +133,7 @@ where
                 skipped = n,
                 "preview watcher lagged on this connection; client missed file events"
             );
-            Ok(false)
+            write_bus_lost(tx, op::PREVIEW_CHANGED, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("preview watcher channel closed");
@@ -132,7 +144,7 @@ where
 
 /// Translates one workspace lifecycle event into a `workspace.changed` evt
 /// frame on the wire. Returns `Ok(true)` if a frame was written, `Ok(false)`
-/// if the receiver was lagged or closed (skip and keep the connection alive).
+/// if the receiver was closed (keep the connection alive); a lagged one writes `bus.lost`.
 pub(super) async fn write_workspace_changed<W>(
     tx: &mut W,
     change: Result<WorkspaceChanged, broadcast::error::RecvError>,
@@ -156,7 +168,7 @@ where
                 skipped = n,
                 "workspace event bus lagged on this connection; client missed workspace changes"
             );
-            Ok(false)
+            write_bus_lost(tx, op::WORKSPACE_CHANGED, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("workspace event bus channel closed");
@@ -186,7 +198,7 @@ where
                 skipped = n,
                 "topology event bus lagged on this connection; client missed a topology change"
             );
-            Ok(false)
+            write_bus_lost(tx, op::TOPOLOGY_CHANGED, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("topology event bus channel closed");
@@ -197,7 +209,7 @@ where
 
 /// Translates one relayed agent message into an `agent.message` evt frame on
 /// the wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
-/// receiver was lagged or closed (skip and keep the connection alive).
+/// receiver was closed (keep the connection alive); a lagged one writes `bus.lost`.
 pub(super) async fn write_agent_message<W>(
     tx: &mut W,
     msg: Result<AgentMessage, broadcast::error::RecvError>,
@@ -222,7 +234,7 @@ where
                 skipped = n,
                 "agent relay bus lagged on this connection; client missed messages"
             );
-            Ok(false)
+            write_bus_lost(tx, op::AGENT_MESSAGE, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("agent relay bus channel closed");
@@ -233,8 +245,8 @@ where
 
 /// Translates one FE command into an `fe.command` evt frame on the wire
 /// (ADR 0025). Returns `Ok(true)` if a frame was written OR correctly
-/// filtered out for this connection, `Ok(false)` if the receiver was lagged
-/// or closed (skip and keep the connection alive). The evt is broadcast to
+/// filtered out for this connection, `Ok(false)` if the receiver was closed
+/// (keep the connection alive); a lagged one writes `bus.lost`. The evt is broadcast to
 /// every connection; ordinarily the FE self-filters on `target`, but when
 /// `e.target_serial` names a specific connection (2026-09-08 review rework,
 /// design point B — exclusive delivery by connection identity, not merely a
@@ -267,7 +279,7 @@ where
                 skipped = n,
                 "fe command bus lagged on this connection; client missed commands"
             );
-            Ok(false)
+            write_bus_lost(tx, op::FE_COMMAND, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("fe command bus channel closed");
@@ -280,7 +292,7 @@ where
 /// wire, as this connection is written it (`CallerNumbers::outgoing`: its
 /// window's own runs under the window's numbers). Returns `Ok(true)` if a frame was written,
 /// `Ok(false)` if the frame is not for this connection or the receiver was
-/// lagged or closed (skip and keep the connection alive). The `frame` value is
+/// closed (keep the connection alive); a lagged one writes `bus.lost`. The `frame` value is
 /// otherwise passed through verbatim — its `{kind, ...}` shape is
 /// kernel-defined, so the backend stays oblivious to new frame kinds — except
 /// the one rewrite `repl_frame_for` makes to a page every frontend would open.
@@ -313,7 +325,7 @@ where
                 skipped = n,
                 "repl frame bus lagged on this connection; client missed frames"
             );
-            Ok(false)
+            write_bus_lost(tx, op::REPL_FRAME, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("repl frame bus channel closed");
@@ -348,7 +360,7 @@ fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients) -
 }
 
 /// Translates one monitor tick into a `monitor.tick` evt (one host per evt; the
-/// frontend merges by host). Skips on lag/close, keeping the connection alive.
+/// frontend merges by host). A lag writes `bus.lost`; a close writes nothing and keeps the connection alive.
 pub(super) async fn write_monitor_tick<W>(
     tx: &mut W,
     msg: Result<HostLatest, broadcast::error::RecvError>,
@@ -368,7 +380,7 @@ where
                 skipped = n,
                 "monitor bus lagged on this connection"
             );
-            Ok(false)
+            write_bus_lost(tx, op::MONITOR_TICK, n).await
         }
         Err(broadcast::error::RecvError::Closed) => {
             tracing::debug!("monitor bus channel closed");

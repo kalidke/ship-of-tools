@@ -486,6 +486,11 @@ pub mod op {
     /// `topology sync` rather than diffing a delta this event doesn't
     /// carry.
     pub const TOPOLOGY_CHANGED: &str = "topology.changed";
+    /// Server→client push: this connection fell behind one of the daemon's broadcast buses and the daemon dropped
+    /// events it would have written. Payload [`crate::ops::BusLostEvt`] names the bus by the op its events travel
+    /// as and how many were dropped. A status, not a replay: nothing resends the lost events, and a reader that
+    /// does not know the op ignores it like any unknown evt.
+    pub const BUS_LOST: &str = "bus.lost";
 
     /// The frame behind a `handoff` hello on a dedicated lease connection: the window claims this
     /// daemon. Payload [`crate::ops::FeLeaseReq`]; reply [`crate::ops::FeLeaseRes`].
@@ -541,6 +546,9 @@ pub use pages::*;
 
 mod monitor;
 pub use monitor::*;
+
+mod bus;
+pub use bus::*;
 
 mod update;
 pub use update::*;

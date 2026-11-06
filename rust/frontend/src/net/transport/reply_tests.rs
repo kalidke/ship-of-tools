@@ -630,3 +630,38 @@ async fn result_tree_loss_fails_pending_requests_once() {
     lost.sort_by_key(|a| a.result_serial);
     assert_eq!(lost, vec![attempt("id-a", 1, 1), attempt("id-a", 4, 5)]);
 }
+
+/// A `bus.lost` evt reaches the window as the typed event, not the generic one; a payload that omits the count (a
+/// writer that cannot say) reads as 0.
+#[test]
+fn bus_lost_evt_decodes_into_its_typed_event() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+    let host = "test-host".to_string();
+    for (payload, skipped) in [
+        (serde_json::json!({"bus": "preview.changed", "skipped": 7}), 7),
+        (serde_json::json!({"bus": "monitor.tick"}), 0),
+    ] {
+        handle_response_frame(Frame::evt(op::BUS_LOST, payload), None, &mut pending, &evt_tx, &host);
+        let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+        match events.as_slice() {
+            [(h, IncomingEvt::BusLost { bus, skipped: n })] => {
+                assert_eq!(h, &host);
+                assert_eq!((bus.as_str(), *n), (if skipped == 7 { "preview.changed" } else { "monitor.tick" }, skipped));
+            }
+            other => panic!("expected one BusLost, got {other:?}"),
+        }
+    }
+}
+
+/// What an older window does with the frame: it knows no `bus.lost`, so it takes the generic `Event` path, whose
+/// handler logs an unknown op at debug and does nothing else.
+#[test]
+fn an_unknown_evt_op_reaches_the_generic_event_path() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+    let host = "test-host".to_string();
+    handle_response_frame(Frame::evt("bus.unheard_of", serde_json::json!({"bus": "x"})), None, &mut pending, &evt_tx, &host);
+    let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
+    assert!(matches!(events.as_slice(), [(_, IncomingEvt::Event { .. })]), "{events:?}");
+}

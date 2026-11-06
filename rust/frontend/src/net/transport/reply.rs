@@ -370,6 +370,13 @@ pub(super) fn handle_response_frame(
         }
         return;
     }
+    if frame.kind == sot_protocol::Kind::Evt && frame.op == op::BUS_LOST {
+        match serde_json::from_value::<sot_protocol::ops::BusLostEvt>(frame.payload) {
+            Ok(ev) => emit(IncomingEvt::BusLost { bus: ev.bus, skipped: ev.skipped }),
+            Err(e) => tracing::warn!(error = %e, "bus.lost evt parse failed"),
+        }
+        return;
+    }
     emit(IncomingEvt::Event {
         op: frame.op,
         payload: frame.payload,

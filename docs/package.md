@@ -119,7 +119,7 @@ connection of another account is dropped at accept before a byte is read; nothin
 one writer per connection; a handler's failure is one frame for the ops that reach `finish_dispatch`; a peer that
 cannot drain is dropped; a ping is answered whatever the role, and a silent pinger is reaped even under event load; an
 op runs off the loop unless `INLINE` names it; an event reaches a connection as one frame, or is dropped when its bus
-lags. Services reach the server only through their handler arguments: the compiler enforces the server's private
+lags, and the connection is then told so by a `bus.lost` frame. Services reach the server only through their handler arguments: the compiler enforces the server's private
 submodules, the rest is convention until the services are crates. Owns: the listener, the roster, the op table. Does
 not: implement any op beyond hello, ping and the handoffs.
 
@@ -620,5 +620,7 @@ network library's own diagnostics into the daemon's log. Its P10 landed the same
 value, `Services`, built once in `run`, in place of 17 to 19 positional parameters; each handler is still given only
 what it uses. Its P11 landed the same day: a controlled end retires the in-process services registered with lifecycle,
 admission closed, stop asked and completion awaited within 1 s of the terminal's unchanged budget, and one that does
-not finish is named and never changes the exit code; nothing is registered until the chat lands.
+not finish is named and never changes the exit code; nothing is registered until the chat lands. Its P5 landed the
+same day: a connection that falls behind a bus gets one typed `bus.lost` frame naming the bus and the count, which an
+older window or linked daemon ignores; no pane recovers from it yet, and the chat is its first consumer.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

@@ -173,11 +173,13 @@ of each.
     file, and always when the private log cannot be opened (`copies_to_stdout`). Limit: a failed roll is printed once
     and not retried until the log has grown by the cap again. No `RUST_LOG` setting lets a network library's
     diagnostics (`h2`, `hyper`, `reqwest`, `rustls`, `tungstenite` and their kin) into the log (`NETWORK_LIBRARIES`).
-16. **An event reaches a connection as one frame, or is dropped when its bus lags.** Each bus item is one `evt` frame
-    written by the connection's loop (`events.rs`); a connection that falls behind a bus loses what the bus dropped
-    (the receiver's lag is logged and nothing is written for it), and a closed bus writes nothing. Nothing resends a
-    dropped event: a window refetches on its next change or reconnect (guarantee 4's replay covers only the revision
-    ring's events).
+16. **An event reaches a connection as one frame, or the connection is told it lost some.** Each bus item is one `evt`
+    frame written by the connection's loop (`events.rs`); a connection that falls behind a bus loses what the bus
+    dropped, and its receiver's lag is logged and written as one `bus.lost` evt, `{bus, skipped}`, through the same
+    writer (`write_bus_lost`), so a status that cannot be written ends the connection as any failed write does. A
+    closed bus writes nothing. Limit: the signal is all there is. Nothing resends a dropped event and no existing pane
+    recovers from `bus.lost` (the window only logs it): a window refetches on its next change or reconnect (guarantee
+    4's replay covers only the revision ring's events). A monitor lag while unsubscribed is consumed unreported.
 
 ## Owns
 - `Services` (`context.rs`), the one value of the daemon's buses and handles that `run` builds and every connection is given.
@@ -243,7 +245,7 @@ tests need the built `sotd` and run in test containers.
 | 12 | the hello names running REPL runs | `tests/repl_windows.rs` (Linux) |
 | 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`, `a_window_used_last_that_is_away_sends_nothing_to_another_window`, `ties_a_windows_other_connection_and_non_windows_rank_as_the_rule_says`; `src/clients_tests.rs`: `a_browser_open_while_the_window_used_last_is_away_publishes_nothing`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
 | 14 | a handler is given its arguments | the private submodules (compiler); `context_tests.rs`: `each_accepted_connection_is_served_the_services_it_was_given`; the rest by convention |
-| 16 | an event is one frame or dropped | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_nothing`, `a_closed_bus_writes_nothing` (per bus) |
+| 16 | an event is one frame, or a loss is told | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_one_bus_lost_frame`, `a_closed_bus_writes_nothing` (per bus), `a_bus_lost_frame_that_cannot_be_written_ends_the_connection` |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `daemon_log_masks_slack_and_page_secrets`, `no_log_level_lets_a_network_library_into_the_log`, `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |
 
 ## Server queue

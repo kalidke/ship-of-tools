@@ -1,5 +1,5 @@
 // One pass of `select_once` per bus event, through the real arms: an item
-// is one evt frame of the bus's op, a lagged or closed bus writes nothing,
+// is one evt frame of the bus's op, a lagged bus writes one `bus.lost` frame, a closed bus writes nothing,
 // and with the two optional buses absent every arm stays pending.
 use super::*;
 use crate::files::watcher::ChangeKind;
@@ -101,8 +101,8 @@ impl Wire {
     }
 }
 
-/// Per bus: one item is one frame, two (capacity 1) lag and write
-/// nothing, a dropped sender closes and writes nothing.
+/// Per bus: one item is one frame, two (capacity 1) lag and write one `bus.lost` frame naming the bus and the one
+/// item lost, a dropped sender closes and writes nothing.
 macro_rules! bus_wire_tests {
     ($name:ident, $tx:ident, $op:expr, $item:expr, $payload:expr) => {
         mod $name {
@@ -117,12 +117,12 @@ macro_rules! bus_wire_tests {
             }
 
             #[tokio::test]
-            async fn a_lagged_bus_writes_nothing() {
+            async fn a_lagged_bus_writes_one_bus_lost_frame() {
                 let (mut w, s) = wire();
                 s.$tx.send($item).unwrap();
                 s.$tx.send($item).unwrap();
                 assert!(matches!(w.once_on(stringify!($name)).await, Woke::Again));
-                assert!(w.buf.is_empty());
+                assert_eq!(w.the_evt().await, (op::BUS_LOST.to_string(), json!({"bus": $op, "skipped": 1})));
             }
 
             #[tokio::test]
@@ -231,4 +231,38 @@ async fn an_expired_read_deadline_reaps_a_connection_whose_event_arms_are_always
         .expect("select_once");
         assert!(matches!(woke, Woke::Reap), "turn {turn}: an expired deadline was not reaped while events were ready");
     }
+}
+
+/// A status frame that cannot be written ends the connection as any failed write does: `select_once` returns the
+/// error instead of `Again`, so the connection's loop ends it.
+#[tokio::test]
+async fn a_bus_lost_frame_that_cannot_be_written_ends_the_connection() {
+    struct Broken;
+    impl tokio::io::AsyncWrite for Broken {
+        fn poll_write(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, _: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+        fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        }
+        fn poll_shutdown(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    let (mut w, s) = wire();
+    let note = || AgentMessage { from: "a".into(), to: "".into(), text: "hi".into(), ts: String::new() };
+    s.agent_events.send(note()).unwrap();
+    s.agent_events.send(note()).unwrap();
+    let ended = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        select_once(
+            &mut Broken, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
+            &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
+            &mut w.jobs, tokio::time::Instant::now(), false, true, &None, &w.workspaces, &None, &Clients::new(),
+            &Default::default(),
+        ),
+    )
+    .await
+    .expect("select_once returned");
+    assert!(ended.is_err(), "a failed status write must end the connection");
 }

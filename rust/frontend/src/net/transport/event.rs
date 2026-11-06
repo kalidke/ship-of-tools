@@ -550,4 +550,10 @@ pub enum IncomingEvt {
     MonitorTick {
         hosts: Vec<sot_protocol::HostLatest>,
     },
+    /// `bus.lost` evt: this connection fell behind a daemon bus and `skipped` of the events travelling as `bus` (an
+    /// op name) were dropped. A status only: nothing is replayed and no pane recovers from it yet.
+    BusLost {
+        bus: String,
+        skipped: u64,
+    },
 }

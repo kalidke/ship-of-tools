@@ -170,6 +170,10 @@ impl State {
                     self.on_monitor_history(hosts)
                 }
                 crate::net::transport::IncomingEvt::MonitorTick { hosts } => self.on_monitor_tick(hosts),
+                // No pane recovers from a lost bus yet; the typed event is for the first consumer.
+                crate::net::transport::IncomingEvt::BusLost { bus, skipped } => {
+                    tracing::warn!(%bus, skipped, "daemon bus lost events on this connection");
+                }
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,
