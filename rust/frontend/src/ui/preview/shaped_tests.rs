@@ -173,3 +173,13 @@ fn preview_selection_skips_separate_media_reservations() {
     assert!(!text.contains('\u{FFFC}'));
     assert!(p.selection_rects().iter().all(|r| r.y != media_top));
 }
+
+#[test]
+fn preview_literal_placeholder_without_media_is_copied_and_tinted() {
+    let (mut p, _fs) = preview("a\u{FFFC}b\n\u{FFFC}\nc", 200.0, 400.0);
+    let start = p.hit(at(&p, 0, 0), true).unwrap();
+    p.press(Some(start));
+    p.extend_drag(at(&p, 2, 0));
+    assert_eq!(p.selected_text().as_deref(), Some("a\u{FFFC}b\n\u{FFFC}\n"));
+    assert_eq!(p.selection_rects().len(), 2);
+}

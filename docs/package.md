@@ -171,7 +171,7 @@ v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `m
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
 the last one and carries everything that use found. In progress is the project chat (the daemon speaks Slack itself,
 in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
-Its preparations P2, P4, P10, P11 and P5 have landed; the first stage continues in the order P6, P9, P1, then B1, B2,
+Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1) have landed; the stage continues with B1, B2, then
 B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,

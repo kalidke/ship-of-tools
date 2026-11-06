@@ -22,7 +22,7 @@ target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns t
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
-`preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll, mouse selection and definition-line
+`flowed_selection::FlowedSelection` owns mouse selection over flowed text; `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
 anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
@@ -236,11 +236,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout
   pass resizes the shape only when the rect moved by more than half a pixel. The shaped body is built and resized but
   no draw path reads it today.
+- `flowed_selection::FlowedSelection` privately owns mouse selection over flowed text: the range as buffer line/byte
+  positions and the drag. A pane lends its buffer, rect, text origin, clip bottom and an optional media placeholder
+  character as a `FlowedText` per call and owns none of the selection; the owner's `hit`, `press`, `extend_drag`,
+  `release`, `clear`, `text` and pure `rects` copy exact UTF-8 ranges (a soft wrap adds no newline, a placeholder adds no
+  text) and clip the tint to the paint bounds. Tested by `flowed_selection_tests.rs`, where a fixture pane that is not
+  the preview gets the preview's copied text and rectangles for the same wrapped Unicode text.
 - `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
   (resized only when the rect moved by more than half a pixel), the math SVG beside it, the scroll in body lines, the
-  definition-line anchor, the refused-hello overlay and mouse selection as buffer line/byte positions. Its `hit`,
-  `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations account
-  for the text origin, top padding and scroll; the render pass tints the clipped rectangles before painting glyphs.
+  definition-line anchor, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
+  `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
+  selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
   Installing a buffer clears selection, drops the SVG and scrolls to the top. A row switch, Escape in the preview
   and opening edit mode also clear selection. The text scope's `preview.copy_selection` copies rendered text on
   Primary+C or Primary+Shift+C; `y` still copies fenced code sources. Selection does not cover MarkdownMedia's wide

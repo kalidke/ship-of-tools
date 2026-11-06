@@ -554,6 +554,7 @@ older window or linked daemon ignores; no pane recovers from it yet, and the cha
 
 A landing's record goes here, with its measured times; the package page holds only the current state.
 
+- P1, 2026-11-06: mouse selection over flowed text is `ui/flowed_selection.rs`'s, private; a pane lends its buffer, rect, origin, clip and media placeholder per call, and the preview is the first consumer. A fixture pane that is not the preview is tested against the preview's copied text and clipped rectangles. 5 minutes of change, goal-only, then a fresh reviewer for 24 minutes (no blocker; an eager walk, two untested conditions and a false comment) and 3 minutes of fixes: a miss against the half hour, the review's length its cause.
 - The chat's preparations, 2026-11-06, change then launch to main in minutes. P2, 18 and 29, from a full brief on Haiku,
   about half the change compiling; the brief named one wrong function and one check that fails at the base. P4, 3 and
   18, from a full brief on Sonnet; the same brief on Haiku had died 3 minutes in, its window refilled to the compaction
