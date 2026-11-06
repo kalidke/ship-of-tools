@@ -99,20 +99,25 @@ token or configuration loading, no delivery and no channel mapping.
    lookup, or a full queue, cannot delay an acknowledgement. Limit: a write that does not finish in 5 s retires the socket.
 18. **One socket at a time, and a replacement waits for retirement.** One task owns the listener and its one socket. It
    opens the next socket only after the last is retired: `warning`, `refresh_requested`, any `disconnect`, a peer close, a
-   silent close (no close frame), 90 s without a frame (our ping, every 30 s, keeps a live link from it) and an
+   silent close (no close frame), 90 s without a received frame (the clock restarts on a frame received, never on our own ping, every 30 s) and an
    acknowledgement that cannot be written all end the socket the same way. Retirement is a close the peer must answer within
    2 s (Slack's observed behavior: a peer that never answers blocks a read forever), then the connection is dropped. Reconnect
    is paced: 1 s, doubling to 30 s while attempts fail, reset by a `hello`, so a refusing Slack is not hammered and a healthy
    refresh is back in a second. `stop` sets the signal, the task retires the socket and ends, and `stop` joins it within 5 s
-   (then aborts it); no connect starts after the signal. Limit: Slack's `Retry-After` on `apps.connections.open` is not read
-   (the backoff paces it).
+   (then aborts it); no connect starts after the signal. Limits: nothing runs after `stop` except one request: a stop
+   during `apps.connections.open` drops the waiter, and `Http::send`'s owner-held deadline (guarantee 7) lets that request,
+   with its app token and permit, run on for up to 15 s. Slack's `Retry-After` on `apps.connections.open` is not read (the
+   backoff paces it). The 30 s ping and the 90 s idle bound are not observed from Slack (its own pings, whether it answers
+   ours, and its longest quiet gap are unmeasured); a wrong value fails safe, as a reconnect, a `Reconnect` gap and a
+   history pull, never a lost event. A `warning` retires the socket at once, by design (one socket, never overlapping).
 19. **Nothing lost is silent.** A pending event is dropped, acknowledged, when 256 are pending or their frames pass 8 MiB
    (an event costs its envelope's size); an event that cannot be read or represented (bad JSON, no `payload.event`, an
    `Unrepresentable` result, a binary frame, a message over the bound) and a connected socket that ends each latch a `Gap`
-   (`Overflow`, `Failed`, `Reconnect`). `Unsupported` subtypes and non-message events are neither. A gap stays until
+   (`Overflow`, `Failed`, `Reconnect`); every `hello`, the first included, latches `Reconnect` too, so events Slack sent
+   before a socket was live are never covered by a reconciliation that began before it. `Unsupported` subtypes and non-message events are neither. A gap stays until
    `Socket::reconciled(gap)` is given the value read before a complete reconciliation began; it clears only when nothing
-   was lost since (every latch is a new sequence number), so a loss during a reconciliation survives it. Limit: the caller
-   starts with its own initial reconciliation; a socket that never connected latches nothing.
+   was lost since (every latch is a new sequence number), so a loss during a reconciliation survives it, whether it is an overflow,
+   a failed event or a lost socket.
 20. **A websocket obeys the request rules and its own bounds.** The URL from `apps.connections.open` passes the guarantee-5
    predicate with scheme `wss` (userinfo, another port, an IP, a foreign or lookalike host, `ws` and `https` are
    `destination`, before any dial), connects directly (no proxy) and runs through `Http`'s one rustls configuration. A
@@ -199,8 +204,8 @@ Paths are under `rust/chat/src/`.
 | 15 | no raw Slack text | `api_tests.rs`: `slack_text_and_identity_failures_reach_no_caller_raw` |
 | 16 | names | `api_tests.rs`: `names_fall_back_to_ids_without_unbounded_cache` |
 | 17 | ack first (C11) | `socket_tests.rs`: `socket_ack_precedes_slow_api_and_dispatch` (the fake sends each envelope only after the previous one's acknowledgement while the dispatcher is stalled on a lookup that never answers) |
-| 18 | one socket (C12) | `socket_tests.rs`: `disconnect_refresh_and_silent_close_keep_one_socket` (warning, refresh, silent close, a peer that ignores close, endless refreshes; peak open 1; stop bounded and final), `a_peer_that_ignores_close_is_forced_down_within_the_bound`, `a_silent_socket_is_replaced_after_the_idle_bound` |
-| 19 | gaps (C13) | `socket_tests.rs`: `overflow_latches_gap_without_blocking_ack` (a failed event; 300 envelopes over the count with every one acknowledged; a loss during a reconciliation survives it; ten 900,000-byte events over the byte budget), `an_events_message_keeps_its_origin_through_the_socket` |
+| 18 | one socket (C12) | `socket_tests.rs`: `disconnect_refresh_and_silent_close_keep_one_socket` (warning, refresh, silent close, a peer that ignores close, endless refreshes; peak open 1; stop bounded and final), `a_peer_that_ignores_close_is_forced_down_within_the_bound`, `a_silent_socket_is_replaced_after_the_idle_bound` (ping shorter than idle, as in the product), `reconnects_are_paced_after_a_refusal_and_after_a_hello`, `stop_during_the_reconnect_pause_does_not_wait_for_it` |
+| 19 | gaps (C13) | `socket_tests.rs`: `a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it`, `a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap`, `overflow_latches_gap_without_blocking_ack` (a failed event; 300 envelopes over the count with every one acknowledged; a loss during a reconciliation survives it; ten 900,000-byte events over the byte budget), `an_events_message_keeps_its_origin_through_the_socket` |
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 
 ## Files

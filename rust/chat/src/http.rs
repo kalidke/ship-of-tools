@@ -216,9 +216,9 @@ struct Inner {
     permits: Arc<Semaphore>,
     /// The one rustls configuration: the client above and every websocket share it.
     tls: Arc<rustls::ClientConfig>,
-    /// Under test, the logical hosts that dial loopback; every other name is refused.
-    #[cfg(test)]
-    hosts: &'static [&'static str],
+    /// The name resolver for a websocket dial: `None` in the product (the system resolver), the fixture's loopback
+    /// map under test. Set only by `for_test`; there is no setter.
+    resolver: Option<Arc<dyn reqwest::dns::Resolve>>,
 }
 
 impl Http {
@@ -226,7 +226,7 @@ impl Http {
     pub fn new() -> Result<Http, HttpError> {
         let roots =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        Http::build(roots, HTTPS_PORT, None, &[])
+        Http::build(roots, HTTPS_PORT, None)
     }
 
     /// The test client: the fixture's CA as the only root, its port as the only port, and a resolver that maps the
@@ -239,20 +239,14 @@ impl Http {
     ) -> Http {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(ca).expect("test CA");
-        Http::build(
-            roots,
-            port,
-            Some(Arc::new(test_resolver::Loopback(hosts))),
-            hosts,
-        )
-        .expect("test client")
+        Http::build(roots, port, Some(Arc::new(test_resolver::Loopback(hosts))))
+            .expect("test client")
     }
 
     fn build(
         roots: rustls::RootCertStore,
         port: u16,
         resolver: Option<Arc<dyn reqwest::dns::Resolve>>,
-        _hosts: &'static [&'static str],
     ) -> Result<Http, HttpError> {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let tls = rustls::ClientConfig::builder_with_provider(provider)
@@ -270,8 +264,8 @@ impl Http {
             .retry(reqwest::retry::never())
             .no_proxy()
             .pool_max_idle_per_host(0);
-        if let Some(resolver) = resolver {
-            builder = builder.dns_resolver(resolver);
+        if let Some(resolver) = &resolver {
+            builder = builder.dns_resolver(resolver.clone());
         }
         let client = builder.build().map_err(|_| HttpError::Invalid)?;
         Ok(Http {
@@ -280,8 +274,7 @@ impl Http {
                 port,
                 permits: Arc::new(Semaphore::new(MAX_OPERATIONS)),
                 tls: Arc::new(tls),
-                #[cfg(test)]
-                hosts: _hosts,
+                resolver,
             }),
         })
     }
@@ -429,28 +422,31 @@ impl Inner {
         .map_err(|_| HttpError::Connect)?;
         #[allow(
             clippy::disallowed_methods,
-            reason = "the chat's one outbound dial, to a validated Slack host over TLS: not the control plane (ADR 0049); the library cannot be given the fixture's loopback mapping otherwise"
+            reason = "the chat's one outbound dial, to a Slack host admitted by check_url, then TLS: not the control plane (ADR 0049); a TcpSocket because mio's connect makes the socket inheritable on Windows"
         )]
         let connected = socket.connect(addr).await;
         connected.map_err(|_| HttpError::Connect)
     }
 
-    #[cfg(not(test))]
+    /// The resolver's first address for `host`, on the one port: the fixture's map when one was set, else the system's.
     async fn address(&self, host: &str) -> Result<std::net::SocketAddr, HttpError> {
-        let mut addrs = tokio::net::lookup_host((host, self.port))
-            .await
-            .map_err(|_| HttpError::Connect)?;
-        addrs.next().ok_or(HttpError::Connect)
-    }
-
-    /// The fixture's logical hosts are loopback; every other name is refused.
-    #[cfg(test)]
-    async fn address(&self, host: &str) -> Result<std::net::SocketAddr, HttpError> {
-        if self.hosts.contains(&host) {
-            Ok(std::net::SocketAddr::from(([127, 0, 0, 1], self.port)))
-        } else {
-            Err(HttpError::Connect)
+        let mut addr = match &self.resolver {
+            Some(resolver) => {
+                let name = host.parse().map_err(|_| HttpError::Connect)?;
+                resolver
+                    .resolve(name)
+                    .await
+                    .map_err(|_| HttpError::Connect)?
+                    .next()
+            }
+            None => tokio::net::lookup_host((host, self.port))
+                .await
+                .map_err(|_| HttpError::Connect)?
+                .next(),
         }
+        .ok_or(HttpError::Connect)?;
+        addr.set_port(self.port);
+        Ok(addr)
     }
 }
 

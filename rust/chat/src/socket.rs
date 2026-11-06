@@ -419,35 +419,44 @@ impl Worker {
         let mut ping = tokio::time::interval(self.timing.ping);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping.tick().await;
+        // The idle clock restarts on a received frame only: our own ping must not re-arm it.
+        let mut last = Instant::now();
         loop {
             let frame = tokio::select! {
                 biased;
                 _ = stopped(stop) => break,
+                _ = tokio::time::sleep_until(last + self.timing.idle) => break,
                 _ = ping.tick() => {
                     if !self.write(&mut ws, Message::Ping(Default::default())).await {
                         break;
                     }
                     continue;
                 }
-                frame = tokio::time::timeout(self.timing.idle, ws.next()) => frame,
+                frame = ws.next() => {
+                    last = Instant::now();
+                    frame
+                }
             };
             match frame {
-                Ok(Some(Ok(Message::Text(text)))) => match self.handle(&mut ws, &text).await {
+                Some(Ok(Message::Text(text))) => match self.handle(&mut ws, &text).await {
                     Next::Continue => {}
                     Next::Hello => {
                         helloed = true;
                         self.set_connected(true);
+                        // Whatever Slack sent before this socket was live is missing: a reconciliation that began
+                        // before now cannot clear this.
+                        self.shared.latch(GapCause::Reconnect);
                     }
                     Next::Retire => break,
                 },
-                Ok(Some(Ok(Message::Binary(_)))) => self.shared.latch(GapCause::Failed),
-                Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Err(_) => break,
-                Ok(Some(Err(WsError::Capacity(_)))) => {
+                Some(Ok(Message::Binary(_))) => self.shared.latch(GapCause::Failed),
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Err(WsError::Capacity(_))) => {
                     self.shared.latch(GapCause::Failed);
                     break;
                 }
-                Ok(Some(Err(_))) => break,
-                Ok(Some(Ok(_))) => {}
+                Some(Err(_)) => break,
+                Some(Ok(_)) => {}
             }
         }
         self.retire(ws).await;

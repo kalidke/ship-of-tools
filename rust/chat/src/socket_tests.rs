@@ -308,7 +308,9 @@ async fn a_silent_socket_is_replaced_after_the_idle_bound() {
         let socket = start(
             &fake,
             Timing {
-                idle: Duration::from_millis(300),
+                idle: Duration::from_millis(500),
+                // The product's shape: our ping is shorter than the idle bound and must not re-arm it.
+                ping: Duration::from_millis(100),
                 ..timing()
             },
         );
@@ -566,6 +568,226 @@ async fn an_events_message_keeps_its_origin_through_the_socket() {
             Some(Normalized::Deleted { .. })
         ));
         socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// Record the instant of every `apps.connections.open` request; `refuse` answers it `ok: false` for the first `n`.
+fn opens(
+    times: &Arc<Mutex<Vec<Instant>>>,
+    refuse: usize,
+) -> impl Fn(&Seen) -> Option<Reply> + Send + Sync + 'static {
+    let times = times.clone();
+    move |seen| {
+        if seen.path() != "/api/apps.connections.open" {
+            return None;
+        }
+        let mut t = times.lock().unwrap();
+        t.push(Instant::now());
+        (t.len() <= refuse).then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+    }
+}
+
+#[tokio::test]
+async fn a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it() {
+    bounded(async {
+        let times = Arc::new(Mutex::new(Vec::new()));
+        // The first open succeeds, the second is refused, the third succeeds.
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let recorder = opens(&times, 0);
+        let fake = fake_with(
+            move |seen| {
+                recorder(seen);
+                (seen.path() == "/api/apps.connections.open"
+                    && c.fetch_add(1, Ordering::SeqCst) == 1)
+                    .then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+            },
+            |i, mut peer| async move {
+                peer.send(&hello()).await;
+                if i == 0 {
+                    peer.send(&disconnect("refresh_requested")).await;
+                }
+                peer.drain().await;
+            },
+        )
+        .await;
+        let slow = Timing {
+            backoff_first: Duration::from_millis(400),
+            backoff_max: Duration::from_millis(800),
+            ..timing()
+        };
+        let socket = start(&fake, slow);
+        eventually("the refused reopen", || {
+            socket.status().error == Some(SocketError::Rejected)
+        })
+        .await;
+        let gap = socket.gap().expect("the lost socket left a gap");
+        assert!(!socket.status().connected);
+        // History works during the outage, so a reconciliation finishes and clears what it covered.
+        assert!(socket.reconciled(gap));
+        assert_eq!(socket.gap(), None);
+        eventually("the new hello", || socket.status().connected).await;
+        let gap = socket.gap().expect("the new hello brings the gap back");
+        assert_eq!(gap.cause, GapCause::Reconnect);
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap() {
+    bounded(async {
+        let (bad_now, drop_now) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (b, d) = (bad_now.clone(), drop_now.clone());
+        let fake = fake(move |i, mut peer| {
+            let (b, d) = (b.clone(), d.clone());
+            async move {
+                peer.send(&hello()).await;
+                if i == 0 {
+                    let wait = |f: Arc<AtomicBool>| async move {
+                        let end = Instant::now() + Duration::from_secs(10);
+                        while !f.load(Ordering::SeqCst) && Instant::now() < end {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    };
+                    wait(b).await;
+                    let mut bad = envelope("EB", 1, "hi", 0);
+                    bad["payload"]["event"]["ts"] = json!("not-a-timestamp");
+                    peer.send(&bad).await;
+                    let _ = peer.recv(SEC).await;
+                    wait(d).await;
+                    peer.send(&disconnect("refresh_requested")).await;
+                }
+                peer.drain().await;
+            }
+        })
+        .await;
+        let socket = start(&fake, timing());
+        eventually("the first gap", || socket.gap().is_some()).await;
+        // A reconciliation begins at `first`; a failed event arrives during it.
+        let first = socket.gap().unwrap();
+        bad_now.store(true, Ordering::SeqCst);
+        eventually("the failed event", || {
+            socket.gap().is_some_and(|g| g.cause == GapCause::Failed)
+        })
+        .await;
+        assert!(
+            !socket.reconciled(first),
+            "a failed event during a reconciliation was cleared by it"
+        );
+        // Another begins at `second`; the socket is lost during it.
+        let second = socket.gap().unwrap();
+        assert_eq!(second.cause, GapCause::Failed);
+        drop_now.store(true, Ordering::SeqCst);
+        eventually("the lost socket", || socket.gap() != Some(second)).await;
+        assert!(
+            !socket.reconciled(second),
+            "a lost socket during a reconciliation was cleared by it"
+        );
+        assert!(socket.gap().is_some());
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn reconnects_are_paced_after_a_refusal_and_after_a_hello() {
+    bounded(async {
+        // A refusing Slack is asked at 0, 200, 600 and 1400 ms: the pause doubles.
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let fake_a = fake_with(opens(&times, usize::MAX), |_, _| async {}).await;
+        let paced = Timing {
+            backoff_first: Duration::from_millis(200),
+            backoff_max: Duration::from_millis(800),
+            ..timing()
+        };
+        let socket = start(&fake_a, paced);
+        eventually("four attempts", || times.lock().unwrap().len() >= 4).await;
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_millis(180),
+            "{:?}",
+            t[1] - t[0]
+        );
+        assert!(
+            t[2] - t[1] >= Duration::from_millis(380),
+            "{:?}",
+            t[2] - t[1]
+        );
+        assert!(
+            t[3] - t[2] >= Duration::from_millis(780),
+            "{:?}",
+            t[3] - t[2]
+        );
+        socket.stop().await;
+        fake_a.shutdown().await;
+
+        // A socket that says hello and is then replaced is back after the first pause, no sooner.
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let fake_b = fake_with(opens(&times, 0), |_, mut peer| async move {
+            peer.send(&hello()).await;
+            peer.send(&disconnect("refresh_requested")).await;
+            peer.drain().await;
+        })
+        .await;
+        let socket = start(&fake_b, paced);
+        eventually("three connections", || times.lock().unwrap().len() >= 3).await;
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] >= Duration::from_millis(180),
+            "{:?}",
+            t[1] - t[0]
+        );
+        assert!(
+            t[2] - t[1] >= Duration::from_millis(180),
+            "{:?}",
+            t[2] - t[1]
+        );
+        socket.stop().await;
+        fake_b.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stop_during_the_reconnect_pause_does_not_wait_for_it() {
+    bounded(async {
+        let fake = fake(|_, mut peer| async move {
+            peer.send(&hello()).await;
+            peer.send(&disconnect("refresh_requested")).await;
+            peer.drain().await;
+        })
+        .await;
+        // The pause (5 s) is longer than the stop bound (1 s).
+        let socket = start(
+            &fake,
+            Timing {
+                backoff_first: Duration::from_secs(5),
+                backoff_max: Duration::from_secs(5),
+                stop: Duration::from_secs(1),
+                ..timing()
+            },
+        );
+        eventually("the first socket gone", || {
+            let (open, _, total) = fake.sockets();
+            total == 1 && open == 0
+        })
+        .await;
+        let began = Instant::now();
+        socket.stop().await;
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(fake.sockets().2, 1);
         fake.shutdown().await;
     })
     .await;
