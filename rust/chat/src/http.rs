@@ -24,7 +24,8 @@ pub const MAX_REDIRECTS: usize = 3;
 /// The only port a product destination may name.
 const HTTPS_PORT: u16 = 443;
 
-/// A credential. It formats as a fixed mask, so no log, error or debug print of anything holding one shows it.
+/// A credential (cloned only into the requests that carry it). It formats as a fixed mask, so no log, error or debug print of anything holding one shows it.
+#[derive(Clone)]
 pub struct Secret(String);
 
 impl Secret {

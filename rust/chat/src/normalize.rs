@@ -105,7 +105,7 @@ fn wrap(r: Result<ChatRecord, Unrepresentable>, f: fn(ChatRecord) -> Normalized)
     r.map_or_else(Normalized::Unrepresentable, f)
 }
 
-fn valid_id(s: &str) -> bool {
+pub(crate) fn valid_id(s: &str) -> bool {
     (1..=MAX_ID).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -124,7 +124,7 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
 }
 
 /// A name-like field: no control characters, trimmed, cut to `max` bytes. The flag is true when it was cut.
-fn clean(s: &str, max: usize) -> (String, bool) {
+pub(crate) fn clean(s: &str, max: usize) -> (String, bool) {
     let plain: String = s.chars().filter(|c| !c.is_control()).collect();
     let (t, cut_) = cut(plain.trim(), max);
     (t.to_string(), cut_)

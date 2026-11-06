@@ -44,7 +44,7 @@ and tests whole; Order of passes says how a load is counted.
 | fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
 | fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
 | distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
-| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; every byte to Slack leaves through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 10 | 10 | 17 | 1 | yes |
+| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; the Slack calls (history paged and bound to its query, one post submitted once, reads paced by the retry header, names through a bounded cache) all leave through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 17 | 19 | 27 | 1 | yes |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
 | total | | 1,959 | 2,087 | 305 | 404 | |
 
@@ -177,8 +177,8 @@ v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `m
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
 the last one and carries everything that use found. In progress is the project chat (the daemon speaks Slack itself,
 in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
-Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization) and B1b (the HTTP core)
-have landed; the stage continues with B1c, B1d, B2, then B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
+Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization), B1b (the HTTP core) and B1c (the Slack calls)
+have landed; the stage continues with B1d, B2, then B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,
 and each subsystem's findings in `docs/defects.md`, handled at its pass.

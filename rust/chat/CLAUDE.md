@@ -1,10 +1,12 @@
 # rust/chat: chat (contract)
 
 The project chat's policy. This stage holds two pieces: normalization (Slack's raw message JSON into the wire's one
-record, `sot_protocol::chat::ChatRecord`) and `http`, the one way out of the crate to the network. The crate
+record, `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, and `api`, the Slack
+Web API calls the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`). The crate
 (`sot-chat`) depends on `sot-protocol`, `serde_json` and the web stack recorded below; nothing links it but the
-workspace (`sotd` does not yet). It owns no runtime state beyond `Http`'s client and admission count, and has no Slack
-method, no socket, no file transfer, no delivery and no channel mapping.
+workspace (`sotd` does not yet). It owns no runtime state beyond `Http`'s client and admission count and `Api`'s bot
+identity, read-pacing instant and name cache, and has no socket, no file call, no token or configuration loading, no
+delivery and no channel mapping.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -15,7 +17,7 @@ method, no socket, no file transfer, no delivery and no channel mapping.
    joins, tombstones and any subtype Slack adds later), and the caller skips it and logs the raw subtype. A message with a valid `ts` whose other fields cannot be read becomes
    a record with `omitted` set and no content, not a dropped message; it keeps its author id, its origin (an own post or any message with a `bot_id` key, even an unreadable one, is `Bot`, never
    `Member`) and its thread, each read on its own; an unreadable `thread_ts` falls back to `ts`. Limit: the author's display name is the event's own
-   profile name or empty; resolving a member's name needs the API, which is a later stage.
+   profile name or empty; `Api::fill_names` (guarantee 16) resolves it.
 2. **Own posts are decided only by the supplied bot identity, and a forged marker never makes one.** Own-app is
    `Context.own_bot_id` or `own_user_id` matching the message; an identity not supplied matches nothing. Only an own
    post has its origin recovered, in order from `metadata`, then the `username` suffix ` (<kind> via Ship of Tools)`,
@@ -60,20 +62,54 @@ method, no socket, no file transfer, no delivery and no channel mapping.
    header or body. The crate logs nothing. Limit: C2's proof covers errors, `Debug` and `Display` values and the
    request and response types; the mail and wire sinks, and the daemon's log masking, are later landings'.
 
+11. **History pages are exact, complete or an error.** `HistoryQuery` and `Bounds` are validated when built: a bound is
+   a wire `Ts` (exactly six fraction digits) or `BadBound`, before anything is sent; `before` and `until` cannot both be
+   given; the limit is 1 to 20. Bounds map `after` to `oldest`, `before` to `latest` with `inclusive=false`, `until` to
+   `latest` with `inclusive=true`; `include_all_metadata=true` is always sent. A `Continuation` wraps Slack's cursor with
+   its workspace, channel, thread, bounds and limit, is at most 1 KiB (`TooLarge`), and under any other query, or if not
+   made by this client, is `Altered`, refused unsent. `has_more` with no cursor is `Missing`, the cursor just sent
+   coming back is `Repeated`, a missing `messages` or `has_more`, more than the limit (plus the thread parent: 21), an
+   unrepresentable message, or a non-`ok` answer fails the whole page (no partial page); `is_limited` is `Page.limited`.
+   The client rechecks every message against the bounds (the parent is exempt). Limit: a continuation is not
+   authenticated, only matched to its query; one unrepresentable message fails its page, which the caller treats as a gap.
+12. **A post is submitted once.** `Api::post` sends one `chat.postMessage` with the custom `username` (`<name> (<kind> via
+   Ship of Tools)`) and `sot_chat_post` metadata (kind, name), so `normalize` recovers the origin the same way over
+   history; there is no text prefix. `Refused` is Slack's definite rejection (a non-5xx status, or `ok: false` with a
+   code that is not transient) or a request that never left (`busy`, `invalid`, `destination`); `Limited` is a 429 or
+   `ratelimited`; every other case without a valid acknowledgement (transport error, timeout, 5xx, unparsable or `ok`-less
+   body, transient code, `ok` with no `ts`) is `Unknown`. Nothing resends, and a caller that stops waiting does not
+   cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent.
+13. **A retry header paces reads, never repeats a mutation.** The `Retry-After` header, in any case, in whole seconds
+   (capped at one hour), makes every read refuse as `Limited` without a request until it passes; a missing or invalid
+   header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
+   reads' wait.
+14. **Every operation has a stated deadline.** Reads 15 s, a post 30 s (it is not resent, so an early give-up only
+   makes `Unknown`), all of a page's name lookups together 10 s; each through `Http`'s owner-held deadline.
+15. **Slack's text reaches no caller.** `ApiError` is a fixed code; Slack's `error` is carried only when it is
+   `[a-z0-9_.]{1,64}`, else `unknown_error`; bodies and URLs are dropped; `auth.test` for another workspace is
+   `WrongWorkspace`; history without the bot identity is `NoIdentity`, unsent.
+16. **A name lookup that fails shows the id and is not remembered; the cache is bounded.** `author_name` and
+   `fill_names` take `display_name`, then `real_name`, then `name`; only a success is cached, at most 1,024 entries,
+   the oldest leaving first. Limit: a success is never refreshed within a process; a lookup that outlives the 10 s
+   bound keeps its `Http` permit to that operation's own 15 s deadline.
+
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
 
 ## Owns
 `normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable` and the bound constants. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
-`MAX_REDIRECTS`). `fake_slack/` (test only): the scripted fake Slack.
+`MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
+`Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `fake_slack/` (test
+only): the scripted fake Slack.
 
 ## Calls in
 `sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts}`, `serde_json::Value`; reqwest, rustls and
-webpki-roots inside `http.rs` alone.
+webpki-roots inside `http.rs` alone (`api.rs` uses `reqwest::Url` to build query strings).
 
 ## Does not
-Call a Slack method, hold a credential at rest, file mail, map channels to rows, or resolve a name. Define the
+Open a socket, call a file method, hold a credential at rest or load one, read configuration, file mail, or map
+channels to rows. Define the
 record's representation (wire's). Offer another way to the network, a retry helper or a generic outbound HTTP type.
 
 ## Dependencies (the web stack)
@@ -92,7 +128,9 @@ crate links `sot-chat`). `tokio-tungstenite` joins with the socket.
 ## The fake Slack
 `fake_slack/mod.rs` (test only) is an HTTPS server on loopback over real TLS (`tokio-rustls`), hand-written, scripted per
 test (`Reply`: a status, raw bytes, a hang, a stall after bytes, an endless body, a dropped connection), recording each
-request, connection and handshake failure. Its listener and connection tasks belong to the `FakeSlack`: `shutdown`
+request (with its path, query parameters and JSON body), connection and handshake failure. It flushes after every
+write and its listener has a 4 KiB send buffer, so output left unflushed in the TLS session hangs on Linux as it did on
+Windows (`chat_operations_keep_bounds_after_caller_drop`, `/exact`, red until the flush). Its listener and connection tasks belong to the `FakeSlack`: `shutdown`
 joins them within five seconds and a drop aborts them. Its fixed certificates (a CA valid to 2126 whose key was discarded,
 a CA-signed server certificate, a self-signed one) and their generation are described in its header; `.gitleaks.toml`
 allows its two `.key` files by exact path and no other file.
@@ -111,13 +149,19 @@ Paths are under `rust/chat/src/`.
 | 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
+| 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending` |
+| 12 | one post, origin kept | `api_tests.rs`: `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin` |
+| 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
+| 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline` |
+| 15 | no raw Slack text | `api_tests.rs`: `slack_text_and_identity_failures_reach_no_caller_raw` |
+| 16 | names | `api_tests.rs`: `names_fall_back_to_ids_without_unbounded_cache` |
 
 ## Files
 - `Cargo.toml`: the manifest; depends on wire and the web stack.
 - `src/lib.rs`: the modules and re-exports.
 - `src/normalize.rs`: the normalization.
-- `src/http.rs`: the HTTP core.
+- `src/http.rs`: the HTTP core. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
 - `src/fake_slack/`: the test-only fake and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
-`src/normalize.rs`, `normalize`; `src/http.rs`, `Http::send`.
+`src/normalize.rs`, `normalize`; `src/http.rs`, `Http::send`; `src/api.rs`, `Api::history` and `Api::post`.

@@ -39,6 +39,9 @@ pub(crate) const HOSTS: &[&str] = &[
     "nosan.slack.com",
 ];
 
+/// The listener's send buffer: small enough that a large reply cannot leave in one write.
+const SEND_BUFFER: u32 = 4096;
+
 const CA_PEM: &str = include_str!("ca.pem");
 const SERVER_PEM: &str = include_str!("server.pem");
 const SERVER_KEY: &str = include_str!("server.key");
@@ -53,6 +56,30 @@ pub(crate) struct Seen {
     pub host: String,
     pub authorization: Option<String>,
     pub body: Vec<u8>,
+}
+
+impl Seen {
+    fn url(&self) -> reqwest::Url {
+        reqwest::Url::parse(&format!("https://fake{}", self.target)).expect("a request target")
+    }
+
+    /// The target without its query.
+    pub fn path(&self) -> String {
+        self.url().path().to_string()
+    }
+
+    /// A query parameter, decoded.
+    pub fn param(&self, name: &str) -> Option<String> {
+        self.url()
+            .query_pairs()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.into_owned())
+    }
+
+    /// The body as JSON, when it is.
+    pub fn json(&self) -> Option<serde_json::Value> {
+        serde_json::from_slice(&self.body).ok()
+    }
 }
 
 /// What the server does with a request.
@@ -82,6 +109,10 @@ impl Reply {
             headers: Vec::new(),
             body: body.to_vec(),
         }
+    }
+
+    pub(crate) fn json(value: &serde_json::Value) -> Reply {
+        Reply::ok(value.to_string().as_bytes())
     }
 
     pub(crate) fn redirect(location: &str) -> Reply {
@@ -130,6 +161,11 @@ impl FakeSlack {
         socket
             .bind(SocketAddr::from(([127, 0, 0, 1], 0)))
             .expect("bind loopback");
+        // A small send buffer, so a write that would block shows on Linux as it does on Windows: output left in the
+        // TLS session is not sent until a flush (accepted sockets inherit the size).
+        socket
+            .set_send_buffer_size(SEND_BUFFER)
+            .expect("send buffer");
         let listener = socket.listen(64).expect("listen");
         let port = listener.local_addr().expect("local addr").port();
         let log = Arc::new(Log::default());
@@ -313,12 +349,13 @@ async fn serve(
                 }
                 out.extend_from_slice(b"\r\n");
                 out.extend_from_slice(&body);
-                if tls.write_all(&out).await.is_err() {
+                if tls.write_all(&out).await.is_err() || tls.flush().await.is_err() {
                     return;
                 }
             }
             Reply::Raw(bytes) => {
                 let _ = tls.write_all(&bytes).await;
+                let _ = tls.flush().await;
                 let _ = tls.shutdown().await;
                 return;
             }
