@@ -618,4 +618,5 @@ A landing's record goes here, with its measured times; the package page holds on
   the socket gone to the next open, which holds the rule without the fixed costs. Guarantee 19 now says any socket that ends.
 - The hosted red on 6a669ae56, 2026-11-06: Linux's `rest-0+rest-1` job ran 304 s in a step bounded at 300, 295 s
   on the green run before it, with no test failing and the step cut off near its end; Windows and macOS passed. The job had 5.5 s
-  of headroom and the next run grew 9.4 s across its binaries, 1.1 s of that in the chat crate. The fold moved, the bound stayed.
+  of headroom and the next run grew 9.4 s across its binaries, 1.1 s of that in the chat crate. The run after it, on 2b80b78e3, took
+  297 s and passed, so the job sat on the bound rather than past it. The fold moved, the bound stayed.
