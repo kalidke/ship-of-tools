@@ -577,3 +577,11 @@ A landing's record goes here, with its measured times; the package page holds on
   one that is not (`page.reply`, `repl.eval`, `repl.run_file`) is ended, with its kind's connection-ended outcome and
   nothing written, if it still waits when a connection ends or when the next one is about to send its hello, so it is
   written on one connection at most (`Outbox::retire`, fe-net's contract).
+- B1a, the chat crate, the wire record and normalization, 2026-11-06: 11:49 to main 12:20, 31 minutes, a miss by one. About 3
+  to read the plan and make the worktree, 6.5 of change from a goal-only brief, 8.5 of review (no blocker, five should-fix), 10
+  of whole gate, passed the first time. Two proofs the brief asked for did not hold as written: `cargo fmt --all --check` and
+  strict clippy already fail on main in code this change does not touch, so a brief asks for the gate's own lint line.
+- B1a's review follow-up, 2026-11-06: 12:09 to main 12:22, 13 minutes. 2 of change, 6 of review (one records blocker), under 1
+  of second round, then the first clean scoped gate: 50 s wall, whole lint, the Windows and macOS checks, and the chat crate's
+  15 tests. That is the scoped gate's test, a fix inside one piece gated in under four minutes. Text no longer decides a post's
+  origin, and the file-share label comes back with outgoing files in B4.

@@ -399,6 +399,11 @@ Chat remains **B1 → B2 → B3 → B4 → B5 → separately owned channel hando
 
 ### 4. Re-cut B1–B5
 
+Amended 2026-11-06: B1 is too large for one landing and lands in four: B1a the crate, the wire record and normalization;
+B1b the web stack, `http.rs` and the fake Slack; B1c `api.rs`; B1d `socket.rs`. `transfer.rs` (C9, C10) moves to B4, since
+figures wait for the maintainer's word and nothing before them calls it, so a first drawer built before B4 shows file stubs
+and no thumbnails.
+
 | Landing | Chat-specific contents | Product / test lines |
 |---|---|---:|
 | **B1 — Native Slack client and shared record** | Chat facade, HTTP/API/transfer/normalization/socket modules, safe errors and loopback TLS fixtures; crate/lock/contracts. Land the one normalized record in wire and return it directly. No temporary chat-owned record or conversion layer. | **1,465 / 2,130 — unverified estimate** |
