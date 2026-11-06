@@ -3886,6 +3886,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sot-chat"
+version = "0.7.1-dev"
+dependencies = [
+ "serde_json",
+ "sot-protocol",
+]
+
+[[package]]
 name = "sot-containment"
 version = "0.7.1-dev"
 dependencies = [

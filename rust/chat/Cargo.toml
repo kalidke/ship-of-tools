@@ -1,0 +1,10 @@
+[package]
+name = "sot-chat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+sot-protocol = { path = "../protocol" }
+serde_json = { workspace = true }

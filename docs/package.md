@@ -44,10 +44,12 @@ and tests whole; Order of passes says how a load is counted.
 | fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
 | fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
 | distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
+| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post | 4 | 3 | 0 | 1 | yes |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
 | total | | 1,959 | 2,087 | 305 | 404 | |
 
-Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
+The chat row is an estimate from its files' characters / 4 (the script does not yet know the crate), and its row of
+the total is not recounted. Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
 The design records (51 ADRs and their index) and the old folder pages live in `docs/history/` and load nowhere.
 
 ## Contracts
@@ -59,6 +61,9 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire alone for now (platform joins with its first use). Owns:
+  normalization of Slack's message JSON into the wire's record (representation: wire's). Does not: open a connection,
+  hold a credential, file mail or map channels; nothing links it yet but the workspace.
 - **topology:** `rust/topology/CLAUDE.md`, crate `sot-topology`; the daemon's half is in `sotd`. Owns: the hub's
   hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections.
 - **containment:** `rust/containment/CLAUDE.md`, crate `sot-containment`, on platform alone. Owns: the registry of
@@ -95,7 +100,7 @@ over this page. The table above says what each guarantees to the rest.
 ## Depends on
 
 Today (crates): platform <- {containment, protocol, capsule, updater}; protocol <- capsule (the row socket's frames,
-since 6c-1a1); {protocol, capsule} <- topology; the backend depends on
+since 6c-1a1); protocol <- chat, which nothing links yet; {protocol, capsule} <- topology; the backend depends on
 protocol, topology, updater, containment, capsule and platform, the frontend on all of those but containment. Wire
 (protocol) depends on platform alone; topology on wire, platform and capsule (the capsule's `Endpoint`); containment
 on platform alone. Inside `sot-backend`
@@ -106,6 +111,7 @@ row supervisor} (since 6d-1; the local transport went to platform).
 Target (one crate per subsystem, acyclic; a call the contract does not name does not build):
 - platform -> (none)
 - wire -> platform
+- chat -> wire, platform (today wire alone)
 - containment -> platform
 - capsule -> platform (and its own store, leg, supervisor, lanes, attach client inside, or the D2 replacement)
 - topology -> wire, platform, containment, capsule (the lane client's endpoint)

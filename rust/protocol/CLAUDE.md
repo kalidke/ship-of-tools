@@ -86,10 +86,22 @@ name is in this crate's one op table.
     newer daemon (`reply_tests::an_unknown_evt_op_reaches_the_generic_event_path`). Limit: a status only, no replay.
     Test `ops/bus_tests.rs`: `bus_lost_keeps_its_shape_and_a_missing_count_reads_as_zero`.
 
+11. **One shared chat record, with a validated timestamp.** `chat::ChatRecord` (`chat.rs`): `workspace` and `channel`
+    (part of a message's identity), `ts` and `thread_ts`, `author {id, name}`, `origin` (`member`, `drawer`, `row`,
+    `bot`), `text`, `reply_count`, `files` (`{id, name, mime, bytes, thumbnail}`, no URL), and the defaulted
+    `truncated`, `latest_reply`, `limited`, `omitted` and `files_omitted`, left out of the JSON when false, zero or
+    absent. `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
+    refuse any other number of fraction digits, because Slack answers such a bound with an empty page and no error.
+    Mechanism: a new type and no new op, so every existing payload and `PROTOCOL_VERSION` (4) are unchanged. Limit:
+    the record's bounds (32 KiB, 8 KiB text, eight files, id and name lengths) are `sot-chat`'s normalization, not
+    checked on decode. Tests `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`,
+    `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`,
+    `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`.
+
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -125,11 +137,13 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
+| 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses` |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
+- `src/chat.rs`: `ChatRecord`, `ChatAuthor`, `ChatFile`, `Origin` and `Ts`, the one normalized chat record and its validated timestamp.
 - `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
 - `src/ir.rs`: the wire's tree and preview payload types
