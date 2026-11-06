@@ -611,3 +611,11 @@ A landing's record goes here, with its measured times; the package page holds on
   comment on `Timing::idle`, and the wording of the dial rule. 14 new lock entries, among them a second `webpki-roots` that the
   websocket feature pulls in and nothing uses at run time. The 30 s ping and 90 s idle are unobserved; a wrong value fails safe.
   C14 moved to B2, where the configuration and the service live. B1 is whole, without file transfer.
+- B1d's review follow-up, 2026-11-06: 15:07 to main 15:25, 18 minutes. 3 of change, 10 of review beside a scoped gate that passed,
+  3 of fix, 1 of the second gate. Six surviving mutants now fail at their own assertions; three tests are new and two are
+  stricter. The review's probes found no product defect. Its one blocker was the test's own: a 390 ms bound on an interval that
+  included the handshake, about 95 ms from failing a correct product on a slower host. The test now measures from the peer seeing
+  the socket gone to the next open, which holds the rule without the fixed costs. Guarantee 19 now says any socket that ends.
+- The hosted red on 6a669ae56, 2026-11-06: Linux's `rest-0+rest-1` job ran 304 s in a step bounded at 300, 295 s
+  on the green run before it, with no test failing and the step cut off near its end; Windows and macOS passed. The chat crate's
+  socket tests took the job past its bound. The fold moved, the bound stayed.
