@@ -25,7 +25,8 @@ run at 53 to 140 KB/s, about 3 to 7 minutes for the Linux archive).
 1. **The local gate passed at this commit**: `scripts/tests/rc-gate.sh` and
    `scripts/tests/user-manager-tests.sh`, each run in its test container (their
    headers have the commands), each `summary.txt` naming HEAD's tree and ending
-   `ALLDONE`. The cut runs no tests and reads no hosted run; it relies on this.
+   exactly `ALLDONE`, with no `scoped` line (a scoped run ends `ALLDONE SCOPED`
+   and is not this gate). The cut runs no tests and reads no hosted run; it relies on this.
 2. **Tree clean + synced**: `git status --porcelain` empty, HEAD == `origin/main`
    (`release.sh` refuses otherwise). Coordinate over sot-comm if a session
    announced pending pushes.

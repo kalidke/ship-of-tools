@@ -39,6 +39,29 @@ Guarantees, each with the mechanism it rests on:
   that sleep on the clock (the lifetime harness, `window_start`, `window_lease`, the `lane_bridge` outage cases,
   `fe_client`'s health window) and the page test that needs a prepared Julia depot run only in release-gate.yml, or here
   with `RCG_FULL` set.
+- A scoped run (`RCG_SCOPE=<base commit-ish>`, given as `env RCG_SCOPE=<base> bash rc-gate.sh ...` inside the container, and
+  to `user-manager-tests.sh` the same way) is the gate for a change inside a few pieces. The scope comes from one rule,
+  `tests/lib-gate-scope.sh`: the paths that differ between the base and HEAD each map to a piece (`rust <crate dir>`,
+  `julia <package>`, `shell comm|agents|scripts`, `docs`; a Rust path a shell or Julia suite proves through the `sotd`
+  binary adds that piece: `backend/src/comm` and `rows` add `shell comm` and `julia root`, `agents` adds `shell agents`,
+  `install`, `update`, `topology`, `rust/updater` and `rust/topology` add `shell scripts` and `julia root`, and the
+  daemon's entry and shared command files add all three shell groups), and a path no piece owns widens the run to the whole, never to
+  less: `rust/Cargo.toml`, the lock, the clippy configs, a directory under `rust/` that is not a crate, the gate's own
+  scripts (`tests/` outside the shell suites, `setup-publish-guard.sh`, `hooks/`, `lib/`), `.github/`, `.claude/`,
+  `julia/pluto`, `examples/`, `dev/`, and an empty diff. Docs alone (`docs/`, markdown outside the pieces) select no test.
+  The workspace build, all three clippy lines and both cross checks run in every scope; only test jobs narrow: a touched
+  crate's tests and doc tests (not its dependents', which the hosted run on main still tests), the Julia packages
+  touched, the shell suites of the touched group and the bash 3.2 job when a shell piece is touched, and the
+  installer-publish jobs when `scripts` or any crate is touched. `user-manager-tests.sh` runs when the scope selects
+  `backend`, `capsule`, `platform` or `containment`, since its five tests are the backend's over those. A job the scope
+  does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no
+  longer has fails (101). A scoped summary says so: `scoped base <sha>` and one `scope <piece>` line each (a widened
+  scope says `scope whole <path>`), and it ends `ALLDONE SCOPED`, never `ALLDONE` (`ALLDONE FAILED` as always). A
+  release needs a whole run: `.claude/skills/release/SKILL.md` asks for a summary ending exactly `ALLDONE` with no
+  `scoped` line, so a scoped run, widened to everything or not, cannot pass there. `RCG_SCOPE` with `RCG_FULL` is
+  refused. `tests/test-rc-gate-scope.sh` holds the path table with its widening cases and runs the real pipeline over
+  stand-ins, and drives the verdict, summary and refusal functions the entries call and the two entries' refusals; a whole
+  run's own container checks are the one part it does not reach.
 - The Linux local gate builds `sotd`, `sot` and `sot-capsule` before its jobs, then runs
   `installer-publish-guard.py` for `fresh` and `repair`, each with its own log, result and named summary line.
   `tests/test-rc-gate-installer.sh` proves both jobs execute and retain their own status through the real pipeline.
@@ -527,6 +550,7 @@ Tests (all observe execution, not source spellings):
 | `tests/install-smoke.sh`, `tests/install-smoke.ps1` | Existing release smokes provision only synthetic policy, exclusively create it in their scratch config and invoke the absolute bootstrap outside the workflow checkout, so the smoke enrolls only its installed clone; the Unix smoke also creates a stand-in `claude` in its scratch home, so a daemon role's Claude Code check can pass |
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
+| `tests/test-rc-gate-scope.sh` | The path-to-piece table with its widening cases, and the real pipeline over stand-ins: a scoped run selects only its pieces, a selected job the tree lacks fails |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
 | `install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees` | Version cleanup preserves unavailable registrations and dirty/locked checkouts while removing available clean ones |
 

@@ -549,3 +549,19 @@ not finish is named and never changes the exit code; nothing is registered until
 same day: a connection that falls behind a bus gets one typed `bus.lost` frame naming the bus and the count, which an
 older window or linked daemon ignores; no pane recovers from it yet, and the chat is its first consumer.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
+
+## Landing records since 2026-11-06
+
+A landing's record goes here, with its measured times; the package page holds only the current state.
+
+- The chat's preparations, 2026-11-06, change then launch to main in minutes. P2, 18 and 29, from a full brief on Haiku,
+  about half the change compiling; the brief named one wrong function and one check that fails at the base. P4, 3 and
+  18, from a full brief on Sonnet; the same brief on Haiku had died 3 minutes in, its window refilled to the compaction
+  point by the 45K tokens every agent then loaded, and each of those minutes counts. P10, 6 and 20, from a full brief on
+  Sonnet, 88 net lines deleted. P11, 5 plus a 2-minute review round for wall-clock margins, from a goal-only brief with
+  one agent planning and editing. P5, 6, goal-only; the session's review of its wire change added the ownership row.
+- The package page's trim, 2026-11-06: 67,806 bytes to 15,506, 3 minutes of change, goal-only; every State sentence
+  checked present in this file, and one false clause fixed in review.
+- The scoped gate, 2026-11-06: `RCG_SCOPE=<base>` narrows test jobs by one rule (`scripts/CLAUDE.md`), 6 minutes of change
+  plus 3 for a review round that made a Rust path add the shell or Julia suites that prove it, goal-only. Under four
+  minutes is its test, read at the first scoped landing after it.

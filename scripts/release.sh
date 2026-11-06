@@ -10,7 +10,7 @@
 # draft is the maintainer's own act (the release skill).
 #
 # It runs no tests and reads no hosted run: the commit it tags passed the local gate (rc-gate.sh and
-# user-manager-tests.sh) before the word, and a re-run here would only repeat it. What it checks protects an invariant
+# user-manager-tests.sh, whole runs: a scoped run ends ALLDONE SCOPED) before the word, and a re-run here would only repeat it. What it checks protects an invariant
 # of the tag itself, and each check prints what it found: the cut is from main, HEAD equals origin/main, the tree is
 # clean, the tag sorts above every tag of its line and above the line's stamp, and the stamp after it sorts above it.
 #

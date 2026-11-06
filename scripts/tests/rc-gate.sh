@@ -36,6 +36,7 @@
 # process behind (any process left in the container). Every job's result file starts as `unrun`, so a job that never
 # ran cannot pass; each job's command has a 1200 s end (the lifetime harness 3600 s; the builds none). The container's
 # end kills what is left.
+# A scoped run (RCG_SCOPE=<base>) ends ALLDONE SCOPED, never ALLDONE, and says its base and pieces on `scoped` and `scope` lines.
 # ALLDONE means every rc line is 0; the rc lines say which job failed. A container stopped from outside SIGKILLs
 # rc-gate, so summary.txt gets no ALLDONE line; a summary without one is a failed run.
 # A shell suite's result and log are named by its path in the checkout with / as - (comm-tests-test-temp-files), so
@@ -48,6 +49,7 @@
 
 SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
+source "$(dirname "$SELF")/lib-gate-scope.sh" || exit 2
 TO=(timeout -k 10 1200)
 # The clippy lines compile every crate again as clippy sees it, and under-bash.sh runs every hermetic shell suite once more.
 LNT=(timeout -k 10 2400)
@@ -108,23 +110,42 @@ logged() {
 job_julia() {
   local p s
   st julia
-  logged "$L/julia-root.log" "$L/julia-root.log" "${TO[@]}" "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()'
-  fin julia-root $?
+  if want julia root; then
+    if [ -f "$D/Project.toml" ]; then
+      logged "$L/julia-root.log" "$L/julia-root.log" "${TO[@]}" "${JE[@]}" julia --project="$D" -e 'using Pkg; Pkg.test()'
+      fin julia-root $?
+    else
+      fin julia-root 101
+    fi
+  fi
   for p in "${JULIA_PKGS[@]}"; do
+    want julia "$p" || continue
     s=julia-${p//\//-}
+    [ -f "$D/$p/Project.toml" ] || { fin "$s" 101; continue; }
     logged "$L/$s.log" "$L/$s.log" "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
     fin "$s" $?
   done
 }
 
 job_cargo_chain() {
-  local M="$D/rust/Cargo.toml" r
-  st rust-doc
-  logged "$L/rust/doc.log" "$L/rust/doc.log" \
-    "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast
-  r=$?
-  echo "$r" > "$L/rust/doc.rc"
-  rc rust-doc "$r"
+  local M="$D/rust/Cargo.toml" r c
+  if want_kind rust; then
+    st rust-doc
+    r=0
+    if narrow; then
+      # a scoped run tests the touched crates' doc tests only
+      while read -r _ c; do
+        logged "$L/rust/doc.log" "$L/rust/doc.log" \
+          "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$D/rust/$c/Cargo.toml" --locked --doc --no-fail-fast || r=$?
+      done < <(grep '^rust ' <<< "$RCG_SCOPE_SEL")
+    else
+      logged "$L/rust/doc.log" "$L/rust/doc.log" \
+        "${TO[@]}" "${CE[@]}" cargo test --manifest-path "$M" --workspace --locked --doc --no-fail-fast
+      r=$?
+    fi
+    echo "$r" > "$L/rust/doc.rc"
+    rc rust-doc "$r"
+  fi
   st win-check
   logged "$L/win-check.log" "$L/win-check.log" "${TO[@]}" "${CE[@]}" CC_x86_64_pc_windows_gnu=gcc AR_x86_64_pc_windows_gnu=ar \
     cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-capsule -p sot-backend -p sot-frontend --locked &&
@@ -269,6 +290,18 @@ emit_shell() {
   emit "shell:$1" "$(printf 'shell\t%s' "$name"; printf '\t%s' "$@")" "$L/steps/$(shell_key "$1").rc"
 }
 
+# shell_group <suite path>: the scope piece a shell suite belongs to
+shell_group() {
+  case $1 in
+    "$D"/comm/*) echo comm ;;
+    "$D"/agents/*) echo agents ;;
+    *) echo scripts ;;
+  esac
+}
+shell_wanted() { want shell "$(shell_group "$1")"; }
+# crate_wanted <package dir of a test binary>: the scope selects its crate
+crate_wanted() { want rust "$(basename "$1")"; }
+
 producer() {
   local k tgt t n exe pkg f s found out lrc ignored irc prc
   local -A LISTED SPLIT_EXE SPLIT_PKG
@@ -293,15 +326,18 @@ producer() {
   SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/installer-wrapper.sh" "$D/scripts/tests/installer-apply.sh" "$D/scripts/tests/installer-shared-home.sh" "$D/scripts/tests/test-topology-plan.sh" "$D/scripts/tests/test-test-body.sh" "$D/scripts/tests/test-bash32.sh" "$D/scripts/tests/test-release-cut.sh" "$D/scripts/tests/test-pre-push.sh" "$D/scripts/tests/test-publish-guard-setup.sh" "$D/scripts/tests/test-publish-guard-entries.sh")
 
   [ -n "${RCG_LIFETIME:-}" ] && emit lifetime lifetime
-  for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
-  emit julia julia
-  echo unrun > "$L/rust/doc.rc"
+  # a job the scope does not select has no result file at all; one it selects starts as unrun
+  want julia root && echo unrun > "$L/steps/julia-root.rc"
+  for s in "${JULIA_PKGS[@]}"; do want julia "$s" && echo unrun > "$L/steps/julia-${s//\//-}.rc"; done
+  want_kind julia && emit julia julia
+  want_kind rust && echo unrun > "$L/rust/doc.rc"
   echo unrun > "$L/steps/win-check.rc"
   echo unrun > "$L/steps/darwin-check.rc"
   emit cargo-chain cargo-chain
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
   [ -n "${RCG_BASH32:-}" ] && emit under-bash under-bash "$L/steps/under-bash.rc"
   for s in fresh repair; do
+    narrow && ! want shell scripts && ! want_kind rust && continue
     emit "installer-publish:$s" "$(printf 'installer-publish\t%s' "$s")" "$L/steps/installer-publish-$s.rc"
   done
   [ "$BUILD_RC" -eq 0 ] && st rust-workspace
@@ -312,6 +348,7 @@ producer() {
       if ! row_for "$n"; then
         echo "split-missing $n" >> "$L/summary.txt"; fin "split-$n" 101; continue
       fi
+      crate_wanted "$pkg" || continue
       EMITTED["bin:$exe"]=1
       (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse) \
         > "$L/$n.all.list" 2> "$L/$n.list.log"
@@ -360,8 +397,10 @@ PYLIST
     while IFS=$'\t' read -r s _ tgt f; do
       [[ " ${SPLIT[*]} " == *" $tgt "* ]] && continue
       if row_for "$tgt"; then
-        EMITTED["bin:$exe"]=1
-        emit_part "$tgt" "$s" "$exe" "$pkg" "$f"
+        if crate_wanted "$pkg"; then
+          EMITTED["bin:$exe"]=1
+          emit_part "$tgt" "$s" "$exe" "$pkg" "$f"
+        fi
       else
         echo "part-missing $tgt" >> "$L/summary.txt"; fin "part-$tgt" 101
       fi
@@ -376,11 +415,12 @@ PYLIST
           if [ "$(basename "$f" .sh)" = "$k" ]; then found=$f; fi
         done
         if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; continue; fi
-        emit_shell "$found"
+        shell_wanted "$found" && emit_shell "$found"
         ;;
       */*)
         [ "$BUILD_RC" -eq 0 ] || continue
         tgt=${k%%/*}; t=${k#*/}
+        if row_for "$tgt" && ! crate_wanted "$pkg"; then continue; fi
         if [ -n "${LISTED[$tgt]:-}" ] && grep -qxF -- "$t" <<< "${LISTED[$tgt]}"; then
           emit_one "${SPLIT_EXE[$tgt]}" "${SPLIT_PKG[$tgt]}" "$t"
         else
@@ -390,12 +430,22 @@ PYLIST
         ;;
       *)
         [ "$BUILD_RC" -eq 0 ] || continue
-        if row_for "$k"; then emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; fi
+        if row_for "$k"; then crate_wanted "$pkg" && emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; fi
         ;;
     esac
   done
   st shell-suites
+  # a scoped group with no suite in the tree is a failure, not a pass
+  if narrow; then
+    for k in comm agents scripts; do
+      want shell "$k" || continue
+      n=0
+      for f in "${SHELL_ALL[@]}"; do [ -e "$f" ] && [ "$(shell_group "$f")" = "$k" ] && n=$((n + 1)); done
+      [ "$n" -gt 0 ] || { echo "scope-missing shell $k" >> "$L/summary.txt"; fin "scope-shell-$k" 101; }
+    done
+  fi
   for f in "${SHELL_ALL[@]}"; do
+    shell_wanted "$f" || continue
     if [ "$(basename "$f")" = test-test-body.sh ]; then
       if [ "$BUILD_RC" -eq 0 ] && row_for test_body_fixture; then
         emit_shell "$f" --all "$exe"
@@ -414,6 +464,7 @@ PYLIST
     done <<< "${LISTED[$n]}"
   done
   while IFS=$'\t' read -r n exe pkg; do
+    crate_wanted "$pkg" || continue
     [ -n "${RCG_FULL:-}" ] || ! python3 "$D/scripts/tests/shards.py" gate-whole "$n" || continue
     emit_bin "$exe" "$pkg"
   done < "$L/tests.tsv"
@@ -455,6 +506,8 @@ if [ $# -lt 2 ] || [ -z "${CARGO_TARGET_DIR:-}" ] || ! [[ $CAP =~ ^[1-9][0-9]*$ 
 fi
 # One target per checkout, for good: the first run names its checkout in the target; a run for another is refused.
 D=$(cd "$1" && pwd) || exit 2
+# A scope is asked for, and refused, before anything is locked, enrolled or built.
+gate_scope_resolve "$D" rc-gate || exit 2
 source "$(dirname "$SELF")/lib-gate-target.sh" || exit 2
 gate_target_lock || exit 2
 CLAIM=$CARGO_TARGET_DIR/rc-gate-checkout
@@ -500,6 +553,8 @@ PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not foun
 # jobs' PATH, ahead of cargo's folder: it is wherever cargo is installed, and whatever else it holds is not the gate's.
 mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
 # under-bash.sh runs when scripts/, comm/ or agents/ differ from the line (or no line is given), under the cached bash 3.2.57
+# A scoped run (RCG_SCOPE=<base commit-ish>, set as `env RCG_SCOPE=<base> bash rc-gate.sh ...` inside the container) narrows its
+# test jobs to the pieces the paths differing from the base map to (lib-gate-scope.sh); it never runs with RCG_FULL.
 RCG_BASH32=
 LINE=${4:-}
 if [ -n "$LINE" ]; then
@@ -507,6 +562,8 @@ if [ -n "$LINE" ]; then
 fi
 if [ -n "$LINE" ] && (cd "$D" && git diff --quiet "$LINE" HEAD -- scripts comm agents); then
   SKIPPED="under-bash skipped: scripts, comm and agents equal $LINE"
+elif narrow && ! want_kind shell; then
+  SKIPPED="under-bash skipped: the scope selects no shell piece"
 else
   RCG_BASH32=$(bash "$D/scripts/tests/bash32.sh") || { echo "rc-gate: no bash 3.2.57" >&2; exit 2; }
 fi
@@ -520,6 +577,8 @@ echo "head $(git -C "$D" rev-parse HEAD) tree $(git -C "$D" rev-parse 'HEAD^{tre
 echo "cap $CAP" >> "$L/summary.txt"
 echo "julia $JULIA_BIN" >> "$L/summary.txt"
 [ -z "${SKIPPED:-}" ] || echo "$SKIPPED" >> "$L/summary.txt"
+# a scoped run says so on its own lines and ends ALLDONE SCOPED, never ALLDONE: it is not a whole run
+gate_scope_summary >> "$L/summary.txt"
 
 # every process in this container but rc-gate itself, read again after 5 s so one that is exiting is not counted
 census() {
@@ -608,9 +667,9 @@ PEAK=$({ awk '$2 == "start" {print $5}' "$L/summary.txt"
 echo "end $(date +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg) cargo=$(pgrep -c cargo) peak-load ${PEAK:-0} wall $(($(date +%s) - T0))s" >> "$L/summary.txt"
 if [ "$RC" -eq 0 ] && [ "$STEPFAIL" -eq 0 ] && [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && [ "$UNRUN" -eq 0 ] &&
   [ -z "$LEFT" ]; then
-  echo ALLDONE >> "$L/summary.txt"
+  gate_verdict 0 >> "$L/summary.txt"
 else
-  echo "ALLDONE FAILED" >> "$L/summary.txt"
+  gate_verdict 1 >> "$L/summary.txt"
 fi
 [ "$INTR" -eq 1 ] && exit 130
 exit 0
