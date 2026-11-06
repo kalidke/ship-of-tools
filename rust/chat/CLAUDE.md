@@ -3,8 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform`, `toml`, `serde_json` and the web stack recorded below; `sotd` links it
-and no code of the daemon calls it yet. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+listener. The crate (`sot-chat`) depends on `sot-protocol`, `serde_json` and the web stack recorded below, with `sot-platform` and `toml` declared
+ahead of the configuration that first uses them. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, read-pacing instant and name cache, and a `Socket`'s one task, queue and gap, and has no file call, no
 token or configuration loading, no delivery and no channel mapping.
 
@@ -217,7 +217,7 @@ Paths are under `rust/chat/src/`.
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 
 ## Files
-- `Cargo.toml`: the manifest; depends on wire and the web stack.
+- `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
 - `src/lib.rs`: the modules and re-exports.
 - `src/normalize.rs`: the normalization.
 - `src/http.rs`: the HTTP core and `Http::websocket`. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
