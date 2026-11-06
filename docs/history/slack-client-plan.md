@@ -404,17 +404,19 @@ B1b the web stack, `http.rs` and the fake Slack; B1c `api.rs`; B1d `socket.rs`. 
 figures wait for the maintainer's word and nothing before them calls it, so a first drawer built before B4 shows file stubs
 and no thumbnails. C14, the duplicate listener and its lock, moves to B2, where the configuration and the service live.
 
-Amended 2026-11-06: B2 lands in eight pieces, one guarantee each, with every manifest change first, alone, on the whole gate,
-in the landing that fixes the macOS cross-check and links `sot-chat` into `sot-backend`. B2a `config.rs` (M1, M2, a second
-workspace refused at load, a token that cannot format); B2b `service.rs` (C14's lock, status, a bounded stop); B2c the watch
-(M5); B2d the wire family (`chat.resolve`, `watch`, `unwatch`, `history`, `post`, events `changed` and `status`; `fetch` and
-`post_file` stay with B4); B2e the hub composition (C1, M3, M8); B2f dispatch and subscriptions (M4); B2g fe-net (M6, M7); B2h
-the minimal chat owner in the window, the loss signal's first consumer.
+Amended 2026-11-06: B2 lands in eight pieces, one guarantee each. Before them, as a landing of its own on the whole gate, comes
+the one that fixes the macOS cross-check and links `sot-chat` into `sot-backend`, so that every manifest change is out of the
+pieces' way. B2a `config.rs` (M1, M2, a second workspace refused at load, a token that cannot format); B2b `service.rs` (C14's
+lock, status, a bounded stop); B2c the watch (M5); B2d the wire family (`chat.resolve`, `watch`, `unwatch`, `history`, `post`,
+events `changed` and `status`; `fetch` and `post_file` stay with B4); B2e the hub composition, the row-fact adapter included (C1,
+M3, M8); B2f dispatch and subscriptions (M4); B2g fe-net (M6, M7); B2h the minimal chat owner in the window, the loss signal's
+first consumer. Each of B2's documents rides the piece that makes it true.
 
 Amended 2026-11-06, from a live measurement (SlackClaw's facts note, section 7): Slack pings a quiet socket about every 10.2 s,
 answers ours, and drops a link that sends it nothing within a minute as a bare end of stream. So before B2 a chat-only landing
-proves every ping is answered while the queue is full or a call is slow, and shortens the idle bound. Our own ping stays:
-answering alone is not proven enough.
+proves every ping is answered while the queue is full or a call is slow, and shortens the idle bound from 90 s to 45 s, a choice
+of this plan's: about four of those intervals, and the shortest silence after which Slack was seen to drop a link. Our own ping
+stays: answering alone is not proven enough.
 
 | Landing | Chat-specific contents | Product / test lines |
 |---|---|---:|
