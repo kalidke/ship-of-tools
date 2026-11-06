@@ -131,6 +131,15 @@ async fn history_pages_exact_query_without_silent_completion() {
                     Reply::json(&v)
                 }
                 // Slack's edge inclusivity is not trusted: the client rechecks every message.
+                // Edges that differ only in the fraction.
+                ("C0FRAC", _) => Reply::json(&page(
+                    vec![
+                        msg("1700000100.000002"),
+                        msg("1700000100.000001"),
+                        msg("1700000100.000000"),
+                    ],
+                    None,
+                )),
                 ("C0EDGE", _) => Reply::json(&page(
                     vec![
                         msg("1700000500.000000"),
@@ -212,19 +221,61 @@ async fn history_pages_exact_query_without_silent_completion() {
         );
         assert_eq!(seen.last().unwrap().param("oldest"), None);
 
-        // A continuation cannot be reused under another query, and nothing is sent when it is refused.
+        // A continuation cannot be reused under another query, and nothing is sent when it is refused. Each row
+        // differs from the query it was made for (`q`) in exactly one component.
         let before = fake.seen().len();
-        let other_channel = query("C0OTHR", bounds_same(), 2);
-        let other_limit = query("C0CHAN", bounds_same(), 3);
-        let other_bounds = query("C0CHAN", Bounds::default(), 2);
-        let thread =
-            HistoryQuery::new("C0CHAN", Some("1700000100.000000"), bounds_same(), 2).unwrap();
-        for q in [&other_channel, &other_limit, &other_bounds, &thread] {
+        let (a0, b0) = ("1699999000.000000", "1700001000.000000");
+        let row =
+            |channel: &str, thread: Option<&str>, after: &str, upper: (&str, &str), limit: u16| {
+                let (before, until) = match upper {
+                    ("before", t) => (Some(t), None),
+                    (_, t) => (None, Some(t)),
+                };
+                let bounds = Bounds::new(Some(after), before, until).unwrap();
+                HistoryQuery::new(channel, thread, bounds, limit).unwrap()
+            };
+        assert_eq!(
+            row("C0CHAN", None, a0, ("before", b0), 2),
+            q,
+            "the table's base"
+        );
+        let one_off = [
+            ("channel", row("C0OTHR", None, a0, ("before", b0), 2)),
+            (
+                "thread",
+                row("C0CHAN", Some("1700000100.000000"), a0, ("before", b0), 2),
+            ),
+            (
+                "after",
+                row("C0CHAN", None, "1699999000.000001", ("before", b0), 2),
+            ),
+            ("bound kind", row("C0CHAN", None, a0, ("until", b0), 2)),
+            (
+                "bound value",
+                row("C0CHAN", None, a0, ("before", "1700001000.000001"), 2),
+            ),
+            ("limit", row("C0CHAN", None, a0, ("before", b0), 3)),
+        ];
+        for (what, other) in &one_off {
             assert_eq!(
-                api.history(q, Some(&cont)).await.unwrap_err(),
-                ApiError::Altered
+                api.history(other, Some(&cont)).await.unwrap_err(),
+                ApiError::Altered,
+                "only the {what} differs"
             );
         }
+        // Only the workspace differs: a second `Api` for another workspace given the first one's continuation.
+        let elsewhere = Api::new(fake.http(), Secret::new(TOKEN), "T0OTHR")
+            .unwrap()
+            .with_base(fake.url("slack.com", "/api/"))
+            .with_identity(crate::api::Identity {
+                user_id: OWN_USER.into(),
+                bot_id: Some(OWN_BOT.into()),
+            });
+        assert_eq!(
+            elsewhere.history(&q, Some(&cont)).await.unwrap_err(),
+            ApiError::Altered,
+            "only the workspace differs"
+        );
         for text in ["not json", "[]", "[1,2]", "{}"] {
             let junk = Continuation::parse(text.into()).unwrap();
             assert_eq!(
@@ -279,6 +330,18 @@ async fn history_pages_exact_query_without_silent_completion() {
         let edge = api.history(&query("C0EDGE", b, 5), None).await.unwrap();
         assert_eq!(tss(&edge), ["1700000400.000000", "1700000300.000000"]);
 
+        // The recheck reads the fraction, not whole seconds.
+        let frac = |after: Option<&str>, before: Option<&str>, until: Option<&str>| {
+            query("C0FRAC", Bounds::new(after, before, until).unwrap(), 5)
+        };
+        let t = "1700000100.000001";
+        let got = api.history(&frac(Some(t), None, None), None).await.unwrap();
+        assert_eq!(tss(&got), ["1700000100.000002"]);
+        let got = api.history(&frac(None, Some(t), None), None).await.unwrap();
+        assert_eq!(tss(&got), ["1700000100.000000"]);
+        let got = api.history(&frac(None, None, Some(t)), None).await.unwrap();
+        assert_eq!(tss(&got), ["1700000100.000001", "1700000100.000000"]);
+
         // A thread: replies, the parent may make 21 records (here 3 for limit 2); more is malformed.
         let thr = |c: &str| {
             HistoryQuery::new(c, Some("1700000100.000000"), Bounds::default(), 2).unwrap()
@@ -296,6 +359,11 @@ async fn history_pages_exact_query_without_silent_completion() {
         let b = Bounds::new(Some("1700000100.000000"), None, None).unwrap();
         let q = HistoryQuery::new("C0THR", Some("1700000100.000000"), b, 2).unwrap();
         assert_eq!(api.history(&q, None).await.unwrap().records.len(), 3);
+        // Only the parent is exempt: a reply outside the bounds is dropped.
+        let b = Bounds::new(Some("1700000101.000000"), None, None).unwrap();
+        let q = HistoryQuery::new("C0THR", Some("1700000100.000000"), b, 2).unwrap();
+        let got = api.history(&q, None).await.unwrap();
+        assert_eq!(tss(&got), ["1700000100.000000", "1700000102.000000"]);
         assert_eq!(
             api.history(&thr("C0THRX"), None).await.unwrap_err(),
             ApiError::Malformed
@@ -303,10 +371,6 @@ async fn history_pages_exact_query_without_silent_completion() {
         fake.shutdown().await;
     })
     .await;
-}
-
-fn bounds_same() -> Bounds {
-    Bounds::new(Some("1699999000.000000"), Some("1700001000.000000"), None).unwrap()
 }
 
 #[tokio::test]
@@ -659,18 +723,16 @@ async fn names_fall_back_to_ids_without_unbounded_cache() {
         assert_eq!(api.author_name("not an id").await, "not an id");
         assert_eq!(fake.seen().len(), before);
 
-        // Excess distinct authors cannot grow the cache.
+        // Excess distinct authors cannot grow the cache: driven directly, as 1,100 handshakes prove nothing more.
         for i in 0..(MAX_NAMES + 76) {
-            let id = format!("U1X{i}");
-            assert_eq!(api.author_name(&id).await, format!("Name-{id}"));
+            api.remember(&format!("U1X{i}"), "n");
         }
         assert_eq!(api.names_cached(), MAX_NAMES);
-        let asked = calls(&fake, "users.info");
-        api.author_name("U1X0").await;
-        assert_eq!(calls(&fake, "users.info"), asked + 1, "the oldest entry left");
-        api.author_name(&format!("U1X{}", MAX_NAMES + 75)).await;
-        assert_eq!(calls(&fake, "users.info"), asked + 1, "the newest stayed");
-        assert_eq!(api.names_cached(), MAX_NAMES);
+        assert!(!api.is_cached("U1X75"), "the oldest entries left");
+        assert!(api.is_cached("U1X76") && api.is_cached(&format!("U1X{}", MAX_NAMES + 75)));
+        api.remember("U1X76", "again");
+        assert_eq!(api.names_cached(), MAX_NAMES, "a known id evicts nothing");
+        assert!(api.is_cached("U1X76") && api.is_cached(&format!("U1X{}", MAX_NAMES + 75)));
 
         // Records get names, and an author that cannot be looked up shows the id. Bots are left alone.
         failing.store(true, Ordering::SeqCst);
@@ -703,7 +765,7 @@ async fn every_operation_ends_at_its_deadline() {
                 .await,
             Ok(PostOutcome::Unknown)
         );
-        let mut records = vec![member_record()];
+        let mut records = vec![member_record("U0HANG")];
         api.fill_names(&mut records).await;
         assert_eq!(records[0].author.name, "U0HANG");
         assert!(start.elapsed() < Duration::from_secs(10));
@@ -712,7 +774,33 @@ async fn every_operation_ends_at_its_deadline() {
     .await;
 }
 
-fn member_record() -> sot_protocol::chat::ChatRecord {
+/// The names' group deadline is its own: each lookup would wait 20 s, five of them are cut at 300 ms.
+#[tokio::test]
+async fn name_lookups_together_end_at_the_names_deadline() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |_, _| Reply::Hang).await;
+        let api = new_api(&fake).with_deadlines(
+            Duration::from_secs(20),
+            Duration::from_secs(20),
+            Duration::from_millis(300),
+        );
+        let ids = ["U0H1", "U0H2", "U0H3", "U0H4", "U0H5"];
+        let mut records: Vec<_> = ids.iter().map(|id| member_record(id)).collect();
+        let start = Instant::now();
+        api.fill_names(&mut records).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        let names: Vec<&str> = records.iter().map(|r| r.author.name.as_str()).collect();
+        assert_eq!(names, ids);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+fn member_record(id: &str) -> sot_protocol::chat::ChatRecord {
     let ctx = crate::normalize::Context {
         workspace: WS,
         own_bot_id: None,
@@ -722,7 +810,7 @@ fn member_record() -> sot_protocol::chat::ChatRecord {
     match crate::normalize::normalize(
         &ctx,
         "C0CHAN",
-        &json!({"ts": "1.000001", "user": "U0HANG", "text": "x"}),
+        &json!({"ts": "1.000001", "user": id, "text": "x"}),
     ) {
         crate::normalize::Normalized::New(r) => r,
         other => panic!("{other:?}"),

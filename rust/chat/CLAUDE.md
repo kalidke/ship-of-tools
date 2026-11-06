@@ -152,7 +152,7 @@ Paths are under `rust/chat/src/`.
 | 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending` |
 | 12 | one post, origin kept | `api_tests.rs`: `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin` |
 | 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
-| 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline` |
+| 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline`, `name_lookups_together_end_at_the_names_deadline` |
 | 15 | no raw Slack text | `api_tests.rs`: `slack_text_and_identity_failures_reach_no_caller_raw` |
 | 16 | names | `api_tests.rs`: `names_fall_back_to_ids_without_unbounded_cache` |
 

@@ -44,7 +44,7 @@ and tests whole; Order of passes says how a load is counted.
 | fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
 | fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
 | distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
-| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; the Slack calls (history paged and bound to its query, one post submitted once, reads paced by the retry header, names through a bounded cache) all leave through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 17 | 19 | 27 | 1 | yes |
+| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; the Slack calls (history paged and bound to its query, one post submitted once, reads paced by the retry header, names through a bounded cache) all leave through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 17 | 20 | 27 | 1 | yes |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
 | total | | 1,959 | 2,087 | 305 | 404 | |
 

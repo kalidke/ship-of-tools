@@ -380,6 +380,18 @@ impl Api {
         self.names.lock().unwrap().by_id.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_cached(&self, user: &str) -> bool {
+        self.names.lock().unwrap().by_id.contains_key(user)
+    }
+
+    /// An `Api` that already holds the bot identity, as if `auth_test` had answered.
+    #[cfg(test)]
+    pub(crate) fn with_identity(self, own: Identity) -> Api {
+        *self.own.lock().unwrap() = Some(own);
+        self
+    }
+
     /// The bot identity, which history needs. The token must belong to the configured workspace.
     pub async fn auth_test(&self) -> Result<Identity, ApiError> {
         let v = self.read("auth.test", &[]).await?;
@@ -598,7 +610,7 @@ impl Api {
             .ok_or(ApiError::Malformed)
     }
 
-    fn remember(&self, user: &str, name: &str) {
+    pub(crate) fn remember(&self, user: &str, name: &str) {
         let mut names = self.names.lock().unwrap();
         if !names.by_id.contains_key(user) {
             if names.by_id.len() >= MAX_NAMES {
