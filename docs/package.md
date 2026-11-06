@@ -44,11 +44,11 @@ and tests whole; Order of passes says how a load is counted.
 | fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
 | fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
 | distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
-| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; every byte to Slack leaves through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 9 | 8 | 17 | 1 | yes |
+| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; every byte to Slack leaves through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 10 | 10 | 17 | 1 | yes |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
 | total | | 1,959 | 2,087 | 305 | 404 | |
 
-The wire and chat rows are measured by the script at the landing of the chat's HTTP core (the fake Slack's server code counts as product); the other rows and the total are as measured at a25f3c39f. Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
+The wire and chat rows are measured by the script at this change (the fake Slack's server code counts as product); the other rows and the total are as measured at a25f3c39f. Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
 The design records (51 ADRs and their index) and the old folder pages live in `docs/history/` and load nowhere.
 
 ## Contracts

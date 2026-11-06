@@ -508,3 +508,100 @@ async fn one_send_is_one_request_even_when_the_server_closes_mid_response() {
     })
     .await;
 }
+
+/// The product constructor builds with the product roots and, with no network, refuses every destination that is not
+/// `https` on 443 at a Slack domain host.
+#[tokio::test]
+async fn the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations() {
+    bounded(async {
+        let http = Http::new().expect("the product client builds");
+        for url in [
+            "https://files.slack.com:8443/",
+            "http://files.slack.com/",
+            "https://127.0.0.1/",
+            "https://evilslack.com/",
+        ] {
+            let request = Request::get(url, Duration::from_secs(2)).bearer(Secret::new(TOKEN));
+            assert_eq!(
+                http.send(request).await.unwrap_err(),
+                HttpError::Destination,
+                "{url}"
+            );
+        }
+    })
+    .await;
+}
+
+/// Proxy variables name a dead address. The environment of a threaded test process is not safe to set, so the test
+/// re-runs itself as a child with the variables set (the child sees `CHILD`) and the parent waits within a bound. A
+/// child whose body passes exits 77; a filter that matched no test exits 0 and a failed body 101, so neither passes.
+/// The parent does not use `sot_platform::test_isolated`, which needs a manifest change this change does not carry;
+/// the socket landing, which changes the manifest, moves this test to the helper.
+#[tokio::test]
+async fn an_ambient_proxy_variable_is_ignored() {
+    const CHILD: &str = "SOT_CHAT_PROXY_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        bounded(async {
+            let fake = FakeSlack::start(Identity::Trusted, |_, _| Reply::ok(b"direct")).await;
+            let response = fake
+                .http()
+                .send(get(&fake, "files.slack.com", "/"))
+                .await
+                .expect("the proxy variable was used");
+            assert_eq!(response.body(), b"direct");
+            assert_eq!((fake.seen().len(), fake.tls_failures()), (1, 0));
+            fake.shutdown().await;
+        })
+        .await;
+        std::process::exit(77);
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
+    command
+        .args([
+            "--exact",
+            "http_tests::an_ambient_proxy_variable_is_ignored",
+            "--test-threads",
+            "1",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::null());
+    for name in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        command.env(name, "http://127.0.0.1:9");
+    }
+    command.env_remove("NO_PROXY").env_remove("no_proxy");
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test re-runs its own binary with proxy variables; the wait below is bounded and kills the child"
+    )]
+    let mut child = command.spawn().expect("spawn the test binary");
+    let end = Instant::now() + Duration::from_secs(90);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("waiting for the child test failed");
+            }
+        }
+        if Instant::now() > end {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child test exceeded its bound");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        status.code(),
+        Some(77),
+        "the child did not run its body to the end: {status}"
+    );
+}

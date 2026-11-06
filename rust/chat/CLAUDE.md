@@ -80,10 +80,12 @@ record's representation (wire's). Offer another way to the network, a retry help
 Pinned as measured on the branch `stack/web-tls`: `reqwest =0.13.5` (no default features; `rustls-no-provider`, `json`,
 `stream`), `rustls =0.23.46` (no default features; `ring`, `std`, `tls12`), `webpki-roots =1.0.11`, all in the workspace
 table; `tokio` from the workspace; dev only: `tokio-rustls 0.26` (no default features; `ring`, `tls12`) and `base64 0.22`
-for the fixture. The change adds 37 `[[package]]` entries to `Cargo.lock`. The tree holds no aws-lc, openssl-sys, cmake,
-pkg-config, vcpkg, bindgen or native-tls; it does hold reqwest's `rustls-platform-verifier` and its per-OS readers
-(`rustls-native-certs`, `openssl-probe`, `schannel`, `security-framework`), compiled and never used, because `http.rs`
-hands reqwest a finished rustls configuration. The one native build is `ring` through `cc` (a C compiler for the
+for the fixture. The change adds 37 `[[package]]` entries to `Cargo.lock`. `sot-chat`'s own tree
+(`cargo tree -p sot-chat --target all -e all`) holds no aws-lc, openssl-sys, cmake, pkg-config, vcpkg, bindgen or
+native-tls (`wasm-bindgen` and `wit-bindgen`, on wasm targets, are other crates); of those crates the workspace lock
+holds only pkg-config, through the frontend. The tree does hold reqwest's `rustls-platform-verifier` and its per-OS
+readers (`rustls-native-certs`, `openssl-probe`, `schannel`, `security-framework`), compiled and never used, because
+`http.rs` hands reqwest a finished rustls configuration. The one native build is `ring` through `cc` (a C compiler for the
 target; the gate's `darwin-check` cannot build it from a Linux host with no Apple clang, so the line fails the day a
 crate links `sot-chat`). `tokio-tungstenite` joins with the socket.
 
@@ -104,7 +106,7 @@ Paths are under `rust/chat/src/`.
 | 2 | own posts by supplied identity only | `normalize_tests.rs`: `normalize_members_bots_edits_deletes_and_file_stubs` (member prefix, member username, other bot), `with_no_identity_supplied_a_member_with_a_forged_prefix_is_a_member`, `a_prefix_in_an_own_posts_text_is_only_text`, `an_unreadable_own_post_keeps_its_origin_and_an_unreadable_reply_its_thread` |
 | 3 | bounds | `normalize_tests.rs`: `text_is_cut_on_a_character_boundary_and_marked`, `names_filenames_and_mime_are_cut_and_marked`, `only_eight_files_are_summarized_and_the_rest_counted`, `an_id_over_64_bytes_or_not_ascii_is_not_carried`, `a_record_never_exceeds_32_kib_of_json`, `names_lose_control_characters`, `a_normalized_record_round_trips_through_the_wire` |
 | 4 | attachment only | `normalize_tests.rs`: `an_attachment_only_message_keeps_its_files_and_has_no_text` |
-| 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations`, `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect` |
+| 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations`, `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect`, `an_ambient_proxy_variable_is_ignored` (the test re-runs itself as a child with every proxy variable naming a dead address and expects a direct request), `the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations` (no network) |
 | 6 | verified server | `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
 | 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
