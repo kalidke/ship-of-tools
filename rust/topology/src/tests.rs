@@ -245,6 +245,31 @@ fn locate_honours_sot_hosts() {
     std::env::remove_var("SOT_HOSTS");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_planted_fifo_or_oversize_hosts_file_is_invalid_not_a_stall() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hosts.toml");
+    let env = sot_platform::host::env::Env::empty().with("SOT_HOSTS", &path);
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a plain mkfifo(3) of a path in this test's own folder.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    // The load runs on its own thread so a load that blocks fails this test instead of hanging the suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let fifo_env = env.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(load_in(&fifo_env));
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the load of a FIFO blocked");
+    assert!(got.unwrap_err().starts_with(&path.display().to_string()));
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, vec![b'#'; (MAX_HOSTS_FILE + 1) as usize]).unwrap();
+    assert!(load_in(&env).unwrap_err().starts_with(&path.display().to_string()));
+    std::fs::remove_file(&path).unwrap();
+    assert!(load_in(&env).unwrap().is_none());
+}
+
 #[test]
 fn only_the_complete_generated_path_is_a_hub_relay() {
     let dir = Path::new("/run/user/1000");

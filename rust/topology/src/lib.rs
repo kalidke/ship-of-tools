@@ -101,6 +101,9 @@ pub fn locate_in(env: &sot_platform::host::env::Env) -> Option<PathBuf> {
     sot_platform::host::state_dir::sot_config_dir_in(env).map(|d| d.join("hosts.toml"))
 }
 
+/// The most a hosts.toml may hold; far above any real file, it ends a stall or a flood from a planted one.
+const MAX_HOSTS_FILE: u64 = 1 << 20;
+
 /// Read and parse the located file. `Ok(None)` when there is no file (the
 /// ordinary state on a box that never declared a topology); `Err` names the
 /// path and the offender for an unreadable or invalid one.
@@ -111,7 +114,9 @@ pub fn load() -> Result<Option<(PathBuf, Topology)>, String> {
 /// [`load`] locating the file through `env`.
 pub fn load_in(env: &sot_platform::host::env::Env) -> Result<Option<(PathBuf, Topology)>, String> {
     let Some(path) = locate_in(env) else { return Ok(None) };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match sot_platform::host::read_regular(&path, MAX_HOSTS_FILE)
+        .and_then(|b| String::from_utf8(b).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData)))
+    {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),

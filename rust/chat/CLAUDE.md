@@ -136,7 +136,7 @@ bot identity, read-pacing instant and name cache, and a `Socket`'s one task, que
 21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
    workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
    `chat-secrets.toml` (`workspace`, `bot_token`, `app_token`) are in platform's config folder (`config_dir`); only the
-   named keys are accepted. Each file is read by `read_file` alone: a regular file (checked on the open handle; on Unix the open is non-blocking, so a planted FIFO returns at once, and a device or
+   named keys are accepted. Each file is read by `read_file` alone, which reads through platform's `read_regular`: a regular file (checked on the open handle; on Unix the open is non-blocking, so a planted FIFO returns at once, and a device or
    directory is refused; Windows applies no such flag and has no such test) of at most 64 KiB (`MAX_FILE`), text,
    read to at most one byte over the cap. The cap's job is to end a stall and bound the work a planted file causes (the
    channel check is quadratic and each mapping asks rows), not to be large. A second workspace (a list, a table, a mapping

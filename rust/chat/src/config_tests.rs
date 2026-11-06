@@ -501,7 +501,7 @@ impl Drop for Scratch {
 }
 
 #[test]
-fn the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else() {
+fn the_real_read_refuses_by_kind_and_the_loader_by_code() {
     let s = Scratch::new("read");
     let file = |name: &str, bytes: &[u8]| {
         let p = s.0.join(name);
@@ -522,48 +522,17 @@ fn the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else() {
         read_file(&file("utf", &[0xff, 0xfe])).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
-    assert_eq!(
-        read_file(&s.0.join("absent")).unwrap_err().kind(),
-        io::ErrorKind::NotFound
-    );
-    // A directory is not a file to read.
-    assert!(read_file(&s.0).is_err());
     // Through the loader, the oversize file is a refusal and the file's text is not in it.
     std::fs::write(s.0.join(CONFIG_FILE), &over).unwrap();
     assert_eq!(
         Config::load(&s.0, &read_file, &rows).unwrap_err(),
         E::Malformed(None)
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn a_planted_fifo_or_device_is_refused_without_a_wait() {
-    let s = Scratch::new("fifo");
-    let fifo = s.0.join(CONFIG_FILE);
-    sot_platform::test_wait::run_within(
-        std::process::Command::new("mkfifo").arg(&fifo),
-        std::time::Duration::from_secs(10),
-    )
-    .ok();
-    // The read runs on its own thread so a read that blocks fails this test instead of hanging the suite; a read that
-    // returns (as it must) costs no wait.
-    let (tx, rx) = std::sync::mpsc::channel();
-    let path = fifo.clone();
-    std::thread::spawn(move || {
-        let _ = tx.send(read_file(&path));
-    });
-    let got = rx
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the read of a FIFO blocked");
-    assert_eq!(got.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    // A directory where the file belongs is unreadable, by platform's refusal of anything but a regular file.
+    std::fs::remove_file(s.0.join(CONFIG_FILE)).unwrap();
+    std::fs::create_dir(s.0.join(CONFIG_FILE)).unwrap();
     assert_eq!(
         Config::load(&s.0, &read_file, &rows).unwrap_err(),
         E::Unreadable
-    );
-    // A device that never ends is not a regular file either.
-    assert_eq!(
-        read_file(Path::new("/dev/zero")).unwrap_err().kind(),
-        io::ErrorKind::InvalidInput
     );
 }

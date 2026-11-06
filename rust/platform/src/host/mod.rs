@@ -12,6 +12,7 @@ pub mod paths;
 mod pinned_dir;
 pub mod process_tree;
 pub mod redial;
+mod regular;
 pub mod state_dir;
 mod storage;
 mod volume;
@@ -106,6 +107,7 @@ pub use held_dir::*;
 pub use fd::inherit_none;
 pub use lock::*;
 pub use pinned_dir::*;
+pub use regular::read_regular;
 pub use storage::native_storage_code;
 pub use volume::*;
 #[cfg(windows)]

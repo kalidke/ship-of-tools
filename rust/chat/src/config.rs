@@ -28,33 +28,11 @@ pub type Reader<'a> = &'a dyn Fn(&Path) -> io::Result<String>;
 /// channel check is quadratic, and each mapping asks rows); 64 KiB holds thousands of mappings.
 pub(crate) const MAX_FILE: u64 = 64 * 1024;
 
-/// `O_NONBLOCK`, so opening a FIFO a session planted returns at once instead of waiting for a writer.
-#[cfg(unix)]
-const NONBLOCK: i32 = if cfg!(target_os = "linux") {
-    0o4000
-} else {
-    0x4
-};
-
-/// The one real read: a regular file of at most [`MAX_FILE`] bytes, as UTF-8. The file is checked after it is opened,
-/// so no swap between a check and the read can change what is read. Not a regular file (a FIFO, a device, a
-/// directory) is `InvalidInput`; a larger file or other bytes than UTF-8 is `InvalidData`, after at most one byte over
-/// the cap has been read.
+/// The one real read: a regular file of at most [`MAX_FILE`] bytes, as UTF-8, through platform's bounded read. Not a
+/// regular file (a FIFO, a device, a directory) is `InvalidInput`; a larger file or other bytes than UTF-8 is
+/// `InvalidData`.
 pub fn read_file(path: &Path) -> io::Result<String> {
-    use io::Read;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, NONBLOCK);
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
+    let bytes = sot_platform::host::read_regular(path, MAX_FILE)?;
     String::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData.into())
 }
 
