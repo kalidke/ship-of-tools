@@ -21,6 +21,18 @@ fn error_text(payload: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// The outcome word of a request an older daemon does not know (`PageReplied`'s `outcome`; a future op's reply carries it
+/// the same way).
+pub(crate) const UNSUPPORTED: &str = "unsupported";
+
+/// Whether `payload` is the daemon's generic unknown-op answer to `op`: exactly `{"error": "unknown op: <op>"}`, no code
+/// and no other field (server/dispatch.rs's catch-all). Names no op, so every op's reply handler may ask. Any other
+/// reply, a success that does not parse included, is not this.
+fn is_unsupported(op: &str, payload: &serde_json::Value) -> bool {
+    payload.as_object().is_some_and(|o| o.len() == 1)
+        && payload.get("error").and_then(|v| v.as_str()).is_some_and(|e| e.strip_prefix("unknown op: ") == Some(op))
+}
+
 pub(super) use {concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, tree::*, workspace::*};
 pub(crate) use {
     concept::ConceptWriteResult,

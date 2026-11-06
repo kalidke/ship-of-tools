@@ -44,7 +44,12 @@ through the channel types below.
   time it lands: `send_page_reply` records `PendingKind::PageReply { handle }` before it writes, and `IncomingEvt::PageReplied`
   carries that handle with the daemon's `outcome` and `detail` (an error reply is outcome `error` with its words; an
   answer that does not parse is never `sent`). A connection that ends before the answer yields outcome `unknown` for that handle (`PendingGuard`), once. The
-  request is made only from the window's reply bar (fe-ui); the transport adds nothing to it and never retries it. Tests `ops::pages::tests::a_page_reply_answer_carries_its_handle_outcome_and_reason`
+  An older daemon's generic unknown-op answer to an op (exactly `{"error": "unknown op: <op>"}`, no code, no other field;
+  `ops::is_unsupported`, which names no op) ends that one request as outcome `unsupported` with the daemon's words, shown
+  to the person as before, and the connection goes on serving; the same words for another op, extra fields or a success
+  that does not parse stay outcome `error`. A future op declares itself the same way. The
+  request is made only from the window's reply bar (fe-ui); the transport adds nothing to it and never retries it. Tests `ops::pages::tests::a_page_reply_answer_carries_its_handle_outcome_and_reason`,
+  `ops::pages::tests::only_the_real_unknown_op_answer_is_unsupported`, `tests::an_unknown_op_reply_ends_only_that_request_as_unsupported`,
   `reply_wait_end_tests::a_page_reply_without_its_answer_is_unknown_when_the_connection_ends` and the golden
   `every_request_kind_and_its_error_reply_match_the_golden`.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as

@@ -187,6 +187,7 @@ pub(crate) fn on_page_reply(
 ) {
     let payload = frame.payload;
     let (outcome, detail) = match error_text(&payload) {
+        Some(message) if is_unsupported(&frame.op, &payload) => (UNSUPPORTED.to_string(), message),
         Some(message) => ("error".to_string(), message),
         None => match serde_json::from_value::<PageReplyRes>(payload) {
             Ok(r) => (r.outcome, r.detail),

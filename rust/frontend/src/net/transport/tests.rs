@@ -440,6 +440,62 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _ = session.await;
 }
 
+/// An old daemon answers an op it does not know with the generic unknown-op payload (server/dispatch.rs: only
+/// `error`, the op echoed). That ends the one request as outcome `unsupported`, the connection stays up, and the next
+/// request on it gets its ordinary answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_op_reply_ends_only_that_request_as_unsupported() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let (near, far) = tokio::io::duplex(1 << 16);
+    let daemon = tokio::spawn(async move {
+        let (rx, mut tx) = tokio::io::split(far);
+        let mut rx = codec::buffered(rx);
+        for n in 0..5 {
+            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let reply = match n {
+                0 => hello_ok(),
+                1 | 2 => serde_json::json!({ "error": "cannot read the default directory", "code": "io" }),
+                3 => serde_json::json!({ "error": format!("unknown op: {}", req.op) }),
+                _ => serde_json::json!({ "outcome": "sent", "detail": "the marked line and Enter were recorded" }),
+            };
+            codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply).with_rev(0), None).await.unwrap();
+        }
+        std::future::pending::<()>().await
+    });
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let session = tokio::spawn(async move {
+        let (rx, tx) = tokio::io::split(near);
+        run_protocol("old-daemon".into(), codec::buffered(rx), tx, None, &evt_tx, &mut out_rx, &NoWindow, ResolvedDial::Local, None).await
+    });
+    let reply = |line: &str| OutgoingReq::PageReply { workspace_id: "w".into(), handle: "repo__box".into(), line: line.into() };
+    let mut replied = Vec::new();
+    for line in ["first", "second"] {
+        out_tx.send(reply(line)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match evt_rx.recv_timeout(left).expect("a page.reply answer") {
+                (_, IncomingEvt::PageReplied { outcome, detail, .. }) => {
+                    replied.push((outcome, detail));
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(
+        replied,
+        [
+            ("unsupported".to_string(), "unknown op: page.reply".to_string()),
+            ("sent".to_string(), "the marked line and Enter were recorded".to_string()),
+        ]
+    );
+    assert!(!session.is_finished(), "the connection goes on serving");
+    session.abort();
+    daemon.abort();
+}
+
 /// Every reply the connect path waits for arrives within `SSH_LOGIN_BOUND`, or the attempt ends with an error
 /// naming its step; `spawn` shows that error as the `Disconnected` reason, and the status line as `disconnected ·
 /// <reason>`. The daemon falls silent after answering `answered` requests: before the hello's reply, before

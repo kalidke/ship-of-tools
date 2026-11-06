@@ -504,7 +504,8 @@ pub enum IncomingEvt {
     },
     /// `page.reply` reply, about the session `handle` the confirmed reply was for. `outcome` is the daemon's word
     /// (`sent`, `refused`, `not_ready`, `not_free`, `typed_not_sent`, `unknown`) and `detail` its reason; an error
-    /// reply comes as outcome `error` with its message.
+    /// reply comes as outcome `error` with its message, and the unknown-op answer of a daemon that predates the op as
+    /// outcome `unsupported` (`ops::UNSUPPORTED`), the same words for the person.
     PageReplied {
         handle: String,
         outcome: String,

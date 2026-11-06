@@ -565,3 +565,6 @@ A landing's record goes here, with its measured times; the package page holds on
 - The scoped gate, 2026-11-06: `RCG_SCOPE=<base>` narrows test jobs by one rule (`scripts/CLAUDE.md`), 6 minutes of change
   plus 3 for a review round that made a Rust path add the shell or Julia suites that prove it, goal-only. Under four
   minutes is its test, read at the first scoped landing after it.
+- P6, unsupported operations, 2026-11-06: the daemon's generic unknown-op answer to an op (`{"error": "unknown op: <op>"}`,
+  nothing else) ends only that request as outcome `unsupported`, named by no op (`ops::is_unsupported`); `page.reply` is
+  the first user, and any other reply stays an error (fe-net's contract). 4 minutes of change, goal-only.

@@ -43,3 +43,24 @@ fn a_page_reply_answer_carries_its_handle_outcome_and_reason() {
     let odd = serde_json::json!({ "something": "else" });
     assert!(page_reply_answer(odd).contains(r#"outcome: "error""#), "an unreadable answer is never a sent");
 }
+
+/// Only the daemon's actual unknown-op answer for this op is unsupported: the same words for another op, extra fields,
+/// or a success that does not parse stay errors.
+#[test]
+fn only_the_real_unknown_op_answer_is_unsupported() {
+    let unknown = serde_json::json!({ "error": "unknown op: page.reply" });
+    assert_eq!(
+        page_reply_answer(unknown),
+        r#"PageReplied { handle: "repo__box", outcome: "unsupported", detail: "unknown op: page.reply" }"#
+    );
+    for payload in [
+        serde_json::json!({ "error": "unknown op: pluto.open" }),
+        serde_json::json!({ "error": "unknown op: page.reply", "code": "io" }),
+        serde_json::json!({ "error": "unknown workspace", "code": "unknown_workspace" }),
+        serde_json::json!({ "outcome": 5 }),
+        serde_json::json!({ "outcome": "sent" }),
+    ] {
+        let shown = page_reply_answer(payload.clone());
+        assert!(shown.contains(r#"outcome: "error""#), "{payload} must stay an error, got {shown}");
+    }
+}
