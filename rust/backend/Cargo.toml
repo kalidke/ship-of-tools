@@ -15,6 +15,7 @@ sot-protocol = { path = "../protocol" }
 sot-topology = { path = "../topology" }
 sot-updater = { path = "../updater" }
 sot-platform = { path = "../platform" }
+sot-chat = { path = "../chat" }
 sot-containment = { path = "../containment" }
 sot-capsule = { path = "../capsule" }
 # The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).

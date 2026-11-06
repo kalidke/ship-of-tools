@@ -60,10 +60,10 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire alone for now (platform is a dev-dependency for tests; it joins at run time with its first use). Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire and platform, and `toml`; `sotd` links it, and no code of the daemon calls it yet. Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls and the Socket Mode listener. Does not: hold a credential at rest, read configuration, lock
-  a workspace, file mail or map channels; nothing links it yet but the workspace.
+  a workspace, file mail or map channels.
 - **topology:** `rust/topology/CLAUDE.md`, crate `sot-topology`; the daemon's half is in `sotd`. Owns: the hub's
   hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections.
 - **containment:** `rust/containment/CLAUDE.md`, crate `sot-containment`, on platform alone. Owns: the registry of
@@ -100,8 +100,8 @@ over this page. The table above says what each guarantees to the rest.
 ## Depends on
 
 Today (crates): platform <- {containment, protocol, capsule, updater}; protocol <- capsule (the row socket's frames,
-since 6c-1a1); protocol <- chat, which nothing links yet; {protocol, capsule} <- topology; the backend depends on
-protocol, topology, updater, containment, capsule and platform, the frontend on all of those but containment. Wire
+since 6c-1a1); protocol <- chat; platform <- chat; chat <- backend (linked, called by nothing yet); {protocol, capsule} <- topology; the backend depends on
+protocol, topology, updater, containment, capsule, chat and platform, the frontend on all of those but containment. Wire
 (protocol) depends on platform alone; topology on wire, platform and capsule (the capsule's `Endpoint`); containment
 on platform alone. Inside `sot-backend`
 (one binary, no library target) the modules form one cycle: {agents clients comm files lifecycle pages rows server
@@ -111,7 +111,7 @@ row supervisor} (since 6d-1; the local transport went to platform).
 Target (one crate per subsystem, acyclic; a call the contract does not name does not build):
 - platform -> (none)
 - wire -> platform
-- chat -> wire, platform (today wire alone; platform in tests)
+- chat -> wire, platform
 - containment -> platform
 - capsule -> platform (and its own store, leg, supervisor, lanes, attach client inside, or the D2 replacement)
 - topology -> wire, platform, containment, capsule (the lane client's endpoint)

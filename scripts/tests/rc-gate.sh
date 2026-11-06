@@ -162,8 +162,10 @@ job_cargo_chain() {
     cargo check --manifest-path "$M" --target x86_64-pc-windows-gnu -p sot-backend -p sot-capsule --all-targets --locked
   fin win-check $?
   st darwin-check
+  # no Apple clang here and check links nothing: ring's build script gets a stand-in compiler that writes empty objects
   logged "$L/darwin-check.log" "$L/darwin-check.log" \
-    "${TO[@]}" "${CE[@]}" cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-capsule -p sot-backend --all-targets --locked
+    "${TO[@]}" "${CE[@]}" CC_aarch64_apple_darwin="$D/scripts/tests/cc-stub.sh" AR_aarch64_apple_darwin=ar \
+    cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-capsule -p sot-backend -p sot-chat --all-targets --locked
   fin darwin-check $?
 }
 

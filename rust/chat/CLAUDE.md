@@ -3,8 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener. The crate (`sot-chat`) depends on `sot-protocol`, `serde_json` and the web stack recorded below; nothing links
-it but the workspace (`sotd` does not yet). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+listener. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform`, `toml`, `serde_json` and the web stack recorded below; `sotd` links it
+and no code of the daemon calls it yet. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, read-pacing instant and name cache, and a `Socket`'s one task, queue and gap, and has no file call, no
 token or configuration loading, no delivery and no channel mapping.
 
@@ -171,8 +171,9 @@ native-tls (`wasm-bindgen` and `wit-bindgen`, on wasm targets, are other crates)
 holds only pkg-config, through the frontend. The tree does hold reqwest's `rustls-platform-verifier` and its per-OS
 readers (`rustls-native-certs`, `openssl-probe`, `schannel`, `security-framework`), compiled and never used, because
 `http.rs` hands reqwest a finished rustls configuration. The one native build is `ring` through `cc` (a C compiler for the
-target; the gate's `darwin-check` cannot build it from a Linux host with no Apple clang, so the line fails the day a
-crate links `sot-chat`). 
+target; the gate's `darwin-check`, on a Linux host with no Apple clang, gives `ring`'s build script the stand-in
+compiler `scripts/tests/cc-stub.sh`, which writes empty objects because the check links nothing; hosted macOS builds
+it for real). 
 ## The fake Slack
 `fake_slack/mod.rs` (test only) is an HTTPS server on loopback over real TLS (`tokio-rustls`), hand-written, scripted per
 test (`Reply`: a status, raw bytes, a hang, a stall after bytes, an endless body, a dropped connection), recording each

@@ -4232,6 +4232,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sot-capsule",
+ "sot-chat",
  "sot-containment",
  "sot-platform",
  "sot-protocol",
@@ -4282,6 +4283,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "toml",
  "webpki-roots 1.0.11",
 ]
 
