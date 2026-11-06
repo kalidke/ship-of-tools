@@ -15,17 +15,18 @@ known, as the root `CLAUDE.md` defines a known defect:
 - `[note]`: not seen in use; a note from reading code, or a red in a gate or a hosted run with no use behind it.
 - `[feature]`: a wish, not a defect; it needs an explicit go-ahead before anyone builds it.
 
-A numbered item of the older lists keeps its number in the text ("Item 17.").
-
 ## The check
 
 The local gate runs `scripts/tests/test-defects-check.sh` in every run, scoped or not. It fails with the id when a
 landing record names an item that is not in this file. Landing records are the section "Landing records since
 2026-11-06" of `docs/history/passes.md` to the end of that file. An id is a token of capitals and digits joined by
-hyphens, with at least two parts that each hold a letter, bounded by anything but a letter, digit, underscore or hyphen:
-`ROW-ID-MINT` and `WIN-IDLE-STATUS-50MS` are ids; `P1`, `ALLDONE`, `RCG_SCOPE`, `SHA-256` and `UTF-8` are not. An id is
-known when an item line starts with it, in an open section or in Closed. The check also fails on an id that starts two
-items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
+hyphens, with at least two parts that each hold two or more capitals, bounded by anything but a letter, digit,
+underscore or a hyphen that joins more: `ROW-ID-MINT` and `WIN-IDLE-STATUS-50MS` are ids; `P1`, `P1-P4`, `B1-B5`,
+`ALLDONE`, `RCG_SCOPE`, `SHA-256` and `UTF-8` are not. An id is known when an item line starts with it, in an open
+section or in Closed. The check also fails on an id that starts two items, on an open item with no mark, and on a
+tracked `CLAUDE.md` that cites this file in the form `docs/defects.md: ID` or `docs/defects.md item ID` after an opening parenthesis with no
+known id, or with none. It does not prove that a fix moved its item to Closed; that is the landing's duty. The rule is
+owned by `docs/CLAUDE.md`.
 
 ## platform
 
@@ -67,13 +68,13 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   `systemctl --user` over a non-interactive ssh without the user bus environment waits out D-Bus timeouts, and the 36
   restarts fit `Restart=on-failure` with a duplicate daemon holding the lock, 150 s each. Main bounds each systemctl call
   but the original cause is not established; needs a real ssh login and user manager.
-- **HOSTS-SYNC-TIMEOUT** [session] An operator's ssh install on a Windows box ended with `topology sync --hub <hub>
+- **HOSTS-SYNC-TIMEOUT** [session] An ssh install on a Windows box ended with `topology sync --hub <hub>
   failed (exit 2): ssh <hub> did not exit within 30s`, while the box's window link to the hub was up. Likely the install
   login has no key or agent for the hub. Read at topology's pass; the fix is a clear reason in the failure, not a longer
   bound.
-- **ONE-LOGIN-CONSTANT** [note] Item 18. Two constants hold one fact, "the window waits 30 s for one ssh login": the lane
+- **ONE-LOGIN-CONSTANT** [note] Two constants hold one fact, "the window waits 30 s for one ssh login": the lane
   dial's bound and the control connection's `SSH_LOGIN_BOUND`. Make it one constant.
-- **UNITS-WITHOUT-LINKS** [note] Item 17. Units `sotd` writes should carry no `[Install]` section: boot start comes from a
+- **UNITS-WITHOUT-LINKS** [note] Units `sotd` writes should carry no `[Install]` section: boot start comes from a
   `default.target.d` drop-in plus the host condition, so `systemctl --user enable` and `disable` change no file and
   `hosts.toml` alone decides where each unit runs. This closes a hand-typed `disable` on one host of a shared home
   disabling the unit for every host. `sotd.service` is done; the relay socket units
@@ -97,13 +98,13 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   platform's lock.
 - **TOPOLOGY-DAEMON-HALF-REACH** [note] The daemon half of topology still reaches server, rows and the lease record; it
   moves behind handlers with the op table.
-- **CLIENT-SELF-ENROLL** [feature] Item 52. A laptop adding itself to the hub's `hosts.toml` during install has a trust
+- **CLIENT-SELF-ENROLL** [feature] A laptop adding itself to the hub's `hosts.toml` during install has a trust
   question (a client writing the hub's host list). Today the docs say the hub-side command and the install fails loudly
   with it.
 
 ## containment
 
-- **B15-REVIEW-NOTES** [note] Item 42. `end_group` with a leader-exited group (`jobs -p` would miss it): the case has a test
+- **B15-REVIEW-NOTES** [note] `end_group` with a leader-exited group (`jobs -p` would miss it): the case has a test
   row (`leaderexit`), and the Git Bash stale-group hazard goes with the shell client's removal. `in-job.ps1`'s
   handle-based wait (C#) needs a Windows test computer. The gate's tool probes sit above its container check (add a
   probe-refusal test), and seven background steps started outside `set -m` should use the stub rule.
@@ -148,7 +149,7 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   size is only a hint.
 - **SERVER-ROOT-REACHABLE** [note] The G14 rule beyond the private submodules is a convention: root-level server items stay
   reachable inside the one crate until the services are crates.
-- **SUCCESSOR-START-PROBE** [note] Item 21. A successor `sotd` started while a child of its killed predecessor is
+- **SUCCESSOR-START-PROBE** [note] Code comments cite this as "queue item 21". A successor `sotd` started while a child of its killed predecessor is
   mid-exec (still holding a copy of the old listener) could read the old socket as live and refuse to start. Unobserved;
   the window ends at the child's exec and a supervised start retries. Candidate fix: the start probe counts a listener
   live only when it replies, not on a bare connect.
@@ -186,7 +187,7 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   reason. Next: when a row stays green on a dialog again, read the `comm dialog:` lines in `sotd.log`. A feature was
   asked beside it: after a dialog stands about a minute, the daemon files one line to a configured handle, once per
   dialog.
-- **REAUTH-TRUST-LOST** [session] Item "L2". After 23 rows were moved to another account with `sot-fe reauth` within 20 s,
+- **REAUTH-TRUST-LOST** [session] After 23 rows were moved to another account with `sot-fe reauth` within 20 s,
   7 of the 23 roots had no accepted entry in the new account's `.claude.json` and 3 sat at Claude Code's folder-trust
   dialog. Likely cause, unproven: a lost update, since 23 Claude Code processes rewrote the same file from their own
   snapshots within 20 s. Logging of every trust outcome has landed. Not built: when the dialog reader sees the
@@ -204,7 +205,7 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   when its channel ends (`rows/spawn/durable/proxy.rs`, `route`), and the test keeps no daemon log, so why it ended is
   unread. In use a daemon whose durable parent dies would start no capsule row until restarted. Log the channel's end
   (the error, the parent's exit status) and keep a failing wake test's daemon log in the gate's folder.
-- **ROW-RESTART** [feature] Item 1. One restart action for a row in phase `terminal` or `ended_no_respawn`: daemon op
+- **ROW-RESTART** [feature] One restart action for a row in phase `terminal` or `ended_no_respawn`: daemon op
   `workspace.restart` owned by rows, `sot-fe restart <ws> [--resume <id>]`, Shift+r in Sessions; same workspace id and
   handle, a fresh leg, resume by id on request. Recorded as unbuilt in the rows contract.
 - **PTY-INPUT-MARK** [note] Distinguish `pty.input` from a non-window connection with a visible mark. Until then, approval
@@ -237,13 +238,13 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
 
 ## messaging
 
-- **WAKE-EATS-UNSENT-PROMPT** [person] Item 69. A mail wake typed into a row whose prompt held a person's unsent line
+- **WAKE-EATS-UNSENT-PROMPT** [person] A mail wake typed into a row whose prompt held a person's unsent line
   replaced that line, so the instruction never reached the session; seen again on the 0.6.6 daemon, where a typed answer
   to a permission question was gone. The wake promises a free prompt only. Main has a test that a row holding unsent
   text is never typed into, and the wake logs every typing at info, but the cause is not known: one loss was Claude
   Code's own input redraw with no mail in flight. Needs a real Claude Code row, its version, a screen capture and the
   wake log together.
-- **WAKE-WINDOWS-READ** [session] Item 65. On a Windows box a typed wake line failed to read alone within the op budget
+- **WAKE-WINDOWS-READ** [note] On a Windows box a typed wake line failed to read alone within the op budget
   (later reads matched it), and a tick refused "cursor not at the prompt" with the line in the box. Needs a captured
   Windows screen of a Claude box holding typed text; the assumption that typed-text and NBSP attributes survive ConPTY
   is in `rust/backend/src/comm/wake/screen.rs`. A named limit in `comm/wake/mod.rs`.
@@ -259,10 +260,10 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
   An honest fix needs authoritative ownership (the linked box tells the hub which handles it holds) or a silent link
   found dead and dropped before the offer; a design exists for a read-only query before one filing, a new wire
   operation for after 0.7.1. The cause of the silent link (a stale link from a box that slept is likeliest) is unread.
-- **M3B-SENDER-NOTICE** [note] Item 55. A row that keeps refusing the wake should tell each sender of its unread mail, once
+- **M3B-SENDER-NOTICE** [note] A row that keeps refusing the wake should tell each sender of its unread mail, once
   per streak. The review's blockers are the design input: it fires for every busy row, and there is no route to a sender
   the folder does not list.
-- **SUBAGENT-NOMAIL** [note] Item 62. Decision 0031's "a subagent uses no mail" cannot be a gate today: on Claude Code
+- **SUBAGENT-NOMAIL** [note] Decision 0031's "a subagent uses no mail" cannot be a gate today: on Claude Code
   2.1.303 an in-process subagent's Bash shell and its session's own shell carry the same `CLAUDE_*` names and values and
   the same process ancestry. The rule is an instruction; a gate needs a harness signal (an agent id in the subagent's
   environment) to exist first.
@@ -272,30 +273,29 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
 - **COMM-SHELL-LEFTOVERS** [note] Left from the shell client's removal: `registry_replace --text` has no caller; the shell
   `with_lock` trap test needs a holder or goes with the shell client; `comm/inbox.rs` calls rows' macOS mount check
   (platform's fact); `comm-status.sh`'s identity, agent gate and markers and the hooks move to `sotd comm`.
-- **GUARD-PROFILE-LOUD** [note] Item 8. `comm/tests/lib-home-guard.sh` reads the account's profile silently on Windows: when
+- **GUARD-PROFILE-LOUD** [note] `comm/tests/lib-home-guard.sh` reads the account's profile silently on Windows: when
   `whoami.exe` fails, the registry is unreadable or `ProfileImagePath` is an unexpanded `REG_EXPAND_SZ`, a suite runs under
   a swapped HOME with neither the profile nor the account recorded. Where `cygpath` marks Windows, make the guard fatal on
   an empty or non-absolute profile, naming the source. Written against the shell client; not re-read against main.
-- **WIN-SID-ONE-OWNER** [note] Item 9. The Windows SID is read twice, by `_sot_windows_sid` (`comm/lib/comm-lib-client.sh`) and
+- **WIN-SID-ONE-OWNER** [note] The Windows SID is read twice, by `_sot_windows_sid` (`comm/lib/comm-lib-client.sh`) and
   the home guard, spelling `whoami`'s path and parsing it two ways; one owner.
-- **NATIVE-PATH-SAYS-WHY** [note] Item 10. `sot_native_path` (`comm/lib/comm-lib-client.sh`) fails silently, so a `cygpath`
+- **NATIVE-PATH-SAYS-WHY** [note] `sot_native_path` (`comm/lib/comm-lib-client.sh`) fails silently, so a `cygpath`
   failure reaches `sot-fe`, `comm-context` and the routable check as the wrong reason; one stderr line there names it for
   every caller.
-- **FE-ENDPOINT-ONCE** [note] Item 11. `sot-fe` resolves the endpoint twice for `docs` and `repl run` (in the dispatcher and
+- **FE-ENDPOINT-ONCE** [note] `sot-fe` resolves the endpoint twice for `docs` and `repl run` (in the dispatcher and
   again in `sot-fe-request.sh` and `sot-fe-repl.sh`); resolve once in the dispatcher.
-- **SHELL-HIDDEN-OUTPUT** [note] Item 14. `agents/tests/test-sot-fe-paths.sh`'s `lib()`, `sent()` and `probe_root_sent()` discard
+- **SHELL-HIDDEN-OUTPUT** [note] `agents/tests/test-sot-fe-paths.sh`'s `lib()`, `sent()` and `probe_root_sent()` discard
   the child's stdout and stderr, so a FAIL reads `got ''`.
-- **SEND-BODY-ON-STDIN** [note] Item 24. The send command should take its body on stdin (`@h -`) so a message never passes
+- **SEND-BODY-ON-STDIN** [note] The send command should take its body on stdin (`@h -`) so a message never passes
   through a shell's quoting; today single quotes are only documented.
-- **COMPACTION-SUPPORT** [feature] Item 56. A handoff command and template, a `/handoff` skill, read-back in the reset
+- **COMPACTION-SUPPORT** [feature] A handoff command and template, a `/handoff` skill, read-back in the reset
   hooks, a usage tap in the statuslines and an installer default for `autoCompactWindow`; a port of the unmerged
   handoff branch, not a merge.
 
 ## agents
 
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
-  computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). A session worked around it by running the spawn on
-  the far box over ssh.
+  computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's
   `julia-root` fail until `scripts/legacy-skill-hashes.sh` is rerun, because removal needs the shipped copy's hash in
   `comm/legacy-skills.txt`. A test that names the rule would say so at the edit.
@@ -306,12 +306,12 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
 - **WIN-LAUNCHER-HELD-JSON** [note] The Windows launcher's freshness step (`scripts/sot-freshness.ps1`) calls the stop
   helper, which derives and reads the daemon's `held.json` itself (`scripts/sot-local-daemon.ps1`) instead of asking the
   daemon; agents' guarantee 9 names it as outside its scope.
-- **REMOTE-TOOL** [feature] Item 5. Run a registered tool (first: a CAD package's STEP export over COM) on a named Windows
+- **REMOTE-TOOL** [feature] Run a registered tool (first: a CAD package's STEP export over COM) on a named Windows
   window box from the hub, in the logged-in desktop session, with no Claude session there; return exit code and log.
   Candidates: a daemon-brokered allowlisted window verb, or the window's own `sotd` running it as a child. The sizing
   covers the allowlist, decision 0031's isolation guarantee and the tool's limits (desktop session only, one at a
   time, COM start hangs). Interim: send mail to a Claude row on that box.
-- **CLAUDE-MD-STUB** [note] Item 51. On a Windows box without symlink privilege a named account's `CLAUDE.md` is a seed copy,
+- **CLAUDE-MD-STUB** [note] On a Windows box without symlink privilege a named account's `CLAUDE.md` is a seed copy,
   because the import stub (`@<default CLAUDE.md>`, so the global instructions stay one file across accounts) could not
   be proven without a logged-in account. Once an account is logged in there, a one-minute check (a marker line in the
   default `CLAUDE.md` that `claude -p` in a stubbed account echoes) decides whether the stub replaces the copy.
@@ -331,33 +331,62 @@ items and on an open item with no mark. The rule is owned by `docs/CLAUDE.md`.
 
 ## sidecars
 
-Items from the outside reviews of the sidecar passes. The contract (`rust/backend/src/sidecars/CLAUDE.md`) states each
-narrowed guarantee and, in its queue section, each scenario and fix; the location is where to start reading.
-
-- **JULIA-RELATIVE-PATH** [note] From the sidecar passes' outside reviews, at `julia.rs`. Scenario and fix: the sidecars contract's queue section.
-- **KERNEL-QUEUED-DEAD** [note] From the sidecar passes' outside reviews, at `kernel.rs`. Scenario and fix: the sidecars contract's queue section.
-- **KERNEL-IDLE-EXIT** [note] From the sidecar passes' outside reviews, at `kernel.rs`. Scenario and fix: the sidecars contract's queue section.
-- **PLUTO-START-EXIT** [note] From the sidecar passes' outside reviews, at `pluto.rs`. Scenario and fix: the sidecars contract's queue section.
-- **DEADLINES-IN-CALLER** [note] From the sidecar passes' outside reviews, at `pluto.rs`, `mathjax.rs`: MathJax's deadlines live in the caller's wait, so a canceled caller leaves none. Scenario and fix: the sidecars contract's queue section.
-- **MONITOR-SCRIPT-DELIVERY** [note] From the sidecar passes' outside reviews, at `monitor.rs`. Scenario and fix: the sidecars contract's queue section.
-- **MATHJAX-READY-LOSSY** [note] From the sidecar passes' outside reviews, at `mathjax.rs`. Scenario and fix: the sidecars contract's queue section.
-- **STARTUP-TAIL-IN-ANSWER** [note] From the sidecar passes' outside reviews, at `kernel.rs`, `mathjax.rs`. Scenario and fix: the sidecars contract's queue section.
-- **PLUTO-OPEN-VALIDATION** [note] From the sidecar passes' outside reviews, at `ops.rs`: a FIFO under a root parks `pluto.open`. Scenario and fix: the sidecars contract's queue section.
-- **CLEANUP-PROOF** [note] From the sidecar passes' outside reviews, at `update.rs`, `child/tmp.rs`, containment's `signal.rs`. Scenario and fix: the sidecars contract's queue section.
-- **NO-HEREDOC-PROOF** [note] From the sidecar passes' outside reviews, at `monitor.rs`. Scenario and fix: the sidecars contract's queue section.
-- **TIMEOUT-DOUBLE-DONE** [note] From the sidecar passes' outside reviews, at `repl/execute.rs`. Scenario and fix: the sidecars contract's queue section.
-- **ROW-END-REPL** [note] From the sidecar passes' outside reviews, at `rows/ops/destroy.rs`: rows' end API should retire the REPL. Scenario and fix: the sidecars contract's queue section.
-- **RETIREMENT-ERROR-DROPPED** [note] From the sidecar passes' outside reviews, at `repl/mod.rs` `Slot::settle`, `child/tmp.rs`. Scenario and fix: the sidecars contract's queue section.
-- **COLLECTOR-LIFETIME** [note] From the sidecar passes' outside reviews, at `repl/mod.rs`. Scenario and fix: the sidecars contract's queue section.
-- **COLLECTION-BOUND** [note] From the sidecar passes' outside reviews, at `repl/execute.rs`. Scenario and fix: the sidecars contract's queue section.
-- **READY-ANNOUNCEMENT** [note] From the sidecar passes' outside reviews, at the supervisor's first stdout line. Scenario and fix: the sidecars contract's queue section.
-- **END-NOT-RETRIED** [note] From the sidecar passes' outside reviews, at `ports.rs` `PortSink::end`. Scenario and fix: the sidecars contract's queue section.
-- **CI-PRE-REPL-INTERRUPT** [note] On the pre-release Julia, `julia/repl/test/interrupt_child.jl` (`run_shim`'s signal and
-  force stop) failed on hosted runs, and on Julia 1.12 once. The three `run_shim` signal testsets now run only with
-  `SOT_REPL_SIGNAL_TESTS=1` (the local gate and `release-gate.yml`'s `repl-signals-linux`), not in `CI.yml`. The cause
-  (an answer short of "eval interrupted" when signals meet a child held still) is unproven. Redesign the test to drive
-  signals as `Escalation` does, then return the signal testsets to `CI.yml`.
-- **DISPLAY-INTO-CHILD** [note] Item 23. `sidecars/display/` (one 235-line file and a page) moves to
+- **JULIA-RELATIVE-PATH** [note] `julia.rs`: an empty or relative PATH entry can give a relative answer, and a broken
+  juliaup default falls through to PATH. Fix: refuse a non-absolute candidate; decide the default's fallthrough.
+- **KERNEL-QUEUED-DEAD** [note] `kernel.rs`: submissions still queued when a kernel generation dies get the generic
+  channel error (`kernel_request_failed`, not `kernel_unavailable`). Fix: drain the queue with `Dead` as `pending` is.
+- **KERNEL-IDLE-EXIT** [note] `kernel.rs`: the service loop has no `wait_until_exited`, so a descendant that holds the
+  stdout of a dead idle kernel keeps it from being replaced. Fix: a select arm on the leader's exit.
+- **PLUTO-START-EXIT** [note] `pluto.rs`: nothing observes the leader's exit before `READY`, so a dead leader whose
+  descendant holds stdout reads as starting until the readiness bound; the start's construction is outside the
+  supervisor's deadline; the cleanup's reap is unbounded. Fix: observe exit in `await_ready` as the serving loop does;
+  bound the reap.
+- **DEADLINES-IN-CALLER** [note] `pluto.rs`, `mathjax.rs`: the deadlines live in the caller's future, so a caller
+  canceled after its request was accepted leaves none on the supervisor; MathJax's blocked write and its death detection
+  (stdout EOF) ignore the `Signal` and the leader's exit. Fix: supervisor-owned deadlines; select the `Signal` and
+  `wait_until_exited` around writes.
+- **MONITOR-SCRIPT-DELIVERY** [note] `monitor.rs`: the sampler script's delivery to the child has no deadline, is not
+  polled for the `Signal`, and precedes the silence clock, so a stalled ssh start that fills the stdin pipe is never
+  replaced. Fix: race it against the `Signal` and a bound, keeping the child for checked cleanup.
+- **MATHJAX-READY-LOSSY** [note] `mathjax.rs`: a lossily decoded first line fails MathJax's ready check. Fix: compare
+  the parsed ready object.
+- **STARTUP-TAIL-IN-ANSWER** [note] `kernel.rs`, `mathjax.rs`: startup errors omit the captured stderr tail from the
+  answer.
+- **PLUTO-OPEN-VALIDATION** [note] `ops.rs`: no regular-file check or deadline before the header read, so a FIFO inside
+  a row's root parks `pluto.open`; the header check is a substring. Fix: `metadata().is_file()` first and an exact-line
+  compare; pin the file by descriptor.
+- **CLEANUP-PROOF** [note] `update.rs`, `child/tmp.rs`, containment's `signal.rs`: canceled updater calls drop the
+  folder without a reap, removal's result is not awaited, and `kill` has no wall-clock ceiling. Fix: containment's.
+- **NO-HEREDOC-PROOF** [note] `monitor.rs`: no test proves the sampler script avoids here-documents; a behavioral proof
+  needs a leak check under bash 5.2.
+- **TIMEOUT-DOUBLE-DONE** [note] `repl/execute.rs` closes a timed-out run's drawer entry with a synthetic `done`, and
+  the shim's own `done` follows (`ShipToolsRepl.jl`, forwarded by `supervisor.rs` `route_line`), so such a run can show
+  two. Fix: one completion owner per run, the supervisor, with the caller's timeout only ending its wait.
+- **ROW-END-REPL** [note] `rows/ops/destroy.rs` removes the registry entry and leaves the children alive while a handler
+  holds the workspace (an `execute` waiting at `repl/execute.rs`), so destroying that row neither answers the run nor
+  ends its child, display or grants. Fix: row end retires the REPL explicitly through rows' end API.
+- **RETIREMENT-ERROR-DROPPED** [note] `repl/mod.rs` `Slot::settle` drops a finished retirement's error, after which a
+  restart starts a child although `child/tmp.rs` kept the folder because termination failed. Fix: keep the failed tree
+  owned until it is confirmed gone (containment's), or refuse the replacement.
+- **COLLECTOR-LIFETIME** [note] `repl/supervisor.rs` keeps a `repl.execute` collector until `done` or the response, so
+  it goes on collecting after its caller timed out. Fix: drop the collector with its caller.
+- **COLLECTION-BOUND** [note] `ExecAccum::push` bounds only text frames. Fix: bound the frame count and bytes of every
+  kind.
+- **READY-ANNOUNCEMENT** [note] `supervisor.rs` flips `starting` to `ready` on the child's first stdout line, parsed or
+  not. Fix: flip on the parsed `repl.ready` (or the first parsed envelope).
+- **END-NOT-RETRIED** [note] `ports.rs` `PortSink::end`: a failed `End` is logged and not retried, so a receiver that
+  refuses it leaves the grant. Fix: the receiver's failure contract, when a receiver can fail.
+- **CI-PRE-REPL-INTERRUPT** [note] The testset "signals after a forced stop meet a child held still" in
+  `julia/repl/test/interrupt_child.jl` (`run_shim`) sends exactly five signals 50 ms apart and expects Julia to force the
+  stop, with its held-still window placed from the fifth. On Linux Julia counts a signal only when the eval's thread runs
+  between two; on Julia 1.12.7 with two cores shared with six busy loops 20 of the testset's 32 checks failed and the
+  child stayed silent until the test's 240 s timer (it passes on an idle computer on 1.12.7 and 1.13.0), which fits
+  signals that merge and a loop never forced; merging is likely, not proven. The daemon's `Escalation` is a different
+  sequence (it signals every 50 ms for `FORCE_SPAN`, then answers the failure). The pre-release Julia's first-testset
+  failure was not reproduced. The three `run_shim` signal testsets run only with `SOT_REPL_SIGNAL_TESTS=1` (the local
+  gate and `release-gate.yml`'s `repl-signals-linux`), not in `CI.yml`. Fix: drive the test's signals as `Escalation`
+  does, place the held-still window from the child's first line, then return the testsets to `CI.yml`.
+- **DISPLAY-INTO-CHILD** [note] `sidecars/display/` (one 235-line file and a page) moves to
   `sidecars/child/display.rs`, the concept "what each child the daemon starts carries"; it deletes a folder, a page and
   the "display/ sibling" cross-reference.
 - **WIN-CIM-LISTING-30S** [note] `sidecars::repl::project_tests::the_command_line_observer_rejects_a_deliberate_leak` failed
@@ -365,18 +394,18 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
   `read_tree` ran past its 30 s bound; the rerun passed. The state the test does not own is the runner's WMI service.
   Query only the probe's tree (`-Filter` by ParentProcessId, walked), or name a bound for a cold provider; measure a cold
   first query on a Windows box.
-- **PKG-DOWNLOAD-TARBALL** [note] Item 34. A Pkg download tarball was left in `TMPDIR`; the root cause was not proven, so
+- **PKG-DOWNLOAD-TARBALL** [note] A Pkg download tarball was left in `TMPDIR`; the root cause was not proven, so
   newer child-folder cleanup cannot be said to fix it. Needs a Linux Julia/Pkg interrupted-download setup.
-- **REPL-SURVIVES-DAEMON** [feature] Item 41. A row's REPL (and kernel) outlive a daemon restart, so a row keeps its loaded
+- **REPL-SURVIVES-DAEMON** [feature] A row's REPL (and kernel) outlive a daemon restart, so a row keeps its loaded
   packages and hardware state across an update; today a daemon stop ends its Julia children (three restarts each ended
   the REPL on one instrument box).
-- **SIDECAR-TEST-APPARATUS** [note] Item 35 SOTD-USER-SERVICE-BIN: `spawn_sotd_as_user_service`
+- **SIDECAR-TEST-APPARATUS** [note] `spawn_sotd_as_user_service`
   (`rust/backend/tests/support/env.rs`, systemd-run) does not go through `sotd_command`, so a daemon that path starts gets
   no `SOT_JULIA_BIN` from `julia_binary()` and its kernel can run a juliaup launcher under the test's `HOME`. Reds
   nothing today.
 - **HOLDER-CONFIRMATION** [note] `child/display/holders.rs`: signals are not confirmed deaths, and unreadable environments
   and failed pidfd opens are only logged. Fix: report the count that failed and wait for the pidfds with a bound.
-- **DISPLAY-HOLDERS-W2-W3** [note] Item 25. W2: end every process that holds a user-code child's display at that child's every
+- **DISPLAY-HOLDERS-W2-W3** [note] W2: end every process that holds a user-code child's display at that child's every
   end (restart, death, row end), not only at a display's end; W3: a cgroup per child (ADR 0050's containment, which is
   containment's and unbuilt). W2 changes accepted behavior (a detached process the REPL started would no longer outlive
   it; ADR 0050 residual 7 records orphaned Pluto workers), so both go together.
@@ -385,20 +414,20 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
 
 ## pages
 
-- **QUARTO-RENDER-FOLDER** [note] Item 33. Quarto's per-render folder outlives a killed render; its detached engine is
+- **QUARTO-RENDER-FOLDER** [note] Quarto's per-render folder outlives a killed render; its detached engine is
   reused for 300 s, so a sweep must hold the engine's life, not the render's. `run_quarto` (`pages/ops.rs`) owns
   process termination but no engine-lifetime scratch cleanup. Needs real Quarto and an interrupted render.
-- **REDIAL-POOL-STEAL-RACE** [note] Item 39. A redial racing a pool steal can lose its port (harmless; the page reopens).
-- **LINK-WATCH-SHAPE** [note] Item 22. `admit` should return the child together with its watch, both taken under the
+- **REDIAL-POOL-STEAL-RACE** [note] A redial racing a pool steal can lose its port (harmless; the page reopens).
+- **LINK-WATCH-SHAPE** [note] `admit` should return the child together with its watch, both taken under the
   admission lock; that deletes the microsecond gap before admission and two of the three `gate.watch()` calls, and
   `pages.rs`'s `pipe_child`/`pipe_one_over` lose their `Option<LinkWatch>` (a default gate's watch, which never closes,
   serves the three tests that pass `None`).
 
 ## fe-net
 
-- **REDIAL-LATE-ACCEPT** [note] Item 27. A run accepted after a redial's hello, during a REPL start (up to about 15 s), is not
+- **REDIAL-LATE-ACCEPT** [note] A run accepted after a redial's hello, during a REPL start (up to about 15 s), is not
   named by that hello; the limit is recorded.
-- **SSH-MUX** [feature] Item 16. One ssh connection per computer carrying every pane: a window on another box opens two
+- **SSH-MUX** [feature] One ssh connection per computer carrying every pane: a window on another box opens two
   fresh ssh logins per pane attach, and Win32-OpenSSH offers no multiplexing, so the per-host connection would be our
   own stream multiplexer between the window and `sotd stdio-bridge` (frames with stream ids and per-stream credit,
   version skew detection, a new ADR; 8 to 10 files, about 1,500 to 2,500 lines with tests). The login cap per host
@@ -407,11 +436,10 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
   count; an older window or linked daemon ignores it, and no pane recovers from it yet. The project chat is its first
   consumer.
 - **HUB-TELLS-OLDER-WINDOW** [feature] At the 0.6.6-to-0.7 crossing a 0.7 hub cannot make an older window install: an
-  older window answers a refused hello only with its overlay, and its bits come only from its own updater or an operator
+  older window answers a refused hello only with its overlay, and its bits come only from its own updater or a manual
   stage. Unfixable for 0.6.6 boxes. Build it so the next crossing works: the hub's hello refusal names its exact release
   (it already carries `backend_version`), and a window or its launcher, on a refusal from a newer hub it is declared to
-  follow, stages that exact tag through the installer's verified path and converges with no paste. Open for the
-  planner: the source of the bits when the release is a draft or the box cannot reach GitHub (the hub serving its own
+  follow, stages that exact tag through the installer's verified path and converges with no paste. Open: the source of the bits when the release is a draft or the box cannot reach GitHub (the hub serving its own
   verified pack over the window's link, admitted to the same OS account only), a pinned install, and an instrument
   computer (never mid-acquisition: the converge waits for the person or asks). Server and distribution take part.
 
@@ -442,7 +470,7 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
   backslash doubles at every save. Found by reading at an earlier head; not re-read against main.
 - **FOCUS-SETTER-TEXT-SCAN** [note] A text scan guards the focus setter; the window keeps six maps keyed by row. `State`'s
   fields are D4's revision on the package page.
-- **LAYOUT-ONE-POSITION** [note] Item 53. The width pre-pass and the layout loop in `rust/frontend/src/ui/chrome/layout.rs`
+- **LAYOUT-ONE-POSITION** [note] The width pre-pass and the layout loop in `rust/frontend/src/ui/chrome/layout.rs`
   each keep their own running position with the same skip rule; storing each column's x position in the list would
   remove the loop copy.
 - **P7-RESULT-LEDGER-HELPER** [note] Retiring many rows clones every pending result id through `session/badge.rs`'s helper,
@@ -451,10 +479,10 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
 - **TERMINAL-DIM-BOX-ARMS** [note] DIM never dims a box-drawing cell's arms: border quads take the glyph color undimmed.
 - **QUAD-SRGB-DARKER** [note] Every solid quad (borders, selection, code panels) samples an sRGB texture and shows darker on
   a surface that does not encode sRGB on write.
-- **PANE-CONNECT** [feature] Item 3. Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
+- **PANE-CONNECT** [feature] Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
   text preparation (the first glyph-atlas fill) and its first dial has no parked spare; hosted macOS first panes were
   1.26 to 1.45 s against 0.13 to 0.93 s later. An improvement, not a defect.
-- **SCRATCH-PAD** [feature] Item 19. A drawable preview pane. A sketch is a file, an SVG in the workspace with one path per
+- **SCRATCH-PAD** [feature] A drawable preview pane. A sketch is a file, an SVG in the workspace with one path per
   stroke, versioned with git and previewed on every machine; a blank pad, or ink over an existing image as an overlay
   SVG beside it. The preview pane takes press/drag/release in a drawing mode (as `ui/input/mouse.rs` does for the agent
   pane's selection), strokes are kept in image-pixel coordinates through ADR 0022's capture mapping so they stay put
@@ -493,13 +521,13 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
   straight past 0.7.0, or keeps the retire. Rows takes part.
 - **OPS-DELETE-GUARD-POWERSHELL** [note] The PowerShell half of the delete guard is unbuilt (`scripts/sot-apply.ps1`, near
   its removal steps). Found by reading an earlier head; not re-read against main.
-- **LOCK-PID-PROBE** [note] Item 32. The updater stage lock (`rust/updater/src/lock.rs`) and `sot_log_protected`
+- **LOCK-PID-PROBE** [note] The updater stage lock (`rust/updater/src/lock.rs`) and `sot_log_protected`
   (`scripts/lib/sot-daemon.sh`) trust a pid probe, so a reused pid reads as a live holder. The stage lock is bounded (a
   12 h takeover by age; a refused acquire names the lock and its owner); a reused pid keeps one old log from pruning. A
   held-lock form needs a design for macOS (no `flock` command) and PowerShell (.NET `FileStream.Lock`).
-- **JQ-PROVIDE** [feature] Item 7. Bundle or download `jq` with the install, so a box without it needs no manual step. Every
+- **JQ-PROVIDE** [feature] Bundle or download `jq` with the install, so a box without it needs no manual step. Every
   installer already checks for jq and names the install command, and a send or poll without jq prints FAILED naming jq.
-- **CONVERGE-HOLDS-LEASE** [feature] Item 37. A converge started over ssh holds its own window lease across the window's
+- **CONVERGE-HOLDS-LEASE** [feature] A converge started over ssh holds its own window lease across the window's
   exit and sends Keep once the window is gone, so a box whose supervisor predates the lease can be updated remotely with
   its sessions kept. Premise to test first: an rc9.12 daemon grants a lease to a same-user ssh process.
 - **WIN-SHELL-TEST-HARNESS** [note] One Windows shell-test harness (a scratch user, the machine variables, native and Git
@@ -549,22 +577,24 @@ narrowed guarantee and, in its queue section, each scenario and fix; the locatio
 - **DOCS-VERSION-PICKER** [note] The `gh-pages` branch's `versions.js` still lists every old version folder (v0.3.0 to
   v0.6.2, the v0.6.0 rc folders included) and sets `DOCUMENTER_NEWEST` to 0.6.2, so the picker offers old manuals beside
   stable and dev. Main now delegates version generation to DocumenterVitepress; the deployed site must be inspected.
-- **DOCS-ENV-REFERENCE** [feature] Item 28. An environment-variable and command reference page.
-- **DOCS-ROADMAP** [feature] Item 29. A real roadmap page (the old one is retitled as the historical Phase 1 plan with a
+- **DOCS-ENV-REFERENCE** [feature] An environment-variable and command reference page.
+- **DOCS-ROADMAP** [feature] A real roadmap page (the old one is retitled as the historical Phase 1 plan with a
   status table).
-- **DOCS-GENERATED-TABLES** [feature] Item 30. Generated reference tables (keybindings, config, ops) so they cannot drift.
-- **DOCS-STALE-CHECK** [feature] Item 31. A lane check that flags manual pages a merge makes stale.
-- **PLATFORM-FACTS** [note] Item 57. Four facts are in no folder page (an MSYS exec's dead Windows parent, the prompt glyph on
+- **DOCS-GENERATED-TABLES** [feature] Generated reference tables (keybindings, config, ops) so they cannot drift.
+- **DOCS-STALE-CHECK** [feature] A lane check that flags manual pages a merge makes stale.
+- **PLATFORM-FACTS** [note] Four facts are in no folder page (an MSYS exec's dead Windows parent, the prompt glyph on
   Windows, antivirus holding a fresh file, the background service); each goes into its owner folder's `CLAUDE.md`.
-- **PROCESS-NAMES-IN-REPO** [note] Item 59. About 160 lines of the tree's comments and docs name the lab's working roles and
+- **PROCESS-NAMES-IN-REPO** [note] About 160 lines of the tree's comments and docs name the lab's working roles and
   sessions; the public-repo rule wants no process or people in repo text. A records-only sweep stating each rule plainly.
-- **DANGLING-POINTERS** [note] Item 61. Nineteen code comments cite an `isolation-plan.md` and one a "supervisor-epoch design
+- **DANGLING-POINTERS** [note] Nineteen code comments cite an `isolation-plan.md` and one a "supervisor-epoch design
   section 7", neither in the repo; also bare dated citations of a decision and "this sprint" with no referent, "round-2 item N"
   markers in `topology/status.rs` and `dial.rs`, `output_end.rs` citations of a decision, ADR history naming a source by
-  a session name, and a tool name in `.gitignore`. Each cites a document in the repo or states its rule plainly.
+  a session name, and a tool name in `.gitignore`. Also code comments that cite "queue item 21" (`rust/backend/src/server/listen.rs`, `listen_tests.rs` twice,
+  `rust/backend/tests/live_socket.rs`) and "queue item 58" (`rust/backend/tests/capsule_workspaces/work_state.rs`), a
+  list that is not in the tree; cite `docs/defects.md` ids or state the rule. Each cites a document in the repo or states its rule plainly.
 - **CORE-UNWIRED-TYPES** [note] `core/` has five unwired types and three unused imports.
 
-- **UNMERGED-BRANCH-IDEAS** [note] Item 68. Work on branches that never merged, kept as ideas by owning subsystem; none is a
+- **UNMERGED-BRANCH-IDEAS** [note] Work on branches that never merged, kept as ideas by owning subsystem; none is a
   lane. Messaging: an unreadable registry reads nothing; a retired process named by pid and start; every shell client
   names a refused hello; protocol wording for the single writer; a Rust `comm_send` test from an old patch. Server and
   fe-net: a second account refused without the kick; a Windows owner lookup and page-port scope text; downloads written

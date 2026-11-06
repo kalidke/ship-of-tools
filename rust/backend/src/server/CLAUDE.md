@@ -247,34 +247,3 @@ tests need the built `sotd` and run in test containers.
 | 14 | a handler is given its arguments | the private submodules (compiler); `context_tests.rs`: `each_accepted_connection_is_served_the_services_it_was_given`; the rest by convention |
 | 16 | an event is one frame, or a loss is told | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_one_bus_lost_frame`, `a_closed_bus_writes_nothing` (per bus), `a_bus_lost_frame_that_cannot_be_written_ends_the_connection` |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `daemon_log_masks_slack_and_page_secrets`, `no_log_level_lets_a_network_library_into_the_log`, `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |
-
-## Server queue
-Seen at pass 5c, handled at the server's next pass; none is a defect seen in use. Each is an item of
-docs/defects.md; this section keeps the scenario.
-- Windows' lock probe proves no reply (`listen.rs`, `socket_answers`): a successful pipe open shows neither a responsive
-  daemon nor a protocol reply, and a busy pipe can make the open fail. There is no Unix fork-to-exec twin of item 21 there
-  (interprocess's listener handles are not inheritable); the state lock and the first pipe instance flag still prevent
-  a second holder. The inbound buffer size is a hint, and `scripts/tests/test-local-daemon-pipe.ps1` measures eight
-  mostly idle connections only.
-- A terminal-time fence: an error return from `run` drops the daemon lock before `complete_main` runs the terminal
-  (`server/mod.rs` `_daemon_lock`, `main.rs` `complete_main`, `lifecycle/shutdown.rs`), so a successor can start while
-  cleanup runs; holding the lock through the terminal is lifecycle's and the server's together.
-- Two starts on different state roots and one socket path can race probe and unlink (`listen.rs`, `refuse_live_socket`
-  then `run_local`'s `remove_file`); no test.
-- `file.download`'s pre-stream error and `workspace.reauth`'s errors bypass `finish_dispatch` (`dispatch.rs`,
-  `files/transfer.rs:59`, `rows/reauth/mod.rs:564`): an oversize error closes the connection. No test of the
-  replacement frame and a following request.
-- The lease's malformed-line refusals use the undeadlined `reject` in a loop that continues (`lifecycle/lease.rs:592`,
-  `:604`): a lease peer that never reads can fill its buffer.
-- The accept loop's select can take a ready connection when the departure is ready too (`listen.rs`, the `select!` in
-  `run_local`): a connection can be accepted just after the decision.
-- Trickling probe replies: only the unit tests of the helper cover the absolute deadline's edge; no test sends a byte
-  at a time.
-- `hand_off`'s `bad_request` and every `reject` write no deadline (`sot_protocol::reply::reject`, `conn.rs:227`); one
-  small frame fits the buffer, so none was seen to park.
-- A lease or lane connection that has left the loop is not in the roster, so nothing reaps one that never pings; the
-  lease has its own ticker and the lane its pipe's end (`conn.rs:175`).
-- The accept loop's stop before any row is touched (lifecycle's guarantee 5) has no test that connects after the
-  departure; only the order of `run_local`'s tail holds it (`listen.rs`, the break, then `drop(listener)`).
-- `INLINE` still holds ops that wait on a local disk (`file.write`, `file.delete`, `dir.create`, `concept.write`): on
-  a network filesystem they hold the loop, and with it the ping (guarantee 10's limit).

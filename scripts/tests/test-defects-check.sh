@@ -42,7 +42,7 @@ fixture known '- A fix, 2026-11-06: closes WIN-IDLE-STATUS-50MS and ROW-ID-MINT,
 out=$(run known); r=$?
 check "known open and closed ids pass" '[ "$r" -eq 0 ] && [ -z "$out" ]'
 
-fixture false '- P1, B1 and P14 landed. ALLDONE SCOPED; RCG_SCOPE=HEAD, SHA-256 of UTF-8 text, CARGO_TARGET_DIR and 0.7.1-DEV.'
+fixture false '- P1, B1 and P14 landed. ALLDONE SCOPED; RCG_SCOPE=HEAD, SHA-256 of UTF-8 text, CARGO_TARGET_DIR, 0.7.1-DEV, and the ranges P1-P4, B1-B5, R1-R3 and D2-D4.'
 out=$(run false); r=$?
 check "capitals that are not ids never hit" '[ "$r" -eq 0 ] && [ -z "$out" ]'
 
@@ -75,6 +75,29 @@ fixture nomark '- Nothing.' "## rows
 out=$(run nomark); r=$?
 check "an open item with no mark fails naming it" '[ "$r" -eq 1 ] && grep -q "ROW-MARKLESS-ITEM: an open item with no mark" <<< "$out"'
 check "a closed item needs no mark" '! grep -q "ROW-CLOSED-ITEM" <<< "$out"'
+
+# ---- a tracked CLAUDE.md that cites the list names an item there
+cite() { # <name> <CLAUDE.md text>: a passing checkout with one contract
+    fixture "$1" '- Nothing.'
+    printf '%s\n' "$2" > "$work/$1/CLAUDE.md"
+}
+cite citeok 'A limit (docs/defects.md: ROW-ID-MINT-OPEN); another (docs/defects.md item WIN-IDLE-STATUS-50MS, a note); and docs/defects.md in prose.'
+out=$(run citeok); r=$?
+check "citations naming known items pass, and a plain mention of the file is no citation" '[ "$r" -eq 0 ] && [ -z "$out" ]'
+cite citebare 'A limit (docs/defects.md).'
+out=$(run citebare); r=$?
+check "a citation with no id fails naming the file" '[ "$r" -eq 1 ] && grep -q "CLAUDE.md: cites docs/defects.md with no item id" <<< "$out"'
+cite citeunknown 'A limit (docs/defects.md item NO-SUCH-ITEM).'
+out=$(run citeunknown); r=$?
+check "a citation of an id that is no item fails naming the id" '[ "$r" -eq 1 ] && grep -q "cites NO-SUCH-ITEM, which is no item" <<< "$out"'
+cite citemany 'A limit (docs/defects.md: ROW-ID-MINT-OPEN and NO-SUCH-TWO, ROW-ID-MINT).'
+out=$(run citemany); r=$?
+check "every id of a joined citation is checked" '[ "$r" -eq 1 ] && grep -q "NO-SUCH-TWO" <<< "$out" && ! grep -q "cites ROW-ID-MINT" <<< "$out"'
+fixture rangehead '- Nothing.' "$LIST_OK
+- **P1-P4** [note] a head that is no id.
+"
+out=$(run rangehead); r=$?
+check "an item head that is no id by the rule fails naming it" '[ "$r" -eq 1 ] && grep -q "P1-P4: an item head that is no id" <<< "$out"'
 
 mkdir -p "$work/nosection/docs/history"
 printf '%s' "$LIST_OK" > "$work/nosection/docs/defects.md"

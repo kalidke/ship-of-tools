@@ -99,7 +99,7 @@ of each.
    window that reaches a relay socket locally still treats its daemon as remote. A path a unit or an ssh login names
    is derived on the box that owns it. Limits: `relay_socket_path` trusts its caller's host name (`sotd stdio-bridge
    --host` refuses a name outside the grammar before it derives a path); `sotd stdio-bridge` with no argument takes the
-   local label's socket and ignores `$SOT_SOCKET` and `$SOT_BACKEND_LABEL` (docs/defects.md); the scripts spell the labels at
+   local label's socket and ignores `$SOT_SOCKET` and `$SOT_BACKEND_LABEL` (docs/defects.md: SYNC-HOSTS-PATH-LITERAL); the scripts spell the labels at
    several sites (`docs/ownership.md`), which the Rust side cannot enforce.
 10. **A unit sotd writes starts only where hosts.toml gives it.** `sotd.service` carries a `ConditionHost` pin of the
     hosts that run sotd (`daemon` or `frontend`, `sotd_hosts`), the reverse tunnels' template and each relay socket one
@@ -109,7 +109,7 @@ of each.
     is not matched (`SOT_SELF_HOST` is not seen by systemd); the pins' effect under real systemd condition evaluation
     is tested in `rust/backend/tests/unit_pin.rs`; the generated relay socket units still carry an
     `[Install]` section, so `systemctl --user enable` and `disable` change a link in the home that every host shares,
-    which the pin does not stop (the boot-start rule of `sotd.service` has not been applied to them; docs/defects.md item UNITS-WITHOUT-LINKS).
+    which the pin does not stop (the boot-start rule of `sotd.service` has not been applied to them; docs/defects.md: UNITS-WITHOUT-LINKS).
     `sotd status` names a host declared only `frontend` as `own, not dialed` in its daemon column
     (`own_not_dialed` in JSON): its own daemon is part of the role, while the status probes still follow
     `dial_endpoints`. This describes the declaration, without claiming a liveness probe of that daemon.

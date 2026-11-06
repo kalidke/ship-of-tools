@@ -548,7 +548,7 @@ admission closed, stop asked and completion awaited within 1 s of the terminal's
 not finish is named and never changes the exit code; nothing is registered until the chat lands. Its P5 landed the
 same day: a connection that falls behind a bus gets one typed `bus.lost` frame naming the bus and the count, which an
 older window or linked daemon ignores; no pane recovers from it yet, and the chat is its first consumer.
-- Findings go to the owning subsystem's queue and are handled at that subsystem's pass.
+- Findings go to `docs/defects.md`, under the owning subsystem, and are handled at that subsystem's pass.
 
 ## Landing records since 2026-11-06
 

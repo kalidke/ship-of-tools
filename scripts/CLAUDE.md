@@ -64,7 +64,8 @@ Guarantees, each with the mechanism it rests on:
   run's own container checks are the one part it does not reach.
 - Every gate run, scoped or not, also runs `tests/test-defects-check.sh`, which runs `tests/defects-check.sh` on the
   checkout: it fails with the id when a landing record of `docs/history/passes.md` names an item that is not in
-  `docs/defects.md`. The rule that tells an id from other capitals is `docs/CLAUDE.md`'s.
+  `docs/defects.md`, and when a tracked `CLAUDE.md` cites an item id there that is not one. The rule that tells an id from
+  other capitals is `docs/CLAUDE.md`'s.
 - The Linux local gate builds `sotd`, `sot` and `sot-capsule` before its jobs, then runs
   `installer-publish-guard.py` for `fresh` and `repair`, each with its own log, result and named summary line.
   `tests/test-rc-gate-installer.sh` proves both jobs execute and retain their own status through the real pipeline.

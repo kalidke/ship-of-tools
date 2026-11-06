@@ -24,12 +24,14 @@ the commit that changes the code it describes, and a design that is not built is
   `fixtures/DemoProject`, never from a private workspace.
 - `defects.md` is the one list of known defects and open items, grouped by the subsystems `package.md` names; each item
   has an UPPER-KEBAB id and a mark (seen by a person, seen by a session operating the product, a note from reading
-  code, or a feature), and a fix moves its item to Closed in the fixing commit. The local gate runs
+  code, or a feature), and a landing that fixes one moves its item to Closed in the same commit. The local gate runs
   `scripts/tests/test-defects-check.sh` in every run, scoped or not: it fails with the id when a landing record
   (the section "Landing records since 2026-11-06" of `history/passes.md` to its end) names an item that is not in
-  `defects.md`, when an id starts two items, and when an open item has no mark. An id is a token of capitals and digits
-  joined by hyphens with at least two parts that each hold a letter, bounded by anything but a letter, digit,
-  underscore or a hyphen that joins more: `ROW-ID-MINT` is one; `P1`, `ALLDONE`, `RCG_SCOPE` and `SHA-256` are not.
+  `defects.md`, when an id starts two items, when an open item has no mark, and when a tracked `CLAUDE.md` cites
+  `defects.md` as `docs/defects.md: ID` or `docs/defects.md item ID` after an opening parenthesis with no known id. An id is a token of capitals
+  and digits joined by hyphens with at least two parts that each hold two or more capitals, bounded by anything but a
+  letter, digit, underscore or a hyphen that joins more: `ROW-ID-MINT` is one; `P1`, `P1-P4`, `ALLDONE`, `RCG_SCOPE` and
+  `SHA-256` are not. The check does not prove that a fix moved its item to Closed.
   The list holds no private name and no unfixed security weakness. No session loads it at start and no `@` include
   names it; a pass reads its own subsystem's part.
 - Nothing below `docs/` carries a page: `history/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
