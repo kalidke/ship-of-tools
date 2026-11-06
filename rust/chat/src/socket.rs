@@ -41,7 +41,7 @@ pub(crate) struct Timing {
     pub close: Duration,
     /// One write (an acknowledgement or a ping): a peer that stops reading cannot hold the reader.
     pub write: Duration,
-    /// No frame, ping included, for this long: the connection is lost. Our pings keep a live one from tripping it.
+    /// No frame received for this long (a pong or Slack's ping counts; our own ping does not): the connection is lost.
     pub idle: Duration,
     /// Our ping interval.
     pub ping: Duration,
@@ -105,7 +105,7 @@ pub enum GapCause {
     Overflow,
     /// An event could not be read or represented, or a message passed its bound.
     Failed,
-    /// A connected socket ended: whatever Slack sent in between is missing.
+    /// A socket ended, or a new one went live: whatever Slack sent in between is missing.
     Reconnect,
 }
 

@@ -305,6 +305,7 @@ async fn a_silent_socket_is_replaced_after_the_idle_bound() {
             }
         })
         .await;
+        let began = Instant::now();
         let socket = start(
             &fake,
             Timing {
@@ -315,6 +316,12 @@ async fn a_silent_socket_is_replaced_after_the_idle_bound() {
             },
         );
         eventually("the replacement", || fake.sockets().2 >= 2).await;
+        // Within the bound, not merely eventually: 500 ms of idle plus a stated slack.
+        assert!(
+            began.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            began.elapsed()
+        );
         assert_eq!(fake.sockets().1, 1);
         assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
         socket.stop().await;
@@ -750,6 +757,12 @@ async fn reconnects_are_paced_after_a_refusal_and_after_a_hello() {
             "{:?}",
             t[2] - t[1]
         );
+        // The hello reset the pause: the second reopen did not wait the doubled 400 ms.
+        assert!(
+            t[2] - t[1] < Duration::from_millis(390),
+            "{:?}",
+            t[2] - t[1]
+        );
         socket.stop().await;
         fake_b.shutdown().await;
     })
@@ -788,6 +801,110 @@ async fn stop_during_the_reconnect_pause_does_not_wait_for_it() {
             began.elapsed()
         );
         assert_eq!(fake.sockets().2, 1);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_link_that_answers_is_kept_past_the_idle_bound() {
+    bounded(async {
+        let fake = fake(|_, mut peer| async move {
+            peer.send(&hello()).await;
+            peer.drain().await;
+        })
+        .await;
+        let socket = start(
+            &fake,
+            Timing {
+                idle: Duration::from_millis(500),
+                ping: Duration::from_millis(100),
+                ..timing()
+            },
+        );
+        eventually("hello", || socket.status().connected).await;
+        let g = socket.gap().expect("hello gap");
+        assert_eq!(g.cause, GapCause::Reconnect);
+        assert!(socket.reconciled(g));
+        assert_eq!(socket.gap(), None);
+        tokio::time::sleep(Duration::from_millis(1800)).await;
+        assert_eq!(fake.sockets().2, 1, "healthy link replaced");
+        assert_eq!(socket.gap(), None, "steady link reports a gap");
+        assert!(socket.status().connected);
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_chatty_peer_that_never_answers_keeps_its_link() {
+    bounded(async {
+        let fake = fake(|_, mut peer| async move {
+            peer.send(&hello()).await;
+            for _ in 0..18 {
+                peer.send(&json!({"type": "slash_commands_noop"})).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            peer.ignore_until_gone().await;
+        })
+        .await;
+        let socket = start(
+            &fake,
+            Timing {
+                idle: Duration::from_millis(500),
+                ping: Duration::from_millis(100),
+                ..timing()
+            },
+        );
+        eventually("hello", || socket.status().connected).await;
+        tokio::time::sleep(Duration::from_millis(1700)).await;
+        assert_eq!(fake.sockets().2, 1, "chatty link replaced");
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_reconciliation_begun_before_a_hello_is_refused_by_it() {
+    bounded(async {
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let fake = fake_with(
+            move |seen| {
+                (seen.path() == "/api/apps.connections.open"
+                    && c.fetch_add(1, Ordering::SeqCst) == 1)
+                    .then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+            },
+            |i, mut peer| async move {
+                peer.send(&hello()).await;
+                if i == 0 {
+                    peer.send(&disconnect("refresh_requested")).await;
+                }
+                peer.drain().await;
+            },
+        )
+        .await;
+        let slow = Timing {
+            backoff_first: Duration::from_millis(400),
+            backoff_max: Duration::from_millis(800),
+            ..timing()
+        };
+        let socket = start(&fake, slow);
+        eventually("the refused reopen", || {
+            socket.status().error == Some(SocketError::Rejected)
+        })
+        .await;
+        // A reconciliation begins here, during the outage, and is still running when the hello arrives.
+        let gap = socket.gap().expect("the lost socket left a gap");
+        eventually("the new hello", || socket.status().connected).await;
+        assert!(
+            !socket.reconciled(gap),
+            "a reconciliation begun before the hello cleared it"
+        );
+        assert!(socket.gap().is_some());
+        socket.stop().await;
         fake.shutdown().await;
     })
     .await;
