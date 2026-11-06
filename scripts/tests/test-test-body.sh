@@ -316,7 +316,7 @@ if mode=='all':
             rows+=fixture_row*(0 if listing=='missing-fixture' else 2 if listing=='duplicate-fixture' else 1)
             (p/'tests.tsv').write_text(rows)
             prefix=gate[gate.index('envs()'):gate.index('if [ "${1:-}" = --job ]')]
-            body=f'source {q(helper)}\nD={q(repo)}; L={q(p)}; BUILD_RC=0; TO=(timeout 30); CE=(env); SPLIT=(comm_wake); JULIA_PKGS=()\n'+prefix+'\nproducer\n'
+            body=f'source {q(helper)}\nsource {q(repo/"scripts/tests/lib-gate-scope.sh")}\nD={q(repo)}; L={q(p)}; BUILD_RC=0; TO=(timeout 30); CE=(env); SPLIT=(comm_wake); JULIA_PKGS=()\n'+prefix+'\nproducer\n'
             r=shell(body,p); jobs=[s.split('\t') for s in r.stdout.splitlines() if s.startswith('one\t')]; emitted=[row[-1] for row in jobs]
             summary=(p/'summary.txt').read_text(encoding='utf-8', errors='strict'); raw=run([fixture,'--list','--ignored','--format','terse'],p)
             ignored=[s[:-6] for s in raw.stdout.splitlines() if s.endswith(': test')]
