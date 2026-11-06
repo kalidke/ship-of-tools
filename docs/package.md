@@ -616,5 +616,7 @@ he saw no issue in use; v0.7.0 was cut from the same code and published the same
 landed 2026-11-06: wire's `op_table!` declares each op once and gives `op::ALL`, so a declared op joins the first-frame
 refusal test with no list to keep, and no test reads the op table's source. Its P4 landed the same day: a Slack
 token is masked whole, by its form, in every log written through `RedactingWriter`, and no `RUST_LOG` setting lets a
-network library's own diagnostics into the daemon's log.
+network library's own diagnostics into the daemon's log. Its P10 landed the same day: the daemon's services are one
+value, `Services`, built once in `run`, in place of 17 to 19 positional parameters; each handler is still given only
+what it uses.
 - Findings go to the owning subsystem's queue and are handled at that subsystem's pass.

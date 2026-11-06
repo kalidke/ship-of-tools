@@ -5,7 +5,7 @@ use super::conn::{ping_read_deadline, test_slow_concept_read_delay};
 use crate::rows::ops::pty::handle_pty_open;
 use crate::rows::reauth::answer_workspace_reauth;
 use crate::sidecars::ops::{handle_monitor_history, handle_monitor_subscribe, handle_monitor_unsubscribe};
-use crate::topology::store::{TopologyChanged, TopologyStore};
+use super::context::Services;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use sot_protocol::reply::HandlerOutput;
 use super::*;
@@ -82,18 +82,7 @@ pub(super) fn place(op: &str) -> Place {
 /// off the loop. The loop's own state (its writer, read deadline, active workspace and monitor flag) is not here.
 #[derive(Clone)]
 pub(super) struct Shared {
-    pub(super) session: Session,
-    pub(super) mathjax: MathJax,
-    pub(super) pluto: Pluto,
-    pub(super) workspaces: Workspaces,
-    pub(super) ws_events_tx: broadcast::Sender<WorkspaceChanged>,
-    pub(super) agent_events_tx: broadcast::Sender<AgentMessage>,
-    pub(super) links: crate::comm::mail::links::Links,
-    pub(super) fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    pub(super) clients: Clients,
-    pub(super) topology_store: Arc<TopologyStore>,
-    pub(super) topo_changed_tx: broadcast::Sender<TopologyChanged>,
-    pub(super) leases: Arc<crate::lifecycle::lease::Leases>,
+    pub(super) services: Services,
     /// This connection's roster serial and client id, from its hello.
     pub(super) serial: u64,
     pub(super) client_id: String,
@@ -155,29 +144,30 @@ where
             let hinted = frame.payload.get("workspace_id").and_then(|v| v.as_str());
             *active_workspace = Some(
                 shared
+                    .services
                     .workspaces
                     .resolve(hinted)
                     .map(|ws| ws.workspace_id.clone())
                     .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
             );
-            crate::rows::ops::list::handle_workspace_activate(req_id, frame.payload, &shared.workspaces).await
+            crate::rows::ops::list::handle_workspace_activate(req_id, frame.payload, &shared.services.workspaces).await
         }
         op::MONITOR_SUBSCRIBE => {
             // Open this connection's live tick delivery (sampling is
             // already running). Reply with the host roster + base cadence
             // so the frontend can lay out panels before the first tick.
             *monitor_subscribed = true;
-            handle_monitor_subscribe(req_id, &shared.workspaces)
+            handle_monitor_subscribe(req_id, &shared.services.workspaces)
         }
         op::MONITOR_UNSUBSCRIBE => {
             *monitor_subscribed = false;
             handle_monitor_unsubscribe(req_id)
         }
-        op::PTY_OPEN => return handle_pty_open(tx, frame, &shared.workspaces).await,
+        op::PTY_OPEN => return handle_pty_open(tx, frame, &shared.services.workspaces).await,
         // ADR 0046 decision 6: the ONE op whose reply must be written
         // before its effect runs, because the caller IS the session
         // being replaced.
-        op::WORKSPACE_REAUTH => return answer_workspace_reauth(tx, frame, &shared.workspaces).await,
+        op::WORKSPACE_REAUTH => return answer_workspace_reauth(tx, frame, &shared.services.workspaces).await,
         // Streams chunk frames straight to the socket (bounded memory),
         // so it writes its own frames and skips the response-write below.
         op::FILE_DOWNLOAD => return crate::files::transfer::stream_file_download(tx, req_id, frame.payload).await,
@@ -187,7 +177,7 @@ where
                 let mut frame = frame;
                 let permit = (off_loop == Place::Pooled).then(|| job_sem.clone());
                 if permit.is_some()
-                    && !canonicalize_workspace_id(tx, &shared.workspaces, req_id, &op_name, &mut frame.payload).await?
+                    && !canonicalize_workspace_id(tx, &shared.services.workspaces, req_id, &op_name, &mut frame.payload).await?
                 {
                     return Ok(());
                 }
@@ -209,8 +199,10 @@ where
 /// Hands one request to its owner's handler: every op but the few `dispatch` keeps for the loop's own state.
 #[allow(clippy::too_many_lines, reason = "the op table: one arm per request op, each calling its owner; predates the 100-line limit")]
 async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
-    let Shared { session, mathjax, pluto, workspaces, ws_events_tx, clients, topology_store, topo_changed_tx, .. } =
-        shared;
+    let Services {
+        session, mathjax, pluto, workspaces, ws_events_tx, clients, topology_store, topo_changed_tx, agent_events_tx,
+        links, fe_command_tx, leases, ..
+    } = &shared.services;
     let (req_id, payload) = (frame.id, frame.payload);
     // Each arm evaluates to `Result<HandlerOutput>`; `finish_dispatch`
     // turns a handler `Err` into an error *frame* for this request
@@ -280,13 +272,13 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         }
         op::WORKSPACE_LIST => crate::rows::ops::list::handle_workspace_list(req_id, payload, workspaces, pluto).await,
         op::ACCOUNTS_LIST => crate::agents::ops::handle_accounts_list(req_id, payload).await,
-        op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(req_id, payload, &shared.agent_events_tx).await,
-        op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload, &shared.links).await,
+        op::AGENT_SEND => crate::comm::mail::relay::handle_agent_send(req_id, payload, agent_events_tx).await,
+        op::COMM_FILE => crate::comm::mail::filer::handle_comm_file(req_id, payload, links).await,
         op::AGENT_JOIN => {
             crate::rows::ops::join::handle_agent_join(req_id, payload, workspaces, ws_events_tx).await
         }
         op::FE_COMMAND_SEND => {
-            crate::clients::handle_fe_command_send(req_id, payload, &shared.fe_command_tx, clients).await
+            crate::clients::handle_fe_command_send(req_id, payload, fe_command_tx, clients).await
         }
         op::FE_PRESENCE => {
             // The ONLY place `last_person_input_at` is stamped from (2026-09-08 review rework, design point A): this op
@@ -302,7 +294,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         }
         op::FE_SESSIONS => crate::clients::handle_fe_sessions(req_id, payload, clients, Some(shared.serial)).await,
         op::UPDATE_CHECK => crate::update::handle_update_check(req_id).await,
-        op::UPDATE_APPLY => crate::update::handle_update_apply(req_id, &shared.fe_command_tx, &shared.leases).await,
+        op::UPDATE_APPLY => crate::update::handle_update_apply(req_id, fe_command_tx, leases).await,
         op::VERSION_QUERY => {
             crate::clients::handle_version_query(req_id, clients, topology_store, topo_changed_tx).await
         }

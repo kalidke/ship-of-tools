@@ -273,25 +273,7 @@ fn bind_session(path: &str) -> Result<interprocess::local_socket::tokio::Listene
     Ok(listener)
 }
 
-pub(super) async fn run_local(
-    socket_path: PathBuf,
-    session: Session,
-    mathjax: MathJax,
-    pluto: Pluto,
-    files_mode: Arc<FilesMode>,
-    preview_changed_tx: broadcast::Sender<PreviewChanged>,
-    label: Arc<Option<String>>,
-    workspaces: Workspaces,
-    ws_events_tx: broadcast::Sender<WorkspaceChanged>,
-    agent_events_tx: broadcast::Sender<AgentMessage>,
-    links: crate::comm::mail::links::Links,
-    fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
-    clients: Clients,
-    topology_store: Arc<crate::topology::store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
-    leases: Arc<crate::lifecycle::lease::Leases>,
-) -> Result<()> {
+pub(super) async fn run_local(socket_path: PathBuf, services: Services) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
             sot_platform::host::paths::secure_socket_dir(parent)
@@ -326,7 +308,7 @@ pub(super) async fn run_local(
         let accept = listener.accept();
         let accepted = tokio::select! {
             accepted = accept => accepted,
-            () = leases.gone() => break tokio::time::Instant::now(),
+            () = services.leases.gone() => break tokio::time::Instant::now(),
         };
         let stream: LocalStream = match accepted {
             Ok(stream) => stream,
@@ -336,29 +318,10 @@ pub(super) async fn run_local(
             }
         };
         dispatch_admitted(stream, admit_peer, |stream, peer| {
-            let le = leases.clone();
-            let s = session.clone();
-            let mj = mathjax.clone();
-            let pl = pluto.clone();
-            let fm = files_mode.clone();
-            let wa = preview_changed_tx.clone();
-            let lb = label.clone();
-            let ws = workspaces.clone();
-            let wse = ws_events_tx.clone();
-            let age = agent_events_tx.clone();
-            let lk = links.clone();
-            let fce = fe_command_tx.clone();
-            let rfe = repl_frame_tx.clone();
-            let cl = clients.clone();
-            let tps = topology_store.clone();
-            let tpe = topo_changed_tx.clone();
+            let services = services.clone();
             tokio::spawn(async move {
                 let (rx, tx) = stream.split();
-                if let Err(e) = handle_connection(
-                    rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, lk, fce, rfe, cl, tps, tpe, peer,
-                    le,
-                )
-                .await
+                if let Err(e) = handle_connection(rx, tx, services, peer).await
                 {
                     tracing::warn!(error = %e, "connection ended with error");
                 } else {
@@ -377,6 +340,7 @@ pub(super) async fn run_local(
         }
         _ => {}
     }
+    let Services { leases, workspaces, ws_events_tx, .. } = services;
     crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 

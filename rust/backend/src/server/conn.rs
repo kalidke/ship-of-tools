@@ -107,23 +107,8 @@ async fn read_owned<R: AsyncRead + Unpin>(
 pub(super) async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
-    session: Session,
-    mathjax: MathJax,
-    pluto: Pluto,
-    files_mode: Arc<FilesMode>,
-    preview_changed_tx: broadcast::Sender<PreviewChanged>,
-    label: Arc<Option<String>>,
-    workspaces: Workspaces,
-    ws_events_tx: broadcast::Sender<WorkspaceChanged>,
-    agent_events_tx: broadcast::Sender<AgentMessage>,
-    links: crate::comm::mail::links::Links,
-    fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
-    clients: Clients,
-    topology_store: Arc<crate::topology::store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
+    services: Services,
     peer: Option<sot_platform::identity::challenge::PeerAuthenticated>,
-    leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -163,25 +148,20 @@ where
             return Ok(());
         }
     };
-    let admitted = parse_first_frame(&first).and_then(|hello| admit_hello(hello, &clients));
+    let admitted = parse_first_frame(&first).and_then(|hello| admit_hello(hello, &services.clients));
     let hello = match admitted {
         Ok(hello) => hello,
         Err(HelloRefusal(payload)) => {
-            let (_, revision) = session.snapshot().await;
+            let (_, revision) = services.session.snapshot().await;
             let refusal = Frame::res(first.id, &first.op, payload).with_rev(revision);
             return write_reply(&mut tx, refusal, None).await;
         }
     };
     if hello.hello().role == HANDOFF_ROLE {
-        return hand_off(buffered, tx, first.id, hello, &session, &files_mode, &label, &workspaces, &clients, peer, &leases).await;
+        return hand_off(buffered, tx, first.id, hello, &services, peer).await;
     }
 
-    let ended = serve_control(
-        &mut tx, buffered, first.id, hello, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
-        ws_events_tx, agent_events_tx, links, fe_command_tx, repl_frame_tx, clients, topology_store,
-        topo_changed_tx, leases,
-    )
-    .await;
+    let ended = serve_control(&mut tx, buffered, first.id, hello, services).await;
     // No end of a control session owes its peer bytes: a reap, a write the daemon could not finish, a frame it would
     // not read and a second hello forfeit the unread replies, and a peer that closed has read what it wanted. So its
     // close never waits for the peer to read.
@@ -194,9 +174,8 @@ where
 /// (`fe.lease`). Any other frame is `bad_request` and the end. It is never listed in the roster and never serves the
 /// control ops.
 async fn hand_off<R, W>(
-    mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, session: &Session,
-    files_mode: &FilesMode, label: &Option<String>, workspaces: &Workspaces, clients: &Clients,
-    peer: Option<sot_platform::identity::challenge::PeerAuthenticated>, leases: &crate::lifecycle::lease::Leases,
+    mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, services: &Services,
+    peer: Option<sot_platform::identity::challenge::PeerAuthenticated>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -204,7 +183,7 @@ where
 {
     // A handoff connection is no window's: it names no REPL run.
     let hello = hello.into_hello();
-    let reply = handle_hello(hello_id, hello, session, files_mode, label.as_deref(), clients, Vec::new()).await?;
+    let reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, Vec::new()).await?;
     if let Some((frame, blob)) = reply.into_iter().next() {
         write_reply(&mut tx, frame, blob).await?;
     }
@@ -230,13 +209,13 @@ where
         // host — one attach path, local or remote.
         (Kind::Req, op::LANE_CONNECT) => {
             tracing::info!("lane.connect — a raw pipe");
-            crate::rows::ops::lane_bridge::handle_lane_connect(rx, tx, next, workspaces).await
+            crate::rows::ops::lane_bridge::handle_lane_connect(rx, tx, next, &services.workspaces).await
         }
         // A lease (1.2) is a connection of its own: it never enters the request loop, the reaper or any handler.
         (Kind::Req, op::FE_LEASE) => {
             tracing::info!(?peer, "fe.lease — a lease connection");
             let state_root = sot_platform::host::state_dir::sot_state_dir();
-            let held = crate::lifecycle::lease::hold(rx, &mut tx, next, peer, leases, state_root.as_deref()).await;
+            let held = crate::lifecycle::lease::hold(rx, &mut tx, next, peer, &services.leases, state_root.as_deref()).await;
             // A lease whose reply or notice could not be written is a peer given up on: closed without the wait.
             if held.is_err() {
                 tx.abandon();
@@ -252,13 +231,7 @@ where
 
 /// Runs one control session: the per-connection state, then the frame loop and its op table.
 async fn serve_control<R, W>(
-    tx: &mut W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
-    preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
-    ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
-    links: crate::comm::mail::links::Links, fe_command_tx: broadcast::Sender<FeCommandEvt>,
-    repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
-    topology_store: Arc<crate::topology::store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>, leases: Arc<crate::lifecycle::lease::Leases>,
+    tx: &mut W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, services: Services,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -330,38 +303,38 @@ where
     // its own preview.changed evt frame; the broadcast channel's per-
     // receiver lag detection lets us notice and log if this connection is
     // falling behind editor saves.
-    let mut watcher_rx = Some(preview_changed_tx.subscribe());
+    let mut watcher_rx = Some(services.preview_changed_tx.subscribe());
 
     // One workspace-lifecycle subscription per connection. Always present
     // (the channel is created unconditionally in `run`), like the watcher
     // receiver above, which is always `Some`. Each connection writes its own
     // `workspace.changed` evt frame; the broadcast's per-receiver lag
     // detection surfaces a connection that fell behind.
-    let mut ws_events_rx = ws_events_tx.subscribe();
+    let mut ws_events_rx = services.ws_events_tx.subscribe();
 
     // One topology subscription per connection, same shape as the
     // workspace-lifecycle bus above (plan §B): each connection writes its
     // own `topology.changed` evt frame so Hosts mode refreshes live.
-    let mut topo_changed_rx = topo_changed_tx.subscribe();
+    let mut topo_changed_rx = services.topo_changed_tx.subscribe();
 
     // One agent-relay subscription per connection. Like the workspace bus
     // it's always present (channel created unconditionally in `run`). Each
     // connection writes its own `agent.message` evt frame; the broadcast's
     // per-receiver lag detection surfaces a connection that fell behind.
-    let mut agent_events_rx = agent_events_tx.subscribe();
+    let mut agent_events_rx = services.agent_events_tx.subscribe();
 
     // One FE-command subscription per connection (ADR 0025). Like the agent
     // bus it's always present (channel created unconditionally in `run`). Each
     // connection writes its own `fe.command` evt frame; the broadcast's
     // per-receiver lag detection surfaces a connection that fell behind.
-    let mut fe_command_rx = fe_command_tx.subscribe();
+    let mut fe_command_rx = services.fe_command_tx.subscribe();
 
     // One REPL-frame subscription per connection. Streamed eval frames arrive
     // here (published by the per-workspace REPL supervisor); each connection
     // writes its own `repl.frame` evt frame. Like the agent bus, always
     // present; the broadcast's per-receiver lag detection surfaces a
     // connection that fell behind a fast-printing eval.
-    let mut repl_frame_rx = repl_frame_tx.subscribe();
+    let mut repl_frame_rx = services.repl_frame_tx.subscribe();
 
     // Monitor tick bus (ADR 0020). Sampling is always-on; this connection only
     // forwards ticks while its drawer is open — `monitor.subscribe` flips the
@@ -370,7 +343,7 @@ where
     // Held as an `Option` like `watcher_rx`: `run` installs the hub before any
     // connection is accepted, so it is `None` only where a test builds the
     // registry without one.
-    let mut monitor_rx = workspaces.monitor_hub().map(|h| h.subscribe());
+    let mut monitor_rx = services.workspaces.monitor_hub().map(|h| h.subscribe());
     let mut monitor_subscribed = false;
 
     // Off-loop jobs (switch-latency Phase 1; the default since
@@ -392,17 +365,16 @@ where
     // requests its own folder cannot file, and reads its answers (`comm::mail::links`). It is attached before it is on
     // the roster, so a connection the roster lists is already offered filings.
     let hello_host = hello.hello().host.clone();
-    let mut link = (hello.hello().role == sot_protocol::LINK_ROLE).then(|| links.attach(hello_host.clone().unwrap_or_default()));
+    let mut link = (hello.hello().role == sot_protocol::LINK_ROLE).then(|| services.links.attach(hello_host.clone().unwrap_or_default()));
 
     // Connected-client registry entry (ADR 0010/0013): registered here, after the bus subscriptions above so no
     // event between them is lost and before the hello's reply so `clients_connected` counts this connection, and
     // held for its lifetime; the guard deregisters on any exit path (clean EOF, error, task drop). The roster holds
     // control sessions only. The connection's declared host (`HelloReq.host`, ADR 0046 decision 1) is what
     // `topology.set`'s "can't remove yourself" refusal reads (`server/dispatch.rs`, `op::TOPOLOGY_SET`).
-    let client_guard = Some(register_hello(&hello, &clients));
+    let client_guard = Some(register_hello(&hello, &services.clients));
     let shared = Shared {
-        session: session.clone(), mathjax, pluto, workspaces: workspaces.clone(), ws_events_tx, agent_events_tx,
-        links, fe_command_tx, clients: clients.clone(), topology_store, topo_changed_tx, leases,
+        services: services.clone(),
         serial: client_guard.as_ref().map_or(0, |g| g.serial()),
         client_id: client_guard.as_ref().map(|g| g.client_id().to_string()).unwrap_or_default(),
         hello_host,
@@ -413,7 +385,7 @@ where
     // `done` of each run named is published after this, so this connection is written it.
     let running = shared.repl_numbers.running(&repl_frame_rx);
     let hello = hello.into_hello();
-    let hello_reply = handle_hello(hello_id, hello, &session, &files_mode, label.as_deref(), &clients, running).await;
+    let hello_reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, running).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(tx, frame, blob).await?;
     }
@@ -422,8 +394,8 @@ where
         let frame = match select_once(
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
-            &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
-            &client_guard, &clients, &shared.repl_numbers,
+            &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
+            &client_guard, &services.clients, &shared.repl_numbers,
         )
         .await?
         {

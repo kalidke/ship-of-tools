@@ -40,6 +40,7 @@ use tokio::task::JoinSet;
 // Private: a service reaches the server through its handler's arguments, so a module that names `crate::server::`
 // outside this folder does not compile. The two items the binary's entry needs are re-exported below.
 mod conn;
+mod context;
 mod dispatch;
 mod events;
 mod hello;
@@ -50,6 +51,7 @@ mod reply;
 pub(crate) use listen::refuse_live_socket;
 
 use sot_protocol::reply::write_frame_to;
+use context::Services;
 use listen::{run_local, take_daemon_lock};
 use crate::rows::anchor::seed_default_row;
 
@@ -257,29 +259,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
 
     if let Some(path) = opts.socket {
-        let s = session.clone();
-        let mj = mathjax.clone();
-        let pl = pluto.clone();
-        let fm = files_mode.clone();
-        let wa = preview_changed_tx.clone();
-        let lb = label.clone();
-        let ws = workspaces.clone();
-        let wse = ws_events_tx.clone();
-        let age = agent_events_tx.clone();
-        let lk = links.clone();
-        let fce = fe_command_tx.clone();
-        let rfe = repl_frame_tx.clone();
-        let cl = clients.clone();
-        let tps = topology_store.clone();
-        let tpe = topo_changed_tx.clone();
-        let le = leases.clone();
-        tasks.push(tokio::spawn(async move {
-            run_local(
-                path, s, mj, pl, fm, wa, lb, ws, wse, age, lk, fce, rfe, cl, tps,
-                tpe, le,
-            )
-            .await
-        }));
+        let services = Services {
+            session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces, ws_events_tx, agent_events_tx,
+            links, fe_command_tx, repl_frame_tx, clients, topology_store, topo_changed_tx, leases,
+        };
+        tasks.push(tokio::spawn(run_local(path, services)));
     }
 
     if tasks.is_empty() {

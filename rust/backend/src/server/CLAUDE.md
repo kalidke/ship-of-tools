@@ -6,7 +6,7 @@ Until then nothing is served. The hello's role then says what the connection bec
 pipe or a lease after its reply (`hand_off`), every other role is a control session at once and its loop its one
 writer (`serve_control`). The server stays inside the `sotd` binary: it is the binary's one table of ops and the only
 caller of every service's handlers. The services do not name its modules: a handler takes what it may use as arguments the
-server builds from the connection's `Shared` (`dispatch.rs`), and the frame helpers they need (`HandlerOutput`, the
+server selects from the connection's `Services` (`context.rs`, carried in `Shared` of `dispatch.rs`), and the frame helpers they need (`HandlerOutput`, the
 frame writes, the refusal frame, the byte pipe) are the wire's (`sot_protocol::reply`, `sot_protocol::pipe`).
 Part of the server's subsystem, beside this folder: `main.rs` (sotd's entry), `clients*.rs` (the roster), `session.rs`
 (the revision ring), `daemon_log/` and `paths.rs`.
@@ -154,8 +154,10 @@ of each.
     503 `window_gone` at the page server. A disconnect after selection remains the bus's best-effort delivery limit.
     `fe.command.send` refuses `cmd: "page_reply"` with code `reserved` before publishing anything, with an explicit
     target or without one. Only the page server publishes that offer (`tests/page_channel.rs::a_session_cannot_open_a_reply_bar`).
-14. **A handler is given what it may use as arguments; the compiler enforces part of that.** The server's
-    implementation modules (`conn`, `dispatch`, `events`, `hello`, `listen`, `reply`) are private to it, so no other
+14. **A handler is given what it may use as arguments; the compiler enforces part of that.** The daemon's services are
+    one value, `Services` (`context.rs`), built once in `run`: a connection is given it, and `serve` selects each
+    handler's arguments from it. The server's
+    implementation modules (`conn`, `context`, `dispatch`, `events`, `hello`, `listen`, `reply`) are private to it, so no other
     module can name them. What remains reachable crate-wide is the entry's (`server::run`, `server::refuse_live_socket`)
     and the server-owned modules at the crate root (`clients*`, `session`, `daemon_log`, `paths`): the services take
     `Session` (the revision ring's handle) as an argument, and no longer take the roster: pages is given the window's key
@@ -175,6 +177,7 @@ of each.
     ring's events).
 
 ## Owns
+- `Services` (`context.rs`), the one value of the daemon's buses and handles that `run` builds and every connection is given.
 - `<state>/daemon.lock` (`take_daemon_lock`, `lock_daemon`); the session socket or pipe (`run_local`: its private
   folder, `refuse_live_socket`, `bind_session` with the Windows owner-only descriptor and an inbound buffer of two
   envelopes, accept, the unlink at the end). On Windows the inbound buffer is a hint of two envelopes (`PIPE_INBOUND_BYTES`; the
@@ -236,7 +239,7 @@ tests need the built `sotd` and run in test containers.
 | 11 | accept errors | `listen_tests.rs`: `the_session_loop_survives_every_transient_and_resource_accept_error`; the stop at departure is lifecycle's (`tests/window_lease/lease.rs`: `last_one_out_two_windows`) |
 | 12 | the hello names running REPL runs | `tests/repl_windows.rs` (Linux) |
 | 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`, `a_window_used_last_that_is_away_sends_nothing_to_another_window`, `ties_a_windows_other_connection_and_non_windows_rank_as_the_rule_says`; `src/clients_tests.rs`: `a_browser_open_while_the_window_used_last_is_away_publishes_nothing`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
-| 14 | a handler is given its arguments | the private submodules (compiler); the rest by convention, no test |
+| 14 | a handler is given its arguments | the private submodules (compiler); `context_tests.rs`: `each_accepted_connection_is_served_the_services_it_was_given`; the rest by convention |
 | 16 | an event is one frame or dropped | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_nothing`, `a_closed_bus_writes_nothing` (per bus) |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `daemon_log_masks_slack_and_page_secrets`, `no_log_level_lets_a_network_library_into_the_log`, `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |
 
@@ -261,13 +264,10 @@ Seen at pass 5c, handled at the server's next pass; none is a defect seen in use
   `run_local`): a connection can be accepted just after the decision.
 - Trickling probe replies: only the unit tests of the helper cover the absolute deadline's edge; no test sends a byte
   at a time.
-- `handle_connection`, `serve_control` and `run_local` carry the daemon's buses and handles as 17 to 19 positional
-  parameters (`conn.rs:107`, `conn.rs:254`, `listen.rs:250`), copied by name three times in `mod.rs` and `listen.rs`; one
-  context value built in `run` would delete the copies and become `Shared`'s base.
-- `hand_off`'s `bad_request` and every `reject` write no deadline (`sot_protocol::reply::reject`, `conn.rs:248`); one
+- `hand_off`'s `bad_request` and every `reject` write no deadline (`sot_protocol::reply::reject`, `conn.rs:227`); one
   small frame fits the buffer, so none was seen to park.
 - A lease or lane connection that has left the loop is not in the roster, so nothing reaps one that never pings; the
-  lease has its own ticker and the lane its pipe's end (`conn.rs:195`).
+  lease has its own ticker and the lane its pipe's end (`conn.rs:175`).
 - The accept loop's stop before any row is touched (lifecycle's guarantee 5) has no test that connects after the
   departure; only the order of `run_local`'s tail holds it (`listen.rs`, the break, then `drop(listener)`).
 - `INLINE` still holds ops that wait on a local disk (`file.write`, `file.delete`, `dir.create`, `concept.write`): on
