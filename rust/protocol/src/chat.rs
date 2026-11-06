@@ -95,7 +95,7 @@ pub struct ChatRecord {
     pub limited: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub omitted: bool,
-    /// Files past the eighth, not summarized.
+    /// File entries not summarized: those past the eighth, and any entry that is not an object or has no valid id.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub files_omitted: u32,
 }

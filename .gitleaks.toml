@@ -12,3 +12,10 @@ regexes = [
   '''^0123456789abcdef0123456789abcdef$''',
   '''^Ab12Cd34Ef56$''',
 ]
+
+[[allowlists]]
+description = "the chat's fake Slack: two test-only TLS keys (a CA-signed server key and a self-signed rogue key) with no use outside that folder"
+targetRules = ["private-key"]
+paths = [
+  '''^rust/chat/src/fake_slack/(server|rogue)\.key$''',
+]

@@ -29,7 +29,7 @@ and tests whole; Order of passes says how a load is counted.
 | subsystem | guarantees to the rest | product k | test k | twice | cross | fits |
 |---|---|---:|---:|---:|---:|---|
 | platform | one answer per machine fact; durable publish, kernel locks, close-on-exec births, the peer challenge | 82 | 69 | 43 | 8 | yes |
-| wire | every byte between our programs: one frame codec, one op table, one protocol integer | 42 | 15 | 3 | 2 | yes |
+| wire | every byte between our programs: one frame codec, one op table, one protocol integer | 47 | 20 | 7 | 1 | yes |
 | topology | hosts.toml read one way; one ssh recipe; one login per computer for the window, its end ending every channel | 50 | 54 | 31 | 23 | yes |
 | containment | every child in a kill domain its owner ends; every wait bounded | 26 | 18 | 27 | 3 | yes |
 | lifecycle | the last window's lease decides whether rows end; every daemon end is bounded and fires the child signal | 22 | 44 | 21 | 14 | yes |
@@ -44,12 +44,11 @@ and tests whole; Order of passes says how a load is counted.
 | fe-net | one connection per dialled host, retried on a pace; typed requests and events, never bytes | 62 | 33 | 22 | 79 | yes |
 | fe-ui | one UI thread owns all view state; one wgpu pass draws every pixel | 391 | 194 | 66 | 29 | no (3x) |
 | distribution | a box runs exactly one tagged release; install verifies before it writes; launch fails open | 211 | 308 | 30 | 18 | no (2.5x) |
-| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post | 4 | 3 | 0 | 1 | yes |
+| chat | Slack's message JSON becomes one bounded wire record: identity, origin and bounds kept, edits and deletes told from new messages, no forged own post; every byte to Slack leaves through one HTTPS door that verifies the server, sends the bot authorization only to Slack hosts, and bounds time, admission and size | 9 | 8 | 17 | 1 | yes |
 | records | the manual says what is true now | 20 | 1 | 10 | 0 | yes |
 | total | | 1,959 | 2,087 | 305 | 404 | |
 
-The chat row is an estimate from its files' characters / 4 (the script does not yet know the crate), and its row of
-the total is not recounted. Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
+The wire and chat rows are measured by the script at the landing of the chat's HTTP core (the fake Slack's server code counts as product); the other rows and the total are as measured at a25f3c39f. Outside the table: the vt100 fork (47 + 39, vendored, never loaded in a pass) and the shared test support (26).
 The design records (51 ADRs and their index) and the old folder pages live in `docs/history/` and load nowhere.
 
 ## Contracts
@@ -62,8 +61,9 @@ over this page. The table above says what each guarantees to the rest.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
 - **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire alone for now (platform joins with its first use). Owns:
-  normalization of Slack's message JSON into the wire's record (representation: wire's). Does not: open a connection,
-  hold a credential, file mail or map channels; nothing links it yet but the workspace.
+  normalization of Slack's message JSON into the wire's record (representation: wire's), and `http`, the one door to the
+  network. Does not: call a Slack method, hold a credential at rest, file mail or map channels; nothing links it yet but
+  the workspace.
 - **topology:** `rust/topology/CLAUDE.md`, crate `sot-topology`; the daemon's half is in `sotd`. Owns: the hub's
   hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections.
 - **containment:** `rust/containment/CLAUDE.md`, crate `sot-containment`, on platform alone. Owns: the registry of
@@ -177,8 +177,8 @@ v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `m
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
 the last one and carries everything that use found. In progress is the project chat (the daemon speaks Slack itself,
 in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
-Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1) and B1a, the record and normalization, have landed;
-the stage continues with B1b, B1c, B1d, B2, then B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
+Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization) and B1b (the HTTP core)
+have landed; the stage continues with B1c, B1d, B2, then B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,
 and each subsystem's findings in `docs/defects.md`, handled at its pass.
