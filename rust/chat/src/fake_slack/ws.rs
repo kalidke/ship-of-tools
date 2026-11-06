@@ -101,6 +101,15 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Replay<S> {
 
 type Inner = Replay<TlsStream<TcpStream>>;
 
+/// How `send_until_dropped` ended.
+#[derive(Debug)]
+pub(crate) enum Flood {
+    /// The client dropped the connection: how long after the first stalled send, if any send stalled.
+    Dropped(Option<Duration>),
+    /// The frame or time cap came first with the connection still up: frames sent, and whether a send stalled.
+    Held { frames: usize, stalled: bool },
+}
+
 /// The server side of one websocket connection, for a script to drive.
 pub(crate) struct WsPeer {
     ws: WebSocketStream<Inner>,
@@ -153,18 +162,6 @@ impl WsPeer {
             .await;
     }
 
-    /// Read frames until a pong carrying `payload` arrives, within `within`.
-    pub(crate) async fn expect_pong(&mut self, payload: &str, within: Duration) -> bool {
-        let end = tokio::time::Instant::now() + within;
-        loop {
-            match tokio::time::timeout_at(end, self.ws.next()).await {
-                Ok(Some(Ok(Message::Pong(got)))) => return got.as_ref() == payload.as_bytes(),
-                Ok(Some(Ok(_))) => {}
-                _ => return false,
-            }
-        }
-    }
-
     /// Read frames until a pong carrying `payload` arrives, within `within`; false if a text frame (an
     /// acknowledgement) comes first, or on a timeout or a wrong payload.
     pub(crate) async fn expect_pong_first(&mut self, payload: &str, within: Duration) -> bool {
@@ -179,29 +176,52 @@ impl WsPeer {
         }
     }
 
-    /// Send `text` frames without ever reading, until the client drops the connection or one send cannot finish
-    /// for `stall` (the client has stopped reading because its own write to us cannot finish). Returns the time
-    /// that send waited past `stall` before it ended (zero when the drop came with no send waiting that long),
-    /// and whether it ended in an error, which is the drop. A client that never drops never returns.
-    pub(crate) async fn send_until_stalled(
+    /// Send `text` frames without ever reading, until a send fails (the client dropped the connection), `frames`
+    /// are sent or `within` passes. A send that waits past `stall` is the client having stopped reading because
+    /// its own write to us cannot finish; only the first such stall is recorded.
+    pub(crate) async fn send_until_dropped(
         &mut self,
         text: &str,
         stall: Duration,
-    ) -> Option<(Duration, bool)> {
-        loop {
+        frames: usize,
+        within: Duration,
+    ) -> Flood {
+        let end = tokio::time::Instant::now() + within;
+        let mut stuck = None;
+        for sent in 0..frames {
             let mut send = std::pin::pin!(self.ws.send(Message::Text(text.to_string().into())));
-            tokio::select! {
-                sent = &mut send => {
-                    if sent.is_err() {
-                        return Some((Duration::ZERO, true));
-                    }
-                }
-                _ = tokio::time::sleep(stall) => {
-                    let stuck = tokio::time::Instant::now();
-                    let sent = send.await;
-                    return Some((stuck.elapsed(), sent.is_err()));
+            let mut result = None;
+            if stuck.is_none() {
+                tokio::select! {
+                    r = &mut send => result = Some(r),
+                    _ = tokio::time::sleep(stall) => stuck = Some(tokio::time::Instant::now()),
                 }
             }
+            let result = match result {
+                Some(r) => r,
+                None => match tokio::time::timeout_at(end, send).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        return Flood::Held {
+                            frames: sent,
+                            stalled: stuck.is_some(),
+                        }
+                    }
+                },
+            };
+            if result.is_err() {
+                return Flood::Dropped(stuck.map(|at| at.elapsed()));
+            }
+            if tokio::time::Instant::now() >= end {
+                return Flood::Held {
+                    frames: sent,
+                    stalled: stuck.is_some(),
+                };
+            }
+        }
+        Flood::Held {
+            frames,
+            stalled: stuck.is_some(),
         }
     }
 

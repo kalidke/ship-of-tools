@@ -39,7 +39,8 @@ pub(crate) struct Timing {
     /// A close the peer must answer, then the connection is forced down (observed: a peer that never answers
     /// blocks the read forever otherwise).
     pub close: Duration,
-    /// One write (an acknowledgement or a ping): a peer that stops reading cannot hold the reader.
+    /// One write (an acknowledgement or a ping): a peer that stops reading can hold the reader for at most this, then
+    /// the socket is retired.
     pub write: Duration,
     /// No frame received for this long (a pong or Slack's ping counts; our own ping does not): the connection is lost.
     pub idle: Duration,

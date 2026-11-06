@@ -11,7 +11,7 @@ use sot_protocol::chat::Origin;
 use tokio::time::Instant;
 
 use crate::api::{Api, Identity as Bot};
-use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen, WsPeer};
+use crate::fake_slack::{eventually, FakeSlack, Flood, Identity, Reply, Seen, WsPeer};
 use crate::http::{HttpError, Secret};
 use crate::normalize::Normalized;
 use crate::socket::{
@@ -941,7 +941,7 @@ async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls
                         .await;
                 }
                 for _ in 0..MAX_PENDING + 20 {
-                    peer.recv(SEC).await;
+                    assert!(peer.recv(SEC).await.is_some());
                 }
                 peer.ping("Ping from applink-2").await;
                 peer.send(&envelope("G0", 999, "hi", 0)).await;
@@ -1051,6 +1051,11 @@ fn the_product_numbers_are_the_measured_ones() {
     assert_eq!(Timing::PRODUCT.idle, Duration::from_secs(45));
     assert_eq!(Timing::PRODUCT.ping, Duration::from_secs(30));
     assert_eq!(Timing::PRODUCT.write, Duration::from_secs(5));
+    assert_eq!(Timing::PRODUCT.open, Duration::from_secs(15));
+    assert_eq!(Timing::PRODUCT.close, Duration::from_secs(2));
+    assert_eq!(Timing::PRODUCT.backoff_first, Duration::from_secs(1));
+    assert_eq!(Timing::PRODUCT.backoff_max, Duration::from_secs(30));
+    assert_eq!(Timing::PRODUCT.stop, Duration::from_secs(5));
 }
 
 #[tokio::test]
@@ -1069,7 +1074,12 @@ async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() 
                     let id = "a".repeat(128);
                     let frame = json!({"type": "noop", "envelope_id": id}).to_string();
                     let out = peer
-                        .send_until_stalled(&frame, Duration::from_millis(100))
+                        .send_until_dropped(
+                            &frame,
+                            Duration::from_millis(100),
+                            400_000,
+                            Duration::from_secs(6),
+                        )
                         .await;
                     *seen.lock().unwrap() = Some(out);
                 } else {
@@ -1085,19 +1095,25 @@ async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() 
                 ..timing()
             },
         );
-        eventually("the stalled send to end", || {
-            ended.lock().unwrap().is_some()
-        })
-        .await;
-        let (stalled, dropped) = ended
-            .lock()
-            .unwrap()
-            .unwrap()
-            .expect("the peer's sends ended without a drop");
+        eventually("the flood to end", || ended.lock().unwrap().is_some()).await;
+        let out = ended.lock().unwrap().take().unwrap();
         // The write bound (200 ms) and the close wait (300 ms), with 2.5 s of slack for a slow host. An unbounded
-        // write never drops the connection, so the peer's send never ends and the wait above times out.
-        assert!(dropped, "the stalled send did not end in a drop");
-        assert!(stalled < Duration::from_millis(3000), "{stalled:?}");
+        // write never drops the connection, so the flood ends held, stalled.
+        match out {
+            Flood::Dropped(stalled) => {
+                assert!(
+                    stalled.is_none_or(|s| s < Duration::from_millis(3000)),
+                    "{stalled:?}"
+                )
+            }
+            Flood::Held {
+                stalled: true,
+                frames,
+            } => panic!("a stalled write held the socket: {frames} frames, never dropped"),
+            Flood::Held { frames, .. } => {
+                panic!("the flood never stalled a write within its caps: {frames} frames")
+            }
+        }
         eventually("the replacement", || fake.sockets().2 >= 2).await;
         socket.stop().await;
         fake.shutdown().await;
