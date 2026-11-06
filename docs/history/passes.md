@@ -585,3 +585,10 @@ A landing's record goes here, with its measured times; the package page holds on
   of second round, then the first clean scoped gate: 50 s wall, whole lint, the Windows and macOS checks, and the chat crate's
   15 tests. That is the scoped gate's test, a fix inside one piece gated in under four minutes. Text no longer decides a post's
   origin, and the file-share label comes back with outgoing files in B4.
+- B1b, the web stack, the HTTP core and the fake Slack, 2026-11-06: 12:25 to main 13:03, 38 minutes, a miss, stopped and written
+  up here. 14 of change, then 10 of review beside a gate started at once (no blocker, four should-fix). That gate failed at 12:51
+  on CAPSULE-RESUME-TEST-UNDER-LOAD at load 73, in a test this change does not touch; the one rerun passed in 9 at peak load 15.7,
+  and without it the landing was 26 minutes. 37 new lock entries, no banned crate. The gate's macOS check passes only because
+  nothing links `sot-chat`: on Linux ring cannot compile C for its macOS target, which must be settled before B2 links the crate.
+- B1b's review follow-up, 2026-11-06: about 12:50 to main 13:05, 15 minutes. 3 of change, 8 of review (one blocker: the child's
+  proof of running was a predictable file in the shared temp folder, now its exit code), 2 of second round, scoped gate 54 s.

@@ -230,6 +230,11 @@ owned by `docs/CLAUDE.md`.
   (`rust/capsule/tests/fe_client/main.rs`) read outcome "ending" where "ended" was expected, after 75 s, at a local gate
   with peak load 51.72; it passed at peak loads 20.55 and 11.64. Nothing in those commits touches the capsule. Likely a
   wall-clock bound under another user's load, unproven. A hosted runner at a quarter speed could meet the same bound.
+- **CAPSULE-RESUME-TEST-UNDER-LOAD** [note] `resume::capsule_headless_input_resumes_a_row_whose_supervisor_died`
+  (`rust/backend/tests/capsule_workspaces/resume.rs`) failed at a local gate at load 73, peak 78: `pty.input` still answered
+  `capsule_not_ready`, phase `unreachable`, at its 60 s bound. The same commit passed it in 16 s at peak load 15.7. Nothing in
+  that commit touches the capsule. Likely the same kind of wall-clock bound as CAPSULE-SWEEP-TEST-UNDER-LOAD, unproven: a green
+  rerun does not exclude a recovery that can stick, and a gate on a shared host hits this when another user's load peaks.
 - **MACOS-AGENT-WATCH** [note] macOS has no parent-death signal, so an agent that ignores SIGHUP can outlive a SIGKILLed
   supervisor. Fix: a kqueue watcher. The ordinary case is proved on macOS; the SIGHUP-ignoring case on Linux and Windows
   only.
