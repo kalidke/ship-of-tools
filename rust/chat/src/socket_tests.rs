@@ -913,3 +913,125 @@ async fn a_reconciliation_begun_before_a_hello_is_refused_by_it() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls_and_the_queue_is_full(
+) {
+    bounded(async {
+        let pongs = Arc::new(Mutex::new(Vec::<(&str, bool)>::new()));
+        let seen = pongs.clone();
+        let fake = fake(move |_, mut peer| {
+            let seen = seen.clone();
+            async move {
+                peer.send(&hello()).await;
+                // A consumer that never reads, queue not full: the ping is still answered.
+                for i in 0..3 {
+                    peer.send(&envelope(&format!("S{i}"), i, "hi", 0)).await;
+                    assert!(expect_ack(&mut peer, &format!("S{i}")).await);
+                }
+                peer.ping("Ping from applink-1").await;
+                let ok = peer.expect_pong("Ping from applink-1", SEC * 2).await;
+                seen.lock().unwrap().push(("stalled", ok));
+                // The queue overflowing: every envelope acknowledged, the rest dropped; the ping is still answered.
+                for i in 0..MAX_PENDING + 20 {
+                    peer.send(&envelope(&format!("F{i}"), 100 + i, "hi", 0))
+                        .await;
+                }
+                peer.ping("Ping from applink-2").await;
+                let ok = peer.expect_pong("Ping from applink-2", SEC * 2).await;
+                seen.lock().unwrap().push(("full", ok));
+                peer.drain().await;
+            }
+        })
+        .await;
+        let socket = start(&fake, timing());
+        eventually("both pongs seen", || pongs.lock().unwrap().len() == 2).await;
+        assert_eq!(
+            *pongs.lock().unwrap(),
+            vec![("stalled", true), ("full", true)]
+        );
+        assert_eq!(socket.pending().0, MAX_PENDING, "the queue was not full");
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_peer_that_only_pings_keeps_its_link() {
+    bounded(async {
+        // The peer pings every 100 ms for 1.2 s, twice the idle bound, and never reads, so never answers ours.
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = done.clone();
+        let fake = fake(move |_, mut peer| {
+            let finished = finished.clone();
+            async move {
+                peer.send(&hello()).await;
+                for _ in 0..12 {
+                    peer.ping("Ping from applink-1").await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                finished.store(true, Ordering::SeqCst);
+                peer.ignore_until_gone().await;
+            }
+        })
+        .await;
+        let socket = start(
+            &fake,
+            Timing {
+                idle: Duration::from_millis(600),
+                ping: Duration::from_millis(100),
+                ..timing()
+            },
+        );
+        eventually("the pings sent", || done.load(Ordering::SeqCst)).await;
+        assert_eq!(fake.sockets().2, 1, "a pinging link was replaced");
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap() {
+    bounded(async {
+        // Socket 0 says hello and vanishes with no close and no disconnect; socket 1 says nothing. The idle bound
+        // (60 s) is far past the test, so only the end of stream can have ended socket 0.
+        let go = Arc::new(AtomicBool::new(false));
+        let times = Arc::new(Mutex::new(Vec::<Instant>::new()));
+        let (flag, at) = (go.clone(), times.clone());
+        let fake = fake(move |i, mut peer| {
+            let (flag, at) = (flag.clone(), at.clone());
+            async move {
+                if i == 0 {
+                    peer.send(&hello()).await;
+                    while !flag.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    at.lock().unwrap().push(Instant::now());
+                } else {
+                    at.lock().unwrap().push(Instant::now());
+                    peer.drain().await;
+                }
+            }
+        })
+        .await;
+        let socket = start(&fake, timing());
+        eventually("hello", || socket.status().connected).await;
+        let g = socket.gap().expect("hello gap");
+        assert!(socket.reconciled(g));
+        assert_eq!(socket.gap(), None);
+        go.store(true, Ordering::SeqCst);
+        eventually("the replacement", || times.lock().unwrap().len() == 2).await;
+        let t = times.lock().unwrap().clone();
+        assert!(
+            t[1] - t[0] < Duration::from_secs(5),
+            "replaced by the idle bound, not by the end: {:?}",
+            t[1] - t[0]
+        );
+        assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}

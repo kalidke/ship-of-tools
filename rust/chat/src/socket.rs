@@ -58,7 +58,7 @@ impl Timing {
         open: Duration::from_secs(15),
         close: Duration::from_secs(2),
         write: Duration::from_secs(5),
-        idle: Duration::from_secs(90),
+        idle: Duration::from_secs(45),
         ping: Duration::from_secs(30),
         backoff_first: Duration::from_secs(1),
         backoff_max: Duration::from_secs(30),

@@ -145,6 +145,26 @@ impl WsPeer {
         }
     }
 
+    /// A websocket ping with a text payload, as Slack sends.
+    pub(crate) async fn ping(&mut self, payload: &str) {
+        let _ = self
+            .ws
+            .send(Message::Ping(payload.as_bytes().to_vec().into()))
+            .await;
+    }
+
+    /// Read frames until a pong carrying `payload` arrives, within `within`.
+    pub(crate) async fn expect_pong(&mut self, payload: &str, within: Duration) -> bool {
+        let end = tokio::time::Instant::now() + within;
+        loop {
+            match tokio::time::timeout_at(end, self.ws.next()).await {
+                Ok(Some(Ok(Message::Pong(got)))) => return got.as_ref() == payload.as_bytes(),
+                Ok(Some(Ok(_))) => {}
+                _ => return false,
+            }
+        }
+    }
+
     /// Read until the client ends the connection; the library answers a close.
     pub(crate) async fn drain(&mut self) {
         while let Some(Ok(_)) = self.ws.next().await {}
