@@ -112,8 +112,9 @@ token or configuration loading, no delivery and no channel mapping.
    pings, median 0.059 s; with nothing sent from our side it dropped the link at 45, 51 and 58 s as a bare end of
    stream, no close and no disconnect frame, and with replies going out the link held 600 s. The 45 s idle bound is
    about four of Slack's intervals and where Slack itself gives up on a silent peer. Every Slack ping is answered with
-   a pong carrying its payload: the reader polls the socket again at once after any frame and `handle` and the queue
-   push never wait, so a stalled consumer or a full queue cannot hold a pong. Not proven: whether answering alone
+   a pong carrying its payload: the websocket library sends it at the reader's next poll, which follows any frame at
+   once. The queue push never waits, so a stalled consumer or a full queue cannot hold a pong; only a write that cannot
+   finish can, for at most its 5 s bound, after which the socket is retired. Not proven: whether answering alone
    keeps the link without our 30 s ping, which stays. A wrong value fails safe, as a reconnect, a `Reconnect` gap and a
    history pull, never a lost event. A `warning` retires the socket at once, by design (one socket, never overlapping).
 19. **Nothing lost is silent.** A pending event is dropped, acknowledged, when 256 are pending or their frames pass 8 MiB
