@@ -3,10 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener. The crate (`sot-chat`) depends on `sot-protocol`, `serde_json` and the web stack recorded below, with `sot-platform` and `toml` declared
-ahead of the configuration that first uses them. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant and name cache, and a `Socket`'s one task, queue and gap, and has no file call, no
-token or configuration loading, no delivery and no channel mapping.
+listener, and `config`, the two configuration files. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+bot identity, read-pacing instant and name cache, and a `Socket`'s one task, queue and gap, and has no delivery. Its one file calls are `config`'s two reads (guarantee 21); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -132,8 +130,22 @@ token or configuration loading, no delivery and no channel mapping.
    never read whole). The connection and handshake share a 15 s deadline. The app token rides only the
    `apps.connections.open` request, which is a request under guarantees 5 to 10; the private URL and the ticket reach no
    error, status or format value (`SocketError` is a fixed code: `Http(code)`, `Rejected`, `Malformed`, `BadRequest`;
-   Slack's text is dropped). A failed open is `Status.error`, paced and retried. Limit: C14 (duplicate listeners, the
-   workspace lock) is the configuration landing's, because a lock needs the configuration and the service.
+   Slack's text is dropped). A failed open is `Status.error`, paced and retried. Limit: C14's lock and second service
+   are the service landing's; its load half is guarantee 21.
+
+21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
+   workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
+   `chat-secrets.toml` (`workspace`, `bot_token`, `app_token`) are in platform's config folder (`config_dir`); only the
+   named keys are accepted. A second workspace (a list, a table, a mapping or the secrets naming another), a repeated
+   channel and equal tokens are refused at load. Mappings are admitted against supplied row facts (`Rows`: a folder's
+   canonical spelling and whether it is the inert anchor; chat resolves no row): an unknown folder, the inert anchor, a
+   channel not listed, two entries for one canonical folder (an alias, or the same pair twice) and one channel for two
+   folders are refused (M1). `resolve(config, folder)` matches the canonical folder exactly and answers `Mapped` (delivering
+   only with a `mail_after`), `Unmapped` or `Invalid(code)` (missing or malformed), each with a fixed `explain()` (M2;
+   the non-hub answer comes with the hub landing). A refusal is a `ConfigError` code: no value from either file is quoted
+   and the library's parse errors, which quote the source, are never formatted. Tokens are `Secret`s (guarantee 10's
+   mask). `Config::load` opens `chat.toml` only; `Credentials::read` is the one call that opens `chat-secrets.toml`
+   (the hub landing guards it). Limit: the file's permissions are not checked here, and the attachment bound is B4's.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -144,7 +156,7 @@ never holds another form.
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -153,8 +165,7 @@ webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the librar
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 
 ## Does not
-Open a socket except through `Http::websocket`, call a file method, hold a credential at rest or load one, read configuration, file mail, or map
-channels to rows. Define the
+Open a socket except through `Http::websocket`, call a file method outside `config.rs`, hold a credential at rest, read a token from the environment, file mail, or resolve a row (it maps folders to channels from supplied facts). Define the
 record's representation (wire's). Offer another way to the network, a retry helper or a generic outbound HTTP type.
 
 ## Dependencies (the web stack)
@@ -214,12 +225,13 @@ Paths are under `rust/chat/src/`.
 | 17 | ack first (C11) | `socket_tests.rs`: `socket_ack_precedes_slow_api_and_dispatch` (the fake sends each envelope only after the previous one's acknowledgement while the dispatcher is stalled on a lookup that never answers), `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` (a peer that never reads fills the buffers; the socket is dropped, not held, with idle far past the test) |
 | 18 | one socket (C12) | `socket_tests.rs`: `disconnect_refresh_and_silent_close_keep_one_socket` (warning, refresh, silent close, a peer that ignores close, endless refreshes; peak open 1; stop bounded and final), `a_peer_that_ignores_close_is_forced_down_within_the_bound`, `the_product_numbers_are_the_measured_ones` (all eight product timings), `a_silent_socket_is_replaced_after_the_idle_bound` (ping shorter than idle, as in the product; replaced no sooner than idle and within a stated bound), `a_link_that_answers_is_kept_past_the_idle_bound`, `a_chatty_peer_that_never_answers_keeps_its_link`, `a_peer_that_only_pings_keeps_its_link` (a peer ping alone resets the idle clock), `every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls_and_the_queue_is_full` (a pong frame with the payload, in both states), `a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap`, `reconnects_are_paced_after_a_refusal_and_after_a_hello`, `stop_during_the_reconnect_pause_does_not_wait_for_it` |
 | 19 | gaps (C13) | `socket_tests.rs`: `a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it`, `a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap`, `a_reconciliation_begun_before_a_hello_is_refused_by_it`, `overflow_latches_gap_without_blocking_ack` (a failed event; 300 envelopes over the count with every one acknowledged; a loss during a reconciliation survives it; ten 900,000-byte events over the byte budget), `an_events_message_keeps_its_origin_through_the_socket` |
+| 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_duplicates_and_bad_values_are_refused_at_load`, `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_files_are_named_in_platforms_config_folder` |
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
 - `src/lib.rs`: the modules and re-exports.
-- `src/normalize.rs`: the normalization.
+- `src/normalize.rs`: the normalization. `src/config.rs`: the configuration; `src/config_tests.rs`: its tests.
 - `src/http.rs`: the HTTP core and `Http::websocket`. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
 - `src/socket.rs`: the Socket Mode listener; `src/socket_tests.rs`: its tests.
 - `src/fake_slack/`: the test-only fake, its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
