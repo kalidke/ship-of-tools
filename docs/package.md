@@ -60,10 +60,10 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire; platform and `toml` are declared ahead of their first use. `sot-backend` depends on it, and no daemon code names it yet, so the binary holds none of it. Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sot-backend` depends on it, and no daemon code names it yet, so the binary holds none of it. Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
-  network, the Slack calls and the Socket Mode listener. Does not: hold a credential at rest, read configuration, lock
-  a workspace, file mail or map channels.
+  network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
+  config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
 - **topology:** `rust/topology/CLAUDE.md`, crate `sot-topology`; the daemon's half is in `sotd`. Owns: the hub's
   hosts.toml and the generated relay units. Does not: hold the window's or the daemon's connections.
 - **containment:** `rust/containment/CLAUDE.md`, crate `sot-containment`, on platform alone. Owns: the registry of

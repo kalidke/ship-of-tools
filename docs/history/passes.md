@@ -633,3 +633,7 @@ A landing's record goes here, with its measured times; the package page holds on
   the step still type-checks macOS code; `cargo check` links nothing. The review showed the builder's word "links" was too strong: no
   daemon code names the crate, so `sotd` holds none of it, and the old-glibc pack and the Windows link have not met it yet. Their
   first proof is the first call, at B2e. Every manifest change of the stage is in this landing.
+- The ping landing's follow-up, 2026-11-06: 15:43 to main 16:03, 20 minutes, two fix rounds, first gate at its head passed. Tests for
+  the 5 s write bound and all eight product numbers, and a tighter pong window. The ordering check it was asked for could not catch a
+  held ping, since the library flushes a queued pong before the next write; it stays, pinning that rule. The review stopped a helper
+  that failed a correct product on a merely slow send and gave its flood frame and time caps, since Windows and macOS buffers are unmeasured.
