@@ -4,11 +4,19 @@ use std::cell::RefCell;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const BOT: &str = "sentinel-bot-token-aaaa";
-const APP: &str = "sentinel-app-token-bbbb";
+type E = ConfigError;
+
+/// Built at run time, so no source line holds a token-shaped literal for the secret scanner.
+fn bot() -> String {
+    ["xoxb", "-sentinel-bot-aaaa"].concat()
+}
+
+fn app() -> String {
+    ["xapp", "-sentinel-app-bbbb"].concat()
+}
 
 /// Rows' facts as a fixture: `/work/a` and its alias `/link/a` are one folder, `/work/anchor` is the inert anchor,
-/// `/work/b` is another, and any other folder is unknown.
+/// `/work/b` is another, and any other folder is unknown. The real canonicalizer is the hub landing's.
 fn rows(folder: &str) -> Option<Folder> {
     let (canonical, inert) = match folder {
         "/work/a" | "/link/a" => ("/work/a", false),
@@ -34,36 +42,37 @@ fn parse(text: &str) -> Result<Config, ConfigError> {
     Config::parse(text, &rows)
 }
 
-fn secrets(extra: &str) -> String {
-    format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\n{extra}")
+fn secrets_with(bot: &str, app: &str) -> String {
+    format!("workspace = \"T0AAAA\"\nbot_token = \"{bot}\"\napp_token = \"{app}\"\n")
+}
+
+fn secrets() -> String {
+    secrets_with(&bot(), &app())
+}
+
+fn creds(text: &str) -> Result<Credentials, ConfigError> {
+    Credentials::parse(text, &parse(&chat("")).unwrap())
 }
 
 #[test]
 fn mapping_refuses_aliases_duplicates_and_inert_anchor() {
     let ok = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0BBBB")));
     assert!(parse(&ok).is_ok());
-    // An alias of a mapped folder collides with it, though the text differs.
+    // An alias of a mapped folder collides with it, though the text differs; the second entry is the one named.
     let alias = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/link/a", "C0BBBB")));
-    assert_eq!(parse(&alias).unwrap_err(), ConfigError::FolderRepeated);
+    assert_eq!(parse(&alias).unwrap_err(), E::FolderRepeated(2));
     // The same pair twice fails.
     let twice = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/a", "C0AAAA")));
-    assert_eq!(parse(&twice).unwrap_err(), ConfigError::FolderRepeated);
+    assert_eq!(parse(&twice).unwrap_err(), E::FolderRepeated(2));
     // One channel for two folders fails.
     let shared = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0AAAA")));
-    assert_eq!(parse(&shared).unwrap_err(), ConfigError::ChannelRepeated);
+    assert_eq!(parse(&shared).unwrap_err(), E::ChannelRepeated(2));
     // The inert anchor takes no channel.
-    let anchor = chat(&mapping("/work/anchor", "C0AAAA"));
-    assert_eq!(parse(&anchor).unwrap_err(), ConfigError::InertAnchor);
-    // A folder no row knows, and a channel the file does not list.
     assert_eq!(
-        parse(&chat(&mapping("/work/zzz", "C0AAAA"))).unwrap_err(),
-        ConfigError::UnknownFolder
+        parse(&chat(&mapping("/work/anchor", "C0AAAA"))).unwrap_err(),
+        E::InertAnchor(1)
     );
-    assert_eq!(
-        parse(&chat(&mapping("/work/a", "C0CCCC"))).unwrap_err(),
-        ConfigError::ChannelNotListed
-    );
-    // Folders match exactly: a prefix, a parent and a trailing slash are not the mapped folder.
+    // Folders match exactly: a prefix, a parent, a trailing slash and another case are not the mapped folder.
     let cfg = Ok(parse(&ok).unwrap());
     assert!(matches!(
         resolve(&cfg, "/work/a"),
@@ -83,7 +92,7 @@ fn resolve_explains_unmapped_invalid_and_disabled_delivery() {
     .unwrap());
     let off = Ok(parse(&chat(&mapping("/work/a", "C0AAAA"))).unwrap());
     let bad = parse("this is not toml [");
-    let missing: Result<Config, ConfigError> = Err(ConfigError::Missing);
+    let missing: Result<Config, ConfigError> = Err(E::Missing);
 
     let r_on = resolve(&on, "/work/a");
     let r_off = resolve(&off, "/work/a");
@@ -105,8 +114,8 @@ fn resolve_explains_unmapped_invalid_and_disabled_delivery() {
         assert!(!r.delivers());
     }
     assert_eq!(r_unmapped, Resolution::Unmapped);
-    assert_eq!(r_bad, Resolution::Invalid(ConfigError::Malformed));
-    assert_eq!(r_missing, Resolution::Invalid(ConfigError::Missing));
+    assert_eq!(r_bad, Resolution::Invalid(E::Malformed(Some(1))));
+    assert_eq!(r_missing, Resolution::Invalid(E::Missing));
     // Five states, five different fixed explanations, each saying what to do.
     let all = [&r_on, &r_off, &r_unmapped, &r_bad, &r_missing].map(|r| r.explain());
     for (i, a) in all.iter().enumerate() {
@@ -120,88 +129,271 @@ fn resolve_explains_unmapped_invalid_and_disabled_delivery() {
     assert!(r_missing.explain().contains("chat.toml"));
 }
 
+/// Every variant exhaustively, so a new one is a compile error here until it has a row below.
+fn index(e: ConfigError) -> usize {
+    match e {
+        E::Missing => 0,
+        E::Unreadable => 1,
+        E::Malformed(_) => 2,
+        E::BadId => 3,
+        E::BadMailAfter => 4,
+        E::BadToken => 5,
+        E::SecondWorkspace => 6,
+        E::DuplicateChannel => 7,
+        E::UnknownFolder(_) => 8,
+        E::InertAnchor(_) => 9,
+        E::FolderRepeated(_) => 10,
+        E::ChannelRepeated(_) => 11,
+        E::ChannelNotListed(_) => 12,
+    }
+}
+const VARIANTS: usize = 13;
+
 #[test]
-fn a_second_workspace_duplicates_and_bad_values_are_refused_at_load() {
-    let m = mapping("/work/a", "C0AAAA");
-    let second_in_mapping = chat(&format!("{m}workspace = \"T0ZZZZ\"\n")); // a key after [[mapping]] belongs to it
+fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
+    let m = |f: &str, c: &str| mapping(f, c);
+    let two = |a: String, b: String| chat(&(a + &b));
+    let long = |p: &str, n: usize| format!("{p}{}", "a".repeat(n - p.len()));
+    type Outcome = Result<(), ConfigError>;
+    let cases: Vec<(&str, Outcome, Outcome)> = vec![
+        (
+            "not toml, line 3",
+            parse("a = 1\nb = 2\nthis is [").map(drop),
+            Err(E::Malformed(Some(3))),
+        ),
+        (
+            "unknown key",
+            parse(&chat("typo = 1\n")).map(drop),
+            Err(E::Malformed(None)),
+        ),
+        (
+            "unknown key in a mapping",
+            parse(&chat(&(m("/work/a", "C0AAAA") + "extra = 1\n"))).map(drop),
+            Err(E::Malformed(None)),
+        ),
+        (
+            "lowercase id",
+            parse("workspace = \"t0aaaa\"\nchannels = []\n").map(drop),
+            Err(E::BadId),
+        ),
+        (
+            "33-byte id",
+            parse(&format!(
+                "workspace = \"{}\"\nchannels = []\n",
+                "T".repeat(33)
+            ))
+            .map(drop),
+            Err(E::BadId),
+        ),
+        (
+            "32-byte id",
+            parse(&format!(
+                "workspace = \"{}\"\nchannels = []\n",
+                "T".repeat(32)
+            ))
+            .map(drop),
+            Ok(()),
+        ),
+        (
+            "bad mail_after",
+            parse(&chat("mail_after = \"yesterday\"\n")).map(drop),
+            Err(E::BadMailAfter),
+        ),
+        (
+            "list of workspaces",
+            parse("workspace = [\"T0AAAA\", \"T0ZZZZ\"]\nchannels = []\n").map(drop),
+            Err(E::SecondWorkspace),
+        ),
+        (
+            "duplicate channel",
+            parse("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0AAAA\"]\n").map(drop),
+            Err(E::DuplicateChannel),
+        ),
+        (
+            "unknown folder, second mapping",
+            parse(&two(m("/work/a", "C0AAAA"), m("/work/zzz", "C0BBBB"))).map(drop),
+            Err(E::UnknownFolder(2)),
+        ),
+        (
+            "inert anchor",
+            parse(&chat(&m("/work/anchor", "C0AAAA"))).map(drop),
+            Err(E::InertAnchor(1)),
+        ),
+        (
+            "alias",
+            parse(&two(m("/work/a", "C0AAAA"), m("/link/a", "C0BBBB"))).map(drop),
+            Err(E::FolderRepeated(2)),
+        ),
+        (
+            "shared channel",
+            parse(&two(m("/work/a", "C0AAAA"), m("/work/b", "C0AAAA"))).map(drop),
+            Err(E::ChannelRepeated(2)),
+        ),
+        (
+            "unlisted channel",
+            parse(&chat(&m("/work/a", "C0CCCC"))).map(drop),
+            Err(E::ChannelNotListed(1)),
+        ),
+        (
+            "bot token as the app token",
+            creds(&secrets_with(&bot(), &bot())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "swapped tokens",
+            creds(&secrets_with(&app(), &bot())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "bare prefix",
+            creds(&secrets_with("xoxb-", &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "empty token",
+            creds(&secrets_with("", &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "513-byte token",
+            creds(&secrets_with(&long("xoxb-", 513), &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "space in a token",
+            creds(&secrets_with(&bot().replace("sentinel", "a b"), &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "non-ASCII in a token",
+            creds(&secrets_with(&format!("{}\u{e9}", bot()), &app())).map(drop),
+            Err(E::BadToken),
+        ),
+        (
+            "secrets for another workspace",
+            creds(&secrets().replace("T0AAAA", "T0ZZZZ")).map(drop),
+            Err(E::SecondWorkspace),
+        ),
+        (
+            "secrets with an unknown key",
+            creds(&(secrets() + "extra = 1\n")).map(drop),
+            Err(E::Malformed(None)),
+        ),
+    ];
+    let mut seen = [false; VARIANTS];
+    for (what, got, want) in &cases {
+        assert_eq!(got, want, "{what}");
+        if let Err(e) = want {
+            seen[index(*e)] = true;
+        }
+    }
+    // The loader's own refusals.
+    let none = |_: &Path| -> io::Result<String> { Err(io::ErrorKind::NotFound.into()) };
+    let denied = |_: &Path| -> io::Result<String> { Err(io::ErrorKind::PermissionDenied.into()) };
+    let big = |_: &Path| -> io::Result<String> { Err(io::ErrorKind::InvalidData.into()) };
+    let dir = Path::new("/config/sot");
+    assert_eq!(Config::load(dir, &none, &rows).unwrap_err(), E::Missing);
     assert_eq!(
-        parse(&second_in_mapping).unwrap_err(),
-        ConfigError::SecondWorkspace
+        Config::load(dir, &denied, &rows).unwrap_err(),
+        E::Unreadable
     );
-    let list = "workspace = [\"T0AAAA\", \"T0ZZZZ\"]\nchannels = [\"C0AAAA\"]\n";
-    assert_eq!(parse(list).unwrap_err(), ConfigError::SecondWorkspace);
+    assert_eq!(
+        Config::load(dir, &big, &rows).unwrap_err(),
+        E::Malformed(None)
+    );
+    seen[index(E::Missing)] = true;
+    seen[index(E::Unreadable)] = true;
+    assert!(seen.iter().all(|s| *s), "a variant has no row: {seen:?}");
+    // Boundaries admitted: a 512-byte token.
+    assert!(creds(&secrets_with(&long("xoxb-", 512), &app())).is_ok());
+    // Every code has a non-empty explanation, no two alike, and a place shows in the text and in no explanation.
+    let codes = [
+        E::Missing,
+        E::Unreadable,
+        E::Malformed(Some(3)),
+        E::BadId,
+        E::BadMailAfter,
+        E::BadToken,
+        E::SecondWorkspace,
+        E::DuplicateChannel,
+        E::UnknownFolder(2),
+        E::InertAnchor(2),
+        E::FolderRepeated(2),
+        E::ChannelRepeated(2),
+        E::ChannelNotListed(2),
+    ];
+    assert_eq!(codes.len(), VARIANTS);
+    for (i, a) in codes.iter().enumerate() {
+        assert_eq!(index(*a), i);
+        assert!(a.explain().len() > 20, "{a:?}");
+        for b in &codes[i + 1..] {
+            assert_ne!(a.explain(), b.explain());
+        }
+    }
+    assert!(E::Malformed(Some(3)).to_string().ends_with("(line 3)"));
+    assert!(E::UnknownFolder(2).to_string().ends_with("(mapping 2)"));
+    assert_eq!(E::Missing.to_string(), E::Missing.explain());
+    // The files are named as the contract names them.
+    assert_eq!(CONFIG_FILE, "chat.toml");
+    assert_eq!(SECRETS_FILE, "chat-secrets.toml");
+}
+
+#[test]
+fn a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load() {
+    let second_in_mapping = chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"T0ZZZZ\"\n"));
+    assert_eq!(parse(&second_in_mapping).unwrap_err(), E::SecondWorkspace);
     let table = "channels = []\n[workspace]\nid = \"T0AAAA\"\n";
-    assert_eq!(parse(table).unwrap_err(), ConfigError::SecondWorkspace);
-    let dup = "workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0AAAA\"]\n";
-    assert_eq!(parse(dup).unwrap_err(), ConfigError::DuplicateChannel);
-    // A duplicate key is not valid TOML.
+    assert_eq!(parse(table).unwrap_err(), E::SecondWorkspace);
+    // A mapping may repeat the one workspace.
+    assert!(parse(&chat(
+        &(mapping("/work/a", "C0AAAA") + "workspace = \"T0AAAA\"\n")
+    ))
+    .is_ok());
     assert_eq!(
-        parse(&chat("workspace = \"T0AAAA\"\n")).unwrap_err(),
-        ConfigError::Malformed
-    );
-    assert_eq!(
-        parse(&chat("typo = 1\n")).unwrap_err(),
-        ConfigError::Malformed
-    );
-    assert_eq!(
-        parse("workspace = \"t0aaaa\"\nchannels = []\n").unwrap_err(),
-        ConfigError::BadId
-    );
-    assert_eq!(
-        parse(&chat("mail_after = \"yesterday\"\n")).unwrap_err(),
-        ConfigError::BadMailAfter
-    );
+        parse(&chat("workspace = \"T0AAAA\"\n")).unwrap_err().at(),
+        Some(3)
+    ); // a repeated key is a parse failure, at its line
     assert_eq!(
         parse(&chat("mail_after = 5\n")).unwrap_err(),
-        ConfigError::Malformed
+        E::Malformed(None)
     );
-    // Secrets: the same token twice, and secrets for another workspace.
-    let cfg = parse(&chat("")).unwrap();
-    let same = format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{BOT}\"\n");
-    assert_eq!(
-        Credentials::parse(&same, &cfg).unwrap_err(),
-        ConfigError::DuplicateToken
-    );
-    let other = secrets("").replace("T0AAAA", "T0ZZZZ");
-    assert_eq!(
-        Credentials::parse(&other, &cfg).unwrap_err(),
-        ConfigError::SecondWorkspace
-    );
-    assert!(Credentials::parse(&secrets(""), &cfg).is_ok());
 }
 
 #[test]
 fn a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value() {
-    let cfg = parse(&chat("")).unwrap();
-    let creds = Credentials::parse(&secrets(""), &cfg).unwrap();
+    let c = creds(&secrets()).unwrap();
     for shown in [
-        format!("{creds:?}"),
-        format!("{:#?}", creds),
-        format!("{}", creds.bot),
-        format!("{:?}", creds.app),
+        format!("{c:?}"),
+        format!("{c:#?}"),
+        format!("{}", c.bot),
+        format!("{:?}", c.app),
     ] {
         assert!(!shown.contains("sentinel"), "{shown}");
     }
+    let (b, a) = (bot(), app());
     // Malformed files with a sentinel in each place a parser might quote it.
     let bad = [
-        format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\napp_token = \"{APP}\"\n"), // unterminated
-        format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\n"), // key twice
-        secrets(&format!("extra = \"{BOT}\"\n")),                                                  // unknown key
-        format!("workspace = \"T0AAAA\"\nbot_token = [\"{BOT}\"]\napp_token = \"{APP}\"\n"),      // wrong type
-        format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT} {BOT}\"\napp_token = \"{APP}\"\n"),   // space in a token
-        format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{BOT}\"\n"),         // same twice
-        secrets("").replace("T0AAAA", &format!("{BOT}")),                                          // token as an id
-        format!("{BOT} = {APP}"),                                                                  // bare garbage
+        format!("workspace = \"T0AAAA\"\nbot_token = \"{b}\napp_token = \"{a}\"\n"), // unterminated
+        format!("workspace = \"T0AAAA\"\nbot_token = \"{b}\"\nbot_token = \"{b}\"\napp_token = \"{a}\"\n"), // key twice
+        secrets() + &format!("extra = \"{b}\"\n"),                                     // unknown key
+        format!("workspace = \"T0AAAA\"\nbot_token = [\"{b}\"]\napp_token = \"{a}\"\n"), // wrong type
+        secrets_with(&format!("{b} {b}"), &a),                                        // space in a token
+        secrets_with(&b, &b),                                                         // same twice
+        secrets_with(&a, &b),                                                         // swapped
+        secrets().replace("T0AAAA", &b),                                              // token as an id
+        format!("{b} = {a}"),                                                         // bare garbage
+        format!("{b}\n{a}\n[{b}\n"),                                                  // garbage over lines
     ];
     for text in &bad {
-        let e = Credentials::parse(text, &cfg).unwrap_err();
+        let e = creds(text).unwrap_err();
         let shown = format!("{e} {e:?} {}", e.explain());
         assert!(!shown.contains("sentinel"), "{shown}");
     }
-    // The same through the file call, where the reader fails with a path and a message.
+    // Through the file call, where the reader fails with a path and a message.
     let failing: Reader = &|p| Err(io::Error::other(format!("{} sentinel-io", p.display())));
-    let e = Credentials::read(Path::new("/nowhere"), failing, &cfg).unwrap_err();
-    assert_eq!(e, ConfigError::Unreadable);
+    let e =
+        Credentials::read(Path::new("/nowhere"), failing, &parse(&chat("")).unwrap()).unwrap_err();
+    assert_eq!(e, E::Unreadable);
     assert!(!format!("{e} {e:?}").contains("sentinel"));
 }
 
@@ -214,7 +406,7 @@ fn loading_the_configuration_opens_no_secret_file() {
         if p.ends_with(CONFIG_FILE) {
             Ok(chat(&mapping("/work/a", "C0AAAA")))
         } else if p.ends_with(SECRETS_FILE) {
-            Ok(secrets(""))
+            Ok(secrets())
         } else {
             Err(io::ErrorKind::NotFound.into())
         }
@@ -222,26 +414,10 @@ fn loading_the_configuration_opens_no_secret_file() {
     let cfg = Config::load(&dir, &read, &rows).unwrap();
     assert_eq!(*opened.borrow(), vec![dir.join(CONFIG_FILE)]);
     // The secrets are opened only by their own call, and by it alone.
-    let creds = Credentials::read(&dir, &read, &cfg).unwrap();
-    assert_eq!(creds.workspace, "T0AAAA");
+    assert!(Credentials::read(&dir, &read, &cfg).is_ok());
     assert_eq!(
         *opened.borrow(),
         vec![dir.join(CONFIG_FILE), dir.join(SECRETS_FILE)]
-    );
-    // A missing file is its own state, and so is one that cannot be read.
-    let none = |_: &Path| -> io::Result<String> { Err(io::ErrorKind::NotFound.into()) };
-    assert_eq!(
-        Config::load(&dir, &none, &rows).unwrap_err(),
-        ConfigError::Missing
-    );
-    assert_eq!(
-        Credentials::read(&dir, &none, &cfg).unwrap_err(),
-        ConfigError::Missing
-    );
-    let denied = |_: &Path| -> io::Result<String> { Err(io::ErrorKind::PermissionDenied.into()) };
-    assert_eq!(
-        Config::load(&dir, &denied, &rows).unwrap_err(),
-        ConfigError::Unreadable
     );
 }
 
@@ -258,4 +434,96 @@ fn the_files_are_named_in_platforms_config_folder() {
         );
     }
     assert_eq!(config_dir(&Env::empty()), None);
+}
+
+/// A scratch folder that removes itself.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir =
+            std::env::temp_dir().join(format!("sot-chat-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else() {
+    let s = Scratch::new("read");
+    let file = |name: &str, bytes: &[u8]| {
+        let p = s.0.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    };
+    let at_cap = vec![b'#'; MAX_FILE as usize];
+    assert_eq!(
+        read_file(&file("at", &at_cap)).unwrap().len(),
+        MAX_FILE as usize
+    );
+    let over = vec![b'#'; MAX_FILE as usize + 1];
+    assert_eq!(
+        read_file(&file("over", &over)).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        read_file(&file("utf", &[0xff, 0xfe])).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        read_file(&s.0.join("absent")).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    // A directory is not a file to read.
+    assert!(read_file(&s.0).is_err());
+    // Through the loader, the oversize file is a refusal and the file's text is not in it.
+    std::fs::write(s.0.join(CONFIG_FILE), &over).unwrap();
+    assert_eq!(
+        Config::load(&s.0, &read_file, &rows).unwrap_err(),
+        E::Malformed(None)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_fifo_or_device_is_refused_without_a_wait() {
+    let s = Scratch::new("fifo");
+    let fifo = s.0.join(CONFIG_FILE);
+    // A short-lived tool that runs to its end, not a daemon child: the allow says why.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test makes a FIFO with a tool that runs to its end; no daemon runs here"
+    )]
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // The read runs on its own thread so a read that blocks fails this test instead of hanging the suite; a read that
+    // returns (as it must) costs no wait.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = fifo.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(read_file(&path));
+    });
+    let got = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the read of a FIFO blocked");
+    assert_eq!(got.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        Config::load(&s.0, &read_file, &rows).unwrap_err(),
+        E::Unreadable
+    );
+    // A device that never ends is not a regular file either.
+    assert_eq!(
+        read_file(Path::new("/dev/zero")).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
 }

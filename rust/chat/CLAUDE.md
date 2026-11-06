@@ -136,16 +136,24 @@ bot identity, read-pacing instant and name cache, and a `Socket`'s one task, que
 21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
    workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
    `chat-secrets.toml` (`workspace`, `bot_token`, `app_token`) are in platform's config folder (`config_dir`); only the
-   named keys are accepted. A second workspace (a list, a table, a mapping or the secrets naming another), a repeated
-   channel and equal tokens are refused at load. Mappings are admitted against supplied row facts (`Rows`: a folder's
-   canonical spelling and whether it is the inert anchor; chat resolves no row): an unknown folder, the inert anchor, a
-   channel not listed, two entries for one canonical folder (an alias, or the same pair twice) and one channel for two
-   folders are refused (M1). `resolve(config, folder)` matches the canonical folder exactly and answers `Mapped` (delivering
-   only with a `mail_after`), `Unmapped` or `Invalid(code)` (missing or malformed), each with a fixed `explain()` (M2;
-   the non-hub answer comes with the hub landing). A refusal is a `ConfigError` code: no value from either file is quoted
-   and the library's parse errors, which quote the source, are never formatted. Tokens are `Secret`s (guarantee 10's
+   named keys are accepted. Each file is read by `read_file` alone: a regular file (checked on the open handle, the open
+   non-blocking so a planted FIFO returns at once; a device or directory is refused) of at most 64 KiB (`MAX_FILE`), text,
+   read to at most one byte over the cap. The cap's job is to end a stall and bound the work a planted file causes (the
+   channel check is quadratic and each mapping asks rows), not to be large. A second workspace (a list, a table, a mapping
+   or the secrets naming another) and a repeated channel are refused at load. The bot token starts `xoxb-` and the app
+   token `xapp-`, then printable ASCII, 512 bytes at most: a swap or equal tokens are refused, and every admitted token
+   is a form platform's log masker knows. Mappings are admitted against supplied row facts (`Rows`: a folder's canonical
+   spelling and whether it is the inert anchor; chat resolves no row): an unknown folder, the inert anchor, a channel not
+   listed, two entries for one canonical folder (an alias, or the same pair twice) and one channel for two folders are
+   refused (M1). `resolve(config, folder)` matches the canonical folder exactly and answers `Mapped` (delivering only
+   with a `mail_after`), `Unmapped` or `Invalid(code)` (missing or malformed), each with a fixed `explain()` (M2; the
+   non-hub answer comes with the hub landing, which must decide the hub before it calls `Config::load`, because another
+   daemon on a shared home has other rows and would read every mapping as unknown). A refusal is a `ConfigError` code: a
+   mapping refusal carries the mapping's ordinal and a parse failure its line, and no key or value from either file is
+   quoted; the library's parse errors, which quote the source, are never formatted. Tokens are `Secret`s (guarantee 10's
    mask). `Config::load` opens `chat.toml` only; `Credentials::read` is the one call that opens `chat-secrets.toml`
-   (the hub landing guards it). Limit: the file's permissions are not checked here, and the attachment bound is B4's.
+   (the hub landing guards it). Limits: the alias rule is proved against a fixture of supplied facts until the hub
+   landing supplies the real canonicalizer; a file's permissions are not checked here; the attachment bound is B4's.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -156,7 +164,7 @@ never holds another form.
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -225,8 +233,8 @@ Paths are under `rust/chat/src/`.
 | 17 | ack first (C11) | `socket_tests.rs`: `socket_ack_precedes_slow_api_and_dispatch` (the fake sends each envelope only after the previous one's acknowledgement while the dispatcher is stalled on a lookup that never answers), `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` (a peer that never reads fills the buffers; the socket is dropped, not held, with idle far past the test) |
 | 18 | one socket (C12) | `socket_tests.rs`: `disconnect_refresh_and_silent_close_keep_one_socket` (warning, refresh, silent close, a peer that ignores close, endless refreshes; peak open 1; stop bounded and final), `a_peer_that_ignores_close_is_forced_down_within_the_bound`, `the_product_numbers_are_the_measured_ones` (all eight product timings), `a_silent_socket_is_replaced_after_the_idle_bound` (ping shorter than idle, as in the product; replaced no sooner than idle and within a stated bound), `a_link_that_answers_is_kept_past_the_idle_bound`, `a_chatty_peer_that_never_answers_keeps_its_link`, `a_peer_that_only_pings_keeps_its_link` (a peer ping alone resets the idle clock), `every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls_and_the_queue_is_full` (a pong frame with the payload, in both states), `a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap`, `reconnects_are_paced_after_a_refusal_and_after_a_hello`, `stop_during_the_reconnect_pause_does_not_wait_for_it` |
 | 19 | gaps (C13) | `socket_tests.rs`: `a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it`, `a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap`, `a_reconciliation_begun_before_a_hello_is_refused_by_it`, `overflow_latches_gap_without_blocking_ack` (a failed event; 300 envelopes over the count with every one acknowledged; a loss during a reconciliation survives it; ten 900,000-byte events over the byte budget), `an_events_message_keeps_its_origin_through_the_socket` |
-| 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_duplicates_and_bad_values_are_refused_at_load`, `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_files_are_named_in_platforms_config_folder` |
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
+| 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load`, `every_refusal_has_an_input_a_code_a_place_and_its_own_explanation` (a row per `ConfigError` variant, the boundaries, the two file names), `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else`, `a_planted_fifo_or_device_is_refused_without_a_wait` (the read runs on a thread with a 10 s guard that only a failing read reaches), `the_files_are_named_in_platforms_config_folder` |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
