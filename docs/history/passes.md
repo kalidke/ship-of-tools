@@ -592,3 +592,13 @@ A landing's record goes here, with its measured times; the package page holds on
   nothing links `sot-chat`: on Linux ring cannot compile C for its macOS target, which must be settled before B2 links the crate.
 - B1b's review follow-up, 2026-11-06: about 12:50 to main 13:05, 15 minutes. 3 of change, 8 of review (one blocker: the child's
   proof of running was a predictable file in the shared temp folder, now its exit code), 2 of second round, scoped gate 54 s.
+- B1b's hosted red, 2026-11-06: `chat_operations_keep_bounds_after_caller_drop` failed on Windows on 21cc2c2d0 and 7a537a17b, a 1 MiB
+  reply hanging to its 10 s deadline. Cause, proven red on Linux: the fake's `Reply::Status` wrote with no flush, so tokio-rustls
+  held output once the socket filled, and Linux's large loopback buffers hid it from both local gates. The fix and a permanent
+  4 KiB send buffer in the fixture rode B1c, which held that file. The hosted result on Windows is read after this landing.
+- B1c, the Slack web calls, 2026-11-06: 13:07 to main 14:10, 63 minutes, a miss, stopped and written up here. 16 of change including
+  the fixture fix, 13 of `git commit` stuck on the shared drive at load 171, 25 of review (60 mutants, seven of eight priority rules
+  pinned, one test blocker), 4 and 2 of fix rounds, 4 of a short review, three scoped gates at 49 to 67 s. Mutation found what the
+  failing-first run could not: most tests failed at one shared setup call, so their red said little. The suite went from 51 s to 4 s
+  by driving the name cache directly instead of 1,100 TLS handshakes. The last three test fixes took no further review: the reviewer
+  had proved each kills its mutant, and a fifth mutation round would only find smaller gaps.
