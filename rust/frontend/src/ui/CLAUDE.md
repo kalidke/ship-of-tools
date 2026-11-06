@@ -402,7 +402,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   shows on a bar of its foreground; the block cursor is an inverse cell and keeps the letter under it. Backgrounds are
   rectangles under every figure, selection and glyph (`project_backs`). The cells a wide glyph covers, which ratatui's
   diff never sends, are blanked in its style, so its background spans its width. A box-drawing cell's arms are not
-  dimmed by DIM, as its glyph would be (queued). Tests: `render::cells::tests`, `render::brushes::tests` and
+  dimmed by DIM, as its glyph would be (docs/defects.md: TERMINAL-DIM-BOX-ARMS). Tests: `render::cells::tests`, `render::brushes::tests` and
   `drawer::terminal::vt::tests::{an_inverse_bar_keeps_its_letters,
   a_cell_background_reaches_the_backend_and_the_cursor_keeps_its_letter}`.
 - `StartupScript` privately owns the harness's one-shots: `--auto-expand`, `--auto-pin` and `--demo-repl-eval` each

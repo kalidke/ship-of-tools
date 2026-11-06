@@ -343,6 +343,7 @@ producer() {
   echo unrun > "$L/steps/win-check.rc"
   echo unrun > "$L/steps/darwin-check.rc"
   emit cargo-chain cargo-chain
+  emit_shell "$D/scripts/tests/test-defects-check.sh" # docs/defects.md: every run, scoped or not
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
   [ -n "${RCG_BASH32:-}" ] && emit under-bash under-bash "$L/steps/under-bash.rc"
   for s in fresh repair; do

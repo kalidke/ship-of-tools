@@ -7,7 +7,7 @@ the commit that changes the code it describes, and a design that is not built is
 ## Owns
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
   `ENROLLING-A-HOST.md`, `USING.md`, `SESSION.md`, `SCREENSHOTS.md`, `plan.md`, the ownership table
-  `ownership.md` and the demo project the screenshots are taken from.
+  `ownership.md`, the list of known defects `defects.md` and the demo project the screenshots are taken from.
 - Outside this folder: `requirements.md` and `README.md` at the root, and the root `CLAUDE.md`. Each folder's own
   `CLAUDE.md` belongs to the subsystem that owns that folder.
 
@@ -22,6 +22,16 @@ the commit that changes the code it describes, and a design that is not built is
   `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
 - Published text names no private hostname, username or LAN detail, and the screenshots are generated from
   `fixtures/DemoProject`, never from a private workspace.
+- `defects.md` is the one list of known defects and open items, grouped by the subsystems `package.md` names; each item
+  has an UPPER-KEBAB id and a mark (seen by a person, seen by a session operating the product, a note from reading
+  code, or a feature), and a fix moves its item to Closed in the fixing commit. The local gate runs
+  `scripts/tests/test-defects-check.sh` in every run, scoped or not: it fails with the id when a landing record
+  (the section "Landing records since 2026-11-06" of `history/passes.md` to its end) names an item that is not in
+  `defects.md`, when an id starts two items, and when an open item has no mark. An id is a token of capitals and digits
+  joined by hyphens with at least two parts that each hold a letter, bounded by anything but a letter, digit,
+  underscore or a hyphen that joins more: `ROW-ID-MINT` is one; `P1`, `ALLDONE`, `RCG_SCOPE` and `SHA-256` are not.
+  The list holds no private name and no unfixed security weakness. No session loads it at start and no `@` include
+  names it; a pass reads its own subsystem's part.
 - Nothing below `docs/` carries a page: `history/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
   manual pages.
 
@@ -42,6 +52,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `ENROLLING-A-HOST.md`: the procedure for enrolling a host behind the hub; staged into the manual by `make.jl`.
 - `INSTALL-AGENT.md`: the install runbook written for a coding agent.
+- `defects.md`: the list of known defects and open items; its head states the form of an item and the check.
 - `Project.toml`: the docs environment (Documenter, DocumenterVitepress, and the two local packages by path).
 - `SCREENSHOTS.md`: how the docs media are regenerated.
 - `SESSION.md`: what every session but a subagent reads at its start; the root `CLAUDE.md` names it.

@@ -59,7 +59,7 @@ of each.
    `shutdown::run` starts, after the listener's teardown in `server/listen.rs`, not at the decision itself). The
    terminal then adds up to `FIRE_WAIT` and `FOLDERS_WAIT` (guarantee 6), so the process's exit is within
    `SHUTDOWN_BOUND` + `FIRE_WAIT` + `FOLDERS_WAIT` (4 s over the bound) of the decision plus the listener teardown;
-   charging those waits inside the bound is queued. A close that finishes exits 0. The update restart exits 75 only while no shutdown has begun:
+   charging those waits inside the bound is open (docs/defects.md: SHUTDOWN-BOUND-TAIL). A close that finishes exits 0. The update restart exits 75 only while no shutdown has begun:
    `Leases::commit_update` moves the phase to `Updating` under the lease lock, so no close begins afterwards, and a close
    that began first refuses the update. Limit: a child creation stalled in the OS can delay the fire (containment's limit
    in guarantee 2), never the exit.

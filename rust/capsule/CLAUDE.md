@@ -31,7 +31,7 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    Unix: the supervisor holds the terminal's master, so its end also hangs up the agent's session. Windows: the ConPTY
    agent runs in an anonymous kill-on-close job with no breakaway (platform's guarantee 12), so the last handle's close
    ends its tree. Limits: macOS has no parent-death signal, so an agent that ignores SIGHUP can outlive a SIGKILLed
-   supervisor (queue item MACOS-AGENT-WATCH, a kqueue watcher; the ordinary case is proved on macOS, the
+   supervisor (docs/defects.md item MACOS-AGENT-WATCH, a kqueue watcher; the ordinary case is proved on macOS, the
    SIGHUP-ignoring case on Linux and Windows only); a descendant that leaves the session (Unix) or the job (Windows) is
    not the supervisor's to end.
 3. **A row outlives its viewers and the daemon.** The supervisor serves its row socket for as long as it lives, across
@@ -134,7 +134,7 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    into the history, because the ConPTY host repaints the visible screen); a file that does not restore (torn, another
    format version) is removed and the screen starts empty. Limits: the file can be 5 s old and a failing disk can leave
    it old for good; the end waits for the writer at most 2 s, and a writer that timed out at a run's end can still
-   publish a stale snapshot over a later run's file (queue item SCREEN-WRITER-SPAN); content held only in the alternate
+   publish a stale snapshot over a later run's file (docs/defects.md item SCREEN-WRITER-SPAN); content held only in the alternate
    grid is hidden when restore switches to the normal grid and is not shown above the restart line. Both grids remain
    encoded, but restore does not copy the alternate grid's content into the normal grid.
 9. **No disk write stops output.** Output never waits on the screen file: a stalled disk blocks only the writer thread

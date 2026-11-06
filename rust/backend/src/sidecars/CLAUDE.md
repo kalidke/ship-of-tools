@@ -24,7 +24,7 @@ of each.
    prepare (`prepare_julia`) all run its answer, the kernel at every generation, Pluto at every start and the REPL at
    every spawn. Limits: a missing explicit absolute path still fails at spawn, not at the choice; a juliaup default
    whose binary is gone falls through to a usable PATH candidate (`julia.rs:84`), it is not refused outright; an empty
-   or relative PATH entry can yield a relative answer, because only the tests' entries are absolute (queue); on Windows
+   or relative PATH entry can yield a relative answer, because only the tests' entries are absolute (docs/defects.md); on Windows
    the selected file is inspected through ordinary filesystem links (`IO_REPARSE_TAG_APPEXECLINK` and inspection errors
    are refused; a folder called `WindowsApps` is not evidence of an alias). MathJax does not use it: it runs
    `SOT_NODE_BIN` or the name `node`, a PATH search at spawn (`MathJax::new`).
@@ -44,7 +44,7 @@ of each.
    other failure as `kernel_request_failed` (`kernel_error_payload`); an unknown row is `unknown_workspace` (rows').
    Limits: a request the kernel's queue does not accept within the bound fails at the bound and was not sent; a request
    still queued when its generation dies gets the generic channel error, so `kernel_request_failed`, not
-   `kernel_unavailable` (queue); a caller's timeout does not cancel the kernel's work.
+   `kernel_unavailable` (docs/defects.md); a caller's timeout does not cancel the kernel's work.
 4. **A kernel that is dead or wedged is replaced, on a backoff that a kernel that does not serve cannot reset.**
    `supervisor_loop` respawns after 250 ms, doubling to 30 s (platform's `Redial`), and starts the doubling over only
    after a generation that served `STABLE` (60 s) after its hello: a kernel that never answers, or answers and then
@@ -52,7 +52,7 @@ of each.
    (300 s, counted from the later of the oldest request's write and the kernel's last answer) or not its hello for
    `start` (1800 s) is ended with that reason. Limits: a kernel that answers slowly but steadily is kept; the
    generation does not observe the leader's exit, only its pipes and its deadlines, so a dead kernel whose descendant
-   holds its stdout, with no request pending, is not replaced until a request arrives or its owner lets go (queue); a
+   holds its stdout, with no request pending, is not replaced until a request arrives or its owner lets go (docs/defects.md); a
    protocol-version mismatch in the hello is logged, not refused.
 5. **A Pluto start belongs to Pluto's supervisor, not to the open that began it, and the waits on it are bounded.**
    The supervisor waits up to `PLUTO_READY_BOUND` (1800 s, the kernel's start bound; both cover a cold precompile)
@@ -65,8 +65,8 @@ of each.
    also replaces a server that died). Limits: the supervisor's own deadline covers the wait for `READY`, not the
    building of the start before it, and its cleanup awaits an unbounded reap; the open's deadline lives in the caller's
    future, so a caller that is cancelled after its request was accepted leaves the request and the supervisor running
-   (queue); before `READY` the supervisor does not observe the leader's exit, so a dead leader whose descendant holds
-   stdout reads as starting until the readiness bound (queue); a notebook the server opened by itself, from Pluto's
+   (docs/defects.md); before `READY` the supervisor does not observe the leader's exit, so a dead leader whose descendant holds
+   stdout reads as starting until the readiness bound (docs/defects.md); a notebook the server opened by itself, from Pluto's
    home page, is not known to the daemon (guarantee 6).
 6. **The daemon knows one fact about Pluto's notebooks: whether its server's supervisor is running.**
    `Pluto::server_up` is true from the server's start (a starting server counts) until the supervisor's channel closes
@@ -92,7 +92,7 @@ of each.
    mid-write, so the next render starts a fresh one; a child that dies is replaced by the next render
    (`ensure_supervisor`). Limits: the deadlines are the render future's, so a caller cancelled after its request was
    accepted leaves no deadline on the supervisor, and a blocked write to the child is not cancelled by the `Signal` (the
-   outer select does not watch it; queue); a child's death is seen by its stdout's end, so a descendant holding stdout
+   outer select does not watch it; docs/defects.md); a child's death is seen by its stdout's end, so a descendant holding stdout
    defeats the replacement; every render waiting on a child that ends or is ended fails with it (`mathjax sidecar
    terminated`), and one child serves all renders, so a render behind a slow one spends its own bound waiting.
 10. **Decoding a child's output never fails: no invalid byte ends a reader or stops a stderr drain.** Every sidecar
@@ -115,7 +115,7 @@ of each.
     production handles are built (`server/mod.rs`, `Workspace::repl`), Pluto in `ensure_supervisor`. After the fire no
     supervisor respawns and the monitor's backoff ends; the kernel's and Pluto's blocked stdin writes do not outlive it.
     Dropping a handle during a start ends the child. Limits: MathJax's blocked write and the monitor's initial script
-    write are not polled for the `Signal` (`mathjax.rs:284`, `monitor.rs:670`; queue); the Pluto handle reads the
+    write are not polled for the `Signal` (`mathjax.rs:284`, `monitor.rs:670`; docs/defects.md); the Pluto handle reads the
     process `Signal` in `ensure_supervisor`, so a test of its shutdown fires the process-wide one and runs in its own
     process (`isolated`).
 13. **A sampler that gives no sample is ended and replaced, once it is running.** One sampler per monitored host: a
@@ -128,7 +128,7 @@ of each.
     `[monitor]` roster, read once at start (`load_hosts`, `sampling_roster`). `monitor.history` answers the retained
     samples by tier (`query`). Limits: the script's delivery to the child (`monitor.rs:670`) has no deadline and is not
     polled for the `Signal`, and the silence clock starts after it, so a stalled ssh start that fills the stdin pipe is
-    never replaced (queue); ending a sampler ends the local ssh process, not proof that the remote sampler ended; the
+    never replaced (docs/defects.md); ending a sampler ends the local ssh process, not proof that the remote sampler ended; the
     roster is read once, so a change needs a restart; macOS and Windows daemons sample nothing of their own. The sampler
     script avoids here-documents because bash before 5.3 leaks the pipe behind one (`monitor.rs:36`); no test proves it
     (the source scan that did is deleted).
@@ -167,7 +167,7 @@ of each.
     start-time environment, so a process that clears or rewrites its `XAUTHORITY` is not found; the walks of the process
     table are bounded in number (`WALKS`, 16), not in time, so a holder that forks faster than they find it can outlive
     them; a process of another account is never signalled; macOS and Windows start no display (GLMakie draws through
-    the system's windowing). Not built: a cgroup per child (ADR 0050's containment, queue item 25's W3).
+    the system's windowing). Not built: a cgroup per child (ADR 0050's containment, docs/defects.md item DISPLAY-HOLDERS-W2-W3).
 16. **The page servers the Julia children run answer nothing without a secret from the OS's generator.** They listen on
     127.0.0.1. Pluto serves every path under its session secret (`base_url`), so nothing, not even its own files or
     `/ping`, answers without it; each notebook worker checks the Distributed cluster cookie it read from its stdin
@@ -182,7 +182,7 @@ of each.
     refuses a path holding a control character with a `PathRefused` before anything starts or is submitted, since the
     protocol is one command per line; the server takes the path after `OPEN ` with only the line end removed. Limits:
     the header check is a substring of the first line, not an exact line; the validation opens the path without a
-    regular-file check or a deadline, so a FIFO inside a row's root parks the op (queue); the canonical pathname, not a
+    regular-file check or a deadline, so a FIFO inside a row's root parks the op (docs/defects.md); the canonical pathname, not a
     file identity, is what Pluto opens later, so a replacement in between is not detected; a file with Pluto's first
     line is opened whatever else it holds (it is user code in the user's own row).
 18. **`math.render` is a stateless transform.** It answers the SVG as a blob (`image/svg+xml`) with its `ex` height and
@@ -235,9 +235,9 @@ R3. **Every accepted run is closed out when its child ends, and its waiting repl
     streamed run an `error` frame naming it and a `done`, after the `dead` announcement, including a submission that
     arrived after the close began; the window's run is marked ended before its `done` is published (`numbers.rs`). A
     caller's timeout is the end of its wait, not of the eval: the run goes on, its drawer run is closed by a synthetic
-    `done`, and the eval's own `done` follows when it ends, so such a run can show two (queue: TIMEOUT-DOUBLE-DONE). A
+    `done`, and the eval's own `done` follows when it ends, so such a run can show two (docs/defects.md: TIMEOUT-DOUBLE-DONE). A
     row's removal ends the REPL only when the last handle to the row is dropped: while a handler holds the workspace
-    (an `execute` waiting, or spilling figures) the child, its display and its grants stay (queue: ROW-END-REPL). Limits:
+    (an `execute` waiting, or spilling figures) the child, its display and its grants stay (docs/defects.md: ROW-END-REPL). Limits:
     a run's frames are published on a bounded broadcast bus, so a subscriber that lags loses frames; `repl.execute`
     collects its own frames loss-free.
 R4. **An interrupt signals only the eval the child runs, only while it runs, and an eval that never yields is
@@ -253,16 +253,16 @@ R4. **An interrupt signals only the eval the child runs, only while it runs, and
     restarts). Limits: this is an interrupt mechanism, not cancellation of every eval: C code, compiling and garbage
     collection take the signal only when they return, forcing inside them can crash or hang the REPL, and on a loaded
     Linux computer five signals count as two or three, so a forced interrupt may not stop the eval, which the answer
-    says. Queue item 20 (an interrupt never reaches an eval that does not yield) is met to those limits; nothing is
+    says. The earlier item on an interrupt that never reaches an eval that does not yield is met to those limits; nothing is
     built for it in 8b. The run_shim signal tests of `julia/repl` (`interrupt_child.jl`) run only in the local gate and
-    the release gate (`SOT_REPL_SIGNAL_TESTS=1`), because the last of them fails on a loaded computer (queue:
+    the release gate (`SOT_REPL_SIGNAL_TESTS=1`), because the last of them fails on a loaded computer (docs/defects.md:
     CI-PRE-REPL-INTERRUPT).
 R5. **A retirement is checked, and an unfinished one stays owned.** A restart stops the old supervisor, which closes out
     its work, asks for its tree's termination and confirms the direct child's reap; the owner joins it for at most
     `REPL_RESTART_WAIT`. A timeout, or a failure the join reports, returns an error and starts no replacement while the
     task has not finished; a retirement that finished with an error is reported once and then dropped, so the next
     restart can start one. Limit: that dropped error is the exception to R1's singleton: the supervisor has finished and
-    released its tree, so a termination that really failed does not stop a later replacement (queue:
+    released its tree, so a termination that really failed does not stop a later replacement (docs/defects.md:
     RETIREMENT-ERROR-DROPPED); the termination is requested of the tree, not confirmed for every descendant (containment's
     guarantee).
 R6. **A browser page's loopback port is granted to the proxy before its frame is forwarded, for one child's life, and an
@@ -287,7 +287,7 @@ R7. **Output reaches the window as `repl.frame`s, and a collected run's text is 
     frames (`truncated`); value, image, error and done frames are always kept, with no count or aggregate bound. A `value`
     text and the first `error` message are cut at `EXEC_FIELD_CAP` (64 KiB) with a marker, when the report is made, after
     collection; other fields, streamed frames and images are not capped. Limits: the collector stays installed until the
-    run's `done` or response, so it goes on collecting after a timed-out caller has returned (queue: COLLECTOR-LIFETIME);
+    run's `done` or response, so it goes on collecting after a timed-out caller has returned (docs/defects.md: COLLECTOR-LIFETIME);
     the 1 MiB envelope bounds a reply, and a run whose frames exceed it fails there.
 
 Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; the result file says what it would take.
@@ -390,6 +390,7 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 | R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`; `repl/numbers_tests.rs`: the window's-numbers tests |
 
 ## Sidecars queue
+Each item is also an item of docs/defects.md, which is the list; this section keeps the scenario and the fix.
 Seen at pass 8a and its review round, handled at the sidecars' next pass; none is a defect seen in use. The REPL's follow the
 guarantees' table. Each names the file, the scenario and the fix.
 - CI-PRE-REPL-INTERRUPT, a partial diagnosis (8b): the testset "signals after a forced stop meet a child held still" in
@@ -441,7 +442,7 @@ guarantees' table. Each names the file, the scenario and the fix.
   without a reap; removal's result is not awaited; `kill` has no wall-clock ceiling. Fix: containment's.
 - `child/display/holders.rs:53`: signals are not confirmed deaths; unreadable environments and failed pidfd opens are
   only logged. Fix: report the count that failed and wait for the pidfds with a bound.
-- A cgroup per child (queue item 25's W3) is containment's and unbuilt.
+- A cgroup per child (docs/defects.md item DISPLAY-HOLDERS-W2-W3) is containment's and unbuilt.
 - No test proves the sampler script's avoidance of here-documents; a behavioral proof needs a leak check under bash 5.2.
 - D3's MathJax question (keep the node child only if markdown with math is previewed in use) waits for the
   maintainer's answer; the MathJax code is unchanged.

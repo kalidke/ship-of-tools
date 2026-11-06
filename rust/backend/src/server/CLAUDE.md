@@ -22,7 +22,7 @@ of each.
    predecessor, then refuses (`lock_daemon`). On Unix "answering" means the listener returns a whole frame to a probe
    frame before one absolute deadline, `REPLY_BOUND` (`socket_answers`, `replies`): a listener that only completes the
    connect, as a copy of the old one held by a child between its fork and its exec does, is waited on, not read as a
-   live daemon (queue item 21). Limits: the lock wait is checked between probes, so a turn can overrun it by the
+   live daemon (docs/defects.md item SUCCESSOR-START-PROBE). Limits: the lock wait is checked between probes, so a turn can overrun it by the
    probe's own bounds (`CONNECT_BOUND` plus `REPLY_BOUND`); on Windows "answering" is a successful open of the pipe
    name, which proves no reply and can fail on a busy pipe; a daemon too slow to reply is waited on and the lock, not
    the probe, then ends the wait; a machine with no state root runs unfenced, with a warning; when `run` returns an
@@ -143,7 +143,7 @@ of each.
     connection whose hello names no instance is no window and is not remembered away; with no window stamped, the one
     connected last; with no named frontend attached a browser open goes nowhere; the away memory is the roster's, so
     a daemon restart forgets it, and a window forgotten past `AWAY` windows away no longer ranks; a `wglshow` page that
-    opens nowhere for this reason tells its REPL run nothing (queued); a tie between a live window and the window away
+    opens nowhere for this reason tells its REPL run nothing (docs/defects.md: REPL-AWAY-NOT-TOLD); a tie between a live window and the window away
     goes to the one away; a window's use lands on every connection of it, and only a named `fe` connection's use is
     remembered (`Inner::report`).
     An untargeted `docs` open with a reply scope additionally needs person input in the chosen window within
@@ -249,7 +249,8 @@ tests need the built `sotd` and run in test containers.
 | 15 | the log | `src/daemon_log/log_tests.rs`: `daemon_log_masks_slack_and_page_secrets`, `no_log_level_lets_a_network_library_into_the_log`, `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |
 
 ## Server queue
-Seen at pass 5c, handled at the server's next pass; none is a defect seen in use.
+Seen at pass 5c, handled at the server's next pass; none is a defect seen in use. Each is an item of
+docs/defects.md; this section keeps the scenario.
 - Windows' lock probe proves no reply (`listen.rs`, `socket_answers`): a successful pipe open shows neither a responsive
   daemon nor a protocol reply, and a busy pipe can make the open fail. There is no Unix fork-to-exec twin of item 21 there
   (interprocess's listener handles are not inheritable); the state lock and the first pipe instance flag still prevent

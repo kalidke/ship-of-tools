@@ -222,7 +222,7 @@ anything but blanks after the glyph, after a plain space
 or after the ASCII `>` reads not free (`screen::tests::a_draft_reads_not_free_wherever_its_cursor_sits`, which runs the
 Windows reading on every system). What it costs there is the dialog side: a dialog input drawn as a glyph and a space
 can read as the main box, so on Windows "never a dialog" rests on the dialog reader and the box's rules alone, unproven
-for Windows dialogs (queue item 65: at-rest screens confirmed on Windows 10 and 11, the Windows 10 typed repaint
+for Windows dialogs (docs/defects.md item WAKE-WINDOWS-READ: at-rest screens confirmed on Windows 10 and 11, the Windows 10 typed repaint
 accepted; the dialog gap remains).
 
 The environment: comm's identity and commands read variables only from an `Env` value they are given (`sot_platform::host::env`),
@@ -243,7 +243,7 @@ and on two hosts at once for concurrent sends into one network folder; `comm/tes
 hosts sharing a folder, for the three shapes in use (a row, a worktree session, a server session with no daemon), each
 mailing an echo row and reading its reply.
 
-Unbuilt: a sender's notice when a row keeps refusing the wake (queue item 55); compaction support (item 56, a feature).
+Unbuilt: a sender's notice when a row keeps refusing the wake (docs/defects.md item M3B-SENDER-NOTICE); compaction support (docs/defects.md item COMPACTION-SUPPORT, a feature).
 
 ## Folders
 - `mail/`: delivery: the append and the lock manager (`inbox.rs`), the cursor and the unread rule (`cursor.rs`),

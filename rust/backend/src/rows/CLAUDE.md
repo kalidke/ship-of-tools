@@ -357,10 +357,10 @@ Tests: one unit test per guarantee, `cargo test -p sot-backend rows::` (each nam
 of the integration suite `capsule_workspaces` on real daemons and capsules; `comm/tests/test-status-floor.sh` for the
 hooks' events reaching the reduction.
 
-Queued to rows: distinguish `pty.input` from a non-window connection with a visible mark. Until then, approval
+Open (docs/defects.md: PTY-INPUT-MARK): distinguish `pty.input` from a non-window connection with a visible mark. Until then, approval
 "typed in that session's pane" without `[sot-page]` is a convention, not proof of physical keyboard input.
 
-Unbuilt: ROW-RESTART (queue item 1, a feature): one restart action for a row in phase `terminal` or `ended_no_respawn`
+Unbuilt: ROW-RESTART (docs/defects.md item ROW-RESTART, a feature): one restart action for a row in phase `terminal` or `ended_no_respawn`
 (`workspace.restart`, `sot-fe restart <ws> [--resume <id>]`, Shift+R in Sessions), keeping the row's id and handle,
 with a fresh leg and a resume by id on request. No guarantee here needs it: an attach resets an ended row, and a reauth
 restarts a live one in place.

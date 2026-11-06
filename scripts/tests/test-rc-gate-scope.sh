@@ -116,6 +116,7 @@ fixture() { # <name>: a stand-in repo with two shell groups, two crates with a t
     cp "$here/shards.py" "$repo/scripts/tests/shards.py"
     : > "$repo/.github/test-shards.txt"
     for t in comm/tests/test-c agents/tests/test-a; do printf '#!/bin/sh\nexit 0\n' > "$repo/$t.sh"; done
+    printf '#!/bin/sh\nexit 0\n' > "$repo/scripts/tests/test-defects-check.sh"
     for t in platform backend; do
         printf '#!/bin/sh\nexit 0\n' > "$work/tools/bin-$t"; chmod +x "$work/tools/bin-$t"
         printf 'bin_%s\t%s\t%s\n' "$t" "$work/tools/bin-$t" "$repo/rust/$t" >> "$logs/tests.tsv"
@@ -165,6 +166,7 @@ fixture sc2; pipeline sc2 b $'julia julia/kernel\ndocs docs'
 check "scoped julia: only the selected package has a result" '[ "$(rcof sc2 steps/julia-julia-kernel)" = 0 ] && [ ! -e "$work/L-sc2/steps/julia-root.rc" ] && [ ! -e "$work/L-sc2/steps/julia-core.rc" ]'
 check "scoped julia: no crate test and no doc test" '! ls "$work"/L-sc2/rust/*.rc > /dev/null 2>&1 && ! grep -q -- "--doc" "$work/tools/cargo.log"'
 check "docs only: the lints still run" '[ "$(rcof sc2 steps/lint-all-targets)" = 0 ]'
+check "the defects check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc1 steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc2 steps/scripts-tests-test-defects-check)" = 0 ]'
 
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'
 check "widened: everything runs as unscoped" '[ "$(rcof sc3 rust/bin-backend)" = 0 ] && [ -e "$work/L-sc3/steps/agents-tests-test-a.rc" ] && [ -e "$work/L-sc3/steps/julia-root.rc" ]'

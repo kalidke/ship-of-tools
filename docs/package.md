@@ -175,4 +175,4 @@ Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1) have landed; t
 B5, each landing alone within the half hour. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,
-and each subsystem's findings in its own queue, handled at its pass.
+and each subsystem's findings in `docs/defects.md`, handled at its pass.

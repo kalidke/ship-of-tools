@@ -60,7 +60,7 @@ of each.
    from the default folder into the account, once, at the spawn, and never the login, the credentials or runtime state;
    an entry already there in any form is left alone, and a sibling spawn's race is tolerated. Where the OS refuses
    symlinks (Windows without the privilege) a folder becomes a junction the daemon proves it can cross and a file a
-   one-time copy the account then owns; `CLAUDE.md` there is a copy unless the import stub is switched on (queue:
+   one-time copy the account then owns; `CLAUDE.md` there is a copy unless the import stub is switched on (docs/defects.md:
    CLAUDE-MD-STUB). A session that starts a row gives it its own account unless told which (the maintainer,
    2026-10-27): with no `--account`, `comm-spawn.sh` names for a Claude row the `.claude-auth/<name>` folder its caller's
    `CLAUDE_CONFIG_DIR` names (either slash), else the caller's `SOT_ACCOUNT` when that variable is unset; a caller on
@@ -95,7 +95,7 @@ of each.
    capsule leg, a reauth leg and a `ccb` session read all of it. The end-of-turn mail check (`comm-status-idle.sh` on
    Stop) and the subagent guard serve every joined session, so they stay in the user's own settings, written by the
    installer as before, and gate themselves on a joined identity (messaging's contract); the work-state part of the Stop
-   script is not separable from its mail check, so a joined session outside a row still runs it (queue). Limits: `--add-dir`
+   script is not separable from its mail check, so a joined session outside a row still runs it (docs/defects.md). Limits: `--add-dir`
    also lets the session read and write the layer folder, which the next install overwrites; a caller's own `--settings` gains the hooks by guarantee 1's shape rule, and one the rule declines is left as given,
    so that leg carries no work-state hooks (logged; its skills still load); a caller's
    `--setting-sources` without `project` keeps an added folder's skills from loading (logged, and the recipe appends the
@@ -148,8 +148,8 @@ of each.
    line, and other roles keep their existing output (`tests/test-sot-fe-version.sh`). **Shipped tools outside this
    folder's ownership still open daemon-owned paths, and this guarantee does not cover them:** the work-state hooks
    (`comm-status.sh`, `comm-status-heartbeat.sh`, `comm-status-idle.sh`) and the turn auditor, rows' and messaging's, test
-   the registry and the inbox and keep turn marks and a signature under the comm folder's `state/` (queued under rows:
-   WORK-STATE-HOOKS-READ-FILES); the Windows launcher's stop helper reads `held.json` (queued under distribution:
+   the registry and the inbox and keep turn marks and a signature under the comm folder's `state/` (docs/defects.md under rows:
+   WORK-STATE-HOOKS-READ-FILES); the Windows launcher's stop helper reads `held.json` (docs/defects.md under distribution:
    WIN-LAUNCHER-HELD-JSON). Test: `tests/test-tools-wire-only.sh` (the registry and inbox folders the tools are told of
    do not exist, and a stand-in `sotd` answers the registry and the unread count; worktree status and sync and the
    probe's responder, through one delivered mail and its report, give the daemon's answers and leave the comm folder's
@@ -303,6 +303,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 16 | `tests/test-spawn-capsule-workspace.sh` (a reader that leaves), `tests/test-despawn-resolve.sh` (D6b) |
 
 ## Queue
+Each item is also an item of docs/defects.md, which is the list.
 - The Stop script `comm-status-idle.sh` does the mail check and the work-state stamping, audits and nudges in one
   574-line flow, and every joined session runs it. Splitting the mail check from the work-state part is messaging's and
   rows' pass; the layer then carries the work-state half.

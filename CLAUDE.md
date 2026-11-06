@@ -32,8 +32,9 @@ does not read it and uses no mail; it reports to the session that launched it.
 - Reactive over eager. A concept annotation shows stale when the file's hash, which the kernel computes on
   `file.parse`, no longer matches its `synced_against`; nothing sweeps in the background.
 - Defer features until forced. A defect is known when it has been seen in use, by a person or by a session operating
-  the product as a user; a thought from reading code is a note. Either goes to the owning subsystem's queue and is
-  handled at that subsystem's pass; a defect that blocks use is fixed on the release branch.
+  the product as a user; a thought from reading code is a note. Either goes to `docs/defects.md`, under the owning
+  subsystem and marked with how it is known, and is handled at that subsystem's pass; a landing that fixes one changes
+  its entry in the same commit; a defect that blocks use is fixed on the release branch.
 - Work happens on main, one writer at a time; a second pass in parallel works in a worktree on a disjoint subsystem.
   Before a push to main, the local gate, the workspace build and the touched crates' tests run locally. The hosted
   runs test main after the merge, one per batch of merges; a red one is fixed forward or its landing reverted.
