@@ -568,3 +568,7 @@ A landing's record goes here, with its measured times; the package page holds on
 - P6, unsupported operations, 2026-11-06: the daemon's generic unknown-op answer to an op (`{"error": "unknown op: <op>"}`,
   nothing else) ends only that request as outcome `unsupported`, named by no op (`ops::is_unsupported`); `page.reply` is
   the first user, and any other reply stays an error (fe-net's contract). 4 minutes of change, goal-only.
+- P9, connection-scoped mutations, 2026-11-06: a request kind says whether it is replayable (`OutgoingReq::replayable`);
+  one that is not (`page.reply`, `repl.eval`, `repl.run_file`) is ended, with its kind's connection-ended outcome and
+  nothing written, if it still waits when a connection ends or when the next one is about to send its hello, so it is
+  written on one connection at most (`Outbox::retire`, fe-net's contract).

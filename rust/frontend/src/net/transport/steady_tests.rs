@@ -25,7 +25,7 @@ fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
     let env = crate::net::state::test_env::set_test_env();
     let (near, far) = tokio::io::duplex(capacity);
     let (events_tx, events) = std::sync::mpsc::channel();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let host: HostKey = "steady-test".to_string();
         let mut pending = PendingGuard { map: HashMap::new(), evt_tx: &events_tx, host: host.clone() };
@@ -43,7 +43,7 @@ fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
             &mut session,
             host,
             &events_tx,
-            &mut out_rx,
+            &mut Outbox::new(out_rx),
             &Quiet,
             ping_every,
         )
@@ -381,7 +381,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
     for run in 0..64 {
         let _env = crate::net::state::test_env::set_test_env();
         let (events_tx, events) = std::sync::mpsc::channel();
-        let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
         let reader = ReadyAt { bytes: frame_bytes(&event_frame(run)), after: PING * 3, at: None, sent: false };
         let task = tokio::spawn(async move {
             let host: HostKey = "steady-test".to_string();
@@ -399,7 +399,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
                 &mut session,
                 host,
                 &events_tx,
-                &mut out_rx,
+                &mut Outbox::new(out_rx),
                 &Quiet,
                 PING,
             )

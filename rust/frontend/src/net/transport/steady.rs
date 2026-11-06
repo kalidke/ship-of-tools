@@ -134,7 +134,7 @@ pub(super) async fn steady_loop<R, W, Wn>(
     session: &mut SessionState,
     host: HostKey,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
-    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    out_rx: &mut Outbox,
     window: &Wn,
     ping_every: std::time::Duration,
 ) -> Result<()>

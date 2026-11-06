@@ -258,14 +258,14 @@ async fn run_against_fake_daemon_counting(
     let host = host.to_string();
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
-        let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
         let result = run_protocol(
             host.clone(),
             codec::buffered(rx),
             tx,
             None,
             &evt_tx,
-            &mut out_rx,
+            &mut Outbox::new(out_rx),
             &window,
             ResolvedDial::Local,
             uplink.as_ref().map(|(handle, link)| (handle, link)),
@@ -463,12 +463,18 @@ async fn an_unknown_op_reply_ends_only_that_request_as_unsupported() {
         std::future::pending::<()>().await
     });
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
-        run_protocol("old-daemon".into(), codec::buffered(rx), tx, None, &evt_tx, &mut out_rx, &NoWindow, ResolvedDial::Local, None).await
+        run_protocol("old-daemon".into(), codec::buffered(rx), tx, None, &evt_tx, &mut Outbox::new(out_rx), &NoWindow, ResolvedDial::Local, None).await
     });
     let reply = |line: &str| OutgoingReq::PageReply { workspace_id: "w".into(), handle: "repo__box".into(), line: line.into() };
+    // A reply queued before the connection's hello belongs to an earlier connection: send once it is connected.
+    loop {
+        if let (_, IncomingEvt::Connected { .. }) = evt_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("Connected") {
+            break;
+        }
+    }
     let mut replied = Vec::new();
     for line in ["first", "second"] {
         out_tx.send(reply(line)).unwrap();

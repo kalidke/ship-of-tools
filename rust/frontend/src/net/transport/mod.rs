@@ -49,6 +49,7 @@ use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 mod event;
 mod hello;
 mod ops;
+mod outbox;
 mod preamble;
 mod reply;
 mod request;
@@ -62,6 +63,7 @@ use hello::{accept_hello, read_hello, send_hello, HelloRefused};
 use ops::*;
 use preamble::{preamble_preview, preamble_tree_root};
 use reply::{eval_running, handle_response_frame, PendingGuard, PendingKind};
+use outbox::Outbox;
 use request::send_request;
 
 // The transport's interface: what code outside this folder names.
@@ -193,9 +195,9 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
         // Reconnect loop with exponential backoff, capped at 5s on a local
         // socket and 30s on an ssh dial (each ssh probe is a login on the
         // hub and another on the far host). The
-        // out_rx channel survives across attempts; any OutgoingReq the
-        // user queued while disconnected gets sent once the next
-        // connection is up. Per ADR 0010 the backend's session-id +
+        // out_rx channel survives across attempts; any replayable OutgoingReq
+        // the user queued while disconnected gets sent once the next
+        // connection is up (`Outbox`: one that is not is ended instead). Per ADR 0010 the backend's session-id +
         // last-seen-revision handshake on each connect carries the
         // resume protocol, so missed events replay automatically.
         //
@@ -206,7 +208,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
         // the wait doubling. The F5 `reconnect_now` notify lets the user
         // collapse the current sleep — useful when wifi flickers and
         // the user knows it's back before the wait elapses.
-        let mut out_rx = out_rx;
+        let mut out_rx = Outbox::new(out_rx);
         let mut redial = redial_for(&config.dial);
         loop {
             let began = tokio::time::Instant::now();
@@ -267,7 +269,7 @@ async fn connect_and_run<Wn: Redraw>(
     host: HostKey,
     config: TransportConfig,
     evt_tx: StdSender<(HostKey, IncomingEvt)>,
-    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    out_rx: &mut Outbox,
     window: Wn,
     link: &sot_topology::link::LinkHandle,
     leases: &crate::lease::Leases,
@@ -412,7 +414,7 @@ async fn run_protocol<R, W, Wn>(
     tx: W,
     token: Option<&str>,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
-    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    out_rx: &mut Outbox,
     window: &Wn,
     resolved: ResolvedDial,
     link: Option<(&sot_topology::link::LinkHandle, &Link)>,
@@ -422,10 +424,13 @@ where
     W: AsyncWrite + Unpin,
     Wn: Redraw,
 {
-    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, resolved, link).await;
+    let result = run_session(host.clone(), rx, tx, token, evt_tx, out_rx, window, resolved, link).await;
     if let Some((handle, _)) = link {
         handle.set_down();
     }
+    // The session's pending entries ended with it; what still waits for a connection and must not be written on a
+    // later one ends now, so the person is told at once rather than after the redial.
+    out_rx.retire(evt_tx, &host).await;
     result
 }
 
@@ -440,7 +445,7 @@ async fn run_session<R, W, Wn>(
     mut tx: W,
     token: Option<&str>,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
-    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    out_rx: &mut Outbox,
     window: &Wn,
     // C3 as amended §5: which transport `connect_and_run` actually
     // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
@@ -500,6 +505,9 @@ where
         "loaded session memory"
     );
 
+    // Whatever was queued while no connection was current belongs to an earlier one; a request sent from here on is
+    // this connection's.
+    out_rx.retire(evt_tx, &host).await;
     // hello
     let hello_id = take_id(&mut next_id);
     send_hello(&mut tx, hello_id, &session, token).await?;
@@ -553,7 +561,7 @@ pub(crate) async fn run_native_progress_transport<R, W, Wn>(
     tx: W,
     host: HostKey,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
-    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    out_rx: &mut Outbox,
     window: &Wn,
 ) -> Result<()>
 where

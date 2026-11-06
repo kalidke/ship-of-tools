@@ -146,10 +146,9 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
         wire
     });
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
-    for r in reqs {
-        out_tx.send(r).unwrap();
-    }
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Sent once the hello is answered: a request queued before a connection's hello belongs to an earlier one.
+    let mut reqs = Some(reqs);
     let session = tokio::spawn(async move {
         let (rx, tx) = tokio::io::split(near);
         run_protocol(
@@ -158,7 +157,7 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
             tx,
             None,
             &evt_tx,
-            &mut out_rx,
+            &mut Outbox::new(out_rx),
             &GoldenWindow,
             ResolvedDial::Local,
             None,
@@ -170,7 +169,14 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
     loop {
         match evt_rx.try_recv() {
             Ok((_, IncomingEvt::Event { op, .. })) if op == "test.end" => break,
-            Ok((host, ev)) => events.push(format!("< {host} {ev:?}")),
+            Ok((host, ev)) => {
+                if matches!(ev, IncomingEvt::Connected { .. }) {
+                    for r in reqs.take().into_iter().flatten() {
+                        out_tx.send(r).unwrap();
+                    }
+                }
+                events.push(format!("< {host} {ev:?}"))
+            }
             Err(_) => {
                 assert!(t0.elapsed() < std::time::Duration::from_secs(10), "no test.end; got {events:#?}");
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;

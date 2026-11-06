@@ -52,6 +52,18 @@ through the channel types below.
   `ops::pages::tests::only_the_real_unknown_op_answer_is_unsupported`, `tests::an_unknown_op_reply_ends_only_that_request_as_unsupported`,
   `reply_wait_end_tests::a_page_reply_without_its_answer_is_unknown_when_the_connection_ends` and the golden
   `every_request_kind_and_its_error_reply_match_the_golden`.
+- A request that must not run twice is written on one connection at most. Each `OutgoingReq` kind says whether it is
+  replayable (`OutgoingReq::replayable`, one arm per kind); the requests wait in an `Outbox`, and `Outbox::retire` ends
+  every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
+  hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
+  is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`. Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
+  `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
+  the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:
+  `a_reply_queued_between_connections_is_not_written_on_the_next`, `a_reply_cut_during_its_write_and_one_behind_it_are_not_written_again`,
+  `an_accepted_reply_with_no_answer_is_unknown_once_and_not_written_again` (the real reconnect loop against a fixture
+  daemon that counts the requests it receives) and `a_retirement_ends_the_unreplayable_and_keeps_the_rest_in_order`.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
   0), never the generic `Event`; the window's one arm only logs it, so no pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.

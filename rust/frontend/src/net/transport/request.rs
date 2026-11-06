@@ -408,6 +408,62 @@ pub enum OutgoingReq {
     },
 }
 
+impl OutgoingReq {
+    /// Whether this request may be written on a connection other than the one current when the window admitted it.
+    /// A read may. A request that must not run twice, or whose person may already have been told it failed, may not:
+    /// it is written on the connection current when it is dequeued, or on none (`Outbox::retire`), and a write that
+    /// got no answer ends as the unknown outcome its kind already has (`PendingGuard`). One arm per variant, so a new
+    /// kind decides. Marked: `PageReply` (typed into a prompt) and the two that run Julia, `ReplEval` and
+    /// `ReplRunFile`; each already has an outcome for a connection that ended. The other writes stay replayable
+    /// because a connection's end gives their callers no outcome yet, so ending one unsent would leave its caller
+    /// waiting; they are queued with their owners (`ConceptWrite`, `FileWrite`, `FileDelete`, `DirCreate`,
+    /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
+    pub(crate) fn replayable(&self) -> bool {
+        match self {
+            OutgoingReq::PageReply { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::ResultTree { .. }
+            | OutgoingReq::TreeChildren { .. }
+            | OutgoingReq::TreeRoot { .. }
+            | OutgoingReq::ToggleHidden { .. }
+            | OutgoingReq::WorkspaceActivate { .. }
+            | OutgoingReq::FePresence
+            | OutgoingReq::FeSessions(_)
+            | OutgoingReq::ProjectScan { .. }
+            | OutgoingReq::ConceptRead { .. }
+            | OutgoingReq::ConceptWrite { .. }
+            | OutgoingReq::FileRead { .. }
+            | OutgoingReq::FileWrite { .. }
+            | OutgoingReq::FileDelete { .. }
+            | OutgoingReq::DirCreate { .. }
+            | OutgoingReq::MathRender { .. }
+            | OutgoingReq::ImageCrop { .. }
+            | OutgoingReq::MarkdownTokenize { .. }
+            | OutgoingReq::FileParse { .. }
+            | OutgoingReq::FunctionMethods { .. }
+            | OutgoingReq::PreviewGet { .. }
+            | OutgoingReq::PreviewSetScale { .. }
+            | OutgoingReq::FigureGet { .. }
+            | OutgoingReq::ReplInterrupt { .. }
+            | OutgoingReq::PtyOpen { .. }
+            | OutgoingReq::DirectoryList { .. }
+            | OutgoingReq::WorkspaceCreate { .. }
+            | OutgoingReq::WorkspaceList
+            | OutgoingReq::AccountsList
+            | OutgoingReq::WorkspaceDestroy { .. }
+            | OutgoingReq::PlutoOpen { .. }
+            | OutgoingReq::VideoOpen { .. }
+            | OutgoingReq::DocsOpen { .. }
+            | OutgoingReq::QuartoOpen { .. }
+            | OutgoingReq::FileDownload { .. }
+            | OutgoingReq::FileUpload { .. }
+            | OutgoingReq::MonitorSubscribe
+            | OutgoingReq::MonitorUnsubscribe
+            | OutgoingReq::MonitorHistory { .. }
+            | OutgoingReq::AgentSend { .. } => true,
+        }
+    }
+}
+
 /// Write one outgoing request: one arm per `OutgoingReq` variant.
 pub(super) async fn send_request<W: AsyncWrite + Unpin>(
     mut tx: W,
