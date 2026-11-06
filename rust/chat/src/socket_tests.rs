@@ -929,16 +929,24 @@ async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls
                     peer.send(&envelope(&format!("S{i}"), i, "hi", 0)).await;
                     assert!(expect_ack(&mut peer, &format!("S{i}")).await);
                 }
+                // An envelope right behind the ping: its acknowledgement must come after the pong.
                 peer.ping("Ping from applink-1").await;
-                let ok = peer.expect_pong("Ping from applink-1", SEC * 2).await;
+                peer.send(&envelope("S3", 3, "hi", 0)).await;
+                let ok = peer.expect_pong_first("Ping from applink-1", SEC).await;
+                assert!(expect_ack(&mut peer, "S3").await);
                 seen.lock().unwrap().push(("stalled", ok));
                 // The queue overflowing: every envelope acknowledged, the rest dropped; the ping is still answered.
                 for i in 0..MAX_PENDING + 20 {
                     peer.send(&envelope(&format!("F{i}"), 100 + i, "hi", 0))
                         .await;
                 }
+                for _ in 0..MAX_PENDING + 20 {
+                    peer.recv(SEC).await;
+                }
                 peer.ping("Ping from applink-2").await;
-                let ok = peer.expect_pong("Ping from applink-2", SEC * 2).await;
+                peer.send(&envelope("G0", 999, "hi", 0)).await;
+                let ok = peer.expect_pong_first("Ping from applink-2", SEC).await;
+                assert!(expect_ack(&mut peer, "G0").await);
                 seen.lock().unwrap().push(("full", ok));
                 peer.drain().await;
             }
@@ -960,16 +968,17 @@ async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls
 #[tokio::test]
 async fn a_peer_that_only_pings_keeps_its_link() {
     bounded(async {
-        // The peer pings every 100 ms for 1.2 s, twice the idle bound, and never reads, so never answers ours.
+        // The peer pings every 40 ms for 1.4 s, twice the idle bound (17 times its own gap), and never reads, so
+        // never answers ours.
         let done = Arc::new(AtomicBool::new(false));
         let finished = done.clone();
         let fake = fake(move |_, mut peer| {
             let finished = finished.clone();
             async move {
                 peer.send(&hello()).await;
-                for _ in 0..12 {
+                for _ in 0..35 {
                     peer.ping("Ping from applink-1").await;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(40)).await;
                 }
                 finished.store(true, Ordering::SeqCst);
                 peer.ignore_until_gone().await;
@@ -979,7 +988,7 @@ async fn a_peer_that_only_pings_keeps_its_link() {
         let socket = start(
             &fake,
             Timing {
-                idle: Duration::from_millis(600),
+                idle: Duration::from_millis(700),
                 ping: Duration::from_millis(100),
                 ..timing()
             },
@@ -1030,6 +1039,66 @@ async fn a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap() 
             t[1] - t[0]
         );
         assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[test]
+fn the_product_numbers_are_the_measured_ones() {
+    // Slack's quiet-socket ping gap is 10.3 s at most and it drops a silent peer at 45 s.
+    assert_eq!(Timing::PRODUCT.idle, Duration::from_secs(45));
+    assert_eq!(Timing::PRODUCT.ping, Duration::from_secs(30));
+    assert_eq!(Timing::PRODUCT.write, Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() {
+    bounded(async {
+        // The peer sends acknowledged frames and never reads, so the client's acknowledgements fill the buffers
+        // and one write stalls. Idle is 60 s, so only the write bound can end the socket; the peer times from its
+        // stalled send, if any, to the connection dropping.
+        let ended = Arc::new(Mutex::new(None));
+        let seen = ended.clone();
+        let fake = fake(move |i, mut peer| {
+            let seen = seen.clone();
+            async move {
+                if i == 0 {
+                    peer.send(&hello()).await;
+                    let id = "a".repeat(128);
+                    let frame = json!({"type": "noop", "envelope_id": id}).to_string();
+                    let out = peer
+                        .send_until_stalled(&frame, Duration::from_millis(100))
+                        .await;
+                    *seen.lock().unwrap() = Some(out);
+                } else {
+                    peer.drain().await;
+                }
+            }
+        })
+        .await;
+        let socket = start(
+            &fake,
+            Timing {
+                write: Duration::from_millis(200),
+                ..timing()
+            },
+        );
+        eventually("the stalled send to end", || {
+            ended.lock().unwrap().is_some()
+        })
+        .await;
+        let (stalled, dropped) = ended
+            .lock()
+            .unwrap()
+            .unwrap()
+            .expect("the peer's sends ended without a drop");
+        // The write bound (200 ms) and the close wait (300 ms), with 2.5 s of slack for a slow host. An unbounded
+        // write never drops the connection, so the peer's send never ends and the wait above times out.
+        assert!(dropped, "the stalled send did not end in a drop");
+        assert!(stalled < Duration::from_millis(3000), "{stalled:?}");
+        eventually("the replacement", || fake.sockets().2 >= 2).await;
         socket.stop().await;
         fake.shutdown().await;
     })

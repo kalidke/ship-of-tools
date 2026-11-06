@@ -165,6 +165,46 @@ impl WsPeer {
         }
     }
 
+    /// Read frames until a pong carrying `payload` arrives, within `within`; false if a text frame (an
+    /// acknowledgement) comes first, or on a timeout or a wrong payload.
+    pub(crate) async fn expect_pong_first(&mut self, payload: &str, within: Duration) -> bool {
+        let end = tokio::time::Instant::now() + within;
+        loop {
+            match tokio::time::timeout_at(end, self.ws.next()).await {
+                Ok(Some(Ok(Message::Pong(got)))) => return got.as_ref() == payload.as_bytes(),
+                Ok(Some(Ok(Message::Text(_)))) => return false,
+                Ok(Some(Ok(_))) => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// Send `text` frames without ever reading, until the client drops the connection or one send cannot finish
+    /// for `stall` (the client has stopped reading because its own write to us cannot finish). Returns the time
+    /// that send waited past `stall` before it ended (zero when the drop came with no send waiting that long),
+    /// and whether it ended in an error, which is the drop. A client that never drops never returns.
+    pub(crate) async fn send_until_stalled(
+        &mut self,
+        text: &str,
+        stall: Duration,
+    ) -> Option<(Duration, bool)> {
+        loop {
+            let mut send = std::pin::pin!(self.ws.send(Message::Text(text.to_string().into())));
+            tokio::select! {
+                sent = &mut send => {
+                    if sent.is_err() {
+                        return Some((Duration::ZERO, true));
+                    }
+                }
+                _ = tokio::time::sleep(stall) => {
+                    let stuck = tokio::time::Instant::now();
+                    let sent = send.await;
+                    return Some((stuck.elapsed(), sent.is_err()));
+                }
+            }
+        }
+    }
+
     /// Read until the client ends the connection; the library answers a close.
     pub(crate) async fn drain(&mut self) {
         while let Some(Ok(_)) = self.ws.next().await {}

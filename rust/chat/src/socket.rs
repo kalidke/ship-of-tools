@@ -66,6 +66,12 @@ impl Timing {
     };
 }
 
+// Our ping and a write that cannot finish must both end well inside the idle bound, or neither could keep a link.
+const _: () = assert!(
+    Timing::PRODUCT.ping.as_millis() < Timing::PRODUCT.idle.as_millis()
+        && Timing::PRODUCT.write.as_millis() < Timing::PRODUCT.idle.as_millis()
+);
+
 /// Why a socket could not be opened, or what it last said. Fixed codes: no URL, token or Slack text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocketError {
