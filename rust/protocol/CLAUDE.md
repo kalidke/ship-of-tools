@@ -121,9 +121,9 @@ name is in this crate's one op table.
     among them): wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's, at B2g. `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
     admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
     `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
-    stays 4; an older daemon answers a chat op as any unknown op. Limits: handlers are the three request ops (`chat/ops.rs`), `chat.watch` and `chat.unwatch` are refused `unavailable` until their subscriptions land, and the events are not sent yet; a duplicate JSON key in a frame's payload is not refused (the codec reads a
-    `Value`, where the last wins); `chat.status` names the channels that need a snapshot, and nothing yet says a watch became
-    complete (B2f decides the carrier); the watch count `MAX_WATCHED` is also `sot-chat`'s `watch::MAX_CHANNELS`, held equal by a test;
+    stays 4; an older daemon answers a chat op as any unknown op. Limits: the daemon serves all five requests (`chat/ops.rs`) and both events (`chat/watch.rs`); a `chat.watch` reply says `complete` when the owner already holds the channel's snapshot and `pending` otherwise, never `needed` (a channel that owes a snapshot is told by a `chat.status` entry, to which the window answers with `chat.watch`), and a window never resyncs on a reply; a duplicate JSON key in a frame's payload is not refused (the codec reads a
+    `Value`, where the last wins); `chat.status` names the channels that need a snapshot, and nothing says a watch became
+    complete: a window reads content by `chat.history` and `chat.changed`, so `complete` matters only to a second watch's reply; the watch count `MAX_WATCHED` is also `sot-chat`'s `watch::MAX_CHANNELS`, held equal by a test;
     a cursor is bounded here and bound to its query by `sot-chat`; `chat.fetch` and `chat.post_file` are B4's.
     Tests `ops/chat_tests.rs`: `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
     `a_page_carries_records_that_round_trip`, `a_code_added_later_reads_as_other`,

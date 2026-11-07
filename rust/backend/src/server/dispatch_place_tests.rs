@@ -17,4 +17,9 @@ fn the_lists_are_disjoint_and_reasoned() {
     for name in [op::CHAT_POST, op::CHAT_HISTORY, op::CHAT_RESOLVE] {
         assert_eq!(place(name), Place::Job, "{name}");
     }
+    // A watch runs in the loop: its reply is written before the loop reads another chat event, and its snapshot is the
+    // owner's, so it waits on admission and memory alone.
+    for name in [op::CHAT_WATCH, op::CHAT_UNWATCH] {
+        assert_eq!(place(name), Place::Inline, "{name}");
+    }
 }

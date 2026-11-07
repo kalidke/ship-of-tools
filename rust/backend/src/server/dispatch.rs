@@ -56,6 +56,9 @@ pub(super) const INLINE: &[(&str, &str)] = &[
     (op::TREE_CHILDREN, "the window applies tree replies newest-wins and relies on request order (`ui/nav/tree_store.rs`)"),
     (op::DIRECTORY_LIST, "the picker applies the listing that echoes its path, and a `.` toggle sends two for one path"),
     (op::WORKSPACE_LIST, "the Sessions strip keeps the last list (`ui/control/replies.rs`)"),
+    (op::CHAT_WATCH, "its reply is written before the loop reads another chat event, so no `chat.changed` for the channel precedes it; \
+     it waits only on admission and memory, the snapshot being the owner's"),
+    (op::CHAT_UNWATCH, "a `chat.changed` sent after its reply would be one the window already unwatched"),
 ];
 
 const COSTLY: &str = "costly work, a kernel call or an image decode: one connection's burst must not starve the runtime";
@@ -93,6 +96,8 @@ pub(super) struct Shared {
     pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
     /// The owner of the pages this connection opens (`ClientGuard::site_owner`): its window's, kept across its redials.
     pub(super) site_owner: u64,
+    /// This connection's side of the chat watches.
+    pub(super) chat_conn: crate::chat::watch::Conn,
 }
 
 /// Runs one request frame where [`place`] puts it: an inline op here, before the loop reads again, and any other as a
@@ -329,10 +334,12 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         // The 1.5 s prompt hold runs off the loop, without a preview-pool permit.
         op::PAGE_REPLY => crate::rows::ops::page_reply::handle_page_reply(req_id, payload, workspaces).await,
         op::MONITOR_HISTORY => handle_monitor_history(req_id, payload, workspaces),
-        // Off the loop like every op not in `INLINE`: admission and the Slack call never hold the connection.
-        op::CHAT_RESOLVE | op::CHAT_HISTORY | op::CHAT_POST | op::CHAT_WATCH | op::CHAT_UNWATCH => {
-            crate::chat::ops::handle(req_id, frame.op.as_str(), payload, chat, workspaces).await
-        }
+        // The three requests that reach Slack are jobs: admission and the Slack call never hold the connection.
+        op::CHAT_RESOLVE => crate::chat::ops::resolve(req_id, payload, chat, workspaces).await,
+        op::CHAT_HISTORY => crate::chat::ops::history(req_id, payload, chat, workspaces).await,
+        op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces).await,
+        op::CHAT_WATCH => crate::chat::ops::watch(req_id, payload, chat, workspaces, &shared.chat_conn).await,
+        op::CHAT_UNWATCH => crate::chat::ops::unwatch(req_id, payload, chat, &shared.chat_conn).await,
         other => {
             tracing::warn!(op = %other, "unknown op");
             let payload = serde_json::json!({ "error": format!("unknown op: {other}") });
@@ -348,3 +355,7 @@ mod place_tests;
 #[cfg(test)]
 #[path = "chat_ops_tests.rs"]
 mod chat_ops_tests;
+
+#[cfg(test)]
+#[path = "chat_watch_tests.rs"]
+mod chat_watch_tests;

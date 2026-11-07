@@ -389,6 +389,40 @@ where
     }
 }
 
+/// Translates one chat event into its evt frame for the connection `conn`. A `chat.changed` is written only when the
+/// connection still watches its channel when it reaches the loop (a connection that never watched, or that unwatched or
+/// was refused since, is written none), and a `chat.status` only to the connections its entries name, each its own.
+/// A lagged one writes `bus.lost`: the chat events are `chat.changed`'s, and the window resyncs every watch.
+pub(super) async fn write_chat_event<W>(
+    tx: &mut W,
+    evt: Result<crate::chat::watch::Evt, broadcast::error::RecvError>,
+    conn: &crate::chat::watch::Conn,
+) -> Result<bool>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use crate::chat::watch::Evt;
+    match evt {
+        Ok(Evt::Changed(e)) if conn.watches(e.channel.as_str()) => {
+            write_frame_to(tx, &Frame::evt(op::CHAT_CHANGED, serde_json::to_value(e)?), None).await?;
+            Ok(true)
+        }
+        Ok(Evt::Status(entries)) => match entries.iter().find(|(c, _)| conn.is(*c)) {
+            Some((_, s)) => {
+                write_frame_to(tx, &Frame::evt(op::CHAT_STATUS, serde_json::to_value(s)?), None).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        },
+        Ok(Evt::Changed(_)) => Ok(false),
+        Err(broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(skipped = n, "chat events lagged on this connection; client missed chat changes");
+            write_bus_lost(tx, op::CHAT_CHANGED, n).await
+        }
+        Err(broadcast::error::RecvError::Closed) => Ok(false),
+    }
+}
+
 #[cfg(test)]
 #[path = "events_tests.rs"]
 mod tests;

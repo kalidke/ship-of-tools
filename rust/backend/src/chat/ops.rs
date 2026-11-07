@@ -1,5 +1,5 @@
-//! The chat's request ops, served from a control session's job (never its loop): `chat.resolve`, `chat.history` and
-//! `chat.post`. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
+//! The chat's request ops: `chat.resolve`, `chat.history` and `chat.post`, each a job (never the loop), and
+//! `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
 //! unknown outcome is the reply's, for the client to settle by reading history.
@@ -13,11 +13,12 @@ use sot_chat::config::Resolution;
 use sot_chat::http::HttpError;
 use sot_protocol::ops::{
     op, ChatChannel, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveReq,
-    ChatResolveRes, ChatTarget, ChatUpper,
+    ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper, ChatWatchReq, ChatWatchRes,
 };
 use sot_protocol::reply::HandlerOutput;
 use sot_protocol::Frame;
 
+use super::watch::Conn;
 use super::Chat;
 use crate::rows::Workspaces;
 
@@ -51,7 +52,16 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
         ApiError::Limited { .. } => ChatCode::Limited,
         ApiError::Closed => ChatCode::Unavailable,
         ApiError::BadRequest | ApiError::BadBound | ApiError::Altered => ChatCode::BadRequest,
-        ApiError::Http(_)
+        ApiError::Http(
+            HttpError::Timeout
+            | HttpError::Destination
+            | HttpError::Redirect
+            | HttpError::Tls
+            | HttpError::Connect
+            | HttpError::Protocol
+            | HttpError::TooLarge
+            | HttpError::Invalid,
+        )
         | ApiError::Slack(_)
         | ApiError::Status(_)
         | ApiError::Malformed
@@ -66,116 +76,144 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
 /// The code of a post Slack or the client refused before it was sent or definitely not posted.
 pub(crate) fn post_refusal_code(why: &str) -> ChatCode {
     match why {
-        "busy" => ChatCode::Busy,
-        "invalid" => ChatCode::BadRequest,
+        why if why == HttpError::Busy.code() => ChatCode::Busy,
+        why if why == HttpError::Invalid.code() => ChatCode::BadRequest,
         _ => ChatCode::Failed,
     }
 }
 
 /// Admission off the runtime's workers: it canonicalizes on the shared home, which can block.
-async fn admitted(chat: &Arc<Chat>, rows: &Workspaces, target: ChatTarget) -> Result<Arc<sot_chat::service::Service>, ChatCode> {
+pub(super) async fn admitted(chat: &Arc<Chat>, rows: &Workspaces, target: ChatTarget) -> Result<Arc<sot_chat::service::Service>, ChatCode> {
     let (chat, rows) = (chat.clone(), rows.clone());
     tokio::task::spawn_blocking(move || chat.admit(&rows, &target)).await.unwrap_or(Err(ChatCode::Failed))
 }
 
-/// One chat request. A payload that does not decode (an unknown post `kind` included) is `bad_request`.
-pub(crate) async fn handle(
-    req_id: u64, name: &str, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
-) -> Result<HandlerOutput> {
-    fn decode<T: for<'de> Deserialize<'de>>(payload: serde_json::Value) -> Result<T, ChatCode> {
-        serde_json::from_value(payload).map_err(|_| ChatCode::BadRequest)
+/// A payload that does not decode (an unknown post `kind` included) is `bad_request`.
+fn decode<T: for<'de> Deserialize<'de>>(payload: serde_json::Value) -> Result<T, ChatCode> {
+    serde_json::from_value(payload).map_err(|_| ChatCode::BadRequest)
+}
+
+pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_RESOLVE;
+    let req = match decode::<ChatResolveReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let (chat, rows) = (chat.clone(), rows.clone());
+    let resolved = tokio::task::spawn_blocking(move || chat.resolve(&rows, &req.row)).await;
+    match resolved.unwrap_or(Err(ChatCode::Failed)) {
+        Err(code) => Ok(refuse(req_id, NAME, code)),
+        Ok((Resolution::NotHub, _)) => Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+        Ok((Resolution::Unmapped, _)) => reply(req_id, NAME, &ChatResolveRes::Unmapped),
+        Ok((Resolution::Invalid(_), _)) => reply(req_id, NAME, &ChatResolveRes::Invalid),
+        Ok((Resolution::Mapped { workspace, channel, .. }, delivers)) => match ChatChannel::try_from(channel) {
+            Ok(channel) => reply(req_id, NAME, &ChatResolveRes::Mapped { workspace, channel, delivers }),
+            Err(_) => reply(req_id, NAME, &ChatResolveRes::Invalid),
+        },
     }
-    let refused = |code| Ok(refuse(req_id, name, code));
-    match name {
-        op::CHAT_RESOLVE => {
-            let req = match decode::<ChatResolveReq>(payload) {
-                Ok(r) => r,
-                Err(c) => return refused(c),
-            };
-            let (chat, rows) = (chat.clone(), rows.clone());
-            let resolved = tokio::task::spawn_blocking(move || chat.resolve(&rows, &req.row)).await;
-            match resolved.unwrap_or(Err(ChatCode::Failed)) {
-                Err(code) => refused(code),
-                Ok((Resolution::NotHub, _)) => refused(ChatCode::Unavailable),
-                Ok((Resolution::Unmapped, _)) => reply(req_id, name, &ChatResolveRes::Unmapped),
-                Ok((Resolution::Invalid(_), _)) => reply(req_id, name, &ChatResolveRes::Invalid),
-                Ok((Resolution::Mapped { workspace, channel, .. }, delivers)) => match ChatChannel::try_from(channel) {
-                    Ok(channel) => reply(req_id, name, &ChatResolveRes::Mapped { workspace, channel, delivers }),
-                    Err(_) => reply(req_id, name, &ChatResolveRes::Invalid),
-                },
-            }
+}
+
+pub(crate) async fn history(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_HISTORY;
+    let req = match decode::<ChatHistoryReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+    };
+    let (before, until) = match &req.upper {
+        Some(ChatUpper::Before(t)) => (Some(t.as_str()), None),
+        Some(ChatUpper::Until(t)) => (None, Some(t.as_str())),
+        None => (None, None),
+    };
+    let query = Bounds::new(req.after.as_ref().map(|t| t.as_str()), before, until)
+        .and_then(|b| HistoryQuery::new(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), b, req.limit));
+    let cont = req.cursor.clone().map(Continuation::parse).transpose();
+    let (query, cont) = match (query, cont) {
+        (Ok(q), Ok(c)) => (q, c),
+        (Err(e), _) | (_, Err(e)) => return Ok(refuse(req_id, NAME, code_of(&e))),
+    };
+    let mut page = match api.history(&query, cont.as_ref()).await {
+        Ok(p) => p,
+        Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
+    };
+    api.fill_names(&mut page.records).await;
+    reply(req_id, NAME, &ChatHistoryRes { records: page.records, next: page.next.map(|c| c.as_str().to_string()), limited: page.limited })
+}
+
+pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_POST;
+    let req = match decode::<ChatPostReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+    };
+    let kind = match req.kind {
+        ChatPostKind::Person => PostKind::Person,
+        ChatPostKind::Row => PostKind::Row,
+    };
+    let refused_post = |code| reply(req_id, NAME, &ChatPostRes::Refused { code });
+    // The one call: nothing below sends again, whatever it answers.
+    let outcome = api.post(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), kind, &req.name, &req.text).await;
+    match outcome {
+        Err(e) => refused_post(code_of(&e)),
+        Ok(PostOutcome::Posted(ts)) => reply(req_id, NAME, &ChatPostRes::Posted { ts }),
+        Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
+        Ok(PostOutcome::Limited { retry_after, assumed }) => {
+            reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
-        op::CHAT_HISTORY => {
-            let req = match decode::<ChatHistoryReq>(payload) {
-                Ok(r) => r,
-                Err(c) => return refused(c),
-            };
-            let service = match admitted(chat, rows, req.target.clone()).await {
-                Ok(s) => s,
-                Err(c) => return refused(c),
-            };
-            let api = match service.api() {
-                Ok(a) => a,
-                Err(_) => return refused(ChatCode::Unavailable),
-            };
-            let (before, until) = match &req.upper {
-                Some(ChatUpper::Before(t)) => (Some(t.as_str()), None),
-                Some(ChatUpper::Until(t)) => (None, Some(t.as_str())),
-                None => (None, None),
-            };
-            let query = Bounds::new(req.after.as_ref().map(|t| t.as_str()), before, until).and_then(|b| {
-                HistoryQuery::new(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), b, req.limit)
-            });
-            let cont = req.cursor.clone().map(Continuation::parse).transpose();
-            let (query, cont) = match (query, cont) {
-                (Ok(q), Ok(c)) => (q, c),
-                (Err(e), _) | (_, Err(e)) => return refused(code_of(&e)),
-            };
-            let mut page = match api.history(&query, cont.as_ref()).await {
-                Ok(p) => p,
-                Err(e) => return refused(code_of(&e)),
-            };
-            api.fill_names(&mut page.records).await;
-            reply(
-                req_id,
-                name,
-                &ChatHistoryRes { records: page.records, next: page.next.map(|c| c.as_str().to_string()), limited: page.limited },
-            )
-        }
-        op::CHAT_POST => {
-            let req = match decode::<ChatPostReq>(payload) {
-                Ok(r) => r,
-                Err(c) => return refused(c),
-            };
-            let service = match admitted(chat, rows, req.target.clone()).await {
-                Ok(s) => s,
-                Err(c) => return refused(c),
-            };
-            let api = match service.api() {
-                Ok(a) => a,
-                Err(_) => return refused(ChatCode::Unavailable),
-            };
-            let kind = match req.kind {
-                ChatPostKind::Person => PostKind::Person,
-                ChatPostKind::Row => PostKind::Row,
-            };
-            let refused_post = |code| reply(req_id, name, &ChatPostRes::Refused { code });
-            // The one call: nothing below sends again, whatever it answers.
-            let outcome = api
-                .post(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), kind, &req.name, &req.text)
-                .await;
-            match outcome {
-                Err(e) => refused_post(code_of(&e)),
-                Ok(PostOutcome::Posted(ts)) => reply(req_id, name, &ChatPostRes::Posted { ts }),
-                Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
-                Ok(PostOutcome::Limited { retry_after, assumed }) => {
-                    reply(req_id, name, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
-                }
-                Ok(PostOutcome::Unknown) => reply(req_id, name, &ChatPostRes::Unknown),
-            }
-        }
-        // `chat.watch` and `chat.unwatch`, the only other names dispatch sends here: no subscription is made until
-        // watches are served, and nothing is admitted.
-        _ => refused(ChatCode::Unavailable),
+        Ok(PostOutcome::Unknown) => reply(req_id, NAME, &ChatPostRes::Unknown),
     }
+}
+
+/// `chat.watch`, run in the connection's loop (`INLINE`): admitted like any action that reaches Slack, then registered
+/// with the owner, which begins the snapshot off the loop. The reply is written before the loop reads another event,
+/// so no `chat.changed` for the channel precedes it. A watch refused at admission releases the connection's slot for
+/// the channel, so a resync that finds its row gone frees what it held.
+pub(crate) async fn watch(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, conn: &Conn) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_WATCH;
+    let req = match decode::<ChatWatchReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let channel = req.target.channel.as_str().to_string();
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => {
+            conn.release(&channel);
+            return Ok(refuse(req_id, NAME, c));
+        }
+    };
+    match conn.watch(req.target, &service, chat, rows).await {
+        Ok(state) => reply(req_id, NAME, &ChatWatchRes { state }),
+        Err(c) => Ok(refuse(req_id, NAME, c)),
+    }
+}
+
+/// `chat.unwatch`: ends this connection's watch of the channel and no other's. It needs a running service and no
+/// current row (`Chat::admit_unwatch`): refusing it for a stale one would keep the slot.
+pub(crate) async fn unwatch(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, conn: &Conn) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_UNWATCH;
+    let req = match decode::<ChatUnwatchReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    if let Err(c) = chat.admit_unwatch() {
+        return Ok(refuse(req_id, NAME, c));
+    }
+    conn.release(req.target.channel.as_str());
+    reply(req_id, NAME, &ChatUnwatchRes {})
 }

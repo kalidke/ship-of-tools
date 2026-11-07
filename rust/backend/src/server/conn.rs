@@ -4,7 +4,7 @@
 
 use super::dispatch::{dispatch, Shared};
 use super::events::{
-    recv_or_pending, write_agent_message, write_fe_command, write_monitor_tick,
+    recv_or_pending, write_agent_message, write_chat_event, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
@@ -361,6 +361,10 @@ where
     let mut jobs = Jobs(JoinSet::new());
     let job_sem = Arc::new(Semaphore::new(OFFLOOP_CONCURRENCY));
 
+    // This connection's chat watches: subscribed here, like the buses above, so no event between is lost, and dropped
+    // with the connection (any end of this function), which releases every slot it holds.
+    let mut chat_watch = services.chat.hub().connect();
+
     // A `link` connection is a daemon that files for its own comm folder: the hub offers it the `comm.file`
     // requests its own folder cannot file, and reads its answers (`comm::mail::links`). It is attached before it is on
     // the roster, so a connection the roster lists is already offered filings.
@@ -380,6 +384,7 @@ where
         hello_host,
         repl_numbers: client_guard.as_ref().map(crate::clients::ClientGuard::numbers).unwrap_or_default(),
         site_owner: client_guard.as_ref().map_or(0, crate::clients::ClientGuard::site_owner),
+        chat_conn: chat_watch.conn.clone(),
     };
     // The window's REPL runs still running, read now that this connection is subscribed to the frame bus above: the
     // `done` of each run named is published after this, so this connection is written it.
@@ -394,7 +399,7 @@ where
         let frame = match select_once(
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
-            &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
+            &mut chat_watch, &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
             &client_guard, &services.clients, &shared.repl_numbers,
         )
         .await?
@@ -466,7 +471,8 @@ async fn select_once<R, W, F>(
     topo_changed_rx: &mut broadcast::Receiver<crate::topology::store::TopologyChanged>,
     agent_events_rx: &mut broadcast::Receiver<AgentMessage>, link: &mut Option<crate::comm::mail::links::LinkEnd>,
     fe_command_rx: &mut broadcast::Receiver<FeCommandEvt>, repl_frame_rx: &mut broadcast::Receiver<ReplFrameMsg>,
-    monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, jobs: &mut JoinSet<()>,
+    monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, chat_watch: &mut crate::chat::watch::Watcher,
+    jobs: &mut JoinSet<()>,
     read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
     active_workspace: &Option<String>, workspaces: &Workspaces, client_guard: &Option<crate::clients::ClientGuard>,
     clients: &Clients,
@@ -528,6 +534,10 @@ where
             if monitor_subscribed {
                 write_monitor_tick(tx, tick).await?;
             }
+            Ok(Woke::Again)
+        }
+        evt = chat_watch.rx.recv() => {
+            write_chat_event(tx, evt, &chat_watch.conn).await?;
             Ok(Woke::Again)
         }
         Some(res) = jobs.join_next(), if !jobs.is_empty() => {

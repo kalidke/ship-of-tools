@@ -562,11 +562,12 @@ async fn stale_row_or_mapping_cannot_post_or_fetch() {
     for what in ["ws-nothing-0", "", "alpha"] {
         assert_eq!(admitted(&w, what, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow), "{what:?}");
     }
-    // A watch admitted while the row was current: once the row goes, its next snapshot is refused and it can be dropped.
+    // A watch admitted while the row was current: once the row goes, its next snapshot is refused, and an unwatch is
+    // still admitted so the watch can be dropped.
     assert!(w.chat.admit(&w.rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
-    assert_eq!(w.chat.admit_unwatch(), Ok(()));
     w.rows.remove_by_id(&id).unwrap();
     assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
+    assert_eq!(w.chat.admit_unwatch(), Ok(()));
 
     // Replaced: a new row in the folder under a new id does not inherit a request that named the old id, and a request
     // naming the new id works.
@@ -594,6 +595,9 @@ async fn stale_row_or_mapping_cannot_post_or_fetch() {
     assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Ok(()));
     w.rows.set_default(&new);
     assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Err(ChatCode::Unmapped));
+    // With a default set, an empty id is still no row: the registry's lookup answers it with the default, and only
+    // the exact-id compare in `current_row` refuses it.
+    assert_eq!(admitted(&w, "", "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
 }
 
 #[tokio::test(flavor = "multi_thread")]

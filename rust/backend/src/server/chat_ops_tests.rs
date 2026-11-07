@@ -15,12 +15,11 @@ use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
 use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// What a chat op name gets from the server: a handler, a refusal until watches are served, or (an event) the unknown-op
-/// answer a request carrying its name gets.
+/// What a chat op name gets from the server: a handler, or (an event) the unknown-op answer a request carrying its
+/// name gets.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     Handled,
-    Unavailable,
     Event,
 }
 
@@ -29,16 +28,16 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_RESOLVE, Answer::Handled),
     (op::CHAT_HISTORY, Answer::Handled),
     (op::CHAT_POST, Answer::Handled),
-    (op::CHAT_WATCH, Answer::Unavailable),
-    (op::CHAT_UNWATCH, Answer::Unavailable),
+    (op::CHAT_WATCH, Answer::Handled),
+    (op::CHAT_UNWATCH, Answer::Handled),
     (op::CHAT_CHANGED, Answer::Event),
     (op::CHAT_STATUS, Answer::Event),
 ];
 
 /// What the fake answers a chat call with.
-const OK: u8 = 0;
-const HOLD: u8 = 1;
-const DROP: u8 = 2;
+pub(super) const OK: u8 = 0;
+pub(super) const HOLD: u8 = 1;
+pub(super) const DROP: u8 = 2;
 
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
@@ -48,7 +47,7 @@ fn is_chat_call(path: &str) -> bool {
 
 /// A fake Slack whose history and post answers follow `mode`; `auth.test` names the workspace and the socket's ticket
 /// is refused, so the service runs with no live socket.
-async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
+pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
     let mode = mode.clone();
     FakeSlack::start(Identity::Trusted, move |seen, _| {
         let path = seen.path();
@@ -66,41 +65,42 @@ async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
     .await
 }
 
-fn calls(fake: &FakeSlack) -> usize {
+pub(super) fn calls(fake: &FakeSlack) -> usize {
     fake.seen().iter().filter(|s| is_chat_call(&s.path())).count()
 }
 
-struct Rig {
-    _home: Home,
-    services: Services,
-    rows: Workspaces,
+pub(super) struct Rig {
+    pub(super) _home: Home,
+    pub(super) services: Services,
+    pub(super) rows: Workspaces,
     /// The ids of rows alpha (folder a, C0AAAA) and beta (folder b, C0BBBB); folder c maps to nothing.
-    alpha: String,
-    folders: [std::path::PathBuf; 3],
+    pub(super) alpha: String,
+    pub(super) beta: String,
+    pub(super) folders: [std::path::PathBuf; 3],
     _root: tempfile::TempDir,
 }
 
-fn starter(fake: &FakeSlack) -> crate::chat::Starter<Service> {
+pub(super) fn starter(fake: &FakeSlack) -> crate::chat::Starter<Service> {
     let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
     Box::new(move |config, credentials, dir| {
         Box::pin(async move { Service::start_at(config, credentials, http, dir, base).await.map(Arc::new).map_err(|e| e.code()) })
     })
 }
 
-async fn running(chat: &Chat<Service>) {
+pub(super) async fn running(chat: &Chat<Service>) {
     while chat.status() == Status::Starting {
         tokio::task::yield_now().await;
     }
 }
 
-async fn rig(fake: &FakeSlack) -> Rig {
+pub(super) async fn rig(fake: &FakeSlack) -> Rig {
     let home = Home::new(Some(SELF));
     let folders = [home.folder("a"), home.folder("b"), home.folder("c")];
     home.chat_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
     home.secrets();
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
-    rows.insert(row("beta", &folders[1]));
+    let beta = rows.insert(row("beta", &folders[1])).workspace_id.clone();
     let chat = Chat::begin(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
     running(&chat).await;
     assert_eq!(chat.status(), Status::Running, "the service starts against the fake: {:?}", fake.seen().iter().map(|s| s.target.clone()).collect::<Vec<_>>());
@@ -108,17 +108,17 @@ async fn rig(fake: &FakeSlack) -> Rig {
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
     services.workspaces = rows.clone();
-    Rig { _home: home, services, rows, alpha, folders, _root: root }
+    Rig { _home: home, services, rows, alpha, beta, folders, _root: root }
 }
 
 /// One open control connection.
-struct Conn {
-    crx: tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
-    ctx: tokio::io::WriteHalf<tokio::io::DuplexStream>,
-    task: tokio::task::JoinHandle<Result<()>>,
+pub(super) struct Conn {
+    pub(super) crx: tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    pub(super) ctx: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    pub(super) task: tokio::task::JoinHandle<Result<()>>,
 }
 
-async fn connect(services: Services) -> Conn {
+pub(super) async fn connect(services: Services) -> Conn {
     let (client, server) = tokio::io::duplex(1 << 16);
     let (srx, stx) = tokio::io::split(server);
     let task = tokio::spawn(handle_connection(srx, stx, services, None));
@@ -135,12 +135,12 @@ async fn connect(services: Services) -> Conn {
 }
 
 impl Conn {
-    async fn send(&mut self, id: u64, name: &str, payload: Value) {
+    pub(super) async fn send(&mut self, id: u64, name: &str, payload: Value) {
         codec::write_frame(&mut self.ctx, &Frame::req(id, name, payload), None).await.unwrap();
     }
 
     /// The payload of the reply to request `id`; other replies and events are passed over.
-    async fn reply(&mut self, id: u64) -> Value {
+    pub(super) async fn reply(&mut self, id: u64) -> Value {
         loop {
             let (frame, _) = codec::read_frame(&mut self.crx).await.unwrap();
             if frame.kind == Kind::Res && frame.id == id {
@@ -149,25 +149,29 @@ impl Conn {
         }
     }
 
-    async fn ask(&mut self, id: u64, name: &str, payload: Value) -> Value {
+    pub(super) async fn ask(&mut self, id: u64, name: &str, payload: Value) -> Value {
         self.send(id, name, payload).await;
         self.reply(id).await
     }
 }
 
-fn target(row: &str, channel: &str) -> Value {
+pub(super) fn target(row: &str, channel: &str) -> Value {
     json!({"row": row, "workspace": "T0AAAA", "channel": channel})
 }
 
-fn history(row: &str, channel: &str) -> Value {
+pub(super) fn history(row: &str, channel: &str) -> Value {
     json!({"target": target(row, channel), "limit": 5})
 }
 
-fn post(row: &str, channel: &str) -> Value {
+pub(super) fn watch(row: &str, channel: &str) -> Value {
+    json!({"target": target(row, channel)})
+}
+
+pub(super) fn post(row: &str, channel: &str) -> Value {
     json!({"target": target(row, channel), "kind": "person", "name": "Ann", "text": "hello"})
 }
 
-fn code(reply: &Value) -> &str {
+pub(super) fn code(reply: &Value) -> &str {
     reply["code"].as_str().unwrap_or("none")
 }
 
@@ -200,7 +204,7 @@ async fn a_removed_replaced_remapped_or_anchor_row_makes_no_call_through_any_req
     };
 
     // Remapped: the row is current, and the expected channel is the other one.
-    for (name, payload) in [(op::CHAT_HISTORY, history(&rig.alpha, "C0BBBB")), (op::CHAT_POST, post(&rig.alpha, "C0BBBB"))] {
+    for (name, payload) in [(op::CHAT_HISTORY, history(&rig.alpha, "C0BBBB")), (op::CHAT_POST, post(&rig.alpha, "C0BBBB")), (op::CHAT_WATCH, watch(&rig.alpha, "C0BBBB"))] {
         let (n, name, payload) = ask(name, payload);
         assert_eq!(code(&conn.ask(n, name, payload).await), "stale_mapping", "{name} remapped");
     }
@@ -213,7 +217,7 @@ async fn a_removed_replaced_remapped_or_anchor_row_makes_no_call_through_any_req
     }
     // The anchor never acts; a resolve names it as not mapped.
     rig.rows.set_default(&rig.alpha);
-    for (name, payload) in [(op::CHAT_HISTORY, history(&rig.alpha, "C0AAAA")), (op::CHAT_POST, post(&rig.alpha, "C0AAAA"))] {
+    for (name, payload) in [(op::CHAT_HISTORY, history(&rig.alpha, "C0AAAA")), (op::CHAT_POST, post(&rig.alpha, "C0AAAA")), (op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA"))] {
         let (n, name, payload) = ask(name, payload);
         assert_eq!(code(&conn.ask(n, name, payload).await), "unmapped", "{name} anchor");
     }
@@ -228,6 +232,7 @@ async fn a_removed_replaced_remapped_or_anchor_row_makes_no_call_through_any_req
         (op::CHAT_HISTORY, history(&rig.alpha, "C0AAAA")),
         (op::CHAT_POST, post(&rig.alpha, "C0AAAA")),
         (op::CHAT_RESOLVE, json!({"row": rig.alpha})),
+        (op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")),
     ] {
         let (n, name, payload) = ask(name, payload);
         assert_eq!(code(&conn.ask(n, name, payload).await), "stale_row", "{name} replaced");
@@ -246,11 +251,13 @@ async fn every_chat_op_name_has_a_handler_or_a_stated_answer() {
         let answer = OPS.iter().find(|(o, _)| o == name).unwrap_or_else(|| panic!("{name} has no handler and no stated answer")).1;
         let reply = conn.ask(100 + n as u64, name, history(&rig.alpha, "C0AAAA")).await;
         match answer {
-            // Watches get no subscription until B2f2: refused as `unavailable`, with nothing admitted.
-            Answer::Unavailable => assert_eq!(code(&reply), "unavailable", "{name}"),
             // The events are the daemon's to send: a request carrying the name is an unknown op.
             Answer::Event => assert!(reply["error"].as_str().unwrap().starts_with("unknown op"), "{name}: {reply}"),
-            Answer::Handled => assert!(!reply["error"].as_str().unwrap_or("").starts_with("unknown op"), "{name}: {reply}"),
+            // A running service and a current row: a name with a handler is neither unknown nor `unavailable`.
+            Answer::Handled => {
+                assert!(!reply["error"].as_str().unwrap_or("").starts_with("unknown op"), "{name}: {reply}");
+                assert_ne!(code(&reply), "unavailable", "{name}: {reply}");
+            }
         }
         seen += 1;
     }
@@ -372,10 +379,15 @@ fn each_api_error_has_its_stated_code() {
         (ApiError::Malformed, ChatCode::Failed),
         (ApiError::Slack("x".into()), ChatCode::Failed),
         (ApiError::Status(500), ChatCode::Failed),
+        (ApiError::NoIdentity, ChatCode::Failed),
+        (ApiError::WrongWorkspace, ChatCode::Failed),
+        (ApiError::Repeated, ChatCode::Failed),
+        (ApiError::Missing, ChatCode::Failed),
+        (ApiError::TooLarge, ChatCode::Failed),
     ] {
         assert_eq!(code_of(&e), want, "{e:?}");
     }
-    for (why, want) in [("busy", ChatCode::Busy), ("invalid", ChatCode::BadRequest), ("destination", ChatCode::Failed), ("http_403", ChatCode::Failed), ("channel_not_found", ChatCode::Failed)] {
+    for (why, want) in [(HttpError::Busy.code(), ChatCode::Busy), (HttpError::Invalid.code(), ChatCode::BadRequest), ("destination", ChatCode::Failed), ("http_403", ChatCode::Failed), ("channel_not_found", ChatCode::Failed)] {
         assert_eq!(post_refusal_code(why), want, "{why}");
     }
 }

@@ -17,6 +17,7 @@ use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 
 pub(crate) mod ops;
+pub(crate) mod watch;
 
 use crate::lifecycle::retire::{Participant, Registry, RETIRE_WAIT};
 use crate::rows::{Workspace, Workspaces};
@@ -164,6 +165,8 @@ pub(crate) struct Chat<L: Listener = Service> {
     shared: Arc<Shared<L>>,
     /// The runtime that stops the service; `None` only for a chat that never started one.
     handle: Option<Handle>,
+    /// Which connection watches which channel, and the owner task that serves them.
+    hub: Arc<watch::Hub>,
 }
 
 impl<L: Listener> Chat<L> {
@@ -176,7 +179,7 @@ impl<L: Listener> Chat<L> {
         let shared = Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new() });
         let chat = |config, status| {
             *shared.lock() = Phase::Off(status);
-            Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()) })
+            Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()), hub: watch::Hub::new() })
         };
         if !is_hub(env) {
             return chat(None, Status::NotHub);
@@ -236,7 +239,11 @@ impl<L: Listener> Chat<L> {
     #[cfg(test)]
     pub(crate) fn off() -> Arc<Chat<L>> {
         let shared = Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new() });
-        Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok() })
+        Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok(), hub: watch::Hub::new() })
+    }
+
+    pub(crate) fn hub(&self) -> &Arc<watch::Hub> {
+        &self.hub
     }
 
     pub(crate) fn status(&self) -> Status {
@@ -281,8 +288,8 @@ impl<L: Listener> Chat<L> {
         Ok((resolution, delivers))
     }
 
-    /// M3: the one door every chat action that reaches Slack or a file passes, at the moment it is admitted. The service is running; the row is
-    /// still the registry's current entry for that id (a removed row, a replaced one under a new id and an id that
+    /// M3: the one door every chat action that reaches Slack or a file passes, at the moment it is admitted. The
+    /// service is running; the row is still the registry's current entry for that id (a removed row, a replaced one under a new id and an id that
     /// never existed are `StaleRow`); it is not the inert anchor (`Unmapped`, as a folder the file does not map); and
     /// its current folder maps, in the configuration loaded at start, to exactly the expected workspace and channel
     /// (anything else is `StaleMapping`). Only then is the service handed out. Limit: the check is at admission, no
@@ -307,7 +314,6 @@ impl<L: Listener> Chat<L> {
 
     /// The door for an unwatch, which hands out no service: it ends access and calls nothing, so it needs no current
     /// row, and refusing it for a stale one would leave the watch holding one of the bounded slots.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the watch ops (B2f2) are its first caller"))]
     pub(crate) fn admit_unwatch(&self) -> Result<(), ChatCode> {
         self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
     }
