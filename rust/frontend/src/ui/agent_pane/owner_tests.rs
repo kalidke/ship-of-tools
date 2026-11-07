@@ -977,3 +977,22 @@ fn leaving_for_a_row_with_no_attachment_paints_as_a_new_pane() {
         assert_eq!(pixels(&mut p), (PaneScreen::Empty, "".into()), "{label}");
     }
 }
+
+/// The move off a destroyed row clears the pane first, so the gone session's last screen is not held while a cold
+/// neighbor attaches.
+#[test]
+fn a_cold_neighbor_attaches_over_an_empty_pane_after_the_gone_row_is_cleared() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "a", "gone", b"the destroyed session", t);
+    step(&mut p, &wire, Step { dead: true, status: Some("ended"), ..Default::default() }, t);
+    p.show_no_attachment();
+    select(&mut p, "a", "next", t, 16);
+    assert_eq!(pixels(&mut p), (PaneScreen::Empty, "".into()));
+    // Without the clear, the departing screen is held under the neighbor.
+    let mut q = Pane::new(None);
+    let wire = ready(&mut q, "a", "gone", b"the destroyed session", t);
+    step(&mut q, &wire, Step { dead: true, status: Some("ended"), ..Default::default() }, t);
+    select(&mut q, "a", "next", t, 16);
+    assert_eq!(pixels(&mut q).0, PaneScreen::Hold);
+}

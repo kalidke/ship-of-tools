@@ -185,19 +185,12 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
     };
     let target: WsKey = (target_host.clone(), target_id.clone());
     if was_destroy_pending.as_ref() == Some(&target) {
-        if let Err(e) = state.send_to(
-            &target_host,
-            crate::net::transport::OutgoingReq::WorkspaceDestroy {
-                workspace_id: target_id.clone(),
-            },
-        ) {
+        if let Err(e) = state.request_destroy(&target_host, &target_id) {
             tracing::warn!(error = %e, "drop workspace.destroy");
             state.status.set(format!(
                 "destroy '{target_label}' failed · channel closed"
             ));
         } else {
-            // In flight: the row is no longer a place to go, should another destroy of the row in view answer first.
-            state.row_directory.note_destroyed(&target_host, &target_id);
             state.status.set(format!("destroying '{target_label}'…"));
         }
         state.window.request_redraw();
@@ -207,4 +200,15 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
         state.window.request_redraw();
     }
     Continue(())
+}
+
+impl State {
+    /// Send the destroy of a row, named by workspace id, to its computer. In flight, the row is no longer a place to
+    /// go, should another destroy of the row in view answer first.
+    pub(in crate::ui) fn request_destroy(&mut self, host: &HostKey, workspace_id: &str) -> Result<(), String> {
+        self.send_to(host, crate::net::transport::OutgoingReq::WorkspaceDestroy { workspace_id: workspace_id.to_string() })
+            .map_err(|e| e.to_string())?;
+        self.row_directory.note_destroyed(host, workspace_id);
+        Ok(())
+    }
 }

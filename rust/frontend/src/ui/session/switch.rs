@@ -80,6 +80,8 @@ impl State {
             Leave::To((h, slug)) => self.row_directory.resolve(&h, &slug).ok().filter(|t| t.attachment().is_ok()),
             Leave::NoSession => None,
         };
+        // The gone row's screen is not held under the next row's chrome while its client attaches.
+        self.agent_pane.show_no_attachment();
         match target {
             Some(target) => self.switch_to_resolved_workspace(target, false),
             None => self.switch_to_workspace(host, None, None, false),
@@ -87,14 +89,15 @@ impl State {
     }
 
     /// Clean up per-workspace snapshot maps so a recreated workspace with the same slug doesn't inherit stale
-    /// UI/REPL state. Purge through the SAME key collapse the maps are written with, so a destroyed default-by-slug
-    /// removes the "<default>" entries, not misses them; the tree slots and row metadata go with them.
+    /// UI/REPL state; the tree slots and row metadata go with them. The key is `(host, slug)` as given: a row that is
+    /// destroyed is never a default row, and collapsing its slug against the selected computer's default slug would
+    /// purge another computer's default row.
     pub(in crate::ui) fn forget_destroyed_row_views(&mut self, host: &HostKey, slug: &str) {
-        let ws_key: WsKey = (host.clone(), self.reply_ws_key(Some(slug)));
+        let ws_key: WsKey = (host.clone(), slug.to_string());
         self.parked_views.forget(&ws_key);
         self.repl_model.forget_destroyed_row(&ws_key);
         self.nav.purge_workspace(&ws_key);
-        self.row_presentation.forget_destroyed_metadata(&(host.clone(), slug.to_string()));
+        self.row_presentation.forget_destroyed_metadata(&ws_key);
     }
 
     /// Single entry point for "switch the chrome's active workspace".

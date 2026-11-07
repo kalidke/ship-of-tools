@@ -5,6 +5,15 @@
 use super::*;
 
 impl State {
+    /// A computer's link came or went. A destroy written on a link that ended gets no answer, so its outcome is
+    /// unknown and the rows noted as destroyed for that computer are taken as alive.
+    pub(in crate::ui) fn note_connection(&mut self, host: &HostKey, connected: bool) {
+        self.hosts.host_connected.insert(host.clone(), connected);
+        if !connected {
+            self.row_directory.clear_destroyed(host);
+        }
+    }
+
     #[allow(clippy::too_many_lines, reason = "drains the daemon-event queue, one arm per event; predates the 100-line limit")]
     pub(super) fn drain_events(&mut self) {
         while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
@@ -333,12 +342,8 @@ impl State {
         // per-host connection status is exactly this — no new wire
         // signal, just watching the two evts that already exist.
         match &evt {
-            crate::net::transport::IncomingEvt::Connected { .. } => {
-                self.hosts.host_connected.insert(event_host.clone(), true);
-            }
-            crate::net::transport::IncomingEvt::Disconnected { .. } => {
-                self.hosts.host_connected.insert(event_host.clone(), false);
-            }
+            crate::net::transport::IncomingEvt::Connected { .. } => self.note_connection(&event_host, true),
+            crate::net::transport::IncomingEvt::Disconnected { .. } => self.note_connection(&event_host, false),
             _ => {}
         }
         // ADR 0042 L2a codex review, item L: live host status in the

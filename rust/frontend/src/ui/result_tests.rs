@@ -1414,7 +1414,7 @@ impl State {
         self.on_workspaces(a.clone(), list(&["s1", "s3"]));
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
         anyhow::ensure!(at(self, &a, Some("s3")), "a destroy of another row moved the view");
-        // A refused destroy of the shown row, then a destroy of another row answered: the view stays on a living row.
+        // A refused destroy, then a destroy of another row answered: the view stays on a living row.
         self.on_workspace_destroyed(a.clone(), Err("refused".into()));
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
         anyhow::ensure!(at(self, &a, Some("s3")), "a refused destroy then another's moved the view off a living session");
@@ -1426,6 +1426,78 @@ impl State {
         self.on_workspaces(b.clone(), list(&[]));
         anyhow::ensure!(at(self, &b, None) && self.agent_pane.target().is_none() && self.agent_pane.view(None).0 == PaneScreen::Empty,
             "the last session's destroy did not leave the empty no-session state");
+        Ok(())
+    }
+}
+
+impl State {
+    /// The window's own calls around a destroy, on a real State: the request notes its row (two destroys in flight
+    /// never move the view onto each other), a refusal and a lost link end the notes (the rows are alive), and a row
+    /// a listing drops loses its parked view under its own computer's key, never another computer's default.
+    pub(in crate::ui) fn a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window(&mut self) -> Result<()> {
+        let hosts: Vec<HostKey> = ["<host-q-a>", "<host-q-b>", "<host-q-c>"].map(String::from).into();
+        let mut receivers = Vec::new();
+        self.conns = hosts
+            .iter()
+            .map(|host| {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                receivers.push(rx);
+                (host.clone(), tx)
+            })
+            .collect();
+        let (a, b, c) = (hosts[0].clone(), hosts[1].clone(), hosts[2].clone());
+        let list = |default: &str, slugs: &[&str]| {
+            let mut default = ws_info(default, &format!("attach-{default}"));
+            default.is_default = true;
+            default.agent = "none".into();
+            std::iter::once(default).chain(slugs.iter().map(|s| probe_row(s, &format!("id-{s}"), false))).collect::<Vec<_>>()
+        };
+        let destroyed = |slug: &str| crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: format!("id-{slug}"), slug: slug.into(), label: slug.into(), tmux_killed: true, toml_removed: true, kept: None,
+        };
+        let at = |state: &Self, host: &HostKey, slug: Option<&str>| *state.selected.host() == *host && state.selected.workspace_id().as_deref() == slug;
+        self.on_workspaces(a.clone(), list("base-a", &["s1", "s2", "s3"]));
+        self.on_workspaces(b.clone(), list("base-b", &["t1"]));
+        self.on_workspaces(c.clone(), list("base-c", &["u1", "u2", "u3"]));
+        // Two destroys in flight, then the shown row's answer: neither is a place to go.
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        self.request_destroy(&a, "id-s2").map_err(anyhow::Error::msg)?;
+        self.request_destroy(&a, "id-s3").map_err(anyhow::Error::msg)?;
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
+        anyhow::ensure!(at(self, &b, Some("t1")), "a destroy answered moved the view onto a row being destroyed");
+        // The link to a ends before those two answered: they are taken as alive.
+        self.note_connection(&a, false);
+        self.on_workspaces(a.clone(), list("base-a", &["s1", "s2", "s3"]));
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
+        anyhow::ensure!(at(self, &a, Some("s2")), "a lost link left its destroys in flight, so a living session was skipped");
+        // A refusal ends the notes of its computer.
+        self.switch_to_workspace(c.clone(), Some("u1".into()), None, false);
+        self.request_destroy(&c, "id-u2").map_err(anyhow::Error::msg)?;
+        self.on_workspace_destroyed(c.clone(), Err("refused".into()));
+        self.on_workspace_destroyed(c.clone(), Ok(destroyed("u1")));
+        anyhow::ensure!(at(self, &c, Some("u2")), "a refused destroy left its row skipped as a neighbor");
+        // A row a listing drops: its parked view goes under its own computer's key. Computer b has a session named
+        // as the default row of computer a.
+        let (d, e) = (hosts[0].clone(), hosts[1].clone());
+        self.on_workspaces(d.clone(), list("base-d", &["v1"]));
+        self.on_workspaces(e.clone(), {
+            let mut rows = list("base-e", &[]);
+            rows.push(probe_row("base-d", "id-e-base-d", false));
+            rows
+        });
+        self.switch_to_workspace(d.clone(), None, None, false);
+        self.switch_to_workspace(e.clone(), Some("base-d".into()), None, false);
+        self.switch_to_workspace(d.clone(), None, None, false);
+        self.switch_to_workspace(d.clone(), Some("v1".into()), None, false);
+        let (twin, default) = ((e.clone(), "base-d".to_string()), (d.clone(), "<default>".to_string()));
+        anyhow::ensure!(self.parked_views.view(&twin).is_some(), "the twin row's view was not parked");
+        let default_parked = self.parked_views.view(&default).is_some();
+        self.on_workspaces(e.clone(), list("base-e", &[]));
+        anyhow::ensure!(self.parked_views.view(&twin).is_none(), "a row a listing dropped kept its parked view");
+        anyhow::ensure!(self.parked_views.view(&default).is_some() == default_parked,
+            "dropping another computer's row purged a default row's parked view");
+        drop(receivers);
         Ok(())
     }
 }

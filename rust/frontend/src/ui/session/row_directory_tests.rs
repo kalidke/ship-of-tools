@@ -321,3 +321,60 @@ fn a_destroy_in_flight_is_never_the_neighbor() {
     let update = refused.prepare_replace("h".into(), vec![successor]);
     assert_eq!(refused.leave(&hosts(), ("h", Some("a2")), "h", Gone::Listed(&update)), Leave::Stay);
 }
+
+fn destroyed(slug: &str, kept: bool) -> Result<WorkspaceDestroyedInfo, String> {
+    Ok(WorkspaceDestroyedInfo {
+        workspace_id: format!("id-{slug}"),
+        slug: slug.into(),
+        label: slug.into(),
+        tmux_killed: true,
+        toml_removed: true,
+        kept: kept.then(|| "run ended".to_string()),
+    })
+}
+
+/// The daemon's answers and a lost link end the notes of destroys that left their row alive: a kept default row that
+/// still has an agent, a refused destroy, and a destroy written on a link that ended before it answered each leave the
+/// row a place to go; an answered destroy of any other row does not.
+#[test]
+fn a_note_ends_when_its_row_is_known_to_be_alive() {
+    let visible_default = |slug: &str| {
+        let mut row = ws_info(slug, "attach-default");
+        row.is_default = true;
+        row.agent = "claude".into();
+        row
+    };
+    let mut directory = RowDirectory::default();
+    for (host, rows) in [("g", rows_of(&["b1"])), ("h", vec![visible_default("base"), ws_info("a1", "attach-a1")])] {
+        let update = directory.prepare_replace(host.into(), rows);
+        directory.commit_replace(update);
+    }
+    let shown = |directory: &RowDirectory| directory.leave(&hosts_gh(), ("h", Some("a1")), "h", Gone::Replied("a1"));
+    // The default row's destroy is asked, and the list that follows still has it.
+    directory.note_destroyed("h", "base");
+    let update = directory.prepare_replace("h".into(), vec![visible_default("base"), ws_info("a1", "attach-a1")]);
+    directory.commit_replace(update);
+    assert_eq!(shown(&directory), to("g", "b1"), "a destroy in flight is not a neighbor");
+    directory.destroy_answered("h", &destroyed("base", true));
+    assert_eq!(shown(&directory), to("h", "base"), "the kept default row is alive and the neighbor above");
+    // An answered destroy notes its row; a refusal ends every note of the computer.
+    directory.destroy_answered("h", &destroyed("base", false));
+    assert_eq!(shown(&directory), to("g", "b1"));
+    directory.destroy_answered("h", &Err("refused".into()));
+    assert_eq!(shown(&directory), to("h", "base"));
+    // A lost link ends the notes of its computer only.
+    directory.note_destroyed("h", "base");
+    directory.note_destroyed("g", "b1");
+    directory.clear_destroyed("h");
+    assert_eq!(shown(&directory), to("h", "base"));
+    let mut quiet = listing(&LISTED);
+    quiet.note_destroyed("h", "id-a2");
+    let reconnect = quiet.prepare_replace("h".into(), rows_of(&["a1", "a2", "a3"]));
+    quiet.commit_replace(reconnect);
+    quiet.clear_destroyed("h");
+    assert_eq!(quiet.leave(&hosts(), ("h", Some("a1")), "h", Gone::Replied("a1")), to("h", "a2"));
+}
+
+fn hosts_gh() -> Vec<HostKey> {
+    vec!["g".to_string(), "h".to_string()]
+}

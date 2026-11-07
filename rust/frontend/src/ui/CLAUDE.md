@@ -436,22 +436,32 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   skips duplicate ownership. Lifecycle refreshes the event host's listing. Presentation supplies nonempty listing
   catch-up; insertion retains unmentioned values but may overwrite mentioned ones, without freshness arbitration.
   Default migration preserves an existing destination record and rewrites only matching host-qualified routes;
-  lifecycle retains raw slugs. Destroy forgets only the named parked record at State's existing cleanup point.
+  lifecycle retains raw slugs. A destroyed row's parked record is forgotten at State's existing cleanup point, under
+  `(host, slug)` as given (a destroyed row is never a default row, so no default-slug collapse), by the window's own
+  destroy reply and by the sweep of every row a listing drops.
 - A selected row that is destroyed is left when the window learns of it: by the window's own destroy reply, or by a
   `workspace.list` that no longer has a row the host listed before (another window, the command line, a row's end).
   Both ask `RowDirectory::leave(hosts, selected, event_host, Gone)`, decided before `commit_replace` consumes the
   listing, which names the next session in the whole Sessions list (the computers in `ordered_hosts` order, each
-  listing in the daemon's order, default first then by slug), below the selected one, else above it, among visible rows
-  that are still listed and neither destroyed nor being destroyed (a note from the request, kept until a listing lacks
-  the row or the daemon refuses a destroy). `apply_leave` switches there through `switch_to_workspace`; with no such
-  row anywhere it goes to the event host's default row, and a switch to a row with no attachment makes the pane paint
-  as a new one (`AgentPane::show_no_attachment`). A destroy of any other row, of another computer's row, or one the
-  daemon refused leaves the view as it is. Limits: the dying row stays in view from the request to the reply or list
-  that tells the window it is gone; a selection resumed before its host's first list is never "gone" (a row destroyed
-  while the window was closed stays selected until the person moves); and a neighbor or default row whose `resolve`
-  refuses leaves the view where it was (the refusal is shown). Pins: the `leave` tables and the pane test in the unit
-  suite; `a_destroyed_session_moves_the_view_to_a_neighbor` in the native State fixtures (the `window_minimized`
-  target, run by the hosted release gate and on a host with a display).
+  listing in the daemon's order, default first then by slug), below the selected one first, else the nearest above it,
+  among visible rows that are still listed and not noted as destroyed. A destroy is noted when requested
+  (`State::request_destroy`) and when answered; a note ends when a listing lacks its row, or when the destroy is known
+  to have left the row alive or its outcome is unknown: the daemon's refusal, a `kept` answer for that row, and the
+  loss of the computer's link (`destroy_answered`, `clear_destroyed`, `note_connection`). `apply_leave` first makes the
+  pane paint as a new one (`AgentPane::show_no_attachment`), so the gone row's last screen is not held while a cold
+  neighbor attaches, then switches through `switch_to_workspace`; with no such row anywhere it goes to the event host's
+  default row, and a switch to a row with no attachment shows the empty pane too. After a listing, every row it
+  dropped is forgotten (`dropped`). A destroy of any other row, of another computer's row, or one the daemon refused
+  leaves the view as it is. Limits: the dying row stays in view from the request to the reply or list that tells the
+  window it is gone; a visible default row that is destroyed in view is kept by the daemon and stays selected with its
+  pane ended (no move); a selection resumed before its host's first list is never "gone" (a row destroyed while the
+  window was closed stays selected until the person moves); the neighbor may be a row of a computer that is down; and
+  a neighbor or default row whose `resolve` refuses leaves the view where it was (the refusal is shown). Pins: the
+  `leave`, `destroy_answered` and `clear_destroyed` tables and the pane tests in the unit suite; the calls into them
+  (`request_destroy`, `note_connection`, the reply, the sweep, `apply_leave`'s move and the key of the sweep) by
+  `a_destroyed_session_moves_the_view_to_a_neighbor` and
+  `a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window` in the native State fixtures (the
+  `window_minimized` target, run by the hosted release gate and on a host with a display).
 - Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
   beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
   Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the
