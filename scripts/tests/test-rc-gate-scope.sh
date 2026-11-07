@@ -197,7 +197,7 @@ check "the release features check is run with --prove over the checkout's rust f
 check "the defects check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc1 steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc2 steps/scripts-tests-test-defects-check)" = 0 ]'
 
 # ---- under-bash: the scans as one job, each suite as its own, only for what changed (UB32 names a bash, UBP and UBS the flags
-# the main flow sets from gate_scope_ub)
+# the main flow sets from gate_ub_decide)
 ubjobs() { ls "$work/L-$1/steps" | grep -c '^under-bash.*\.rc$'; }
 check "gate_scope_ub: a markdown file under agents/ sets the scans and no suite" '(gate_scope_ub "$ubr" HEAD~1; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 10 ])'
 check "gate_scope_ub: a script under agents/ sets both" '(gate_scope_ub "$ubr" HEAD~2; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 11 ])'

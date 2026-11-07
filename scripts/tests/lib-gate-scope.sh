@@ -92,7 +92,8 @@ gate_scope_ub() {
 
 # gate_ub_decide <checkout> <line>: sets RCG_UB_PARSE and RCG_UB_SUITES for the under-bash jobs, and SKIPPED when neither
 # runs. Both run unless the tree equals the line under comm, agents and scripts (a whole run given a line), or the run is
-# narrow and gate_scope_ub finds nothing differing from the scope's base.
+# narrow and gate_scope_ub finds nothing differing from the scope's base. A narrow run whose only differing files are
+# markdown gets the scans alone.
 gate_ub_decide() {
     RCG_UB_PARSE=1 RCG_UB_SUITES=1 SKIPPED=
     if [ -n "$2" ] && git -C "$1" diff --quiet "$2" HEAD -- scripts comm agents; then

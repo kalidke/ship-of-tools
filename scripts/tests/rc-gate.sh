@@ -9,7 +9,7 @@
 # every Julia suite, and the shell suites; not the tests release-gate.yml runs (the gate-* rows of .github/test-shards.txt:
 # the ones that sleep on the clock and the page test that needs a prepared depot), unless RCG_FULL is set; and, when the tree differs from `line` (a commit-ish; always when none is given)
 # under scripts/, comm/ or agents/, scripts/tests/under-bash.sh under a bash 3.2.57 that scripts/tests/bash32.sh builds
-# once and keeps under /scratch/<user>, as release-gate.yml's bash32-linux job runs it (its scans as one job, each suite as another); and, with RCG_FULL set, the daemon lifetime
+# once and keeps under /scratch/<user>, as release-gate.yml's bash32-linux job runs it (there one step with no option, everything in series; here the scans are one job and each suite another); and, with RCG_FULL set, the daemon lifetime
 # harness as release-gate.yml's Linux job runs it, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
 # faults) would replace the `sotd` and `sot-capsule` the other jobs run.
 #

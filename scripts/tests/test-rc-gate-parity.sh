@@ -4,8 +4,8 @@
 # holding a test-children violation, an un-allowed std::fs::copy, and a violation only cfg(windows) test code holds; and
 # its under-bash scans job goes red on a script that parses only under bash 4. The jobs run as rc-gate runs them (--job) over
 # stand-in trees with the real cargo and a real bash 3.2.57 (scripts/tests/bash32.sh, built once and cached). The
-# pipeline is run over a stub cargo to show the gate emits every job with each clippy line's arguments, and that a line
-# equal to the tree skips the bash 3.2 job. Needs cargo with clippy; the windows-gnu cases print SKIP where that target's
+# pipeline is run over a stub cargo to show the gate emits every job with each clippy line's arguments (the skip of the
+# bash 3.2 jobs for a line equal to the tree is a case of test-rc-gate-scope.sh). Needs cargo with clippy; the windows-gnu cases print SKIP where that target's
 # standard library is not installed. Exit: failed checks.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
