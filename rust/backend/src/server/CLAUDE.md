@@ -119,9 +119,12 @@ of each.
     deciding lease departure, before any row is touched (`run_local`'s loop breaks on `Leases::gone` and drops the
     listener before `shutdown::run`): that is lifecycle's guarantee 5, held there. Limit: the accept `select!` is not
     biased toward the departure, so a connection ready at the same moment can be accepted just after the decision.
-    A service that runs in the daemon and listens itself (the project chat, not yet built) registers with lifecycle's
+    A service that runs in the daemon and listens itself (the project chat) registers with lifecycle's
     `retire::participants()` and is retired by the terminal (lifecycle's guarantee 6); the server's accept loop is not
-    one of them and its behavior here is unchanged.
+    one of them and its behavior here is unchanged. `run` builds the chat once (`chat::Chat::begin`, after the rows
+    exist and before the listener) and puts it in `Services` as `chat`; no handler reads it yet, so no chat op is
+    served, before a hello or after (`tests/admission.rs` `every_connection_kind_needs_an_accepted_hello` covers the
+    chat names in `op::ALL`). The chat's admission and construction are `rust/chat/CLAUDE.md` guarantee 21's.
 12. **A control session's hello reply names its window's REPL runs still running.** `HelloRes::repl_running`, read from
     `CallerNumbers::running` after the connection's bus subscriptions, so the `done` of each run it names is written to
     the connection. Limits: the bus is lossy: a `done` that lag drops leaves the run open until the window's next drop;

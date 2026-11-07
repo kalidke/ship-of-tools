@@ -28,6 +28,7 @@ of each.
    (strings, booleans, integers, comments), not the `toml` crate; a `[monitor]` target is otherwise any string, since
    it may be `user@host` or an alias; `serialize`, which every edit writes through, is a canonical rewrite, so a
    `topology.set` drops the file's comments and any unknown host key a hand edit added.
+1a. **The chat's hub admission reads the current parse.** `rust/backend/src/chat.rs` `is_hub` calls `sot_topology::load_in` and admits only an `Ok(Some)` whose `hub` is this computer; it takes nothing from `TopologyStore` (which keeps an earlier parse after the file is gone) or `comm_topology_hub` (which accepts a missing file). No grammar or routing change. Test: `chat_tests.rs` `only_hub_reads_chat_credentials_from_platform_config`.
 2. **Writers of hosts.toml exclude one another, and `topology.set` and `sync` never replace a newer version.** The
    hub's daemon applies an edit (`topology.set`) only where its own loaded file names itself the hub (`not_hub`
    otherwise), and holds `TopologyStore::edit_lock` from its read to its confirming re-read: an in-process mutex and a

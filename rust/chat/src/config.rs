@@ -246,8 +246,8 @@ impl Config {
     }
 }
 
-/// What a folder's configuration says. Nothing is delivered unless it is `Mapped` with a `mail_after`. The hub landing
-/// adds the case of a daemon that is not the hub.
+/// What a folder's configuration says. Nothing is delivered unless it is `Mapped` with a `mail_after`. `NotHub` is the
+/// daemon's own answer when it is not the configured hub: it read no chat file, so it knows nothing of the folder.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Resolution {
     Mapped {
@@ -257,6 +257,7 @@ pub enum Resolution {
     },
     Unmapped,
     Invalid(ConfigError),
+    NotHub,
 }
 
 impl Resolution {
@@ -278,6 +279,7 @@ impl Resolution {
             Resolution::Mapped { mail_after: None, .. } => "the folder has a channel and mail is off: set mail_after in chat.toml to a Slack timestamp to turn it on",
             Resolution::Unmapped => "the folder has no channel: add a [[mapping]] with its canonical folder and a channel to chat.toml",
             Resolution::Invalid(e) => e.explain(),
+            Resolution::NotHub => "this computer is not the configured hub: the chat runs only there, and no chat file is read here",
         }
     }
 }
