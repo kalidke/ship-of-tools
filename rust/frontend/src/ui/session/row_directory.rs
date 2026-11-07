@@ -75,6 +75,11 @@ impl RowDirectoryUpdate {
     pub(in crate::ui) fn retired(&self) -> &[ResultRowIdentity] {
         &self.retired
     }
+
+    /// Whether the new listing still has a row the spelling names.
+    pub(in crate::ui) fn lists(&self, spelling: &str) -> bool {
+        self.rows.iter().any(|row| row.slug == spelling || row.workspace_id == spelling)
+    }
 }
 
 impl RowDirectory {
@@ -122,6 +127,15 @@ impl RowDirectory {
                 );
             }
         }
+    }
+
+    /// A row the host listed before that this update's listing no longer has: a destroyed one. A spelling never listed
+    /// (a resumed selection before the first list) is not dropped.
+    pub(in crate::ui) fn drops(&self, host: &str, update: &RowDirectoryUpdate, spelling: &str) -> bool {
+        let listed = self
+            .rows(host)
+            .is_some_and(|rows| rows.iter().any(|row| row.slug == spelling || row.workspace_id == spelling));
+        listed && !update.lists(spelling)
     }
 
     /// None distinguishes a host that has not answered from one whose authoritative list is empty.

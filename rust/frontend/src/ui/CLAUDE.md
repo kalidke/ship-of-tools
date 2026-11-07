@@ -437,6 +437,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   catch-up; insertion retains unmentioned values but may overwrite mentioned ones, without freshness arbitration.
   Default migration preserves an existing destination record and rewrites only matching host-qualified routes;
   lifecycle retains raw slugs. Destroy forgets only the named parked record at State's existing cleanup point.
+- A selected row that is destroyed never stays selected: the window's own destroy reply and a `workspace.list` that no longer
+  has a row the host listed before (another window, the command line, a row's end) both switch, through
+  `switch_to_workspace`, to `RowPresentation::successor`, the surviving row just below it in the strip, else the nearest
+  above, else the host's default row; a destroy of any other row leaves the view as it is.
 - Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
   beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
   Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the

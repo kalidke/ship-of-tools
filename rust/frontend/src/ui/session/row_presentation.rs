@@ -213,6 +213,21 @@ impl RowPresentation {
         Some(self.workspace_slugs[next].clone())
     }
 
+    /// Where the view goes when the selected row is gone: the surviving row just below it in the strip, else the
+    /// nearest above. None when the selected row is not in the strip or nothing else survives.
+    pub(in crate::ui) fn successor(
+        &self,
+        host: &str,
+        slug: Option<&str>,
+        survives: impl Fn(&WsKey) -> bool,
+    ) -> Option<WsKey> {
+        let selected = self.selected_key(host, slug)?;
+        let at = self.workspace_slugs.iter().position(|k| *k == selected)?;
+        let below = self.workspace_slugs[at + 1..].iter();
+        let above = self.workspace_slugs[..at].iter().rev();
+        below.chain(above).find(|k| survives(k)).cloned()
+    }
+
     pub(in crate::ui) fn label(&self, host: &str, slug: &str) -> Option<&str> {
         self.workspace_labels
             .get(&(host.to_string(), slug.to_string()))

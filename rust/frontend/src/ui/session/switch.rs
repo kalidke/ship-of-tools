@@ -71,6 +71,31 @@ impl State {
         self.switch_to_resolved_workspace(target, person_driven);
     }
 
+    /// The selected row is gone: switch, as any switch does, to `neighbor`, the surviving row next to it in the strip
+    /// (`RowPresentation::successor`), never leaving the view on a row that no longer exists. With no neighbor, or one
+    /// that cannot be attached, the view falls back to the host's default row, which a destroy never removes. Not a
+    /// person's choice: blue is left as-is.
+    pub(in crate::ui) fn leave_gone_row(&mut self, host: HostKey, neighbor: Option<WsKey>) {
+        let target = neighbor
+            .and_then(|(h, slug)| self.row_directory.resolve(&h, &slug).ok())
+            .filter(|target| target.attachment().is_ok());
+        match target {
+            Some(target) => self.switch_to_resolved_workspace(target, false),
+            None => self.switch_to_workspace(host, None, None, false),
+        }
+    }
+
+    /// Clean up per-workspace snapshot maps so a recreated workspace with the same slug doesn't inherit stale
+    /// UI/REPL state. Purge through the SAME key collapse the maps are written with, so a destroyed default-by-slug
+    /// removes the "<default>" entries, not misses them; the tree slots and row metadata go with them.
+    pub(in crate::ui) fn forget_destroyed_row_views(&mut self, host: &HostKey, slug: &str) {
+        let ws_key: WsKey = (host.clone(), self.reply_ws_key(Some(slug)));
+        self.parked_views.forget(&ws_key);
+        self.repl_model.forget_destroyed_row(&ws_key);
+        self.nav.purge_workspace(&ws_key);
+        self.row_presentation.forget_destroyed_metadata(&(host.clone(), slug.to_string()));
+    }
+
     /// Single entry point for "switch the chrome's active workspace".
     /// Drives the full snapshot/restore dance from one place so the
     /// Sessions-Enter handler, the workspace-create handler, and the

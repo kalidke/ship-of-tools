@@ -420,16 +420,10 @@ impl State {
                     self.selected.host(),
                 );
                 self.apply_result_effects(effects);
-                // If the active workspace was the one we
-                // just destroyed, bounce to default. The
-                // backend already refused to destroy the
-                // default, so resetting active to None is
-                // always a valid target.
-                // ADR 0042 L2a: also gated on the destroyed
-                // workspace's OWN host matching active_host — a
-                // same-named slug/id destroyed on a DIFFERENT
-                // host must not bounce us off what we're
-                // actually viewing.
+                // The row the window is showing was destroyed: move to its
+                // neighbor. Gated on the destroyed row's OWN host (ADR 0042
+                // L2a): a same-named slug/id destroyed on a DIFFERENT host
+                // must not move us off what we're actually viewing.
                 if *self.selected.host() == event_host
                     && self
                         .selected
@@ -438,29 +432,12 @@ impl State {
                         .map(|s| s == info.slug || s == info.workspace_id)
                         .unwrap_or(false)
                 {
-                    // Forced bounce off a destroyed row, not a
-                    // person choosing to view it: leave blue as-is.
-                    self.switch_to_workspace(event_host.clone(), None, None, false);
+                    let gone = self.row_presentation.selected_key(self.selected.host(), self.selected.workspace_id().as_deref());
+                    let neighbor = self.row_presentation.successor(
+                        self.selected.host(), self.selected.workspace_id().as_deref(), |key| Some(key) != gone.as_ref());
+                    self.leave_gone_row(event_host.clone(), neighbor);
                 }
-                // Clean up per-workspace snapshot maps so a
-                // recreated workspace with the same slug
-                // doesn't inherit stale UI/REPL state.
-                // Purge through the SAME key collapse the maps are
-                // written with — a destroyed default-by-slug must
-                // remove the "<default>" entries, not miss them.
-                let ws_key: WsKey = (
-                    event_host.clone(),
-                    self.reply_ws_key(Some(info.slug.as_str())),
-                );
-                self.parked_views.forget(&ws_key);
-                self.repl_model.forget_destroyed_row(&ws_key);
-                // The tree slots died with the snapshot on main;
-                // the store split orphaned them — drop the
-                // destroyed workspace's Files/Modules slots so a
-                // same-slug recreate starts clean (codex r2 #3).
-                self.nav.purge_workspace(&ws_key);
-                let destroyed_key: WsKey = (event_host.clone(), info.slug.clone());
-                self.row_presentation.forget_destroyed_metadata(&destroyed_key);
+                self.forget_destroyed_row_views(&event_host, &info.slug);
                 let tmux_note = if info.tmux_killed {
                     ""
                 } else {
@@ -513,9 +490,23 @@ impl State {
         // whole union in one pass.
         // Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list.
         let update = self.row_directory.prepare_replace(event_host.clone(), workspaces);
+        // A destroy the window did not make itself (another window, the command line, a row's end) reaches it
+        // only as this list: if the selected row is the one that dropped out, the view leaves it below.
+        let leaving = self.selected.workspace_id().clone().filter(|spelling| {
+            *self.selected.host() == event_host && self.row_directory.drops(&event_host, &update, spelling)
+        });
+        // The neighbor is picked from the strip as it was, among the rows the new list still has.
+        let neighbor = leaving.as_ref().map(|spelling| {
+            let survives = |key: &WsKey| key.0 != event_host || update.lists(&key.1);
+            self.row_presentation.successor(&event_host, Some(spelling), survives)
+        });
         self.reconcile_pending_results(&update);
         self.row_directory.commit_replace(update);
         self.rebuild_workspace_caches();
+        if let (Some(neighbor), Some(spelling)) = (neighbor, leaving) {
+            self.leave_gone_row(event_host.clone(), neighbor);
+            self.forget_destroyed_row_views(&event_host, &spelling);
+        }
         self.prune_warm_attach(&event_host);
         // No handle declaration is sent for message routing: the daemon files for
         // its own comm folder (`hub_link.rs`), and a frontend plays no part in it.
