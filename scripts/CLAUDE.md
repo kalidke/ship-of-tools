@@ -60,7 +60,8 @@ Guarantees, each with the mechanism it rests on:
   through the backend path rule runs those suites under the default bash only). A whole run emits the scans and every
   suite's job, and a whole run given a line keeps its skip when the three folders equal it. `under-bash.sh` with no
   option, as release-gate.yml calls it, does everything one after another; `--parse-only`, `--no-parse` and `--list`
-  serve the gate's jobs. Markdown is skipped for the suites because no suite's verdict on a markdown input depends on
+  serve the gate's jobs. When the decision selects any bash 3.2 job the run builds bash 3.2 and runs every selected job,
+  or fails naming the build; it never ends `ALLDONE` with a selected job missing. Markdown is skipped for the suites because no suite's verdict on a markdown input depends on
   which bash runs it. `user-manager-tests.sh` runs when the scope selects
   `backend`, `capsule`, `platform` or `containment`, since its five tests are the backend's over those. A job the scope
   does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no

@@ -617,15 +617,11 @@ mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$J
 # the selected shell groups (RCG_UB_SUITES), as scripts/CLAUDE.md's "The local gate" says. A scoped run (RCG_SCOPE=<base
 # commit-ish>, set as `env RCG_SCOPE=<base> bash rc-gate.sh ...` inside the container) narrows its test jobs to the pieces
 # the paths differing from the base map to (lib-gate-scope.sh); it never runs with RCG_FULL.
-RCG_BASH32= RCG_UB_PARSE=1 RCG_UB_SUITES=1
 LINE=${4:-}
 if [ -n "$LINE" ]; then
   (cd "$D" && git rev-parse --verify -q "$LINE^{commit}" > /dev/null) || { echo "rc-gate: $LINE is no commit in $D" >&2; exit 2; }
 fi
-gate_ub_decide "$D" "$LINE"
-if [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ]; then
-  RCG_BASH32=$(bash "$D/scripts/tests/bash32.sh") || { echo "rc-gate: no bash 3.2.57" >&2; exit 2; }
-fi
+gate_ub_decide "$D" "$LINE" "$D/scripts/tests/bash32.sh" || exit 2
 export RCG_UB_PARSE RCG_UB_SUITES
 export RCG_BASH32
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
