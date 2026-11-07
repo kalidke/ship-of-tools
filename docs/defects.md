@@ -572,6 +572,13 @@ owned by `docs/CLAUDE.md`.
 - **RUST-YML-PUSH-FILTER** [note] `rust.yml`'s push filter omits `core/**` and `julia/**`, which its Rust tests exercise; a
   271-line catalog proves a 24-line runner (a source-spelling test).
 
+## chat
+
+- **CHAT-FLOOD-CAP-UNDER-LOAD** [note] `socket_tests.rs`'s
+  `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` failed on a Linux host under 64 busy CPU loops: its
+  flood reached its frame and byte caps without one write stalling ("the flood never stalled a write within its caps"). A
+  fixture cap, not a pause, so the pause check does not cover it; the test passed under load in later runs.
+
 ## records
 
 - **FOUR-NUMBERS-TWICE-NAMES** [note] `scripts/four-numbers.jl` should list the twice pairs a pass adds, by name, at each
