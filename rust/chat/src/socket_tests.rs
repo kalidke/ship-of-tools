@@ -30,6 +30,37 @@ async fn bounded<T>(body: impl Future<Output = T>) -> T {
         .expect("the test exceeded its bound")
 }
 
+/// Runs a test whose rule is that a link survives an idle bound. A host that pauses the whole process for half the bound
+/// (a loaded or descheduled runner) makes the client see a silent peer, and the rule rightly retires that link; so each
+/// attempt runs beside a ticker, and an attempt that failed while the ticker saw such a pause is run again. An attempt
+/// that fails on a host that did not pause fails the test, and so does a host that paused every attempt.
+async fn steady<F, Fut>(idle: Duration, attempt: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    for _ in 0..5 {
+        let longest = Arc::new(AtomicUsize::new(0));
+        let seen = longest.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                let began = Instant::now();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                seen.fetch_max(began.elapsed().as_millis() as usize, Ordering::SeqCst);
+            }
+        });
+        let result = attempt().await;
+        ticker.abort();
+        let paused = longest.load(Ordering::SeqCst) as u128 >= idle.as_millis() / 2;
+        match result {
+            Ok(()) => return,
+            Err(why) if !paused => panic!("{why}"),
+            Err(_) => {}
+        }
+    }
+    panic!("the host paused during every attempt");
+}
+
 /// Short waits: pacing of tens of milliseconds, a close bound of 300 ms.
 fn timing() -> Timing {
     Timing {
@@ -812,7 +843,8 @@ async fn stop_during_the_reconnect_pause_does_not_wait_for_it() {
 
 #[tokio::test]
 async fn a_link_that_answers_is_kept_past_the_idle_bound() {
-    bounded(async {
+    let idle = Duration::from_millis(500);
+    bounded(steady(idle, || async move {
         let fake = fake(|_, mut peer| async move {
             peer.send(&hello()).await;
             peer.drain().await;
@@ -821,7 +853,7 @@ async fn a_link_that_answers_is_kept_past_the_idle_bound() {
         let socket = start(
             &fake,
             Timing {
-                idle: Duration::from_millis(500),
+                idle,
                 ping: Duration::from_millis(100),
                 ..timing()
             },
@@ -832,41 +864,51 @@ async fn a_link_that_answers_is_kept_past_the_idle_bound() {
         assert!(socket.reconciled(g));
         assert_eq!(socket.gap(), None);
         tokio::time::sleep(Duration::from_millis(1800)).await;
-        assert_eq!(fake.sockets().2, 1, "healthy link replaced");
-        assert_eq!(socket.gap(), None, "steady link reports a gap");
-        assert!(socket.status().connected);
+        let kept = fake.sockets().2 == 1 && socket.gap().is_none() && socket.status().connected;
         socket.stop().await;
         fake.shutdown().await;
-    })
+        kept.then_some(())
+            .ok_or_else(|| "a healthy link was replaced or reported a gap".to_string())
+    }))
     .await;
 }
 
 #[tokio::test]
 async fn a_chatty_peer_that_never_answers_keeps_its_link() {
-    bounded(async {
-        let fake = fake(|_, mut peer| async move {
-            peer.send(&hello()).await;
-            for _ in 0..18 {
-                peer.send(&json!({"type": "slash_commands_noop"})).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
+    let idle = Duration::from_millis(500);
+    bounded(steady(idle, || async move {
+        // The peer is chatty for 1.8 s, past three idle bounds, then goes silent; the link is judged when the peer has
+        // sent its last frame, not at a time the test guesses.
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = done.clone();
+        let fake = fake(move |_, mut peer| {
+            let finished = finished.clone();
+            async move {
+                peer.send(&hello()).await;
+                for _ in 0..18 {
+                    peer.send(&json!({"type": "slash_commands_noop"})).await;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                finished.store(true, Ordering::SeqCst);
+                peer.ignore_until_gone().await;
             }
-            peer.ignore_until_gone().await;
         })
         .await;
         let socket = start(
             &fake,
             Timing {
-                idle: Duration::from_millis(500),
+                idle,
                 ping: Duration::from_millis(100),
                 ..timing()
             },
         );
-        eventually("hello", || socket.status().connected).await;
-        tokio::time::sleep(Duration::from_millis(1700)).await;
-        assert_eq!(fake.sockets().2, 1, "chatty link replaced");
+        eventually("the frames sent", || done.load(Ordering::SeqCst)).await;
+        let kept = fake.sockets().2 == 1;
         socket.stop().await;
         fake.shutdown().await;
-    })
+        kept.then_some(())
+            .ok_or_else(|| "chatty link replaced".to_string())
+    }))
     .await;
 }
 
@@ -967,7 +1009,8 @@ async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls
 
 #[tokio::test]
 async fn a_peer_that_only_pings_keeps_its_link() {
-    bounded(async {
+    let idle = Duration::from_millis(700);
+    bounded(steady(idle, || async move {
         // The peer pings every 40 ms for 1.4 s, twice the idle bound (17 times its own gap), and never reads, so
         // never answers ours.
         let done = Arc::new(AtomicBool::new(false));
@@ -988,16 +1031,18 @@ async fn a_peer_that_only_pings_keeps_its_link() {
         let socket = start(
             &fake,
             Timing {
-                idle: Duration::from_millis(700),
+                idle,
                 ping: Duration::from_millis(100),
                 ..timing()
             },
         );
         eventually("the pings sent", || done.load(Ordering::SeqCst)).await;
-        assert_eq!(fake.sockets().2, 1, "a pinging link was replaced");
+        let kept = fake.sockets().2 == 1;
         socket.stop().await;
         fake.shutdown().await;
-    })
+        kept.then_some(())
+            .ok_or_else(|| "a pinging link was replaced".to_string())
+    }))
     .await;
 }
 
