@@ -1,0 +1,272 @@
+//! Behavioral tests of `service` against the scripted fake Slack. Every id and token is synthetic, every folder is the
+//! test's own, and every wait is bounded.
+
+use std::future::Future;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde_json::json;
+
+use crate::config::{Config, Credentials};
+use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, WsPeer};
+use crate::service::{Service, ServiceError, Status};
+use crate::socket::Timing;
+
+const WS: &str = "T0TEAM";
+
+/// Every test body runs under one bound: a hung fixture fails here instead of waiting.
+async fn bounded<T>(body: impl Future<Output = T>) -> T {
+    tokio::time::timeout(Duration::from_secs(60), body)
+        .await
+        .expect("the test exceeded its bound")
+}
+
+/// A scratch folder that removes itself.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("sot-chat-service-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn config() -> Config {
+    Config::parse(&format!("workspace = \"{WS}\"\nchannels = [\"C0AAAA\"]\n"), &|_| None).unwrap()
+}
+
+/// Built at run time, so no source line holds a token-shaped literal for the secret scanner.
+fn credentials(config: &Config) -> Credentials {
+    let text = format!(
+        "workspace = \"{WS}\"\nbot_token = \"{}\"\napp_token = \"{}\"\n",
+        ["xoxb", "-sentinel-bot-aaaa"].concat(),
+        ["xapp", "-sentinel-app-bbbb"].concat()
+    );
+    Credentials::parse(&text, config).unwrap()
+}
+
+fn timing() -> Timing {
+    Timing {
+        open: Duration::from_secs(5),
+        close: Duration::from_secs(30),
+        write: Duration::from_secs(2),
+        idle: Duration::from_secs(60),
+        ping: Duration::from_secs(30),
+        backoff_first: Duration::from_millis(50),
+        backoff_max: Duration::from_millis(200),
+        stop: Duration::from_secs(3),
+    }
+}
+
+/// A fake that answers `auth.test` as workspace `team`, opens a socket, says hello and then `script`.
+async fn fake<F, Fut>(team: &'static str, script: F) -> FakeSlack
+where
+    F: Fn(WsPeer) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    FakeSlack::start(Identity::Trusted, move |seen, port| {
+        match seen.path().as_str() {
+            "/api/auth.test" => {
+                return Reply::json(&json!({"ok": true, "team_id": team, "user_id": "U0BOT", "bot_id": "B0BOT"}))
+            }
+            "/api/apps.connections.open" => {
+                let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
+                return Reply::json(&json!({"ok": true, "url": url}));
+            }
+            _ => {}
+        }
+        if seen.upgrade {
+            let script = script.clone();
+            return Reply::socket(move |mut peer| {
+                let script = script.clone();
+                async move {
+                    peer.send(&json!({"type": "hello", "num_connections": 1})).await;
+                    script(peer).await
+                }
+            });
+        }
+        Reply::json(&json!({"ok": false, "error": "unexpected"}))
+    })
+    .await
+}
+
+async fn holding_fake(team: &'static str) -> FakeSlack {
+    fake(team, |mut peer| async move { peer.drain().await }).await
+}
+
+async fn start(fake: &FakeSlack, dir: &std::path::Path) -> Result<Service, ServiceError> {
+    let config = config();
+    Service::start_for_test(&config, credentials(&config), fake.http(), dir, fake.url("slack.com", "/api/"), timing()).await
+}
+
+fn calls(fake: &FakeSlack) -> usize {
+    fake.seen().len()
+}
+
+#[tokio::test]
+async fn duplicate_workspace_or_app_has_one_listener() {
+    bounded(async {
+        let dir = Scratch::new("duplicate");
+        let fake = holding_fake(WS).await;
+        let first = start(&fake, &dir.0).await.expect("the first service");
+        eventually("the first socket", || fake.sockets().2 == 1).await;
+        let before = calls(&fake);
+        // A second service for the workspace, in this process: refused with no call and no socket.
+        assert_eq!(start(&fake, &dir.0).await.err(), Some(ServiceError::Held));
+        assert_eq!((calls(&fake), fake.sockets().2), (before, 1), "a refused service reached Slack");
+        // Stopped, the workspace is free again, and the new service is the only one.
+        first.stop(Duration::from_secs(3)).await;
+        let second = start(&fake, &dir.0).await.expect("start after stop");
+        second.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_token_for_another_workspace_is_refused_before_serving() {
+    bounded(async {
+        let dir = Scratch::new("wrong");
+        let fake = holding_fake("T0OTHER").await;
+        assert_eq!(start(&fake, &dir.0).await.err(), Some(ServiceError::Api(crate::api::ApiError::WrongWorkspace)));
+        assert_eq!(fake.sockets().2, 0, "a socket opened for the wrong workspace");
+        // The refusal did not keep the lock.
+        let good = holding_fake(WS).await;
+        let service = start(&good, &dir.0).await.expect("the lock was released");
+        service.stop(Duration::from_secs(3)).await;
+        good.shutdown().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener() {
+    bounded(async {
+        let dir = Scratch::new("stop");
+        // A peer that never answers a close: the stop's bound, not the 30 s close, ends the listener.
+        let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
+        let service = std::sync::Arc::new(start(&fake, &dir.0).await.expect("service"));
+        eventually("connected", || matches!(service.status(), Status::Running { socket, .. } if socket.connected)).await;
+        assert!(matches!(service.status(), Status::Running { gap: true, .. }), "a hello owes a reconciliation");
+        let held = service.api().expect("api while running");
+        let stopping = {
+            let s = service.clone();
+            tokio::spawn(async move { s.stop(Duration::from_secs(3)).await })
+        };
+        eventually("stopping", || service.status() == Status::Stopping).await;
+        assert_eq!(service.api().err(), Some(ServiceError::Stopped));
+        // While the stop is under way the listener may still run, so the lock is held.
+        assert_eq!(start(&fake, &dir.0).await.err(), Some(ServiceError::Held));
+        stopping.await.unwrap();
+        assert_eq!(service.status(), Status::Stopped);
+        // Repeatable and final.
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(service.api().err(), Some(ServiceError::Stopped));
+        drop(held);
+        // The lock is free exactly now.
+        start(&fake, &dir.0).await.expect("the lock after the stop").stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stop_before_the_socket_connected_returns() {
+    bounded(async {
+        let dir = Scratch::new("early");
+        // The socket's upgrade is never answered by a hello: the service starts, the socket does not connect.
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| match seen.path().as_str() {
+            "/api/auth.test" => Reply::json(&json!({"ok": true, "team_id": WS, "user_id": "U0BOT"})),
+            _ => Reply::Hang,
+        })
+        .await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        assert!(matches!(service.status(), Status::Running { socket, .. } if !socket.connected));
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(service.status(), Status::Stopped);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_dropped_service_releases_the_lock_only_with_its_listener() {
+    bounded(async {
+        let dir = Scratch::new("drop");
+        let fake = holding_fake(WS).await;
+        let first = start(&fake, &dir.0).await.expect("service");
+        eventually("connected", || fake.sockets().0 == 1).await;
+        drop(first);
+        // The lock goes with the aborted task's future, so the next service is admitted and the first is gone.
+        let second = start(&fake, &dir.0).await.expect("the lock after a drop");
+        eventually("one socket open", || fake.sockets().0 == 1).await;
+        second.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A child process of this test binary that starts a service and waits to be killed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_killed_holder_leaves_the_workspace_free() {
+    use sot_platform::test_isolated::{enter, test_command};
+    const NAME: &str = "service_tests::a_killed_holder_leaves_the_workspace_free";
+    const CHILD: &str = "SOT_CHAT_SERVICE_CHILD";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        enter(NAME);
+        bounded(async {
+            let dir = PathBuf::from(dir);
+            let fake = holding_fake(WS).await;
+            let _service = start(&fake, &dir).await.expect("the child's service");
+            std::fs::write(dir.join("ready"), b"1").unwrap();
+            tokio::time::sleep(Duration::from_secs(50)).await;
+        })
+        .await;
+        return;
+    }
+    bounded(async {
+        let dir = Scratch::new("killed");
+        let (mut command, entry) = test_command(NAME);
+        command.env(CHILD, &dir.0).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let mut child = command.spawn().expect("spawn the child");
+        eventually("the child's service", || dir.0.join("ready").exists()).await;
+        let fake = holding_fake(WS).await;
+        assert_eq!(start(&fake, &dir.0).await.err(), Some(ServiceError::Held), "a second process was admitted");
+        child.kill().expect("kill the holder");
+        child.wait().expect("reap the holder");
+        entry.assert_once(child.id());
+        let service = start(&fake, &dir.0).await.expect("a killed holder left the workspace locked");
+        service.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_child_started_by_the_daemon_does_not_keep_the_lock() {
+    bounded(async {
+        let dir = Scratch::new("inherit");
+        let fake = holding_fake(WS).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        // Born while the lock is held, and alive after the service ends.
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        service.stop(Duration::from_secs(3)).await;
+        let again = start(&fake, &dir.0).await;
+        child.kill().expect("kill the child");
+        child.wait().expect("reap the child");
+        again.expect("a child kept the lock's descriptor").stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}

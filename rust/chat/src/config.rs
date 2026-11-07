@@ -175,6 +175,11 @@ impl Config {
         Config::parse(&text(read, &dir.join(CONFIG_FILE))?, rows)
     }
 
+    /// The one configured workspace id.
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
     pub fn parse(text: &str, rows: Rows) -> Result<Config, ConfigError> {
         let t = parse_table(text)?;
         only(&t, &["workspace", "channels", "mail_after", "mapping"])?;

@@ -1,11 +1,12 @@
 //! sot-chat: the project chat's policy. This stage holds normalization (Slack's raw message JSON into the one wire
 //! record), `http`, the one way out of the crate to the network, and `api`, the Slack Web API calls the first stage
-//! needs, and `socket`, the Socket Mode listener, and `config`, the two configuration files. Only `config` calls a file method.
+//! needs, and `socket`, the Socket Mode listener, and `config`, the two configuration files, and `service`, the one running listener. Only `config` calls a file method (`service` takes a lock through platform).
 
 pub mod api;
 pub mod config;
 pub mod http;
 pub mod normalize;
+pub mod service;
 pub mod socket;
 
 pub use normalize::{normalize, Context, Normalized, Unrepresentable};
@@ -18,5 +19,7 @@ mod config_tests;
 mod fake_slack;
 #[cfg(test)]
 mod http_tests;
+#[cfg(test)]
+mod service_tests;
 #[cfg(test)]
 mod socket_tests;

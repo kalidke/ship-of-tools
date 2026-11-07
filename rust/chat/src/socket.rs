@@ -189,7 +189,19 @@ impl Socket {
         own: Identity,
         workspace: &str,
     ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT)
+        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, Box::new(()))
+    }
+
+    /// As `start`, and `held` lives exactly as long as the listener's task: it is dropped when the task ends or is
+    /// aborted, never while the task can still run. The service's lock rides here.
+    pub(crate) fn start_held(
+        http: Http,
+        app: Secret,
+        own: Identity,
+        workspace: &str,
+        held: Box<dyn Send + Sync>,
+    ) -> Result<Socket, SocketError> {
+        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, held)
     }
 
     /// The fixture's logical base URL and short waits; the product has neither.
@@ -202,7 +214,20 @@ impl Socket {
         base: String,
         timing: Timing,
     ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, base, timing)
+        Socket::launch(http, app, own, workspace, base, timing, Box::new(()))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_held_for_test(
+        http: Http,
+        app: Secret,
+        own: Identity,
+        workspace: &str,
+        base: String,
+        timing: Timing,
+        held: Box<dyn Send + Sync>,
+    ) -> Result<Socket, SocketError> {
+        Socket::launch(http, app, own, workspace, base, timing, held)
     }
 
     fn launch(
@@ -212,6 +237,7 @@ impl Socket {
         workspace: &str,
         base: String,
         timing: Timing,
+        held: Box<dyn Send + Sync>,
     ) -> Result<Socket, SocketError> {
         if !valid_id(workspace) {
             return Err(SocketError::BadRequest);
@@ -229,6 +255,7 @@ impl Socket {
             workspace: workspace.into(),
             base,
             timing,
+            _held: held,
         };
         let task = tokio::spawn(worker.run(stopped));
         Ok(Socket {
@@ -277,10 +304,16 @@ impl Socket {
     }
 
     /// Stop: no further connect, the open socket retired within its close bound, the task joined within `stop`.
-    pub async fn stop(mut self) {
+    pub async fn stop(self) {
+        let within = self.timing.stop;
+        self.stop_within(within).await;
+    }
+
+    /// `stop` with the join bound given: after it the task is gone, ended or aborted and awaited.
+    pub async fn stop_within(mut self, within: Duration) {
         let _ = self.stop.send(true);
         if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(self.timing.stop, &mut task)
+            if tokio::time::timeout(within, &mut task)
                 .await
                 .is_err()
             {
@@ -314,6 +347,8 @@ struct Worker {
     workspace: String,
     base: String,
     timing: Timing,
+    /// Dropped with the task's future, after its last poll.
+    _held: Box<dyn Send + Sync>,
 }
 
 /// What one frame asks of the read loop.

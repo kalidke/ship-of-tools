@@ -3,7 +3,7 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+listener, and `config`, the two configuration files, and `service`, the one running listener. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, read-pacing instant and name cache, and a `Socket`'s one task, queue and gap, and has no delivery. Its one file calls are `config`'s two reads (guarantee 21); it reads no token from the environment.
 
 ## Guarantees
@@ -131,7 +131,7 @@ bot identity, read-pacing instant and name cache, and a `Socket`'s one task, que
    `apps.connections.open` request, which is a request under guarantees 5 to 10; the private URL and the ticket reach no
    error, status or format value (`SocketError` is a fixed code: `Http(code)`, `Rejected`, `Malformed`, `BadRequest`;
    Slack's text is dropped). A failed open is `Status.error`, paced and retried. Limit: C14's lock and second service
-   are the service landing's; its load half is guarantee 21.
+   are guarantee 22; its load half is guarantee 21.
 
 21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
    workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
@@ -154,6 +154,28 @@ bot identity, read-pacing instant and name cache, and a `Socket`'s one task, que
    mask). `Config::load` opens `chat.toml` only; `Credentials::read` is the one call that opens `chat-secrets.toml`
    (the hub landing guards it). Limits: the alias rule is proved against a fixture of supplied facts until the hub
    landing supplies the real canonicalizer; a file's permissions are not checked here; the attachment bound is B4's.
+22. **One workspace has one listener, and its lock lives exactly as long as the listener.** `Service::start(config,
+   credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the
+   workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
+   (a kernel `flock`, close-on-exec) on `<dir>/chat-<workspace>.lock`, a name built from the validated workspace id alone,
+   holding no secret; `dir` is a private folder the caller supplies and owns (not checked here). The lock is moved into the
+   listener's task (`Socket::start_held`), so it is released when the task's future is dropped, after its last poll: at a
+   normal end, at a `stop` that timed out and aborted (the abort is awaited first), and at a drop without `stop` (the
+   abort, not an await). A killed holder releases it with its descriptor, a child born later does not inherit it, and
+   `start` after `stop` in one process is admitted. A token whose `auth.test` names another workspace is
+   `Api(wrong_workspace)` before serving, and the lock is released. `stop(within)` is bounded and final: the signal, a join
+   within `within`, then abort and await; a second call returns at once, and `api()` is `Stopped` from the moment a stop
+   begins. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until B2c reconciles),
+   `Stopping` or `Stopped`; a service refused or never started has no value, its state is `start`'s error. The error codes are
+   the existing ones plus `held`, `lock`, `stopped`. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
+   a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another and freed when the
+   holder ended; a holder killed on one computer, a lost computer (lease expiry) and a mount that does not support locks
+   are not measured, and Windows is `LockFileEx` with no cross-computer claim. A path outside the shared home (a
+   per-computer `dir`) gives per-computer exclusion only. `auth.test` reports no app id, so a duplicate app id across
+   different workspace ids, and an app token that belongs to another app than the bot token, are not detected here. A
+   mutation or name lookup begun before `stop` runs to its own deadline (guarantees 7, 12, 16). The service's `stop` bound
+   is the caller's; the daemon's retirement of in-process services allows 1 s (`lifecycle`), and a `within` over that is
+   reported incomplete there, with the lock released by the process's end.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -164,7 +186,7 @@ never holds another form.
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -235,6 +257,7 @@ Paths are under `rust/chat/src/`.
 | 19 | gaps (C13) | `socket_tests.rs`: `a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it`, `a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap`, `a_reconciliation_begun_before_a_hello_is_refused_by_it`, `overflow_latches_gap_without_blocking_ack` (a failed event; 300 envelopes over the count with every one acknowledged; a loss during a reconciliation survives it; ten 900,000-byte events over the byte budget), `an_events_message_keeps_its_origin_through_the_socket` |
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 | 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load`, `every_refusal_has_an_input_a_code_a_place_and_its_own_explanation` (a row per `ConfigError` variant, the boundaries, the two file names), `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else`, `a_planted_fifo_or_device_is_refused_without_a_wait` (the read runs on a thread with a 10 s guard that only a failing read reaches), `the_files_are_named_in_platforms_config_folder` |
+| 22 | one listener (C14's running half) | `service_tests.rs`: `duplicate_workspace_or_app_has_one_listener` (a second service in this process: `Held`, no call, no socket; start after stop), `a_token_for_another_workspace_is_refused_before_serving`, `stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener` (a peer that ignores close; the lock held while stopping, free after), `a_stop_before_the_socket_connected_returns`, `a_dropped_service_releases_the_lock_only_with_its_listener`, `a_killed_holder_leaves_the_workspace_free` (a second process; SIGKILL), `a_child_started_by_the_daemon_does_not_keep_the_lock` (Unix only; relies on platform's close-on-exec, which no chat mutation reaches) |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
@@ -242,6 +265,7 @@ Paths are under `rust/chat/src/`.
 - `src/normalize.rs`: the normalization. `src/config.rs`: the configuration; `src/config_tests.rs`: its tests.
 - `src/http.rs`: the HTTP core and `Http::websocket`. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
 - `src/socket.rs`: the Socket Mode listener; `src/socket_tests.rs`: its tests.
+- `src/service.rs`: the service; `src/service_tests.rs`: its tests.
 - `src/fake_slack/`: the test-only fake, its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
