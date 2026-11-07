@@ -92,16 +92,41 @@ name is in this crate's one op table.
     `truncated`, `latest_reply`, `limited`, `omitted` and `files_omitted`, left out of the JSON when false, zero or
     absent. `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
     refuse any other number of fraction digits, because Slack answers such a bound with an empty page and no error.
-    Mechanism: a new type and no new op, so every existing payload and `PROTOCOL_VERSION` (4) are unchanged. Limit:
-    the record's bounds (32 KiB, 8 KiB text, eight files, id and name lengths) are `sot-chat`'s normalization, not
-    checked on decode. Tests `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`,
+    Mechanism: a new type and no new op, so every existing payload and `PROTOCOL_VERSION` (4) are unchanged. Bounds, enforced on decode since the chat family (guarantee 12): ids 64 bytes, text 8 KiB, author name 160, file name 256,
+    MIME 128, eight files. Limit: the 32 KiB total is not checked as a sum (the per-field bounds keep a record far under it), and
+    what a cut field means (`truncated`) is `sot-chat`'s normalization; a record's unknown field is ignored (growth).
+    Tests `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`,
     `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`,
-    `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`.
+    `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode`.
+
+12. **Every chat payload is typed and bounded at decode, and every chat op is in the one table.** `ops/chat.rs`: requests
+    `chat.resolve {row}`, `chat.watch {target}`, `chat.unwatch {target}`, `chat.history {target, thread?, after?, upper?, limit,
+    cursor?}`, `chat.post {target, thread?, kind, name, text}`, each with a reply, and the events `chat.changed` (puts and deletes in
+    a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
+    `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
+    only). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
+    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`), never
+    Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
+    a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
+    cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
+    first excess item); `upper` is `before` or `until`, never both; every timestamp is a `Ts`. A request refuses an unknown
+    field; a reply or event ignores one (guarantee 3's growth). The seven names are in `op_table!`, so `op::ALL` and the
+    admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
+    `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
+    stays 4; an older daemon answers a chat op as any unknown op. Limits: no handler yet (B2e, B2f); a duplicate JSON key reaches
+    a typed decoder only as text (`from_str` refuses it), while the frame codec reads a payload as a `Value`, where the last wins;
+    a cursor is bounded here and bound to its query by `sot-chat`; `chat.fetch` and `chat.post_file` are B4's.
+    Tests `ops/chat_tests.rs`: `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
+    `a_page_and_an_event_carry_records_that_round_trip`, `a_code_added_later_reads_as_other`,
+    `a_request_with_an_unknown_field_is_refused_and_a_reply_ignores_one`, `a_duplicate_key_is_refused_by_the_typed_decoder`,
+    `a_number_where_a_string_belongs_is_refused`, `a_timestamp_with_the_wrong_digits_is_refused_in_a_request`,
+    `both_upper_bounds_cannot_be_asked_for`, `a_limit_is_one_to_twenty`, `a_cursor_a_text_and_a_name_stop_at_their_bounds`,
+    `a_target_names_a_real_channel_and_bounded_ids`, `a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds`.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -137,7 +162,8 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
-| 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses` |
+| 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
+| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12) |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours
@@ -148,7 +174,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
-- `src/ops/`: the op names and payload types, one file per family
+- `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12)
 - `src/pipe.rs`: `pipe_bidirectional`, the raw byte pipe after a connect frame (the daemon's `proxy.connect` and `lane.connect`)
 - `src/reply.rs`: `HandlerOutput`, the bounded frame write and the error frame for a refused connect
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.

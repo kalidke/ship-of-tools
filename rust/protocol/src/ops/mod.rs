@@ -492,6 +492,22 @@ pub mod op {
     /// does not know the op ignores it like any unknown evt.
     pub const BUS_LOST: &str = "bus.lost";
 
+    /// The project chat (`ops/chat.rs`). Each request names the canonical row and the expected (workspace, channel)
+    /// pair; the daemon rechecks both. Payloads [`crate::ops::ChatResolveReq`] / [`crate::ops::ChatResolveRes`].
+    pub const CHAT_RESOLVE: &str = "chat.resolve";
+    /// Register a channel and begin its snapshot: [`crate::ops::ChatWatchReq`], reply [`crate::ops::ChatWatchRes`].
+    pub const CHAT_WATCH: &str = "chat.watch";
+    /// [`crate::ops::ChatUnwatchReq`], reply [`crate::ops::ChatUnwatchRes`].
+    pub const CHAT_UNWATCH: &str = "chat.unwatch";
+    /// One page of history: [`crate::ops::ChatHistoryReq`], reply [`crate::ops::ChatHistoryRes`].
+    pub const CHAT_HISTORY: &str = "chat.history";
+    /// One post, never resent: [`crate::ops::ChatPostReq`], reply [`crate::ops::ChatPostRes`].
+    pub const CHAT_POST: &str = "chat.post";
+    /// Server to client push: messages put or deleted in a watched channel, [`crate::ops::ChatChangedEvt`].
+    pub const CHAT_CHANGED: &str = "chat.changed";
+    /// Server to client push: the service's phase and the watches that need a snapshot, [`crate::ops::ChatStatusEvt`].
+    pub const CHAT_STATUS: &str = "chat.status";
+
     /// The frame behind a `handoff` hello on a dedicated lease connection: the window claims this
     /// daemon. Payload [`crate::ops::FeLeaseReq`]; reply [`crate::ops::FeLeaseRes`].
     pub const FE_LEASE: &str = "fe.lease";
@@ -549,6 +565,9 @@ pub use monitor::*;
 
 mod bus;
 pub use bus::*;
+
+mod chat;
+pub use chat::*;
 
 mod update;
 pub use update::*;

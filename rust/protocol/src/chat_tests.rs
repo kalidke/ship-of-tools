@@ -98,3 +98,32 @@ fn a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses() 
     assert_eq!((parsed.files_omitted, parsed.latest_reply), (0, None));
     assert_eq!(parsed.origin, Origin::Bot);
 }
+
+fn decode(r: &ChatRecord) -> Result<ChatRecord, serde_json::Error> {
+    serde_json::from_str(&serde_json::to_string(r).unwrap())
+}
+
+fn a_file() -> ChatFile {
+    ChatFile { id: "F1".into(), name: "a".into(), mime: "image/png".into(), bytes: None, thumbnail: false }
+}
+
+#[test]
+fn a_record_is_bounded_at_decode() {
+    let ok = |f: &dyn Fn(&mut ChatRecord)| {
+        let mut r = record();
+        f(&mut r);
+        decode(&r).is_ok()
+    };
+    assert!(ok(&|r| r.text = "t".repeat(MAX_TEXT)));
+    assert!(!ok(&|r| r.text = "t".repeat(MAX_TEXT + 1)));
+    assert!(ok(&|r| r.channel = "c".repeat(MAX_ID)));
+    assert!(!ok(&|r| r.channel = "c".repeat(MAX_ID + 1)));
+    assert!(!ok(&|r| r.workspace = "w".repeat(MAX_ID + 1)));
+    assert!(!ok(&|r| r.author.id = "u".repeat(MAX_ID + 1)));
+    assert!(!ok(&|r| r.author.name = "n".repeat(MAX_NAME + 1)));
+    assert!(ok(&|r| r.files = vec![a_file(); MAX_FILES]));
+    assert!(!ok(&|r| r.files = vec![a_file(); MAX_FILES + 1]));
+    assert!(!ok(&|r| r.files = vec![ChatFile { id: "i".repeat(MAX_ID + 1), ..a_file() }]));
+    assert!(!ok(&|r| r.files = vec![ChatFile { name: "n".repeat(MAX_FILENAME + 1), ..a_file() }]));
+    assert!(!ok(&|r| r.files = vec![ChatFile { mime: "m".repeat(MAX_MIME + 1), ..a_file() }]));
+}

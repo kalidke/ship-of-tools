@@ -2,7 +2,48 @@
 //! the daemon and the window. Wire owns this representation; `sot-chat` owns the meaning and builds it from Slack's
 //! JSON. A private URL has no field here.
 
+use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+
+/// The record's bounds, enforced when it is decoded (a decoder holds nothing past them): ids, text, names, MIME and
+/// the file list. `sot-chat` builds a record within the same numbers.
+pub const MAX_ID: usize = 64;
+pub const MAX_TEXT: usize = 8 * 1024;
+pub const MAX_FILES: usize = 8;
+pub const MAX_NAME: usize = 160;
+pub const MAX_FILENAME: usize = 256;
+pub const MAX_MIME: usize = 128;
+
+/// `deserialize_with` for a string of at most `N` bytes.
+pub(crate) fn within<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    if s.len() > N {
+        return Err(D::Error::custom(format_args!("more than {N} bytes")));
+    }
+    Ok(s)
+}
+
+/// `deserialize_with` for a list of at most `N` items; the item after the `N`th is refused unread.
+pub(crate) fn at_most<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<Vec<T>, D::Error> {
+    struct Cap<T, const N: usize>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for Cap<T, N> {
+        type Value = Vec<T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "a list of at most {N}")
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(item) = seq.next_element()? {
+                if out.len() == N {
+                    return Err(A::Error::custom(format_args!("more than {N} items")));
+                }
+                out.push(item);
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_seq(Cap::<T, N>(std::marker::PhantomData))
+}
 
 /// A Slack timestamp: exactly `<seconds>.<six digits>`, kept as the decimal string, never a float. Slack answers a
 /// bound with any other number of fraction digits as an empty page and no error, so a bad bound must be refused
@@ -58,7 +99,9 @@ pub enum Origin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatAuthor {
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub id: String,
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
     pub name: String,
 }
 
@@ -66,8 +109,11 @@ pub struct ChatAuthor {
 /// no size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatFile {
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub id: String,
+    #[serde(deserialize_with = "within::<_, MAX_FILENAME>")]
     pub name: String,
+    #[serde(deserialize_with = "within::<_, MAX_MIME>")]
     pub mime: String,
     pub bytes: Option<u64>,
     pub thumbnail: bool,
@@ -77,16 +123,20 @@ pub struct ChatFile {
 /// sets `truncated`; `omitted` marks a message whose identity is known but whose content could not be represented.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRecord {
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub workspace: String,
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub channel: String,
     pub ts: Ts,
     pub thread_ts: Ts,
     pub author: ChatAuthor,
     pub origin: Origin,
+    #[serde(deserialize_with = "within::<_, MAX_TEXT>")]
     pub text: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub truncated: bool,
     pub reply_count: u32,
+    #[serde(deserialize_with = "at_most::<_, _, MAX_FILES>")]
     pub files: Vec<ChatFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_reply: Option<Ts>,
