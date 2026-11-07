@@ -120,8 +120,9 @@ where each lives).
     std's open (`PermissionDenied`) before the handle check; the cap and text rule apply, and a named pipe's name is
     not promised refused. No test runs a named pipe there.
 16. **A test holds a thread at a marked line until it releases it, and no hold outlives its bounds.** Product code marks a
-    line with `hold_point!("<subsystem>.<place>", key?)` (sync) or `hold_point_async!` (async: the arrival waits on
-    `spawn_blocking`); the name is a literal of `a-z 0-9 . _ -`, checked at compile time, and a key is formatted only
+    line with `hold_point!("<subsystem>.<place>", key?)` (sync) or `hold_point_async!` (async: the arrival waits on its
+    own thread and the future on that thread's oneshot, through `spawn_blocking` when a runtime is there, so paused tokio
+    time cannot pass the hold and a runtime dropped under it leaves the ticket to its give-up); the name is a literal of `a-z 0-9 . _ -`, checked at compile time, and a key is formatted only
     when an arm asks for one. A test arms the point with `test_hold::Holds::here().arm(point).key(k).hold(n)`: arrivals
     whose key matches take tickets 0, 1, 2 in claim order, tickets below `n` wait until `release(t)`, the rest pass and
     are counted; `reached(t)` waits for arrival `t`. Bounds: every test-side wait 30 s (`WAIT`), a held arrival 60 s
@@ -133,8 +134,10 @@ where each lives).
     refused. A sync point held, or a sync `reached`, on a current-thread runtime's own thread is not detected (tokio has
     no stable way to tell): it stops the test that must release it, gives up at its bound and fails the arm, naming
     `hold_point_async!` / `reached_async`. Dropping an arm releases every held arrival and never panics while the test
-    is already panicking. A build without debug assertions has no point: the macros expand to `()` (no call, no argument
-    evaluated, no name in the binary; checked with `strings` on a release build, not pinned by a test). Limits:
+    is already panicking. Both profiles expand a point to `if ON { arrive(..) }` (`ON` is `cfg!(debug_assertions)`): a release build
+    type-checks what a debug build compiles (the key shapes' doc test, run by `cargo test --release --doc`), and the
+    optimizer drops the dead branch, so no key is evaluated and no name is in the binary (`strings` on a release build,
+    not pinned by a test). Limits:
     in-process only (a child process's folder is not built); arms of one point serialize even with distinct keys; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 

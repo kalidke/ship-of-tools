@@ -1,8 +1,10 @@
 //! The product half of the hold tool: a marked line a test may hold a thread at until it releases it (`test_hold` is the
-//! test half). A build without debug assertions has no point: the macros expand to `()`, so no call is made, no
-//! argument is evaluated and no name is kept. Every test build is the dev profile and every shipped build is
-//! `--release`, so tests always have the points and no installed binary has one. A point goes on a decision path (once
-//! per op, per attempt, per tick), never in a per-byte or per-frame loop, and changes nothing when unarmed.
+//! test half). Both profiles expand a point to the same code, `if ON { arrive(..) }`, with `ON` the build's
+//! `cfg!(debug_assertions)`: a release build type-checks exactly what a debug build compiles, and the optimizer drops
+//! the dead branch, so no call is made, no key is evaluated and no name is kept (`strings` on a release build shows
+//! none). Every test build is the dev profile and every shipped build is `--release`, so tests always have the points
+//! and no installed binary has one. A point goes on a decision path (once per op, per attempt, per tick), never in a
+//! per-byte or per-frame loop, and changes nothing when unarmed.
 //!
 //! A point's name is a string literal of `a-z 0-9 . _ -`, `<subsystem>.<place>`, checked at compile time:
 //!
@@ -13,44 +15,53 @@
 //! ```compile_fail,E0080
 //! sot_platform::hold_point!("Doc Name Not Fine");
 //! ```
+//!
+//! A key is anything `Display`, whatever its shape; this compiles, and runs unarmed, in both profiles (the doc tests
+//! run under `cargo test --release --doc` too):
+//!
+//! ```
+//! # use std::path::Path;
+//! # fn maybe() -> Result<String, std::io::Error> { Ok("k".into()) }
+//! # async fn key() -> String { "k".into() }
+//! # async fn later() { sot_platform::hold_point_async!("doc.key.async", key().await); }
+//! fn run(dir: &Path, only: u64) -> Result<(), std::io::Error> {
+//!     sot_platform::hold_point!("doc.key.display", dir.display());
+//!     sot_platform::hold_point!("doc.key.call", dir.to_string_lossy().len());
+//!     sot_platform::hold_point!("doc.key.format", format!("k-{}", 7));
+//!     sot_platform::hold_point!("doc.key.var", only);
+//!     sot_platform::hold_point!("doc.key.try", maybe()?);
+//!     Ok(())
+//! }
+//! run(Path::new("/x"), 3).unwrap();
+//! # let _ = later();
+//! ```
+
+/// Whether this build has points.
+#[doc(hidden)]
+pub const ON: bool = cfg!(debug_assertions);
 
 /// Marks a line in sync code (a thread, `spawn_blocking`); an optional second argument is a key (anything `Display`) a
 /// test's arm may match, formatted only when an arm asks for a key. Held only while a test has armed the point.
 #[macro_export]
 macro_rules! hold_point {
     ($name:literal $(, $key:expr)? $(,)?) => {{
-        #[cfg(debug_assertions)]
-        {
-            const _: () = $crate::hold::check_name($name);
+        const _: () = $crate::hold::check_name($name);
+        if $crate::hold::ON {
             $crate::hold::arrive($name, $crate::__hold_key!($($key)?));
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            // The same expression the debug build evaluates, type-checked and never run.
-            if false {
-                let _ = $crate::__hold_key!($($key)?);
-            }
         }
     }};
 }
 
-/// Marks a line in async code: the arrival waits on `spawn_blocking`, never on a runtime thread.
+/// Marks a line in async code: the arrival waits on its own thread and the future on that thread's oneshot, never
+/// holding a runtime thread.
 #[macro_export]
 macro_rules! hold_point_async {
     ($name:literal $(, $key:expr)? $(,)?) => {{
-        #[cfg(debug_assertions)]
-        {
-            const _: () = $crate::hold::check_name($name);
+        const _: () = $crate::hold::check_name($name);
+        if $crate::hold::ON {
             // Its own statement: the key's borrow must not live across the await.
             let arrival = $crate::hold::arrive_async($name, $crate::__hold_key!($($key)?));
             arrival.await;
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            // The same expression the debug build evaluates, type-checked and never run.
-            if false {
-                let _ = $crate::__hold_key!($($key)?);
-            }
         }
     }};
 }
@@ -62,8 +73,30 @@ macro_rules! __hold_key {
     ($key:expr) => { ::core::option::Option::Some(&$key as &dyn ::core::fmt::Display) };
 }
 
+pub const fn check_name(name: &str) {
+    let bytes = name.as_bytes();
+    assert!(!bytes.is_empty(), "a hold point's name is empty");
+    let mut at = 0;
+    while at < bytes.len() {
+        assert!(
+            matches!(bytes[at], b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'),
+            "a hold point's name holds a byte outside a-z 0-9 . _ -"
+        );
+        at += 1;
+    }
+}
+
 #[cfg(debug_assertions)]
-pub use imp::{arrive, arrive_async, check_name};
+pub use imp::{arrive, arrive_async};
+/// A release build's points: the same signatures, never called (`ON` is false), nothing in them.
+#[cfg(not(debug_assertions))]
+#[doc(hidden)]
+pub fn arrive(_: &'static str, _: Option<&dyn std::fmt::Display>) {}
+#[cfg(not(debug_assertions))]
+#[doc(hidden)]
+pub fn arrive_async(_: &'static str, _: Option<&dyn std::fmt::Display>) -> std::future::Ready<()> {
+    std::future::ready(())
+}
 #[cfg(all(debug_assertions, feature = "test-support"))]
 pub use imp::{GIVE_UP, WAIT};
 #[cfg(all(debug_assertions, feature = "test-support"))]
@@ -124,19 +157,6 @@ mod imp {
         on.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0
     }
 
-    pub const fn check_name(name: &str) {
-        let bytes = name.as_bytes();
-        assert!(!bytes.is_empty(), "a hold point's name is empty");
-        let mut at = 0;
-        while at < bytes.len() {
-            assert!(
-                matches!(bytes[at], b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'),
-                "a hold point's name holds a byte outside a-z 0-9 . _ -"
-            );
-            at += 1;
-        }
-    }
-
     /// A ticket that waits at its line.
     struct Held {
         arm: u64,
@@ -188,16 +208,26 @@ mod imp {
         }
     }
 
-    /// The claim is made at the call, so the future holds no borrow of the key; the wait is on `spawn_blocking`.
+    /// The claim is made at the call, so the future holds no borrow of the key. A held arrival waits on a plain
+    /// thread and the future waits on that thread's oneshot (on `spawn_blocking` when a runtime is there, so paused tokio
+    /// time cannot pass the hold): a runtime dropped under it cancels only the future, the thread still waits for its
+    /// release or give-up, so the ticket never reads Held with nobody waiting.
     pub fn arrive_async(point: &'static str, key: Option<&dyn Display>) -> impl Future<Output = ()> + Send + 'static {
-        let held = claim(point, key);
+        let woke = claim(point, key).map(|held| {
+            let (done, woke) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                held.wait();
+                done.send(()).ok();
+            });
+            woke
+        });
         async move {
-            if let Some(held) = held {
-                // Polled outside a tokio runtime there is no pool to wait on: wait as a sync point does.
-                if tokio::runtime::Handle::try_current().is_ok() {
-                    tokio::task::spawn_blocking(move || held.wait()).await.ok();
-                } else {
-                    held.wait();
+            if let Some(woke) = woke {
+                // A pending blocking task keeps paused tokio time from advancing past the hold; with no runtime to
+                // run one, the oneshot is awaited directly.
+                match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => drop(runtime.spawn_blocking(move || woke.blocking_recv()).await),
+                    Err(_) => drop(woke.await),
                 }
             }
         }
@@ -205,7 +235,7 @@ mod imp {
 
     /// Installs an arm of `point`, waiting up to `WAIT` for another arm of it to end; returns the arm's id.
     pub(crate) fn install(point: &'static str, key: Option<String>, hold: usize, give_up: Duration) -> u64 {
-        check_name(point);
+        super::check_name(point);
         let deadline = Instant::now() + WAIT;
         let mut state = lock();
         state.waiting += 1;
