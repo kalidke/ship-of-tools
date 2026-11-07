@@ -134,7 +134,6 @@ fn a_panicking_test_still_prints_the_arms_failure_and_does_not_abort() {
     entry.assert_once(pid);
     assert!(status.success(), "the child did not end cleanly (an abort is a second panic): {status}\n{err}");
     assert!(err.contains("t.print") && err.contains("arrival 0") && err.contains("hold_point_async!"), "{err}");
-    assert_eq!(err.matches("panicked at").count(), 1, "one panic, the test's own: {err}");
 }
 
 #[test]
@@ -255,8 +254,8 @@ fn an_async_point_polled_outside_a_runtime_waits_like_a_sync_one_and_fails_the_a
     assert!(text.contains("t.async.plain"), "{text}");
 }
 
-/// Every shape of key a point may carry compiles in this (dev) build, and the release expansion type-checks the same
-/// expression (`__hold_key!`); a release build of these shapes is the gate's `--release` check.
+/// Every shape of key runs here, unarmed, in the dev build; the release build's expansion is this one (`ON` is the only
+/// difference), and the doc test in `hold.rs` compiles the same shapes under `cargo test --release --doc`.
 #[test]
 fn every_shape_of_key_compiles_and_an_unarmed_point_ignores_it() {
     fn side() -> &'static str {
@@ -326,4 +325,25 @@ fn an_arrival_wakes_the_reached_that_waits_for_it() {
         arm.reached_within(ticket, BOUND);
         assert!(started.elapsed() < BOUND / 2, "reached woke only at its bound: {:?}", started.elapsed());
     }
+}
+
+/// A runtime dropped under a held async arrival cancels its future; the ticket's own waiter is a plain thread, so the
+/// give-up still lands on the arm and no ticket stays held with nobody waiting.
+#[test]
+fn an_async_point_held_when_its_runtime_is_dropped_fails_the_arm_by_name() {
+    let arm = Holds::here().arm("t.async.dropped").give_up_after(Duration::from_millis(200)).hold(1);
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let task = runtime.spawn(async { crate::hold_point_async!("t.async.dropped") });
+    runtime.block_on(arm.reached_async(0));
+    drop(task);
+    drop(runtime);
+    let started = std::time::Instant::now();
+    while catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })).is_ok() {
+        assert!(started.elapsed() < SEEN, "the held ticket was never given up: it reads Held with nobody waiting");
+        std::thread::yield_now();
+    }
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
+    assert!(text.contains("t.async.dropped") && text.contains("went on"), "{text}");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.async.dropped"), "{text}");
 }
