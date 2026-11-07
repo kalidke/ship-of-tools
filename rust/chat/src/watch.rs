@@ -4,14 +4,14 @@
 //! while a snapshot is pending, live changes go into a bounded overlay applied after it.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use sot_protocol::chat::ChatRecord;
 
 use crate::normalize::{ts_key, valid_id, Normalized};
-use crate::service::Service;
+use crate::service::{Service, ENDED, FREE, HELD};
 use crate::socket::{Gap, Taken};
 
 /// Channels watched at once.
@@ -41,6 +41,17 @@ pub enum State {
     /// A snapshot was begun and not answered.
     Pending,
     Complete,
+}
+
+/// What a `wait` ended with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    /// Something was queued or latched: pump.
+    Look,
+    /// The bound passed with nothing to take.
+    Idle,
+    /// The service is no longer running, or this `Watches` is not its own: there is nothing more to wait for.
+    Stopped,
 }
 
 /// What `loaded` did with a snapshot.
@@ -105,7 +116,7 @@ impl Channel {
 /// `Service::watches`.
 pub struct Watches {
     /// The service's claim, released on drop; none for a model with no service (tests).
-    claim: Option<Arc<AtomicBool>>,
+    claim: Option<Arc<AtomicU8>>,
     gap: Option<Gap>,
     /// The highest gap number seen. The gap moves forward only: a value read earlier, handed in later, is ignored.
     seen: u64,
@@ -114,7 +125,7 @@ pub struct Watches {
 }
 
 impl Watches {
-    pub(crate) fn claimed(claim: Arc<AtomicBool>) -> Watches {
+    pub(crate) fn claimed(claim: Arc<AtomicU8>) -> Watches {
         Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
     }
 
@@ -123,7 +134,7 @@ impl Watches {
         Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
     }
 
-    pub(crate) fn claims(&self, claim: &Arc<AtomicBool>) -> bool {
+    pub(crate) fn claims(&self, claim: &Arc<AtomicU8>) -> bool {
         self.claim.as_ref().is_some_and(|c| Arc::ptr_eq(c, claim))
     }
 
@@ -147,8 +158,16 @@ impl Watches {
         self.channels.remove(channel);
     }
 
+    /// Whether the service that made this `Watches` has stopped: nothing held is current, and nothing more comes.
+    fn ended(&self) -> bool {
+        self.claim.as_ref().is_some_and(|c| c.load(Ordering::SeqCst) == ENDED)
+    }
+
+    /// Once the service has stopped every channel reads `Needed`, whatever this `Watches` is called against.
     pub fn state(&self, channel: &str) -> Option<State> {
+        let ended = self.ended();
         self.channels.get(channel).map(|c| match c.phase {
+            _ if ended => State::Needed,
             Phase::Needed => State::Needed,
             Phase::Pending { .. } => State::Pending,
             Phase::Complete => State::Complete,
@@ -179,6 +198,9 @@ impl Watches {
     /// no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
     /// unwatched or its snapshot is already pending or done (the events are applied either way).
     pub fn begin(&mut self, channel: &str, service: &Service) -> Option<u64> {
+        if self.ended() {
+            return None;
+        }
         self.begin_taken(channel, service.take(self))
     }
 
@@ -189,28 +211,24 @@ impl Watches {
         self.apply_taken(service.take(self));
     }
 
-    /// Wait at most `within` for something to take: an event queued or a gap latched, or anything still queued. True
-    /// means look (`pump`) and may be spurious; false is a bound reached or the service stopped, a wait in flight
-    /// included. The caller pumps after every wait. Taking `&mut self` is what makes one wait in flight the only
-    /// wait: a second waiter would take the wake the pump needs.
-    pub async fn wait(&mut self, service: &Service, within: Duration) -> bool {
-        match service.waiter(self) {
-            Some(w) => w.wait(within).await && service.running(),
-            None => false,
-        }
-    }
-
-    /// The service stopped: nothing held is current.
-    fn ended(&mut self) {
-        for c in self.channels.values_mut() {
-            c.phase = Phase::Needed;
+    /// Wait at most `within` for something to take: an event queued or a gap latched, or anything still queued.
+    /// `Look` means pump (and may be spurious), `Idle` a bound reached with nothing to take, `Stopped` the service
+    /// is no longer running, a wait in flight included, and every call after says so at once: a loop ends there.
+    /// Taking `&mut self` is what makes one wait in flight the only wait: a second waiter would take the wake the
+    /// pump needs.
+    pub async fn wait(&mut self, service: &Service, within: Duration) -> Wake {
+        let Some(w) = service.waiter(self) else { return Wake::Stopped };
+        let woke = w.wait(within).await;
+        if !service.running() {
+            Wake::Stopped
+        } else if woke {
+            Wake::Look
+        } else {
+            Wake::Idle
         }
     }
 
     pub(crate) fn apply_taken(&mut self, taken: Taken) {
-        if taken.ended {
-            self.ended();
-        }
         self.sync(taken.gap);
         for event in &taken.events {
             self.apply(event);
@@ -230,14 +248,10 @@ impl Watches {
     /// loss since `begin` refuses it. Only its top-level messages of this channel are kept. The overlay is
     /// applied after it, so a live edit or delete wins over the snapshot's older content.
     pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, service: &Service) -> Loaded {
-        if !service.owns(self) {
+        if !service.owns(self) || self.ended() {
             return Loaded::Stale;
         }
-        let now = service.running_gap().unwrap_or_else(|| {
-            self.ended();
-            None
-        });
-        self.loaded_at(channel, ticket, records, now)
+        self.loaded_at(channel, ticket, records, service.gap())
     }
 
     pub(crate) fn loaded_at(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, now: Option<Gap>) -> Loaded {
@@ -304,7 +318,7 @@ impl Watches {
     /// Clear the socket's gap, through the service (`Socket::reconciled`), when every watch has resynced from a snapshot
     /// begun after that gap was read. `clear` refuses when something was lost since, and the gap stays.
     pub fn reconcile(&mut self, service: &Service) -> bool {
-        self.reconcile_with(|g| service.reconciled(g))
+        !self.ended() && self.reconcile_with(|g| service.reconciled(g))
     }
 
     pub(crate) fn reconcile_with(&mut self, clear: impl FnOnce(Gap) -> bool) -> bool {
@@ -320,7 +334,8 @@ impl Watches {
 impl Drop for Watches {
     fn drop(&mut self) {
         if let Some(c) = &self.claim {
-            c.store(false, Ordering::SeqCst);
+            // A stop's end stays: only a `Watches` of a running service frees the claim.
+            let _ = c.compare_exchange(HELD, FREE, Ordering::SeqCst, Ordering::SeqCst);
         }
     }
 }

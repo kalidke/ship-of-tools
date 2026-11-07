@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -62,6 +62,11 @@ pub enum Status {
     Stopped,
 }
 
+/// The claim's states: no `Watches` made, one alive, the service no longer running.
+pub(crate) const FREE: u8 = 0;
+pub(crate) const HELD: u8 = 1;
+pub(crate) const ENDED: u8 = 2;
+
 enum Phase {
     Running(Socket),
     Stopping,
@@ -72,7 +77,7 @@ pub struct Service {
     api: Arc<Api>,
     phase: Mutex<Phase>,
     /// Set while a `Watches` made by `watches` lives: the one reader of this service's events.
-    claim: Arc<AtomicBool>,
+    claim: Arc<AtomicU8>,
 }
 
 /// The lock file's name: built from the validated workspace id alone.
@@ -131,7 +136,7 @@ impl Service {
         // From here an early return drops the lock; the socket, once started, owns it.
         let own = api.auth_test().await.map_err(ServiceError::Api)?;
         let socket = Socket::launch(http, app, own, workspace, base, timing, Box::new(lock)).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim: Arc::new(AtomicBool::new(false)) })
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim: Arc::new(AtomicU8::new(FREE)) })
     }
 
     /// The Slack API, or `Stopped`. A call already begun runs to its own deadline; a mutation already sent is neither
@@ -144,9 +149,12 @@ impl Service {
     }
 
     /// The one `Watches` of this service, or none while another made here is alive: a second would take events the
-    /// first never sees and hold stale content as complete. The claim is released when the `Watches` is dropped.
+    /// first never sees and hold stale content as complete. The claim is released when the `Watches` is dropped, and
+    /// never after a stop: a stopped service has no `Watches` to give, and the one it gave reads every channel as
+    /// owing a snapshot.
     pub fn watches(&self) -> Option<Watches> {
-        (!self.claim.swap(true, Ordering::SeqCst)).then(|| Watches::claimed(self.claim.clone()))
+        let free = self.claim.compare_exchange(FREE, HELD, Ordering::SeqCst, Ordering::SeqCst).is_ok();
+        free.then(|| Watches::claimed(self.claim.clone()))
     }
 
     /// Whether `by` is this service's `Watches`.
@@ -167,14 +175,6 @@ impl Service {
         matches!(&*self.phase.lock().unwrap(), Phase::Running(_))
     }
 
-    /// The gap as `Watches::loaded` reads it: `None` (outer) once stopped.
-    pub(crate) fn running_gap(&self) -> Option<Option<Gap>> {
-        match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => Some(s.gap()),
-            _ => None,
-        }
-    }
-
     /// The socket's gap, for `Watches::loaded`; none once stopped.
     pub fn gap(&self) -> Option<Gap> {
         match &*self.phase.lock().unwrap() {
@@ -183,15 +183,15 @@ impl Service {
         }
     }
 
-    /// `Socket::take` for the `Watches` this service made, which takes and applies in one call; empty for any other,
-    /// and `ended` once the service is no longer running.
+    /// `Socket::take` for the `Watches` this service made, which takes and applies in one call; empty for any other
+    /// and once the service is no longer running.
     pub(crate) fn take(&self, by: &Watches) -> Taken {
         if !self.owns(by) {
             return Taken::default();
         }
         match &*self.phase.lock().unwrap() {
             Phase::Running(s) => s.take(),
-            _ => Taken { ended: true, ..Taken::default() },
+            _ => Taken::default(),
         }
     }
 
@@ -226,6 +226,8 @@ impl Service {
                 }
             }
         };
+        // Every channel of the service's `Watches` reads as owing a snapshot from here on.
+        self.claim.store(ENDED, Ordering::SeqCst);
         self.api.close();
         socket.stop_within(within).await;
         *self.phase.lock().unwrap() = Phase::Stopped;
@@ -234,7 +236,7 @@ impl Service {
     /// A service over a socket with no task, for the test to push events and latch gaps into.
     #[cfg(test)]
     pub(crate) fn inert(api: Arc<Api>) -> Service {
-        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim: Arc::new(AtomicBool::new(false)) }
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim: Arc::new(AtomicU8::new(FREE)) }
     }
 
     #[cfg(test)]
@@ -249,5 +251,11 @@ impl Service {
         if let Phase::Running(s) = &*self.phase.lock().unwrap() {
             s.lose(cause);
         }
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.claim.store(ENDED, Ordering::SeqCst);
     }
 }

@@ -158,8 +158,6 @@ impl Waiter {
 pub(crate) struct Taken {
     pub(crate) gap: Option<Gap>,
     pub(crate) events: Vec<Normalized>,
-    /// The service is no longer running: nothing more will come, and what was held is no longer current.
-    pub(crate) ended: bool,
 }
 
 /// The listener as the caller sees it.
@@ -312,7 +310,7 @@ impl Socket {
     pub(crate) fn take(&self) -> Taken {
         let mut s = self.shared.state.lock().unwrap();
         s.bytes = 0;
-        Taken { gap: s.gap, events: s.queue.drain(..).map(|(e, _)| e).collect(), ended: false }
+        Taken { gap: s.gap, events: s.queue.drain(..).map(|(e, _)| e).collect() }
     }
 
     /// The reconciliation requirement, when anything was lost since it was last cleared.

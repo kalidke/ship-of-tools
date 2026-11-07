@@ -421,13 +421,16 @@ async fn a_stop_makes_every_watch_owed_a_snapshot_and_a_stranger_clears_nothing(
         // The lock is the first service's until it stops.
         assert_eq!(second.await.err(), Some(ServiceError::Held));
         first.stop(Duration::from_secs(3)).await;
-        // A stopped service's content is not current: the next pump says so.
-        watches.pump(&first);
+        // A stopped service's content is not current, whatever the watch is called against, or never called.
         assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
+        watches.watch("C0BBBB").unwrap();
+        assert_eq!(watches.begin("C0BBBB", &first), None, "a snapshot begun against a stopped service");
         assert!(!watches.reconcile(&first));
         // The next service's gap is not this watch's to clear.
         let second = start(&fake, &dir.0).await.expect("second");
         eventually("the second hello", || second.gap().is_some()).await;
+        watches.pump(&second);
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
         assert!(!watches.reconcile(&second));
         assert!(second.gap().is_some());
         second.stop(Duration::from_secs(3)).await;
@@ -465,6 +468,7 @@ fn edit() -> crate::normalize::Normalized {
 #[tokio::test]
 async fn wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the_stop() {
     use crate::socket::GapCause;
+    use crate::watch::Wake;
     bounded(async {
         let service = inert();
         let mut watches = service.watches().unwrap();
@@ -472,15 +476,16 @@ async fn wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the
         service.lose(GapCause::Reconnect);
         // Another service's Watches takes no wake from this one, so the owner's is still there.
         let mut stranger = inert().watches().unwrap();
-        assert!(!stranger.wait(&service, short).await, "a stranger waited on another service");
-        assert!(watches.wait(&service, Duration::from_secs(20)).await, "no wake for a gap");
+        assert_eq!(stranger.wait(&service, short).await, Wake::Stopped, "a stranger waited on another service");
+        assert_eq!(watches.wait(&service, Duration::from_secs(20)).await, Wake::Look, "no wake for a gap");
         service.feed(edit());
-        assert!(watches.wait(&service, Duration::from_secs(20)).await, "no wake for an event");
+        assert_eq!(watches.wait(&service, Duration::from_secs(20)).await, Wake::Look, "no wake for an event");
         // Nothing was taken, so what is queued is still seen at once, with no new wake.
-        assert!(watches.wait(&service, short).await, "a queued event was not seen");
+        assert_eq!(watches.wait(&service, short).await, Wake::Look, "a queued event was not seen");
         watches.pump(&service);
         service.stop(Duration::from_secs(3)).await;
-        assert!(!watches.wait(&service, short).await, "a stopped service woke");
+        assert_eq!(watches.wait(&service, short).await, Wake::Stopped, "a stopped service did not say so");
+        assert_eq!(watches.wait(&service, short).await, Wake::Stopped);
     })
     .await;
 }
@@ -488,6 +493,7 @@ async fn wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the
 #[tokio::test]
 async fn a_wait_in_flight_ends_at_the_stop() {
     use crate::socket::GapCause;
+    use crate::watch::Wake;
     bounded(async {
         let service = inert();
         let mut watches = service.watches().unwrap();
@@ -499,13 +505,14 @@ async fn a_wait_in_flight_ends_at_the_stop() {
         let mut wait = Box::pin(watches.wait(&service, Duration::from_secs(20)));
         assert!(tokio::time::timeout(Duration::ZERO, &mut wait).await.is_err(), "the wait had something to see");
         service.stop(Duration::from_secs(3)).await;
-        assert_eq!(tokio::time::timeout(Duration::ZERO, &mut wait).await, Ok(false), "the stop did not end the wait");
+        assert_eq!(tokio::time::timeout(Duration::ZERO, &mut wait).await, Ok(Wake::Stopped), "the stop did not end the wait");
     })
     .await;
 }
 
 #[tokio::test]
 async fn a_wait_woken_while_the_stop_is_under_way_answers_false() {
+    use crate::watch::Wake;
     bounded(async {
         let dir = Scratch::new("stopping-wait");
         // A peer that never answers a close: the service is `Stopping` for the stop's whole bound.
@@ -519,7 +526,7 @@ async fn a_wait_woken_while_the_stop_is_under_way_answers_false() {
             tokio::task::yield_now().await;
             service.stop(Duration::from_secs(3)).await;
         });
-        assert!(!woke, "a wait woken by the stop answered true while the service was stopping");
+        assert_eq!(woke, Wake::Stopped, "a wait woken by the stop answered anything else while the service was stopping");
         fake.shutdown().await;
     })
     .await;
@@ -528,7 +535,7 @@ async fn a_wait_woken_while_the_stop_is_under_way_answers_false() {
 #[tokio::test]
 async fn a_pump_loop_beside_a_latched_gap_sees_it() {
     use crate::socket::GapCause;
-    use crate::watch::State;
+    use crate::watch::{State, Wake};
     bounded(async {
         let service = inert();
         let mut watches = service.watches().unwrap();
@@ -541,10 +548,58 @@ async fn a_pump_loop_beside_a_latched_gap_sees_it() {
             tokio::task::yield_now().await;
             service.lose(GapCause::Failed);
         });
-        assert!(woke, "the pump was not woken for a gap");
+        assert_eq!(woke, Wake::Look, "the pump was not woken for a gap");
         watches.pump(&service);
         assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
     })
     .await;
 }
 
+
+#[tokio::test]
+async fn loaded_reads_its_own_services_gap_and_a_stop_ends_what_was_pending_and_the_claim() {
+    use crate::socket::GapCause;
+    use crate::watch::{Loaded, State};
+    bounded(async {
+        let service = inert();
+        let mut watches = service.watches().unwrap();
+        watches.watch("C0AAAA").unwrap();
+        // A loss after the take, unseen by any pump: the answer reads the service's gap and is refused.
+        let t = watches.begin("C0AAAA", &service).unwrap();
+        service.lose(GapCause::Failed);
+        assert_eq!(watches.loaded("C0AAAA", t, Vec::new(), &service), Loaded::Resync);
+        // A snapshot pending at the stop is answered after it: not complete.
+        let t = watches.begin("C0AAAA", &service).unwrap();
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(watches.loaded("C0AAAA", t, Vec::new(), &service), Loaded::Stale);
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
+        // The claim outlives the stop and the `Watches`: a stopped service has none to give.
+        assert!(service.watches().is_none(), "the stop released the claim");
+        drop(watches);
+        assert!(service.watches().is_none(), "a dropped Watches freed a stopped service's claim");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stop_under_way_already_ends_the_watch() {
+    use crate::watch::{State, Wake};
+    bounded(async {
+        let dir = Scratch::new("stopping-state");
+        // A peer that never answers a close, and a stop whose caller gives up: the service stays `Stopping`.
+        let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        let mut watches = service.watches().unwrap();
+        eventually("connected", || matches!(service.status(), Status::Running { socket, .. } if socket.connected)).await;
+        watches.watch("C0AAAA").unwrap();
+        let t = watches.begin("C0AAAA", &service).unwrap();
+        watches.loaded("C0AAAA", t, Vec::new(), &service);
+        assert_eq!(watches.state("C0AAAA"), Some(State::Complete));
+        assert!(tokio::time::timeout(Duration::ZERO, service.stop(Duration::from_secs(3))).await.is_err());
+        assert_eq!(service.status(), Status::Stopping);
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed), "a service on its way to stopped still served as complete");
+        assert_eq!(watches.wait(&service, Duration::ZERO).await, Wake::Stopped);
+        fake.shutdown().await;
+    })
+    .await;
+}

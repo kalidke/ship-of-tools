@@ -12,7 +12,7 @@ use crate::normalize::{ts_key, Normalized};
 use crate::service::Service;
 use crate::socket::{Gap, GapCause, Taken};
 use crate::watch::{
-    Loaded, State, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
+    Loaded, State, Wake, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
 };
 
 const C: &str = "C0AAAA";
@@ -295,7 +295,7 @@ fn a_burst_after_the_events_were_taken_refuses_the_snapshot() {
     let mut w = Watches::new();
     let t = pending(&mut w);
     w.loaded_at(C, t, vec![rec("1.000000", "v0")], None);
-    let taken = Taken { gap: Some(gap(1)), events: vec![edited("1.000000", "stale")], ended: false };
+    let taken = Taken { gap: Some(gap(1)), events: vec![edited("1.000000", "stale")] };
     let t = w.begin_taken(C, taken).unwrap();
     assert_eq!(texts(&w, C), ["stale"], "a taken event was not applied before the snapshot began");
     // A loss after the take is a gap the model has not seen: the fresh read at `loaded` finds it.
@@ -303,7 +303,7 @@ fn a_burst_after_the_events_were_taken_refuses_the_snapshot() {
     assert_eq!(w.state(C), Some(State::Needed));
     assert!(!w.reconcile_with(|_| panic!("a gap was cleared over a refused snapshot")));
     // Without a loss the same snapshot completes, and the taken event is older than it.
-    let taken = Taken { gap: Some(gap(2)), events: vec![edited("1.000000", "stale")], ended: false };
+    let taken = Taken { gap: Some(gap(2)), events: vec![edited("1.000000", "stale")] };
     let t = w.begin_taken(C, taken).unwrap();
     assert_eq!(w.loaded_at(C, t, vec![rec("1.000000", "fresh")], Some(gap(2))), Loaded::Complete);
     assert_eq!(texts(&w, C), ["fresh"]);
@@ -317,15 +317,15 @@ fn begin_applies_the_events_it_is_given_to_every_channel_whether_or_not_it_begin
     w.loaded_at(C, t, vec![rec("1.000000", "a")], None);
     w.watch(other).unwrap();
     // The begun channel is another one: the edit of the first is applied, and the begun one goes pending.
-    let taken = Taken { gap: None, events: vec![edited("1.000000", "a2")], ended: false };
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a2")] };
     assert!(w.begin_taken(other, taken).is_some());
     assert_eq!(texts(&w, C), ["a2"], "an event for another channel was not applied");
     // No snapshot begins (already pending), and the events are applied all the same.
-    let taken = Taken { gap: None, events: vec![edited("1.000000", "a3")], ended: false };
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a3")] };
     assert_eq!(w.begin_taken(other, taken), None);
     assert_eq!(texts(&w, C), ["a3"], "events given to a refused begin were thrown away");
     // Nor for an unwatched channel.
-    let taken = Taken { gap: None, events: vec![edited("1.000000", "a4")], ended: false };
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a4")] };
     assert_eq!(w.begin_taken("C0CCCC", taken), None);
     assert_eq!(texts(&w, C), ["a4"]);
 }
@@ -382,7 +382,7 @@ struct World {
 /// A wait that leaves nothing owed: the permit a push or latch left, if any, is consumed. After a take every one is
 /// spurious (the take saw all of it), so the next `wait` is true only for a change after the take.
 async fn settle(w: &mut Watches, service: &Service) -> bool {
-    w.wait(service, Duration::ZERO).await
+    w.wait(service, Duration::ZERO).await == Wake::Look
 }
 
 impl World {
