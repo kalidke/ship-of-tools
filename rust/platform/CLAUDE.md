@@ -111,12 +111,14 @@ where each lives).
     to each write and reports the whole buffer written. Wired through it: the daemon's log and the window's log. Limits:
     the supervisor's own diagnostics go straight to its stderr and are not masked; a secret split across two writes is
     not seen (each write is masked alone).
-15. **A small configuration file is read bounded and only if regular.** `host::read_regular(path, cap)` opens without
-    blocking or taking a controlling terminal (Unix `O_NONBLOCK | O_NOCTTY`), refuses on the open handle anything but a
-    regular file (`InvalidInput`: a FIFO, a device or a directory never waits) and reads at most `cap` bytes, a larger
-    file being `InvalidData`; a missing file is `NotFound`. Chat's two files and hosts.toml are read through it. On
-    Windows the same handle check and cap apply through std's open; no test runs there, and a named pipe's name is not
-    promised refused.
+15. **A small configuration file is read bounded and only if regular.** `host::read_regular(path, cap)` returns the
+    file's text: it opens without blocking or taking a controlling terminal (Unix `O_NONBLOCK | O_NOCTTY`), refuses on
+    the open handle anything but a regular file (`InvalidInput`: a FIFO or a device never waits), reads at most `cap`
+    bytes, and refuses a larger file or invalid UTF-8 as `InvalidData` with a message of its own; a missing file is
+    `NotFound`. Chat's two files and hosts.toml (the store and sync included) are read through it. Limit: only a FIFO's
+    wait is ended; a regular file on a hung network mount still blocks in the OS. On Windows a directory is refused by
+    std's open (`PermissionDenied`) before the handle check; the cap and text rule apply, and a named pipe's name is
+    not promised refused. No test runs a named pipe there.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git

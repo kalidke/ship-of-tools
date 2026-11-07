@@ -20,10 +20,20 @@ fn a_regular_file_reads_up_to_the_cap_and_no_further() {
             .kind(),
         ErrorKind::NotFound
     );
+    // A directory is refused on every platform: on Unix by the handle check, on Windows by the open.
+    assert!(read_regular(dir.path(), 16).is_err());
+    #[cfg(unix)]
     assert_eq!(
         read_regular(dir.path(), 16).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
+    // Each refusal says which it is.
+    let non_text = file("utf", 0);
+    std::fs::write(&non_text, [0xff, 0xfe]).unwrap();
+    let non_text = read_regular(&non_text, 16).unwrap_err();
+    let big = read_regular(&file("big", 17), 16).unwrap_err();
+    assert_eq!(non_text.kind(), ErrorKind::InvalidData);
+    assert_ne!(non_text.to_string(), big.to_string());
 }
 
 #[cfg(unix)]

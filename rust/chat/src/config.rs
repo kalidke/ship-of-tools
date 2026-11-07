@@ -32,8 +32,7 @@ pub(crate) const MAX_FILE: u64 = 64 * 1024;
 /// regular file (a FIFO, a device, a directory) is `InvalidInput`; a larger file or other bytes than UTF-8 is
 /// `InvalidData`.
 pub fn read_file(path: &Path) -> io::Result<String> {
-    let bytes = sot_platform::host::read_regular(path, MAX_FILE)?;
-    String::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData.into())
+    sot_platform::host::read_regular(path, MAX_FILE)
 }
 
 /// A file's text, or why not: absent, too large or not text (`Malformed`), or unreadable.

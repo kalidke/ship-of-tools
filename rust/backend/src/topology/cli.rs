@@ -178,7 +178,7 @@ const LOCAL_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10
 fn sync(hub: Option<String>) -> Result<(), String> {
     let dest = topology::locate().ok_or("no config dir: set $HOME (or %LOCALAPPDATA%) or $SOT_HOSTS")?;
     let local = topology::load()?;
-    let read = std::fs::read_to_string(&dest).ok();
+    let read = topology::read_hosts(&dest).ok();
     let hub = resolve_hub(local.as_ref().map(|(_, t)| t), hub.as_deref(), &dest)?;
     let me = self_host()?;
     if self_is_hub(&me, &hub) {
@@ -196,7 +196,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
     let text = String::from_utf8(out.stdout).map_err(|_| format!("hub `{hub}`: hosts.toml is not UTF-8"))?;
     let fetched = topology::parse(&text).map_err(|e| format!("hub `{hub}`: fetched hosts.toml rejected, keeping the local copy: {e}"))?;
     refuse_if_not_listed(&fetched, &me)?;
-    if std::fs::read_to_string(&dest).ok().as_deref() == Some(text.as_str()) {
+    if topology::read_hosts(&dest).ok().as_deref() == Some(text.as_str()) {
         println!("{} is current (same as {hub})", dest.display());
         return Ok(());
     }
@@ -209,7 +209,7 @@ fn sync(hub: Option<String>) -> Result<(), String> {
 /// fetched (`read`, `None` for no file).
 fn publish_synced(dest: &std::path::Path, read: Option<&str>, text: &str) -> Result<(), String> {
     let _lock = crate::topology::store::lock_file(dest)?;
-    if std::fs::read_to_string(dest).ok().as_deref() != read {
+    if topology::read_hosts(dest).ok().as_deref() != read {
         return Err(format!("{} changed while it was fetched; nothing replaced, run sync again", dest.display()));
     }
     crate::topology::store::write_atomic(dest, text)
@@ -350,7 +350,7 @@ fn report_cache_divergence(topo: &Topology) {
         return;
     }
     let Some(path) = topology::locate() else { return };
-    let Ok(local_text) = std::fs::read_to_string(&path) else { return };
+    let Ok(local_text) = topology::read_hosts(&path) else { return };
     let local_hash = topology::hash_text(&local_text);
     let endpoint = hub_endpoint(topo, &me);
     let Ok(res) = crate::topology::dial::dial_and_call(&endpoint, &me, sot_protocol::op::VERSION_QUERY, serde_json::json!({}), super::status::PROBE_TIMEOUT) else {

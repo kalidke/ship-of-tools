@@ -130,7 +130,7 @@ impl TopologyStore {
             }
         }
 
-        let text = match std::fs::read_to_string(&self.path) {
+        let text = match topology::read_hosts(&self.path) {
             Ok(t) => t,
             Err(e) => {
                 let (topo, hash) = fallback(&guard);

@@ -84,6 +84,31 @@ fn malformed_file_is_refused_without_losing_previous_content() {
 /// A fresh folder per call, named by tempfile's random suffix, so the
 /// parallel tests never share one. The guard removes it when the test ends,
 /// and also when an assertion panics first.
+/// A FIFO planted where hosts.toml belongs ends in an error, keeping an earlier valid topology; the refresh runs on its
+/// own thread so a read that waits fails the test instead of hanging the suite.
+#[cfg(unix)]
+#[test]
+fn a_planted_fifo_is_refused_and_keeps_the_previous_topology() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempdir();
+    let path = dir.path().join("hosts.toml");
+    let store = std::sync::Arc::new(TopologyStore::new(path.clone()));
+    write(&path, "hub = \"alpha\"\n[host.alpha]\ndaemon = true\n");
+    assert!(store.refresh().topo.is_some());
+    std::fs::remove_file(&path).unwrap();
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a plain mkfifo(3) of a path in this test's own folder.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let s = store.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(s.refresh());
+    });
+    let r = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the refresh of a FIFO blocked");
+    assert!(r.error.is_some());
+    assert!(r.topo.is_some());
+}
+
 fn tempdir() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("sot-topology-store-test-")

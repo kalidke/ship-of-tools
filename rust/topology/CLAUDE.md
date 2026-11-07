@@ -18,7 +18,7 @@ Each states what the rest may rely on, the mechanism it rests on and the limit i
 of each.
 
 1. **hosts.toml has one grammar and one search order.** `locate` is `$SOT_HOSTS`, else `<config dir>/hosts.toml`
-   (`sot_platform::host::state_dir::sot_config_dir`); `load` reads it (through `sot_platform::host::read_regular`, at most 1 MiB, regular files only: a planted FIFO, directory or oversize file is an `Err` naming the path, never a stall; a missing file is `Ok(None)`) and `parse` is the only reader of its text
+   (`sot_platform::host::state_dir::sot_config_dir`); `load` reads it (through `sot_platform::host::read_regular`, at most 1 MiB, regular files only: a planted FIFO, directory or oversize file is an `Err` naming the path and not a wait, though a regular file on a hung network mount still blocks in the OS; a missing file is `Ok(None)`) and `parse` is the only reader of its text
    (`lib.rs`; the daemon's store, the monitor's roster, the CLI and the window call these, nothing else reads the file).
    Exactly one `hub`, which names a listed host with `daemon = true`; a section name is a plain host name; an unknown
    top-level key or section, a duplicate key and a malformed line are errors naming the line; an unknown key inside
