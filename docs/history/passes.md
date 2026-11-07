@@ -711,7 +711,8 @@ A landing's record goes here, with its measured times; the package page holds on
 - The selection requirement, 2026-11-06: 22:26 to main 22:30, 4 minutes. The maintainer's answer to the selection plan (every
   recommendation taken) put its requirement into `requirements.md` in the words he approved, checked against them by a script;
   no reviewer read it, since the text was his. Scoped gate one minute, passed first time.
-- The selection op on the wire, 2026-11-06: 22:31 to main 22:59, 28 minutes, inside. `selection.set`, its reply and the one
+- The selection op on the wire, 2026-11-06: 22:26 to main 22:59, 32 minutes, a miss, timed from its builder's launch (first
+  recorded from 22:31, which was not the start). `selection.set`, its reply and the one
   selection digest, every payload bounded at decode, built beside the chat's hub piece in another worktree. 100 product and 110
   test lines. The first scoped gate passed in two minutes; the review found one blocker, a test gap: the digest was compared only
   with itself, so a version hashing one byte per character passed, and fixed vectors now pin it to the UTF-8 bytes. A second
@@ -722,3 +723,15 @@ A landing's record goes here, with its measured times; the package page holds on
   stays with the maintainer, so the value is allowed by its exact text under the app-token rule only, as the other test
   fixtures are; a full-history scan then found nothing. The same run's documentation job failed on a network reset during
   `npm install`, and its rerun was requested. The scan's timing is SECRET-SCAN-AFTER-PUSH.
+- The chat hub piece, 2026-11-06: 22:26 to main 23:44, 78 minutes, a miss, stopped and written up here. `sotd` builds the chat
+  service once with its other services, only on a daemon positively identified as the configured hub (topology's current load,
+  decided before the chat configuration loads), and retires it through lifecycle; a non-hub opens no secret file. About 330
+  product and 500 test lines. The first gate passed in 11 minutes before review, and each later gate passed first time. Three
+  review rounds (blockers 1, 1, 0): the first found the hub rule untested against a listed non-hub and a retirement arriving
+  between registering and starting lost, a product defect; the second found that the 400-try race test written for that fix
+  could not fail while the contract said it could; the third, on a stated scope, checked the order pinned by a test-only hook.
+  A made-up token in its tests meanwhile turned main's secret scan red through its pushed branches. Cause of the miss: the
+  brief did not ask for a deterministic seam where two threads race. The release workflow, dispatched on its head (builds and
+  smokes, no tag, no draft), passed whole: the static musl Linux build compiled the chat crate into `sotd`, the daemon booted
+  and answered hello in an Ubuntu 20.04 container (glibc 2.31), and the Windows MSVC build passed with its artifact smoke and
+  four install smokes, as did macOS. The first link of `sot-chat` into the daemon is proven on every release path.
