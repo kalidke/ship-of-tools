@@ -265,6 +265,8 @@ async fn a_session_carries_the_daemons_own_binary_over_an_inherited_sotd_bin() {
     );
     // The row's own state folder, never the project's: the file the daemon publishes the selection into.
     let state_folder = row.env().state_root.join("sot").join("workspaces").join(&workspace_id);
+    // As the daemon resolves the folder: canonical, then without a Windows verbatim prefix.
+    let state_folder = sot_platform::host::paths::simplify_verbatim(std::fs::canonicalize(&state_folder).expect("state folder"));
     let want_sel = state_folder.join("selection.json").to_string_lossy().replace('\\', "/");
     let got_sel = std::fs::read_to_string(&sel_out).expect("selection-file.txt").trim().replace('\\', "/");
     assert_eq!(got_sel, want_sel, "a session names its own row's selection file");

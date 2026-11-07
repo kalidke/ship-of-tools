@@ -3,8 +3,7 @@ use super::super::support_tests::self_file_env_guarded;
 
 #[test]
 fn nesting_env_scrub_list_matches_ccb() {
-    // Mirrors agents/claude/bin/ccb's own `unset` line
-    // exactly -- see that file for the reasoning per variable.
+    // The list's own pin; `ccx_unsets_the_nesting_markers_the_scrub_list_names` holds `ccx`'s `unset` line to it.
     assert_eq!(
         NESTING_ENV_VARS_TO_SCRUB,
         &[
@@ -292,4 +291,11 @@ fn the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected() {
     assert_eq!(env["SOTD_BIN"], "");
     let pairs = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), "claude", Path::new("/state/ws-1"));
     assert_eq!(pairs.iter().filter(|(k, _)| k == "SOTD_BIN").count(), 1, "{pairs:?}");
+}
+
+#[test]
+#[cfg(windows)]
+fn a_verbatim_state_folder_gives_the_plain_forward_slash_form() {
+    assert_eq!(selection_file_value(Path::new(r"\\?\C:\state\ws-1"), true), "C:/state/ws-1/selection.json");
+    assert_eq!(selection_file_value(Path::new(r"\\?\UNC\srv\share\ws-1"), true), "//srv/share/ws-1/selection.json");
 }

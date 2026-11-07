@@ -51,8 +51,11 @@ fn capsule_comm_home_str() -> Option<String> {
 }
 
 /// The `SOT_SELECTION_FILE` value: the row's `selection.json` in its state folder, in the forward-slash form a Git Bash
-/// shell reads when `forward_slashes` (Windows), as `SOT_COMM_HOME` is.
+/// shell reads when `forward_slashes` (Windows), as `SOT_COMM_HOME` is, and without a verbatim prefix.
 fn selection_file_value(state_dir: &Path, forward_slashes: bool) -> String {
+    // A created row's first leg gets the canonical folder, a verbatim `\\?\C:\...` path on Windows, which no Git Bash
+    // shell reads; the plain drive path is the one spelling every start gives.
+    let state_dir = sot_platform::host::paths::simplify_verbatim(state_dir.to_path_buf());
     let file = state_dir.join(crate::agents::selection::FILE_NAME).to_string_lossy().into_owned();
     if forward_slashes { file.replace('\\', "/") } else { file }
 }

@@ -161,7 +161,7 @@ of each.
     --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust <prompt>`). It chooses no handle
     (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
-    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). `--capsule` marks the daemon's own leg for a row: it keeps `SOT_SELECTION_FILE`, which a `ccx` without it unsets. Limits: `ccx` runs
+    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
     Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
     `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh`,
     `tests/test-ccx-resume-default.sh`.
