@@ -346,15 +346,36 @@ async fn a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped
         let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
         let service = std::sync::Arc::new(start(&fake, &dir.0).await.expect("service"));
         eventually("connected", || matches!(service.status(), Status::Running { socket, .. } if socket.connected)).await;
+        let handle = service.api().expect("api while running");
         let first = {
             let s = service.clone();
             tokio::spawn(async move { s.stop(Duration::from_secs(1)).await })
         };
         eventually("stopping", || service.status() == Status::Stopping).await;
+        // A handle is refused from the moment the stop began, while the listener may still run.
+        let before = calls(&fake);
+        assert_eq!(handle.auth_test().await.err(), Some(crate::api::ApiError::Closed));
+        assert_eq!(calls(&fake), before, "a handle reached Slack during the stop");
         service.stop(Duration::from_secs(1)).await;
         assert_eq!(service.status(), Status::Stopping, "the second stop disturbed the first");
         first.await.unwrap();
         assert_eq!(service.status(), Status::Stopped);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_cancelled_stop_frees_the_lock() {
+    bounded(async {
+        let dir = Scratch::new("cancel");
+        let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        eventually("connected", || matches!(service.status(), Status::Running { socket, .. } if socket.connected)).await;
+        // The peer never answers the close and the close bound is 600 s: the stop is still waiting when it is cancelled.
+        assert!(tokio::time::timeout(Duration::from_millis(200), service.stop(Duration::from_secs(30))).await.is_err());
+        assert_eq!(service.status(), Status::Stopping);
+        start(&fake, &dir.0).await.expect("a cancelled stop left the listener holding the lock").stop(Duration::from_secs(3)).await;
         fake.shutdown().await;
     })
     .await;

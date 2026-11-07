@@ -150,7 +150,7 @@ impl Service {
     /// End the listener. The call that begins the stop closes the API for every handle, then returns after the
     /// task is gone (ended, or aborted and awaited once `within` passes) and the lock is released. Any other call,
     /// including one made while that stop is waiting, returns at once. A stop future dropped before it finishes
-    /// leaves the status `Stopping`; dropping it drops the socket, which aborts the task.
+    /// leaves the status `Stopping`, and dropping it aborts the task, so the lock is released with it.
     pub async fn stop(&self, within: Duration) {
         let socket = {
             let mut phase = self.phase.lock().unwrap();

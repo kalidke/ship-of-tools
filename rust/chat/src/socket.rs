@@ -289,11 +289,9 @@ impl Socket {
     /// `stop` with the join bound given: after it the task is gone, ended or aborted and awaited.
     pub async fn stop_within(mut self, within: Duration) {
         let _ = self.stop.send(true);
-        if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(within, &mut task)
-                .await
-                .is_err()
-            {
+        // The handle stays in `self`, so a stop future dropped mid-wait drops the socket and `Drop` aborts the task.
+        if let Some(task) = self.task.as_mut() {
+            if tokio::time::timeout(within, &mut *task).await.is_err() {
                 task.abort();
                 let _ = task.await;
             }
