@@ -786,3 +786,22 @@ A landing's record goes here, with its measured times; the package page holds on
   past events, rode a last two-line commit with the 32-channel tests' waits lengthened after they failed under heavy load.
   Cause of the miss: an estimate off nearly fourfold for a piece with ten guarantees, and two reviews of about half an hour
   each in series with a half-hour fix round.
+- The chat watch tests' hosted red, fixed forward, 2026-11-07: 05:36 to main 06:13, 37 minutes, a miss. Main's hosted run on the
+  chat watches failed the two 32-channel watch tests on Windows and macOS at their 30-second wait, while hosted Linux passed them
+  in about a second. The cause was the test, not the product: its many-channel helper returned before the fake Slack socket's
+  hello, and every hello latches a gap, so a snapshot begun or completed before it is told to resync; when the hello landed
+  among the 31 watch requests, each later request began the flipped channels again, the fake saw 35 to 40 snapshots against 33,
+  and the test's exact count was passed and never matched. The helper now waits for the hello, as the single-channel rig did,
+  and the waits ask for each channel's complete state. Test lines only (12 added, 4 removed). The builder reproduced it at 7 of
+  12 copies pinned to two CPUs and showed 600 clean runs after; the review confirmed by ablation that the hello wait alone is
+  the cure (the complete-state waits alone still failed 15 of 36) and that the daemon tells a watch begun before the hello to
+  resync. The last landing's longer wait had been a deadline raise on an unmeasured reading of CPU starvation. Scoped gate and
+  a hosted run on the branch (43 jobs) passed first time; one review round, no blocker. Cause of the miss: a hosted run, a
+  review and the gate in series after a 13-minute diagnosis.
+- The watch tests' follow-up, 2026-11-07: 06:14 to main 06:40, 26 minutes, inside. Two tests pin the ordinary start of a
+  daemon, a watch begun before the socket's hello: one whose snapshot completed before it and one whose snapshot was in flight
+  across it are each told `chat.status` with the gap and the channel, and a repeat watch completes the channel; a semaphore in
+  the tests' levers holds the hello. The complete-state wait and the hello wait are each one helper, which names its call site
+  on a timeout, and the server contract's table names both tests. About 77 test lines added and 19 removed, no product change.
+  Both scoped gates passed first time; one review round, no blocker; its two should-fixes rode the landing unreviewed (eight
+  lines, the reviewer's own).
