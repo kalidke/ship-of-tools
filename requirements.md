@@ -61,6 +61,12 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 - The LLM is the user's primary means of operating the environment beyond core editor and REPL interactions.
 - Decisions about which actions require user confirmation are the LLM's responsibility. The environment does not impose its own permission tiers, sandboxes, or rule-based action gating.
 
+#### The agent sees what the user selects
+
+- Text the user selects in a view of a project file is known to the agent of that project's session: the file, the lines and the text, without copying, pasting or typing a reference. Clearing the selection, selecting in another file or session, or closing the window withdraws it. The agent is told only what the file holds at those lines.
+- An agent with no such channel is told nothing, and the window says the selection was not shared.
+  *Status: not built.*
+
 ### Window and layout management
 
 - The layout system must accommodate both ultrawide displays and small laptop displays (16:10) without per-device reconfiguration by the user.
