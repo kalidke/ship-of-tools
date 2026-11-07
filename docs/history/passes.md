@@ -689,3 +689,12 @@ A landing's record goes here, with its measured times; the package page holds on
   refusal decodes without a code, as an old daemon's unknown-op answer has none; a newer daemon's service state, watch state,
   resolve state, post outcome or record origin reads as a fallback, never as the app's own post and never as a post to resend; the
   record's bounds have one copy, in wire, which chat uses.
+- B2c's second follow-up, 2026-11-06: 20:13 to main 21:39, 86 minutes, a miss, stopped and written up here. 20 of change, then
+  three rounds of review and fix (blockers 2, 1, 0), every gate about a minute and every one passed first time, with a copy onto
+  main between rounds since B2d landed beside it. A `Service` hands out one `Watches`, which alone can wait (exclusively, and the
+  wait says whether it woke, timed out or saw a stop); a stop or a dropped service ends the claim for good, so no channel reads
+  complete over a stopped service; the enumeration of a pump, a snapshot and a gap now runs the product's own take and wake.
+  Each round found one more way a stop or a wait met a kept watch: a second waiter that stole the pump's wake and left a watch
+  complete over a gap, then a watch kept past its service and only ever called against the next. Cause of the miss: the
+  enumeration was asked of the pump, the snapshot and the gap, not of every public call. For a guarantee about orderings, the
+  enumeration's steps are every public call, a stop, a wait and a drop included.

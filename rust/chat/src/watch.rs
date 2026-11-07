@@ -318,7 +318,7 @@ impl Watches {
     /// Clear the socket's gap, through the service (`Socket::reconciled`), when every watch has resynced from a snapshot
     /// begun after that gap was read. `clear` refuses when something was lost since, and the gap stays.
     pub fn reconcile(&mut self, service: &Service) -> bool {
-        !self.ended() && self.reconcile_with(|g| service.reconciled(g))
+        self.reconcile_with(|g| service.reconciled(g))
     }
 
     pub(crate) fn reconcile_with(&mut self, clear: impl FnOnce(Gap) -> bool) -> bool {

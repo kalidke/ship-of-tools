@@ -603,3 +603,18 @@ async fn a_stop_under_way_already_ends_the_watch() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_dropped_service_ends_its_watch() {
+    use crate::watch::{Loaded, State};
+    bounded(async {
+        let service = inert();
+        let mut watches = service.watches().unwrap();
+        watches.watch("C0AAAA").unwrap();
+        let t = watches.begin("C0AAAA", &service).unwrap();
+        assert_eq!(watches.loaded("C0AAAA", t, Vec::new(), &service), Loaded::Complete);
+        drop(service);
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed), "a watch of a dropped service served as complete");
+    })
+    .await;
+}
