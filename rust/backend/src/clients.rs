@@ -684,7 +684,7 @@ pub async fn handle_fe_command_send(
         // Every window: a preview or a reveal. A window that holds an old connection beside its redial is one
         // audience, not two.
         (None, None) => window::window_count(
-            snap.clients.iter().filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty())),
+            snap.clients.iter().filter(|c| c.window_handle().is_some()),
         ),
     };
 

@@ -220,7 +220,7 @@ of each.
   (`Shared.window`, set once from the hello by `clients::window_name`: role `fe` with a non-empty name); any other
   connection (`cli`, `agent`, `bridge`, an unnamed frontend) is answered `not_a_window` before any row work and changes
   nothing, a file a window set included. The role is the client's own declaration, so this is a protocol check, not a
-  security boundary; with no state root the answer is `publish_failed` first. The row's file
+  security boundary. The row's file
   `<row state folder>/selection.json` holds exactly the rendering of the last selection the daemon accepted for that
   row, or nothing; the one exception is a removal that itself fails, which leaves the old file and answers
   `publish_failed`. The handler resolves the workspace (`unknown_workspace`, an empty id included, writes nothing),

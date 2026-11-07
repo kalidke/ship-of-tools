@@ -32,7 +32,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(FILE_NAME);
     let held = || std::fs::read_to_string(&file).ok();
-    let set = |workspace: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, true, &req(workspace, s));
+    let set = |workspace: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, true, &req(workspace, s));
     // the rendering of lines `first` to `last` of `name`: the absolute path and the project-relative path differ
     let expect = |name: &str, text: &str, first: usize, last: usize| {
         let absolute = root.join(name).to_string_lossy().into_owned();
@@ -215,10 +215,10 @@ fn the_reply_says_who_will_hear() {
     };
     std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
     let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
-    let ask = |window: bool, id: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, window, &req(id, s));
+    let ask = |window: bool, id: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, window, &req(id, s));
     let file = |id: &str| state_dir_for(state.path(), id).join(FILE_NAME);
 
-    // 1. a connection with no roster entry is refused before any row work, and a file a window set stays
+    // 1. a connection that is not a window's is refused before any row work, and a file a window set stays
     insert("ws-claude", "claude");
     assert!(ask(true, "ws-claude", good()).is_ok());
     for (name, s) in [("a set", good()), ("a clear", None)] {
@@ -226,6 +226,7 @@ fn the_reply_says_who_will_hear() {
         assert!(file("ws-claude").exists(), "row 1: {name} changes nothing");
     }
     assert_eq!(ask(false, "ws-nope", good()), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the row");
+    assert_eq!(set_selection(None, &workspaces, false, &req("ws-claude", good())), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the state root");
 
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
     for kind in ["claude", "codex"] {

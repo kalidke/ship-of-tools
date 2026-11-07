@@ -26,13 +26,13 @@ const MARKER_NAME: &str = "selection-hook";
 /// decides whether Codex hears one at all.
 const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
 
-/// `selection.set`: one reply. `window` is whether the connection holds a roster entry. An accepted selection answers
+/// `selection.set`: one reply. `window` is whether the connection is a window's, the server's one definition (`clients::window_name`). An accepted selection answers
 /// `shared` when the row's agent was started with the hook and `held` when it was not; a clear answers `shared`.
 pub(crate) async fn handle_selection_set(
     req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces, window: bool,
 ) -> Result<HandlerOutput> {
     let req: SelectionSetReq = serde_json::from_value(payload).context("selection.set payload")?;
-    let frame = match state_root.map_or(Err(selection_code::PUBLISH_FAILED), |root| set_selection(root, workspaces, window, &req)) {
+    let frame = match set_selection(state_root, workspaces, window, &req) {
         Ok(state) => Frame::res(req_id, op::SELECTION_SET, serde_json::to_value(SelectionSetRes { state })?),
         Err(code) => {
             let payload = serde_json::json!({ "error": format!("selection not shared: {code}"), "code": code });
@@ -44,11 +44,12 @@ pub(crate) async fn handle_selection_set(
 
 /// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`.
 fn set_selection(
-    state_root: &Path, workspaces: &Workspaces, window: bool, req: &SelectionSetReq,
+    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, req: &SelectionSetReq,
 ) -> Result<SelectionState, &'static str> {
     if !window {
         return Err(selection_code::NOT_A_WINDOW);
     }
+    let state_root = state_root.ok_or(selection_code::PUBLISH_FAILED)?;
     let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
     let file = state_dir_for(state_root, &ws.workspace_id).join(FILE_NAME);
     let withdraw = || sot_platform::host::remove_durable(&file).map_err(|_| selection_code::PUBLISH_FAILED);

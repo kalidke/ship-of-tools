@@ -169,7 +169,9 @@ of each.
     and the server-owned modules at the crate root (`clients*`, `session`, `daemon_log`, `paths`): the services take
     `Session` (the revision ring's handle) as an argument, and no longer take the roster: pages is given the window's key
     and the away windows as a closure, and `PageVerbs` with the states, handle and window lookups and fe-command bus;
-    the updater the count of attached windows. That no service reaches the roster or
+    the updater the count of attached windows, `selection.set`'s handler `Shared.window` (the hello's role `fe` with a
+    non-empty name, `clients::window_name`; test `context_tests.rs`: `only_a_named_frontends_connection_may_share_a_selection`).
+    That no service reaches the roster or
     the entry's items through the crate is a convention until the crates are cut, held by review, not by the compiler.
 15. **The log is one file, bounded, and normally not copied to a regular-file stdout.** `sotd.log` follows
     `XDG_STATE_HOME` and rolls after a daemon write leaves it over 64 MiB: its last 64 MiB go to `sotd.log.1`,
