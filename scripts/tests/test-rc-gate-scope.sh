@@ -188,7 +188,9 @@ fixture sc2; pipeline sc2 b $'julia julia/kernel\ndocs docs'
 check "scoped julia: only the selected package has a result" '[ "$(rcof sc2 steps/julia-julia-kernel)" = 0 ] && [ ! -e "$work/L-sc2/steps/julia-root.rc" ] && [ ! -e "$work/L-sc2/steps/julia-core.rc" ]'
 check "scoped julia: no crate test and no doc test" '! ls "$work"/L-sc2/rust/*.rc > /dev/null 2>&1 && ! grep -q -- "--doc" "$work/tools/cargo.log"'
 check "docs only: the lints still run" '[ "$(rcof sc2 steps/lint-all-targets)" = 0 ]'
-check "the release features check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/release-features-check)" = 0 ] && [ "$(rcof sc1 steps/release-features-check)" = 0 ] && [ "$(rcof sc2 steps/release-features-check)" = 0 ] && for n in none sc1 sc2; do grep -qx -- "--prove $work/$n/rust" "$work/$n/scripts/tests/features-args.log" || return 1; done'
+args_ok() { local n; for n in "$@"; do grep -qx -- "--prove $work/$n/rust" "$work/$n/scripts/tests/features-args.log" || return 1; done; }
+check "the release features check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/release-features-check)" = 0 ] && [ "$(rcof sc1 steps/release-features-check)" = 0 ] && [ "$(rcof sc2 steps/release-features-check)" = 0 ]'
+check "the release features check is run with --prove over the checkout's rust folder every time" 'args_ok none sc1 sc2'
 check "the defects check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc1 steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc2 steps/scripts-tests-test-defects-check)" = 0 ]'
 
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'

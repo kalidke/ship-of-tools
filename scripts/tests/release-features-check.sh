@@ -7,28 +7,27 @@
 # compiles, no dev-dependency's features) for the release targets, and fails when sot-chat's resolved features include
 # `test-support`. One resolution covers every release build: under resolver 2 a package's features in any subset of
 # the workspace are a subset of its features in the whole, and `--workspace` is itself the macOS and Windows selection.
-# Release builds are those of FILES (release.yml, pack-build.sh, pack-build.ps1; the gate's builds and a user's source
-# build, launch-sot.sh, ship nothing): any of them naming `features` or a `-F` token fails, since a flag there can enable
-# the feature where no manifest does. A dev-dependency enabling the feature does not show; the same line under
-# [dependencies] of any crate (also by target table, in `default`, or another member) does.
+# The feature is also a compile error in a build without debug assertions (sot-chat's lib.rs), so any release-profile build
+# with it fails whatever the flag or manifest spelling; this check names the cause early, in the gate. A dev-dependency
+# enabling the feature does not show here; the same line under [dependencies] of any crate (also by target table, in
+# `default`, or another member) does.
 # --prove first runs the check against copies of the tree with each fault put in, each of which must end red, and the
 # dev-dependency alone, which must end green. Needs the locked packages' sources for the release targets in CARGO_HOME
-# (nothing is fetched). Exit 0 ok; 1 a violation; 2 cargo or the arguments.
+# (nothing is fetched; a depot missing them needs `cargo fetch --locked` once). Exit 0 ok; 1 a violation; 2 cargo or the arguments.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 prove=0
 [ "${1:-}" = --prove ] && { prove=1; shift; }
 rust=$(cd "${1:-$here/../../rust}" && pwd) || exit 2
-FILES=(.github/workflows/release.yml scripts/pack-build.sh scripts/pack-build.ps1)
 TARGETS=(x86_64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-msvc aarch64-apple-darwin)
 
 # check <repo root> <cargo flags>
 check() {
-  local root=$1 flags=$2 t out f targets=()
+  local root=$1 flags=$2 t out targets=()
   for t in "${TARGETS[@]}"; do targets+=(--target "$t"); done
   # shellcheck disable=SC2086
   out=$(cargo tree --manifest-path "$root/rust/Cargo.toml" --workspace -e normal,build "${targets[@]}" -f '{p} [{f}]' $flags 2>&1) \
-    || { echo "release-features-check: cargo tree failed (are the packages fetched?): $out" >&2; return 2; }
+    || { echo "release-features-check: cargo tree failed (a depot missing the release targets' packages needs cargo fetch --locked once): $out" >&2; return 2; }
   grep -qE '^[^a-z]*sot-chat v' <<< "$out" || { echo "release-features-check: sot-chat is not in the resolved tree" >&2; return 2; }
   if grep -qE '^[^a-z]*sot-chat v[^ ]* .*\[.*\btest-support\b' <<< "$out"; then
     echo "release-features-check: feature test-support of sot-chat reaches the workspace release builds (sot, sotd, sot-capsule); enabled through:" >&2
@@ -36,13 +35,6 @@ check() {
     cargo tree --manifest-path "$root/rust/Cargo.toml" --workspace -e normal,build "${targets[@]}" -i sot-chat $flags 2>&1 | head -20 >&2
     return 1
   fi
-  for f in "${FILES[@]}"; do
-    [ -f "$root/$f" ] || { echo "release-features-check: $f is missing" >&2; return 2; }
-    if grep -qiE 'features' "$root/$f" || grep -qE "(^|[[:space:]'\"])-F([[:space:]'\"=]|\$)" "$root/$f"; then
-      echo "release-features-check: $f names a feature flag, which can enable test-support of sot-chat in a release build" >&2
-      return 1
-    fi
-  done
 }
 
 if [ "$prove" = 1 ]; then
@@ -52,7 +44,7 @@ if [ "$prove" = 1 ]; then
   # fault <name> <file under the repo root> <sed script, or empty> <message text it must end with, or ok> [setup command]
   fault() {
     local d=$w/$1 rc=0 msg
-    mkdir -p "$d" && (cd "$root" && git ls-files -z --cached --others --exclude-standard rust "${FILES[@]}" | tar --null -T - -cf -) | tar -xf - -C "$d" || exit 2
+    mkdir -p "$d" && (cd "$root" && git ls-files -z --cached --others --exclude-standard rust | tar --null -T - -cf -) | tar -xf - -C "$d" || exit 2
     [ -z "$3" ] || { sed "$3" "$d/$2" > "$d/$2.new" && mv "$d/$2.new" "$d/$2"; } || exit 2
     [ -z "${5:-}" ] || (cd "$d" && eval "$5") || exit 2
     msg=$(check "$d" --offline 2>&1) || rc=$?
@@ -62,7 +54,6 @@ if [ "$prove" = 1 ]; then
   }
   CHAT='sot-chat = { path = "../chat", features = ["test-support"] }'
   RES='feature test-support of sot-chat reaches the workspace release builds'
-  FLAG='names a feature flag'
   fault dev-dependency-alone rust/backend/Cargo.toml '' ok
   fault feature-on-backend-normal-dependency rust/backend/Cargo.toml '0,/^sot-chat = { path = "..\/chat" }/s||'"$CHAT"'|' "$RES"
   fault feature-in-default rust/chat/Cargo.toml 's/^test-support = /default = ["test-support"]\ntest-support = /' "$RES"
@@ -73,10 +64,6 @@ $CHAT" "$RES"
   EXTRA='[package]\nname = "extra"\nversion = "0.0.0"\nedition = "2021"\n[dependencies]\n'"$CHAT"'\n'
   fault feature-on-member-seen-only-by-workspace rust/Cargo.toml 's|^    "vt100",|    "vt100",\n    "extra",|' "$RES" \
     "mkdir -p rust/extra/src && : > rust/extra/src/lib.rs && printf '$EXTRA' > rust/extra/Cargo.toml"
-  fault all-features-on-a-release-line .github/workflows/release.yml 's/--target x86_64-unknown-linux-musl --locked$/& --all-features/' "$FLAG"
-  fault short-feature-flag-on-a-pack-line scripts/pack-build.sh 's/--target "\$triple" --locked$/& -F sot-chat\/test-support/' "$FLAG"
-  fault all-features-in-the-windows-pack-array scripts/pack-build.ps1 "s/'--locked')/'--locked','--all-features')/" "$FLAG"
-  fault feature-flag-on-a-continuation-line scripts/pack-build.sh 's/--target "\$triple" --locked$/--target "$triple" --locked \\\n    --features sot-chat\/test-support/' "$FLAG"
 fi
 
 rc=0

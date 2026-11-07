@@ -2,6 +2,10 @@
 //! record), `http`, the one way out of the crate to the network, and `api`, the Slack Web API calls the first stage
 //! needs, and `socket`, the Socket Mode listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels. Only `config` calls a file method (`service` takes a lock through platform).
 
+// The fake Slack's server key is committed: a build without debug assertions (every release build) never has the feature.
+#[cfg(all(feature = "test-support", not(debug_assertions)))]
+compile_error!("sot-chat's `test-support` feature is for tests only and is refused in a build without debug assertions");
+
 pub mod api;
 pub mod config;
 #[cfg(any(test, feature = "test-support"))]
