@@ -119,6 +119,20 @@ where each lives).
     wait is ended; a regular file on a hung network mount still blocks in the OS. On Windows a directory is refused by
     std's open (`PermissionDenied`) before the handle check; the cap and text rule apply, and a named pipe's name is
     not promised refused. No test runs a named pipe there.
+16. **A test holds a thread at a marked line until it releases it, and no hold outlives its bounds.** Product code marks a
+    line with `hold_point!("<subsystem>.<place>", key?)` (sync) or `hold_point_async!` (async: the arrival waits on
+    `spawn_blocking`); the name is a literal of `a-z 0-9 . _ -`, checked at compile time. A test arms the point with
+    `test_hold::Holds::here().arm(point).key(k).hold(n)`: arrivals whose key matches take tickets 0, 1, 2 in claim order,
+    tickets below `n` wait until `release(t)`, the rest pass and are counted; `reached(t)` waits for arrival `t`. Bounds:
+    every test-side wait 30 s (`WAIT`), a held arrival 60 s (`GIVE_UP`), after which it goes on and its arm fails the test
+    by name at its next call or drop; never an exit or a hang; every wait uses the system clock, so paused tokio time
+    fires no bound. An arm is exclusive per point (a second waits for the first), `release` of an arrival that has not
+    arrived or is not held is refused, and a sync `reached` or a held sync point on a current-thread runtime's own
+    thread is refused (a blocking-pool thread is told by tokio's default thread name). Dropping an arm releases every
+    held arrival and never panics while the test is already panicking. A build without debug assertions has no point:
+    the macros expand to `()` (no call, no argument evaluated, no name in the binary; checked with `strings` on a
+    release build, not pinned by a test). Limits: in-process only (a child process's folder is not built); in a test
+    binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
@@ -136,7 +150,7 @@ launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory 
 preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`, guarantee 12);
 the private-dir and socket-dir checks; the local connection (`transport/`: `connect_own`, the two clients, the accept
 policy, `Client` and `TransportError`) and the log masking (`secret.rs`); the test support every crate's tests share
-(`test_wait`, `test_isolated`, `test_exec`, `test_log`, `test_scan`, `test_copy`, `test_foreign` and, under
+(`test_wait`, `test_isolated`, `test_exec`, `test_log`, `test_scan`, `test_copy`, `test_foreign`, `test_hold` and, under
 `native-barrier`, `test_barrier`); the resource folder (`resource_dir`, `SOT_RESOURCE_ROOT`) and the verbatim-path
 strip; the peer challenge's OS steps, `PeerIdentity` and `PeerProcess`, the exchange trait and the deadline
 (`identity/`); the account (`os_account`) and loopback owner (`peer_owner`). The crate's `Error` is `Io`, `Path` (an OS error with what was being done) or `State`; the
@@ -199,6 +213,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
+| 16 | hold tool | `hold_tests.rs` (the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter

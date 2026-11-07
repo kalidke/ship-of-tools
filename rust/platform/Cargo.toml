@@ -57,3 +57,5 @@ cc = "1"
 [dev-dependencies]
 tempfile = { workspace = true }
 sot-platform = { path = ".", features = ["test-support"] }
+# `start_paused` runtime (hold_tests' paused-time test of a held async point).
+tokio = { workspace = true, features = ["test-util"] }
