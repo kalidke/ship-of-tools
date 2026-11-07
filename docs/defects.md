@@ -575,9 +575,11 @@ owned by `docs/CLAUDE.md`.
 ## chat
 
 - **CHAT-FLOOD-CAP-UNDER-LOAD** [note] `socket_tests.rs`'s
-  `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` failed on a Linux host under 64 busy CPU loops: its
-  flood reached its frame and byte caps without one write stalling ("the flood never stalled a write within its caps"). A
-  fixture cap, not a pause, so the pause check does not cover it; the test passed under load in later runs.
+  `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` fails on a Linux host under CPU load, in two ways.
+  Under 64 busy loops its flood reached its frame and byte caps without one write stalling ("the flood never stalled a write
+  within its caps"), and later runs passed. Pinned to one core beside eight busy loops it fails every run, at the base and the
+  head, with "a stalled write held the socket ... never dropped". Both are plain panics, so the pause check does not cover
+  them; whether the second is the fixture's or the product's write bound is unknown.
 
 ## records
 

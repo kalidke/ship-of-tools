@@ -698,3 +698,11 @@ A landing's record goes here, with its measured times; the package page holds on
   complete over a gap, then a watch kept past its service and only ever called against the next. Cause of the miss: the
   enumeration was asked of the pump, the snapshot and the gap, not of every public call. For a guarantee about orderings, the
   enumeration's steps are every public call, a stop, a wait and a drop included.
+- The hosted red on cf029b92f, 2026-11-06: macOS failed `a_chatty_peer_that_never_answers_keeps_its_link` (a second link opened)
+  in chat code that had passed every run before. Fix started 20:55, main 21:58, 63 minutes, a miss: 15 of diagnosis and change,
+  two review rounds with no blocker, then a wait for the change beside it to land, since both touched the socket tests. The cause
+  was proven by freezing the test process for 0.7 s: on resume the idle timer fires before the paused peer's next frame is read,
+  and the client retires the link, as the idle rule says; CPU load alone never reproduced it. Every test that holds a bound on a
+  measured duration now runs beside a ticker and is judged only on an attempt with no pause as long as its margin; the review
+  found the reconnect-pacing test more exposed than the one that went red, which is why the class was swept in a second round.
+  The product's behavior under a stall is a stated limit. Load found a second, unrelated failure, CHAT-FLOOD-CAP-UNDER-LOAD.
