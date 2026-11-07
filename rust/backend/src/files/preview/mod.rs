@@ -34,7 +34,7 @@ const ROOT_PREVIEW_TEMPLATE: &str =
 /// where truncating mid-stream is lossy-but-rendersable. Phase-1 frontends
 /// don't yet have scrolling affordances and pulling a 100 MiB log through
 /// the wire isn't useful.
-const PREVIEW_BYTE_CAP: usize = 2 * 1024 * 1024;
+pub(crate) const PREVIEW_BYTE_CAP: usize = 2 * 1024 * 1024;
 
 /// Cap on binary mimes (image/*, application/*, etc.) where mid-stream
 /// truncation corrupts the format and produces undecodable garbage on the

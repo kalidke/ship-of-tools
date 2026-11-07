@@ -1,5 +1,5 @@
 //! The pure half of sharing a window's selection with a row's agent: the check that it is the file's own text, and
-//! its rendering as the hook's output. No I/O; the handler that reads the file, publishes and answers is unbuilt.
+//! its rendering as the hook's output. No I/O; `selection.rs` reads the file, publishes and answers.
 
 use sot_protocol::ops::SelectedText;
 use sot_protocol::selection_digest;
@@ -22,7 +22,6 @@ const _: () = assert!(LEAD_WORDS.len() + 40 + PATH_CAP + TEXT_CUT + CUT_WORDS.le
 
 /// A range the file's own text matched: its text and the 1-based inclusive lines it covers.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code, reason = "the selection handler (A3) is the first caller"))]
 pub(crate) struct FileText {
     pub(crate) text: String,
     pub(crate) first_line: usize,
@@ -33,9 +32,9 @@ pub(crate) struct FileText {
 /// end mid-character after the range; a range reaching past it is refused. Lines are LF-ended with a CR before the LF
 /// dropped, as the preview shows them; a lone CR, U+2028, U+2029 or U+0085 before the range's end is refused (the
 /// preview breaks a line there, the file does not), and anything after it, or bytes that are not UTF-8 after it, are
-/// not read. A position outside its line or inside a character, and a `len` or `digest` that differs from the file's
+/// not read. A start not before the end (the wire's decode refuses it too; this function does not depend on the
+/// decode), a position outside its line or inside a character, and a `len` or `digest` that differs from the file's
 /// text, are refused.
-#[cfg_attr(not(test), allow(dead_code, reason = "the selection handler (A3) is the first caller"))]
 pub(crate) fn check_selection(bytes: &[u8], sel: &SelectedText) -> Option<FileText> {
     let valid = match std::str::from_utf8(bytes) {
         Ok(s) => s,
@@ -143,7 +142,6 @@ fn left_cut(s: &str, max: usize) -> String {
 /// UTF-16 code units (Claude Code's `length`, never smaller than a character count): the range's text is cut at 2000,
 /// the path in the context at 4096, the message at 200, and the context stays under 9,000 by the assertion above. The
 /// suffix names the range's whole size in Unicode scalar values.
-#[cfg_attr(not(test), allow(dead_code, reason = "the selection handler (A3) is the first caller"))]
 pub(crate) fn render_selection(f: &FileText, path: &str, rel: &str) -> String {
     let (a, b) = (f.first_line, f.last_line);
     let lead = format!("The user selected lines {a} to {b} of {} in the Ship of Tools window:\n", left_cut(&plain(path), PATH_CAP));

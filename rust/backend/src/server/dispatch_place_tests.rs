@@ -22,4 +22,6 @@ fn the_lists_are_disjoint_and_reasoned() {
     for name in [op::CHAT_WATCH, op::CHAT_UNWATCH] {
         assert_eq!(place(name), Place::Inline, "{name}");
     }
+    // Selections apply in the order sent: a later one replaces an earlier one.
+    assert_eq!(place(op::SELECTION_SET), Place::Inline, "selection.set");
 }

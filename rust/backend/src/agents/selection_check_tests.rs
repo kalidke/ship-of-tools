@@ -91,9 +91,9 @@ fn the_rendering_is_the_hook_output_both_agents_accept_within_the_caps() {
     assert_eq!(v["systemMessage"], "Selection: src/f.jl lines 3-4");
 
     // a file name never breaks a line or carries an escape
-    let v = parse(&render_selection(&file_text("x", 1, 1), "/p/a\nb\u{1b}[2J\u{2028}c", "a\nb\u{1b}c\u{2029}"));
-    assert_eq!(v["systemMessage"], "Selection: a?b?c? lines 1-1");
-    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains(" of /p/a?b?[2J?c in the"));
+    let v = parse(&render_selection(&file_text("x", 1, 1), "/p/a\nb\u{1b}[2J\u{2028}c\u{9b}\u{7f}", "a\nb\u{1b}c\u{2029}\u{9b}\u{7f}"));
+    assert_eq!(v["systemMessage"], "Selection: a?b?c??? lines 1-1");
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains(" of /p/a?b?[2J?c?? in the"));
 
     // 1500 astral characters are 3000 UTF-16 units: cut at 2000 units (1000 characters), the size named in characters
     let emoji = "\u{1F600}".repeat(1500);

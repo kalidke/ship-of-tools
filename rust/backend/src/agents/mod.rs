@@ -8,6 +8,7 @@ pub(crate) mod env;
 pub(crate) mod folder_trust;
 mod layer;
 pub(crate) mod memory;
+pub(crate) mod selection;
 pub(crate) mod selection_check;
 pub(super) mod ops;
 pub(crate) mod trust_declaration;

@@ -216,9 +216,24 @@ of each.
   `resolve_ccx`, `agent_env`, `NESTING_ENV_VARS_TO_SCRUB`, `account_spawn_env`, `capsule_supervisor_env`,
   `row_self_file`, `own_sotd_bin`, the awareness env, accounts and their links, the folder-trust record and its
   declaration, the auto-memory flag, and `sotd agent-exec` and `accounts.list`.
-- The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, not yet called: the
-  handler that reads the file and publishes is unbuilt). `check_selection` accepts exactly the file's own text at the
-  window's range: it refuses (`not_file_text`) bytes that are not UTF-8 before the range's end, a CR not before an LF or
+- The selection handler (`rust/backend/src/agents/selection.rs`, served `INLINE` as `selection.set`). The row's file
+  `<row state folder>/selection.json` holds exactly the rendering of the last selection the daemon accepted for that
+  row, or nothing. The handler resolves the workspace (`unknown_workspace`, an empty id included, writes nothing),
+  resolves `node_id` with files' read resolver, the preview's (`bad_node_id` for an empty id, no `files:` prefix, `..` or
+  an absolute path), and so follows a link out of the root as the preview does, never further than the preview reads;
+  it reads at most the preview's 2 MiB (`PREVIEW_BYTE_CAP`) of a regular file, then `check_selection` and
+  `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
+  answers `held` (no leg carries the hook yet); a clear removes the file and answers `shared`; every refusal
+  (`not_file_text`, `bad_node_id`) and a failed publish (`publish_failed`) removes it first. A removal that fails answers
+  `publish_failed`. Limits: two connections setting one row race (the lock is A4's); on Windows a publish or removal
+  that meets an open read can fail, which is `publish_failed` with the file gone. Unbuilt: `not_a_window` and `no_agent`
+  and `shared` from the leg's marker (A3b); the map of who set each file, the removal at a connection's end and the
+  start-up walk (A4); the hook, the leg's variable and the marker (A5). Test:
+  `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one row per path.
+- The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
+  `check_selection` accepts exactly the file's own text at the
+  window's range: it refuses (`not_file_text`) a start not before the end (the wire's decode refuses it too; the function
+  does not depend on the decode), bytes that are not UTF-8 before the range's end, a CR not before an LF or
   a U+2028, U+2029 or U+0085 before the end, a position outside its line or inside a character, and a `len` or `digest`
   (`sot_protocol::selection_digest`) that differs from the file's text; the wire refuses a `len` outside 1 to 2 MiB and a start
   not before the end, but checks neither `len` against the text nor any position, so this is the only place a position near

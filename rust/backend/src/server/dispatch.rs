@@ -59,6 +59,8 @@ pub(super) const INLINE: &[(&str, &str)] = &[
     (op::CHAT_WATCH, "its reply is written before the loop reads another chat event, so no `chat.changed` for the channel precedes it; \
      it waits only on admission and memory, the snapshot being the owner's"),
     (op::CHAT_UNWATCH, "a `chat.changed` sent after its reply would be one the window already unwatched"),
+    (op::SELECTION_SET, "a later selection replaces an earlier one, so they apply in the order sent; it reads up to 2 MiB of the \
+     project file"),
 ];
 
 const COSTLY: &str = "costly work, a kernel call or an image decode: one connection's burst must not starve the runtime";
@@ -271,6 +273,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::REPL_EXECUTE => {
             crate::sidecars::repl::execute::handle_repl_execute(req_id, payload, session, workspaces).await
         }
+        op::SELECTION_SET => crate::agents::selection::handle_selection_set(req_id, payload, workspaces).await,
         op::DIRECTORY_LIST => crate::files::tree_ops::handle_directory_list(req_id, payload, session).await,
         op::WORKSPACE_CREATE => {
             crate::rows::ops::create::handle_workspace_create(req_id, payload, session, workspaces, ws_events_tx).await

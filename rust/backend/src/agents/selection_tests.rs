@@ -1,0 +1,129 @@
+use super::*;
+use crate::agents::selection_check::FileText;
+use sot_protocol::ops::TextPos;
+use sot_protocol::selection_digest;
+
+fn sel(node: &str, start: (u32, u32), end: (u32, u32), shown: &str) -> SelectedText {
+    SelectedText {
+        node_id: node.to_string(),
+        start: TextPos { line: start.0, byte: start.1 },
+        end: TextPos { line: end.0, byte: end.1 },
+        len: shown.len() as u32,
+        digest: selection_digest(shown),
+    }
+}
+
+fn req(workspace: &str, selection: Option<SelectedText>) -> SelectionSetReq {
+    SelectionSetReq { workspace_id: workspace.to_string(), selection }
+}
+
+#[test]
+fn the_row_file_holds_the_last_shared_selection_or_nothing() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    let mut row = Workspace::from_label("sel", project.path().to_path_buf(), false, "none".into(), String::new(), String::new());
+    row.workspace_id = "ws-sel-1".to_string();
+    let ws = workspaces.insert(row);
+    workspaces.set_default(&ws.workspace_id);
+    let root = ws.files_mode().unwrap().root_path().to_path_buf();
+    let folder = state_dir_for(state.path(), &ws.workspace_id);
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join(FILE_NAME);
+    let held = || std::fs::read_to_string(&file).ok();
+    let set = |workspace: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, &req(workspace, s));
+    // the rendering of lines `first` to `last` of `name`: the absolute path and the project-relative path differ
+    let expect = |name: &str, text: &str, first: usize, last: usize| {
+        let absolute = root.join(name).to_string_lossy().into_owned();
+        let f = FileText { text: text.to_string(), first_line: first, last_line: last };
+        render_selection(&f, &absolute, name)
+    };
+    std::fs::write(project.path().join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    std::fs::write(project.path().join("b.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(project.path().join("bin.dat"), b"ab\xffcd\n").unwrap();
+    std::fs::write(outside.path().join("out.txt"), "secret\nlines\n").unwrap();
+
+    // 1. an accepted selection publishes exactly the rendering of the file's own text
+    assert_eq!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 2), (1, 2), "pha\nbe"))), Ok(SelectionState::Held));
+    assert_eq!(held(), Some(expect("a.txt", "pha\nbe", 1, 2)), "row 1: an accepted selection publishes the file");
+    assert!(held().unwrap().contains(&root.join("a.txt").to_string_lossy().into_owned()), "row 1: the absolute path");
+    assert!(held().unwrap().contains("\"Selection: a.txt lines 1-2\""), "row 1: the relative path");
+
+    // 2. a second accepted selection replaces the first
+    assert_eq!(set(&ws.workspace_id, Some(sel("files:b.txt", (1, 0), (1, 3), "two"))), Ok(SelectionState::Held));
+    assert_eq!(held(), Some(expect("b.txt", "two", 2, 2)), "row 2: a second selection replaces the first");
+
+    // 3. a clear removes the file
+    assert_eq!(set(&ws.workspace_id, None), Ok(SelectionState::Shared));
+    assert_eq!(held(), None, "row 3: a clear removes the file");
+
+    // 4. a refusal removes an earlier file, and the file outside the root is never read
+    let refusals: Vec<(&str, SelectedText, &str)> = vec![
+        ("not the file's text", sel("files:a.txt", (0, 0), (0, 5), "alphX"), selection_code::NOT_FILE_TEXT),
+        ("not UTF-8", sel("files:bin.dat", (0, 0), (0, 5), "ab\u{fffd}cd"), selection_code::NOT_FILE_TEXT),
+        ("a folder", sel("files:", (0, 0), (0, 1), "x"), selection_code::NOT_FILE_TEXT),
+        ("a missing file", sel("files:none.txt", (0, 0), (0, 1), "x"), selection_code::NOT_FILE_TEXT),
+        ("an empty id", sel("", (0, 0), (0, 5), "alpha"), selection_code::BAD_NODE_ID),
+        ("no prefix", sel("a.txt", (0, 0), (0, 5), "alpha"), selection_code::BAD_NODE_ID),
+        (
+            "a parent segment out of the root",
+            sel(&format!("files:../{}/out.txt", outside.path().file_name().unwrap().to_string_lossy()), (0, 0), (0, 6), "secret"),
+            selection_code::BAD_NODE_ID,
+        ),
+        (
+            "an absolute path",
+            sel(&format!("files:{}/out.txt", outside.path().display()), (0, 0), (0, 6), "secret"),
+            selection_code::BAD_NODE_ID,
+        ),
+    ];
+    for (name, s, code) in refusals {
+        assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok(), "setup for {name}");
+        assert!(held().is_some(), "setup for {name}");
+        assert_eq!(set(&ws.workspace_id, Some(s)), Err(code), "row 4: {name}");
+        assert_eq!(held(), None, "row 4: {name} removes the earlier file");
+    }
+
+    // 4b. a link out of the root is followed as the preview follows it: the file's own text is shared
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path().join("out.txt"), project.path().join("link.txt")).unwrap();
+        assert_eq!(set(&ws.workspace_id, Some(sel("files:link.txt", (0, 0), (0, 6), "secret"))), Ok(SelectionState::Held), "row 4b: a link out of the root is shared");
+        assert_eq!(held(), Some(expect("link.txt", "secret", 1, 1)), "row 4b: a link out of the root publishes the file's text");
+    }
+
+    // 5. a failed publish answers publish_failed and leaves no file (a folder where the temporary file goes)
+    assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok());
+    assert!(held().is_some());
+    std::fs::create_dir(folder.join("selection.json.tmp")).unwrap();
+    assert_eq!(
+        set(&ws.workspace_id, Some(sel("files:b.txt", (0, 0), (0, 3), "one"))),
+        Err(selection_code::PUBLISH_FAILED),
+        "row 5: the answer"
+    );
+    assert_eq!(held(), None, "row 5: a failed publish removes the earlier file");
+    std::fs::remove_dir(folder.join("selection.json.tmp")).unwrap();
+
+    // 6. a workspace that is no row, an empty id among them, writes nothing (a default row exists)
+    assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok());
+    let before = held();
+    for id in ["", "ws-nope-9"] {
+        assert_eq!(set(id, Some(sel("files:b.txt", (0, 0), (0, 3), "one"))), Err(selection_code::UNKNOWN_WORKSPACE), "row 6: {id:?}");
+        assert_eq!(set(id, None), Err(selection_code::UNKNOWN_WORKSPACE), "row 6: a clear for {id:?}");
+        assert_eq!(held(), before, "row 6: {id:?} writes nothing");
+    }
+
+    // 7. the read is bounded: a range near the start of a file past 2 MiB is accepted, one ending past the cap is not
+    let cap = PREVIEW_BYTE_CAP;
+    let long = "x".repeat(cap);
+    std::fs::write(project.path().join("big.txt"), format!("head\n{long}\ntail\n")).unwrap();
+    assert_eq!(set(&ws.workspace_id, Some(sel("files:big.txt", (0, 0), (0, 4), "head"))), Ok(SelectionState::Held));
+    assert_eq!(held(), Some(expect("big.txt", "head", 1, 1)), "row 7: a range near the start of a large file");
+    let shown = &long[..cap - 4];
+    assert_eq!(
+        set(&ws.workspace_id, Some(sel("files:big.txt", (1, 0), (1, (cap - 4) as u32), shown))),
+        Err(selection_code::NOT_FILE_TEXT),
+        "row 7: a range ending past the cap"
+    );
+    assert_eq!(held(), None, "row 7: the refusal removes the file");
+}

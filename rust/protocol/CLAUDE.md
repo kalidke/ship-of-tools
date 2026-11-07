@@ -144,7 +144,7 @@ name is in this crate's one op table.
     them: `workspace_id` 256 bytes, `node_id` 4096, `start` before `end` by (line, byte), `len` 1 to 2 MiB
     (`MAX_SELECTION_LEN`), numbers typed (a string, a negative or a fractional number is refused). An unknown field is ignored
     (growth, as the chat family). Mechanism: one new op and new payloads, so `PROTOCOL_VERSION` stays 4; an older daemon
-    answers it as any unknown op. Limits: no handler yet (the daemon's check and handler are later pieces); a duplicate JSON
+    answers it as any unknown op. Limits: the daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
     key is not refused (the codec reads a `Value`, the last wins). Tests `ops/selection_tests.rs`:
     `selection_set_round_trips_and_the_digest_is_fnv1a_64`, `a_missing_selection_is_refused_not_read_as_a_clear`,
     `ids_are_bounded_at_decode`, `a_range_starts_before_it_ends`, `len_is_one_to_two_mib`,
