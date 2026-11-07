@@ -13,19 +13,27 @@
 # SCRIPT:LINE:TEXT` per pipeline whose reader can stop early (sigpipe-scan.awk), and `under-bash: FAIL bare-in-place-sed
 # FILE:LINE:TEXT` per in-place sed with no suffix in any tracked file under comm/, agents/ or scripts/, tests included
 # (macOS's sed takes the expression as the suffix); exits with the count of FAIL lines, or 2 when the setup is wrong.
+# `--parse-only` after BASH runs the scans and no suite; `--no-parse` runs the suites and no scan (rc-gate.sh runs the
+# scans as one job and each suite as another); `--list` alone prints the default suites, one path per line.
 set -u
-[ $# -eq 1 ] || { [ $# -ge 3 ] && [ "$2" = -- ]; } || { echo "usage: under-bash.sh BASH [-- SUITE...]" >&2; exit 2; }
-want="$1"; shift; [ $# -eq 0 ] || shift
-[ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "under-bash.sh: run it with bash 4 or later, not $BASH_VERSION" >&2; exit 2; }
-cd "$(git rev-parse --show-toplevel)" || exit 2
-if [ $# -eq 0 ]; then
-    for s in comm/tests/test-*.sh agents/tests/test-*.sh; do
-        set -- "$@" "$s"
-    done
-    set -- "$@" scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
+suites() {
+    ls comm/tests/test-*.sh agents/tests/test-*.sh
+    printf '%s\n' scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
         scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh \
         scripts/tests/test-release-cut.sh scripts/tests/test-pre-push.sh scripts/tests/test-publish-guard-setup.sh \
         scripts/tests/test-publish-guard-entries.sh
+}
+if [ "${1:-}" = --list ] && [ $# -eq 1 ]; then cd "$(dirname "$0")/../.." && suites; exit; fi
+[ $# -ge 1 ] || { echo "usage: under-bash.sh BASH [--parse-only|--no-parse] [-- SUITE...]" >&2; exit 2; }
+want="$1"; shift
+mode=all
+case "${1:-}" in --parse-only) mode=parse; shift ;; --no-parse) mode=suites; shift ;; esac
+[ $# -eq 0 ] || [ "$1" = -- ] || { echo "usage: under-bash.sh BASH [--parse-only|--no-parse] [-- SUITE...]" >&2; exit 2; }
+[ $# -eq 0 ] || shift
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || { echo "under-bash.sh: run it with bash 4 or later, not $BASH_VERSION" >&2; exit 2; }
+cd "$(git rev-parse --show-toplevel)" || exit 2
+if [ "$mode" = parse ]; then set --; elif [ $# -eq 0 ]; then
+    while IFS= read -r s; do set -- "$@" "$s"; done < <(suites)
 fi
 shadow="$(mktemp -d "${TMPDIR:-/tmp}/under-bash-XXXXXX")" || exit 2
 trap 'rm -rf "${shadow:?}"' EXIT
@@ -38,6 +46,7 @@ v="$("$want" -c 'echo "$BASH_VERSION"')" && [ "$(bash -c 'echo "$BASH_VERSION"')
 echo "under-bash: scripts run by bash $v; suites outside scripts/tests by bash $BASH_VERSION"
 failed=0 n=0
 while IFS= read -r f; do
+    [ "$mode" != suites ] || break
     # An in-place sed without a suffix fails on macOS: BSD sed reads the expression as the suffix. Write to a temporary
     # file and move it over, as release.sh does.
     while IFS= read -r hit; do
@@ -57,7 +66,7 @@ while IFS= read -r f; do
         echo "under-bash: FAIL early-reader ${hit:0:200}"; failed=$((failed + 1))
     done < <(awk -f "$PWD/scripts/tests/sigpipe-scan.awk" "$f")
 done < <(git ls-files -- comm agents scripts)
-echo "under-bash: parsed $n scripts"
+[ "$mode" = suites ] || echo "under-bash: parsed $n scripts"
 for s in "$@"; do
     echo "under-bash: run $s"
     case "$s" in scripts/tests/*) by="$want" ;; *) by="$BASH" ;; esac

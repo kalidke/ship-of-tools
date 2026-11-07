@@ -81,6 +81,15 @@ want_kind() {
     grep -q -- "^$1 " <<< "$RCG_SCOPE_SEL"
 }
 
+# gate_scope_ub <checkout> <base>: sets RCG_UB_PARSE (1 when any file under comm/, agents/ or scripts/ differs from base,
+# markdown included: the bare in-place sed scan reads every tracked file there) and RCG_UB_SUITES (1 when one other than
+# markdown differs) for the under-bash jobs
+gate_scope_ub() {
+    RCG_UB_PARSE=0 RCG_UB_SUITES=0
+    git -C "$1" diff --quiet "$2" HEAD -- comm agents scripts || RCG_UB_PARSE=1
+    git -C "$1" diff --quiet "$2" HEAD -- comm agents scripts ':(exclude)*.md' || RCG_UB_SUITES=1
+}
+
 # gate_scope_resolve <checkout> <who>: reads RCG_SCOPE (the base commit-ish a caller asks for) and sets and exports
 # RCG_SCOPE_BASE and RCG_SCOPE_SEL, both empty when no scope was asked for. A scope is refused (status 2, the reason on
 # standard error) beside RCG_FULL, for a base that is no commit, and when git cannot list the differing paths.

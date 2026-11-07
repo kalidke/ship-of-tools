@@ -51,8 +51,16 @@ Guarantees, each with the mechanism it rests on:
   `julia/pluto`, `examples/`, `dev/`, and an empty diff. Docs alone (`docs/`, markdown outside the pieces) select no test.
   The workspace build, all three clippy lines and both cross checks run in every scope; only test jobs narrow: a touched
   crate's tests, and its doc tests when it has a library target (a binary-only crate has no doc job and no doc result) but not its dependents' tests, which the hosted run on main still runs; the Julia packages
-  touched, the shell suites of the touched group and the bash 3.2 job when a shell piece is touched, and the
-  installer-publish jobs when `scripts` or any crate is touched. `user-manager-tests.sh` runs when the scope selects
+  touched, the shell suites of the touched group, and the
+  installer-publish jobs when `scripts` or any crate is touched. `under-bash` is two kinds of job, by the files that differ
+  from the base (`gate_scope_ub`): its parse and scan checks, one job `under-bash-parse`, when any file under `comm/`,
+  `agents/` or `scripts/` differs (markdown included: the bare in-place `sed` scan reads every tracked file there), and
+  each hermetic suite of the selected shell groups under bash 3.2 as its own job `under-bash-<suite key>` when one of
+  those files other than markdown differs; with neither, no `under-bash` job (a daemon change that selects shell groups
+  through the backend path rule runs those suites under the default bash only). A whole run emits the scans and every
+  suite's job, and a whole run given a line keeps its skip when the three folders equal it. `under-bash.sh` with no
+  option, as release-gate.yml calls it, does everything one after another; `--parse-only`, `--no-parse` and `--list`
+  serve the gate's jobs. `user-manager-tests.sh` runs when the scope selects
   `backend`, `capsule`, `platform` or `containment`, since its five tests are the backend's over those. A job the scope
   does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no
   longer has fails (101). A scoped summary says so: `scoped base <sha>` and one `scope <piece>` line each (a widened

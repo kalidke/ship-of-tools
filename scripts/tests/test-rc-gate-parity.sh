@@ -160,9 +160,9 @@ check "pipeline: lib-bins line runs without the test config" 'grep -qx "clippy -
 check "pipeline: all-targets line runs under rust/clippy-tests" 'grep -q "clippy --workspace --exclude vt100-ctt --all-targets --features .*daemon-lifetime-faults.* conf=$work/pipe/rust/clippy-tests$" "$work/stub-pipe/log"'
 check "pipeline: windows line runs over sot-capsule and sot-backend under rust/clippy-tests" 'grep -q "clippy -p sot-capsule -p sot-backend --target x86_64-pc-windows-gnu --all-targets .* conf=$work/pipe/rust/clippy-tests$" "$work/stub-pipe/log"'
 check "pipeline: every lint has a result of its own" '[ "$(rcof pipe lint-lib-bins)$(rcof pipe lint-all-targets)$(rcof pipe lint-windows-tests)" = 000 ]'
-check "pipeline: the bash 3.2 job has a result" '[ -n "$(rcof pipe under-bash)" ] && [ "$(rcof pipe under-bash)" != unrun ]'
+check "pipeline: the bash 3.2 job has a result" '[ -n "$(rcof pipe under-bash-parse)" ] && [ "$(rcof pipe under-bash-parse)" != unrun ] && [ "$(rcof pipe under-bash-comm-tests-test-ok)" = 0 ]'
 pipe none ""
-check "pipeline: without a bash 3.2 the job is not emitted" '[ -z "$(rcof none under-bash)" ]'
+check "pipeline: without a bash 3.2 the job is not emitted" '[ -z "$(rcof none under-bash-parse)" ]'
 
 echo "failed: $fail"
 exit "$fail"

@@ -100,6 +100,9 @@ check "an unknown base fails" '! gate_scope "$repo" nosuchbase > /dev/null 2>&1'
 check "narrow is false unscoped and want selects everything" '(unset RCG_SCOPE_BASE; ! narrow && want rust x && want_kind shell)'
 check "narrow want selects only the named piece" '(RCG_SCOPE_BASE=b RCG_SCOPE_SEL="rust platform"; narrow && want rust platform && ! want rust backend && want_kind rust && ! want_kind shell)'
 check "a widened scope selects everything" '(RCG_SCOPE_BASE=b RCG_SCOPE_SEL="whole x"; ! narrow && want rust backend && want_kind julia)'
+mkdir -p agents && echo x > agents/x.sh && git add -A && git -c user.name=t -c user.email=t@t commit -q -m sh
+echo n > agents/n.md && git add -A && git -c user.name=t -c user.email=t@t commit -q -m md
+ubr=$repo
 cd "$here" || exit 2
 
 real=$repo
@@ -113,7 +116,7 @@ fixture() { # <name>: a stand-in repo with two shell groups, two crates with a t
     : > "$repo/rust/platform/Cargo.toml"; : > "$repo/rust/backend/Cargo.toml"
     mkdir -p "$repo/rust/platform/src" && : > "$repo/rust/platform/src/lib.rs" # backend is binary-only, as the real one is
     : > "$repo/Project.toml"; : > "$repo/julia/kernel/Project.toml"
-    cp "$here/shards.py" "$repo/scripts/tests/shards.py"
+    cp "$here/shards.py" "$here/under-bash.sh" "$repo/scripts/tests/"
     : > "$repo/.github/test-shards.txt"
     for t in comm/tests/test-c agents/tests/test-a; do printf '#!/bin/sh\nexit 0\n' > "$repo/$t.sh"; done
     printf '#!/bin/sh\nexit 0\n' > "$repo/scripts/tests/test-defects-check.sh"
@@ -134,7 +137,7 @@ STUB
 pipeline() { # <name> <scope base or -> <scope lines>
     local n=$1 b=$2 sel=${3:-}
     [ "$b" != - ] || b=
-    RCG_D=$work/$n RCG_L=$work/L-$n RCG_BUILD_RC=0 RCG_CARGO_DIR=$work/tools RCG_JULIA_DIR=$work/tools RCG_BASH32= \
+    RCG_D=$work/$n RCG_L=$work/L-$n RCG_BUILD_RC=0 RCG_CARGO_DIR=$work/tools RCG_JULIA_DIR=$work/tools RCG_BASH32=${UB32:-} RCG_UB_PARSE=${UBP:-1} RCG_UB_SUITES=${UBS:-1} \
         RCG_SCOPE_BASE=$b RCG_SCOPE_SEL=$sel HOME=$work CARGO_TARGET_DIR=$work/target XDG_RUNTIME_DIR=$work/run \
         bash "$gate" --pipeline 4 > "$work/$n.out" 2>&1
 }
@@ -192,6 +195,21 @@ args_ok() { local n; for n in "$@"; do grep -qx -- "--prove $work/$n/rust" "$wor
 check "the release features check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/release-features-check)" = 0 ] && [ "$(rcof sc1 steps/release-features-check)" = 0 ] && [ "$(rcof sc2 steps/release-features-check)" = 0 ]'
 check "the release features check is run with --prove over the checkout's rust folder every time" 'args_ok none sc1 sc2'
 check "the defects check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc1 steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc2 steps/scripts-tests-test-defects-check)" = 0 ]'
+
+# ---- under-bash: the scans as one job, each suite as its own, only for what changed (UB32 names a bash, UBP and UBS the flags
+# the main flow sets from gate_scope_ub)
+ubjobs() { ls "$work/L-$1/steps" | grep -c '^under-bash.*\.rc$'; }
+check "gate_scope_ub: a markdown file under agents/ sets the scans and no suite" '(gate_scope_ub "$ubr" HEAD~1; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 10 ])'
+check "gate_scope_ub: a script under agents/ sets both" '(gate_scope_ub "$ubr" HEAD~2; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 11 ])'
+check "gate_scope_ub: a Rust path alone sets neither" '(gate_scope_ub "$ubr" HEAD; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ])'
+fixture ub1; UB32=/bin/bash UBP=0 UBS=0 pipeline ub1 b $'rust backend\nshell comm\njulia root'
+check "under-bash: a scope from rows alone emits no under-bash job" '[ "$(ubjobs ub1)" = 0 ]'
+fixture ub2; UB32=/bin/bash UBS=0 pipeline ub2 b $'shell agents'
+check "under-bash: a markdown change alone emits the scans job only" '[ "$(ubjobs ub2)" = 1 ] && [ -e "$work/L-ub2/steps/under-bash-parse.rc" ]'
+fixture ub3; UB32=/bin/bash pipeline ub3 b $'shell agents'
+check "under-bash: a script under agents emits the scans and one job per agents suite, each with its own result" '[ "$(ubjobs ub3)" = 2 ] && [ -e "$work/L-ub3/steps/under-bash-parse.rc" ] && [ -e "$work/L-ub3/steps/under-bash-agents-tests-test-a.rc" ] && [ ! -e "$work/L-ub3/steps/under-bash-comm-tests-test-c.rc" ]'
+fixture ub4; UB32=/bin/bash pipeline ub4 -
+check "under-bash: a whole run emits the scans and one job per suite of all three groups" '[ "$(ubjobs ub4)" = 13 ] && [ -e "$work/L-ub4/steps/under-bash-comm-tests-test-c.rc" ] && [ -e "$work/L-ub4/steps/under-bash-agents-tests-test-a.rc" ] && [ -e "$work/L-ub4/steps/under-bash-scripts-tests-installer-state.rc" ]'
 
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'
 check "widened: everything runs as unscoped" '[ "$(rcof sc3 rust/bin-backend)" = 0 ] && [ -e "$work/L-sc3/steps/agents-tests-test-a.rc" ] && [ -e "$work/L-sc3/steps/julia-root.rc" ]'

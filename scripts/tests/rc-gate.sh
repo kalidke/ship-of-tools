@@ -198,12 +198,19 @@ job_lint() {
   fin "lint-$1" $?
 }
 
-# job_under_bash: scripts/tests/under-bash.sh under the bash 3.2.57 the main flow names in RCG_BASH32
+# job_under_bash [parse | <suite path>]: scripts/tests/under-bash.sh under the bash 3.2.57 the main flow names in RCG_BASH32;
+# the scans alone, one suite alone, or (no argument) everything one after another
 job_under_bash() {
-  st under-bash
-  cd "$D" || { fin under-bash 2; return; }
-  logged "$L/under-bash.log" "$L/under-bash.log" "${LNT[@]}" "${SE[@]}" bash scripts/tests/under-bash.sh "$RCG_BASH32"
-  fin under-bash $?
+  local k=under-bash args=()
+  case ${1:-} in
+    "") ;;
+    parse) k=under-bash-parse; args=(--parse-only) ;;
+    *) k=under-bash-$(shell_key "$D/$1"); args=(--no-parse -- "$1") ;;
+  esac
+  st "$k"
+  cd "$D" || { fin "$k" 2; return; }
+  logged "$L/$k.log" "$L/$k.log" "${LNT[@]}" "${SE[@]}" bash scripts/tests/under-bash.sh "$RCG_BASH32" "${args[@]}"
+  fin "$k" $?
 }
 
 job_shell() {
@@ -380,7 +387,14 @@ producer() {
   emit cargo-chain cargo-chain
   emit_shell "$D/scripts/tests/test-defects-check.sh" # docs/defects.md: every run, scoped or not
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
-  [ -n "${RCG_BASH32:-}" ] && emit under-bash under-bash "$L/steps/under-bash.rc"
+  if [ -n "${RCG_BASH32:-}" ]; then
+    [ "${RCG_UB_PARSE:-1}" = 0 ] || emit under-bash:parse "$(printf 'under-bash\tparse')" "$L/steps/under-bash-parse.rc"
+    if [ "${RCG_UB_SUITES:-1}" != 0 ]; then
+      while IFS= read -r s; do
+        shell_wanted "$D/$s" && emit "under-bash:$s" "$(printf 'under-bash\t%s' "$s")" "$L/steps/under-bash-$(shell_key "$D/$s").rc"
+      done < <(cd "$D" && bash scripts/tests/under-bash.sh --list)
+    fi
+  fi
   for s in fresh repair; do
     narrow && ! want shell scripts && ! want_kind rust && continue
     emit "installer-publish:$s" "$(printf 'installer-publish\t%s' "$s")" "$L/steps/installer-publish-$s.rc"
@@ -525,7 +539,7 @@ if [ "${1:-}" = --job ]; then
     lifetime) job_lifetime ;;
     cargo-chain) job_cargo_chain ;;
     lint) job_lint "$a" ;;
-    under-bash) job_under_bash ;;
+    under-bash) job_under_bash "$a" ;;
     shell) job_shell "$b" ${c:+"$c" "$d"} ;;
     installer-publish) job_installer_publish "$a" ;;
     install-smoke) job_install_smoke ;;
@@ -600,21 +614,26 @@ PATH=/usr/bin:/bin command -v Xvfb > /dev/null || { echo "rc-gate: Xvfb not foun
 # CLIs, and a julia in /usr/bin would put /usr/bin's node ahead of the node chosen here). Those two folders lead the Rust
 # jobs' PATH, ahead of cargo's folder: it is wherever cargo is installed, and whatever else it holds is not the gate's.
 mkdir -p "$L/bin" "$L/julia-bin" && ln -s "$NODE_BIN" "$L/bin/node" && ln -s "$JULIA_BIN" "$L/julia-bin/julia" || exit 2
-# under-bash.sh runs when scripts/, comm/ or agents/ differ from the line (or no line is given), under the cached bash 3.2.57
-# A scoped run (RCG_SCOPE=<base commit-ish>, set as `env RCG_SCOPE=<base> bash rc-gate.sh ...` inside the container) narrows its
-# test jobs to the pieces the paths differing from the base map to (lib-gate-scope.sh); it never runs with RCG_FULL.
-RCG_BASH32=
+# under-bash.sh runs under the cached bash 3.2.57 as a job for its scans (RCG_UB_PARSE) and a job per hermetic suite of
+# the selected shell groups (RCG_UB_SUITES), as scripts/CLAUDE.md's "The local gate" says. A scoped run (RCG_SCOPE=<base
+# commit-ish>, set as `env RCG_SCOPE=<base> bash rc-gate.sh ...` inside the container) narrows its test jobs to the pieces
+# the paths differing from the base map to (lib-gate-scope.sh); it never runs with RCG_FULL.
+RCG_BASH32= RCG_UB_PARSE=1 RCG_UB_SUITES=1
 LINE=${4:-}
 if [ -n "$LINE" ]; then
   (cd "$D" && git rev-parse --verify -q "$LINE^{commit}" > /dev/null) || { echo "rc-gate: $LINE is no commit in $D" >&2; exit 2; }
 fi
 if [ -n "$LINE" ] && (cd "$D" && git diff --quiet "$LINE" HEAD -- scripts comm agents); then
   SKIPPED="under-bash skipped: scripts, comm and agents equal $LINE"
-elif narrow && ! want_kind shell; then
-  SKIPPED="under-bash skipped: the scope selects no shell piece"
-else
+  RCG_UB_PARSE=0 RCG_UB_SUITES=0
+elif narrow; then
+  gate_scope_ub "$D" "$RCG_SCOPE_BASE"
+  [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] || SKIPPED="under-bash skipped: no file under scripts, comm or agents differs from $RCG_SCOPE_BASE"
+fi
+if [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ]; then
   RCG_BASH32=$(bash "$D/scripts/tests/bash32.sh") || { echo "rc-gate: no bash 3.2.57" >&2; exit 2; }
 fi
+export RCG_UB_PARSE RCG_UB_SUITES
 export RCG_BASH32
 export RCG_D=$D RCG_L=$L RCG_CARGO_DIR=$(dirname "$CARGO_BIN") RCG_JULIA_DIR=$L/julia-bin RCG_NODE_DIR=$L/bin
 envs
