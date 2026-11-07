@@ -805,3 +805,17 @@ A landing's record goes here, with its measured times; the package page holds on
   on a timeout, and the server contract's table names both tests. About 77 test lines added and 19 removed, no product change.
   Both scoped gates passed first time; one review round, no blocker; its two should-fixes rode the landing unreviewed (eight
   lines, the reviewer's own).
+- The selection handler's first part, 2026-11-07: 06:44 to main 07:31, 47 minutes, a miss. The daemon serves `selection.set` on
+  the connection loop: it resolves the workspace to its row and the node through the preview's resolver (so a link out of the
+  root is followed as the preview follows it), reads at most the preview's 2 MiB of a regular file, checks and renders it, and
+  publishes the row's `selection.json` whole or removes it; a clear, every refusal and a failed publish leave no file, and a
+  removal that itself fails answers `publish_failed` with the old file kept. An accepted selection answers `held` until a leg
+  carries the hook. The planned piece was split before launch: the replies that tell the window who will hear went to the next
+  piece and the map of who set each file to the withdrawal piece. About 100 product and 205 test lines. The builder stopped
+  at once on the session's brief, which listed an out-of-root link as a refusal the plan's resolver does not make; the plan
+  stood. Two review rounds (blockers 2, 1): round 1 found no product defect, a failed removal and the regular-file guard
+  unpinned and one contract sentence false; round 2 closed both by mutants, fuzzed the new strip of the root and found it
+  cannot panic, and found one contract sentence false, which the session corrected without a third round. The first two
+  scoped gates passed; the third, on the contract fix alone, failed one chat test no commit of the landing touched
+  (CHAT-STOP-STATUS-UNDER-LOAD), and the landing went in on the gate of the byte-identical code. Cause of the miss: a brief
+  premise of the session's own, two review rounds and twelve-minute gates in series.

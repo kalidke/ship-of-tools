@@ -583,6 +583,11 @@ owned by `docs/CLAUDE.md`.
   within its caps"), and later runs passed. Pinned to one core beside eight busy loops it fails every run, at the base and the
   head, with "a stalled write held the socket ... never dropped". Both are plain panics, so the pause check does not cover
   them; whether the second is the fixture's or the product's write bound is unknown.
+- **CHAT-STOP-STATUS-UNDER-LOAD** [note] `chat_tests.rs`'s `a_stop_that_does_not_finish_is_reported_incomplete_and_final`
+  failed once at a local gate at peak load 13.5: after the retire reported chat incomplete, `status()` still read `Running`
+  where the test expects `Stopping`. The same code had passed two gates that hour, and nothing in that landing touched chat.
+  Whether the retire can report incomplete before the status moves to `Stopping` (a product order) or the test reads a status
+  set by another task (a test race) is unknown.
 
 ## records
 
