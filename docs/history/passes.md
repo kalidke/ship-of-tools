@@ -735,3 +735,18 @@ A landing's record goes here, with its measured times; the package page holds on
   smokes, no tag, no draft), passed whole: the static musl Linux build compiled the chat crate into `sotd`, the daemon booted
   and answered hello in an Ubuntu 20.04 container (glibc 2.31), and the Windows MSVC build passed with its artifact smoke and
   four install smokes, as did macOS. The first link of `sot-chat` into the daemon is proven on every release path.
+- The selection check and its rendering, 2026-11-06: 23:50 to main 00:32 on 11-07, 41 minutes, a miss. Built in 7 minutes
+  beside the chat's recheck in another worktree; about 145 product and 123 test lines, and nothing calls them yet. The first
+  review's probes found the code right on every input and two rules no test pinned: the guard refusing a range whose start is
+  not before its end (without it a reversed range panicked) and a 9,000 cap no input could reach, now an invariant the compiler
+  proves to the unit. A file name's control characters now show as a question mark, and the truncation note counts characters
+  while the cut counts UTF-16 units. The second review found no blocker; its two should-fixes ride the handler piece.
+- The chat recheck, 2026-11-06: 23:50 to main 00:32 on 11-07, 41 minutes, a miss. Every chat action passes one admission that
+  reads the row's current entry and the hub's mapping when it acts, so a removed or replaced row, the inert anchor and a pair
+  the mapping no longer names reach no service; resolve joins the mapping with the service's status; unwatch has its own door
+  that hands out nothing able to reach Slack. About 85 product and 250 test lines. The first review found no blocker and four
+  should-fixes it made a condition of landing, among them an exempt action that handed the whole service past the recheck; the
+  second found none. M3 is proven at the adapter; end to end it waits for dispatch. Cause of both misses: two review rounds of
+  about ten minutes each and a ten-minute gate run in series, and a gate on the first versions, started before the reviews
+  ended, held the gate host five minutes after both fixes were ready. The two landed together on one gate of the stacked
+  changes.
