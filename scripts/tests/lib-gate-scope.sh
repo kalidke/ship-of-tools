@@ -91,10 +91,10 @@ gate_scope_ub() {
 }
 
 # gate_ub_decide <checkout> <line> <bash32.sh>: sets RCG_UB_PARSE and RCG_UB_SUITES for the under-bash jobs, and SKIPPED
-# when neither runs; when either runs it sets RCG_BASH32 to the bash 3.2 that script prints, and fails (2) naming it when
-# there is none, so a selected job is never dropped for want of the build. Both run unless the tree equals the line under comm, agents and scripts (a whole run given a line), or the run is
-# narrow and gate_scope_ub finds nothing differing from the scope's base. A narrow run whose only differing files are
-# markdown gets the scans alone.
+# when neither runs. Both run unless the tree equals the line under comm, agents and scripts (a whole run given a line),
+# or the run is narrow and gate_scope_ub finds nothing differing from the scope's base; a narrow run whose only
+# differing files are markdown gets the scans alone. When either runs it sets RCG_BASH32 to the bash that script prints,
+# and fails (2) naming it unless that is bash 3.2.57, so a selected job is never dropped for want of the build.
 gate_ub_decide() {
     RCG_UB_PARSE=1 RCG_UB_SUITES=1 SKIPPED= RCG_BASH32=
     if [ -n "$2" ] && git -C "$1" diff --quiet "$2" HEAD -- scripts comm agents; then
@@ -105,8 +105,10 @@ gate_ub_decide() {
         [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] ||
             SKIPPED="under-bash skipped: no file under scripts, comm or agents differs from $RCG_SCOPE_BASE"
     fi
-    [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ] ||
-        RCG_BASH32=$(bash "$3") || { echo "rc-gate: no bash 3.2.57" >&2; return 2; }
+    [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] || return 0
+    RCG_BASH32=$(bash "$3") &&
+        case $("$RCG_BASH32" -c 'echo "$BASH_VERSION"' 2> /dev/null) in 3.2.57*) ;; *) false ;; esac ||
+        { echo "rc-gate: no bash 3.2.57" >&2; RCG_BASH32=; return 2; }
 }
 
 # gate_scope_resolve <checkout> <who>: reads RCG_SCOPE (the base commit-ish a caller asks for) and sets and exports

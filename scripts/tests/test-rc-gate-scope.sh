@@ -203,21 +203,36 @@ check "gate_scope_ub: a markdown file under agents/ sets the scans and no suite"
 check "gate_scope_ub: a script under agents/ sets both" '(gate_scope_ub "$ubr" HEAD~2; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 11 ])'
 check "gate_scope_ub: an empty diff sets neither" '(gate_scope_ub "$ubr" HEAD; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ])'
 check "under-bash.sh --list keeps the old order: comm, agents, scripts" '[ "$(bash "$here/under-bash.sh" --list | cut -d/ -f1 | uniq | tr "\n" " ")" = "comm agents scripts " ]'
-b32ok=$work/b32ok b32bad=$work/b32bad
-printf '#!/bin/sh\necho /stub/bash\n' > "$b32ok"; printf '#!/bin/sh\nexit 1\n' > "$b32bad"
-decide() { # <base or -> <scope lines> <line>: gate_ub_decide's flags and whether it skipped
-    ( [ "$1" = - ] && unset RCG_SCOPE_BASE || { RCG_SCOPE_BASE=$1; RCG_SCOPE_SEL=$2; }
-      gate_ub_decide "$ubr" "${3:-}" "$b32ok"; echo "$RCG_UB_PARSE$RCG_UB_SUITES${SKIPPED:+ skipped}" )
+mkdir -p "$ubr/scripts/tests"
+printf '#!/bin/sh\necho 3.2.57\n' > "$work/fake32"; chmod +x "$work/fake32"
+stub() { # ok | bad | empty | five: the bash32.sh the main flow's decision builds with; each call is logged
+    case $1 in
+        ok) out="echo $work/fake32" ;; bad) out="exit 1" ;; empty) out=: ;; five) out="echo $BASH" ;;
+    esac
+    printf '#!/bin/sh\necho x >> "%s"\n%s\n' "$work/b32calls" "$out" > "$ubr/scripts/tests/bash32.sh"
 }
-check "decide: a whole run with no line runs the scans and every suite" '[ "$(decide -)" = 11 ]'
-check "decide: a whole run given a line equal to the tree skips both" '[ "$(decide - "" HEAD)" = "00 skipped" ]'
-check "decide: a whole run given a line that differs runs both" '[ "$(decide - "" HEAD~2)" = 11 ]'
-check "decide: a scoped run with a markdown change alone runs the scans only" '[ "$(decide HEAD~1 "shell agents")" = 10 ]'
-check "decide: a scoped run with a script change runs both" '[ "$(decide HEAD~2 "shell agents")" = 11 ]'
-check "decide: a scoped run with nothing under the three folders skips both" '[ "$(decide HEAD "rust backend")" = "00 skipped" ]'
-check "decide: a selected job gets the bash 3.2 the build script prints, and none selected builds none" '(RCG_SCOPE_BASE=HEAD~1 RCG_SCOPE_SEL="shell agents"; gate_ub_decide "$ubr" "" "$b32ok"; [ "$RCG_BASH32" = /stub/bash ]) && (RCG_SCOPE_BASE=HEAD RCG_SCOPE_SEL="rust backend"; gate_ub_decide "$ubr" "" "$b32bad"; [ -z "$RCG_BASH32" ])'
-check "decide: a failed bash 3.2 build is refused (2), naming it, whenever a job is selected" '(RCG_SCOPE_BASE=HEAD~1 RCG_SCOPE_SEL="shell agents"; gate_ub_decide "$ubr" "" "$b32bad" 2> "$work/b32.err"; [ $? -eq 2 ] && grep -q "no bash 3.2.57" "$work/b32.err")'
-check "the main flow asks gate_ub_decide for the bash 3.2 and builds it nowhere else" '[ "$(grep -c "gate_ub_decide \"\$D\" \"\$LINE\" \"\$D/scripts/tests/bash32.sh\" || exit 2" "$here/rc-gate.sh")" = 1 ] && [ "$(grep -v "^#" "$here/rc-gate.sh" | grep -c "tests/bash32.sh")" = 1 ]'
+decide() { # <base or -> <scope lines> <line>: the main flow's own decision lines (rc-gate.sh, from LINE= to the export of
+    # RCG_BASH32) over the stub; the flags, whether it skipped, whether RCG_BASH32 was set, the builds made
+    : > "$work/b32calls"
+    ( if [ "$1" = - ]; then unset RCG_SCOPE_BASE; else RCG_SCOPE_BASE=$1 RCG_SCOPE_SEL=$2; fi
+      D=$ubr; set -- a b c "${3:-}"
+      eval "$(sed -n '/^LINE=/,/^export RCG_BASH32$/p' "$here/rc-gate.sh")"
+      echo "$RCG_UB_PARSE$RCG_UB_SUITES${SKIPPED:+ skipped}${RCG_BASH32:+ bash} builds=$(wc -l < "$work/b32calls" | tr -d ' ')" )
+}
+stub ok
+check "decide: a whole run with no line runs the scans and every suite, with one bash 3.2" '[ "$(decide -)" = "11 bash builds=1" ]'
+check "decide: a whole run given a line equal to the tree skips both and builds none" '[ "$(decide - "" HEAD)" = "00 skipped builds=0" ]'
+check "decide: a whole run given a line that differs runs both" '[ "$(decide - "" HEAD~2)" = "11 bash builds=1" ]'
+check "decide: a scoped run with a markdown change alone runs the scans only" '[ "$(decide HEAD~1 "shell agents")" = "10 bash builds=1" ]'
+check "decide: a scoped run with a script change runs both" '[ "$(decide HEAD~2 "shell agents")" = "11 bash builds=1" ]'
+check "decide: a scoped run with nothing under the three folders skips both and builds none" '[ "$(decide HEAD "rust backend")" = "00 skipped builds=0" ]'
+for s in bad empty five; do
+    stub $s
+    check "decide: a $s bash 3.2 ends the run (2) naming it, whenever a job is selected, given a line or not" '
+        fails() { out=$("$@" 2>&1); [ $? -eq 2 ] && grep -q "no bash 3.2.57" <<< "$out"; }
+        fails decide - "" && fails decide - "" HEAD~2 && fails decide HEAD~1 "shell agents"'
+done
+stub ok
 fixture ub1; UB32=/bin/bash UBP=0 UBS=0 pipeline ub1 b $'rust backend\nshell comm\njulia root'
 check "under-bash: a scope from rows alone emits no under-bash job" '[ "$(ubjobs ub1)" = 0 ]'
 fixture ub2; UB32=/bin/bash UBS=0 pipeline ub2 b $'shell agents'
