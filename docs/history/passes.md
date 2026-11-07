@@ -649,3 +649,14 @@ A landing's record goes here, with its measured times; the package page holds on
   false while every test passed. Cause of the miss: a path under `rust/platform` or `rust/topology`, a contract included, runs a
   scoped gate for 9 to 10 minutes, since everything rests on them, and this landing ran that gate twice after its first. A
   contract fix for those crates waits for the commit it fixes.
+- B2b, the chat service, 2026-11-06: 17:31 to main 18:38, 67 minutes, a miss, stopped and written up here. 20 of change, then three
+  rounds of review and fix (5 and 2, 4 and 1, 3), each gate about a minute and every one passed, and 25 minutes in which the
+  second fix sat finished and unreported. `service.rs` takes the workspace's kernel lock before any call to Slack, keeps it in the
+  listener's task so it is released only once no listener can run, checks the workspace `auth.test` reports, and refuses a second
+  service with no network call. About 230 product lines landed against an estimate of 120, and 382 test lines. The three blockers:
+  an API handle taken before stop still reached Slack after it, the contract's opening no longer said what chat owns, and a stop
+  whose caller gave up carried the listener's task away, so the service stayed locked. Two were product defects that every test
+  had passed, found by the reviewers' probes. Cause of the miss: three review rounds on a piece near twice its estimate, and a
+  builder resumed by its id after the session moved accounts, whose report did not arrive and which no watch was following. A
+  resumed agent gets a watch like a new one. Unproven and stated as a limit: a holder killed on one computer freeing the lock for
+  another over the shared home; that check was refused by a safety check and did not run.

@@ -159,7 +159,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
    (a kernel `flock`, close-on-exec) on `<dir>/chat-<workspace>.lock`, a name built from the validated workspace id alone,
    holding no secret; `dir` is a private folder the caller supplies and owns (not checked here). The lock is moved into the
-   listener's task (`Socket::start_held`), so it is released when the task's future is dropped, after its last poll: at a
+   listener's task (`Socket::launch`'s `held` argument), so it is released when the task's future is dropped, after its last poll: at a
    normal end, at a `stop` that timed out and aborted (the abort is awaited first), and at a drop without `stop` (the
    abort, not an await). A killed holder releases it with its descriptor, a child born later does not inherit it, and
    `start` after `stop` in one process is admitted. A token whose `auth.test` names another workspace is
@@ -167,8 +167,8 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    within `within`, then abort and await; a second call returns at once, and `api()` is `Stopped` and every handle already taken answers `Closed` (the API itself is closed, before the socket is
    signaled) from the moment a stop begins; only the call that began the stop waits for the listener, any other returns at once;
    a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until B2c reconciles),
-   `Stopping` or `Stopped`; a service refused or never started has no value, its state is `start`'s error. The error codes are
-   the existing ones plus `held`, `lock`, `stopped`. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
+   `Stopping` or `Stopped`. A service holds three things: the workspace lock, its phase, and the API's closed state (set when a stop begins, never cleared, seen by every handle). A stop whose caller stops waiting (its future is dropped, as lifecycle's 1 s retirement bound does) leaves that service at `Stopping` for good, not `Stopped`: every handle answers `Closed` and the task is aborted, so the lock frees when the runtime drops the task and a `start` right after may wait platform's short retry; nothing may poll for `Stopped` after cancelling. A service refused or never started has no value, its state is `start`'s error. The error codes are
+   the existing ones plus `held`, `lock`, `stopped`, and `closed`, which a handle answers once its service has begun to stop. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
    a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another and freed when the
    holder ended; a holder killed on one computer, a lost computer (lease expiry) and a mount that does not support locks
    are not measured, and Windows is `LockFileEx` with no cross-computer claim. A path outside the shared home (a
