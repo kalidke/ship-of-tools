@@ -2,7 +2,7 @@
 # test-rc-gate-parity.sh: rc-gate.sh runs what hosted CI runs on Linux. Its three clippy jobs (rust.yml's lib-bins line,
 # the all-targets line under rust/clippy-tests, and that line for x86_64-pc-windows-gnu) go red on a stand-in workspace
 # holding a test-children violation, an un-allowed std::fs::copy, and a violation only cfg(windows) test code holds; and
-# its under-bash job goes red on a script that parses only under bash 4. The jobs run as rc-gate runs them (--job) over
+# its under-bash scans job goes red on a script that parses only under bash 4. The jobs run as rc-gate runs them (--job) over
 # stand-in trees with the real cargo and a real bash 3.2.57 (scripts/tests/bash32.sh, built once and cached). The
 # pipeline is run over a stub cargo to show the gate emits every job with each clippy line's arguments, and that a line
 # equal to the tree skips the bash 3.2 job. Needs cargo with clippy; the windows-gnu cases print SKIP where that target's
@@ -130,14 +130,17 @@ new_ub() {
 gitall() { (cd "$repo" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t commit -q -m t); }
 new_ub ubgreen
 gitall
-job ubgreen under-bash
-check "under-bash: a script that runs under bash 3.2 is green" '[ "$(rcof ubgreen under-bash)" = 0 ]'
+job ubgreen $'under-bash\tparse'
+job ubgreen $'under-bash\tcomm/tests/test-ok.sh'
+check "under-bash: a script that runs under bash 3.2 is green, and the scans job runs no suite" '[ "$(rcof ubgreen under-bash-parse)" = 0 ] && grep -q "^under-bash: parsed " "$work/L-ubgreen/under-bash-parse.log" && ! grep -q "^under-bash: run " "$work/L-ubgreen/under-bash-parse.log"'
+check "under-bash: a suite job runs its suite and scans nothing" '[ "$(rcof ubgreen under-bash-comm-tests-test-ok)" = 0 ] && grep -q "^under-bash: PASS comm/tests/test-ok.sh" "$work/L-ubgreen/under-bash-comm-tests-test-ok.log" && ! grep -q "^under-bash: parsed " "$work/L-ubgreen/under-bash-comm-tests-test-ok.log"'
 new_ub ubred
 # `;;&` ends a case clause only in bash 4 and later: under 3.2 the script does not parse
 printf '#!/usr/bin/env bash\ncase x in\n  x) echo a ;;&\n  *) echo b ;;\nesac\n' > "$repo/comm/four-only.sh"
 gitall
-job ubred under-bash
-check "under-bash: a script that parses only under bash 4 goes red" '[ "$(rcof ubred under-bash)" = 1 ] && grep -q "FAIL parse comm/four-only.sh" "$work/L-ubred/under-bash.log"'
+job ubred $'under-bash\tparse'
+job ubred $'under-bash\tcomm/tests/test-ok.sh'
+check "under-bash: a script that parses only under bash 4 goes red in the scans job and not in a suite job" '[ "$(rcof ubred under-bash-parse)" = 1 ] && grep -q "FAIL parse comm/four-only.sh" "$work/L-ubred/under-bash-parse.log" && [ "$(rcof ubred under-bash-comm-tests-test-ok)" = 0 ]'
 
 # the pipeline over a stub cargo: every clippy line is emitted with its arguments, and the bash 3.2 job runs or is skipped
 pipe() { # <repo-name> [bash] -> runs the real --pipeline over a stub cargo that logs each clippy line to its folder

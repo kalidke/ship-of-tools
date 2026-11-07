@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# under-bash.sh BASH [-- SUITE...] -- the shell scripts under BASH, the bash 3.2 the records promise (comm/CLAUDE.md,
+# under-bash.sh BASH [--parse-only|--no-parse] [-- SUITE...] -- the shell scripts under BASH, the bash 3.2 the records promise (comm/CLAUDE.md,
 # scripts/CLAUDE.md). First every tracked shell script outside a tests folder under comm/, agents/ and scripts/ must
 # parse under BASH. Then each SUITE (a path from the repository root) runs from its own folder with a folder holding
 # `bash -> BASH` first on PATH, so every script it starts through `#!/usr/bin/env bash`, `bash x.sh` or `bash -c` gets
@@ -17,7 +17,7 @@
 # scans as one job and each suite as another); `--list` alone prints the default suites, one path per line.
 set -u
 suites() {
-    ls comm/tests/test-*.sh agents/tests/test-*.sh
+    printf '%s\n' comm/tests/test-*.sh agents/tests/test-*.sh
     printf '%s\n' scripts/tests/installer-state.sh scripts/tests/installer-wrapper.sh scripts/tests/installer-apply.sh \
         scripts/tests/installer-shared-home.sh scripts/tests/test-topology-plan.sh scripts/tests/test-sigpipe-scan.sh \
         scripts/tests/test-release-cut.sh scripts/tests/test-pre-push.sh scripts/tests/test-publish-guard-setup.sh \

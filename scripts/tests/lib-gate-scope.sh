@@ -90,6 +90,21 @@ gate_scope_ub() {
     git -C "$1" diff --quiet "$2" HEAD -- comm agents scripts ':(exclude)*.md' || RCG_UB_SUITES=1
 }
 
+# gate_ub_decide <checkout> <line>: sets RCG_UB_PARSE and RCG_UB_SUITES for the under-bash jobs, and SKIPPED when neither
+# runs. Both run unless the tree equals the line under comm, agents and scripts (a whole run given a line), or the run is
+# narrow and gate_scope_ub finds nothing differing from the scope's base.
+gate_ub_decide() {
+    RCG_UB_PARSE=1 RCG_UB_SUITES=1 SKIPPED=
+    if [ -n "$2" ] && git -C "$1" diff --quiet "$2" HEAD -- scripts comm agents; then
+        RCG_UB_PARSE=0 RCG_UB_SUITES=0
+        SKIPPED="under-bash skipped: scripts, comm and agents equal $2"
+    elif narrow; then
+        gate_scope_ub "$1" "$RCG_SCOPE_BASE"
+        [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] ||
+            SKIPPED="under-bash skipped: no file under scripts, comm or agents differs from $RCG_SCOPE_BASE"
+    fi
+}
+
 # gate_scope_resolve <checkout> <who>: reads RCG_SCOPE (the base commit-ish a caller asks for) and sets and exports
 # RCG_SCOPE_BASE and RCG_SCOPE_SEL, both empty when no scope was asked for. A scope is refused (status 2, the reason on
 # standard error) beside RCG_FULL, for a base that is no commit, and when git cannot list the differing paths.

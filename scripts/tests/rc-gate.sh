@@ -9,7 +9,7 @@
 # every Julia suite, and the shell suites; not the tests release-gate.yml runs (the gate-* rows of .github/test-shards.txt:
 # the ones that sleep on the clock and the page test that needs a prepared depot), unless RCG_FULL is set; and, when the tree differs from `line` (a commit-ish; always when none is given)
 # under scripts/, comm/ or agents/, scripts/tests/under-bash.sh under a bash 3.2.57 that scripts/tests/bash32.sh builds
-# once and keeps under /scratch/<user>, as release-gate.yml's bash32-linux job runs it; and, with RCG_FULL set, the daemon lifetime
+# once and keeps under /scratch/<user>, as release-gate.yml's bash32-linux job runs it (its scans as one job, each suite as another); and, with RCG_FULL set, the daemon lifetime
 # harness as release-gate.yml's Linux job runs it, built in CARGO_TARGET_DIR/daemon-lifetime, since its features (the capsule's phase barriers, the daemon's
 # faults) would replace the `sotd` and `sot-capsule` the other jobs run.
 #
@@ -51,7 +51,7 @@ SELF=$(readlink -f "$0")
 source "$(dirname "$SELF")/lib-test-body.sh" || exit 2
 source "$(dirname "$SELF")/lib-gate-scope.sh" || exit 2
 TO=(timeout -k 10 1200)
-# The clippy lines compile every crate again as clippy sees it, and under-bash.sh runs every hermetic shell suite once more.
+# The clippy lines compile every crate again as clippy sees it, and under-bash.sh runs the hermetic shell suites once more, each as a job.
 LNT=(timeout -k 10 2400)
 # The lifetime harness runs every case one at a time: 963 s inside a whole gate and 1035 s alone, on a shared test
 # host. So it has an end of its own, inside the 75 min rust.yml gives its job.
@@ -198,12 +198,11 @@ job_lint() {
   fin "lint-$1" $?
 }
 
-# job_under_bash [parse | <suite path>]: scripts/tests/under-bash.sh under the bash 3.2.57 the main flow names in RCG_BASH32;
-# the scans alone, one suite alone, or (no argument) everything one after another
+# job_under_bash parse | <suite path>: scripts/tests/under-bash.sh under the bash 3.2.57 the main flow names in RCG_BASH32;
+# the scans alone, or one suite alone
 job_under_bash() {
-  local k=under-bash args=()
-  case ${1:-} in
-    "") ;;
+  local k args=()
+  case $1 in
     parse) k=under-bash-parse; args=(--parse-only) ;;
     *) k=under-bash-$(shell_key "$D/$1"); args=(--no-parse -- "$1") ;;
   esac
@@ -623,13 +622,7 @@ LINE=${4:-}
 if [ -n "$LINE" ]; then
   (cd "$D" && git rev-parse --verify -q "$LINE^{commit}" > /dev/null) || { echo "rc-gate: $LINE is no commit in $D" >&2; exit 2; }
 fi
-if [ -n "$LINE" ] && (cd "$D" && git diff --quiet "$LINE" HEAD -- scripts comm agents); then
-  SKIPPED="under-bash skipped: scripts, comm and agents equal $LINE"
-  RCG_UB_PARSE=0 RCG_UB_SUITES=0
-elif narrow; then
-  gate_scope_ub "$D" "$RCG_SCOPE_BASE"
-  [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] || SKIPPED="under-bash skipped: no file under scripts, comm or agents differs from $RCG_SCOPE_BASE"
-fi
+gate_ub_decide "$D" "$LINE"
 if [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ]; then
   RCG_BASH32=$(bash "$D/scripts/tests/bash32.sh") || { echo "rc-gate: no bash 3.2.57" >&2; exit 2; }
 fi

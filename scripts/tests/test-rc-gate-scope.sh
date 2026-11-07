@@ -201,7 +201,18 @@ check "the defects check runs unscoped, scoped to a crate and scoped to docs alo
 ubjobs() { ls "$work/L-$1/steps" | grep -c '^under-bash.*\.rc$'; }
 check "gate_scope_ub: a markdown file under agents/ sets the scans and no suite" '(gate_scope_ub "$ubr" HEAD~1; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 10 ])'
 check "gate_scope_ub: a script under agents/ sets both" '(gate_scope_ub "$ubr" HEAD~2; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 11 ])'
-check "gate_scope_ub: a Rust path alone sets neither" '(gate_scope_ub "$ubr" HEAD; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ])'
+check "gate_scope_ub: an empty diff sets neither" '(gate_scope_ub "$ubr" HEAD; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ])'
+check "under-bash.sh --list keeps the old order: comm, agents, scripts" '[ "$(bash "$here/under-bash.sh" --list | cut -d/ -f1 | uniq | tr "\n" " ")" = "comm agents scripts " ]'
+decide() { # <base or -> <scope lines> <line>: gate_ub_decide's flags and whether it skipped
+    ( [ "$1" = - ] && unset RCG_SCOPE_BASE || { RCG_SCOPE_BASE=$1; RCG_SCOPE_SEL=$2; }
+      gate_ub_decide "$ubr" "${3:-}"; echo "$RCG_UB_PARSE$RCG_UB_SUITES${SKIPPED:+ skipped}" )
+}
+check "decide: a whole run with no line runs the scans and every suite" '[ "$(decide -)" = 11 ]'
+check "decide: a whole run given a line equal to the tree skips both" '[ "$(decide - "" HEAD)" = "00 skipped" ]'
+check "decide: a whole run given a line that differs runs both" '[ "$(decide - "" HEAD~2)" = 11 ]'
+check "decide: a scoped run with a markdown change alone runs the scans only" '[ "$(decide HEAD~1 "shell agents")" = 10 ]'
+check "decide: a scoped run with a script change runs both" '[ "$(decide HEAD~2 "shell agents")" = 11 ]'
+check "decide: a scoped run with nothing under the three folders skips both" '[ "$(decide HEAD "rust backend")" = "00 skipped" ]'
 fixture ub1; UB32=/bin/bash UBP=0 UBS=0 pipeline ub1 b $'rust backend\nshell comm\njulia root'
 check "under-bash: a scope from rows alone emits no under-bash job" '[ "$(ubjobs ub1)" = 0 ]'
 fixture ub2; UB32=/bin/bash UBS=0 pipeline ub2 b $'shell agents'
@@ -209,7 +220,7 @@ check "under-bash: a markdown change alone emits the scans job only" '[ "$(ubjob
 fixture ub3; UB32=/bin/bash pipeline ub3 b $'shell agents'
 check "under-bash: a script under agents emits the scans and one job per agents suite, each with its own result" '[ "$(ubjobs ub3)" = 2 ] && [ -e "$work/L-ub3/steps/under-bash-parse.rc" ] && [ -e "$work/L-ub3/steps/under-bash-agents-tests-test-a.rc" ] && [ ! -e "$work/L-ub3/steps/under-bash-comm-tests-test-c.rc" ]'
 fixture ub4; UB32=/bin/bash pipeline ub4 -
-check "under-bash: a whole run emits the scans and one job per suite of all three groups" '[ "$(ubjobs ub4)" = 13 ] && [ -e "$work/L-ub4/steps/under-bash-comm-tests-test-c.rc" ] && [ -e "$work/L-ub4/steps/under-bash-agents-tests-test-a.rc" ] && [ -e "$work/L-ub4/steps/under-bash-scripts-tests-installer-state.rc" ]'
+check "under-bash: a whole run emits the scans and one job per suite of all three groups" '[ "$(ubjobs ub4)" = $(( $(bash "$work/ub4/scripts/tests/under-bash.sh" --list | wc -l) + 1 )) ] && [ -e "$work/L-ub4/steps/under-bash-comm-tests-test-c.rc" ] && [ -e "$work/L-ub4/steps/under-bash-agents-tests-test-a.rc" ] && [ -e "$work/L-ub4/steps/under-bash-scripts-tests-installer-state.rc" ]'
 
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'
 check "widened: everything runs as unscoped" '[ "$(rcof sc3 rust/bin-backend)" = 0 ] && [ -e "$work/L-sc3/steps/agents-tests-test-a.rc" ] && [ -e "$work/L-sc3/steps/julia-root.rc" ]'
