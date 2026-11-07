@@ -690,11 +690,13 @@ A landing's record goes here, with its measured times; the package page holds on
   resolve state, post outcome or record origin reads as a fallback, never as the app's own post and never as a post to resend; the
   record's bounds have one copy, in wire, which chat uses.
 - B2c's second follow-up, 2026-11-06: 20:13 to main 21:39, 86 minutes, a miss, stopped and written up here. 20 of change, then
-  three rounds of review and fix (blockers 2, 1, 0), every gate about a minute and every one passed first time, with a copy onto
-  main between rounds since B2d landed beside it. A `Service` hands out one `Watches`, which alone can wait (exclusively, and the
+  three rounds of review and fix (blockers 2, 1, 0), every local gate about a minute and every one passed first time, with a copy
+  onto main between rounds since B2d landed beside it. Main's hosted Windows run was then red: the enumeration ran past the test
+  step's five minutes, since each of its zero-bound waits paid a timer tick, about 15 ms on Windows, across 16,800 runs. It was
+  fixed forward by a zero-bound wait that never waits for a tick, a cost of the platform that no local gate could show. A `Service` hands out one `Watches`, which alone can wait (exclusively, and the
   wait says whether it woke, timed out or saw a stop); a stop or a dropped service ends the claim for good, so no channel reads
   complete over a stopped service; the enumeration of a pump, a snapshot and a gap now runs the product's own take and wake.
-  Each round found one more way a stop or a wait met a kept watch: a second waiter that stole the pump's wake and left a watch
+  The first two rounds each found one more way a stop or a wait met a kept watch: a second waiter that stole the pump's wake and left a watch
   complete over a gap, then a watch kept past its service and only ever called against the next. Cause of the miss: the
   enumeration was asked of the pump, the snapshot and the gap, not of every public call. For a guarantee about orderings, the
   enumeration's steps are every public call, a stop, a wait and a drop included.
