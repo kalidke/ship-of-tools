@@ -255,13 +255,24 @@ pub async fn run(opts: Opts) -> Result<()> {
     let roster = clients.clone();
     crate::update::spawn_periodic(fe_command_tx.clone(), move || roster.count(), leases.clone());
 
+    // The project chat: the hub fact decides before any chat file is opened; a daemon that is not the hub holds none.
+    // It retires with the daemon's other in-process services (lifecycle's terminal).
+    let chat = crate::chat::Chat::begin(
+        &sot_platform::host::env::Env::process(),
+        &crate::chat::row_facts(&workspaces),
+        &sot_chat::config::read_file,
+        crate::lifecycle::retire::participants(),
+        Box::new(crate::chat::start_service),
+    );
+    tracing::info!(status = %chat.status(), "project chat");
+
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
 
     if let Some(path) = opts.socket {
         let services = Services {
             session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces, ws_events_tx, agent_events_tx,
-            links, fe_command_tx, repl_frame_tx, clients, topology_store, topo_changed_tx, leases,
+            links, fe_command_tx, repl_frame_tx, clients, topology_store, topo_changed_tx, leases, chat,
         };
         tasks.push(tokio::spawn(run_local(path, services)));
     }

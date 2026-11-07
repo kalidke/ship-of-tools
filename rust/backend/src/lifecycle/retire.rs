@@ -12,7 +12,7 @@ use std::time::Duration;
 
 /// How long the terminal waits for retirement, charged to [`super::shutdown::FIRE_WAIT`]: the fire's wait is what is
 /// left of that budget, so the terminal's total stays `FIRE_WAIT` + `FOLDERS_WAIT`.
-pub(super) const RETIRE_WAIT: Duration = Duration::from_secs(1);
+pub(crate) const RETIRE_WAIT: Duration = Duration::from_secs(1);
 
 /// An in-process service the daemon's end waits for. The three steps are called in this order, each participant's
 /// closure before any participant's stop, from one thread the terminal bounds; none of them may rely on the runtime
@@ -45,7 +45,6 @@ impl Registry {
     }
 
     /// Register `participant`; false when retirement has already begun and the caller must not start.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the project chat is the first caller"))]
     pub(crate) fn register(&self, participant: Arc<dyn Participant>) -> bool {
         match self.participants.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             Some(list) => {
@@ -54,6 +53,11 @@ impl Registry {
             }
             None => false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.participants.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, Vec::len)
     }
 
     fn take(&self) -> Vec<Arc<dyn Participant>> {
@@ -70,7 +74,7 @@ pub(crate) fn participants() -> &'static Registry {
 /// Retire every participant of `registry` within `bound`: close admission for all, request stop of all, then wait for
 /// each. The steps run on a thread of their own, so a participant that blocks in any of them costs the bound and no
 /// more; those not confirmed by then are the report's `incomplete`. A second call finds the registry empty.
-pub(super) fn retire(registry: &Registry, bound: Duration) -> Retirement {
+pub(crate) fn retire(registry: &Registry, bound: Duration) -> Retirement {
     let list = registry.take();
     if list.is_empty() {
         return Retirement::default();
