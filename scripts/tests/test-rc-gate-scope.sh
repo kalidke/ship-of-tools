@@ -311,6 +311,25 @@ check "the first run on a target, with no times file, writes this run's jobs" '(
     merge_times
     grep -qP "^bin:bin_fail\t[2-9]$" "$RCG_TIMES")'
 
+# a split binary's per-test jobs key on the target and the test, each its own
+fixture o7
+x=$work/tools/comm_wake-0123456789abcdef
+printf '#!/bin/sh\ncase "$*" in *--ignored*) ;; *--list*) echo "a_test: test"; echo "b_test: test" ;; esac\nexit 0\n' > "$x"; chmod +x "$x"
+printf 'comm_wake\t%s\t%s\n' "$x" "$work/o7/rust/platform" >> "$work/L-o7/tests.tsv"
+CAP=1 pipeline o7 -
+check "keys: a split binary's jobs are keyed by target and test, distinct, with no hash" '[ "$(cut -f1 "$work"/L-o7/times/* | grep -c "^one:comm_wake:[ab]_test$")" -eq 2 ] && [ -z "$(cut -f1 "$work"/L-o7/times/* | sort | uniq -d)" ] && ! cut -f1 "$work"/L-o7/times/* | grep -q "^one:.*[0-9a-f]\{16\}"'
+# a lookup never makes an entry: two unmeasured jobs of one key stay unmeasured beside a measured one
+orderfn=$(sed -n '/^timekey() {/,/^}/p;/^order_listing() {/,/^}/p' "$gate")
+check "order_listing: reading a job's time makes no entry, so an unmeasured key stays unmeasured" '(
+    eval "$orderfn"
+    RCG_TIMES=$work/ol.tsv; printf "lint:b\t5\n" > "$RCG_TIMES"
+    [ "$(order_listing <<< "$(printf "lint\tA\nlint\tA\nlint\tb")" | cut -f2 | tr "\n" " ")" = "A A b " ])'
+check "merge_times: a value of ten digits or more, or a bad line, is not kept; nine digits is" '(
+    eval "$mergefn"
+    L=$work/L-tm; RCG_TIMES=$work/dig.tsv; printf "bin:big\t12345678901\nbin:ok\t123456789\n" > "$RCG_TIMES"
+    merge_times
+    [ "$(cut -f1 "$RCG_TIMES" | tr "\n" " ")" = "bin:bin_fail bin:ok " ])'
+
 # ---- the verdict, the summary lines and the refusals the main flows call, driven as they are called
 check "a whole run that passed ends ALLDONE" '[ "$(unset RCG_SCOPE_BASE; gate_verdict 0)" = ALLDONE ]'
 check "a scoped run that passed ends ALLDONE SCOPED, never ALLDONE" '[ "$(RCG_SCOPE_BASE=b gate_verdict 0)" = "ALLDONE SCOPED" ]'

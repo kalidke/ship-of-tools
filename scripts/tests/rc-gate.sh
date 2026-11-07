@@ -513,7 +513,7 @@ order_listing() {
     printf '%s\t%s\n' "$REPLY" "$line"
   done | awk -F'\t' -v tf="$RCG_TIMES" '
     BEGIN { while ((getline l < tf) > 0) { n = split(l, f, "\t"); if (n == 2 && f[1] != "" && length(f[2]) < 10 && f[2] ~ /^[0-9]+$/) t[f[1]] = f[2] } }
-    { k = $1; sub(/^[^\t]*\t/, ""); printf "%d\t%d\t%d\t%s\n", (k in t), t[k] + 0, NR, $0 }' |
+    { k = $1; sub(/^[^\t]*\t/, ""); printf "%d\t%d\t%d\t%s\n", (k in t), (k in t) ? t[k] : 0, NR, $0 }' |
     sort -t$'\t' -k1,1n -k2,2nr -k3,3n | cut -f4-
 }
 # merge_times: this run's measured jobs ($L/times/*) over the file; a job that did not run keeps its old time
