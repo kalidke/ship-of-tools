@@ -508,6 +508,10 @@ pub mod op {
     /// Server to client push: the service's phase and the watches that need a snapshot, [`crate::ops::ChatStatusEvt`].
     pub const CHAT_STATUS: &str = "chat.status";
 
+    /// A window shares, or clears, the text selected in a previewed project file with the row's agent
+    /// (`ops/selection.rs`): [`crate::ops::SelectionSetReq`], reply [`crate::ops::SelectionSetRes`].
+    pub const SELECTION_SET: &str = "selection.set";
+
     /// The frame behind a `handoff` hello on a dedicated lease connection: the window claims this
     /// daemon. Payload [`crate::ops::FeLeaseReq`]; reply [`crate::ops::FeLeaseRes`].
     pub const FE_LEASE: &str = "fe.lease";
@@ -568,6 +572,9 @@ pub use bus::*;
 
 mod chat;
 pub use chat::*;
+
+mod selection;
+pub use selection::*;
 
 mod update;
 pub use update::*;
