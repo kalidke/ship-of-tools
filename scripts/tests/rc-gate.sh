@@ -352,23 +352,10 @@ shell_wanted() { want shell "$(shell_group "$1")"; }
 crate_wanted() { want rust "$(basename "$1")"; }
 
 producer() {
-  local k tgt t n exe pkg f s found out lrc ignored irc prc
+  local k tgt t n exe pkg f s out lrc ignored irc prc
   local -A LISTED SPLIT_EXE SPLIT_PKG
   local SHELL_ALL=()
-  local SLOW_FIRST=(
-    test-spawn-capsule-workspace
-    capsule_workspaces/spawn::capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
-    supervisor
-    test-status-floor
-  )
-  # the tests release-gate.yml runs are slow first here only when RCG_FULL runs them
-  [ -n "${RCG_FULL:-}" ] && SLOW_FIRST=(
-    lane_bridge/outage::a_blackhole_is_unreachable_and_retried
-    lane_bridge/outage::a_daemon_outage_past_the_window_keeps_retrying
-    lane_bridge/outage::a_terminal_row_is_terminal_after_the_window
-    fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window
-    "${SLOW_FIRST[@]}")
-  # shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
+  # shell suites: all of them, listed here and emitted at step 5
   for f in "$D"/comm/tests/test-*.sh "$D"/agents/tests/test-*.sh; do
     SHELL_ALL+=("$f")
   done
@@ -467,33 +454,6 @@ PYLIST
     done < <(python3 "$D/scripts/tests/shards.py" parts ${RCG_FULL:+all})
   fi
 
-  for k in "${SLOW_FIRST[@]}"; do
-    case $k in
-      test-*)
-        found=
-        for f in "${SHELL_ALL[@]}"; do
-          if [ "$(basename "$f" .sh)" = "$k" ]; then found=$f; fi
-        done
-        if [ -z "$found" ]; then echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; continue; fi
-        shell_wanted "$found" && emit_shell "$found"
-        ;;
-      */*)
-        [ "$BUILD_RC" -eq 0 ] || continue
-        tgt=${k%%/*}; t=${k#*/}
-        if row_for "$tgt" && ! crate_wanted "$pkg"; then continue; fi
-        if [ -n "${LISTED[$tgt]:-}" ] && grep -qxF -- "$t" <<< "${LISTED[$tgt]}"; then
-          emit_one "${SPLIT_EXE[$tgt]}" "${SPLIT_PKG[$tgt]}" "$t"
-        else
-          echo "slow-first-missing $k" >> "$L/summary.txt"
-          fin "missing-${k//[:\/]/_}" 101
-        fi
-        ;;
-      *)
-        [ "$BUILD_RC" -eq 0 ] || continue
-        if row_for "$k"; then crate_wanted "$pkg" && emit_bin "$exe" "$pkg"; else echo "slow-first-missing $k" >> "$L/summary.txt"; fin "missing-${k//[:\/]/_}" 101; fi
-        ;;
-    esac
-  done
   st shell-suites
   # a scoped group with no suite in the tree is a failure, not a pass
   if narrow; then
@@ -530,6 +490,37 @@ PYLIST
   done < "$L/tests.tsv"
 }
 
+# The jobs start longest first, from the wall times of the last run kept in $CARGO_TARGET_DIR/rc-gate-times.tsv (one
+# `key<TAB>seconds` line per job). A job's key is its kind and name with the test binary's hash removed, which changes
+# with every build: `bin:comm_wake`, `one:comm_wake__<test>`.
+RCG_TIMES=$CARGO_TARGET_DIR/rc-gate-times.tsv
+# timekey <job line>: sets REPLY to the job's key
+timekey() {
+  local k a re='^(.*)-[0-9a-f]{16}(.*)$'
+  IFS=$'\t' read -r k a _ <<< "$1"
+  REPLY=$k:$a
+  [[ $REPLY =~ $re ]] && REPLY=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
+  return 0
+}
+# order_listing: the job lines on stdin, a job the times file does not name first (in their order), then the named ones,
+# the longest first; a line of the file that is not `key<TAB>seconds` is ignored
+order_listing() {
+  local line
+  while IFS= read -r line; do
+    timekey "$line"
+    printf '%s\t%s\n' "$REPLY" "$line"
+  done | awk -F'\t' -v tf="$RCG_TIMES" '
+    BEGIN { while ((getline l < tf) > 0) { n = split(l, f, "\t"); if (n == 2 && f[1] != "" && f[2] ~ /^[0-9]+$/) t[f[1]] = f[2] } }
+    { k = $1; sub(/^[^\t]*\t/, ""); printf "%d\t%d\t%s\n", (k in t) ? t[k] : 999999999, NR, $0 }' |
+    sort -t$'\t' -k1,1nr -k2,2n | cut -f3-
+}
+# merge_times: this run's measured jobs ($L/times/*) over the file; a job that did not run keeps its old time
+merge_times() {
+  [ -n "$(ls -A "$L/times" 2> /dev/null)" ] || return 0
+  awk -F'\t' 'NF == 2 && $1 != "" && $2 ~ /^[0-9]+$/ { t[$1] = $2 } END { for (k in t) print k "\t" t[k] }' \
+    "$RCG_TIMES" "$L"/times/* 2> /dev/null | sort > "$RCG_TIMES.new" && mv "$RCG_TIMES.new" "$RCG_TIMES"
+}
+
 if [ "${1:-}" = --job ]; then
   envs
   IFS=$'\t' read -r kind a b c d <<< "$2"
@@ -546,6 +537,8 @@ if [ "${1:-}" = --job ]; then
     one) job_test "$a" "$b" "$c" "$d" ;;
     part) job_part "$a" "$b" "$c" "$d" ;;
   esac
+  timekey "$2"
+  mkdir -p "$L/times" && printf '%s\t%s\n' "$REPLY" "$SECONDS" >> "$L/times/$$"
   exit 0
 fi
 
@@ -555,7 +548,7 @@ if [ "${1:-}" = --pipeline ]; then
   set -o pipefail
   # the listing is taken whole before any job starts, so a refused listing (emit's exit 2) starts no job
   listing=$(producer) || exit $?
-  printf '%s\n' "$listing" | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
+  order_listing <<< "$listing" | xargs -d '\n' -n 1 -P "$2" bash "$SELF" --job
   exit $?
 fi
 
@@ -692,6 +685,7 @@ if [ "$INTR" -eq 0 ]; then
   wait "$PG"
   XS=$?
   [ "$XS" -eq 0 ] && [ "$INTR" -eq 0 ] && census > "$L/leftovers.txt"
+  merge_times
 fi
 # anything the tests left in the container is reported; the container's end kills it
 LEFT=$(cat "$L/leftovers.txt" 2> /dev/null)
