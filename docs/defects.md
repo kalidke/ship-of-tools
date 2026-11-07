@@ -189,12 +189,18 @@ owned by `docs/CLAUDE.md`.
   dialog.
 - **REAUTH-TRUST-LOST** [session] After 23 rows were moved to another account with `sot-fe reauth` within 20 s,
   7 of the 23 roots had no accepted entry in the new account's `.claude.json` and 3 sat at Claude Code's folder-trust
-  dialog. Likely cause, unproven: a lost update, since 23 Claude Code processes rewrote the same file from their own
-  snapshots within 20 s. Logging of every trust outcome has landed. Not built: when the dialog reader sees the
+  dialog. Seen again on 0.7.0 (2026-11-06 and 11-07, three roots, two accounts), with every trust outcome logged. Cause,
+  measured there: a lost update. The daemon logged `Recorded` for each root before its leg started; Claude Code's backups
+  minutes later held no entry; Claude Code 2.1.319 saves the file under its own lock by reading it again and renaming its
+  copy over it, and the daemon's write (`agents/folder_trust.rs`) is outside that lock, so a neighbor leg's start-up save
+  replaced it. All three losses came 0.58 to 0.81 s after another leg on the same account started (3 of 6 records written
+  within 1 s of a start were lost, none of 15 written 1.44 s or more after one). Not built: when the dialog reader sees the
   folder-trust dialog on a leg's first screen and the root lies under the declared prefix, record trust again and
-  restart that leg once with the same resume id (no turn has run); a second sight leaves the row red. Never answer the
-  dialog by keys. Red tests first: a trust entry removed after the spawn's record leaves the row restarted once and
-  trusted; a root outside the prefix is never restarted.
+  restart that leg once with the same resume id (no turn has run); a second sight leaves the row red. The restart waits
+  until 2 s have passed since the last Claude leg start on the same trust file, since its own record is the same
+  unlocked write; the dialog's variant for a folder already trusted (option `No, continue without these permissions`),
+  which a restart cannot clear, is not restarted. Never answer the dialog by keys. Red tests first: a trust entry removed
+  after the spawn's record leaves the row restarted once and trusted; a root outside the prefix is never restarted.
 - **WRAPPED-DRAFT-READS-DIALOG** [note] A person's draft that wraps (or holds a newline) puts the cursor's row out of the
   box's one line, so `input_refused` returns "not in an input box" and `page_reply::refusal_name` names it `dialog`; the
   person is told a dialog is open when it is their unsent text. Rule if seen: a box identified by its two rules with text
@@ -325,6 +331,16 @@ owned by `docs/CLAUDE.md`.
   guarantee of its own in the agents page; it is owned policy of the recipe, proved by `memory::tests::*`.
 - **CODEX-GLOBAL-SKILLS** [note] Codex's skills and plugin still install into the global `$CODEX_HOME` and `~/.agents`,
   outside any row; the same question as guarantee 7, for Codex. A pass decides it with the Codex plugin mechanism.
+- **ROW-CLEAR-NO-SESSION-START** [person] After a `/clear` or a compaction, a Claude row's session does not run the comm
+  session start and is not pointed at its handoff, so a bare `/clear` is not enough to resume work. A regression: hook
+  entries on SessionStart for `clear` and `compact` existed and were tested until the hooks moved into the launch recipe;
+  a row leg's `--settings` now carries PostToolUse, PreToolUse on AskUserQuestion and UserPromptSubmit only. Fix: the
+  recipe carries SessionStart on `clear` and `compact`, running the session start, whose output names the handoff, with a
+  test that a launched row's settings hold both and that the output names the handoff.
+- **TRUST-WRITE-DROPS-SAVE** [note] The reverse of REAUTH-TRUST-LOST, by reading: `ensure_folder_trusted`
+  (`agents/folder_trust.rs`) reads the account's `.claude.json`, inserts the entry and renames its copy over the file
+  outside Claude Code's lock, so a Claude Code save that lands between that read and that rename is dropped (a counter, a
+  project field, or an account field). Not seen; the window is a few milliseconds.
 
 ## files
 

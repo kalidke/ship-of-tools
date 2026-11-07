@@ -854,3 +854,21 @@ A landing's record goes here, with its measured times; the package page holds on
   twofold (the per-roster counter and the tests' own constant serials), measured at 20 of 150 before and 0 of 160 after.
   Round 2 repeated the filter 300 times clean. Both scoped gates passed first time (the first on luck, given the red the
   review found). Cause of the miss: two review rounds and two ten-minute gates in series after a build of 6 minutes.
+- From here on (2026-11-07 10:44) a landing's time is recorded as where its minutes went, with no half-hour mark and no miss;
+  the maintainer's standard that no code change takes an hour stays.
+- The selection variable, 2026-11-07: builder launched 10:06, main 10:49 (5f73bd0f8), 43 minutes. Every agent leg a row's
+  supervisor starts carries `SOT_SELECTION_FILE`, its row's state folder plus `selection.json`, in a form a Git Bash shell
+  reads on Windows (forward slashes, a verbatim prefix removed by platform's `simplify_verbatim`); no nested leg inherits it:
+  the variable is on the nesting scrub list that `sotd agent-exec` and a row spawned inside a row apply, and `ccx` drops it
+  unless started with `--capsule`, which the daemon passes for a Codex row's own leg. The spawn's scrub-then-row-pairs order
+  is one function a test pins; a real daemon's session test pins the folder. Before the first commit, the plan's premise
+  that Claude Code shows a prompt hook's message and passes its context to the model was run on Linux (2.1.319): it held,
+  a message queued during a turn runs the hook when it is sent, and a cleared selection stays in that conversation's history.
+  About 50 product and 75 test lines. Where the minutes went: the build 5 (10:06 to 10:11, beside the premise run); three
+  review rounds of 8, 10 and 7 minutes (blockers 1, 0, 0); three fix rounds of 2, 1 and 1 minutes; three scoped gates of 8,
+  10 and 10 minutes, each beside its review; one hosted branch run beside the third, for the Windows-only test. Round 1
+  found the plan's premise false that `ccx` is only a nested launcher: it is also a Codex row's own leg, so the first
+  version stripped the variable from every Codex row; the fix pins both ways by running the real `ccx`. Round 2 found the
+  real-daemon assertion composing its own path while the leg gets the canonical state folder, which on Windows is verbatim
+  and would have given `//?/C:/...`; a third round, bounded to that fix, ran on the session's decision. Its two text
+  should-fixes ride the next agents change.
