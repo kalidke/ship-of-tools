@@ -159,22 +159,29 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    daemon's rows through one canonicalizer (an absolute folder, resolved through symlinks, `.`, `..` and a trailing
    slash, de-verbatimed and in the system's letter case on Windows; a relative spelling or a folder that does not exist
    is unknown); then `Credentials::read`; then the lock folder (`<daemon state>/chat`, private); then registration with
-   lifecycle's `retire::participants()` (refused once retirement began, and then no start); then the start on a task,
-   so boot never waits on Slack. A non-hub opens no chat file and registers nothing; a hub with no `chat.toml` is off
-   (`Refused(Missing)`) and writes nothing; a malformed one opens no secret file. Every open goes through the one
-   `Reader` passed to `begin`, and `begin` is the only caller of `Config::load` and `Credentials::read`: the status,
-   its words, `resolve`, a stop and a wait read memory. The hub fact is read once. A daemon that stops being the hub
-   after its start (the topology changes or vanishes) keeps its running service until it ends and opens no file again;
-   a reload does not exist, and a start after a stop is a second `begin` (a restart of the daemon in practice). Rows
-   made after the start are not seen: a mapping to a folder no row held then makes `chat.toml` refused (`UnknownFolder`)
-   until the daemon restarts. A second daemon of the account on a home that names the same hub reads the files like the
-   first and is `Held` by C14's lock. Retirement: lifecycle closes admission (the chat has none yet: a handler reads
-   `service()`, `None` once the stop begins), then `request_stop` spawns `Service::stop(500 ms)` on the daemon's
-   runtime (a start still under way is aborted), and `wait_retired` waits for the stopped state; lifecycle's 1 s bound
-   cancels no future, so a stop that outlasts it is reported incomplete and the daemon ends regardless. Limit: the
-   Windows spellings (drive-letter case, separators) rest on canonicalization and are compiled, not run, here;
-   the registration holds the phase lock until the start is in place, so a retirement racing `begin` finds it (`a_retirement_racing_the_begin_never_leaves_a_start_running` runs 400 races, a statistical test: the window cannot be paused, and it is red with a pause put in it; `retiring_a_start_under_way_drops_its_future` and `a_start_that_finishes_as_retirement_arrives_is_stopped_at_once` are deterministic, and fail by hanging, not by an assertion, when the abort or the stop is removed); a failed start is final until the daemon restarts, and `resolve` answers from the file alone (a handler joins it with `status()`); the running-listener paths are proved with a test listener, since `Service::start` reaches Slack only and the
-   backend has no fake of it (the service's own stop is guarantee 22's). Limits: a file's permissions are not checked here; the attachment bound is B4's.
+   lifecycle's `retire::participants()`, made with the phase lock already held and kept until the start task is in
+   place, so a retirement that reaches `request_stop` after the registration finds the start and aborts it (refused
+   once retirement began, and then no start; pinned by
+   `a_retirement_reaching_request_stop_between_register_and_starting_finds_the_start`, through a test-only hook in
+   lifecycle's `Registry`); then the start on a task, so boot never waits on Slack. A non-hub opens no chat file and
+   registers nothing; a hub with no `chat.toml` is off (`Refused(Missing)`) and writes nothing; a malformed one opens no
+   secret file. Every open goes through the one `Reader` passed to `begin`, and `begin` is the only caller of
+   `Config::load` and `Credentials::read`: the status, its words, `resolve`, a stop and a wait read memory. The hub fact
+   is read once. A daemon that stops being the hub after its start (the topology changes or vanishes) keeps its running
+   service until it ends and opens no file again; a reload does not exist, and a start after a stop is a second `begin`
+   (a restart of the daemon in practice). A failed start is final until the daemon restarts, and `resolve` answers from
+   the file alone (a handler joins it with `status()`). Rows made after the start are not seen: a mapping to a folder no
+   row held then makes `chat.toml` refused (`UnknownFolder`) until the daemon restarts. A second daemon of the account
+   on a home that names the same hub reads the files like the first and is `Held` by C14's lock. Retirement: lifecycle
+   closes admission (the chat has none yet: a handler reads `service()`, `None` once the stop begins), then
+   `request_stop` spawns `Service::stop(500 ms)` on the daemon's runtime (a start still under way is aborted;
+   `retiring_a_start_under_way_drops_its_future`, and `a_start_that_finishes_as_retirement_arrives_is_stopped_at_once`
+   for a service made as retirement arrives, each failing at a 10 s bound with a message naming the rule), and
+   `wait_retired` waits for the stopped state; lifecycle's 1 s bound cancels no future, so a stop that outlasts it is
+   reported incomplete and the daemon ends regardless. Limits: the Windows spellings (drive-letter case, separators)
+   rest on canonicalization and are compiled, not run, here; the running-listener paths are proved with a test
+   listener, since `Service::start` reaches Slack only and the backend has no fake of it (the service's own stop is
+   guarantee 22's); a file's permissions are not checked here; the attachment bound is B4's.
 22. **One workspace has one listener, and its lock lives exactly as long as the listener.** `Service::start(config,
    credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the
    workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
