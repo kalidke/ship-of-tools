@@ -131,34 +131,11 @@ pub(crate) fn row_facts(workspaces: &Workspaces) -> Vec<RowFact> {
     workspaces.list().iter().filter_map(|ws| fact_of(workspaces, ws)).collect()
 }
 
-/// The registry's current entry for the canonical row id, read now. The id is matched exactly (the registry's own
-/// `resolve` also takes a slug, which would let a name stand for a row), and no lock is held past the read.
+/// The registry's current entry for the canonical row id, read now. The id is matched exactly (the registry's
+/// `resolve` also takes a slug, which the filter rejects), and no lock is held past the read.
 fn current_row(workspaces: &Workspaces, id: &str) -> Option<RowFact> {
-    let ws = workspaces.list().into_iter().find(|ws| ws.workspace_id == id)?;
+    let ws = workspaces.resolve(Some(id)).filter(|ws| ws.workspace_id == id)?;
     fact_of(workspaces, &ws)
-}
-
-/// Every action that reaches the service, the one list the adapter and its test walk.
-#[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Action {
-    Watch,
-    Unwatch,
-    History,
-    Post,
-    /// A watch's snapshot or resync: each is a history call, admitted again whenever it is made.
-    Snapshot,
-}
-
-#[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
-impl Action {
-    pub(crate) const ALL: [Action; 5] = [Action::Watch, Action::Unwatch, Action::History, Action::Post, Action::Snapshot];
-
-    /// Every action but `Unwatch` reaches Slack or a file. An unwatch ends access and calls nothing, and a watch whose
-    /// row went away must stay droppable, or it would hold one of the bounded watch slots for good.
-    fn rechecks_row(self) -> bool {
-        self != Action::Unwatch
-    }
 }
 
 /// A mapping's folder as chat's `Rows` asks for it: through the same canonicalizer as the rows' own roots.
@@ -303,7 +280,7 @@ impl<L: Listener> Chat<L> {
         Ok((resolution, delivers))
     }
 
-    /// M3: the one door every chat action passes, at the moment it is admitted. The service is running; the row is
+    /// M3: the one door every chat action that reaches Slack or a file passes, at the moment it is admitted. The service is running; the row is
     /// still the registry's current entry for that id (a removed row, a replaced one under a new id and an id that
     /// never existed are `StaleRow`); it is not the inert anchor (`Unmapped`, as a folder the file does not map); and
     /// its current folder maps, in the configuration loaded at start, to exactly the expected workspace and channel
@@ -311,23 +288,28 @@ impl<L: Listener> Chat<L> {
     /// rows lock is held across a Slack call, and a call already made is not recalled when its row is removed
     /// afterwards; a later action, a watch's next snapshot included, is admitted again.
     #[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
-    pub(crate) fn admit(&self, action: Action, rows: &Workspaces, target: &ChatTarget) -> Result<Arc<L>, ChatCode> {
+    pub(crate) fn admit(&self, rows: &Workspaces, target: &ChatTarget) -> Result<Arc<L>, ChatCode> {
         let service = self.service().ok_or(ChatCode::Unavailable)?;
-        if action.rechecks_row() {
-            let fact = current_row(rows, &target.row).ok_or(ChatCode::StaleRow)?;
-            if fact.inert {
-                return Err(ChatCode::Unmapped);
-            }
-            match self.mapping(&fact.canonical.to_string_lossy()) {
-                Resolution::Mapped { workspace, channel, .. } => {
-                    if workspace != target.workspace || channel != target.channel.as_str() {
-                        return Err(ChatCode::StaleMapping);
-                    }
+        let fact = current_row(rows, &target.row).ok_or(ChatCode::StaleRow)?;
+        if fact.inert {
+            return Err(ChatCode::Unmapped);
+        }
+        match self.mapping(&fact.canonical.to_string_lossy()) {
+            Resolution::Mapped { workspace, channel, .. } => {
+                if workspace != target.workspace || channel != target.channel.as_str() {
+                    return Err(ChatCode::StaleMapping);
                 }
-                _ => return Err(ChatCode::Unmapped),
             }
+            _ => return Err(ChatCode::Unmapped),
         }
         Ok(service)
+    }
+
+    /// The door for an unwatch, which hands out no service: it ends access and calls nothing, so it needs no current
+    /// row, and refusing it for a stale one would leave the watch holding one of the bounded slots.
+    #[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
+    pub(crate) fn admit_unwatch(&self) -> Result<(), ChatCode> {
+        self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
     }
 }
 
@@ -336,7 +318,7 @@ impl<L: Listener> Participant for Chat<L> {
         "chat"
     }
 
-    /// The chat has no admission to close yet: a handler checks `service()`, which is `None` once the stop begins.
+    /// The chat has no admission to close yet: a handler's `admit` refuses `unavailable` once the stop begins.
     fn close_admission(&self) {}
 
     fn request_stop(&self) {

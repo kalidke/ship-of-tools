@@ -527,7 +527,8 @@ fn target(row: &str, workspace: &str, channel: &str) -> ChatTarget {
 /// c no mapping names. The service is a listener that holds no Slack: a refusal is proved by the adapter handing out
 /// no service, the only way to a call (`Chat::service` is private), since the backend has no fake Slack.
 struct World {
-    home: Home,
+    /// Keeps the temporary folders alive.
+    _home: Home,
     rows: Workspaces,
     chat: Arc<Chat<Fake>>,
     alpha: String,
@@ -544,85 +545,62 @@ async fn world() -> World {
     rows.insert(row("beta", &folders[1]));
     let chat = begin(&home, &row_facts(&rows), &Observed::new(), &Registry::new(), gives(&Arc::new(Fake::default())));
     assert_eq!(settled(&chat).await, Status::Running);
-    World { home, rows, chat, alpha, folders }
+    World { _home: home, rows, chat, alpha, folders }
 }
 
-fn admitted(w: &World, id: &str, workspace: &str, channel: &str) -> Vec<Result<(), ChatCode>> {
-    let t = target(id, workspace, channel);
-    Action::ALL.iter().map(|a| w.chat.admit(*a, &w.rows, &t).map(|_| ())).collect()
-}
-
-/// What each action answers: every action but an unwatch the same, and an unwatch only needs the service.
-fn all(refusal: ChatCode) -> Vec<Result<(), ChatCode>> {
-    Action::ALL.iter().map(|a| if *a == Action::Unwatch { Ok(()) } else { Err(refusal) }).collect()
-}
-
-fn ok() -> Vec<Result<(), ChatCode>> {
-    vec![Ok(()); Action::ALL.len()]
-}
-
-#[test]
-fn every_action_is_in_the_one_table() {
-    // Adding a variant stops this match compiling; the table must then name it.
-    let named = |a: Action| match a {
-        Action::Watch | Action::Unwatch | Action::History | Action::Post | Action::Snapshot => a,
-    };
-    for a in Action::ALL {
-        assert_eq!(named(a), a);
-    }
-    let mut seen = Action::ALL.to_vec();
-    seen.dedup();
-    assert_eq!(seen.len(), 5);
+fn admitted(w: &World, id: &str, workspace: &str, channel: &str) -> Result<(), ChatCode> {
+    w.chat.admit(&w.rows, &target(id, workspace, channel)).map(|_| ())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stale_row_or_mapping_cannot_post_or_fetch() {
     let w = world().await;
     let id = w.alpha.clone();
-    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), ok());
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), Ok(()));
 
     // A removed row, an id that never existed, an empty id and a slug used as an id: no service.
     for what in ["ws-nothing-0", "", "alpha"] {
-        assert_eq!(admitted(&w, what, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow), "{what:?}");
+        assert_eq!(admitted(&w, what, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow), "{what:?}");
     }
     // A watch admitted while the row was current: once the row goes, its next snapshot is refused and it can be dropped.
-    assert!(w.chat.admit(Action::Watch, &w.rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
+    assert!(w.chat.admit(&w.rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
+    assert_eq!(w.chat.admit_unwatch(), Ok(()));
     w.rows.remove_by_id(&id).unwrap();
-    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
 
     // Replaced: a new row in the folder under a new id does not inherit a request that named the old id, and a request
     // naming the new id works.
     let new = w.rows.insert(row("alpha", &w.folders[0])).workspace_id.clone();
     assert_ne!(new, id);
-    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), ok());
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Ok(()));
 
     // A pair the mapping does not hold: another channel, another workspace, a channel the file does not list.
     for (workspace, channel) in [("T0AAAA", "C0BBBB"), ("T0ZZZZ", "C0AAAA"), ("T0AAAA", "C0ZZZZ")] {
-        assert_eq!(admitted(&w, &new, workspace, channel), all(ChatCode::StaleMapping), "{workspace} {channel}");
+        assert_eq!(admitted(&w, &new, workspace, channel), Err(ChatCode::StaleMapping), "{workspace} {channel}");
     }
     // The same id re-rooted (a same-slug insert keeps the id): onto folder b it maps to C0BBBB, not what was expected;
     // onto folder c it maps to nothing; and the row that went away with its folder is gone.
     w.rows.insert(row("alpha", &w.folders[1]));
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::StaleMapping));
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0BBBB"), ok());
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleMapping));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0BBBB"), Ok(()));
     w.rows.insert(row("alpha", &w.folders[2]));
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::Unmapped));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Err(ChatCode::Unmapped));
     std::fs::remove_dir_all(&w.folders[2]).unwrap();
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
 
     // The inert anchor never acts, though its folder is still mapped.
     w.rows.insert(row("alpha", &w.folders[0]));
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), ok());
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Ok(()));
     w.rows.set_default(&new);
-    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::Unmapped));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Err(ChatCode::Unmapped));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_action_is_admitted_unless_the_service_runs() {
     let rows = Workspaces::new();
     let t = |id: &str| target(id, "T0AAAA", "C0AAAA");
-    let unavailable = |chat: &Chat<Fake>, id: &str| Action::ALL.iter().all(|a| chat.admit(*a, &rows, &t(id)).err() == Some(ChatCode::Unavailable));
+    let unavailable = |chat: &Chat<Fake>, id: &str| chat.admit(&rows, &t(id)).err() == Some(ChatCode::Unavailable) && chat.admit_unwatch() == Err(ChatCode::Unavailable);
 
     // Not the hub, a hub with no chat.toml, one with no secrets, and one whose start failed.
     let other = Home::new(Some("elsewhere"));
@@ -648,10 +626,11 @@ async fn no_action_is_admitted_unless_the_service_runs() {
     assert!(unavailable(&chat, "r"));
     let w = world().await;
     let t = target(&w.alpha, "T0AAAA", "C0AAAA");
-    assert!(w.chat.admit(Action::Post, &w.rows, &t).is_ok());
+    assert!(w.chat.admit(&w.rows, &t).is_ok());
     w.chat.request_stop();
     assert!(w.chat.wait_retired(LONG));
-    assert!(Action::ALL.iter().all(|a| w.chat.admit(*a, &w.rows, &t).err() == Some(ChatCode::Unavailable)));
+    assert_eq!(w.chat.admit(&w.rows, &t).err(), Some(ChatCode::Unavailable));
+    assert_eq!(w.chat.admit_unwatch(), Err(ChatCode::Unavailable));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -694,4 +673,20 @@ async fn resolve_joins_the_mapping_with_the_row_and_the_service_status() {
     let non_hub = Home::new(Some("elsewhere"));
     let chat = begin(&non_hub, &[], &Observed::new(), &Registry::new(), refuses("x"));
     assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::NotHub, false)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolve_asks_the_hub_fact_first_and_the_row_before_the_file() {
+    let rows = Workspaces::new();
+    let folders = Home::new(None);
+    let id = rows.insert(row("alpha", &folders.folder("a"))).workspace_id.clone();
+    // A non-hub answers `NotHub` even for an id it does not know.
+    let other = Home::new(Some("elsewhere"));
+    let chat = begin(&other, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    assert_eq!(chat.resolve(&rows, "ws-nothing-0"), Ok((Resolution::NotHub, false)));
+    // A hub with no chat.toml: `Invalid(Missing)` for a row it has, `StaleRow` for one it has not.
+    let bare = Home::new(Some(SELF));
+    let chat = begin(&bare, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::Invalid(ConfigError::Missing), false)));
+    assert_eq!(chat.resolve(&rows, "ws-nothing-0"), Err(ChatCode::StaleRow));
 }
