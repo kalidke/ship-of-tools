@@ -47,7 +47,7 @@ of each.
    `SOTD_BIN` (this daemon's own start path, made absolute; it is checked to be a regular file, executable on Unix, and is not run; a bare name is looked up on `PATH` the same way), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
    `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, and the `PATH` addition of guarantee 3. The spawn removes
    `NESTING_ENV_VARS_TO_SCRUB` from the daemon's own environment first (`CLAUDECODE` and the other markers that make a
-   fresh `claude` think it is nested, `NO_COLOR`, and `SOT_SELECTION_FILE`, so a nested row or a `ccb` or `ccx` session never reads an outer row's selection), then applies the row's pairs, then the account's, so an account's
+   fresh `claude` think it is nested, `NO_COLOR`, and `SOT_SELECTION_FILE`, so a nested row or a `ccb` session never reads an outer row's selection; `ccx` unsets it itself unless started with `--capsule`, which is a Codex row's own leg and keeps it), then applies the row's pairs, then the account's, so an account's
    `CLAUDE_CONFIG_DIR` wins. `sotd agent-exec` scrubs the same list and adds only the `PATH` rule. Limits: comm home and
    self file are absent when no comm home resolves; `SOTD_BIN` is always set, and empty when the start path names no such file or a bare start name is found nowhere, so the leg never inherits the daemon's own value over it, and the session's shell, which reads an empty value as unset, finds `sotd` by its own ladder (an executable that does not work, a missing interpreter included, passes the check); a
    leg started by `agent-exec` carries none of the `SOT_*` row variables, since it runs in a shell that already has its
@@ -161,7 +161,7 @@ of each.
     --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust <prompt>`). It chooses no handle
     (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
-    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
+    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). `--capsule` marks the daemon's own leg for a row: it keeps `SOT_SELECTION_FILE`, which a `ccx` without it unsets. Limits: `ccx` runs
     Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
     `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh`,
     `tests/test-ccx-resume-default.sh`.
@@ -355,7 +355,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 1 | `argv::tests::every_claude_leg_runs_auto_mode_and_never_skips_permissions` |
 | 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/capsule/tests/supervisor/spawn.rs`: `first_run_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
-| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `every_row_leg_names_its_selection_file`, `ccx_unsets_the_selection_file_as_the_scrub_list_does`, `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
+| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `every_row_leg_names_its_selection_file`, `ccx_unsets_the_nesting_markers_the_scrub_list_names`, `tests/test-ccx-launch.sh` (`--capsule` keeps the selection file, a bare `ccx` drops it), `tests/capsule_workspaces/session_env.rs` (a real row's session names its own state folder's file), `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`), `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*`;

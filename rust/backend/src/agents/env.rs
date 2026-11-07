@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 /// where the pty sets no `TERM`/`COLORTERM` and `NO_COLOR` overrides
 /// ConPTY's own VT detection (field report, 2026-09-17).
 /// `SOT_SELECTION_FILE` names the row's selection file, so a nested row or a `ccb` session that inherited it would read
-/// the outer row's selection into its own prompts; the row's own leg gets it after this scrub, from its own pairs.
+/// the outer row's selection into its own prompts; the row's own leg gets it after this scrub, from its own pairs. A
+/// Codex row's leg is `ccx --capsule`, which keeps it; a `ccx` started without `--capsule` unsets it itself.
 pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_FORK_SUBAGENT",
     "CLAUDE_CODE_CHILD_SESSION",

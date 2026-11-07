@@ -37,14 +37,14 @@ fn every_row_leg_names_its_selection_file() {
 }
 
 #[test]
-fn ccx_unsets_the_selection_file_as_the_scrub_list_does() {
+fn ccx_unsets_the_nesting_markers_the_scrub_list_names() {
+    // The selection file is not here: `ccx` keeps it under `--capsule`, which `tests/test-ccx-launch.sh` runs.
     let ccx = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/codex/bin/ccx")).unwrap();
     let unset = ccx.lines().find(|l| l.starts_with("unset ")).expect("ccx has an unset line");
-    for var in NESTING_ENV_VARS_TO_SCRUB.iter().filter(|v| **v != "NO_COLOR") {
+    for var in NESTING_ENV_VARS_TO_SCRUB.iter().filter(|v| !matches!(**v, "NO_COLOR" | "SOT_SELECTION_FILE")) {
         assert!(unset.split(' ').any(|w| w == *var), "ccx's unset line leaves {var} inherited");
     }
 }
-
 #[test]
 #[cfg(not(windows))]
 fn agent_env_prepends_local_bin_to_path_once() {

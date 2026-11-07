@@ -38,6 +38,7 @@ CODEX_LOG="$WORK/codex.log"; JOIN_LOG="$WORK/join.log"
 cat > "$STUB_DIR/codex" <<'STUB'
 #!/bin/sh
 for a in "$@"; do printf '%s\n' "$a"; done > "$CODEX_LOG_PATH"
+printf '%s\n' "${SOT_SELECTION_FILE-<unset>}" > "$CODEX_LOG_PATH.sel"
 STUB
 chmod +x "$STUB_DIR/codex"
 cat > "$STAGE/comm-join.sh" <<'STUB'
@@ -62,7 +63,7 @@ run_ccx() {
         cd "$proj" || exit 1
         env CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" CONTEXT_NAME="$name" \
             PATH="$STUB_DIR:$PATH" CODEX_HOME="$WORK/codex-home" "$@" \
-            "$CCX" --fresh >/dev/null 2>"$WORK/err"
+            "$CCX" --fresh ${CCX_FLAG-} >/dev/null 2>"$WORK/err"
     )
 }
 
@@ -84,9 +85,21 @@ case_no_handle_still_starts_codex_and_says_so() {
         && grep -q 'gave this session no handle' "$WORK/err"
 }
 
+case_a_capsule_leg_keeps_its_rows_selection_file() {
+    CCX_FLAG=--capsule run_ccx proj-box1 SOT_SELECTION_FILE=/row/selection.json || return 1
+    [ "$(cat "$CODEX_LOG.sel")" = "/row/selection.json" ] || { echo "  codex saw: $(cat "$CODEX_LOG.sel")"; return 1; }
+}
+
+case_a_ccx_started_inside_a_row_drops_the_rows_selection_file() {
+    run_ccx proj-box1 SOT_SELECTION_FILE=/row/selection.json || return 1
+    [ "$(cat "$CODEX_LOG.sel")" = "<unset>" ] || { echo "  codex saw: $(cat "$CODEX_LOG.sel")"; return 1; }
+}
+
 check "ccx joins with no name and the first prompt names the handle comm-context reads" case_the_join_names_no_handle_and_the_prompt_names_the_sessions
 check "SOT_COMM_NAME chooses nothing" case_sot_comm_name_chooses_nothing
 check "a join that gives no handle still starts codex and says so" case_no_handle_still_starts_codex_and_says_so
+check "ccx --capsule keeps its row's selection file" case_a_capsule_leg_keeps_its_rows_selection_file
+check "a ccx started without --capsule drops the selection file it inherited" case_a_ccx_started_inside_a_row_drops_the_rows_selection_file
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

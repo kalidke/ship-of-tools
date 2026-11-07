@@ -214,10 +214,15 @@ async fn a_session_carries_the_daemons_own_binary_over_an_inherited_sotd_bin() {
     .await;
 
     let out = row.env().workspace_project_root.join("sotd-bin.txt");
+    let sel_out = row.env().workspace_project_root.join("selection-file.txt");
     let line = if cfg!(windows) {
-        format!("echo %SOTD_BIN%>\"{}\"", out.display())
+        format!("echo %SOT_SELECTION_FILE%>\"{}\"&echo %SOTD_BIN%>\"{}\"", sel_out.display(), out.display())
     } else {
-        format!("printf '%s\\n' \"$SOTD_BIN\" > '{}'", out.display())
+        format!(
+            "printf '%s\\n' \"$SOT_SELECTION_FILE\" > '{}'; printf '%s\\n' \"$SOTD_BIN\" > '{}'",
+            sel_out.display(),
+            out.display()
+        )
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
@@ -258,6 +263,11 @@ async fn a_session_carries_the_daemons_own_binary_over_an_inherited_sotd_bin() {
         got, want,
         "a session's SOTD_BIN is the daemon's own binary, not the value the daemon inherited"
     );
+    // The row's own state folder, never the project's: the file the daemon publishes the selection into.
+    let state_folder = row.env().state_root.join("sot").join("workspaces").join(&workspace_id);
+    let want_sel = state_folder.join("selection.json").to_string_lossy().replace('\\', "/");
+    let got_sel = std::fs::read_to_string(&sel_out).expect("selection-file.txt").trim().replace('\\', "/");
+    assert_eq!(got_sel, want_sel, "a session names its own row's selection file");
 
     if let Err(e) = row.finish() {
         panic!("the row did not end through its owners: {e}");
