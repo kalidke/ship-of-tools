@@ -221,7 +221,8 @@ of each.
   row, or nothing; the one exception is a removal that itself fails, which leaves the old file and answers
   `publish_failed`. The handler resolves the workspace (`unknown_workspace`, an empty id included, writes nothing),
   resolves `node_id` with files' read resolver, the preview's (`bad_node_id` for an empty id, no `files:` prefix, `..` or
-  an absolute path, or a project root that no longer exists), and so follows a link out of the root as the preview does,
+  an absolute path, or a project root missing when the row was registered; a root deleted later is `not_file_text`), and so
+  follows a link out of the root as the preview does,
   never further than the preview reads; it reads at most the preview's 2 MiB (`PREVIEW_BYTE_CAP`) of a regular file (a
   directory, a pipe or device, a missing or unreadable file is `not_file_text`), then `check_selection` and
   `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
@@ -229,14 +230,15 @@ of each.
   (`not_file_text`, `bad_node_id`) and a failed publish (`publish_failed`) removes it first. A removal that fails
   answers `publish_failed` in place of the refusal's own code, and the old file stays. A request the wire refuses at
   decode (a start not before the end, a `len` outside 1 to 2 MiB, an over-long id) is answered `handler_error` and
-  changes nothing, so the previous file stays; a window that gets any error reply sends a clear. The row's state folder
+  changes nothing, so the previous file stays. The row's state folder
   is the capsule's and exists once the row has started; for a row that never started an accepted selection answers
   `publish_failed` and a clear answers `shared`. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Limits: two connections setting one row race, the shared
   temporary file included (the lock is A4's); on Windows a publish or removal that meets an open read can fail, which is
   `publish_failed` and the old file may remain. Unbuilt: `not_a_window` and `no_agent` and `shared` from the leg's marker
   (A3b); the map of who set each file, the removal at a connection's end and the start-up walk (A4); the hook, the leg's
-  variable and the marker (A5). Tests: `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
+  variable and the marker (A5); the window's clear after an error reply (A7). Tests:
+  `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
   row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`.
 - The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
   `check_selection` accepts exactly the file's own text at the
