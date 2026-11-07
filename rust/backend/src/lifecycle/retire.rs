@@ -15,9 +15,9 @@ use std::time::Duration;
 pub(crate) const RETIRE_WAIT: Duration = Duration::from_secs(1);
 
 /// An in-process service the daemon's end waits for. The three steps are called in this order, each participant's
-/// closure before any participant's stop, from one thread the terminal bounds. A participant may use the daemon's runtime (the
-/// chat spawns its stop on it); the bound covers a runtime that is stalled, and the participant is then reported
-/// incomplete.
+/// closure before any participant's stop, from one thread the terminal bounds. A participant may use the daemon's
+/// runtime (the chat spawns its stop on it); the bound covers a runtime that is stalled, and the participant is then
+/// reported incomplete.
 pub(crate) trait Participant: Send + Sync {
     /// A name for the log and the report.
     fn name(&self) -> &'static str;
@@ -38,22 +38,39 @@ pub(crate) struct Retirement {
 /// The registered participants; `None` once retirement has begun, so a late registrant is refused, never missed.
 pub(crate) struct Registry {
     participants: Mutex<Option<Vec<Arc<dyn Participant>>>>,
+    /// A test's hook, called at the end of `register` after the push, outside the registry's lock.
+    #[cfg(test)]
+    after_register: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl Registry {
     pub(crate) const fn new() -> Self {
-        Registry { participants: Mutex::new(Some(Vec::new())) }
+        Registry {
+            participants: Mutex::new(Some(Vec::new())),
+            #[cfg(test)]
+            after_register: Mutex::new(None),
+        }
     }
 
     /// Register `participant`; false when retirement has already begun and the caller must not start.
     pub(crate) fn register(&self, participant: Arc<dyn Participant>) -> bool {
-        match self.participants.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        let pushed = match self.participants.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             Some(list) => {
                 list.push(participant);
                 true
             }
             None => false,
+        };
+        #[cfg(test)]
+        if let Some(hook) = self.after_register.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            hook();
         }
+        pushed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn on_register(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        *self.after_register.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     #[cfg(test)]

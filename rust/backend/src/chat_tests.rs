@@ -490,20 +490,23 @@ async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
     assert!(!called.load(Ordering::SeqCst));
 }
 
-#[test]
-fn a_retirement_racing_the_begin_never_leaves_a_start_running() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_the_start() {
     let home = Home::new(Some(SELF));
     let row = home.configured();
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let _enter = rt.enter();
-    // Whichever side wins, the end state is the same: retired before the registration (refused) or after it
-    // (stopped). Not deterministic: the window is the registration itself, which no test can pause.
-    for _ in 0..400 {
-        let registry = Arc::new(Registry::new());
-        let racing = registry.clone();
-        let retiring = std::thread::spawn(move || retire(&racing, LONG));
-        let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, pending());
-        assert!(retiring.join().unwrap().incomplete.is_empty());
-        assert_eq!(chat.status(), Status::Stopped);
-    }
+    let registry = Arc::new(Registry::new());
+    let retiring = Arc::new(std::sync::Mutex::new(None));
+    // Right after the chat is registered, a retirement starts and is given time to reach `request_stop`: with the
+    // phase lock held by `begin` it waits there for `Starting`; with the lock taken after the registration it has
+    // already finished against a chat that was off. (One sleep: a slow host can only miss the second case.)
+    let (reg, slot) = (registry.clone(), retiring.clone());
+    registry.on_register(Box::new(move || {
+        let reg = reg.clone();
+        *slot.lock().unwrap() = Some(std::thread::spawn(move || retire(&reg, LONG)));
+        std::thread::sleep(Duration::from_millis(50));
+    }));
+    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, pending());
+    let done = retiring.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(done.incomplete.is_empty(), "{done:?}");
+    assert_eq!(chat.status(), Status::Stopped, "a start began after its retirement was reported complete");
 }
