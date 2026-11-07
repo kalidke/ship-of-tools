@@ -13,7 +13,7 @@ use sot_platform::Error as PlatformError;
 use crate::api::{Api, ApiError};
 use crate::config::{Config, Credentials};
 use crate::http::{Http, Secret};
-use crate::socket::{self, Socket, SocketError, Timing, BASE};
+use crate::socket::{self, Gap, Socket, SocketError, Timing, BASE};
 
 /// Why a service did not start, or why a call was refused. Fixed codes: no path, token or Slack text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl std::error::Error for ServiceError {}
 /// A service that exists is running or on its way to stopped; one that was refused or never started is `start`'s error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    /// `gap`: a reconciliation is owed (every hello owes one, and nothing reconciles until the watch lands).
+    /// `gap`: a reconciliation is owed (every hello owes one; `Watches::reconcile` clears it).
     Running { socket: socket::Status, gap: bool },
     /// Stop was asked and has not returned: the listener may still be running, and the lock is held.
     Stopping,
@@ -136,6 +136,22 @@ impl Service {
         match *self.phase.lock().unwrap() {
             Phase::Running(_) => Ok(self.api.clone()),
             _ => Err(ServiceError::Stopped),
+        }
+    }
+
+    /// The socket's gap, for the watch to read (`Watches::sync`); none once stopped.
+    pub fn gap(&self) -> Option<Gap> {
+        match &*self.phase.lock().unwrap() {
+            Phase::Running(s) => s.gap(),
+            _ => None,
+        }
+    }
+
+    /// `Socket::reconciled`, for `Watches::reconcile`; a service that is stopping or stopped clears nothing.
+    pub fn reconciled(&self, gap: Gap) -> bool {
+        match &*self.phase.lock().unwrap() {
+            Phase::Running(s) => s.reconciled(gap),
+            _ => false,
         }
     }
 

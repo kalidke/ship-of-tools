@@ -124,6 +124,13 @@ pub struct Gap {
     pub cause: GapCause,
 }
 
+impl Gap {
+    #[cfg(test)]
+    pub(crate) fn for_test(seq: u64, cause: GapCause) -> Gap {
+        Gap { seq, cause }
+    }
+}
+
 /// The listener as the caller sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {

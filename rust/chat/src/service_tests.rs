@@ -380,3 +380,28 @@ async fn a_cancelled_stop_frees_the_lock() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing() {
+    use crate::watch::{Loaded, Watches};
+    bounded(async {
+        let dir = Scratch::new("reconcile");
+        let fake = holding_fake(WS).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        eventually("the hello's gap", || service.gap().is_some()).await;
+        let mut watches = Watches::new();
+        watches.watch("C0AAAA").unwrap();
+        watches.sync(service.gap());
+        let ticket = watches.begin("C0AAAA").unwrap();
+        // The snapshot is not complete yet, so nothing clears.
+        assert!(!watches.reconcile(|g| service.reconciled(g)));
+        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new(), false), Loaded::Complete);
+        let gap = service.gap().unwrap();
+        assert!(watches.reconcile(|g| service.reconciled(g)));
+        assert!(matches!(service.status(), Status::Running { gap: false, .. }));
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!((service.gap(), service.reconciled(gap)), (None, false));
+        fake.shutdown().await;
+    })
+    .await;
+}

@@ -3,8 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files, and `service`, the one running listener. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, and a `Service`'s workspace lock and phase, and has no delivery. Its file calls are `config`'s two reads (guarantee 21) and the one lock file `service` takes through platform (guarantee 22); it reads no token from the environment.
+listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it and no daemon code names it yet, so `sotd` holds none of it. It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock and phase, and a `Watches`' channels (bounded, guarantee 23), and has no delivery. Its file calls are `config`'s two reads (guarantee 21) and the one lock file `service` takes through platform (guarantee 22); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -166,7 +166,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `Api(wrong_workspace)` before serving, and the lock is released. `stop(within)` is bounded and final: the signal, a join
    within `within`, then abort and await; a second call returns at once, and `api()` is `Stopped` and every handle already taken answers `Closed` (the API itself is closed, before the socket is
    signaled) from the moment a stop begins; only the call that began the stop waits for the listener, any other returns at once;
-   a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until B2c reconciles),
+   a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until `Watches::reconcile` clears it through `Service::reconciled`; `Service::gap` is the value to read, and both answer nothing once a stop has begun),
    `Stopping` or `Stopped`. A service holds three things: the workspace lock, its phase, and the API's closed state (set when a stop begins, never cleared, seen by every handle). A stop whose caller stops waiting (its future is dropped, as lifecycle's 1 s retirement bound does) leaves that service at `Stopping` for good, not `Stopped`: every handle answers `Closed` and the task is aborted, so the lock frees when the runtime drops the task and a `start` right after may wait platform's short retry; nothing may poll for `Stopped` after cancelling. A service refused or never started has no value, its state is `start`'s error. The error codes are
    the existing ones plus `held`, `lock`, `stopped`, and `closed`, which a handle answers once its service has begun to stop. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
    a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another and freed when the
@@ -178,6 +178,29 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    is the caller's; the daemon's retirement of in-process services allows 1 s (`lifecycle`), and a `within` over that is
    reported incomplete there, with the lock released by the process's end.
 
+23. **Watching cannot lose the snapshot/event overlap silently (M5).** `Watches` is a model with no task and no call; its
+   caller (the wire and daemon landings; until then the tests) feeds it the socket's events (`apply`), the gap
+   (`sync(Service::gap())`, before it trusts any state) and each snapshot's answer. A channel is registered (`watch`)
+   before its snapshot is begun (`begin`, which returns a ticket), so no event falls between them. While the snapshot is
+   pending, live changes go into an overlay of at most 128, applied after the snapshot in order: an edit or delete seen
+   live wins over the snapshot's older content, a message the snapshot lacks is kept, and a new message never replaces
+   one held. An overlay past its bound is dropped and its snapshot refused (`Resync`, the channel `Needed`, nothing
+   kept from it). Every gap, every hello included, makes every complete watch `Needed`, and a snapshot is accepted only
+   when no gap newer than the one known when it began has been seen, so a gap latched while one is pending, or a second
+   during a resync, refuses it. A snapshot that fails or whose service stopped (`failed`) leaves a new one owed. An
+   answer whose ticket is not the channel's pending one (unwatched, watched again, begun again) is `Stale` and changes
+   nothing. The socket's gap is cleared (`reconcile(|g| service.reconciled(g))`) only when every watch that exists is
+   `Complete`, hence resynced from a snapshot begun after that gap was read, and the socket refuses it when anything was
+   lost since; with nothing watched it clears at once. The set is the watches today, and B3's mail joins it. One total
+   order on timestamps (`ts_cmp`): numeric on the validated form, so `9.000000` precedes `10.000000` and `007.000000`
+   is `7.000000`, one message. Bounds: 32 channels, 100 messages a channel (the oldest leave), 128 overlay changes,
+   a channel id of at most 64 characters; the worst case is the product of these and a record's 32 KiB. Limits:
+   "complete" is the latest page of history (at most 20 messages, `Page`) plus every change since, never older
+   messages (an edit of one older than the page's oldest is not added, and a delete of one never held is a no-op);
+   a thread reply, a thread broadcast included, is not applied live (a parent's reply count and a broadcast arrive
+   with the next snapshot); a snapshot nobody answers leaves its channel `Pending`, so the caller answers every ticket
+   with `loaded` or `failed`; a gap newer than the model's, not yet synced, is seen only at the next `sync`.
+
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
 
@@ -187,7 +210,7 @@ never holds another form.
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `WatchError`, `ts_cmp` and the bound constants (`MAX_CHANNELS`, `MAX_KEPT`, `MAX_OVERLAY`). `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -259,6 +282,7 @@ Paths are under `rust/chat/src/`.
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 | 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load`, `every_refusal_has_an_input_a_code_a_place_and_its_own_explanation` (a row per `ConfigError` variant, the boundaries, the two file names), `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else`, `a_planted_fifo_or_device_is_refused_without_a_wait` (the read runs on a thread with a 10 s guard that only a failing read reaches), `the_files_are_named_in_platforms_config_folder` |
 | 22 | one listener (C14's running half) | `service_tests.rs`: `duplicate_workspace_or_app_has_one_listener` (a second service in this process: `Held`, no call, no socket; start after stop), `a_token_for_another_workspace_is_refused_before_serving`, `stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener` (a peer that ignores close; the lock held while stopping, free after), `a_handle_kept_across_stop_is_refused_by_every_call`, `the_lock_is_dropped_with_the_task_before_stop_returns` (the abort is awaited), `a_lock_that_cannot_be_made_is_not_held_and_the_codes_are_fixed`, `a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped`, `a_stop_before_the_socket_connected_returns`, `a_dropped_service_releases_the_lock_only_with_its_listener`, `a_killed_holder_leaves_the_workspace_free` (a second process; SIGKILL), `a_child_started_by_the_daemon_does_not_keep_the_lock` (Unix only; relies on platform's close-on-exec, which no chat mutation reaches) |
+| 23 | watching (M5) | `watch_tests.rs`: `watch_snapshot_overlap_and_lag_resynchronize` (live edit, delete and add during a snapshot; a new message never replaces; the overlay at its bound and one past it), `a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_then` (a gap pending, a second gap during a resync, a refused clear, the value given), `a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync`, `events_nobody_keeps_and_answers_nobody_wants` (an unwatched channel, replies, an unwatch and a re-watch during a snapshot, a failed snapshot, an old page's edit and an unheld delete), `timestamps_order_numerically_on_validated_values`, `the_watch_is_bounded_in_channels_ids_and_messages`; `service_tests.rs`: `the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing` |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
@@ -267,6 +291,7 @@ Paths are under `rust/chat/src/`.
 - `src/http.rs`: the HTTP core and `Http::websocket`. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
 - `src/socket.rs`: the Socket Mode listener; `src/socket_tests.rs`: its tests.
 - `src/service.rs`: the service; `src/service_tests.rs`: its tests.
+- `src/watch.rs`: the watch model; `src/watch_tests.rs`: its tests.
 - `src/fake_slack/`: the test-only fake, its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
