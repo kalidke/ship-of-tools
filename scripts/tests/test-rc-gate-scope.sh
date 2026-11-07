@@ -14,7 +14,7 @@ trap 'rm -rf "${work:?}"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 source "$here/lib-gate-scope.sh" || exit 2
 fail=0
-check() { if eval "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=$((fail + 1)); fi; }
+check() { if (eval "$2"); then echo "PASS: $1"; else echo "FAIL: $1"; fail=$((fail + 1)); fi; }
 
 # ---- the path-to-piece table, over a checkout with two crates
 co=$work/co

@@ -64,7 +64,7 @@ Guarantees, each with the mechanism it rests on:
   run's own container checks are the one part it does not reach.
 - Every gate run, scoped or not, also runs `tests/release-features-check.sh --prove` in the cargo chain: no shipped
   binary may resolve sot-chat's `test-support` feature (its fake Slack's committed server key would let anyone impersonate
-  Slack's hosts to it; sot-chat's lib.rs also refuses it as a compile error in a build without debug assertions). It reads
+  Slack's hosts to it; sot-chat's lib.rs also refuses it as a compile error in a build without debug assertions, and `--prove` runs a release-profile check of sot-chat with the feature that must fail with that error; a release-profile test build is refused by design). It reads
   `cargo tree --workspace -e normal,build` for the release targets; `tests/test-rc-gate-scope.sh` pins that it runs with
   `--prove` over the checkout's rust folder. A depot missing the release targets' packages needs `cargo fetch --locked` once.
 - Every gate run, scoped or not, also runs `tests/test-defects-check.sh`, which runs `tests/defects-check.sh` on the

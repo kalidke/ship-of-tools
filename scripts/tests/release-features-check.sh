@@ -11,6 +11,7 @@
 # with it fails whatever the flag or manifest spelling; this check names the cause early, in the gate. A dev-dependency
 # enabling the feature does not show here; the same line under [dependencies] of any crate (also by target table, in
 # `default`, or another member) does.
+# --prove also builds sot-chat in the release profile with the feature, which must fail with that compile error.
 # --prove first runs the check against copies of the tree with each fault put in, each of which must end red, and the
 # dev-dependency alone, which must end green. Needs the locked packages' sources for the release targets in CARGO_HOME
 # (nothing is fetched; a depot missing them needs `cargo fetch --locked` once). Exit 0 ok; 1 a violation; 2 cargo or the arguments.
@@ -64,6 +65,17 @@ $CHAT" "$RES"
   EXTRA='[package]\nname = "extra"\nversion = "0.0.0"\nedition = "2021"\n[dependencies]\n'"$CHAT"'\n'
   fault feature-on-member-seen-only-by-workspace rust/Cargo.toml 's|^    "vt100",|    "vt100",\n    "extra",|' "$RES" \
     "mkdir -p rust/extra/src && : > rust/extra/src/lib.rs && printf '$EXTRA' > rust/extra/Cargo.toml"
+  # The resolution cannot see `cargo build --release --workspace --all-features`; the compile error in sot-chat's lib.rs
+  # does: a release-profile check of the crate with the feature must fail with that message.
+  refused() {
+    local msg
+    msg=$(cd "$1" && cargo check --release -p sot-chat --features test-support --locked --offline 2>&1) \
+      && { echo "FAIL: a release build of sot-chat with test-support was accepted" >&2; exit 1; }
+    grep -q 'refused in a build without debug assertions' <<< "$msg" \
+      || { echo "FAIL: the release build failed, but not with sot-chat's compile error: $(tail -5 <<< "$msg")" >&2; exit 1; }
+    echo "PASS: a release build with test-support is a compile error"
+  }
+  refused "$rust"
 fi
 
 rc=0

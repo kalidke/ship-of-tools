@@ -57,6 +57,7 @@ pub struct ChatTarget {
 pub enum ChatCode {
     /// No chat service runs here (not the hub, not configured, stopped).
     Unavailable,
+    /// The row's folder maps to no channel (the inert anchor included).
     Unmapped,
     StaleRow,
     StaleMapping,

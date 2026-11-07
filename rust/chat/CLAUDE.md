@@ -43,7 +43,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    failure is `Tls`, before any HTTP byte. There is no endpoint override, insecure mode, test-root setting or plaintext
    path in a shipped build. `Http::for_test`, under `cfg(test)` or the `test-support` feature alone, takes the fixture's
    CA as the only root and a resolver that maps the fixture's logical hosts to loopback and refuses every other name
-   (`Connect`, no connection). The feature also builds the fake Slack, whose committed server key (the CA's key was discarded)
+   (`Connect`, no connection). `Service::start_at` (the fixture's base URL, the product's timing) is gated the same way and held out of shipped builds by the same two guards below; a base URL given with `Http::new` still reaches only Slack hosts on port 443 by the destination check (`Http::check_url`), which no test runs. The feature also builds the fake Slack, whose committed server key (the CA's key was discarded)
    lets anyone impersonate the fixture's Slack hosts to a client that trusts the fixture CA, so it is enabled by
    dev-dependencies only (`sot-backend`'s), and two things hold it out of a shipped binary. First, `lib.rs` is a
    `compile_error!` when the feature is on and `debug_assertions` is off, so any release-profile build with it fails
@@ -53,8 +53,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    workspace a subset of its features) and fails, naming the feature and the crates that enable it, when sot-chat's
    `test-support` is in it, whether set on a normal dependency of any crate (also under a target table), in `default`, or by
    a member only `--workspace` builds; it runs in every gate run with each of those faults put in (`--prove`), and needs the
-   release targets' packages in the depot (`cargo fetch --locked` once). Source builds by users (`launch-sot.sh`) are not
-   release builds and are not read. Limits, resting on review: a release profile that turns debug assertions on, a
+   release targets' packages in the depot (`cargo fetch --locked` once). A third guard: `--prove` also runs a release-profile check of `sot-chat` with the feature, which must fail with that compile error (shown red with the error deleted in a copy). Source builds by users (`launch-sot.sh`, `sot-freshness.ps1`) are `--release`, so the compile error covers them; a release-profile test build is refused by design. Limits, resting on review: a debug-profile build with the feature turned on by a command-line flag, a release profile that turns debug assertions on, a
    re-export of `for_test` or the fake outside its cfg, and code written to include the fixture's files from outside the
    gated module.
 7. **An operation has one owner-held deadline and bounded admission.** `Request` carries its deadline; `send` runs the
@@ -194,8 +193,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    id, and a request naming the new id works. `admit_unwatch` hands out no service and needs only a running one: an
    unwatch calls nothing, and refusing it for a stale row would leave the watch holding one of the bounded slots. The
    mapping is the configuration loaded at start. Tests: `stale_row_or_mapping_cannot_post_or_fetch` and
-   `no_action_is_admitted_unless_the_service_runs` prove a refusal by no service being handed out, since the backend
-   does not yet use the fake Slack its tests can now reach; that `service` is private rests on its visibility and review, no test can see it (they are a
+   `no_action_is_admitted_unless_the_service_runs` prove a refusal by no service being handed out, and the backend's `server/chat_ops_tests.rs` proves it through a connection by the fake's record of requests staying empty; that `service` is private rests on its visibility and review, no test can see it (they are a
    child module). `resolve` asks the hub fact first, then the row, then the file: `NotHub` for a non-hub whatever the
    id, `stale_row` for a row that is gone, `Unmapped` for the anchor; otherwise the file's mapping in every service
    status, with `delivers` only while the service runs (starting, failed, secrets missing, stopping and stopped show
@@ -203,9 +201,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    (`resolve_joins_the_mapping_with_the_row_and_the_service_status`,
    `resolve_asks_the_hub_fact_first_and_the_row_before_the_file`). Limit: the check is at admission and holds no rows
    lock across a Slack call, so a call already made, a history page's name lookups included, is not recalled when its
-   row is removed afterwards. Unbuilt, B2f's: each watch snapshot and resync is admitted again through `admit` when
-   it is made, so a watch whose row went away is refused and its caller drops the watch; until then no handler calls
-   `admit`. Rows made after the start are not seen: a mapping to a folder no
+   row is removed afterwards. The request ops (`chat/ops.rs`) call `admit` on the blocking pool, since it canonicalizes on the shared home. Unbuilt, B2f2's: each watch snapshot and resync is admitted again through `admit` when it is made, so a watch whose row went away is refused and its caller drops the watch; until then `chat.watch` and `chat.unwatch` are refused `unavailable` and no handler calls `admit_unwatch`. The row socket's own name lookups run with no admission, and are not Slack calls. Rows made after the start are not seen: a mapping to a folder no
    row held then makes `chat.toml` refused (`UnknownFolder`) until the daemon restarts. A second daemon of the account
    on a home that names the same hub reads the files like the first and is `Held` by C14's lock. Retirement: lifecycle
    closes admission (the chat has none yet: a handler's `admit` is `unavailable` once the stop begins), then
@@ -215,7 +211,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `wait_retired` waits for the stopped state; lifecycle's 1 s bound cancels no future, so a stop that outlasts it is
    reported incomplete and the daemon ends regardless. Limits: the Windows spellings (drive-letter case, separators)
    rest on canonicalization and are compiled, not run, here; the running-listener paths are proved with a test
-   listener, since `Service::start` reaches Slack only and the backend's tests do not yet use the fake they can reach (the service's own stop is
+   listener, since `Service::start` reaches Slack only (the backend's connection tests reach the fake through `Service::start_at`; the service's own stop is
    guarantee 22's); a file's permissions are not checked here; the attachment bound is B4's.
 22. **One workspace has one listener, and its lock lives exactly as long as the listener.** `Service::start(config,
    credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the

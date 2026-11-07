@@ -365,7 +365,7 @@ impl Api {
     }
 
     /// The fixture's logical base URL; the product has no endpoint override.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_base(mut self, base: String) -> Api {
         self.base = base;
         self

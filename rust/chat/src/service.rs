@@ -99,7 +99,21 @@ impl Service {
         Service::launch(config.workspace(), credentials.app, api, http, dir, BASE.into(), Timing::PRODUCT).await
     }
 
-    #[cfg(test)]
+    /// `start` against the fixture's base URL (`FakeSlack::url("slack.com", "/api/")`), with the product's timing.
+    /// Exists under `cfg(test)` or the `test-support` feature alone, like `Http::for_test`; an `Http` made by
+    /// `Http::new` still refuses every host that is not Slack's and every port but 443.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn start_at(
+        config: &Config,
+        credentials: Credentials,
+        http: Http,
+        dir: &Path,
+        base: String,
+    ) -> Result<Service, ServiceError> {
+        Service::start_for_test(config, credentials, http, dir, base, Timing::PRODUCT).await
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn start_for_test(
         config: &Config,
         credentials: Credentials,

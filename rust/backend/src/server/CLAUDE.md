@@ -122,8 +122,7 @@ of each.
     A service that runs in the daemon and listens itself (the project chat) registers with lifecycle's
     `retire::participants()` and is retired by the terminal (lifecycle's guarantee 6); the server's accept loop is not
     one of them and its behavior here is unchanged. `run` builds the chat once (`chat::Chat::begin`, after the rows
-    exist and before the listener) and puts it in `Services` as `chat`; no handler reads it yet, so no chat op is
-    served, before a hello or after (`tests/admission.rs` `every_connection_kind_needs_an_accepted_hello` covers the
+    exist and before the listener) and puts it in `Services` as `chat`. `chat.resolve`, `chat.history` and `chat.post` are served by `chat/ops.rs` as jobs off the loop (not in `INLINE`), each action through `Chat::admit` run on the blocking pool; a held Slack answer delays no other op on the connection (M4: `held_chat_request_does_not_delay_ping_or_other_ops`), a request whose connection closes ends when its Slack call does and writes nothing, and a post is made once and an unknown outcome is the reply's. Limits: a call in flight runs to the API's own deadline (the daemon's end drops it), and a reply over the frame cap becomes `envelope_too_large`. `chat.watch` and `chat.unwatch` are refused `unavailable` until B2f2; the event names are unknown ops as requests. Hello comes first for every kind (`tests/admission.rs` `every_connection_kind_needs_an_accepted_hello` covers the
     chat names in `op::ALL`). The chat's admission and construction are `rust/chat/CLAUDE.md` guarantee 21's.
 12. **A control session's hello reply names its window's REPL runs still running.** `HelloRes::repl_running`, read from
     `CallerNumbers::running` after the connection's bus subscriptions, so the `done` of each run it names is written to

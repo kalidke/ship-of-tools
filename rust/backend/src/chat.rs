@@ -1,6 +1,6 @@
 //! The project chat in the daemon: the one place `sotd` names `sot-chat`. It decides whether this daemon is the
 //! configured hub before it reads any chat file, builds the row facts chat's mappings are admitted against, starts the
-//! one service off the boot path, and retires it through lifecycle's registry. Nothing here serves an op.
+//! one service off the boot path, and retires it through lifecycle's registry. `ops` serves the request ops.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,8 @@ use sot_platform::host::env::Env;
 use sot_protocol::ops::{ChatCode, ChatTarget};
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
+
+pub(crate) mod ops;
 
 use crate::lifecycle::retire::{Participant, Registry, RETIRE_WAIT};
 use crate::rows::{Workspace, Workspaces};
@@ -266,7 +268,6 @@ impl<L: Listener> Chat<L> {
     /// M3 for `chat.resolve`: the mapping of the row's current folder, and whether mail is delivered for it, which
     /// takes a running service. Not the hub: `NotHub`. A row that is gone: `StaleRow`. The inert anchor: `Unmapped`.
     /// Every service status shows the file's mapping, and only `Running` delivers; a refused `chat.toml` is `Invalid`.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
     pub(crate) fn resolve(&self, rows: &Workspaces, row: &str) -> Result<(Resolution, bool), ChatCode> {
         if self.config.is_none() {
             return Ok((Resolution::NotHub, false));
@@ -287,7 +288,6 @@ impl<L: Listener> Chat<L> {
     /// (anything else is `StaleMapping`). Only then is the service handed out. Limit: the check is at admission, no
     /// rows lock is held across a Slack call, and a call already made is not recalled when its row is removed
     /// afterwards; a later action, a watch's next snapshot included, is admitted again.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
     pub(crate) fn admit(&self, rows: &Workspaces, target: &ChatTarget) -> Result<Arc<L>, ChatCode> {
         let service = self.service().ok_or(ChatCode::Unavailable)?;
         let fact = current_row(rows, &target.row).ok_or(ChatCode::StaleRow)?;
@@ -307,7 +307,7 @@ impl<L: Listener> Chat<L> {
 
     /// The door for an unwatch, which hands out no service: it ends access and calls nothing, so it needs no current
     /// row, and refusing it for a stale one would leave the watch holding one of the bounded slots.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the chat handlers are the first caller"))]
+    #[cfg_attr(not(test), allow(dead_code, reason = "the watch ops (B2f2) are its first caller"))]
     pub(crate) fn admit_unwatch(&self) -> Result<(), ChatCode> {
         self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
     }
@@ -358,4 +358,4 @@ impl<L: Listener> Participant for Chat<L> {
 
 #[cfg(test)]
 #[path = "chat_tests.rs"]
-mod tests;
+pub(crate) mod tests;

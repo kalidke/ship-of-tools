@@ -201,7 +201,7 @@ where
 async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
     let Services {
         session, mathjax, pluto, workspaces, ws_events_tx, clients, topology_store, topo_changed_tx, agent_events_tx,
-        links, fe_command_tx, leases, ..
+        links, fe_command_tx, leases, chat, ..
     } = &shared.services;
     let (req_id, payload) = (frame.id, frame.payload);
     // Each arm evaluates to `Result<HandlerOutput>`; `finish_dispatch`
@@ -329,6 +329,10 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         // The 1.5 s prompt hold runs off the loop, without a preview-pool permit.
         op::PAGE_REPLY => crate::rows::ops::page_reply::handle_page_reply(req_id, payload, workspaces).await,
         op::MONITOR_HISTORY => handle_monitor_history(req_id, payload, workspaces),
+        // Off the loop like every op not in `INLINE`: admission and the Slack call never hold the connection.
+        op::CHAT_RESOLVE | op::CHAT_HISTORY | op::CHAT_POST | op::CHAT_WATCH | op::CHAT_UNWATCH => {
+            crate::chat::ops::handle(req_id, frame.op.as_str(), payload, chat, workspaces).await
+        }
         other => {
             tracing::warn!(op = %other, "unknown op");
             let payload = serde_json::json!({ "error": format!("unknown op: {other}") });
@@ -340,3 +344,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
 #[cfg(test)]
 #[path = "dispatch_place_tests.rs"]
 mod place_tests;
+
+#[cfg(test)]
+#[path = "chat_ops_tests.rs"]
+mod chat_ops_tests;

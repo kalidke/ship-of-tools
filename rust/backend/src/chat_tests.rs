@@ -6,21 +6,21 @@ use sot_chat::config::{CONFIG_FILE, SECRETS_FILE};
 
 use crate::lifecycle::retire::retire;
 
-const SELF: &str = "hub-box";
+pub(crate) const SELF: &str = "hub-box";
 const BOT: &str = "xoxb-1111-2222-aaaa";
 const APP: &str = "xapp-1-A111-2222-bbbb";
 /// A bound no test relies on meeting: it only has to be long enough for a stop that finishes.
 const LONG: Duration = Duration::from_secs(60);
 
 /// Synthetic homes: a config home, a state home and the folders of rows, none of them the real ones.
-struct Home {
+pub(crate) struct Home {
     dir: tempfile::TempDir,
-    env: Env,
+    pub(crate) env: Env,
 }
 
 impl Home {
     /// `hub` names the hub in hosts.toml (`None`: no hosts.toml at all).
-    fn new(hub: Option<&str>) -> Home {
+    pub(crate) fn new(hub: Option<&str>) -> Home {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let env = Env::empty()
@@ -38,27 +38,27 @@ impl Home {
     }
 
     /// hosts.toml naming `hub`; a computer that is not the hub is listed, as every real one is.
-    fn list(&self, hub: &str) {
+    pub(crate) fn list(&self, hub: &str) {
         let me = if hub == SELF { String::new() } else { format!("[host.{SELF}]\ndaemon = true\n") };
         self.write("hosts.toml", &format!("hub = \"{hub}\"\n[host.{hub}]\ndaemon = true\n{me}"));
     }
 
-    fn config(&self) -> PathBuf {
+    pub(crate) fn config(&self) -> PathBuf {
         config::config_dir(&self.env).unwrap()
     }
 
-    fn write(&self, name: &str, text: &str) {
+    pub(crate) fn write(&self, name: &str, text: &str) {
         std::fs::write(self.config().join(name), text).unwrap();
     }
 
     /// A folder a row could have, in its canonical spelling.
-    fn folder(&self, name: &str) -> PathBuf {
+    pub(crate) fn folder(&self, name: &str) -> PathBuf {
         let p = self.dir.path().join("rows").join(name);
         std::fs::create_dir_all(&p).unwrap();
         canonical(&p).unwrap()
     }
 
-    fn chat_toml(&self, folders: &[String]) {
+    pub(crate) fn chat_toml(&self, folders: &[String]) {
         let mut text = String::from("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\nmail_after = \"1.000000\"\n");
         for (f, c) in folders.iter().zip(["C0AAAA", "C0BBBB"]) {
             text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\n");
@@ -66,12 +66,12 @@ impl Home {
         self.write(CONFIG_FILE, &text);
     }
 
-    fn secrets(&self) {
+    pub(crate) fn secrets(&self) {
         self.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\n"));
     }
 
     /// Both files, with one mapped row.
-    fn configured(&self) -> PathBuf {
+    pub(crate) fn configured(&self) -> PathBuf {
         let row = self.folder("a");
         self.chat_toml(&[row.to_string_lossy().into_owned()]);
         self.secrets();
@@ -515,7 +515,7 @@ async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_
 
 use sot_protocol::ops::ChatChannel;
 
-fn row(label: &str, folder: &Path) -> Workspace {
+pub(crate) fn row(label: &str, folder: &Path) -> Workspace {
     Workspace::from_label(label, folder.to_path_buf(), false, "none".into(), String::new(), String::new())
 }
 
