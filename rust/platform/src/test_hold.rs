@@ -1,12 +1,6 @@
 //! Test-only (feature `test-support`, debug assertions): the test half of the hold tool. A test arms a point the product
-//! marked with `hold_point!`, waits for an arrival to reach it, does the other thing, and releases it:
-//!
-//! ```ignore
-//! let arm = Holds::here().arm("chat.watch.between").key(hub_key).hold(1); // hold(0) only counts
-//! arm.reached_async(0).await;   // arrival 0 is at the line (sync tests: arm.reached(0))
-//! arm.release(0);               // arrival 0 goes on
-//! drop(arm);                    // releases what is still held; fails the test if an arrival gave up
-//! ```
+//! marked with `hold_point!`, waits for an arrival to reach it, does the other thing, and releases it (guarantee 16 of
+//! `CLAUDE.md` is the contract).
 //!
 //! From the arm on, each arrival whose key matches (an arm with no key matches every arrival) takes the next ticket,
 //! 0, 1, 2, in the order arrivals claim them; tickets below the hold count wait at the line, the rest pass and are
@@ -46,7 +40,9 @@ impl ArmSpec {
         self
     }
 
+    /// A held arrival's own bound; never more than `GIVE_UP`.
     pub fn give_up_after(mut self, bound: Duration) -> Self {
+        assert!(bound <= GIVE_UP, "hold point {}: give_up_after({bound:?}) is longer than the {GIVE_UP:?} bound", self.point);
         self.give_up = bound;
         self
     }
@@ -69,11 +65,7 @@ impl Arm {
     }
 
     pub fn reached_within(&self, ticket: usize, bound: Duration) {
-        assert!(
-            !hold::own_thread_of_current_thread_runtime(),
-            "hold point {}: a sync reached on a current-thread runtime's own thread could never see the arrival; use reached_async",
-            self.point
-        );
+        assert!(bound <= WAIT, "hold point {}: reached_within({bound:?}) is longer than the {WAIT:?} bound", self.point);
         if let Err(failure) = hold::wait_arrival(self.id, ticket, bound) {
             panic!("{failure}");
         }
@@ -89,7 +81,7 @@ impl Arm {
         }
     }
 
-    /// Lets held arrival `ticket` go on. Refused if it has not arrived, is not held, or gave up.
+    /// Lets held arrival `ticket` go on. Refused if it has not arrived or is not held.
     pub fn release(&self, ticket: usize) {
         if let Err(failure) = hold::release(self.id, ticket) {
             panic!("{failure}");
@@ -98,15 +90,16 @@ impl Arm {
 
     /// How many arrivals the arm has seen, held or passed.
     pub fn arrivals(&self) -> usize {
-        hold::arrivals(self.id)
+        hold::arrivals(self.id).unwrap_or_else(|failure| panic!("{failure}"))
     }
 }
 
 impl Drop for Arm {
     fn drop(&mut self) {
-        let gave_up = hold::uninstall(self.id);
-        if !gave_up.is_empty() && !std::thread::panicking() {
-            panic!("hold point {}: arrival(s) {gave_up:?} were held past their bound and went on", self.point);
+        if let Some(failure) = hold::uninstall(self.id) {
+            if !std::thread::panicking() {
+                panic!("{failure}");
+            }
         }
     }
 }

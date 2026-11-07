@@ -10,12 +10,12 @@
 //! sot_platform::hold_point!("doc.name.fine");
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0080
 //! sot_platform::hold_point!("Doc Name Not Fine");
 //! ```
 
 /// Marks a line in sync code (a thread, `spawn_blocking`); an optional second argument is a key (anything `Display`) a
-/// test's arm may match. Held only while a test has armed the point.
+/// test's arm may match, formatted only when an arm asks for a key. Held only while a test has armed the point.
 #[macro_export]
 macro_rules! hold_point {
     ($name:literal $(, $key:expr)? $(,)?) => {{
@@ -23,6 +23,10 @@ macro_rules! hold_point {
         {
             const _: () = $crate::hold::check_name($name);
             $crate::hold::arrive($name, $crate::__hold_key!($($key)?));
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = || ($( &$key, )?);
         }
     }};
 }
@@ -34,7 +38,13 @@ macro_rules! hold_point_async {
         #[cfg(debug_assertions)]
         {
             const _: () = $crate::hold::check_name($name);
-            $crate::hold::arrive_async($name, $crate::__hold_key!($($key)?)).await;
+            // Its own statement: the key's borrow must not live across the await.
+            let arrival = $crate::hold::arrive_async($name, $crate::__hold_key!($($key)?));
+            arrival.await;
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = || ($( &$key, )?);
         }
     }};
 }
@@ -42,23 +52,27 @@ macro_rules! hold_point_async {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __hold_key {
-    () => { ::core::option::Option::None };
-    ($key:expr) => { ::core::option::Option::Some(::std::string::ToString::to_string(&$key)) };
+    () => { ::core::option::Option::<&dyn ::core::fmt::Display>::None };
+    ($key:expr) => { ::core::option::Option::Some(&$key as &dyn ::core::fmt::Display) };
 }
 
 #[cfg(debug_assertions)]
 pub use imp::{arrive, arrive_async, check_name};
 #[cfg(all(debug_assertions, feature = "test-support"))]
-pub(crate) use imp::{arrivals, install, own_thread_of_current_thread_runtime, release, uninstall, wait_arrival};
+pub use imp::{GIVE_UP, WAIT};
+#[cfg(all(debug_assertions, feature = "test-support"))]
+pub(crate) use imp::{arrivals, install, release, uninstall, wait_arrival};
 #[cfg(all(debug_assertions, test))]
 pub(crate) use imp::waiting_arms;
-#[cfg(debug_assertions)]
-pub use imp::{GIVE_UP, WAIT};
 
+/// Nothing on the product side panics or refuses: whatever an arrival meets (a hold on a thread the test needs, a
+/// release that never comes) is recorded on its ticket, and the arm fails the test by name at its next call or drop.
 #[cfg(debug_assertions)]
 #[cfg_attr(not(feature = "test-support"), allow(dead_code, reason = "the arm's callers are test_hold's, under feature test-support"))]
 mod imp {
-    use std::sync::{Condvar, Mutex, MutexGuard};
+    use std::fmt::Display;
+    use std::future::Future;
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
     use std::time::{Duration, Instant};
 
     /// The longest any test-side wait takes (`reached`, a second arm of a point).
@@ -81,24 +95,27 @@ mod imp {
         hold: usize,
         give_up: Duration,
         tickets: Vec<Ticket>,
+        /// Wakes this arm's waiters only, so no test's notify wakes another test's wait.
+        changed: Arc<Condvar>,
     }
 
     struct State {
         slots: Vec<Slot>,
         next_arm: u64,
-        waiting: Vec<&'static str>,
+        /// Installs waiting for another arm of their point to end.
+        waiting: usize,
     }
 
-    static STATE: Mutex<State> = Mutex::new(State { slots: Vec::new(), next_arm: 0, waiting: Vec::new() });
-    static CHANGED: Condvar = Condvar::new();
+    static STATE: Mutex<State> = Mutex::new(State { slots: Vec::new(), next_arm: 0, waiting: 0 });
+    static ENDED: Condvar = Condvar::new();
 
     /// A panic in a test must not poison the table for the tests beside it.
     fn lock() -> MutexGuard<'static, State> {
         STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn sleep_on<'a>(state: MutexGuard<'a, State>, left: Duration) -> MutexGuard<'a, State> {
-        CHANGED.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0
+    fn sleep_on<'a>(state: MutexGuard<'a, State>, on: &Condvar, left: Duration) -> MutexGuard<'a, State> {
+        on.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0
     }
 
     pub const fn check_name(name: &str) {
@@ -114,60 +131,65 @@ mod imp {
         }
     }
 
-    /// True on the thread that drives a current-thread runtime (a test body under `block_on`, a task): a hold there
-    /// would stop the very test that must release it. A blocking-pool thread of that runtime is not, told by tokio's default thread name (it has no other mark).
-    pub(crate) fn own_thread_of_current_thread_runtime() -> bool {
-        use tokio::runtime::{Handle, RuntimeFlavor};
-        Handle::try_current().is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::CurrentThread)
-            && !matches!(std::thread::current().name(), Some("tokio-rt-worker" | "tokio-runtime-worker"))
+    /// A ticket that waits at its line.
+    struct Held {
+        arm: u64,
+        ticket: usize,
+        give_up: Duration,
+        changed: Arc<Condvar>,
+    }
+
+    impl Held {
+        /// Waits while the ticket is held, its arm lives and the give-up bound has not passed.
+        fn wait(self) {
+            let deadline = Instant::now() + self.give_up;
+            let mut state = lock();
+            loop {
+                let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == self.arm) else { return };
+                if slot.tickets[self.ticket] != Ticket::Held {
+                    return;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    slot.tickets[self.ticket] = Ticket::GaveUp;
+                    self.changed.notify_all();
+                    return;
+                }
+                state = sleep_on(state, &self.changed, left);
+            }
+        }
     }
 
     /// Takes the next ticket at `point` if an arm matches the key; `Some` only when the ticket is held.
-    fn claim(point: &'static str, key: &Option<String>) -> Option<(u64, usize, Duration)> {
+    fn claim(point: &'static str, key: Option<&dyn Display>) -> Option<Held> {
         let mut state = lock();
         let slot = state.slots.iter_mut().find(|slot| slot.point == point)?;
-        if slot.key.is_some() && slot.key != *key {
-            return None;
+        if let Some(wanted) = &slot.key {
+            if key.map(|key| key.to_string()).as_ref() != Some(wanted) {
+                return None;
+            }
         }
         let ticket = slot.tickets.len();
         let held = ticket < slot.hold;
         slot.tickets.push(if held { Ticket::Held } else { Ticket::Passed });
-        let found = (slot.arm, ticket, slot.give_up);
-        CHANGED.notify_all();
-        held.then_some(found)
+        slot.changed.notify_all();
+        held.then(|| Held { arm: slot.arm, ticket, give_up: slot.give_up, changed: slot.changed.clone() })
     }
 
-    /// Waits while the ticket is held, its arm lives and the give-up bound has not passed.
-    fn wait_held(arm: u64, ticket: usize, give_up: Duration) {
-        let deadline = Instant::now() + give_up;
-        let mut state = lock();
-        loop {
-            let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == arm) else { return };
-            if slot.tickets[ticket] != Ticket::Held {
-                return;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                slot.tickets[ticket] = Ticket::GaveUp;
-                CHANGED.notify_all();
-                return;
-            }
-            state = sleep_on(state, left);
+    pub fn arrive(point: &'static str, key: Option<&dyn Display>) {
+        if let Some(held) = claim(point, key) {
+            held.wait();
         }
     }
 
-    pub fn arrive(point: &'static str, key: Option<String>) {
-        let Some((arm, ticket, give_up)) = claim(point, &key) else { return };
-        if own_thread_of_current_thread_runtime() {
-            release(arm, ticket).ok();
-            panic!("hold point {point}: a sync point held on a current-thread runtime's own thread; use hold_point_async!");
+    /// The claim is made at the call, so the future holds no borrow of the key; the wait is on `spawn_blocking`.
+    pub fn arrive_async(point: &'static str, key: Option<&dyn Display>) -> impl Future<Output = ()> + Send + 'static {
+        let held = claim(point, key);
+        async move {
+            if let Some(held) = held {
+                tokio::task::spawn_blocking(move || held.wait()).await.ok();
+            }
         }
-        wait_held(arm, ticket, give_up);
-    }
-
-    pub async fn arrive_async(point: &'static str, key: Option<String>) {
-        let Some((arm, ticket, give_up)) = claim(point, &key) else { return };
-        tokio::task::spawn_blocking(move || wait_held(arm, ticket, give_up)).await.ok();
     }
 
     /// Installs an arm of `point`, waiting up to `WAIT` for another arm of it to end; returns the arm's id.
@@ -175,55 +197,58 @@ mod imp {
         check_name(point);
         let deadline = Instant::now() + WAIT;
         let mut state = lock();
-        let mut queued = false;
+        state.waiting += 1;
         while state.slots.iter().any(|slot| slot.point == point) {
-            if !queued {
-                state.waiting.push(point);
-                queued = true;
-            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                dequeue(&mut state, point);
+                state.waiting -= 1;
                 drop(state);
                 panic!("hold point {point}: another arm of it did not end within {WAIT:?}");
             }
-            state = sleep_on(state, left);
+            state = sleep_on(state, &ENDED, left);
         }
-        if queued {
-            dequeue(&mut state, point);
-        }
+        state.waiting -= 1;
         let arm = state.next_arm;
         state.next_arm += 1;
-        state.slots.push(Slot { point, arm, key, hold, give_up, tickets: Vec::new() });
+        let changed = Arc::new(Condvar::new());
+        state.slots.push(Slot { point, arm, key, hold, give_up, tickets: Vec::new(), changed });
         arm
     }
 
-    fn dequeue(state: &mut State, point: &'static str) {
-        if let Some(at) = state.waiting.iter().position(|waiting| *waiting == point) {
-            state.waiting.remove(at);
-        }
-    }
-
     #[cfg(test)]
-    pub(crate) fn waiting_arms(point: &'static str) -> usize {
-        lock().waiting.iter().filter(|waiting| **waiting == point).count()
+    pub(crate) fn waiting_arms() -> usize {
+        lock().waiting
     }
 
-    pub(crate) fn arrivals(arm: u64) -> usize {
-        lock().slots.iter().find(|slot| slot.arm == arm).map_or(0, |slot| slot.tickets.len())
+    /// The arm's slot: an `Arm` borrows its id, so the slot lives as long as any caller.
+    fn slot_of(state: &mut State, arm: u64) -> &mut Slot {
+        state.slots.iter_mut().find(|slot| slot.arm == arm).expect("an arm's slot lives as long as the arm")
     }
 
-    /// Ends an arm: every held arrival goes on and later arrivals pass. Returns the tickets that gave up.
-    pub(crate) fn uninstall(arm: u64) -> Vec<usize> {
+    /// The failure a give-up leaves on its arm, naming the point, the ticket and the usual cause.
+    fn gave_up(slot: &Slot) -> Option<String> {
+        let ticket = slot.tickets.iter().position(|ticket| *ticket == Ticket::GaveUp)?;
+        Some(format!(
+            "hold point {}: arrival {ticket} was held past its {:?} bound and went on (a sync point on a current-thread \
+             runtime's own thread stops the test that must release it: use hold_point_async!)",
+            slot.point, slot.give_up
+        ))
+    }
+
+    /// Ends an arm: every held arrival goes on and later arrivals pass. Returns its give-up failure, if any.
+    pub(crate) fn uninstall(arm: u64) -> Option<String> {
         let mut state = lock();
-        let Some(at) = state.slots.iter().position(|slot| slot.arm == arm) else { return Vec::new() };
+        let at = state.slots.iter().position(|slot| slot.arm == arm)?;
         let slot = state.slots.remove(at);
-        CHANGED.notify_all();
-        (0..slot.tickets.len()).filter(|ticket| slot.tickets[*ticket] == Ticket::GaveUp).collect()
+        slot.changed.notify_all();
+        ENDED.notify_all();
+        gave_up(&slot)
     }
 
-    fn gave_up_message(slot: &Slot, ticket: usize) -> String {
-        format!("hold point {}: arrival {ticket} was held past its {:?} bound and went on", slot.point, slot.give_up)
+    pub(crate) fn arrivals(arm: u64) -> Result<usize, String> {
+        let mut state = lock();
+        let slot = slot_of(&mut state, arm);
+        gave_up(slot).map_or(Ok(slot.tickets.len()), Err)
     }
 
     /// Waits until arrival `ticket` of the arm exists; the error names the point, the ticket and what was seen.
@@ -231,11 +256,9 @@ mod imp {
         let deadline = Instant::now() + bound;
         let mut state = lock();
         loop {
-            let Some(slot) = state.slots.iter().find(|slot| slot.arm == arm) else {
-                return Err(format!("hold arm {arm} is gone"));
-            };
-            if let Some(gave_up) = slot.tickets.iter().position(|t| *t == Ticket::GaveUp) {
-                return Err(gave_up_message(slot, gave_up));
+            let slot = slot_of(&mut state, arm);
+            if let Some(failure) = gave_up(slot) {
+                return Err(failure);
             }
             if slot.tickets.len() > ticket {
                 return Ok(());
@@ -243,29 +266,31 @@ mod imp {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(format!(
-                    "hold point {}: arrival {ticket} not reached within {bound:?}; {} arrivals seen",
+                    "hold point {}: arrival {ticket} not reached within {bound:?}; {} arrivals seen (a sync reached on a \
+                     current-thread runtime's own thread can never see an arrival: use reached_async)",
                     slot.point,
                     slot.tickets.len()
                 ));
             }
-            state = sleep_on(state, left);
+            let changed = slot.changed.clone();
+            state = sleep_on(state, &changed, left);
         }
     }
 
-    /// Lets held arrival `ticket` go on; refused if it has not arrived, is not held, or gave up.
+    /// Lets held arrival `ticket` go on; refused if it has not arrived or is not held.
     pub(crate) fn release(arm: u64, ticket: usize) -> Result<(), String> {
         let mut state = lock();
-        let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == arm) else {
-            return Err(format!("hold arm {arm} is gone"));
-        };
+        let slot = slot_of(&mut state, arm);
+        if let Some(failure) = gave_up(slot) {
+            return Err(failure);
+        }
         match slot.tickets.get(ticket).copied() {
             None => Err(format!("hold point {}: release of arrival {ticket}, which has not arrived", slot.point)),
             Some(Ticket::Held) => {
                 slot.tickets[ticket] = Ticket::Released;
-                CHANGED.notify_all();
+                slot.changed.notify_all();
                 Ok(())
             }
-            Some(Ticket::GaveUp) => Err(gave_up_message(slot, ticket)),
             Some(other) => Err(format!("hold point {}: release of arrival {ticket}, which is {other:?}, not held", slot.point)),
         }
     }

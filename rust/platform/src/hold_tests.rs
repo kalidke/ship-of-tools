@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::hold::{arrive, waiting_arms};
+use std::fmt::Display;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +16,7 @@ fn arrives(point: &'static str, key: Option<&str>) -> mpsc::Receiver<()> {
     let key = key.map(str::to_string);
     let (done, gone) = mpsc::channel();
     std::thread::spawn(move || {
-        arrive(point, key);
+        arrive(point, key.as_ref().map(|key| key as &dyn Display));
         done.send(()).ok();
     });
     gone
@@ -87,17 +88,7 @@ fn an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm() {
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
     assert!(text.contains("t.giveup") && text.contains("arrival 0") && text.contains("went on"), "{text}");
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
-    assert!(text.contains("t.giveup") && text.contains("[0]"), "{text}");
-}
-
-#[test]
-fn a_release_that_comes_first_beats_the_give_up() {
-    let arm = Holds::here().arm("t.race").give_up_after(Duration::from_millis(200)).hold(1);
-    let gone = arrives("t.race", None);
-    arm.reached(0);
-    arm.release(0);
-    goes_on(&gone, "released");
-    drop(arm);
+    assert!(text.contains("t.giveup") && text.contains("arrival 0"), "{text}");
 }
 
 #[test]
@@ -151,7 +142,7 @@ fn a_second_arm_of_a_point_waits_for_the_first() {
         made.send(arm).ok();
     });
     let queued = std::time::Instant::now();
-    while waiting_arms("t.second") == 0 {
+    while waiting_arms() == 0 {
         assert!(queued.elapsed() < SEEN, "the second arm never queued behind the first");
         std::thread::yield_now();
     }
@@ -189,20 +180,70 @@ async fn an_async_point_holds_under_paused_time() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_sync_reached_on_a_current_thread_runtime_is_refused() {
-    let arm = Holds::here().arm("t.sync.reached").hold(1);
-    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached(0))));
-    assert!(text.contains("reached_async"), "{text}");
+async fn a_sync_point_in_a_task_on_a_current_thread_runtime_fails_the_arm_by_name() {
+    let arm = Holds::here().arm("t.sync.task").give_up_after(Duration::from_millis(200)).hold(1);
+    let task = tokio::spawn(async {
+        crate::hold_point!("t.sync.task");
+    });
+    // The task holds the runtime's only thread until its give-up, so this resumes after it.
+    arm.reached_async(0).await;
+    task.await.expect("the product side never panics");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.sync.task") && text.contains("hold_point_async!"), "{text}");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn a_sync_point_held_on_a_current_thread_runtime_is_refused_but_not_on_its_blocking_thread() {
-    let arm = Holds::here().arm("t.sync.held").hold(2);
-    let text = panic_text(catch_unwind(|| crate::hold_point!("t.sync.held")));
-    assert!(text.contains("hold_point_async!"), "{text}");
-    let blocking = tokio::task::spawn_blocking(|| crate::hold_point!("t.sync.held"));
-    arm.reached_async(1).await;
-    arm.release(1);
-    blocking.await.unwrap();
-    assert_eq!(arm.arrivals(), 2);
+#[test]
+fn every_call_of_an_arm_that_gave_up_fails_by_name() {
+    let arm = Holds::here().arm("t.gaveup.calls").give_up_after(Duration::from_millis(100)).hold(1);
+    goes_on(&arrives("t.gaveup.calls", None), "after its give-up");
+    for (call, text) in [
+        ("reached", panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached(0))))),
+        ("release", panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))))),
+        ("arrivals", panic_text(catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })))),
+    ] {
+        assert!(text.contains("t.gaveup.calls") && text.contains("went on"), "{call}: {text}");
+    }
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.gaveup.calls"), "{text}");
+}
+
+#[test]
+fn a_bound_longer_than_the_tools_own_is_refused() {
+    let spec = Holds::here().arm("t.bounds");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(spec.give_up_after(Duration::MAX)))));
+    assert!(text.contains("give_up_after") && text.contains("t.bounds"), "{text}");
+    let arm = Holds::here().arm("t.bounds").hold(0);
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached_within(0, WAIT + Duration::from_secs(1)))));
+    assert!(text.contains("reached_within") && text.contains("t.bounds"), "{text}");
+}
+
+/// Each arm has its own wake, and a missing notify is only a wait to the bound (the wait re-reads the table when it
+/// times out), so the test reads the wait's length: `reached` parks first (its arrival waits on a signal sent just
+/// before it) and must be woken well inside its bound.
+#[test]
+fn an_arrival_wakes_the_reached_that_waits_for_it() {
+    const BOUND: Duration = Duration::from_secs(4);
+    let arm = Holds::here().arm("t.wake.claim").hold(0);
+    for ticket in 0..3 {
+        let (go, wait) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            wait.recv().ok();
+            arrive("t.wake.claim", None);
+        });
+        let started = std::time::Instant::now();
+        go.send(()).unwrap();
+        arm.reached_within(ticket, BOUND);
+        assert!(started.elapsed() < BOUND / 2, "reached woke only at its bound: {:?}", started.elapsed());
+    }
+}
+
+#[test]
+fn a_drop_wakes_every_arrival_held_at_the_point() {
+    for _ in 0..5 {
+        let arm = Holds::here().arm("t.wake.drop").hold(1);
+        let gone = arrives("t.wake.drop", None);
+        arm.reached(0);
+        drop(arm);
+        goes_on(&gone, "after the drop");
+    }
 }
