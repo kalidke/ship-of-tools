@@ -38,7 +38,7 @@ pub struct FilesMode {
     show_hidden: AtomicBool,
 }
 
-const ID_PREFIX: &str = "files:";
+pub(crate) const ID_PREFIX: &str = "files:";
 
 impl FilesMode {
     pub fn new(root: PathBuf) -> Result<Self> {

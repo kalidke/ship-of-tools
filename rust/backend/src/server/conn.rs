@@ -382,6 +382,7 @@ where
         serial: client_guard.as_ref().map_or(0, |g| g.serial()),
         client_id: client_guard.as_ref().map(|g| g.client_id().to_string()).unwrap_or_default(),
         hello_host,
+        window: crate::clients::window_name(&hello.hello().role, hello.hello().name.as_deref()).is_some(),
         repl_numbers: client_guard.as_ref().map(crate::clients::ClientGuard::numbers).unwrap_or_default(),
         site_owner: client_guard.as_ref().map_or(0, crate::clients::ClientGuard::site_owner),
         chat_conn: chat_watch.conn.clone(),

@@ -12,6 +12,7 @@ use sot_protocol::Frame;
 
 use super::selection_check::{check_selection, render_selection};
 use crate::files::preview::PREVIEW_BYTE_CAP;
+use crate::files::ID_PREFIX;
 use crate::rows::spawn::state_root::state_dir_for;
 use crate::rows::{Workspace, Workspaces};
 
@@ -85,8 +86,7 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
     let text = check_selection(&bytes, sel).ok_or(selection_code::NOT_FILE_TEXT)?;
     let absolute = path.to_string_lossy().into_owned();
     let id = files.path_to_node_id(&path).ok_or(selection_code::BAD_NODE_ID)?;
-    // the id is the files tree's prefix, a colon, then the root-relative path with forward slashes
-    let relative = id.split_once(':').map_or(id.as_str(), |(_, rest)| rest);
+    let relative = id.strip_prefix(ID_PREFIX).ok_or(selection_code::BAD_NODE_ID)?;
     Ok(render_selection(&text, &absolute, relative))
 }
 

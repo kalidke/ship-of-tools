@@ -66,8 +66,7 @@ impl ClientsSnapshot {
     /// highest first: (last used, connection serial).
     pub fn in_use(&self) -> Result<(ActiveFrontend, &'static str), Option<String>> {
         let windows = || {
-            let fe = self.clients.iter().filter(|c| c.role == "fe");
-            fe.filter_map(|c| Some((c, c.name.as_deref().filter(|n| !n.is_empty())?)))
+            self.clients.iter().filter_map(|c| Some((c, c.window_handle()?)))
         };
         let to = |(c, handle): (&ClientInfo, &str)| ActiveFrontend { serial: c.serial, handle: handle.to_string() };
         let live = windows().max_by_key(|(c, _)| (c.last_person_input_at, c.serial));

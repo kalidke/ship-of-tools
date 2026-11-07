@@ -213,7 +213,8 @@ of each.
 ## Calls out
 `run`, and `refuse_live_socket` for the early check in `main.rs`. Services reach nothing here; the roster (`Clients`,
 `ClientGuard`) is handed to a handler that needs a window fact as a value or a closure (`handle_docs_open` takes the
-window's key and `away_sites`, `spawn_periodic` the count of attached windows).
+window's key and `away_sites`, `spawn_periodic` the count of attached windows, `handle_selection_set` `Shared.window`, whether the
+hello is a window's: role `fe` with a non-empty name, `clients::window_name`, which the roster's window-connection, report and in-use queries share; the active-frontend resolution still accepts an empty name).
 `run` builds one `PageVerbs` after the fe-command bus and roster exist, then calls `start_page_servers` before accepting
 control connections. All page listeners share its separate body-reader, polling and action budgets. Its blocking closures use the checked fresh
 comm registry read and call rows' `work_state::states` and

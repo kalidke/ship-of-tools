@@ -93,6 +93,9 @@ pub(super) struct Shared {
     pub(super) client_id: String,
     /// The hello's declared host.
     pub(super) hello_host: Option<String>,
+    /// Whether this connection is a window's, by its hello (`clients::window_name`); only a window's `selection.set`
+    /// shares.
+    pub(super) window: bool,
     /// The REPL runs this connection's window numbered itself, written to it under the window's numbers
     /// (`CallerNumbers`, kept by the roster across the window's connections).
     pub(super) repl_numbers: crate::sidecars::repl::numbers::CallerNumbers,
@@ -273,7 +276,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::REPL_EXECUTE => {
             crate::sidecars::repl::execute::handle_repl_execute(req_id, payload, session, workspaces).await
         }
-        op::SELECTION_SET => crate::agents::selection::handle_selection_set(req_id, payload, sot_platform::host::state_dir::sot_state_dir().as_deref(), workspaces, shared.serial != 0).await,
+        op::SELECTION_SET => crate::agents::selection::handle_selection_set(req_id, payload, sot_platform::host::state_dir::sot_state_dir().as_deref(), workspaces, shared.window).await,
         op::DIRECTORY_LIST => crate::files::tree_ops::handle_directory_list(req_id, payload, session).await,
         op::WORKSPACE_CREATE => {
             crate::rows::ops::create::handle_workspace_create(req_id, payload, session, workspaces, ws_events_tx).await

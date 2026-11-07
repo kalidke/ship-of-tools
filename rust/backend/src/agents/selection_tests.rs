@@ -197,7 +197,6 @@ async fn the_replies_are_the_wire_frames() {
     // a request the wire refuses at decode is a handler error and changes nothing
     let mut bad = serde_json::to_value(req("ws-rep-1", good())).unwrap();
     bad["selection"]["len"] = 0.into();
-    assert!(handle_selection_set(7, bad.clone(), root, &workspaces, true).await.is_err());
     assert_eq!(only(ask(root, "ws-rep-1", good()).await), serde_json::json!({"state": "held"}), "the file was published");
     assert!(handle_selection_set(7, bad, root, &workspaces, true).await.is_err());
     assert!(state_dir_for(state.path(), "ws-rep-1").join(FILE_NAME).exists(), "a decode refusal changes nothing");
@@ -221,7 +220,7 @@ fn the_reply_says_who_will_hear() {
 
     // 1. a connection with no roster entry is refused before any row work, and a file a window set stays
     insert("ws-claude", "claude");
-    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held));
+    assert!(ask(true, "ws-claude", good()).is_ok());
     for (name, s) in [("a set", good()), ("a clear", None)] {
         assert_eq!(ask(false, "ws-claude", s), Err(selection_code::NOT_A_WINDOW), "row 1: {name}");
         assert!(file("ws-claude").exists(), "row 1: {name} changes nothing");
@@ -231,7 +230,7 @@ fn the_reply_says_who_will_hear() {
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
     for kind in ["claude", "codex"] {
         insert(&format!("ws-{kind}-k"), kind);
-        assert_eq!(ask(true, &format!("ws-{kind}-k"), good()), Ok(SelectionState::Held), "row 2: {kind} takes one");
+        assert!(ask(true, &format!("ws-{kind}-k"), good()).is_ok(), "row 2: {kind} takes one");
     }
     for kind in ["none", "gemini", ""] {
         let id = format!("ws-{kind}-k");
@@ -244,9 +243,9 @@ fn the_reply_says_who_will_hear() {
 
     // 3. an accepted selection is shared when the marker exists and held when it does not
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: no marker");
+    assert_eq!(ask(true, "ws-codex-k", good()), Ok(SelectionState::Held), "row 3: codex with no marker");
     std::fs::write(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME), "").unwrap();
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Shared), "row 3: marker");
     std::fs::remove_file(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME)).unwrap();
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: marker removed");
-    assert_eq!(ask(true, "ws-codex-k", good()), Ok(SelectionState::Held), "row 3: codex with no marker");
 }

@@ -9,5 +9,6 @@ pub(super) mod io_ops;
 pub(super) mod preview;
 pub(super) mod transfer;
 pub(super) mod tree;
+pub(crate) use tree::ID_PREFIX;
 pub(super) mod tree_ops;
 pub(super) mod watcher;

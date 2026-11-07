@@ -64,3 +64,43 @@ async fn each_accepted_connection_is_served_the_services_it_was_given() {
         }
     }
 }
+
+/// Serves one real connection that says hello with `role` and `name`, sends a `selection.set` clear for a row that does
+/// not exist (so nothing is written whatever the answer), and returns the refusal's code.
+async fn selection_code_for(role: &str, name: Option<&str>) -> String {
+    let root = tempfile::tempdir().unwrap();
+    let services = Services::for_test("sel", root.path());
+    let (client, server) = tokio::io::duplex(1 << 16);
+    let (srx, stx) = tokio::io::split(server);
+    let task = tokio::spawn(handle_connection(srx, stx, services, None));
+    let (crx, mut ctx) = tokio::io::split(client);
+    let mut crx = codec::buffered(crx);
+    let hello = json!({
+        "client_id": "sel-client", "protocol": sot_protocol::PROTOCOL_VERSION, "app_version": sot_protocol::app_version(),
+        "host": "test-host", "os_user": "test-user", "role": role, "name": name,
+    });
+    codec::write_frame(&mut ctx, &Frame::req(1, op::HELLO, hello), None).await.unwrap();
+    let (reply, _) = codec::read_frame(&mut crx).await.unwrap();
+    assert_eq!(reply.op, op::HELLO, "{reply:?}");
+    let ask = json!({ "workspace_id": "ws-nope-1", "selection": null });
+    codec::write_frame(&mut ctx, &Frame::req(2, op::SELECTION_SET, ask), None).await.unwrap();
+    let code = loop {
+        let (frame, _) = codec::read_frame(&mut crx).await.unwrap();
+        if frame.kind == Kind::Res && frame.op == op::SELECTION_SET {
+            break frame.payload["code"].as_str().unwrap().to_string();
+        }
+    };
+    drop((crx, ctx));
+    task.await.unwrap().unwrap();
+    code
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_named_frontends_connection_may_share_a_selection() {
+    use sot_protocol::ops::selection_code::{NOT_A_WINDOW, UNKNOWN_WORKSPACE};
+    // a window reaches the row check; every other role, and a frontend that named nothing, is refused before it
+    assert_eq!(selection_code_for("fe", Some("fe@test-host")).await, UNKNOWN_WORKSPACE, "a named frontend");
+    for (role, name) in [("cli", Some("someone")), ("agent", Some("someone")), ("bridge", Some("someone")), ("fe", None), ("fe", Some(""))] {
+        assert_eq!(selection_code_for(role, name).await, NOT_A_WINDOW, "{role} {name:?}");
+    }
+}

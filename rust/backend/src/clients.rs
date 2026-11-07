@@ -118,6 +118,20 @@ pub struct ClientInfo {
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
 }
 
+/// The handle of the window a hello declaring `role` and `name` speaks for: a frontend (`"fe"`) that named itself. The
+/// role is the client's own declaration (only the account is authenticated), so this is a protocol check, not a
+/// security boundary.
+pub fn window_name<'a>(role: &str, name: Option<&'a str>) -> Option<&'a str> {
+    if role == "fe" { name.filter(|n| !n.is_empty()) } else { None }
+}
+
+impl ClientInfo {
+    /// This connection's window handle, or `None` when it is not a window's ([`window_name`]).
+    pub fn window_handle(&self) -> Option<&str> {
+        window_name(&self.role, self.name.as_deref())
+    }
+}
+
 /// A hello refused because its declared host said hello to this daemon first as another OS account: two accounts
 /// on one computer that share this daemon's hub account would otherwise receive each other's mail (ADR 0049
 /// `## User isolation`). Names the host only, never an account.

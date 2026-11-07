@@ -50,14 +50,14 @@ impl super::Clients {
     pub fn window_connection(&self, owner: u64) -> Option<super::ActiveFrontend> {
         let inner = self.inner.lock().unwrap();
         inner.by_conn.values()
-            .filter(|info| info.role == "fe" && info.name.as_ref().is_some_and(|name| !name.is_empty()))
-            .filter(|info| {
+            .filter_map(|info| Some((info, info.window_handle()?)))
+            .filter(|(info, _)| {
                 let sites = window_key(info).and_then(|key| inner.windows.get(&key))
                     .map_or(info.serial, |window| window.sites);
                 sites == owner
             })
-            .max_by_key(|info| info.serial)
-            .map(|info| super::ActiveFrontend { serial: info.serial, handle: info.name.clone().expect("named frontend") })
+            .max_by_key(|(info, _)| info.serial)
+            .map(|(info, handle)| super::ActiveFrontend { serial: info.serial, handle: handle.to_string() })
     }
 
     /// The owners of the pages of the windows with no live connection, the one away longest first: whose pool port a
@@ -122,7 +122,7 @@ impl Inner {
             return;
         };
         info.last_person_input_at = Some(at);
-        if info.role != "fe" || info.name.as_deref().is_none_or(str::is_empty) {
+        if info.window_handle().is_none() {
             return;
         }
         let Some(key) = window_key(info) else {
