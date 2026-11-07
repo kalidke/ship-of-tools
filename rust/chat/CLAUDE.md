@@ -173,8 +173,8 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    runtime (a start still under way is aborted), and `wait_retired` waits for the stopped state; lifecycle's 1 s bound
    cancels no future, so a stop that outlasts it is reported incomplete and the daemon ends regardless. Limit: the
    Windows spellings (drive-letter case, separators) rest on canonicalization and are compiled, not run, here;
-   the running-listener paths are proved with a test listener, since `Service::start` reaches Slack only and the
-   backend has no fake of it (the service's own stop is guarantee 22's). Limits: a file's permissions are not checked here; a file's permissions are not checked here; the attachment bound is B4's.
+   the registration holds the phase lock until the start is in place, so a retirement racing `begin` finds it (`a_retirement_racing_the_begin_never_leaves_a_start_running` runs 400 races, a statistical test: the window cannot be paused, and it is red with a pause put in it; `retiring_a_start_under_way_drops_its_future` and `a_start_that_finishes_as_retirement_arrives_is_stopped_at_once` are deterministic, and fail by hanging, not by an assertion, when the abort or the stop is removed); a failed start is final until the daemon restarts, and `resolve` answers from the file alone (a handler joins it with `status()`); the running-listener paths are proved with a test listener, since `Service::start` reaches Slack only and the
+   backend has no fake of it (the service's own stop is guarantee 22's). Limits: a file's permissions are not checked here; the attachment bound is B4's.
 22. **One workspace has one listener, and its lock lives exactly as long as the listener.** `Service::start(config,
    credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the
    workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
