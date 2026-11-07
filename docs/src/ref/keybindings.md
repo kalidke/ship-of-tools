@@ -149,7 +149,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `files.pin` | `p` | Keep the selected file in preview while browsing. Unpin returns to the pinned file. |
 | `mode.hosts` | `h` | Browse backend hosts. |
 | `files.toggle_hidden` | `.` | Show or hide dotfiles. |
-| `session.destroy` | `Shift+d` | Press twice to destroy the selected session. Any other command cancels confirmation. Destroying the session in view moves the view to the next session in the Sessions list (the one below it, or the one above when it was last, crossing to another computer's sessions when this computer has no other), or to the empty default view when no session remains. |
+| `session.destroy` | `Shift+d` | Press twice to destroy the selected session. Any other command cancels confirmation. Destroying the session in view moves the view to the next session in the Sessions list, which runs across computers: the one below it, else the one above, or the empty default view when no session remains. |
 | `file.open` | `o` | Open HTML, video or an interactive document in the browser; Julia files open in Pluto. |
 | `file.docs` | `Shift+w` | Open the built documentation site for this file in the browser. |
 | `file.execute` | `Shift+o` | Render a Quarto document and execute its code chunks. |

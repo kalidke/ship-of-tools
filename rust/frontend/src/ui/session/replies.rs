@@ -364,6 +364,7 @@ impl State {
         event_host: HostKey,
         result: Result<crate::net::transport::WorkspaceDestroyedInfo, String>,
     ) {
+        self.row_directory.destroy_answered(&event_host, &result);
         match result {
             Ok(info) if info.kept.is_some() => {
                 let effects = self.result_ledger.row_outcome(
@@ -422,7 +423,6 @@ impl State {
                 self.apply_result_effects(effects);
                 // The row the window is showing was destroyed: move to its neighbor. A row of another host with
                 // the same name never moves it (ADR 0042 L2a).
-                self.row_directory.note_destroyed(&event_host, &info.slug);
                 let leave = self.row_directory.leave(
                     &self.ordered_hosts(),
                     (self.selected.host(), self.selected.workspace_id().as_deref()),
@@ -455,8 +455,6 @@ impl State {
                 }
             }
             Err(msg) => {
-                // The refusal names no row: every destroy noted for the host is alive until a listing says otherwise.
-                self.row_directory.clear_destroyed(&event_host);
                 self.status.set(format!("workspace.destroy failed · {msg}"));
                 tracing::warn!(error = %msg, "workspace.destroy failed");
                 self.window.request_redraw();

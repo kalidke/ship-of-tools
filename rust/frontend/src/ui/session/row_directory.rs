@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::net::dial::HostKey;
-use crate::net::transport::WorkspaceInfo;
+use crate::net::transport::{WorkspaceDestroyedInfo, WorkspaceInfo};
 use crate::ui::WsKey;
 
 use super::workspace_key::{is_default_workspace_name, ws_key_of};
@@ -159,13 +159,26 @@ impl RowDirectory {
         self.destroyed.insert((host.to_string(), slug));
     }
 
+    /// The daemon's answer to a destroy: a refusal names no row, so every destroy noted for the host is alive until a
+    /// listing says otherwise; a kept row (the default, whose run ended) is alive; any other row is gone.
+    pub(in crate::ui) fn destroy_answered(&mut self, host: &str, answer: &Result<WorkspaceDestroyedInfo, String>) {
+        match answer {
+            Err(_) => self.clear_destroyed(host),
+            Ok(info) if info.kept.is_some() => {
+                self.destroyed.remove(&(host.to_string(), info.slug.clone()));
+            }
+            Ok(info) => self.note_destroyed(host, &info.slug),
+        }
+    }
+
     /// The slugs the host listed before that the update's listing lacks: rows destroyed elsewhere.
     pub(in crate::ui) fn dropped(&self, host: &str, update: &RowDirectoryUpdate) -> Vec<String> {
         let rows = self.rows(host).unwrap_or_default();
         rows.iter().filter(|row| !update.lists(&row.slug)).map(|row| row.slug.clone()).collect()
     }
 
-    /// A destroy the daemon refused: the host's rows noted as destroyed are alive.
+    /// A destroy whose outcome is unknown (the daemon refused it, or the connection ended before it answered): the
+    /// host's rows noted as destroyed are taken as alive.
     pub(in crate::ui) fn clear_destroyed(&mut self, host: &str) {
         self.destroyed.retain(|(h, _)| h != host);
     }
