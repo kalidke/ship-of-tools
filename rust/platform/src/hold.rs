@@ -17,8 +17,9 @@
 //! sot_platform::hold_point!("Doc Name Not Fine");
 //! ```
 //!
-//! A key is anything `Display`, whatever its shape; this compiles and runs unarmed. (rustdoc builds doc tests with debug
-//! assertions even under `--release`, so no doc test pins the release body; a `--release` build of a keyed point does.)
+//! A key is anything `Display`, whatever its shape; this compiles and runs unarmed. (rustdoc's debug assertions are the doc
+//! test crate's, while the library is built as the profile says, so `cargo test --release --doc` runs the release
+//! expansion and bodies; no gate runs it, and the gate's `cargo check --release -p sot-chat` covers only what sot-chat calls.)
 //!
 //! ```
 //! # use std::path::Path;
@@ -73,6 +74,7 @@ macro_rules! __hold_key {
     ($key:expr) => { ::core::option::Option::Some(&$key as &dyn ::core::fmt::Display) };
 }
 
+#[doc(hidden)]
 pub const fn check_name(name: &str) {
     let bytes = name.as_bytes();
     assert!(!bytes.is_empty(), "a hold point's name is empty");
@@ -137,6 +139,8 @@ mod imp {
         Released,
         Passed,
         GaveUp,
+        /// Its waiter was lost before the wait ran or finished (a cancelled blocking task, a dropped runtime).
+        Lost,
     }
 
     struct Slot {
@@ -199,12 +203,12 @@ mod imp {
     }
 
     impl Drop for Held {
-        /// A wait that never ran (its blocking task cancelled with its runtime) leaves its ticket to fail the arm.
+        /// A wait that never ran (its blocking task cancelled with its runtime) leaves its ticket lost, to fail the arm.
         fn drop(&mut self) {
             let mut state = lock();
             if let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == self.arm) {
                 if slot.tickets[self.ticket] == Ticket::Held {
-                    slot.tickets[self.ticket] = Ticket::GaveUp;
+                    slot.tickets[self.ticket] = Ticket::Lost;
                     self.changed.notify_all();
                 }
             }
@@ -234,7 +238,7 @@ mod imp {
     }
 
     /// The claim is made at the call, so the future holds no borrow of the key. A runtime dropped under the wait cancels
-    /// its blocking task unrun; the `Drop` of `Held` then fails the ticket, so nothing goes on holding it.
+    /// its blocking task unrun; the `Drop` of `Held` then marks the ticket lost, so nothing goes on holding it.
     pub fn arrive_async(point: &'static str, key: Option<&dyn Display>) -> impl Future<Output = ()> + Send + 'static {
         let held = claim(point, key);
         async move {
@@ -282,14 +286,22 @@ mod imp {
         state.slots.iter_mut().find(|slot| slot.arm == arm).expect("an arm's slot lives as long as the arm")
     }
 
-    /// The failure a give-up leaves on its arm, naming the point, the ticket and the usual cause.
+    /// The failure a give-up or a lost waiter leaves on its arm, naming the point, the ticket and the usual cause.
     fn gave_up(slot: &Slot) -> Option<String> {
-        let ticket = slot.tickets.iter().position(|ticket| *ticket == Ticket::GaveUp)?;
-        Some(format!(
-            "hold point {}: arrival {ticket} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
-             runtime's own thread, it stops the test that must release it: use hold_point_async!)",
-            slot.point, slot.give_up
-        ))
+        let failed = slot.tickets.iter().position(|ticket| matches!(ticket, Ticket::GaveUp | Ticket::Lost))?;
+        Some(if slot.tickets[failed] == Ticket::Lost {
+            format!(
+                "hold point {}: arrival {failed}'s waiter was lost before it finished (a cancelled blocking task or a dropped \
+                 runtime), so the hold ended early",
+                slot.point
+            )
+        } else {
+            format!(
+                "hold point {}: arrival {failed} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
+                 runtime's own thread, it stops the test that must release it: use hold_point_async!)",
+                slot.point, slot.give_up
+            )
+        })
     }
 
     /// Ends an arm: every held arrival goes on and later arrivals pass. Returns its give-up failure, if any.

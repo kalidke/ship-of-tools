@@ -121,7 +121,7 @@ where each lives).
     not promised refused. No test runs a named pipe there.
 16. **A test holds a thread at a marked line until it releases it, and no hold outlives its bounds.** Product code marks a
     line with `hold_point!("<subsystem>.<place>", key?)` (sync) or `hold_point_async!` (async: the arrival waits on `spawn_blocking`, so paused tokio time cannot pass the hold; a wait lost with its
-    runtime fails its ticket, so the arm fails by name); the name is a literal of `a-z 0-9 . _ -`, checked at compile time, and a key is formatted only
+    runtime marks its ticket lost, and the arm fails by name with a message naming the lost waiter); the name is a literal of `a-z 0-9 . _ -`, checked at compile time, and a key is formatted only
     when an arm asks for one. A test arms the point with `test_hold::Holds::here().arm(point).key(k).hold(n)`: arrivals
     whose key matches take tickets 0, 1, 2 in claim order, tickets below `n` wait until `release(t)`, the rest pass and
     are counted; `reached(t)` waits for arrival `t`. Bounds: every test-side wait 30 s (`WAIT`), a held arrival 60 s
@@ -136,8 +136,10 @@ where each lives).
     is already panicking. Both profiles expand a point to `if ON { arrive(..) }` (`ON` is `cfg!(debug_assertions)`), and `arrive`
     and `arrive_async` have one signature each with a body only under debug assertions: a release caller type-checks
     against the same signatures, no key is evaluated, and the optimizer drops the call and the name (`strings` on a
-    release build shows none). No test pins the release body: rustdoc builds doc tests with debug assertions even under
-    `--release`, and no gate builds a release caller before the tag; a `--release` build of a keyed point checks it.
+    release build shows none). rustdoc's debug assertions are the doc test crate's, while the library is built as
+    the profile says, so `cargo test --release --doc` runs the release expansion and bodies; no gate runs it (the gate's
+    `cargo check --release -p sot-chat` covers only what sot-chat calls). One limit: on a current-thread runtime whose OS
+    refuses a blocking thread, tokio's `spawn_blocking` panics and the ticket stays held.
     Limits:
     in-process only (a child process's folder is not built); arms of one point serialize even with distinct keys; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.

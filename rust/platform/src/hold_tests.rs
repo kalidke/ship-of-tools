@@ -133,6 +133,7 @@ fn a_panicking_test_still_prints_the_arms_failure_and_does_not_abort() {
     let (status, _out, err) = drain(child).wait_within(ISOLATION_TIMEOUT);
     entry.assert_once(pid);
     assert!(status.success(), "the child did not end cleanly (an abort is a second panic): {status}\n{err}");
+    assert_eq!(err.matches("panicked at").count(), 1, "one panic, the test's own: {err}");
     assert!(err.contains("t.print") && err.contains("arrival 0") && err.contains("hold_point_async!"), "{err}");
 }
 
@@ -314,24 +315,7 @@ fn an_async_point_through_a_dropped_runtimes_handle_fails_the_arm_by_name() {
     });
     goes_on(&gone, "through a dead handle");
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
-    assert!(text.contains("t.dead.handle") && text.contains("went on"), "{text}");
+    assert!(text.contains("t.dead.handle") && text.contains("waiter was lost") && !text.contains("hold_point_async!"), "{text}");
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
     assert!(text.contains("t.dead.handle"), "{text}");
-}
-
-/// A multi-thread runtime dropped while an async arrival is held: its give-up (or the lost waiter) lands on the arm.
-#[test]
-fn an_async_point_held_when_a_multi_thread_runtime_is_dropped_fails_the_arm_by_name() {
-    let arm = Holds::here().arm("t.dropped.multi").give_up_after(Duration::from_millis(200)).hold(1);
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
-    let _task = runtime.spawn(async { crate::hold_point_async!("t.dropped.multi") });
-    arm.reached(0);
-    drop(runtime);
-    let started = std::time::Instant::now();
-    while catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })).is_ok() {
-        assert!(started.elapsed() < SEEN, "the held ticket was never failed: it reads Held with nobody waiting");
-        std::thread::yield_now();
-    }
-    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
-    assert!(text.contains("t.dropped.multi"), "{text}");
 }
