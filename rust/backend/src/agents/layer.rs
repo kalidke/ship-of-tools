@@ -6,13 +6,17 @@ use std::path::{Path, PathBuf};
 /// The layer's folder under the comm home, written by the installer (`ShipTools.update_comm`) and read by the recipe.
 pub(super) const LAYER_DIR: &str = "claude-layer";
 
-/// The hooks a leg carries: (Claude Code event, script in `<comm home>/bin`, tool matcher): the work-state facts a row is
-/// reduced from. The end-of-turn mail check (`comm-status-idle.sh` on Stop) and the subagent guard serve every joined
-/// session, so they stay in the user's own settings (`src/claude_hooks.jl`) and are not here.
+/// The hooks a leg carries: (Claude Code event, script in `<comm home>/bin`, matcher: a tool name, or for SessionStart the
+/// source): the work-state facts a row is reduced from, and the session start again after a `/clear` or a compaction,
+/// which a leg's bootstrap prompt does not reach. The end-of-turn mail check (`comm-status-idle.sh` on Stop) and the
+/// subagent guard serve every joined session, so they stay in the user's own settings (`src/claude_hooks.jl`) and are
+/// not here.
 pub(super) const HOOKS: &[(&str, &str, Option<&str>)] = &[
     ("UserPromptSubmit", "comm-status-working.sh", None),
     ("PreToolUse", "comm-status-blocked.sh", Some("AskUserQuestion")),
     ("PostToolUse", "comm-status-heartbeat.sh", None),
+    ("SessionStart", "comm-session-start-hook.sh", Some("clear")),
+    ("SessionStart", "comm-session-start-hook.sh", Some("compact")),
 ];
 
 /// The skill the leg's prompt names: a layer without it cannot start the session.

@@ -2,8 +2,8 @@ use super::*;
 use super::super::support_tests::self_file_env_guarded;
 
 #[test]
-fn nesting_env_scrub_list_matches_ccb() {
-    // The list's own pin; `ccx_unsets_the_nesting_markers_the_scrub_list_names` holds `ccx`'s `unset` line to it.
+fn nesting_env_scrub_list_is_pinned() {
+    // The list's own pin, the one list the supervisor env and `sotd agent-exec` scrub; `ccx_unsets_the_nesting_markers_the_scrub_list_names` holds `ccx`'s `unset` line to it.
     assert_eq!(
         NESTING_ENV_VARS_TO_SCRUB,
         &[

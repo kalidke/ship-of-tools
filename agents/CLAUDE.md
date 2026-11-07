@@ -43,7 +43,7 @@ of each.
    `SOT_SOCKET` (Unix, the daemon's own listener, once it is set), `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`,
    `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` (when the manual's checkout is found), `SOT_AGENT_KIND`, `SOT_COMM_HOME` and
    `SOT_COMM_SELF_FILE` (the row's pinned self file, so a capsule never falls to the shared no-pane slot),
-   `SOT_SELECTION_FILE` (the row's `selection.json` in its state folder, forward slashes on Windows, for a Claude and a Codex leg alike; the hook that reads it and the marker are unbuilt),
+   `SOT_SELECTION_FILE` (the row's `selection.json` in its state folder, on Windows with forward slashes and no verbatim `\\?\` prefix, for a Claude and a Codex leg alike; the hook that reads it and the marker are unbuilt),
    `SOTD_BIN` (this daemon's own start path, made absolute; it is checked to be a regular file, executable on Unix, and is not run; a bare name is looked up on `PATH` the same way), `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` and
    `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, and the `PATH` addition of guarantee 3. The spawn removes
    `NESTING_ENV_VARS_TO_SCRUB` from the daemon's own environment first (`CLAUDECODE` and the other markers that make a
@@ -88,8 +88,11 @@ of each.
    them. The layer is ready when it holds `sot-session-start`'s
    `SKILL.md`; then `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next
    argument, and an absolute path, since the leg's working folder is the project's) and a `hooks` key, built from `HOOKS`
-   in `layer.rs` (`comm-status-working.sh`, `comm-status-blocked.sh`, `comm-status-heartbeat.sh` from the comm folder's
-   `bin/`, by quoted absolute path), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
+   in `layer.rs` (`comm-status-working.sh`, `comm-status-blocked.sh`, `comm-status-heartbeat.sh` and, on the SessionStart
+   sources `clear` and `compact`, the session-start hook script, which runs the comm session start again so a session that
+   lost its context is told its handle and its handoff file, and stands down on `SOT_COMM_HOOKS=off`; from the comm
+   folder's `bin/`, by quoted absolute path; a leg's first start and a resume are not those sources, and the bootstrap
+   prompt covers them), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
    there but not ready is left out with a warning in the daemon's log, and the leg does not name `/sot-session-start`;
    a box with no layer folder at all (the installer has not run) still names it. A plain `claude` reads none of it; a
    capsule leg, a reauth leg and a `ccb` session read all of it. The end-of-turn mail check (`comm-status-idle.sh` on
@@ -355,11 +358,11 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 1 | `argv::tests::every_claude_leg_runs_auto_mode_and_never_skips_permissions` |
 | 2 | `argv::tests::agent_argv_claude_starts_a_fresh_conversation`, `a_reauth_leg_resumes_by_id_and_never_continues`, `agent_exec_argv_claude_never_adds_continue`; the supervisor's stripping of a resume on later legs, `rust/capsule/tests/supervisor/spawn.rs`: `first_run_only_keeps_a_token_on_the_first_leg_and_strips_it_after_a_producer_ran` |
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
-| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_matches_ccb`, `every_row_leg_names_its_selection_file`, `ccx_unsets_the_nesting_markers_the_scrub_list_names`, `tests/test-ccx-launch.sh` (`--capsule` keeps the selection file, a bare `ccx` drops it), `tests/capsule_workspaces/session_env.rs` (a real row's session names its own state folder's file), `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
+| 4 | `env::tests::capsule_supervisor_env_*`, `nesting_env_scrub_list_is_pinned`, `every_row_leg_names_its_selection_file`, `a_verbatim_state_folder_gives_the_plain_forward_slash_form` (Windows only), `ccx_unsets_the_nesting_markers_the_scrub_list_names`, `tests/test-ccx-launch.sh` (`--capsule` keeps the selection file, a bare `ccx` drops it), `tests/capsule_workspaces/session_env.rs` (a real row's session names its own state folder's file), `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`), `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*`;
-`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh`; `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
+`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh`; `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
 | 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh` |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |

@@ -418,7 +418,14 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     assert_eq!(argv.iter().filter(|a| *a == "--settings").count(), 1, "{argv:?}");
     let at = argv.iter().position(|a| a == "--settings").unwrap();
     let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
-    assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
+    assert_eq!(json["hooks"].as_object().unwrap().len(), 4, "{json}");
+    // A launched row's settings run the session start again after a /clear and after a compaction.
+    let start = json["hooks"]["SessionStart"].as_array().unwrap();
+    let matchers: Vec<_> = start.iter().map(|g| g["matcher"].as_str().unwrap()).collect();
+    assert_eq!(matchers, ["clear", "compact"], "{json}");
+    for group in start {
+        assert!(group["hooks"][0]["command"].as_str().unwrap().contains("comm-session-start-hook.sh"), "{json}");
+    }
     assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
     // A caller's own `--settings` stays the one, with its own keys, and gains the hooks (the next test); the skills load.
     let caller = claude_recipe(&["--settings".to_string(), "{\"a\":1}".to_string()], None, Some(comm.path()));
@@ -427,7 +434,7 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     let at = caller.iter().position(|a| a == "--settings").unwrap();
     let json: serde_json::Value = serde_json::from_str(&caller[at + 1]).unwrap();
     assert_eq!(json["a"], 1, "{json}");
-    assert_eq!(json["hooks"].as_object().unwrap().len(), 3, "{json}");
+    assert_eq!(json["hooks"].as_object().unwrap().len(), 4, "{json}");
 }
 
 /// A caller's own `--settings` JSON keeps its own keys and gains the recipe's hooks beside its own: per event the

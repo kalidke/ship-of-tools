@@ -28,7 +28,7 @@ COMM="$WORK/comm folder it's"   # a space and a quote: the quoting is what is un
 mkdir -p "$COMM/bin" "$COMM/claude-layer/.claude/skills/sot-session-start" "$HOME/.local/bin"
 printf -- '---\nname: sot-session-start\n---\n' > "$COMM/claude-layer/.claude/skills/sot-session-start/SKILL.md"
 MARKS="$WORK/marks"; mkdir -p "$MARKS"
-for s in comm-status-working comm-status-blocked comm-status-heartbeat; do
+for s in comm-status-working comm-status-blocked comm-status-heartbeat comm-session-start-hook; do
     printf '#!/usr/bin/env bash\n: > "%s/%s"\n' "$MARKS" "$s" > "$COMM/bin/$s.sh"
     chmod +x "$COMM/bin/$s.sh"
 done
@@ -51,11 +51,11 @@ case_every_hook_command_starts_its_script() {
     settings="$(sed -n '/^--settings$/{n;p;}' "$ARGS")"
     [ -n "$settings" ] || { echo "  no --settings in: $(cat "$ARGS")"; return 1; }
     cmds="$(printf '%s' "$settings" | jq -r '.hooks[][].hooks[].command')" || { echo "  unreadable settings: $settings"; return 1; }
-    [ "$(printf '%s\n' "$cmds" | grep -c .)" -eq 3 ] || { echo "  want three hook commands: $cmds"; return 1; }
+    [ "$(printf '%s\n' "$cmds" | grep -c .)" -eq 5 ] || { echo "  want five hook commands: $cmds"; return 1; }
     while IFS= read -r cmd; do
         bash -c "$cmd" > "$WORK/hook.out" 2>&1 || { echo "  '$cmd' failed: $(cat "$WORK/hook.out")"; return 1; }
     done <<< "$cmds"
-    for name in comm-status-working comm-status-blocked comm-status-heartbeat; do
+    for name in comm-status-working comm-status-blocked comm-status-heartbeat comm-session-start-hook; do
         [ -e "$MARKS/$name" ] || { echo "  $name never ran; commands: $cmds"; return 1; }
     done
 }

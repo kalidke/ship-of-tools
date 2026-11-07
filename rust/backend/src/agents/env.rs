@@ -4,8 +4,8 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// Environment variables scrubbed from the spawned supervisor's (and
-/// hence its capsule leg's) environment before launch — the exact list
-/// `agents/claude/bin/ccb` unsets, for the identical reason: a
+/// hence its capsule leg's) environment before launch, and from `sotd agent-exec`'s own (the scrub `ccb` runs through),
+/// for the one reason: a
 /// spawning parent's own Claude Code nesting markers make a fresh
 /// `claude` mis-detect itself as nested/forked and exit silently.
 /// `CLAUDECODE`/`AI_AGENT`/`CLAUDE_CODE_SESSION_ID` make it think it is
@@ -54,7 +54,7 @@ fn capsule_comm_home_str() -> Option<String> {
 /// shell reads when `forward_slashes` (Windows), as `SOT_COMM_HOME` is, and without a verbatim prefix.
 fn selection_file_value(state_dir: &Path, forward_slashes: bool) -> String {
     // A created row's first leg gets the canonical folder, a verbatim `\\?\C:\...` path on Windows, which no Git Bash
-    // shell reads; the plain drive path is the one spelling every start gives.
+    // shell reads; the plain drive path is what this leaves, whether or not the folder came in verbatim.
     let state_dir = sot_platform::host::paths::simplify_verbatim(state_dir.to_path_buf());
     let file = state_dir.join(crate::agents::selection::FILE_NAME).to_string_lossy().into_owned();
     if forward_slashes { file.replace('\\', "/") } else { file }

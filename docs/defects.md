@@ -331,12 +331,6 @@ owned by `docs/CLAUDE.md`.
   guarantee of its own in the agents page; it is owned policy of the recipe, proved by `memory::tests::*`.
 - **CODEX-GLOBAL-SKILLS** [note] Codex's skills and plugin still install into the global `$CODEX_HOME` and `~/.agents`,
   outside any row; the same question as guarantee 7, for Codex. A pass decides it with the Codex plugin mechanism.
-- **ROW-CLEAR-NO-SESSION-START** [person] After a `/clear` or a compaction, a Claude row's session does not run the comm
-  session start and is not pointed at its handoff, so a bare `/clear` is not enough to resume work. A regression: hook
-  entries on SessionStart for `clear` and `compact` existed and were tested until the hooks moved into the launch recipe;
-  a row leg's `--settings` now carries PostToolUse, PreToolUse on AskUserQuestion and UserPromptSubmit only. Fix: the
-  recipe carries SessionStart on `clear` and `compact`, running the session start, whose output names the handoff, with a
-  test that a launched row's settings hold both and that the output names the handoff.
 - **TRUST-WRITE-DROPS-SAVE** [note] The reverse of REAUTH-TRUST-LOST, by reading: `ensure_folder_trusted`
   (`agents/folder_trust.rs`) reads the account's `.claude.json`, inserts the entry and renames its copy over the file
   outside Claude Code's lock, so a Claude Code save that lands between that read and that rename is dropped (a counter, a
@@ -645,6 +639,8 @@ owned by `docs/CLAUDE.md`.
 ## Closed
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **ROW-CLEAR-NO-SESSION-START** (agents) closed by the session-start hook landing: a Claude row leg's `--settings` carries SessionStart on `clear` and `compact`, running the comm session start, whose output names the handle and the handoff.
 
 - **ROW-ID-MINT** (rows) closed by f7905b1a5: a row id is unique within a process by count, not by the second.
 - **GATE-TARGET-SHARED** (distribution) closed by d74ddbe77: the gate holds a lock on its target folder, and a second gate on the same target fails naming it.

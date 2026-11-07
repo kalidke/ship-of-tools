@@ -30,6 +30,8 @@ fn the_hooks_table_is_the_work_state_hooks_and_not_messagings_protections() {
             ("UserPromptSubmit", "comm-status-working.sh", None),
             ("PreToolUse", "comm-status-blocked.sh", Some("AskUserQuestion")),
             ("PostToolUse", "comm-status-heartbeat.sh", None),
+            ("SessionStart", "comm-session-start-hook.sh", Some("clear")),
+            ("SessionStart", "comm-session-start-hook.sh", Some("compact")),
         ]
     );
 }
@@ -49,7 +51,7 @@ fn a_hook_runs_its_installed_script_by_a_quoted_absolute_path() {
     let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(pre.len(), 1, "{settings}");
     assert_eq!(pre[0]["matcher"], "AskUserQuestion");
-    assert_eq!(settings["hooks"].as_object().unwrap().len(), 3);
+    assert_eq!(settings["hooks"].as_object().unwrap().len(), 4);
     assert!(settings["hooks"].get("Stop").is_none(), "the mail check is not the layer's: {settings}");
 }
 

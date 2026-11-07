@@ -33,7 +33,10 @@ Address:
   declaration keep it, and a newer join moves it (rows' `set_agent_handle`). A process acts as a row's handle only from
   inside that row: the identity (`identity::context`) discards a handle whose registry entry binds another row, and a
   session outside any row never takes or reads a handle a row holds (the daemon's `agent.join` with an empty row id
-  rules on each join from outside any row).
+  rules on each join from outside any row). A Claude row's leg runs the session start again after a clear or a
+  compaction through a SessionStart hook (`work_state/hooks/comm-session-start-hook.sh`, carried by the leg's settings:
+  agents' guarantee 7), which prints the handle and the handoff line and stands down on `SOT_COMM_HOOKS=off`; a leg's
+  first start and a resume run it through the bootstrap prompt. Test: `comm/tests/test-session-start-hook.sh`.
 - Each handle has one inbox, `inbox/<h>.jsonl` in the comm folder of the box where its session runs (one folder for
   every computer that shares the home).
 
