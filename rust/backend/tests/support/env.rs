@@ -269,7 +269,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
-            .env("SOT_TEST_HOLDS", self.holds.env().1)
+            .env(self.holds.env().0, self.holds.env().1)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -486,7 +486,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
-            .env("SOT_TEST_HOLDS", self.holds.env().1)
+            .env(self.holds.env().0, self.holds.env().1)
             .env("PATH", path)
             .envs(extra.iter().copied())
             .stdin(Stdio::null())
@@ -521,7 +521,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
-            .env("SOT_TEST_HOLDS", self.holds.env().1)
+            .env(self.holds.env().0, self.holds.env().1)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -575,7 +575,7 @@ impl Env {
             .arg(setenv("XDG_CONFIG_HOME", self.config_root.as_os_str()))
             .arg(setenv("SOT_SELF_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
             .arg(setenv("SOT_RUNTIME_DIR", self._runtime_tmp.path().as_os_str()))
-            .arg(setenv("SOT_TEST_HOLDS", self.holds.env().1.as_os_str()))
+            .arg(setenv(self.holds.env().0, self.holds.env().1.as_os_str()))
             .arg(setenv("PATH", &path))
             .arg(setenv("HOME", &home));
         // The Julia every other test daemon is given (`sotd_command`), so this one's kernel never runs a juliaup launcher.

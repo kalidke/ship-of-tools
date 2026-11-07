@@ -446,16 +446,23 @@ mod imp {
         }
     }
 
+    impl Drop for FolderHeld {
+        /// A wait that never finished (its blocking task cancelled with its runtime) leaves its ticket lost, to fail the arm.
+        fn drop(&mut self) {
+            let ends = ["go", "gaveup"].map(|end| part(&self.dir, self.point, &format!("{}.{end}", self.ticket)));
+            if !ends.iter().any(|end| end.exists()) && !part(&self.dir, self.point, "all").exists() {
+                create_new(&part(&self.dir, self.point, &format!("{}.lost", self.ticket))).ok();
+            }
+        }
+    }
+
     fn claim_folder(point: &'static str, key: Option<&dyn Display>) -> Option<FolderHeld> {
         let dir = folder()?;
-        if part(dir, point, "all").exists() {
-            return None;
-        }
         // Read at every arrival, never cached: an arm written after the child started holds its next arrival.
         let text = std::fs::read_to_string(part(dir, point, "arm")).ok()?;
         let term = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
         let hold: usize = term("hold")?.parse().ok()?;
-        let give_up = Duration::from_millis(term("give_up_ms")?.parse().ok()?).min(GIVE_UP);
+        let give_up = Duration::from_millis(term("give_up_ms")?.parse().ok()?);
         if let Some(wanted) = term("key") {
             if key.map(|key| key.to_string()).as_deref() != Some(wanted) {
                 return None;
@@ -511,7 +518,15 @@ mod imp {
 
     pub(crate) fn folder_arrivals(arm: &FolderArm) -> Result<usize, String> {
         let seen = (0..).find(|&ticket| !at(arm, ticket, "at").exists()).unwrap_or(0);
-        if let Some(failed) = (0..seen.min(arm.hold)).find(|&ticket| at(arm, ticket, "gaveup").exists()) {
+        let ended = |what| (0..seen.min(arm.hold)).find(|&ticket| at(arm, ticket, what).exists());
+        if let Some(failed) = ended("lost") {
+            return Err(format!(
+                "hold point {}: arrival {failed}'s waiter was lost before it finished (a cancelled blocking task or a dropped \
+                 runtime), so the hold ended early",
+                arm.point
+            ));
+        }
+        if let Some(failed) = ended("gaveup") {
             return Err(format!(
                 "hold point {}: arrival {failed} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
                  runtime's own thread, it stops the test that must release it: use hold_point_async!)",

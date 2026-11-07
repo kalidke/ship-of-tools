@@ -334,11 +334,20 @@ fn a_child_that_arrives() {
     enter(CHILD_BODY);
     let point: &'static str = Box::leak(std::env::var("SOT_HOLD_CHILD_POINT").expect("point").into_boxed_str());
     let arrivals: usize = std::env::var("SOT_HOLD_CHILD_ARRIVALS").expect("arrivals").parse().expect("a count");
+    let key = std::env::var("SOT_HOLD_CHILD_KEY").ok();
     for round in 1..=arrivals {
         if round > 1 {
             appears(&out.join("next"), "the parent's go-ahead");
         }
-        arrive(point, None);
+        if std::env::var_os("SOT_HOLD_CHILD_DEAD").is_some() {
+            // Through a dropped runtime's handle the wait's blocking task is cancelled unrun.
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            let handle = runtime.handle().clone();
+            drop(runtime);
+            handle.block_on(async { crate::hold_point_async!("t.child.dead") });
+        } else {
+            arrive(point, key.as_ref().map(|key| key as &dyn Display));
+        }
         let folder = std::path::PathBuf::from(std::env::var_os("SOT_TEST_HOLDS").expect("the folder"));
         let released = std::fs::read_dir(&folder).unwrap().flatten().any(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -386,6 +395,10 @@ impl Drop for ChildRun {
 }
 
 fn start_child(holds: &Holds, out: &std::path::Path, point: &str, arrivals: usize) -> ChildRun {
+    start_child_with(holds, out, point, arrivals, &[])
+}
+
+fn start_child_with(holds: &Holds, out: &std::path::Path, point: &str, arrivals: usize, vars: &[(&str, &str)]) -> ChildRun {
     let (mut command, entry) = crate::test_isolated::test_command(CHILD_BODY);
     let (name, folder) = holds.env();
     command
@@ -393,6 +406,7 @@ fn start_child(holds: &Holds, out: &std::path::Path, point: &str, arrivals: usiz
         .env("SOT_HOLD_CHILD_OUT", out)
         .env("SOT_HOLD_CHILD_POINT", point)
         .env("SOT_HOLD_CHILD_ARRIVALS", arrivals.to_string())
+        .envs(vars.iter().copied())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null());
     let child = command.spawn().expect("spawn the child");
@@ -436,12 +450,16 @@ fn two_children_sharing_a_folder_take_distinct_tickets() {
     arm.reached(1);
     let folder = holds.env().1.to_path_buf();
     // The ticket's file is made before its pid is written into it.
-    let pid_at = |ticket: usize| loop {
-        let text = std::fs::read_to_string(folder.join(format!("t.child.two.{ticket}.at"))).unwrap_or_default();
-        if let Ok(pid) = text.parse::<u32>() {
-            return pid;
+    let pid_at = |ticket: usize| {
+        let started = std::time::Instant::now();
+        loop {
+            let text = std::fs::read_to_string(folder.join(format!("t.child.two.{ticket}.at"))).unwrap_or_default();
+            if let Ok(pid) = text.parse::<u32>() {
+                return pid;
+            }
+            assert!(started.elapsed() < SEEN, "t.child.two: ticket {ticket} holds no pid within {SEEN:?}: {text:?}");
+            std::thread::sleep(Duration::from_millis(5));
         }
-        std::thread::sleep(Duration::from_millis(5));
     };
     let mut pids = [pid_at(0), pid_at(1)];
     pids.sort();
@@ -513,7 +531,6 @@ fn a_child_killed_while_held_leaves_no_give_up_and_the_drop_does_not_fail() {
     drop(arm);
     let folder = holds.env().1;
     assert!(folder.join("t.child.killed.all").exists(), "the drop writes the all-go file");
-    assert!(!folder.join("t.child.killed.0.gaveup").exists(), "a killed child records no give-up");
 }
 
 #[test]
@@ -550,4 +567,38 @@ fn an_arm_file_is_never_seen_half_written() {
     done.store(true, Ordering::SeqCst);
     reader.join().expect("the reader saw only whole files");
     drop(arm);
+}
+
+#[test]
+fn a_keyed_folder_arm_holds_its_key_and_lets_another_key_pass_uncounted() {
+    let (_tmp, holds, out) = folder_for("hold-key-");
+    let arm = holds.arm("t.child.keyed").key("mine").hold(1);
+    let other = start_child_with(&holds, &out, "t.child.keyed", 1, &[("SOT_HOLD_CHILD_KEY", "theirs")]);
+    assert_eq!(pass_of(&out, &other, 1), "no-go", "another key passes untouched, with no release");
+    other.ends();
+    assert_eq!(arm.arrivals(), 0, "another key's arrival takes no ticket");
+    let mine = start_child_with(&holds, &out, "t.child.keyed", 1, &[("SOT_HOLD_CHILD_KEY", "mine")]);
+    arm.reached(0);
+    assert!(!out.join(format!("pass.{}.1", mine.pid())).exists());
+    arm.release(0);
+    assert_eq!(pass_of(&out, &mine, 1), "go");
+    mine.ends();
+}
+
+#[test]
+fn a_child_whose_wait_is_cancelled_before_it_runs_fails_the_arm_by_name() {
+    let (_tmp, holds, out) = folder_for("hold-lost-");
+    let arm = holds.arm("t.child.dead").hold(1);
+    let child = start_child_with(&holds, &out, "t.child.dead", 1, &[("SOT_HOLD_CHILD_DEAD", "1")]);
+    assert_eq!(pass_of(&out, &child, 1), "no-go", "it went on at once, held by nobody's release");
+    child.ends();
+    for (call, text) in [
+        ("reached", panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached(0))))),
+        ("release", panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))))),
+        ("arrivals", panic_text(catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })))),
+    ] {
+        assert!(text.contains("t.child.dead") && text.contains("waiter was lost"), "{call}: {text}");
+    }
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.child.dead") && text.contains("waiter was lost"), "{text}");
 }

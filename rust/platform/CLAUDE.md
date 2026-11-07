@@ -145,11 +145,11 @@ where each lives).
     files of that folder: tickets are numbered across every process sharing it by an exclusive file create (`<point>.<t>.at`),
     a release, the arm's drop and a give-up are files (`.go`, `.all`, `.gaveup`), the arm's terms are renamed into place
     whole, and no file is deleted while the folder lives, so one folder takes one arm of a point for its life (a second is
-    refused). A held child always goes on by its give-up (at most 60 s, whatever the arm file says) and the arm fails by
+    refused). A held child always goes on by its give-up (at most 60 s) and the arm fails by
     name; an arrival before the arm is not seen; a child killed while held records no give-up. A daemon passes the
     variable on to the supervisors it starts, so one folder serves both. Limits:
-    an arrival whose blocking wait is cancelled before it runs goes on unrecorded in a folder (the table's `Lost` is
-    in-process); arms of one point serialize even with distinct keys in a process; in a
+    a wait cancelled before it runs (a dropped runtime) leaves `<point>.<t>.lost`, which fails the arm by name; the arming
+    process's own arrivals pass uncounted; arms of one point serialize even with distinct keys in a process; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
