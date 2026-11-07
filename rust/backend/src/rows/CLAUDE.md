@@ -365,7 +365,7 @@ Unbuilt: ROW-RESTART (docs/defects.md item ROW-RESTART, a feature): one restart 
 with a fresh leg and a resume by id on request. No guarantee here needs it: an attach resets an ended row, and a reauth
 restarts a live one in place.
 
-The project chat reads the registry for the current entry of a canonical row id (`chat::current_row`: `Workspaces::resolve`, then the id compared exactly, since `resolve` also takes a slug) once per admitted action and holds no rows lock past the read; a row removed or replaced under a new id is then refused by the chat as `stale_row`. Rows owns the registry and the inert-anchor fact (`is_inert_default_anchor`); the chat's `admit` and `resolve` run on the blocking pool, so a slow folder lookup never holds a connection's loop.
+The project chat reads the registry for the current entry of a canonical row id (`chat::current_row`: `Workspaces::resolve`, then the id compared exactly, since `resolve` also takes a slug) once per admitted action and holds no rows lock past the read; a row removed or replaced under a new id is then refused by the chat as `stale_row`. Rows owns the registry and the inert-anchor fact (`is_inert_default_anchor`); the chat's `admit` and `resolve` run on the blocking pool, so a slow folder lookup never holds a worker of the runtime.
 
 ## Folders
 - `ops/`: the row ops clients call.

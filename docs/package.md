@@ -60,7 +60,7 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; no op dispatches to it yet. Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; `chat.resolve`, `chat.history` and `chat.post` are dispatched to it (`rust/backend/src/chat/ops.rs`), and `chat.watch`, `chat.unwatch` and the events are not built yet. Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
   config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
@@ -179,8 +179,8 @@ the last one and carries everything that use found. In progress is the project c
 in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
 Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization), B1b (the HTTP core) and B1c (the Slack calls) and B1d (the Socket Mode listener)
 have landed, which closes B1; the stage continues with B2, then B5, each landing alone within the half hour. Of B2, the
-configuration, the service, the watch, the wire family, the hub composition and the per-action recheck have landed; dispatch
-is next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+configuration, the service, the watch, the wire family, the hub composition and the per-action recheck have landed, with the request ops' dispatch; watch,
+unwatch and the events are next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op and the daemon's pure check have landed, and its handler follows chat's dispatch. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,

@@ -13,4 +13,8 @@ fn the_lists_are_disjoint_and_reasoned() {
     assert_eq!(place(op::QUARTO_OPEN), Place::Job);
     assert_eq!(place(op::PREVIEW_GET), Place::Pooled);
     assert_eq!(place("no.such"), Place::Job);
+    // A chat request waits on Slack: each is a job, never in the loop.
+    for name in [op::CHAT_POST, op::CHAT_HISTORY, op::CHAT_RESOLVE] {
+        assert_eq!(place(name), Place::Job, "{name}");
+    }
 }

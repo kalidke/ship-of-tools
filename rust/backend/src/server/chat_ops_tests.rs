@@ -1,7 +1,7 @@
 //! The chat request ops through a real connection, against the exported fake Slack.
 
 use super::*;
-use crate::chat::ops::code_of;
+use crate::chat::ops::{code_of, post_refusal_code};
 use sot_chat::api::ApiError;
 use sot_chat::http::HttpError;
 use sot_protocol::ops::ChatCode;
@@ -374,5 +374,8 @@ fn each_api_error_has_its_stated_code() {
         (ApiError::Status(500), ChatCode::Failed),
     ] {
         assert_eq!(code_of(&e), want, "{e:?}");
+    }
+    for (why, want) in [("busy", ChatCode::Busy), ("invalid", ChatCode::BadRequest), ("destination", ChatCode::Failed), ("http_403", ChatCode::Failed), ("channel_not_found", ChatCode::Failed)] {
+        assert_eq!(post_refusal_code(why), want, "{why}");
     }
 }

@@ -51,6 +51,23 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
         ApiError::Limited { .. } => ChatCode::Limited,
         ApiError::Closed => ChatCode::Unavailable,
         ApiError::BadRequest | ApiError::BadBound | ApiError::Altered => ChatCode::BadRequest,
+        ApiError::Http(_)
+        | ApiError::Slack(_)
+        | ApiError::Status(_)
+        | ApiError::Malformed
+        | ApiError::NoIdentity
+        | ApiError::WrongWorkspace
+        | ApiError::Repeated
+        | ApiError::Missing
+        | ApiError::TooLarge => ChatCode::Failed,
+    }
+}
+
+/// The code of a post Slack or the client refused before it was sent or definitely not posted.
+pub(crate) fn post_refusal_code(why: &str) -> ChatCode {
+    match why {
+        "busy" => ChatCode::Busy,
+        "invalid" => ChatCode::BadRequest,
         _ => ChatCode::Failed,
     }
 }
@@ -150,11 +167,7 @@ pub(crate) async fn handle(
             match outcome {
                 Err(e) => refused_post(code_of(&e)),
                 Ok(PostOutcome::Posted(ts)) => reply(req_id, name, &ChatPostRes::Posted { ts }),
-                Ok(PostOutcome::Refused(why)) => refused_post(match why.as_str() {
-                    "busy" => ChatCode::Busy,
-                    "invalid" => ChatCode::BadRequest,
-                    _ => ChatCode::Failed,
-                }),
+                Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
                 Ok(PostOutcome::Limited { retry_after, assumed }) => {
                     reply(req_id, name, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
                 }
