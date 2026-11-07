@@ -32,9 +32,15 @@ impl Home {
         let home = Home { dir, env };
         std::fs::create_dir_all(home.config()).unwrap();
         if let Some(hub) = hub {
-            home.write("hosts.toml", &format!("hub = \"{hub}\"\n[host.{hub}]\ndaemon = true\n"));
+            home.list(hub);
         }
         home
+    }
+
+    /// hosts.toml naming `hub`; a computer that is not the hub is listed, as every real one is.
+    fn list(&self, hub: &str) {
+        let me = if hub == SELF { String::new() } else { format!("[host.{SELF}]\ndaemon = true\n") };
+        self.write("hosts.toml", &format!("hub = \"{hub}\"\n[host.{hub}]\ndaemon = true\n{me}"));
     }
 
     fn config(&self) -> PathBuf {
@@ -181,10 +187,13 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
 
     // A hub that stops being the hub after its start (the topology names another, then is gone), and a stop, open
     // nothing more.
-    home.write("hosts.toml", "hub = \"elsewhere\"\n[host.elsewhere]\ndaemon = true\n");
-    let _ = (chat.status(), chat.service().is_some(), chat.resolve(&row.to_string_lossy()));
+    home.list("elsewhere");
+    assert_eq!(chat.status(), Status::Running);
+    assert!(chat.service().is_some());
+    assert!(matches!(chat.resolve(&row.to_string_lossy()), Resolution::Mapped { .. }));
     std::fs::remove_file(home.config().join("hosts.toml")).unwrap();
-    let _ = (chat.status().to_string(), chat.service().is_some(), chat.resolve("/x"));
+    assert_eq!(chat.status(), Status::Running);
+    assert!(chat.service().is_some());
     chat.request_stop();
     assert!(chat.wait_retired(LONG));
     assert_eq!(seen.opened(), both, "a running chat read a chat file again");
@@ -406,4 +415,95 @@ async fn a_dropped_chat_lets_its_listener_go_and_a_start_after_a_stop_is_a_new_c
     assert_eq!(settled(&again).await, Status::Running);
     assert_eq!(chat.status(), Status::Stopped, "the first chat stays stopped");
     assert_eq!(second.stops.load(Ordering::SeqCst), 1);
+}
+
+/// A starter that holds `guard` while it waits for ever.
+fn holding(guard: Arc<()>) -> Starter<Fake> {
+    Box::new(move |_, _, _| {
+        Box::pin(async move {
+            let _held = guard;
+            std::future::pending().await
+        })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retiring_a_start_under_way_drops_its_future() {
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    let (registry, probe) = (Registry::new(), Arc::new(()));
+    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, holding(probe.clone()));
+    // The start task holds the probe from its first poll until it is dropped by the abort.
+    while Arc::strong_count(&probe) == 1 {
+        tokio::task::yield_now().await;
+    }
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    let dropped = async {
+        while Arc::strong_count(&probe) > 1 {
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), dropped)
+        .await
+        .expect("a start under way was retired but its future was not dropped: the abort is missing");
+    assert_eq!(chat.status(), Status::Stopped);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    let (registry, listener) = (Arc::new(Registry::new()), Arc::new(Fake::default()));
+    let (reg, made) = (registry.clone(), listener.clone());
+    // The retirement runs inside the start, just before it returns its service.
+    let start: Starter<Fake> = Box::new(move |_, _, _| {
+        Box::pin(async move {
+            assert!(retire(&reg, LONG).incomplete.is_empty());
+            Ok(made)
+        })
+    });
+    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, start);
+    let stopped = async {
+        while listener.stops.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), stopped)
+        .await
+        .expect("a service made as retirement arrived was never stopped: the spawned stop is missing");
+    assert_eq!(chat.status(), Status::Stopped);
+    assert!(chat.service().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    // A file where the folder belongs.
+    let state = sot_platform::host::state_dir::daemon_state_dir_in(&home.env);
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("chat"), "not a folder").unwrap();
+    let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
+    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, never(&called));
+    assert_eq!(chat.status(), Status::Failed("lock"));
+    assert_eq!(registry.len(), 0);
+    assert!(!called.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_retirement_racing_the_begin_never_leaves_a_start_running() {
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let _enter = rt.enter();
+    // Whichever side wins, the end state is the same: retired before the registration (refused) or after it
+    // (stopped). Not deterministic: the window is the registration itself, which no test can pause.
+    for _ in 0..400 {
+        let registry = Arc::new(Registry::new());
+        let racing = registry.clone();
+        let retiring = std::thread::spawn(move || retire(&racing, LONG));
+        let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, pending());
+        assert!(retiring.join().unwrap().incomplete.is_empty());
+        assert_eq!(chat.status(), Status::Stopped);
+    }
 }

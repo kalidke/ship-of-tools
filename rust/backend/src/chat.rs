@@ -190,12 +190,14 @@ impl<L: Listener> Chat<L> {
             return chat(Some(config), Status::Failed("lock"));
         }
         let this = chat(Some(config), Status::Stopped);
+        // The phase lock is taken before the registration and held until `Starting` is in place: a retirement that
+        // reaches `request_stop` in between waits for it, and so finds the start and aborts it. The start task's own
+        // completion takes the same lock.
+        let (task_chat, shared) = (this.clone(), this.shared.clone());
+        let mut phase = shared.lock();
         if !registry.register(this.clone()) {
             return this;
         }
-        // The task's own completion takes the phase lock, which is held until `Starting` is in place.
-        let (task_chat, shared) = (this.clone(), this.shared.clone());
-        let mut phase = shared.lock();
         let task = Handle::current().spawn(async move {
             let Some(Ok(config)) = &task_chat.config else { return };
             let made = start(config, credentials, &locks).await;

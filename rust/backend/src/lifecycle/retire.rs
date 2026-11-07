@@ -15,8 +15,9 @@ use std::time::Duration;
 pub(crate) const RETIRE_WAIT: Duration = Duration::from_secs(1);
 
 /// An in-process service the daemon's end waits for. The three steps are called in this order, each participant's
-/// closure before any participant's stop, from one thread the terminal bounds; none of them may rely on the runtime
-/// that is ending.
+/// closure before any participant's stop, from one thread the terminal bounds. A participant may use the daemon's runtime (the
+/// chat spawns its stop on it); the bound covers a runtime that is stalled, and the participant is then reported
+/// incomplete.
 pub(crate) trait Participant: Send + Sync {
     /// A name for the log and the report.
     fn name(&self) -> &'static str;
