@@ -273,7 +273,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::REPL_EXECUTE => {
             crate::sidecars::repl::execute::handle_repl_execute(req_id, payload, session, workspaces).await
         }
-        op::SELECTION_SET => crate::agents::selection::handle_selection_set(req_id, payload, workspaces).await,
+        op::SELECTION_SET => crate::agents::selection::handle_selection_set(req_id, payload, sot_platform::host::state_dir::sot_state_dir().as_deref(), workspaces).await,
         op::DIRECTORY_LIST => crate::files::tree_ops::handle_directory_list(req_id, payload, session).await,
         op::WORKSPACE_CREATE => {
             crate::rows::ops::create::handle_workspace_create(req_id, payload, session, workspaces, ws_events_tx).await

@@ -20,11 +20,10 @@ const FILE_NAME: &str = "selection.json";
 
 /// `selection.set`: one reply, `held` for an accepted selection (no leg carries the hook yet), `shared` for a clear.
 pub(crate) async fn handle_selection_set(
-    req_id: u64, payload: serde_json::Value, workspaces: &Workspaces,
+    req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces,
 ) -> Result<HandlerOutput> {
     let req: SelectionSetReq = serde_json::from_value(payload).context("selection.set payload")?;
-    let state_root = sot_platform::host::state_dir::sot_state_dir();
-    let frame = match state_root.map_or(Err(selection_code::PUBLISH_FAILED), |root| set_selection(&root, workspaces, &req)) {
+    let frame = match state_root.map_or(Err(selection_code::PUBLISH_FAILED), |root| set_selection(root, workspaces, &req)) {
         Ok(state) => Frame::res(req_id, op::SELECTION_SET, serde_json::to_value(SelectionSetRes { state })?),
         Err(code) => {
             let payload = serde_json::json!({ "error": format!("selection not shared: {code}"), "code": code });
@@ -35,7 +34,7 @@ pub(crate) async fn handle_selection_set(
 }
 
 /// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`.
-pub(crate) fn set_selection(
+fn set_selection(
     state_root: &Path, workspaces: &Workspaces, req: &SelectionSetReq,
 ) -> Result<SelectionState, &'static str> {
     let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
@@ -67,9 +66,9 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
     let bytes = read_prefix(&path).ok_or(selection_code::NOT_FILE_TEXT)?;
     let text = check_selection(&bytes, sel).ok_or(selection_code::NOT_FILE_TEXT)?;
     let absolute = path.to_string_lossy().into_owned();
-    let relative = path
-        .strip_prefix(files.root_path())
-        .map_or_else(|_| sel.node_id.clone(), |r| r.to_string_lossy().replace('\\', "/"));
+    // the resolver's own check keeps every resolved path under the root
+    let relative = path.strip_prefix(files.root_path()).expect("a resolved node lies under the root");
+    let relative = relative.to_string_lossy().replace('\\', "/");
     Ok(render_selection(&text, &absolute, &relative))
 }
 

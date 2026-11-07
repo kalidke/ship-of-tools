@@ -95,6 +95,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     // 5. a failed publish answers publish_failed and leaves no file (a folder where the temporary file goes)
     assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok());
     assert!(held().is_some());
+    // a folder at the temporary name `write_durable` writes first makes its create fail
     std::fs::create_dir(folder.join("selection.json.tmp")).unwrap();
     assert_eq!(
         set(&ws.workspace_id, Some(sel("files:b.txt", (0, 0), (0, 3), "one"))),
@@ -119,6 +120,9 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     std::fs::write(project.path().join("big.txt"), format!("head\n{long}\ntail\n")).unwrap();
     assert_eq!(set(&ws.workspace_id, Some(sel("files:big.txt", (0, 0), (0, 4), "head"))), Ok(SelectionState::Held));
     assert_eq!(held(), Some(expect("big.txt", "head", 1, 1)), "row 7: a range near the start of a large file");
+    let exact = &long[..cap - 5];
+    assert_eq!(set(&ws.workspace_id, Some(sel("files:big.txt", (1, 0), (1, (cap - 5) as u32), exact))), Ok(SelectionState::Held));
+    assert_eq!(held(), Some(expect("big.txt", exact, 2, 2)), "row 7: a range ending exactly at the cap");
     let shown = &long[..cap - 4];
     assert_eq!(
         set(&ws.workspace_id, Some(sel("files:big.txt", (1, 0), (1, (cap - 4) as u32), shown))),
@@ -126,4 +130,72 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
         "row 7: a range ending past the cap"
     );
     assert_eq!(held(), None, "row 7: the refusal removes the file");
+
+    // 8. a removal that fails answers publish_failed, whatever the request, and the old file stays (a non-empty folder
+    // where the file goes cannot be removed or replaced, on Unix or Windows)
+    std::fs::create_dir(&file).unwrap();
+    std::fs::write(file.join("kept"), "x").unwrap();
+    assert_eq!(set(&ws.workspace_id, None), Err(selection_code::PUBLISH_FAILED), "row 8: a clear whose removal fails");
+    assert_eq!(
+        set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))),
+        Err(selection_code::PUBLISH_FAILED),
+        "row 8: an accepted selection whose publish and removal fail"
+    );
+    assert_eq!(
+        set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alphX"))),
+        Err(selection_code::PUBLISH_FAILED),
+        "row 8: a refusal whose removal fails answers publish_failed, not its own code"
+    );
+    assert!(file.join("kept").exists(), "row 8: the old record stays");
+    std::fs::remove_dir_all(&file).unwrap();
+
+    // 9. a link to a device is no file: its open may wait or never end, so it is refused and the old file goes
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/dev/zero", project.path().join("zero.txt")).unwrap();
+        assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok());
+        assert_eq!(
+            set(&ws.workspace_id, Some(sel("files:zero.txt", (0, 0), (0, 1), "\0"))),
+            Err(selection_code::NOT_FILE_TEXT),
+            "row 9: a link to /dev/zero"
+        );
+        assert_eq!(held(), None, "row 9: the refusal removes the file");
+    }
+}
+
+#[tokio::test]
+async fn the_replies_are_the_wire_frames() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    let mut row = Workspace::from_label("rep", project.path().to_path_buf(), false, "none".into(), String::new(), String::new());
+    row.workspace_id = "ws-rep-1".to_string();
+    workspaces.insert(row);
+    std::fs::create_dir_all(state_dir_for(state.path(), "ws-rep-1")).unwrap();
+    std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
+    let ask = |root: Option<&Path>, workspace: &str, s: Option<SelectedText>| {
+        let payload = serde_json::to_value(req(workspace, s)).unwrap();
+        let workspaces = workspaces.clone();
+        let root = root.map(Path::to_path_buf);
+        async move { handle_selection_set(7, payload, root.as_deref(), &workspaces).await.unwrap() }
+    };
+    let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
+    let only = |out: HandlerOutput| {
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].0.id, out[0].0.op.as_str()), (7, op::SELECTION_SET));
+        out[0].0.payload.clone()
+    };
+    let root = Some(state.path());
+    assert_eq!(only(ask(root, "ws-rep-1", good()).await), serde_json::json!({"state": "held"}));
+    assert_eq!(only(ask(root, "ws-rep-1", None).await), serde_json::json!({"state": "shared"}));
+    let refused = Some(sel("files:a.txt", (0, 0), (0, 5), "alphX"));
+    assert_eq!(
+        only(ask(root, "ws-rep-1", refused).await),
+        serde_json::json!({"error": "selection not shared: not_file_text", "code": "not_file_text"})
+    );
+    assert_eq!(only(ask(None, "ws-rep-1", good()).await)["code"], selection_code::PUBLISH_FAILED, "no state root");
+    // a request the wire refuses at decode is a handler error and changes nothing
+    let mut bad = serde_json::to_value(req("ws-rep-1", good())).unwrap();
+    bad["selection"]["len"] = 0.into();
+    assert!(handle_selection_set(7, bad, root, &workspaces).await.is_err());
 }
