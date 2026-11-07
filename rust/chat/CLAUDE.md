@@ -41,8 +41,16 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
 6. **The server is verified, and the product has no way to weaken that.** `Http::new` trusts the bundled web roots
    (`webpki-roots`) through one rustls configuration (ring provider) and checks the certificate chain and the name; either
    failure is `Tls`, before any HTTP byte. There is no endpoint override, insecure mode, test-root setting or plaintext
-   path. `Http::for_test`, under `cfg(test)` alone, takes the fixture's CA as the only root and a resolver that maps the
-   fixture's logical hosts to loopback and refuses every other name (`Connect`, no connection).
+   path in a shipped build. `Http::for_test`, under `cfg(test)` or the `test-support` feature alone, takes the fixture's
+   CA as the only root and a resolver that maps the fixture's logical hosts to loopback and refuses every other name
+   (`Connect`, no connection). The feature, which also builds the fake Slack with the key of that CA, is enabled by
+   dev-dependencies only (`sot-backend`'s); `scripts/tests/release-features-check.sh` reads what Cargo resolves for each
+   release build command (`-p sot-frontend`; `-p sot-backend -p sot-capsule`; `--workspace`, the macOS and Windows builds,
+   taken from release.yml and pack-build.sh, which it also holds free of `--features` and `--all-features`) and fails
+   naming the feature and the binary when sot-chat's `test-support` is in it, whether set on a normal dependency of any
+   crate in the selection, in `default`, or by another member of `--workspace`; it runs in every gate run, with the faults
+   put in. Limits: a re-export of `for_test` or the fake outside its cfg, and a key included outside the fake's folder
+   (the check refuses only the second), rest on review.
 7. **An operation has one owner-held deadline and bounded admission.** `Request` carries its deadline; `send` runs the
    operation as a task that holds the deadline and the permit, so connection, headers, redirects and body share one
    bound and a caller that stops waiting neither frees the permit nor cancels a mutation already sent. Sixteen
@@ -181,7 +189,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    unwatch calls nothing, and refusing it for a stale row would leave the watch holding one of the bounded slots. The
    mapping is the configuration loaded at start. Tests: `stale_row_or_mapping_cannot_post_or_fetch` and
    `no_action_is_admitted_unless_the_service_runs` prove a refusal by no service being handed out, since the backend
-   has no fake Slack; that `service` is private rests on its visibility and review, no test can see it (they are a
+   does not yet use the fake Slack its tests can now reach; that `service` is private rests on its visibility and review, no test can see it (they are a
    child module). `resolve` asks the hub fact first, then the row, then the file: `NotHub` for a non-hub whatever the
    id, `stale_row` for a row that is gone, `Unmapped` for the anchor; otherwise the file's mapping in every service
    status, with `delivers` only while the service runs (starting, failed, secrets missing, stopping and stopped show
@@ -201,7 +209,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `wait_retired` waits for the stopped state; lifecycle's 1 s bound cancels no future, so a stop that outlasts it is
    reported incomplete and the daemon ends regardless. Limits: the Windows spellings (drive-letter case, separators)
    rest on canonicalization and are compiled, not run, here; the running-listener paths are proved with a test
-   listener, since `Service::start` reaches Slack only and the backend has no fake of it (the service's own stop is
+   listener, since `Service::start` reaches Slack only and the backend's tests do not yet use the fake they can reach (the service's own stop is
    guarantee 22's); a file's permissions are not checked here; the attachment bound is B4's.
 22. **One workspace has one listener, and its lock lives exactly as long as the listener.** `Service::start(config,
    credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the
@@ -278,7 +286,7 @@ never holds another form.
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -308,7 +316,7 @@ target; the gate's `darwin-check`, on a Linux host with no Apple clang, gives `r
 compiler `scripts/tests/cc-stub.sh`, which writes empty objects because the check links nothing; hosted macOS builds
 it for real). 
 ## The fake Slack
-`fake_slack/mod.rs` (test only) is an HTTPS server on loopback over real TLS (`tokio-rustls`), hand-written, scripted per
+`fake_slack/mod.rs` (under `cfg(test)` or the `test-support` feature, which another crate's tests enable as a dev-dependency; guarantee 6 says what holds it out of a shipped binary) is an HTTPS server on loopback over real TLS (`tokio-rustls`), hand-written, scripted per
 test (`Reply`: a status, raw bytes, a hang, a stall after bytes, an endless body, a dropped connection), recording each
 request (with its path, query parameters and JSON body), connection and handshake failure. It flushes after every
 write and its listener has a 4 KiB send buffer, so output left unflushed in the TLS session hangs on Linux as it did on
@@ -334,7 +342,7 @@ Paths are under `rust/chat/src/`.
 | 3 | bounds | `normalize_tests.rs`: `text_is_cut_on_a_character_boundary_and_marked`, `names_filenames_and_mime_are_cut_and_marked`, `only_eight_files_are_summarized_and_the_rest_counted`, `an_id_over_64_bytes_or_not_ascii_is_not_carried`, `a_record_never_exceeds_32_kib_of_json`, `names_lose_control_characters`, `a_normalized_record_round_trips_through_the_wire` |
 | 4 | attachment only | `normalize_tests.rs`: `an_attachment_only_message_keeps_its_files_and_has_no_text` |
 | 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations`, `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect`, `an_ambient_proxy_variable_is_ignored` (the test re-runs itself through `sot_platform::test_isolated` as a child with every proxy variable naming a dead address and expects a direct request; the helper fails the parent when the body was not entered exactly once or exited non-zero), `the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations` (no network) |
-| 6 | verified server | `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
+| 6 | verified server, and no test root in a shipped binary | `scripts/tests/release-features-check.sh --prove` (the gate runs it: green for the real tree and for the feature on a dev-dependency alone, red with the feature on a normal dependency, in `default`, on the frontend, or on a member only `--workspace` builds), and `sot-backend`'s `the_exported_fake_slack_answers_one_scripted_reply` (the export works); `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
 | 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
@@ -362,7 +370,7 @@ Paths are under `rust/chat/src/`.
 - `src/socket.rs`: the Socket Mode listener; `src/socket_tests.rs`: its tests.
 - `src/service.rs`: the service; `src/service_tests.rs`: its tests.
 - `src/watch.rs`: the watch model; `src/watch_tests.rs`: its tests.
-- `src/fake_slack/`: the test-only fake, its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
+- `src/fake_slack/`: the fake (tests and the `test-support` feature), its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
 `src/normalize.rs`, `normalize`; `src/http.rs`, `Http::send`; `src/api.rs`, `Api::history` and `Api::post`; `src/socket.rs`, `Worker::run` and `Worker::handle`.

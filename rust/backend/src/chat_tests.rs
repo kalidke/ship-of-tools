@@ -690,3 +690,20 @@ async fn resolve_asks_the_hub_fact_first_and_the_row_before_the_file() {
     assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::Invalid(ConfigError::Missing), false)));
     assert_eq!(chat.resolve(&rows, "ws-nothing-0"), Err(ChatCode::StaleRow));
 }
+
+/// The seam the chat ops' tests use: the fake Slack from `sot-chat` answers one scripted reply to an `Http` built by
+/// `Http::for_test`, and counts the call.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_exported_fake_slack_answers_one_scripted_reply() {
+    use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
+    use sot_chat::http::Request;
+    let fake = FakeSlack::start(Identity::Trusted, |_, _| Reply::ok(b"scripted")).await;
+    let reply = fake
+        .http()
+        .send(Request::get(fake.url("slack.com", "/api/x"), LONG))
+        .await
+        .expect("the fake answers");
+    assert_eq!((reply.status(), reply.body()), (200, &b"scripted"[..]));
+    assert_eq!(fake.seen().len(), 1);
+    fake.shutdown().await;
+}

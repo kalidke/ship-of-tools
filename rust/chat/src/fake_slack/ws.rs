@@ -103,7 +103,7 @@ type Inner = Replay<TlsStream<TcpStream>>;
 
 /// How `send_until_dropped` ended.
 #[derive(Debug)]
-pub(crate) enum Flood {
+pub enum Flood {
     /// The client dropped the connection: how long after the first stalled send, if any send stalled.
     Dropped(Option<Duration>),
     /// The frame or time cap came first with the connection still up: frames sent, and whether a send stalled.
@@ -111,7 +111,7 @@ pub(crate) enum Flood {
 }
 
 /// The server side of one websocket connection, for a script to drive.
-pub(crate) struct WsPeer {
+pub struct WsPeer {
     ws: WebSocketStream<Inner>,
     _open: OpenGuard,
 }
@@ -134,16 +134,16 @@ pub(super) async fn serve_socket(
 }
 
 impl WsPeer {
-    pub(crate) async fn send(&mut self, value: &Value) {
+    pub async fn send(&mut self, value: &Value) {
         self.send_text(value.to_string()).await;
     }
 
-    pub(crate) async fn send_text(&mut self, text: String) {
+    pub async fn send_text(&mut self, text: String) {
         let _ = self.ws.send(Message::Text(text.into())).await;
     }
 
     /// The next text frame as JSON, within `within`. `None` on a timeout or when the client is gone.
-    pub(crate) async fn recv(&mut self, within: Duration) -> Option<Value> {
+    pub async fn recv(&mut self, within: Duration) -> Option<Value> {
         let end = tokio::time::Instant::now() + within;
         loop {
             match tokio::time::timeout_at(end, self.ws.next()).await.ok()?? {
@@ -155,7 +155,7 @@ impl WsPeer {
     }
 
     /// A websocket ping with a text payload, as Slack sends.
-    pub(crate) async fn ping(&mut self, payload: &str) {
+    pub async fn ping(&mut self, payload: &str) {
         let _ = self
             .ws
             .send(Message::Ping(payload.as_bytes().to_vec().into()))
@@ -164,7 +164,7 @@ impl WsPeer {
 
     /// Read frames until a pong carrying `payload` arrives, within `within`; false if a text frame (an
     /// acknowledgement) comes first, or on a timeout or a wrong payload.
-    pub(crate) async fn expect_pong_first(&mut self, payload: &str, within: Duration) -> bool {
+    pub async fn expect_pong_first(&mut self, payload: &str, within: Duration) -> bool {
         let end = tokio::time::Instant::now() + within;
         loop {
             match tokio::time::timeout_at(end, self.ws.next()).await {
@@ -179,7 +179,7 @@ impl WsPeer {
     /// Send `text` frames without ever reading, until a send fails (the client dropped the connection), `frames`
     /// are sent or `within` passes. A send that waits past `stall` is the client having stopped reading because
     /// its own write to us cannot finish; only the first such stall is recorded.
-    pub(crate) async fn send_until_dropped(
+    pub async fn send_until_dropped(
         &mut self,
         text: &str,
         stall: Duration,
@@ -226,12 +226,12 @@ impl WsPeer {
     }
 
     /// Read until the client ends the connection; the library answers a close.
-    pub(crate) async fn drain(&mut self) {
+    pub async fn drain(&mut self) {
         while let Some(Ok(_)) = self.ws.next().await {}
     }
 
     /// Never parse a frame, so never answer a close: read raw bytes until the client's connection is gone.
-    pub(crate) async fn ignore_until_gone(&mut self) {
+    pub async fn ignore_until_gone(&mut self) {
         let mut buf = [0u8; 1024];
         while let Ok(n) = self.ws.get_mut().read(&mut buf).await {
             if n == 0 {

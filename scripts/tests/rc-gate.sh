@@ -167,6 +167,11 @@ job_cargo_chain() {
     "${TO[@]}" "${CE[@]}" CC_aarch64_apple_darwin="$D/scripts/tests/cc-stub.sh" AR_aarch64_apple_darwin=ar \
     cargo check --manifest-path "$M" --target aarch64-apple-darwin -p sot-capsule -p sot-backend -p sot-chat --all-targets --locked
   fin darwin-check $?
+  st release-features-check
+  # no shipped binary resolves sot-chat's test-support: the check, and its faults put in (--prove); every run, scoped or not
+  logged "$L/release-features-check.log" "$L/release-features-check.log" \
+    "${TO[@]}" "${CE[@]}" bash "$D/scripts/tests/release-features-check.sh" --prove "$D/rust"
+  fin release-features-check $?
 }
 
 # job_lint <line>: one of rust.yml's clippy lines, run from rust/ as the workflow runs it. The all-targets lines read
@@ -371,6 +376,7 @@ producer() {
   { ! narrow || [ -n "$(doc_crates)" ]; } && echo unrun > "$L/rust/doc.rc"
   echo unrun > "$L/steps/win-check.rc"
   echo unrun > "$L/steps/darwin-check.rc"
+  echo unrun > "$L/steps/release-features-check.rc"
   emit cargo-chain cargo-chain
   emit_shell "$D/scripts/tests/test-defects-check.sh" # docs/defects.md: every run, scoped or not
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done

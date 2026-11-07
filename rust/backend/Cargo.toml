@@ -79,6 +79,9 @@ sot-topology = { path = "../topology", features = ["test-handshake-bound"] }
 # `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).
 # `test_log`, `sot_platform::test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
 sot-platform = { path = "../platform", features = ["test-support"] }
+# The fake Slack and `Http::for_test`, for the chat ops' tests. The check `scripts/tests/release-features-check.sh` fails the gate
+# if this feature reaches a shipped binary, as it would from this line moved under `[dependencies]`.
+sot-chat = { path = "../chat", features = ["test-support"] }
 sot-containment = { path = "../containment", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).

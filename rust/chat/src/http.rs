@@ -4,7 +4,7 @@
 //! fixed errors. It knows no Slack method; callers build a `Request` and read a `Response`.
 //!
 //! The product constructor (`Http::new`) trusts the bundled web roots and sends only to Slack hosts. There is no
-//! endpoint override, insecure mode or plaintext path; the one test constructor exists under `cfg(test)` alone.
+//! endpoint override, insecure mode or plaintext path; the one test constructor exists under `cfg(test)` or the `test-support` feature alone.
 
 use std::error::Error;
 use std::fmt;
@@ -231,8 +231,8 @@ impl Http {
 
     /// The test client: the fixture's CA as the only root, its port as the only port, and a resolver that maps the
     /// fixture's logical hosts to loopback and refuses every other name.
-    #[cfg(test)]
-    pub(crate) fn for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(
         ca: rustls::pki_types::CertificateDer<'static>,
         port: u16,
         hosts: &'static [&'static str],
@@ -508,7 +508,7 @@ fn is_tls(err: &(dyn Error + 'static)) -> bool {
             .is_some_and(|inner| is_tls(inner))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod test_resolver {
     use reqwest::dns::{Addrs, Name, Resolve, Resolving};
     use std::net::SocketAddr;

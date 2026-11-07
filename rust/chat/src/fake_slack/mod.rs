@@ -30,11 +30,11 @@ use tokio_rustls::TlsAcceptor;
 use crate::http::Http;
 
 mod ws;
-pub(crate) use ws::{Flood, WsPeer};
+pub use ws::{Flood, WsPeer};
 
 /// The names the test resolver maps to loopback: Slack's, two lookalikes, a foreign host, and one Slack name the
 /// trusted certificate does not cover.
-pub(crate) const HOSTS: &[&str] = &[
+pub const HOSTS: &[&str] = &[
     "slack.com",
     "api.slack.com",
     "files.slack.com",
@@ -56,7 +56,7 @@ const ROGUE_KEY: &str = include_str!("rogue.key");
 
 /// One request head and body as the fake received it.
 #[derive(Clone, Debug)]
-pub(crate) struct Seen {
+pub struct Seen {
     pub method: String,
     pub target: String,
     pub host: String,
@@ -91,7 +91,7 @@ impl Seen {
 }
 
 /// What the server does with a request.
-pub(crate) enum Reply {
+pub enum Reply {
     /// A complete, well-formed answer.
     Status {
         code: u16,
@@ -113,7 +113,7 @@ pub(crate) enum Reply {
 }
 
 impl Reply {
-    pub(crate) fn ok(body: &[u8]) -> Reply {
+    pub fn ok(body: &[u8]) -> Reply {
         Reply::Status {
             code: 200,
             headers: Vec::new(),
@@ -121,12 +121,12 @@ impl Reply {
         }
     }
 
-    pub(crate) fn json(value: &serde_json::Value) -> Reply {
+    pub fn json(value: &serde_json::Value) -> Reply {
         Reply::ok(value.to_string().as_bytes())
     }
 
     /// A websocket: the script drives the server side of one connection.
-    pub(crate) fn socket<F, Fut>(script: F) -> Reply
+    pub fn socket<F, Fut>(script: F) -> Reply
     where
         F: Fn(WsPeer) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -134,7 +134,7 @@ impl Reply {
         Reply::Socket(Arc::new(move |peer| Box::pin(script(peer))))
     }
 
-    pub(crate) fn redirect(location: &str) -> Reply {
+    pub fn redirect(location: &str) -> Reply {
         Reply::Status {
             code: 302,
             headers: vec![("Location".into(), location.into())],
@@ -144,10 +144,10 @@ impl Reply {
 }
 
 /// The script: a request and the fixture's port in, a reply out.
-pub(crate) type Script = Arc<dyn Fn(&Seen, u16) -> Reply + Send + Sync>;
+pub type Script = Arc<dyn Fn(&Seen, u16) -> Reply + Send + Sync>;
 
 #[derive(Clone, Copy)]
-pub(crate) enum Identity {
+pub enum Identity {
     /// Signed by the test CA, for the names in `HOSTS` but `nosan.slack.com`.
     Trusted,
     /// Self-signed; no client trusts it.
@@ -164,7 +164,7 @@ struct Log {
     sockets: ws::Sockets,
 }
 
-pub(crate) struct FakeSlack {
+pub struct FakeSlack {
     port: u16,
     log: Arc<Log>,
     stop: watch::Sender<bool>,
@@ -172,7 +172,7 @@ pub(crate) struct FakeSlack {
 }
 
 impl FakeSlack {
-    pub(crate) async fn start(
+    pub async fn start(
         identity: Identity,
         script: impl Fn(&Seen, u16) -> Reply + Send + Sync + 'static,
     ) -> FakeSlack {
@@ -209,33 +209,33 @@ impl FakeSlack {
     }
 
     /// A client for this fake: its CA as the only root, its port as the only port, `HOSTS` as the only names.
-    pub(crate) fn http(&self) -> Http {
+    pub fn http(&self) -> Http {
         Http::for_test(ca(), self.port, HOSTS)
     }
 
-    pub(crate) fn url(&self, host: &str, path: &str) -> String {
+    pub fn url(&self, host: &str, path: &str) -> String {
         format!("https://{host}:{}{path}", self.port)
     }
 
-    pub(crate) fn seen(&self) -> Vec<Seen> {
+    pub fn seen(&self) -> Vec<Seen> {
         self.log.seen.lock().unwrap().clone()
     }
 
-    pub(crate) fn connections(&self) -> usize {
+    pub fn connections(&self) -> usize {
         self.log.connections.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn tls_failures(&self) -> usize {
+    pub fn tls_failures(&self) -> usize {
         self.log.tls_failures.load(Ordering::SeqCst)
     }
 
     /// Websocket connections: open now, the most open at once, and ever accepted.
-    pub(crate) fn sockets(&self) -> (usize, usize, usize) {
+    pub fn sockets(&self) -> (usize, usize, usize) {
         self.log.sockets.counts()
     }
 
     /// Bytes a `Flood` reply wrote, and whether its writer has ended (the peer went away).
-    pub(crate) fn flood(&self) -> (usize, bool) {
+    pub fn flood(&self) -> (usize, bool) {
         (
             self.log.flooded.load(Ordering::SeqCst),
             self.log.flood_ended.load(Ordering::SeqCst),
@@ -243,7 +243,7 @@ impl FakeSlack {
     }
 
     /// Stop the listener and every connection, joined within five seconds.
-    pub(crate) async fn shutdown(mut self) {
+    pub async fn shutdown(mut self) {
         let _ = self.stop.send(true);
         if let Some(task) = self.task.take() {
             tokio::time::timeout(Duration::from_secs(5), task)
@@ -263,7 +263,7 @@ impl Drop for FakeSlack {
 }
 
 /// Wait, bounded, until `check` holds; the caller's assertion follows.
-pub(crate) async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+pub async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
     let end = tokio::time::Instant::now() + Duration::from_secs(10);
     while !check() {
         assert!(
@@ -274,7 +274,7 @@ pub(crate) async fn eventually(what: &str, mut check: impl FnMut() -> bool) {
     }
 }
 
-pub(crate) fn ca() -> CertificateDer<'static> {
+pub fn ca() -> CertificateDer<'static> {
     CertificateDer::from_pem_slice(CA_PEM.as_bytes()).expect("fixture CA")
 }
 

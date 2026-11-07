@@ -62,6 +62,10 @@ Guarantees, each with the mechanism it rests on:
   refused. `tests/test-rc-gate-scope.sh` holds the path table with its widening cases and runs the real pipeline over
   stand-ins, and drives the verdict, summary and refusal functions the entries call and the two entries' refusals; a whole
   run's own container checks are the one part it does not reach.
+- Every gate run, scoped or not, also runs `tests/release-features-check.sh --prove` in the cargo chain: no shipped
+  binary may resolve sot-chat's `test-support` feature (its fake Slack trusts a committed key). It reads `cargo tree -e
+  normal,build` for each `cargo build --release` selection of release.yml and pack-build.sh, and refuses a line there
+  with another selection or a feature flag; `tests/test-rc-gate-scope.sh` pins that it runs.
 - Every gate run, scoped or not, also runs `tests/test-defects-check.sh`, which runs `tests/defects-check.sh` on the
   checkout: it fails with the id when a landing record of `docs/history/passes.md` names an item that is not in
   `docs/defects.md`, and when a tracked `CLAUDE.md` cites an item id there that is not one. The rule that tells an id from
@@ -566,6 +570,7 @@ Tests (all observe execution, not source spellings):
 | `tests/test-publish-guard-entries.sh` | Actual release push refusal; gate checkout enrollment at container boundary; shell/PowerShell pack enrollment at recording build boundary; entry conflicts before builds |
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
 | `tests/test-rc-gate-scope.sh` | The path-to-piece table with its widening cases, and the real pipeline over stand-ins: a scoped run selects only its pieces, a selected job the tree lacks fails |
+| `tests/release-features-check.sh --prove` | The real tree and the feature on a dev-dependency alone pass; the feature on a normal dependency of the backend, on the frontend, in sot-chat's default, or on a member only `--workspace` builds fails and the message names the feature and the binaries; a release line with a feature flag fails |
 | `tests/test-defects-check.sh` (and `tests/defects-check.sh`) | A landing record naming an unknown item id fails and the output names it; known open and closed ids pass; capitals that are not ids never hit; a duplicate id and an open item with no mark fail; the real tree passes |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
 | `install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees` | Version cleanup preserves unavailable registrations and dirty/locked checkouts while removing available clean ones |

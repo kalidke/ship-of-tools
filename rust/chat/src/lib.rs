@@ -4,6 +4,8 @@
 
 pub mod api;
 pub mod config;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake_slack;
 pub mod http;
 pub mod normalize;
 pub mod service;
@@ -16,8 +18,6 @@ pub use normalize::{normalize, Context, Normalized, Unrepresentable};
 mod api_tests;
 #[cfg(test)]
 mod config_tests;
-#[cfg(test)]
-mod fake_slack;
 #[cfg(test)]
 mod http_tests;
 #[cfg(test)]
