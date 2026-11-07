@@ -32,7 +32,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(FILE_NAME);
     let held = || std::fs::read_to_string(&file).ok();
-    let set = |workspace: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, true, 1, &req(workspace, s));
+    let set = |workspace: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, true, 9_001_001, &req(workspace, s));
     // the rendering of lines `first` to `last` of `name`: the absolute path and the project-relative path differ
     let expect = |name: &str, text: &str, first: usize, last: usize| {
         let absolute = root.join(name).to_string_lossy().into_owned();
@@ -180,7 +180,7 @@ async fn the_replies_are_the_wire_frames() {
         let payload = serde_json::to_value(req(workspace, s)).unwrap();
         let workspaces = workspaces.clone();
         let root = root.map(Path::to_path_buf);
-        async move { handle_selection_set(7, payload, root.as_deref(), &workspaces, true, 2).await.unwrap() }
+        async move { handle_selection_set(7, payload, root.as_deref(), &workspaces, true, 9_001_002).await.unwrap() }
     };
     let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
     let only = |out: HandlerOutput| {
@@ -201,7 +201,7 @@ async fn the_replies_are_the_wire_frames() {
     let mut bad = serde_json::to_value(req("ws-rep-1", good())).unwrap();
     bad["selection"]["len"] = 0.into();
     assert_eq!(only(ask(root, "ws-rep-1", good()).await), serde_json::json!({"state": "held"}), "the file was published");
-    assert!(handle_selection_set(7, bad, root, &workspaces, true, 2).await.is_err());
+    assert!(handle_selection_set(7, bad, root, &workspaces, true, 9_001_002).await.is_err());
     assert!(state_dir_for(state.path(), "ws-rep-1").join(FILE_NAME).exists(), "a decode refusal changes nothing");
 }
 
@@ -218,7 +218,7 @@ fn the_reply_says_who_will_hear() {
     };
     std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
     let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
-    let ask = |window: bool, id: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, window, 3, &req(id, s));
+    let ask = |window: bool, id: &str, s: Option<SelectedText>| set_selection(Some(state.path()), &workspaces, window, 9_001_003, &req(id, s));
     let file = |id: &str| state_dir_for(state.path(), id).join(FILE_NAME);
 
     // 1. a connection that is not a window's is refused before any row work, and a file a window set stays
@@ -229,7 +229,7 @@ fn the_reply_says_who_will_hear() {
         assert!(file("ws-claude").exists(), "row 1: {name} changes nothing");
     }
     assert_eq!(ask(false, "ws-nope", good()), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the row");
-    assert_eq!(set_selection(None, &workspaces, false, 3, &req("ws-claude", good())), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the state root");
+    assert_eq!(set_selection(None, &workspaces, false, 9_001_003, &req("ws-claude", good())), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the state root");
 
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
     for kind in ["claude", "codex"] {
@@ -271,7 +271,7 @@ fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
     let ask = |window: bool, serial: u64, id: &str, s: Option<SelectedText>| {
         set_selection(Some(state.path()), &workspaces, window, serial, &req(id, s))
     };
-    let (a, b) = (9001, 9002);
+    let (a, b) = (9_002_001, 9_002_002);
 
     // 1. a publish replaces the setter; a clear, a refusal and a failed publish drop it; not_a_window changes nothing
     assert!(ask(true, a, "ws-wd-1", good()).is_ok());
@@ -298,6 +298,17 @@ fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
     assert!(file("ws-wd-1").exists(), "row 1: a failed publish drops the entry");
     forget(b);
 
+    // a removal that fails keeps the setter's entry, so its end retries
+    assert!(ask(true, a, "ws-wd-1", good()).is_ok());
+    std::fs::remove_file(file("ws-wd-1")).unwrap();
+    std::fs::create_dir(file("ws-wd-1")).unwrap();
+    std::fs::write(file("ws-wd-1").join("kept"), "x").unwrap();
+    assert_eq!(ask(true, b, "ws-wd-1", None), Err(selection_code::PUBLISH_FAILED));
+    std::fs::remove_dir_all(file("ws-wd-1")).unwrap();
+    std::fs::write(file("ws-wd-1"), "later").unwrap();
+    forget(a);
+    assert!(!file("ws-wd-1").exists(), "row 1: a failed removal keeps the entry, so its setter's end removes the file");
+
     // 2. an end removes every file its serial set and nothing another serial set
     assert!(ask(true, a, "ws-wd-2", good()).is_ok());
     assert!(ask(true, a, "ws-wd-3", good()).is_ok());
@@ -313,13 +324,16 @@ fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
     let guard = clients.register("c", "0.6.6", 1, "fe".into(), Some("host-a".into()), Some("w".into()), Some("fe@host-a".to_string()));
     assert!(ask(true, guard.serial(), "ws-wd-2", good()).is_ok());
     assert!(file("ws-wd-2").exists());
+    let other = crate::clients::Clients::new().register("c", "0.6.6", 1, "fe".into(), None, None, None);
+    assert_ne!(other.serial(), guard.serial(), "row 3: two rosters never hand out one serial");
     drop(guard);
     assert!(!file("ws-wd-2").exists(), "row 3: a guard's end removes the file its connection set");
 
     // 4. the walk removes a file no live connection of this process set, and keeps one a connection set
     std::fs::write(file("ws-wd-1"), "from an earlier process").unwrap();
-    clear_unowned(state.path(), "ws-wd-1");
+    assert!(clear_unowned(state.path(), "ws-wd-1"));
     assert!(!file("ws-wd-1").exists(), "row 4: a file from an earlier process is removed");
+    assert!(!clear_unowned(state.path(), "ws-wd-1"), "row 4: a row with no file does no removal");
     assert!(ask(true, a, "ws-wd-2", good()).is_ok());
     clear_unowned(state.path(), "ws-wd-2");
     assert!(file("ws-wd-2").exists(), "row 4: a share made before the walk survives it");

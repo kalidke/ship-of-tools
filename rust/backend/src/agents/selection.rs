@@ -57,12 +57,16 @@ pub(crate) fn forget(serial: u64) {
     });
 }
 
-/// The start-up walk's call for one row: removes its file only when no live connection of this process set it.
-pub(crate) fn clear_unowned(state_root: &Path, row: &str) {
+/// The start-up walk's call for one row: removes its file only when it exists and no live connection of this process
+/// set it (a row with no file costs one `stat`); answers whether it removed one.
+pub(crate) fn clear_unowned(state_root: &Path, row: &str) -> bool {
     let map = setters();
-    if !map.contains_key(row) {
-        remove_logged(row, &state_dir_for(state_root, row).join(FILE_NAME));
+    let file = state_dir_for(state_root, row).join(FILE_NAME);
+    let removable = !map.contains_key(row) && file.try_exists().unwrap_or(true);
+    if removable {
+        remove_logged(row, &file);
     }
+    removable
 }
 
 /// `selection.set`: one reply. `window` is whether the connection is a window's, the server's one definition
@@ -81,7 +85,8 @@ pub(crate) async fn handle_selection_set(
     Ok(vec![(frame, None)])
 }
 
-/// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`.
+/// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`. The row is resolved and the
+/// project file read and rendered before the lock; the lock covers the file's publish or removal and the map.
 fn set_selection(
     state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, req: &SelectionSetReq,
 ) -> Result<SelectionState, &'static str> {
@@ -90,24 +95,30 @@ fn set_selection(
     }
     let state_root = state_root.ok_or(selection_code::PUBLISH_FAILED)?;
     let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
-    let file = state_dir_for(state_root, &ws.workspace_id).join(FILE_NAME);
+    let folder = state_dir_for(state_root, &ws.workspace_id);
+    let file = folder.join(FILE_NAME);
+    let checked = req.selection.as_ref().map(|sel| {
+        if takes_selection(&ws.agent()) { render(&ws, sel) } else { Err(selection_code::NO_AGENT) }
+    });
+    let hooked = folder.join(MARKER_NAME).exists();
     let mut map = setters();
-    let result = apply(&file, &state_dir_for(state_root, &ws.workspace_id), &ws, req);
+    let result = apply(&file, checked, hooked);
     match (&result, &req.selection) {
         (Ok(_), Some(_)) => map.insert(ws.workspace_id.clone(), (serial, file)),
+        // a removal that failed leaves the file and its setter's entry, so that setter's end or a later clear retries it
+        (Err(_), _) if file.exists() => None,
         _ => map.remove(&ws.workspace_id),
     };
     result
 }
 
-/// The file and its row's state folder after `req`, with the map's lock held by the caller.
-fn apply(file: &Path, folder: &Path, ws: &Workspace, req: &SelectionSetReq) -> Result<SelectionState, &'static str> {
+/// The file after a clear (`checked` is `None`) or the checked rendering, with the map's lock held by the caller.
+fn apply(file: &Path, checked: Option<Result<String, &'static str>>, hooked: bool) -> Result<SelectionState, &'static str> {
     let withdraw = || sot_platform::host::remove_durable(file).map_err(|_| selection_code::PUBLISH_FAILED);
-    let Some(sel) = &req.selection else {
+    let Some(checked) = checked else {
         withdraw()?;
         return Ok(SelectionState::Shared);
     };
-    let checked = if takes_selection(&ws.agent()) { render(ws, sel) } else { Err(selection_code::NO_AGENT) };
     let rendering = match checked {
         Ok(r) => r,
         Err(code) => {
@@ -119,7 +130,6 @@ fn apply(file: &Path, folder: &Path, ws: &Workspace, req: &SelectionSetReq) -> R
         let _ = withdraw();
         return Err(selection_code::PUBLISH_FAILED);
     }
-    let hooked = folder.join(MARKER_NAME).exists();
     Ok(if hooked { SelectionState::Shared } else { SelectionState::Held })
 }
 

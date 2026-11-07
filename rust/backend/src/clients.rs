@@ -163,11 +163,14 @@ struct Inner {
     windows: HashMap<window::WindowKey, window::Window>,
 }
 
+/// The next connection serial: one counter for the process, so a serial is never reused while it runs, whatever the
+/// number of rosters (a daemon builds one; tests build many). `agents::selection` keys its setter map by it.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
 /// Shared, cheaply-cloneable handle to the connected-client roster.
 #[derive(Clone)]
 pub struct Clients {
     inner: Arc<Mutex<Inner>>,
-    next_serial: Arc<AtomicU64>,
     /// This daemon PROCESS's own start time — session-listing brief: the
     /// header line names how far back the `disconnected` map's memory
     /// reaches ("this daemon, up 3h"), so a restart's forgetting is
@@ -180,7 +183,6 @@ impl Clients {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(Inner::default())),
-            next_serial: Arc::new(AtomicU64::new(1)),
             started_at: Instant::now(),
         }
     }
@@ -221,7 +223,7 @@ impl Clients {
         instance: Option<String>,
         name: Option<String>,
     ) -> ClientGuard {
-        let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
+        let serial = NEXT_SERIAL.fetch_add(1, Ordering::Relaxed);
         let mut info = ClientInfo {
             serial,
             client_id: client_id.into(),

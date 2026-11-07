@@ -246,18 +246,24 @@ of each.
   Codex hears one; if H2 fails Codex rows will answer `no_agent`. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
   file's JSON escapes. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Withdrawal: one process-wide map behind one lock holds per
-  row the roster serial of the connection that set the file and the file's path; every publish and removal holds the
-  lock (never across an `.await`), so two connections setting one row are serialized and the newest accepted selection
-  wins and owns the file. An accepted selection records its setter; a clear, a refusal, `no_agent` and a failed
-  publish drop the row's entry; `not_a_window` changes nothing. `ClientGuard::drop` calls `selection::forget(serial)`,
+  row the roster serial of the connection that set the file and the file's path; the serial comes from one counter for
+  the process (`clients::NEXT_SERIAL`), so it is never reused. The row is resolved and the project file read and
+  rendered before the lock; the lock covers only the file's publish or removal and the map update (never an `.await`),
+  so two connections setting one row are serialized and the newest accepted selection wins and owns the file. A clear
+  or refusal from any connection removes the file whoever set it. An accepted selection records its setter; a clear, a
+  refusal after the row resolves, `no_agent` and a failed publish drop the row's entry once the file is gone; when a
+  removal fails the file stays and so does its entry, so the setter's end or a later clear retries it; `not_a_window`,
+  `unknown_workspace` and a missing state root change nothing. `selection.set` stays `INLINE` partly for this: it
+  runs on its connection's own loop, so no job can record an entry after that connection's `forget`. `ClientGuard::drop` calls `selection::forget(serial)`,
   which removes every file that serial set and none another set (a redialed window's old connection cannot erase what
   its new one sent). `rows::run::resume::resume_all` calls `selection::clear_unowned` for every registered row first,
-  which removes the row's file only when the map holds no entry for it, so a file an earlier process left goes and a
+  which removes the row's file only when it exists and the map holds no entry for it (a row with no file costs one
+  `stat`), so a file an earlier process left goes and a
   share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
-  entry is dropped, and the next walk removes the file; a daemon start that ends its rows without a resume
-  (the startup Cleanup) runs no walk; on Windows a publish or removal that meets an open read can fail, which is
+  entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
+  keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is
   `publish_failed` and the old file may remain. Unbuilt: the hook, the leg's
   variable and writing the marker (A5); the window's clear after an error reply (A7). Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one

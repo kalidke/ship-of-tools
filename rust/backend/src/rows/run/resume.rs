@@ -71,7 +71,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
 
     // A selection file an earlier process left names a window that is gone; one a live connection set since survives.
     for ws in workspaces.list() {
-        crate::agents::selection::clear_unowned(&state_root, &ws.workspace_id);
+        let _ = crate::agents::selection::clear_unowned(&state_root, &ws.workspace_id);
     }
 
     // Covers both boot load and adoption of a still-live prior authority.
