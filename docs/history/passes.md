@@ -640,3 +640,12 @@ A landing's record goes here, with its measured times; the package page holds on
 - B2a, the chat configuration, 2026-11-06: 15:59 to main 16:15, 16 minutes, first gate passed, review without a blocker: 4 of change,
   1 of gate, 8 of review, 2 of records. 100 product lines were estimated and 341 landed, doc comments included. Its review's
   should-fixes rode a follow-up, whose probes then found an admitted token the log masker would cut short and print the rest of.
+- B2a's follow-up, 2026-11-06: 16:15 to main 16:40, 25 minutes, three fix rounds. A planted FIFO could hang the load and a swapped or
+  odd token was admitted; both are closed. The gate failed once, on a test's child that the all-targets lint refuses: the session had
+  passed on a review's word that a lint allow was dead weight, and that review had read one of the gate's two lint lines.
+- The one bounded read, 2026-11-06: 16:40 to main 17:24, 44 minutes, a miss, stopped and written up here. 13 of change, 6 of review, 5 of
+  fix, 19 of gates. `sot_platform::host::read_regular` gives chat's configuration and `hosts.toml` one read that a FIFO cannot stall.
+  The review's blocker was the goal itself: the daemon's store held a second reader of `hosts.toml`, unmoved, so the guarantee was
+  false while every test passed. Cause of the miss: a path under `rust/platform` or `rust/topology`, a contract included, runs a
+  scoped gate for 9 to 10 minutes, since everything rests on them, and this landing ran that gate twice after its first. A
+  contract fix for those crates waits for the commit it fixes.
