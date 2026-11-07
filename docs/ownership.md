@@ -241,7 +241,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `agent.send` (a UI notification; mail is refused) | op | messaging | `rust/backend/src/comm/mail/relay.rs` `handle_agent_send` |
 | `agent.message` (a UI notification) | event, bus | messaging | `rust/backend/src/comm/mail/bus.rs`; `rust/backend/src/server/events.rs` `write_agent_message` |
 | `bus.lost` (a connection fell behind a bus) | event | server | `rust/backend/src/server/events.rs` `write_bus_lost` |
-| `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status` (declared; no handler yet) | op, event | wire | `rust/protocol/src/ops/chat.rs`; `rust/protocol/src/ops/mod.rs` `CHAT_RESOLVE` ... `CHAT_STATUS` |
+| `chat.resolve`, `chat.history`, `chat.post` (handled in `rust/backend/src/chat/ops.rs`); `chat.watch`, `chat.unwatch` (refused `unavailable` until their subscriptions land); `chat.changed`, `chat.status` (declared; not sent yet) | op, event | wire | `rust/protocol/src/ops/chat.rs`; `rust/protocol/src/ops/mod.rs` `CHAT_RESOLVE` ... `CHAT_STATUS` |
 | `selection.set` (declared; no handler yet), `selection_digest` | op, function | wire | `rust/protocol/src/ops/selection.rs`; `rust/protocol/src/ops/mod.rs` `SELECTION_SET` |
 | the chat service in `sotd`: the hub fact, the row facts, the start and the retirement | state, rule | chat | `rust/backend/src/chat.rs` `Chat::begin`, `Chat::admit`, `Chat::admit_unwatch`, `Chat::resolve`, `is_hub`, `row_facts`, `folder_of` |
 | the hub's linked daemons and their offers (`link` hello role) | state, op | messaging | `rust/backend/src/comm/mail/links.rs` `Links`, `LinkEnd`; `rust/protocol/src/ops/session.rs` `LINK_ROLE` |

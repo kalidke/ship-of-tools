@@ -4,7 +4,7 @@
 
 // The fake Slack's server key is committed: a build without debug assertions (every release build) never has the feature.
 #[cfg(all(feature = "test-support", not(debug_assertions)))]
-compile_error!("sot-chat's `test-support` feature is for tests only and is refused in a build without debug assertions");
+compile_error!("sot-chat's `test-support` feature is for tests only and is refused in a build without debug assertions; a release-profile test build is refused by design, so tests need debug assertions");
 
 pub mod api;
 pub mod config;

@@ -1,7 +1,10 @@
 //! The chat request ops through a real connection, against the exported fake Slack.
 
 use super::*;
-use crate::chat::ops::{Answer, OPS};
+use crate::chat::ops::code_of;
+use sot_chat::api::ApiError;
+use sot_chat::http::HttpError;
+use sot_protocol::ops::ChatCode;
 use crate::chat::tests::{row, Home, SELF};
 use crate::chat::{row_facts, Chat, Status};
 use crate::lifecycle::retire::Registry;
@@ -12,11 +15,33 @@ use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
 use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+/// What a chat op name gets from the server: a handler, a refusal until watches are served, or (an event) the unknown-op
+/// answer a request carrying its name gets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Handled,
+    Unavailable,
+    Event,
+}
+
+/// Every chat op name of the wire and its answer; the walk below fails for a name missing here.
+const OPS: &[(&str, Answer)] = &[
+    (op::CHAT_RESOLVE, Answer::Handled),
+    (op::CHAT_HISTORY, Answer::Handled),
+    (op::CHAT_POST, Answer::Handled),
+    (op::CHAT_WATCH, Answer::Unavailable),
+    (op::CHAT_UNWATCH, Answer::Unavailable),
+    (op::CHAT_CHANGED, Answer::Event),
+    (op::CHAT_STATUS, Answer::Event),
+];
+
 /// What the fake answers a chat call with.
 const OK: u8 = 0;
 const HOLD: u8 = 1;
 const DROP: u8 = 2;
 
+/// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
+/// and are not counted: they run with no admission.
 fn is_chat_call(path: &str) -> bool {
     path.ends_with("/conversations.history") || path.ends_with("/conversations.replies") || path.ends_with("/chat.postMessage") || path.ends_with("/users.info")
 }
@@ -286,7 +311,8 @@ async fn held_chat_request_does_not_delay_ping_or_other_ops() {
         ping |= frame.id == 11;
         other |= frame.id == 12;
     }
-    // Releasing the stall (the fake ends its connections) is what answers the request.
+    // Releasing the stall (the fake ends its connections) answers the request with `failed`; a stalled answer that
+    // finishes with content is not exercised.
     while calls(&fake) == 0 {
         tokio::task::yield_now().await;
     }
@@ -295,7 +321,7 @@ async fn held_chat_request_does_not_delay_ping_or_other_ops() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_request_in_flight_when_its_connection_closes_ends_without_writing() {
+async fn a_request_in_flight_when_its_connection_closes_ends_when_its_stall_is_released() {
     let mode = Arc::new(AtomicU8::new(HOLD));
     let fake = slack(&mode).await;
     let rig = rig(&fake).await;
@@ -329,4 +355,24 @@ async fn a_post_whose_outcome_is_unknown_is_made_once_and_answered_unknown() {
     assert_eq!(reply["outcome"], "unknown", "{reply}");
     let posts = fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).count();
     assert_eq!(posts, 1, "the handler sent the post again");
+}
+
+#[test]
+fn each_api_error_has_its_stated_code() {
+    use std::time::Duration;
+    let limited = ApiError::Limited { retry_after: Duration::from_secs(1), assumed: false };
+    for (e, want) in [
+        (ApiError::Http(HttpError::Busy), ChatCode::Busy),
+        (ApiError::Http(HttpError::Timeout), ChatCode::Failed),
+        (limited, ChatCode::Limited),
+        (ApiError::Closed, ChatCode::Unavailable),
+        (ApiError::BadRequest, ChatCode::BadRequest),
+        (ApiError::BadBound, ChatCode::BadRequest),
+        (ApiError::Altered, ChatCode::BadRequest),
+        (ApiError::Malformed, ChatCode::Failed),
+        (ApiError::Slack("x".into()), ChatCode::Failed),
+        (ApiError::Status(500), ChatCode::Failed),
+    ] {
+        assert_eq!(code_of(&e), want, "{e:?}");
+    }
 }

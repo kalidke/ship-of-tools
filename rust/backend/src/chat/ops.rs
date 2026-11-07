@@ -10,6 +10,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use sot_chat::api::{ApiError, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome};
 use sot_chat::config::Resolution;
+use sot_chat::http::HttpError;
 use sot_protocol::ops::{
     op, ChatChannel, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveReq,
     ChatResolveRes, ChatTarget, ChatUpper,
@@ -19,30 +20,6 @@ use sot_protocol::Frame;
 
 use super::Chat;
 use crate::rows::Workspaces;
-
-/// What a chat op name gets from the server.
-#[cfg_attr(not(test), allow(dead_code, reason = "the op walk's table"))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Answer {
-    /// A handler here.
-    Handled,
-    /// Refused as `unavailable` until the watch pieces (B2f2) exist: no subscription is made.
-    Unavailable,
-    /// A server-to-client event: a request carrying the name is an unknown op.
-    Event,
-}
-
-/// Every chat op name of the wire and what the server answers it with; a test walks `op::ALL` against it.
-#[cfg_attr(not(test), allow(dead_code, reason = "the op walk's table"))]
-pub(crate) const OPS: &[(&str, Answer)] = &[
-    (op::CHAT_RESOLVE, Answer::Handled),
-    (op::CHAT_HISTORY, Answer::Handled),
-    (op::CHAT_POST, Answer::Handled),
-    (op::CHAT_WATCH, Answer::Unavailable),
-    (op::CHAT_UNWATCH, Answer::Unavailable),
-    (op::CHAT_CHANGED, Answer::Event),
-    (op::CHAT_STATUS, Answer::Event),
-];
 
 fn text(code: ChatCode) -> &'static str {
     match code {
@@ -68,8 +45,9 @@ fn reply<T: serde::Serialize>(req_id: u64, op: &str, body: &T) -> Result<Handler
     Ok(vec![(Frame::res(req_id, op, serde_json::to_value(body)?), None)])
 }
 
-fn code_of(e: &ApiError) -> ChatCode {
+pub(crate) fn code_of(e: &ApiError) -> ChatCode {
     match e {
+        ApiError::Http(HttpError::Busy) => ChatCode::Busy,
         ApiError::Limited { .. } => ChatCode::Limited,
         ApiError::Closed => ChatCode::Unavailable,
         ApiError::BadRequest | ApiError::BadBound | ApiError::Altered => ChatCode::BadRequest,
@@ -183,11 +161,8 @@ pub(crate) async fn handle(
                 Ok(PostOutcome::Unknown) => reply(req_id, name, &ChatPostRes::Unknown),
             }
         }
-        // Watches are B2f2's: no subscription is made, and nothing is admitted.
-        op::CHAT_WATCH | op::CHAT_UNWATCH => refused(ChatCode::Unavailable),
-        other => {
-            let payload = serde_json::json!({ "error": format!("unknown op: {other}") });
-            Ok(vec![(Frame::res(req_id, other, payload), None)])
-        }
+        // `chat.watch` and `chat.unwatch`, the only other names dispatch sends here: no subscription is made until
+        // watches are served, and nothing is admitted.
+        _ => refused(ChatCode::Unavailable),
     }
 }
