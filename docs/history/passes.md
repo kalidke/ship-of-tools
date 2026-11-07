@@ -917,3 +917,51 @@ A landing's record goes here, with its measured times; the package page holds on
   10:00 to 12:15) ends here, at about 465K tokens. Besides the landings it ran the diagnosis of the trust entries lost at an
   account move (a measured lost update), two plans (the shared test tool with the test-run cut, and drawing in the preview
   pane, whose three questions wait on the maintainer) and the change of rules at 10:44 that dropped the half-hour mark.
+- The bash 3.2 run covers what changed, 2026-11-07: builder launched 12:20, main 13:13 (d7f56463a, e7188007c, 2d0123583), 53
+  minutes. The daemon test run is to come down toward the maintainer's four minutes; in a change that brought the shell
+  suites, one serial job ran every hermetic suite again under bash 3.2, 509 to 532 s of the run. In a scoped run the parse and
+  scan checks now run as one job when a file under the three shell folders differs, each selected suite runs under bash 3.2 as
+  its own job when a non-markdown file there differs, and with neither nothing runs; a whole run emits all of them, and
+  `under-bash.sh` with no option still runs everything in series for the release gate. About 75 script and 55 test lines.
+  Where the minutes went: the build about 5; two whole gates of 251 and 249 s to test that the suites can run beside each
+  other and their bash 3.2 twins (they could); two review rounds of 17 and 9 minutes (blockers 0, 0); fix rounds of 2 and 1
+  (the second comments only); two more whole gates of 297 and 293 s. Round 1 found the suite order changed by a sort and the
+  decision's use and both new modes unpinned; round 2 found two false comments and a guard, older than this change, that let a
+  run pass with no bash 3.2 build: the follow-up below. A whole gate run took about 10 minutes before this landing and about
+  4 to 5 after it.
+- A selected bash 3.2 job never passes by being skipped, 2026-11-07: builder launched 13:13, main 13:38 (884716511, 0a0b733c5,
+  f08b7973f), 25 minutes. The decision takes the build script's path, builds bash 3.2 itself and returns a failure naming the
+  build when any job is selected and no bash 3.2.57 results; the main flow is one call that exits on it. About 15 script and
+  45 test lines. Where the minutes went: the build 2; two review rounds of 8 and 5 minutes (blockers 0, 0); fix rounds of 2
+  and 1; three whole gates of about 4 minutes. Round 1 found the code right and the tests weak (a text check missed a skipped
+  call, a "builds nothing" case checked nothing, any bash was accepted); the tests now run the gate's own decision lines over a
+  stub build that counts its calls, and only 3.2.57 passes.
+- A test holds a thread at a marked line, in one process, 2026-11-07: builder launched 12:21, main 13:51 (a0226104e, 175fcc871,
+  c37b8bbfd), 90 minutes, past the maintainer's hour. Platform's `hold_point!` and `hold_point_async!` mark a line; a test's
+  arm holds arrivals by ticket until it releases them; every test-side wait is bounded at 30 s and a held arrival gives up
+  after 60 s and fails the arm by name; no product-side path panics or refuses; a build without debug assertions evaluates no
+  key and keeps no point name. One test-only dev-dependency line (tokio's test clock) in platform's manifest, the session's
+  decision. About 420 product and 330 test lines. Where the minutes went: a premise stop of 4; the build 10; three review
+  rounds of 16, 26 and 14 minutes (blockers 1, 1, 0); fix rounds of 8, 3 and 1; three platform gates of about 3 minutes; a
+  hosted branch run for Windows and macOS; one move onto a main that had moved. Why past the hour: round 1 found a refusal
+  inside a task gave a false green (the session then deleted the refusals that guessed a thread's kind from its name); round 2
+  found that round 1's fix for a release-build warning broke the release compile of a keyed point, in a profile no gate
+  builds. Round 3's should-fix and gap are the follow-up.
+- Longest jobs first, 2026-11-07: builder launched 13:38, main 14:18 (f0f9164b1, 66f035393, b34caebc5, ceeb76f96), 40 minutes.
+  The pipeline starts unmeasured jobs first, then the rest by their last measured time, longest first; times per target in
+  `rc-gate-times.tsv`, keyed per job (a test binary by its target name, a shell suite by its path); the hand list `SLOW_FIRST`
+  is gone. About 40 script and 80 test lines. Where the minutes went: the build 4; two review rounds of 13 and 10 minutes
+  (blockers 1, 0); fix rounds of 4, 1 and 2; whole gates of 309 and 261 s (the first run on a target wrote an empty times
+  file, round 1's blocker, seen on the build server), 331 and 236 s (the measurement: the first fully ordered run took 236 s
+  against 249 to 261 unordered), and 237 s to land; the gate's own suites run by the session, since the local gate does not
+  run them. One extra fix round came from the session committing while the builder still applied a follow-up note.
+- A hold point has one form in both profiles, and a held ticket whose waiter is lost fails its arm, 2026-11-07: builder sent
+  13:51, main 15:17 (91f3445f6, 6ffe29977, a7017b439), 86 minutes, past the maintainer's hour. Both profiles expand a point to
+  `if ON { arrive(..) }` and each arrival function has one signature with a profile-dependent body, so no release stub can
+  drift; a held async arrival waits on a blocking task, and a ticket still held when that task is lost (cancelled, or its
+  runtime dropped) records its own state and fails the arm by name. About 60 product and 40 test lines net. Where the minutes
+  went: the build 5; two review rounds of 17 and 25 minutes (blockers 1, 0); fix rounds of 5 and 3; three platform gates of
+  3, 2 and 2 minutes; one move onto a main that had moved; the session's move to another account, which ended the builder
+  (a new one took the last round). Why past the hour: round 1 found the gap this change existed to close still open (its new
+  test passed on the old code too), and round 2 named three more fixes; a multi-thread runtime-drop test was deleted because a
+  race in the runtime's shutdown decides it.

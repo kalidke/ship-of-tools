@@ -437,6 +437,9 @@ owned by `docs/CLAUDE.md`.
   admission lock; that deletes the microsecond gap before admission and two of the three `gate.watch()` calls, and
   `pages.rs`'s `pipe_child`/`pipe_one_over` lose their `Option<LinkWatch>` (a default gate's watch, which never closes,
   serves the three tests that pass `None`).
+- **QUARTO-START-BOUND-STARVED** [note] `quarto_never_holds_a_freed_group_number` (`pages/ops_quarto_shutdown_tests.rs`)
+  failed 4 of 30 runs at its five-second start bound ("the stub render never started") under extreme CPU starvation in a
+  review's 50-run loops, 2026-11-07; the bound was unchanged by the fix to the test's sleeper.
 
 ## fe-net
 
@@ -584,6 +587,13 @@ owned by `docs/CLAUDE.md`.
 - **SECRET-SCAN-AFTER-PUSH** [note] The secret scan (`.github/workflows/gitleaks.yml`) runs only after a push and reads every
   pushed branch, and the pre-push publish guard does not scan for secrets, so a real token committed on a branch is public
   before anyone sees it. Seen when a made-up Slack app token in a test reached four pushed branches and turned main's scan red.
+- **GATE-OWN-SUITES-HOSTED-ONLY** [note] The local gate (`scripts/tests/rc-gate.sh`) never runs the gate's own suites
+  (`scripts/tests/test-rc-gate-*.sh`); they run only in the hosted `rust.yml` and `release-gate.yml` after a push, so a change
+  to the gate lands on whole runs that cannot see its own cases fail. Seen 2026-11-07: a commit whose scope case failed
+  passed two whole runs. Fix: run them in any run whose scope holds a gate script.
+- **GATE-NO-RELEASE-PROFILE** [note] No local gate job and no hosted run before a tag compiles the release profile, so a
+  release-only compile error is first seen at the tag build (`release.yml`). Seen 2026-11-07 in review: a hold point's
+  release expansion did not compile; the hold tool now expands one form in both profiles.
 
 ## chat
 
