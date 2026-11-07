@@ -491,34 +491,36 @@ PYLIST
 }
 
 # The jobs start longest first, from the wall times of the last run kept in $CARGO_TARGET_DIR/rc-gate-times.tsv (one
-# `key<TAB>seconds` line per job). A job's key is its kind and name with the test binary's hash removed, which changes
-# with every build: `bin:comm_wake`, `one:comm_wake__<test>`.
+# `key<TAB>seconds` line per job). A job's key is unique to it and the same from build to build, so it names a test binary by
+# its target (the hash in its file name changes) and a shell suite by its path: `bin:comm_wake`, `one:comm_wake:<test>`.
 RCG_TIMES=$CARGO_TARGET_DIR/rc-gate-times.tsv
 # timekey <job line>: sets REPLY to the job's key
 timekey() {
-  local k a re='^(.*)-[0-9a-f]{16}(.*)$'
-  IFS=$'\t' read -r k a _ <<< "$1"
-  REPLY=$k:$a
-  [[ $REPLY =~ $re ]] && REPLY=${BASH_REMATCH[1]}${BASH_REMATCH[2]}
-  return 0
+  local k a b c d t
+  IFS=$'\t' read -r k a b c d _ <<< "$1"
+  case $k in
+    bin|one) t=$(awk -F'\t' -v e="$b" '$2 == e {print $1; exit}' "$L/tests.tsv" 2> /dev/null); REPLY=$k:${t:-$a}${d:+:$d} ;;
+    shell) REPLY=$k:${b#"$D/"} ;;
+    *) REPLY=$k:$a ;;
+  esac
 }
 # order_listing: the job lines on stdin, a job the times file does not name first (in their order), then the named ones,
-# the longest first; a line of the file that is not `key<TAB>seconds` is ignored
+# the longest first; a line of the file that is not `key<TAB>seconds` (under ten digits) is ignored
 order_listing() {
   local line
   while IFS= read -r line; do
     timekey "$line"
     printf '%s\t%s\n' "$REPLY" "$line"
   done | awk -F'\t' -v tf="$RCG_TIMES" '
-    BEGIN { while ((getline l < tf) > 0) { n = split(l, f, "\t"); if (n == 2 && f[1] != "" && f[2] ~ /^[0-9]+$/) t[f[1]] = f[2] } }
-    { k = $1; sub(/^[^\t]*\t/, ""); printf "%d\t%d\t%s\n", (k in t) ? t[k] : 999999999, NR, $0 }' |
-    sort -t$'\t' -k1,1nr -k2,2n | cut -f3-
+    BEGIN { while ((getline l < tf) > 0) { n = split(l, f, "\t"); if (n == 2 && f[1] != "" && length(f[2]) < 10 && f[2] ~ /^[0-9]+$/) t[f[1]] = f[2] } }
+    { k = $1; sub(/^[^\t]*\t/, ""); printf "%d\t%d\t%d\t%s\n", (k in t), t[k] + 0, NR, $0 }' |
+    sort -t$'\t' -k1,1n -k2,2nr -k3,3n | cut -f4-
 }
 # merge_times: this run's measured jobs ($L/times/*) over the file; a job that did not run keeps its old time
 merge_times() {
-  [ -n "$(ls -A "$L/times" 2> /dev/null)" ] || return 0
-  awk -F'\t' 'NF == 2 && $1 != "" && $2 ~ /^[0-9]+$/ { t[$1] = $2 } END { for (k in t) print k "\t" t[k] }' \
-    "$RCG_TIMES" "$L"/times/* 2> /dev/null | sort > "$RCG_TIMES.new" && mv "$RCG_TIMES.new" "$RCG_TIMES"
+  cat "$RCG_TIMES" "$L"/times/* 2> /dev/null |
+    awk -F'\t' 'NF == 2 && $1 != "" && length($2) < 10 && $2 ~ /^[0-9]+$/ { t[$1] = $2 } END { for (k in t) print k "\t" t[k] }' |
+    sort > "$RCG_TIMES.new" && mv "$RCG_TIMES.new" "$RCG_TIMES"
 }
 
 if [ "${1:-}" = --job ]; then
