@@ -140,8 +140,16 @@ where each lives).
     the profile says, so `cargo test --release --doc` runs the release expansion and bodies; no gate runs it (the gate's
     `cargo check --release -p sot-chat` covers only what sot-chat calls). One limit: on a current-thread runtime whose OS
     refuses a blocking thread, tokio's `spawn_blocking` panics and the ticket stays held.
-    Limits:
-    in-process only (a child process's folder is not built); arms of one point serialize even with distinct keys; in a
+    A child started with `SOT_TEST_HOLDS` (`Holds::folder(dir)`, then `env()` on the child's command before it starts; read
+    once per process, and only with debug assertions) is held at a marked line by the same arm, tickets and bounds, through
+    files of that folder: tickets are numbered across every process sharing it by an exclusive file create (`<point>.<t>.at`),
+    a release, the arm's drop and a give-up are files (`.go`, `.all`, `.gaveup`), the arm's terms are renamed into place
+    whole, and no file is deleted while the folder lives, so one folder takes one arm of a point for its life (a second is
+    refused). A held child always goes on by its give-up (at most 60 s, whatever the arm file says) and the arm fails by
+    name; an arrival before the arm is not seen; a child killed while held records no give-up. A daemon passes the
+    variable on to the supervisors it starts, so one folder serves both. Limits:
+    an arrival whose blocking wait is cancelled before it runs goes on unrecorded in a folder (the table's `Lost` is
+    in-process); arms of one point serialize even with distinct keys in a process; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
@@ -223,7 +231,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 12 | job ends at last close (Windows) | `rust/capsule/tests/conpty.rs`: `containment_kills_child_and_grandchild` (`:147`); `rust/capsule/tests/capsule/windows_only.rs`: `the_agent_job_refuses_a_breakaway` (`:488`); containment's `contain_tests.rs` `contain_job_permits_no_breakaway` reads the flags only |
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
-| 16 | hold tool | `hold_tests.rs` (the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
+| 16 | hold tool | `hold_tests.rs` (child cases through a rerun of the test binary: `a_child_started_with_the_folder_is_held_at_its_line_and_released`, `two_children_sharing_a_folder_take_distinct_tickets`, `the_arm_drop_releases_a_held_child`; the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter

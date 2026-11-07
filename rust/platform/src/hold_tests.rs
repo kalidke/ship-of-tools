@@ -319,3 +319,235 @@ fn an_async_point_through_a_dropped_runtimes_handle_fails_the_arm_by_name() {
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
     assert!(text.contains("t.dead.handle"), "{text}");
 }
+
+// The folder half: child processes started with the folder's variable. A child is this test binary rerun on
+// `a_child_that_arrives` (a no-op in an ordinary run), which arrives at a point `SOT_HOLD_CHILD_ARRIVALS` times, each
+// after the first when `next` appears, and records every arrival that went on as `pass.<pid>.<n>`: `go` if a release
+// (or the arm's drop) had been written by then, `no-go` if not.
+
+const CHILD_BODY: &str = "test_hold::tests::a_child_that_arrives";
+
+#[test]
+fn a_child_that_arrives() {
+    use crate::test_isolated::enter;
+    let Some(out) = std::env::var_os("SOT_HOLD_CHILD_OUT").map(std::path::PathBuf::from) else { return };
+    enter(CHILD_BODY);
+    let point: &'static str = Box::leak(std::env::var("SOT_HOLD_CHILD_POINT").expect("point").into_boxed_str());
+    let arrivals: usize = std::env::var("SOT_HOLD_CHILD_ARRIVALS").expect("arrivals").parse().expect("a count");
+    for round in 1..=arrivals {
+        if round > 1 {
+            appears(&out.join("next"), "the parent's go-ahead");
+        }
+        arrive(point, None);
+        let folder = std::path::PathBuf::from(std::env::var_os("SOT_TEST_HOLDS").expect("the folder"));
+        let released = std::fs::read_dir(&folder).unwrap().flatten().any(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(".go") || name.ends_with(".all")
+        });
+        std::fs::write(out.join(format!("pass.{}.{round}", std::process::id())), if released { "go" } else { "no-go" }).unwrap();
+    }
+}
+
+fn appears(path: &std::path::Path, what: &str) {
+    let started = std::time::Instant::now();
+    while !path.exists() {
+        assert!(started.elapsed() < SEEN, "{what}: {} did not appear within {SEEN:?}", path.display());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+struct ChildRun {
+    child: std::process::Child,
+    entry: Option<crate::test_isolated::Entry>,
+}
+
+impl ChildRun {
+    fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// The child's own end, within the isolation bound, having entered its body once.
+    fn ends(mut self) {
+        let status = crate::test_isolated::wait_within(&mut self.child, crate::test_isolated::ISOLATION_TIMEOUT);
+        self.entry.take().unwrap().assert_once(self.pid());
+        assert!(status.success(), "the child ended badly: {status}");
+    }
+}
+
+impl Drop for ChildRun {
+    fn drop(&mut self) {
+        // A child left holding by a failed test ends here, not after its give-up.
+        self.child.kill().ok();
+        self.child.wait().ok();
+        if let Some(entry) = self.entry.take() {
+            entry.assert_once(self.child.id());
+        }
+    }
+}
+
+fn start_child(holds: &Holds, out: &std::path::Path, point: &str, arrivals: usize) -> ChildRun {
+    let (mut command, entry) = crate::test_isolated::test_command(CHILD_BODY);
+    let (name, folder) = holds.env();
+    command
+        .env(name, folder)
+        .env("SOT_HOLD_CHILD_OUT", out)
+        .env("SOT_HOLD_CHILD_POINT", point)
+        .env("SOT_HOLD_CHILD_ARRIVALS", arrivals.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null());
+    let child = command.spawn().expect("spawn the child");
+    ChildRun { child, entry: Some(entry) }
+}
+
+fn pass_of(out: &std::path::Path, child: &ChildRun, round: usize) -> String {
+    let path = out.join(format!("pass.{}.{round}", child.pid()));
+    appears(&path, "the child's arrival to go on");
+    std::fs::read_to_string(path).unwrap()
+}
+
+fn folder_for(name: &str) -> (tempfile::TempDir, Holds, std::path::PathBuf) {
+    let tmp = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let holds = Holds::folder(&tmp.path().join("holds"));
+    (tmp, holds, out)
+}
+
+#[test]
+fn a_child_started_with_the_folder_is_held_at_its_line_and_released() {
+    let (_tmp, holds, out) = folder_for("hold-child-");
+    let arm = holds.arm("t.child.held").hold(1);
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
+    assert!(text.contains("has not arrived"), "{text}");
+    let child = start_child(&holds, &out, "t.child.held", 1);
+    arm.reached(0);
+    assert_eq!(arm.arrivals(), 1);
+    assert!(!out.join(format!("pass.{}.1", child.pid())).exists(), "the child went on before its release");
+    arm.release(0);
+    assert_eq!(pass_of(&out, &child, 1), "go", "the child went on without a release");
+    child.ends();
+}
+
+#[test]
+fn two_children_sharing_a_folder_take_distinct_tickets() {
+    let (_tmp, holds, out) = folder_for("hold-two-");
+    let arm = holds.arm("t.child.two").hold(2);
+    let (first, second) = (start_child(&holds, &out, "t.child.two", 1), start_child(&holds, &out, "t.child.two", 1));
+    arm.reached(1);
+    let folder = holds.env().1.to_path_buf();
+    // The ticket's file is made before its pid is written into it.
+    let pid_at = |ticket: usize| loop {
+        let text = std::fs::read_to_string(folder.join(format!("t.child.two.{ticket}.at"))).unwrap_or_default();
+        if let Ok(pid) = text.parse::<u32>() {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let mut pids = [pid_at(0), pid_at(1)];
+    pids.sort();
+    let mut started = [first.pid(), second.pid()];
+    started.sort();
+    assert_eq!(pids, started, "each child holds one ticket, neither shares one");
+    arm.release(0);
+    arm.release(1);
+    assert_eq!(pass_of(&out, &first, 1), "go");
+    assert_eq!(pass_of(&out, &second, 1), "go");
+    first.ends();
+    second.ends();
+}
+
+#[test]
+fn a_child_arrival_nobody_releases_gives_up_and_the_arm_fails() {
+    let (_tmp, holds, out) = folder_for("hold-giveup-");
+    let arm = holds.arm("t.child.giveup").give_up_after(Duration::from_millis(200)).hold(1);
+    let child = start_child(&holds, &out, "t.child.giveup", 1);
+    assert_eq!(pass_of(&out, &child, 1), "no-go", "it went on by its give-up, not a release");
+    for (call, text) in [
+        ("reached", panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached(0))))),
+        ("release", panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))))),
+        ("arrivals", panic_text(catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })))),
+    ] {
+        assert!(text.contains("t.child.giveup") && text.contains("went on"), "{call}: {text}");
+    }
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.child.giveup") && text.contains("arrival 0"), "{text}");
+    child.ends();
+}
+
+#[test]
+fn an_arm_written_after_the_child_started_holds_its_next_arrival() {
+    let (_tmp, holds, out) = folder_for("hold-late-");
+    let child = start_child(&holds, &out, "t.child.late", 2);
+    assert_eq!(pass_of(&out, &child, 1), "no-go", "no arm yet: the arrival passes");
+    let arm = holds.arm("t.child.late").hold(1);
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached_within(0, Duration::from_millis(200)))));
+    assert!(text.contains("t.child.late") && text.contains("0 arrivals seen"), "an arrival before the arm is not seen: {text}");
+    std::fs::write(out.join("next"), "").unwrap();
+    arm.reached(0);
+    assert_eq!(arm.arrivals(), 1);
+    assert!(!out.join(format!("pass.{}.2", child.pid())).exists());
+    arm.release(0);
+    assert_eq!(pass_of(&out, &child, 2), "go");
+    child.ends();
+}
+
+#[test]
+fn the_arm_drop_releases_a_held_child() {
+    let (_tmp, holds, out) = folder_for("hold-drop-");
+    let arm = holds.arm("t.child.drop").hold(1);
+    let child = start_child(&holds, &out, "t.child.drop", 1);
+    arm.reached(0);
+    drop(arm);
+    assert_eq!(pass_of(&out, &child, 1), "go", "the drop's file lets it go on");
+    child.ends();
+}
+
+#[test]
+fn a_child_killed_while_held_leaves_no_give_up_and_the_drop_does_not_fail() {
+    let (_tmp, holds, out) = folder_for("hold-killed-");
+    let arm = holds.arm("t.child.killed").hold(1);
+    let mut child = start_child(&holds, &out, "t.child.killed", 1);
+    arm.reached(0);
+    child.child.kill().expect("kill the held child");
+    child.child.wait().expect("reap it");
+    drop(arm);
+    let folder = holds.env().1;
+    assert!(folder.join("t.child.killed.all").exists(), "the drop writes the all-go file");
+    assert!(!folder.join("t.child.killed.0.gaveup").exists(), "a killed child records no give-up");
+}
+
+#[test]
+fn a_second_arm_of_a_point_in_one_folder_is_refused_for_the_folders_life() {
+    let (_tmp, holds, _out) = folder_for("hold-second-");
+    let first = holds.arm("t.child.second").hold(1);
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(holds.arm("t.child.second").hold(0)))));
+    assert!(text.contains("t.child.second") && text.contains("refused"), "{text}");
+    drop(first);
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(holds.arm("t.child.second").hold(0)))));
+    assert!(text.contains("refused"), "no file is deleted, so the point stays armed: {text}");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| { Holds::here().env(); })));
+    assert!(text.contains("Holds::folder"), "{text}");
+}
+
+#[test]
+fn an_arm_file_is_never_seen_half_written() {
+    let (_tmp, holds, _out) = folder_for("hold-whole-");
+    let path = holds.env().1.join("t.child.whole.arm");
+    let done = Arc::new(AtomicBool::new(false));
+    let stop = done.clone();
+    let reader = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        while !stop.load(Ordering::SeqCst) {
+            assert!(started.elapsed() < SEEN, "the arm file never appeared");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                assert!(text.ends_with("\n") && text.contains("give_up_ms"), "a partial arm file was visible ({} bytes)", text.len());
+                return;
+            }
+        }
+    });
+    // A key of several megabytes: a write in place would take long enough for the reader to see part of it.
+    let arm = holds.arm("t.child.whole").key("k".repeat(8 << 20)).hold(1);
+    done.store(true, Ordering::SeqCst);
+    reader.join().expect("the reader saw only whole files");
+    drop(arm);
+}

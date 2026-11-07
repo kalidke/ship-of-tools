@@ -95,7 +95,7 @@ async fn boot_seeds_the_anchor_and_relays_registry_changes() {
 }
 
 /// A daemon starts from the harness's own variables: whatever `SOT_` variable the runner holds never reaches it, and
-/// the one the harness adds is the Julia binary it found (`SOT_JULIA_BIN`, `support::julia_binary`).
+/// the ones the harness adds are the hold folder (`SOT_TEST_HOLDS`) and the Julia binary it found (`SOT_JULIA_BIN`, `support::julia_binary`).
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
@@ -114,8 +114,8 @@ async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
         .filter(|k| k.starts_with("SOT_"))
         .collect();
     names.sort();
-    // The harness hands every test daemon the Julia binary it found, when it found one (`support::julia_binary`).
-    let mut expected = vec!["SOT_COMM_HOME", "SOT_RUNTIME_DIR", "SOT_SELF_HOST"];
+    // The harness hands every test daemon its hold folder, and the Julia binary it found, when it found one (`support::julia_binary`).
+    let mut expected = vec!["SOT_COMM_HOME", "SOT_RUNTIME_DIR", "SOT_SELF_HOST", "SOT_TEST_HOLDS"];
     if support::julia_binary().is_some() {
         expected.insert(1, "SOT_JULIA_BIN");
     }

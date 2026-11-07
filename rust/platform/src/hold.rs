@@ -114,7 +114,7 @@ pub fn arrive_async(point: &'static str, key: Option<&dyn std::fmt::Display>) ->
 #[cfg(all(debug_assertions, feature = "test-support"))]
 pub use imp::{GIVE_UP, WAIT};
 #[cfg(all(debug_assertions, feature = "test-support"))]
-pub(crate) use imp::{arrivals, install, release, uninstall, wait_arrival};
+pub(crate) use imp::{arrivals, folder_arrivals, folder_install, folder_release, folder_uninstall, folder_wait, install, release, uninstall, wait_arrival, FolderArm};
 #[cfg(all(debug_assertions, test))]
 pub(crate) use imp::waiting_arms;
 
@@ -125,7 +125,9 @@ pub(crate) use imp::waiting_arms;
 mod imp {
     use std::fmt::Display;
     use std::future::Future;
-    use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant};
 
     /// The longest any test-side wait takes (`reached`, a second arm of a point).
@@ -215,20 +217,51 @@ mod imp {
         }
     }
 
-    /// Takes the next ticket at `point` if an arm matches the key; `Some` only when the ticket is held.
-    fn claim(point: &'static str, key: Option<&dyn Display>) -> Option<Held> {
+    /// What the in-process table says to an arrival.
+    enum Here {
+        /// No arm of the point lives in this process: the folder, if the process has one, decides.
+        NoArm,
+        Pass,
+        Held(Held),
+    }
+
+    /// Takes the next ticket at `point` if an arm matches the key.
+    fn claim_here(point: &'static str, key: Option<&dyn Display>) -> Here {
         let mut state = lock();
-        let slot = state.slots.iter_mut().find(|slot| slot.point == point)?;
+        let Some(slot) = state.slots.iter_mut().find(|slot| slot.point == point) else { return Here::NoArm };
         if let Some(wanted) = &slot.key {
             if key.map(|key| key.to_string()).as_ref() != Some(wanted) {
-                return None;
+                return Here::Pass;
             }
         }
         let ticket = slot.tickets.len();
         let held = ticket < slot.hold;
         slot.tickets.push(if held { Ticket::Held } else { Ticket::Passed });
         slot.changed.notify_all();
-        held.then(|| Held { arm: slot.arm, ticket, give_up: slot.give_up, changed: slot.changed.clone() })
+        if held { Here::Held(Held { arm: slot.arm, ticket, give_up: slot.give_up, changed: slot.changed.clone() }) } else { Here::Pass }
+    }
+
+    /// A ticket that waits: in this process's table, or on a file of the folder a parent test shares.
+    enum Waiter {
+        Here(Held),
+        Folder(FolderHeld),
+    }
+
+    impl Waiter {
+        fn wait(self) {
+            match self {
+                Waiter::Here(held) => held.wait(),
+                Waiter::Folder(held) => held.wait(),
+            }
+        }
+    }
+
+    fn claim(point: &'static str, key: Option<&dyn Display>) -> Option<Waiter> {
+        match claim_here(point, key) {
+            Here::NoArm => claim_folder(point, key).map(Waiter::Folder),
+            Here::Pass => None,
+            Here::Held(held) => Some(Waiter::Here(held)),
+        }
     }
 
     pub fn arrive(point: &'static str, key: Option<&dyn Display>) {
@@ -365,5 +398,162 @@ mod imp {
             }
             Some(other) => Err(format!("hold point {}: release of arrival {ticket}, which is {other:?}, not held", slot.point)),
         }
+    }
+
+    // The folder half: a child started with `SOT_TEST_HOLDS` is held through files of that folder, shared with the test
+    // that armed it (guarantee 16). Files, none ever deleted (Windows cannot delete one another process has open):
+    // `<point>.armed` (created exclusive by the one arm), `<point>.arm` (the arm's terms, written to a temporary file and
+    // renamed, so a reader sees all or nothing), `<point>.<t>.at` (created exclusive by the arrival that takes ticket `t`,
+    // so tickets are numbered across every process sharing the folder), `<point>.<t>.go` (the test's release),
+    // `<point>.all` (the arm's drop), `<point>.<t>.gaveup`. Calls used, each the same on Linux, macOS and Windows:
+    // `create_new` (O_EXCL / CREATE_NEW: exactly one creator, a loser sees `AlreadyExists`), a rename onto a name nothing
+    // has (atomic on one volume; the name is never replaced, because `.armed` admits one arm), `exists`, `read_to_string`
+    // of a file nobody rewrites, and a 5 ms poll. The rename retries, as an indexer may hold the temporary file briefly.
+    const POLL: Duration = Duration::from_millis(5);
+
+    fn folder() -> Option<&'static Path> {
+        static FOLDER: OnceLock<Option<PathBuf>> = OnceLock::new();
+        FOLDER.get_or_init(|| std::env::var_os("SOT_TEST_HOLDS").filter(|v| !v.is_empty()).map(PathBuf::from)).as_deref()
+    }
+
+    fn part(dir: &Path, point: &str, part: &str) -> PathBuf {
+        dir.join(format!("{point}.{part}"))
+    }
+
+    fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
+        std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+    }
+
+    /// An arrival that took a ticket below the hold count.
+    struct FolderHeld {
+        dir: PathBuf,
+        point: &'static str,
+        ticket: usize,
+        give_up: Duration,
+    }
+
+    impl FolderHeld {
+        fn wait(self) {
+            let deadline = Instant::now() + self.give_up;
+            let (go, all) = (part(&self.dir, self.point, &format!("{}.go", self.ticket)), part(&self.dir, self.point, "all"));
+            while !go.exists() && !all.exists() {
+                if Instant::now() >= deadline {
+                    create_new(&part(&self.dir, self.point, &format!("{}.gaveup", self.ticket))).ok();
+                    return;
+                }
+                std::thread::sleep(POLL);
+            }
+        }
+    }
+
+    fn claim_folder(point: &'static str, key: Option<&dyn Display>) -> Option<FolderHeld> {
+        let dir = folder()?;
+        if part(dir, point, "all").exists() {
+            return None;
+        }
+        // Read at every arrival, never cached: an arm written after the child started holds its next arrival.
+        let text = std::fs::read_to_string(part(dir, point, "arm")).ok()?;
+        let term = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
+        let hold: usize = term("hold")?.parse().ok()?;
+        let give_up = Duration::from_millis(term("give_up_ms")?.parse().ok()?).min(GIVE_UP);
+        if let Some(wanted) = term("key") {
+            if key.map(|key| key.to_string()).as_deref() != Some(wanted) {
+                return None;
+            }
+        }
+        for ticket in 0.. {
+            match create_new(&part(dir, point, &format!("{ticket}.at"))) {
+                Ok(mut at) => {
+                    write!(at, "{}", std::process::id()).ok();
+                    return (ticket < hold).then(|| FolderHeld { dir: dir.to_path_buf(), point, ticket, give_up });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// A test's arm of a point in a folder.
+    #[derive(Clone)]
+    pub(crate) struct FolderArm {
+        dir: PathBuf,
+        point: &'static str,
+        hold: usize,
+        give_up: Duration,
+    }
+
+    /// Arms `point` in `dir`; one arm per point per folder for the folder's life.
+    pub(crate) fn folder_install(dir: &Path, point: &'static str, key: Option<String>, hold: usize, give_up: Duration) -> FolderArm {
+        super::check_name(point);
+        assert!(key.as_deref().is_none_or(|key| !key.contains('\n')), "hold point {point}: a key with a newline cannot be armed in a folder");
+        if let Err(e) = create_new(&part(dir, point, "armed")) {
+            panic!("hold point {point}: this folder already has an arm of it, which is refused for the folder's life ({e})");
+        }
+        let mut terms = format!("hold {hold}\ngive_up_ms {}\n", give_up.as_millis());
+        if let Some(key) = key {
+            terms.push_str(&format!("key {key}\n"));
+        }
+        let temp = part(dir, point, &format!("arm.{}.tmp", std::process::id()));
+        std::fs::write(&temp, terms).expect("write the arm's terms");
+        let mut tries = 0;
+        while let Err(e) = std::fs::rename(&temp, part(dir, point, "arm")) {
+            tries += 1;
+            assert!(tries < 200, "hold point {point}: the arm file could not be put in place: {e}");
+            std::thread::sleep(POLL);
+        }
+        FolderArm { dir: dir.to_path_buf(), point, hold, give_up }
+    }
+
+    fn at(arm: &FolderArm, ticket: usize, what: &str) -> PathBuf {
+        part(&arm.dir, arm.point, &format!("{ticket}.{what}"))
+    }
+
+    pub(crate) fn folder_arrivals(arm: &FolderArm) -> Result<usize, String> {
+        let seen = (0..).find(|&ticket| !at(arm, ticket, "at").exists()).unwrap_or(0);
+        if let Some(failed) = (0..seen.min(arm.hold)).find(|&ticket| at(arm, ticket, "gaveup").exists()) {
+            return Err(format!(
+                "hold point {}: arrival {failed} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
+                 runtime's own thread, it stops the test that must release it: use hold_point_async!)",
+                arm.point, arm.give_up
+            ));
+        }
+        Ok(seen)
+    }
+
+    pub(crate) fn folder_wait(arm: &FolderArm, ticket: usize, bound: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + bound;
+        loop {
+            let seen = folder_arrivals(arm)?;
+            if seen > ticket {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "hold point {}: arrival {ticket} not reached within {bound:?}; {seen} arrivals seen (a child must be started with \
+                     SOT_TEST_HOLDS naming this folder, and arrives after the arm to be seen)",
+                    arm.point
+                ));
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    pub(crate) fn folder_release(arm: &FolderArm, ticket: usize) -> Result<(), String> {
+        let seen = folder_arrivals(arm)?;
+        let point = arm.point;
+        if ticket >= seen {
+            return Err(format!("hold point {point}: release of arrival {ticket}, which has not arrived"));
+        }
+        if ticket >= arm.hold {
+            return Err(format!("hold point {point}: release of arrival {ticket}, which is Passed, not held"));
+        }
+        create_new(&at(arm, ticket, "go")).map(drop).map_err(|e| format!("hold point {point}: release of arrival {ticket}, which is not held ({e})"))
+    }
+
+    /// Ends the arm: every held arrival goes on and later ones pass. Returns its give-up failure, if any.
+    pub(crate) fn folder_uninstall(arm: &FolderArm) -> Option<String> {
+        create_new(&part(&arm.dir, arm.point, "all")).ok();
+        folder_arrivals(arm).err()
     }
 }
