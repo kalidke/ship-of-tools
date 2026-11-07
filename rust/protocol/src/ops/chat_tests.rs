@@ -132,11 +132,30 @@ fn a_phase_or_outcome_added_later_reads_as_the_safe_one() {
 }
 
 #[test]
-fn a_wait_is_at_most_an_hour() {
+fn a_wait_is_clamped_to_an_hour() {
     let limited = |n: u64| json!({"outcome": "limited", "retry_after_secs": n, "assumed": false});
-    assert!(serde_json::from_value::<ChatPostRes>(limited(MAX_RETRY_SECS)).is_ok());
-    assert!(serde_json::from_value::<ChatPostRes>(limited(MAX_RETRY_SECS + 1)).is_err());
-    assert!(serde_json::from_value::<ChatPostRes>(limited(u64::MAX)).is_err());
+    let wait = |n: u64| match serde_json::from_value::<ChatPostRes>(limited(n)).unwrap() {
+        ChatPostRes::Limited { retry_after_secs, .. } => retry_after_secs,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((wait(30), wait(MAX_RETRY_SECS), wait(MAX_RETRY_SECS + 1), wait(u64::MAX)), (30, 3600, 3600, 3600));
+}
+
+#[test]
+fn a_state_added_later_reads_as_a_safe_one() {
+    let watch: ChatWatchRes = serde_json::from_value(json!({"state": "stale"})).unwrap();
+    assert_eq!(watch.state, ChatWatchState::Other);
+    let resolve: ChatResolveRes = serde_json::from_value(json!({"state": "disabled"})).unwrap();
+    assert_eq!(resolve, ChatResolveRes::Invalid);
+}
+
+#[test]
+fn a_record_with_an_origin_added_later_does_not_spoil_its_page() {
+    let mut rec = serde_json::to_value(record("x")).unwrap();
+    rec["origin"] = json!("webhook");
+    let page: ChatHistoryRes = serde_json::from_value(json!({"records": [rec, serde_json::to_value(record("y")).unwrap()]})).unwrap();
+    assert_eq!(page.records[0].origin, Origin::Other);
+    assert_eq!(page.records.len(), 2);
 }
 
 #[test]

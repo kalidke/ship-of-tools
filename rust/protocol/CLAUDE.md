@@ -111,10 +111,13 @@ name is in this crate's one op table.
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
     first excess item); `upper` is `before` or `until`, never both; every timestamp is a `Ts`. Every payload, a request
-    included, ignores an unknown field, so guarantee 3's growth by defaulted fields holds both ways. Every enum a reader
-    could meet a new member of reads it safely: a `ChatCode` as `other`, a `service` as `other` (not running; resync every
-    watch), a post `outcome` as `unknown` (the post may exist; never resent). A `limited` wait is at most an hour
-    (`MAX_RETRY_SECS`). `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
+    included, ignores an unknown field, so guarantee 3's growth by defaulted fields holds both ways. Every enum a window reads
+    reads a member added later safely: a `ChatCode` as `other`, a `service` as `other` (not running; resync every watch), a
+    watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
+    app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
+    A request's `kind` is the other direction: an older daemon refuses a kind it does not know, with a `bad_request` code.
+    A `limited` wait is clamped to an hour (`MAX_RETRY_SECS`). A `chat.post` reply that carries no `code` and does not decode
+    is read as `unknown`, never resent: wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's, at B2g. `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
     admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
     `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
     stays 4; an older daemon answers a chat op as any unknown op. Limits: no handler yet (B2e, B2f); a duplicate JSON key in a frame's payload is not refused (the codec reads a
@@ -124,7 +127,7 @@ name is in this crate's one op table.
     Tests `ops/chat_tests.rs`: `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
     `a_page_carries_records_that_round_trip`, `a_code_added_later_reads_as_other`,
     `an_older_daemons_unknown_op_refusal_reads_as_a_refusal_with_no_code`, `a_phase_or_outcome_added_later_reads_as_the_safe_one`,
-    `a_wait_is_at_most_an_hour`, `a_legal_page_fits_the_envelope`,
+    `a_wait_is_clamped_to_an_hour`, `a_state_added_later_reads_as_a_safe_one`, `a_record_with_an_origin_added_later_does_not_spoil_its_page`, `a_legal_page_fits_the_envelope`,
     `a_number_where_a_string_belongs_is_refused`, `a_timestamp_with_the_wrong_digits_is_refused_in_a_request`,
     `both_upper_bounds_cannot_be_asked_for`, `a_limit_is_one_to_twenty`, `a_cursor_a_text_and_a_name_stop_at_their_bounds`,
     `a_target_names_a_real_channel_and_bounded_ids`, `a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds`.

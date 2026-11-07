@@ -95,6 +95,8 @@ pub enum ChatResolveRes {
         delivers: bool,
     },
     Unmapped,
+    /// Also a state added later: a reader takes it as no usable mapping.
+    #[serde(other)]
     Invalid,
 }
 
@@ -111,6 +113,9 @@ pub enum ChatWatchState {
     Needed,
     Pending,
     Complete,
+    /// A state added later: a reader takes it as `needed` (a snapshot is owed).
+    #[serde(other)]
+    Other,
 }
 
 /// Reply to `chat.watch`. The messages come by `chat.history` and `chat.changed`, never in this reply.
@@ -160,8 +165,7 @@ fn page_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
 }
 
 fn retry_wait<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
-    let n = u64::deserialize(d)?;
-    if n <= MAX_RETRY_SECS { Ok(n) } else { Err(serde::de::Error::custom("wait is at most an hour")) }
+    Ok(u64::deserialize(d)?.min(MAX_RETRY_SECS))
 }
 
 fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {

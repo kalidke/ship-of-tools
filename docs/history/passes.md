@@ -673,3 +673,9 @@ A landing's record goes here, with its measured times; the package page holds on
   readers (a pump and a snapshot task) could still leave a watch complete and stale. Its follow-up, two review rounds of its own,
   made `take` private to the crate: a daemon reaches events only through a `Watches`, whose `begin` and `pump` each take and
   apply in one call, and waits on the service's `wait`, which a gap also wakes. Two `Watches` against one service stays a stated limit.
+- B2d, the chat operations in wire, 2026-11-06: 20:14 to main 20:42, 28 minutes, first gate passed (scoped, 2 minutes), review
+  without a blocker, run beside the gate. Requests `chat.resolve`, `watch`, `unwatch`, `history` and `post`, their replies and the
+  events `changed` and `status` join the one op declaration, so the generated admission fixtures cover them; the record's bounds
+  now hold on decode. About 300 product lines against an estimate of 125, and 230 test lines. The admission suite would not start
+  `sotd` outside the gate's container, on this computer or on the gate host, at the base as well; the hosted Linux run passed it
+  on this commit. That run was red on macOS, on a chat socket test this commit does not touch (its own record follows).

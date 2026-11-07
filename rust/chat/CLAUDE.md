@@ -226,16 +226,16 @@ The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate
 never holds another form.
 
 ## Owns
-`normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key` and the bound constants. `http.rs`: `Http`,
+`normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key`; it re-exports wire's record bounds (`MAX_RECORD_BYTES`, `MAX_TEXT`, `MAX_FILES`, `MAX_ID`, `MAX_NAME`, `MAX_FILENAME`, `MAX_MIME`) and the id grammar `is_id` (as `valid_id`), which wire owns. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
-`Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
+`Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `WatchError` and the bound constants (`MAX_CHANNELS`, `MAX_KEPT`, `MAX_OVERLAY`). `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`. `fake_slack/` (test only): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
-`sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts}`, `serde_json::Value`; reqwest, rustls and
+`sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, MAX_*}`, `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_RETRY_SECS}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
 webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the library's `Message` and `Error` types; `api.rs` uses
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 

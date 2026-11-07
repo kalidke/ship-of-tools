@@ -102,6 +102,9 @@ pub enum Origin {
     Drawer,
     Row,
     Bot,
+    /// An origin added later: a reader shows it as another's message, never as this app's own post.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
