@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -116,6 +117,13 @@ pub enum GapCause {
     Reconnect,
 }
 
+/// Every latch of every socket in the process takes the next number, so a gap of one socket never equals a gap of
+/// another (a model that outlives its service cannot take the next service's first hello as one it knows).
+fn next_seq() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 /// A latched reconciliation requirement. It names the latest loss; `Socket::reconciled` clears it only when nothing
 /// was lost since this value was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,7 +153,6 @@ struct State {
     queue: VecDeque<(Normalized, usize)>,
     bytes: usize,
     gap: Option<Gap>,
-    seq: u64,
     status: Status,
 }
 
@@ -156,19 +163,13 @@ struct Shared {
 
 impl Shared {
     fn latch(&self, cause: GapCause) {
-        let mut s = self.state.lock().unwrap();
-        s.seq += 1;
-        s.gap = Some(Gap { seq: s.seq, cause });
+        self.state.lock().unwrap().gap = Some(Gap { seq: next_seq(), cause });
     }
 
     fn push(&self, event: Normalized, cost: usize) {
         let mut s = self.state.lock().unwrap();
         if s.queue.len() >= MAX_PENDING || s.bytes + cost > MAX_PENDING_BYTES {
-            s.seq += 1;
-            s.gap = Some(Gap {
-                seq: s.seq,
-                cause: GapCause::Overflow,
-            });
+            s.gap = Some(Gap { seq: next_seq(), cause: GapCause::Overflow });
             return;
         }
         s.bytes += cost;

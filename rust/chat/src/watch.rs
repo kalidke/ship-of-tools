@@ -3,12 +3,11 @@
 //! reads the socket and the API and tells it what happened. Registration (`watch`) precedes the snapshot (`begin`);
 //! while a snapshot is pending, live changes go into a bounded overlay applied after it.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 use sot_protocol::chat::{ChatRecord, Ts};
 
-use crate::normalize::{valid_id, Normalized};
+use crate::normalize::{ts_key, valid_id, Normalized};
 use crate::socket::Gap;
 
 /// Channels watched at once.
@@ -18,19 +17,10 @@ pub const MAX_KEPT: usize = 100;
 /// Live changes kept per channel while its snapshot is pending; one more forces a resync.
 pub const MAX_OVERLAY: usize = 128;
 
-/// A validated timestamp's value: seconds, then microseconds. `Ts` is `<1 to 20 digits>.<six digits>`, so the digits
-/// fit and the comparison is numeric (`9.000000` precedes `10.000000`, `007.000000` equals `7.000000`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Key(u128, u32);
+type Key = (u128, u32);
 
 fn key(ts: &Ts) -> Key {
-    let (secs, frac) = ts.as_str().split_once('.').unwrap_or_default();
-    Key(secs.parse().unwrap_or(0), frac.parse().unwrap_or(0))
-}
-
-/// The one total order on timestamps: numeric, so two spellings of one value are equal.
-pub fn ts_cmp(a: &Ts, b: &Ts) -> Ordering {
-    key(a).cmp(&key(b))
+    ts_key(ts)
 }
 
 /// Why a channel could not be watched.
@@ -78,8 +68,6 @@ enum Phase {
 struct Channel {
     phase: Phase,
     messages: BTreeMap<Key, ChatRecord>,
-    /// Messages at or below this are older than what is held: an edit of one the model lacks is not a message to add.
-    floor: Option<Key>,
 }
 
 impl Channel {
@@ -91,10 +79,12 @@ impl Channel {
             Change::Put { record, edited } => {
                 let k = key(&record.ts);
                 if edited {
-                    if !self.messages.contains_key(&k) && self.floor.is_some_and(|f| k <= f) {
-                        return;
+                    // An edit of a message not held is not added: it is older than the page, and a newer one
+                    // missed would have been a gap.
+                    if let Some(held) = self.messages.get_mut(&k) {
+                        *held = record;
                     }
-                    self.messages.insert(k, record);
+                    return;
                 } else {
                     // A new message never replaces what is held: the snapshot may already carry a later edit.
                     self.messages.entry(k).or_insert(record);
@@ -106,9 +96,7 @@ impl Channel {
 
     fn trim(&mut self) {
         while self.messages.len() > MAX_KEPT {
-            if let Some((k, _)) = self.messages.pop_first() {
-                self.floor = self.floor.max(Some(k));
-            }
+            self.messages.pop_first();
         }
     }
 }
@@ -135,7 +123,7 @@ impl Watches {
             if self.channels.len() >= MAX_CHANNELS {
                 return Err(WatchError::Full);
             }
-            let ch = Channel { phase: Phase::Needed, messages: BTreeMap::new(), floor: None };
+            let ch = Channel { phase: Phase::Needed, messages: BTreeMap::new() };
             self.channels.insert(channel.into(), ch);
         }
         Ok(())
@@ -172,8 +160,10 @@ impl Watches {
         }
     }
 
-    /// Begin a channel's snapshot, after `sync` and after the channel was registered. The ticket goes back with the
-    /// answer; `None` when the channel is unwatched or its snapshot is already pending or done.
+    /// Begin a channel's snapshot, after the channel was registered. The caller first applies every event the socket
+    /// holds (the model cannot tell a queued old event from a live one, and applied after `begin` it would win over a
+    /// newer snapshot), then `sync`s, then begins. The ticket goes back with the answer; `None` when the channel is
+    /// unwatched or its snapshot is already pending or done.
     pub fn begin(&mut self, channel: &str) -> Option<u64> {
         let read = self.gap;
         let c = self.channels.get_mut(channel).filter(|c| matches!(c.phase, Phase::Needed))?;
@@ -182,9 +172,9 @@ impl Watches {
         Some(self.tickets)
     }
 
-    /// The snapshot is the channel's latest page, `more` saying older messages exist. The overlay is applied after it,
-    /// so a live edit or delete wins over the snapshot's older content.
-    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, more: bool) -> Loaded {
+    /// The snapshot is the channel's latest page. Only its top-level messages of this channel are kept. The overlay is
+    /// applied after it, so a live edit or delete wins over the snapshot's older content.
+    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>) -> Loaded {
         let gap = self.gap;
         let Some(c) = self.channels.get_mut(channel) else { return Loaded::Stale };
         let Phase::Pending { ticket: t, read, overlay, overflow } = &mut c.phase else { return Loaded::Stale };
@@ -196,12 +186,9 @@ impl Watches {
             return Loaded::Resync;
         }
         let overlay = std::mem::take(overlay);
-        c.messages = records.into_iter().map(|r| (key(&r.ts), r)).collect();
-        c.floor = None;
+        let top = |r: &ChatRecord| r.channel == channel && key(&r.thread_ts) == key(&r.ts);
+        c.messages = records.into_iter().filter(top).map(|r| (key(&r.ts), r)).collect();
         c.trim();
-        if more {
-            c.floor = c.floor.max(c.messages.keys().next().copied());
-        }
         for change in overlay {
             c.apply(change);
         }

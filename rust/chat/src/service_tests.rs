@@ -395,12 +395,38 @@ async fn the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing(
         let ticket = watches.begin("C0AAAA").unwrap();
         // The snapshot is not complete yet, so nothing clears.
         assert!(!watches.reconcile(|g| service.reconciled(g)));
-        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new(), false), Loaded::Complete);
+        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new()), Loaded::Complete);
         let gap = service.gap().unwrap();
         assert!(watches.reconcile(|g| service.reconciled(g)));
         assert!(matches!(service.status(), Status::Running { gap: false, .. }));
         service.stop(Duration::from_secs(3)).await;
         assert_eq!((service.gap(), service.reconciled(gap)), (None, false));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_watch_that_outlives_its_service_does_not_know_the_next_services_first_gap() {
+    use crate::watch::{Loaded, State, Watches};
+    bounded(async {
+        let dir = Scratch::new("outlive");
+        let fake = holding_fake(WS).await;
+        let first = start(&fake, &dir.0).await.expect("first");
+        eventually("the first hello", || first.gap().is_some()).await;
+        let mut watches = Watches::new();
+        watches.watch("C0AAAA").unwrap();
+        watches.sync(first.gap());
+        let ticket = watches.begin("C0AAAA").unwrap();
+        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new()), Loaded::Complete);
+        // The first service stops before the gap was cleared; the next one's first hello is a new gap.
+        first.stop(Duration::from_secs(3)).await;
+        let second = start(&fake, &dir.0).await.expect("second");
+        eventually("the second hello", || second.gap().is_some()).await;
+        watches.sync(second.gap());
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
+        assert!(!watches.reconcile(|g| second.reconciled(g)));
+        second.stop(Duration::from_secs(3)).await;
         fake.shutdown().await;
     })
     .await;

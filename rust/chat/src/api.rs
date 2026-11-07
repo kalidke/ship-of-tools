@@ -15,7 +15,7 @@ use sot_protocol::chat::{ChatRecord, Origin, Ts};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret};
-use crate::normalize::{clean, normalize, valid_id, Context, Normalized, MAX_NAME, MAX_TEXT};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_NAME, MAX_TEXT};
 
 /// A read (`auth.test`, history, replies, `users.info`): Slack answers in well under a second, so fifteen seconds
 /// covers a slow link and still frees a drawer waiting on a stalled page.
@@ -157,20 +157,14 @@ impl Bounds {
     }
 
     fn admits(&self, ts: &Ts) -> bool {
-        let at = key(ts);
-        self.after.as_ref().is_none_or(|a| at > key(a))
+        let at = ts_key(ts);
+        self.after.as_ref().is_none_or(|a| at > ts_key(a))
             && match &self.upper {
                 None => true,
-                Some(Upper::Before(b)) => at < key(b),
-                Some(Upper::Until(u)) => at <= key(u),
+                Some(Upper::Before(b)) => at < ts_key(b),
+                Some(Upper::Until(u)) => at <= ts_key(u),
             }
     }
-}
-
-/// A `Ts` as a number: seconds (at most 20 digits) and microseconds.
-fn key(ts: &Ts) -> (u128, u32) {
-    let (secs, frac) = ts.as_str().split_once('.').unwrap_or(("0", "0"));
-    (secs.parse().unwrap_or(0), frac.parse().unwrap_or(0))
 }
 
 /// What a history call asks for: a channel or one thread, bounds and a page size. Everything in it is validated

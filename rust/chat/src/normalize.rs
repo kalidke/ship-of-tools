@@ -105,6 +105,18 @@ fn wrap(r: Result<ChatRecord, Unrepresentable>, f: fn(ChatRecord) -> Normalized)
     r.map_or_else(Normalized::Unrepresentable, f)
 }
 
+/// A `Ts` as a number: seconds (at most 20 digits, so they fit) and microseconds. The one order on timestamps is this
+/// tuple's: numeric, so `9.000000` precedes `10.000000` and `007.000000` equals `7.000000`.
+pub(crate) fn ts_key(ts: &Ts) -> (u128, u32) {
+    let (secs, frac) = ts.as_str().split_once('.').unwrap_or(("0", "0"));
+    (secs.parse().unwrap_or(0), frac.parse().unwrap_or(0))
+}
+
+/// The one total order on validated timestamps.
+pub fn ts_cmp(a: &Ts, b: &Ts) -> std::cmp::Ordering {
+    ts_key(a).cmp(&ts_key(b))
+}
+
 pub(crate) fn valid_id(s: &str) -> bool {
     (1..=MAX_ID).contains(&s.len())
         && s.bytes()
