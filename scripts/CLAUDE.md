@@ -63,10 +63,11 @@ Guarantees, each with the mechanism it rests on:
   serve the gate's jobs. Markdown is skipped for the suites because no suite's verdict on a markdown input depends on
   which bash runs it. When the decision selects any bash 3.2 job the run builds bash 3.2 and runs every selected job, or
   fails naming the build (and its path, when one was built), also when the bash built reports another version; it never
-  ends `ALLDONE` with a selected job missing. The pipeline starts its jobs in the order of their last measured wall time, longest first; a job with no measurement
-  starts before every measured one; every job still starts exactly once. The times are kept per checkout in
-  `<CARGO_TARGET_DIR>/rc-gate-times.tsv`, keyed by the job key with any binary hash removed, and written at the run's end
-  from the jobs that ran (a failed or timed-out job's time counts; a job that did not run keeps its old time). `user-manager-tests.sh` runs when the scope selects `backend`, `capsule`,
+  ends `ALLDONE` with a selected job missing. The pipeline starts its jobs in the order of their last
+  measured wall time, longest first; a job with no measurement starts before every measured one; every job still starts
+  exactly once. The times are kept per checkout in `<CARGO_TARGET_DIR>/rc-gate-times.tsv`, keyed by a name unique to the
+  job (a test binary by its target, a shell suite by its path) and written at the run's end from the jobs that ran (a
+  failed or timed-out job's time counts; a job that did not run keeps its old time; an interrupted run writes none). `user-manager-tests.sh` runs when the scope selects `backend`, `capsule`,
   `platform` or `containment`, since its five tests are the backend's over those. A job the scope
   does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no
   longer has fails (101). A scoped summary says so: `scoped base <sha>` and one `scope <piece>` line each (a widened
