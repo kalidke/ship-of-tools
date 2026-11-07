@@ -423,7 +423,12 @@ impl State {
                 // The row the window is showing was destroyed: move to its neighbor. A row of another host with
                 // the same name never moves it (ADR 0042 L2a).
                 self.row_directory.note_destroyed(&event_host, &info.slug);
-                let leave = self.leave_for(&event_host, None);
+                let leave = self.row_directory.leave(
+                    &self.ordered_hosts(),
+                    (self.selected.host(), self.selected.workspace_id().as_deref()),
+                    &event_host,
+                    Gone::Replied(&info.slug),
+                );
                 self.apply_leave(event_host.clone(), leave);
                 self.forget_destroyed_row_views(&event_host, &info.slug);
                 let tmux_note = if info.tmux_killed {
@@ -450,6 +455,8 @@ impl State {
                 }
             }
             Err(msg) => {
+                // The refusal names no row: every destroy noted for the host is alive until a listing says otherwise.
+                self.row_directory.clear_destroyed(&event_host);
                 self.status.set(format!("workspace.destroy failed · {msg}"));
                 tracing::warn!(error = %msg, "workspace.destroy failed");
                 self.window.request_redraw();
@@ -480,16 +487,22 @@ impl State {
         let update = self.row_directory.prepare_replace(event_host.clone(), workspaces);
         // A destroy the window did not make itself (another window, the command line, a row's end) reaches it
         // only as this list: decided before the commit consumes the update, carried out after the caches rebuild.
-        let leave = self.leave_for(&event_host, Some(&update));
-        let leaving = self.selected.workspace_id().clone();
+        let leave = self.row_directory.leave(
+            &self.ordered_hosts(),
+            (self.selected.host(), self.selected.workspace_id().as_deref()),
+            &event_host,
+            Gone::Listed(&update),
+        );
+        let dropped = self.row_directory.dropped(&event_host, &update);
         self.reconcile_pending_results(&update);
         self.row_directory.commit_replace(update);
         self.rebuild_workspace_caches();
         if leave != Leave::Stay {
             self.apply_leave(event_host.clone(), leave);
-            if let Some(slug) = leaving {
-                self.forget_destroyed_row_views(&event_host, &slug);
-            }
+        }
+        // A row destroyed elsewhere keeps no parked view, REPL state or tree slot (the shown one only after the move).
+        for slug in dropped {
+            self.forget_destroyed_row_views(&event_host, &slug);
         }
         self.prune_warm_attach(&event_host);
         // No handle declaration is sent for message routing: the daemon files for

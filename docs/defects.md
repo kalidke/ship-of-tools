@@ -641,8 +641,7 @@ owned by `docs/CLAUDE.md`.
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
 - **ROW-CLEAR-NO-SESSION-START** (agents) closed by the session-start hook landing: a Claude row leg's `--settings` (for legs started after the update) carries SessionStart on `clear` and `compact`, running the read-only comm session start, whose output names the handle and the handoff. Not covered: `/resume` typed in a live row, Codex rows.
-
-- **DESTROY-SESSION-LIMBO** (fe-ui) closed by the landing that fixes it, 2026-11-07: destroying the session in view left the window on the default row, or, when another window or the command line destroyed it, on a session that no longer exists; the view now moves to the session below it in the list (above when it was last), and destroying any other session changes nothing.
+- **DESTROY-SESSION-LIMBO** (fe-ui) closed by the landing that fixes it, 2026-11-07: destroying the session in view left the window on the default row, or, when another window or the command line destroyed it, on a session that no longer exists, and a session destroyed elsewhere kept its parked view, REPL state and tree slots; the view now moves to the next session in the Sessions list (below, else above, across computers), the pane is empty when none remains, destroying any other session changes nothing, and a row a listing no longer has loses its parked view, REPL state and tree slots.
 - **ROW-ID-MINT** (rows) closed by f7905b1a5: a row id is unique within a process by count, not by the second.
 - **GATE-TARGET-SHARED** (distribution) closed by d74ddbe77: the gate holds a lock on its target folder, and a second gate on the same target fails naming it.
 - **LANE-BRIDGE-RELAY-HALF-CLOSE** (capsule) closed by 0f7cdf875: the throttled relay half-closes each destination as its copy returns.

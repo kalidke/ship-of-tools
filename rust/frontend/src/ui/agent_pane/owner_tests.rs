@@ -945,16 +945,35 @@ fn a_copy_decodes_to_its_text_and_bad_base64_is_refused_with_why() {
     assert!(copied_text(b"@@@").unwrap_err().contains("base64"));
 }
 
-/// The no-session state shows an empty pane: a row's client that ended, with its last screen, is not kept once the
-/// switch finds no attachment to open.
+/// The no-session state paints exactly as a new pane, whatever the last session left: an ended client with its
+/// screen, a held screen, a dial error, a live client.
 #[test]
-fn leaving_for_a_row_with_no_attachment_empties_the_pane() {
+fn leaving_for_a_row_with_no_attachment_paints_as_a_new_pane() {
     let t = Instant::now();
-    let mut p = Pane::new(None);
-    let wire = ready(&mut p, "a", "gone", b"work in progress", t);
-    step(&mut p, &wire, Step { dead: true, status: Some("ended"), ..Default::default() }, t);
-    assert_ne!(pixels(&mut p).0, PaneScreen::Empty, "the ended session's screen is held");
-    p.invalidate_kept_attachment();
-    assert_eq!(pixels(&mut p), (PaneScreen::Empty, "".into()));
-    assert_eq!(p.target(), None);
+    let fresh = Pane::new(None).view(None);
+    let leftovers: [(&str, fn(&mut Pane, Instant)); 4] = [
+        ("ended client", |p, t| {
+            let wire = ready(p, "a", "gone", b"work in progress", t);
+            step(p, &wire, Step { dead: true, status: Some("ended"), ..Default::default() }, t);
+        }),
+        ("held screen", |p, t| {
+            ready(p, "a", "gone", b"screen of gone", t);
+            select(p, "a", "next", t, 16);
+        }),
+        ("dial error", |p, _| {
+            select(p, "a", "gone", Instant::now(), 16);
+            p.open_failed(&"a".to_string(), &"a".to_string(), Some("gone"), "unknown workspace: gone");
+        }),
+        ("live client", |p, t| { ready(p, "a", "gone", b"live", t); }),
+    ];
+    for (label, leave) in leftovers {
+        let mut p = Pane::new(None);
+        leave(&mut p, t);
+        let shown = p.view(None);
+        assert_ne!((shown.0, shown.1), (fresh.0, fresh.1.clone()), "{label}: the leftover must show before the switch");
+        p.show_no_attachment();
+        let (choice, reasons, _) = p.view(None);
+        assert_eq!((choice, reasons, p.target()), (fresh.0, fresh.1.clone(), None), "{label}");
+        assert_eq!(pixels(&mut p), (PaneScreen::Empty, "".into()), "{label}");
+    }
 }

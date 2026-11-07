@@ -195,77 +195,129 @@ fn authoritative_replacement_reports_only_retired_canonical_identities() {
     );
 }
 
-fn listing(host: &str, slugs: &[&str]) -> RowDirectory {
-    let mut directory = RowDirectory::default();
-    let rows = slugs.iter().map(|slug| {
+/// A host's listing as the daemon sends it: the inert default first, then the sessions by slug.
+fn rows_of(slugs: &[&str]) -> Vec<WorkspaceInfo> {
+    let mut default = ws_info("default", "attach-default");
+    default.is_default = true;
+    default.agent = "none".into();
+    let sessions = slugs.iter().map(|slug| {
         let mut row = ws_info(slug, &format!("attach-{slug}"));
         row.workspace_id = format!("id-{slug}");
         row
     });
-    let update = directory.prepare_replace(host.into(), rows.collect());
-    directory.commit_replace(update);
+    std::iter::once(default).chain(sessions).collect()
+}
+
+fn listing(lists: &[(&str, &[&str])]) -> RowDirectory {
+    let mut directory = RowDirectory::default();
+    for (host, slugs) in lists {
+        let update = directory.prepare_replace((*host).into(), rows_of(slugs));
+        directory.commit_replace(update);
+    }
     directory
 }
 
-fn rows_of(slugs: &[&str]) -> Vec<WorkspaceInfo> {
-    slugs.iter().map(|slug| ws_info(slug, &format!("attach-{slug}"))).collect()
+fn hosts() -> Vec<HostKey> {
+    vec!["h".to_string(), "g".to_string()]
 }
 
 fn to(host: &str, slug: &str) -> Leave {
     Leave::To((host.into(), slug.into()))
 }
 
-/// What the window does with its selected row when a row is destroyed, by its own destroy (`note_destroyed`, no
-/// listing) and by the host's next listing: the next row below in the Sessions list, else above, else no session;
-/// a destroy of another row, of another host's row, or a first listing changes nothing.
+const LISTED: [(&str, &[&str]); 2] = [("h", &["a1", "a2", "a3"]), ("g", &["b1"])];
+
+/// What the window does with its selected row when a row is destroyed, by its own destroy's reply and by the host's
+/// next listing: the next session in the whole Sessions list (computers in order, each default first then by slug),
+/// below else above; no session only when none remains anywhere. A destroy of another row, of another computer's
+/// row, a first listing or a never-listed selection changes nothing.
 #[test]
-fn leaving_a_gone_row_names_its_neighbor_below_else_above() {
-    // (listed, selected, destroyed together, expected)
-    let table: [(&[&str], &str, &[&str], Leave); 8] = [
-        (&["a1", "a2", "a3"], "a1", &["a1"], to("h", "a2")),
-        (&["a1", "a2", "a3"], "a2", &["a2"], to("h", "a3")),
-        (&["a1", "a2", "a3"], "a3", &["a3"], to("h", "a2")),
-        (&["a1", "a2", "a3"], "a1", &["a1", "a2"], to("h", "a3")),
-        (&["a1", "a2", "a3"], "a3", &["a3", "a2"], to("h", "a1")),
-        (&["a1", "a2", "a3"], "a2", &["a1", "a2", "a3"], Leave::NoSession),
-        (&["a1", "a2", "a3"], "a2", &["a3"], Leave::Stay),
-        (&["a1"], "a1", &["a1"], Leave::NoSession),
+fn leaving_a_gone_row_names_its_neighbor_in_the_whole_sessions_list() {
+    // (selected host, selected, destroyed together on h, expected)
+    let table: [(&str, &str, &[&str], Leave); 8] = [
+        ("h", "a1", &["a1"], to("h", "a2")),
+        ("h", "a2", &["a2"], to("h", "a3")),
+        // Last of its computer: the next computer's first session, never the inert default between.
+        ("h", "a3", &["a3"], to("g", "b1")),
+        ("h", "a1", &["a1", "a2"], to("h", "a3")),
+        ("h", "a2", &["a2", "a3"], to("g", "b1")),
+        ("h", "a2", &["a3"], Leave::Stay),
+        ("h", "a2", &["a1"], Leave::Stay),
+        ("g", "b1", &["a1"], Leave::Stay),
     ];
-    for (listed, selected, gone, expected) in table {
-        let kept: Vec<&str> = listed.iter().copied().filter(|s| !gone.contains(s)).collect();
-        let mut by_own = listing("h", listed);
+    for (host, selected, gone, expected) in table {
+        let kept: Vec<&str> = LISTED[0].1.iter().copied().filter(|s| !gone.contains(s)).collect();
+        let mut by_own = listing(&LISTED);
         for slug in gone {
             by_own.note_destroyed("h", slug);
         }
-        assert_eq!(by_own.leave("h", Some(selected), None), expected, "own destroy of {gone:?} on {selected}");
-        let by_list = listing("h", listed);
+        let replied = by_own.leave(&hosts(), (host, Some(selected)), "h", Gone::Replied(gone[0]));
+        if gone.contains(&selected) {
+            assert_eq!(replied, expected, "own destroy of {gone:?} on {host}/{selected}");
+        } else {
+            assert_eq!(replied, Leave::Stay, "own destroy of {gone:?} on {host}/{selected}");
+        }
+        let by_list = listing(&LISTED);
         let update = by_list.prepare_replace("h".into(), rows_of(&kept));
-        assert_eq!(by_list.leave("h", Some(selected), Some(&update)), expected, "list without {gone:?} on {selected}");
+        let listed = by_list.leave(&hosts(), (host, Some(selected)), "h", Gone::Listed(&update));
+        assert_eq!(listed, expected, "list without {gone:?} on {host}/{selected}");
     }
-    let directory = listing("h", &["a1", "a2"]);
-    let update = directory.prepare_replace("h".into(), rows_of(&["a2"]));
-    assert_eq!(directory.leave("other", Some("a1"), Some(&update)), Leave::Stay, "another host's rows are not its own");
-    assert_eq!(directory.leave("h", None, Some(&update)), Leave::Stay, "the default row is never gone");
-    assert_eq!(directory.leave("h", Some("never-listed"), Some(&update)), Leave::Stay, "a resumed selection is kept");
+    // The last session of the last computer goes up to the one above; the only session anywhere has no neighbor.
+    let mut last = listing(&LISTED);
+    last.note_destroyed("g", "b1");
+    assert_eq!(last.leave(&hosts(), ("g", Some("b1")), "g", Gone::Replied("b1")), to("h", "a3"));
+    let mut only = listing(&[("h", &["a1"])]);
+    only.note_destroyed("h", "a1");
+    assert_eq!(only.leave(&["h".to_string()], ("h", Some("a1")), "h", Gone::Replied("a1")), Leave::NoSession);
+    // The default row and a selection resumed before the first list are never gone; a first list drops nothing.
+    let directory = listing(&LISTED);
+    let update = directory.prepare_replace("h".into(), rows_of(&["a2", "a3"]));
+    assert_eq!(directory.dropped("h", &update), ["a1"], "the rows a listing lost are forgotten, a first listing's none");
+    assert!(RowDirectory::default().dropped("h", &update).is_empty());
+    assert_eq!(directory.leave(&hosts(), ("h", None), "h", Gone::Listed(&update)), Leave::Stay);
+    assert_eq!(directory.leave(&hosts(), ("h", Some("never-listed")), "h", Gone::Listed(&update)), Leave::Stay);
     let first = RowDirectory::default();
     let update = first.prepare_replace("h".into(), rows_of(&["a2"]));
-    assert_eq!(first.leave("h", Some("a1"), Some(&update)), Leave::Stay, "a first listing drops nothing");
+    assert_eq!(first.leave(&hosts(), ("h", Some("a1")), "h", Gone::Listed(&update)), Leave::Stay);
 }
 
-/// Two quick destroys before the list answers: the second's neighbor is never the first's row, whether it was named
-/// by slug (the reply) or by workspace id (the request); and a same-slug successor in a list keeps the selection.
+/// A destroy note lives until a listing lacks its row or the daemon refuses the destroy: through an unrelated list
+/// that has both rows, the first reply never moves onto the row being destroyed; after a refused destroy a later
+/// destroy of another row never moves the view off a living session.
 #[test]
 fn a_destroy_in_flight_is_never_the_neighbor() {
-    let mut directory = listing("h", &["a1", "a2", "a3"]);
+    let mut directory = listing(&LISTED);
+    // The requests name the rows by workspace id.
     directory.note_destroyed("h", "id-a2");
-    assert_eq!(directory.leave("h", Some("a2"), None), to("h", "a3"));
     directory.note_destroyed("h", "id-a3");
-    assert_eq!(directory.leave("h", Some("a3"), None), to("h", "a1"));
-    let update = directory.prepare_replace("h".into(), rows_of(&["a1"]));
+    let unrelated = directory.prepare_replace("h".into(), rows_of(&["a1", "a2", "a3"]));
+    directory.commit_replace(unrelated);
+    assert_eq!(directory.leave(&hosts(), ("h", Some("a2")), "h", Gone::Replied("a2")), to("g", "b1"));
+    let update = directory.prepare_replace("h".into(), rows_of(&["a1", "a3"]));
+    assert_eq!(directory.leave(&hosts(), ("h", Some("a2")), "h", Gone::Listed(&update)), to("g", "b1"));
     directory.commit_replace(update);
-    assert_eq!(directory.leave("h", Some("a1"), None), Leave::Stay, "a listing replaces the record");
-    let mut successor = ws_info("a1", "attach-new");
+    // a2 left the listing, so its note is gone; a3 is still being destroyed.
+    assert_eq!(directory.leave(&hosts(), ("h", Some("a1")), "h", Gone::Replied("a2")), Leave::Stay);
+    directory.note_destroyed("h", "a1");
+    assert_eq!(directory.leave(&hosts(), ("h", Some("a1")), "h", Gone::Replied("a1")), to("g", "b1"));
+    // A refused destroy of the shown a2, then a destroy of a3 answered: the view stays on a2.
+    let mut refused = listing(&LISTED);
+    refused.note_destroyed("h", "id-a2");
+    refused.clear_destroyed("h");
+    refused.note_destroyed("h", "a3");
+    assert_eq!(refused.leave(&hosts(), ("h", Some("a2")), "h", Gone::Replied("a3")), Leave::Stay);
+    // The refused row is alive, so it is the neighbor of the shown row destroyed next.
+    refused.note_destroyed("h", "a1");
+    assert_eq!(refused.leave(&hosts(), ("h", Some("a1")), "h", Gone::Replied("a1")), to("h", "a2"));
+    // A row of the same name on another computer is not the selected one.
+    let mut twins = listing(&[("h", &["a1", "a2"]), ("g", &["a1"])]);
+    twins.note_destroyed("h", "a1");
+    assert_eq!(twins.leave(&hosts(), ("g", Some("a1")), "h", Gone::Replied("a1")), Leave::Stay);
+    let update = twins.prepare_replace("h".into(), rows_of(&["a2"]));
+    assert_eq!(twins.leave(&hosts(), ("g", Some("a1")), "h", Gone::Listed(&update)), Leave::Stay);
+    // A same-slug successor in a listing keeps the selection.
+    let mut successor = ws_info("a2", "attach-new");
     successor.workspace_id = "id-new".into();
-    let update = directory.prepare_replace("h".into(), vec![successor]);
-    assert_eq!(directory.leave("h", Some("a1"), Some(&update)), Leave::Stay);
+    let update = refused.prepare_replace("h".into(), vec![successor]);
+    assert_eq!(refused.leave(&hosts(), ("h", Some("a2")), "h", Gone::Listed(&update)), Leave::Stay);
 }

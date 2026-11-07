@@ -1383,3 +1383,49 @@ impl State {
         Ok(())
     }
 }
+
+impl State {
+    /// Drives the real State through both destroy paths: the window's own reply and a listing that lost the shown row.
+    /// The view moves to the next session in the Sessions list, a destroy of another row leaves it, a refused destroy
+    /// leaves it, and the last session leaves the empty pane.
+    pub(in crate::ui) fn a_destroyed_session_moves_the_view_to_a_neighbor(&mut self) -> Result<()> {
+        let (a, b) = ("<host-gone-a>".to_string(), "<host-gone-b>".to_string());
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (b_tx, _b_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx), (b.clone(), b_tx)];
+        let list = |slugs: &[&str]| {
+            let mut default = ws_info("default", "attach-default");
+            default.is_default = true;
+            default.agent = "none".into();
+            std::iter::once(default).chain(slugs.iter().map(|s| probe_row(s, &format!("id-{s}"), false))).collect::<Vec<_>>()
+        };
+        let destroyed = |slug: &str| crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: format!("id-{slug}"), slug: slug.into(), label: slug.into(), tmux_killed: true, toml_removed: true, kept: None,
+        };
+        self.on_workspaces(a.clone(), list(&["s1", "s2", "s3"]));
+        self.on_workspaces(b.clone(), list(&["t1"]));
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        let at = |state: &Self, host: &HostKey, slug: Option<&str>| *state.selected.host() == *host && state.selected.workspace_id().as_deref() == slug;
+        // The window's own destroy of the shown row: the reply moves the view below, and the pane follows.
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed("s2")));
+        anyhow::ensure!(at(self, &a, Some("s3")) && self.agent_pane.target() == Some((a.clone(), "s3-session".into())),
+            "own destroy of the shown row did not move the view to the session below");
+        // The listing that follows has the neighbor and moves nothing; a destroy of a row not shown moves nothing.
+        self.on_workspaces(a.clone(), list(&["s1", "s3"]));
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
+        anyhow::ensure!(at(self, &a, Some("s3")), "a destroy of another row moved the view");
+        // A refused destroy of the shown row, then a destroy of another row answered: the view stays on a living row.
+        self.on_workspace_destroyed(a.clone(), Err("refused".into()));
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
+        anyhow::ensure!(at(self, &a, Some("s3")), "a refused destroy then another's moved the view off a living session");
+        // A destroy by another window: the listing lost the shown row; the view crosses to the next computer.
+        self.on_workspaces(a.clone(), list(&[]));
+        anyhow::ensure!(at(self, &b, Some("t1")) && self.agent_pane.target() == Some((b.clone(), "t1-session".into())),
+            "a listing that lost the shown row did not move the view to the next computer's session");
+        // Its destroy, with no session left anywhere: the no-session state shows an empty pane.
+        self.on_workspaces(b.clone(), list(&[]));
+        anyhow::ensure!(at(self, &b, None) && self.agent_pane.target().is_none() && self.agent_pane.view(None).0 == PaneScreen::Empty,
+            "the last session's destroy did not leave the empty no-session state");
+        Ok(())
+    }
+}

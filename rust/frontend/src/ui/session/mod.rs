@@ -26,7 +26,7 @@ pub(in crate::ui) use parked::ParkedViews;
 #[cfg(test)]
 pub(in crate::ui) use workspace_key::ws_key_of;
 pub(in crate::ui) use row_directory::{
-    Leave, ResolvedWorkspace, ResultRowIdentity, RowDirectory, RowDirectoryUpdate,
+    Gone, Leave, ResolvedWorkspace, ResultRowIdentity, RowDirectory, RowDirectoryUpdate,
 };
 pub(in crate::ui) use workspace_list::*;
 pub(in crate::ui) use row_presentation::{RowPresentation, StripOrder};
