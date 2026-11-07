@@ -383,13 +383,13 @@ async fn a_cancelled_stop_frees_the_lock() {
 
 #[tokio::test]
 async fn the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing() {
-    use crate::watch::{Loaded, Watches};
+    use crate::watch::Loaded;
     bounded(async {
         let dir = Scratch::new("reconcile");
         let fake = holding_fake(WS).await;
         let service = start(&fake, &dir.0).await.expect("service");
         eventually("the hello's gap", || service.gap().is_some()).await;
-        let mut watches = Watches::new();
+        let mut watches = service.watches().unwrap();
         watches.watch("C0AAAA").unwrap();
         let ticket = watches.begin("C0AAAA", &service).unwrap();
         // The snapshot is not complete yet, so nothing clears.
@@ -406,26 +406,92 @@ async fn the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing(
 }
 
 #[tokio::test]
-async fn a_watch_that_outlives_its_service_does_not_know_the_next_services_first_gap() {
-    use crate::watch::{Loaded, State, Watches};
+async fn a_watch_of_one_service_reads_nothing_from_the_next() {
+    use crate::watch::{Loaded, State};
     bounded(async {
         let dir = Scratch::new("outlive");
         let fake = holding_fake(WS).await;
         let first = start(&fake, &dir.0).await.expect("first");
         eventually("the first hello", || first.gap().is_some()).await;
-        let mut watches = Watches::new();
+        let mut watches = first.watches().unwrap();
         watches.watch("C0AAAA").unwrap();
         let ticket = watches.begin("C0AAAA", &first).unwrap();
         assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new(), first.gap()), Loaded::Complete);
-        // The first service stops before the gap was cleared; the next one's first hello is a new gap.
+        // The first service stops before the gap was cleared; the next one's first hello is a new gap, which the
+        // first one's watch is never handed.
         first.stop(Duration::from_secs(3)).await;
         let second = start(&fake, &dir.0).await.expect("second");
         eventually("the second hello", || second.gap().is_some()).await;
         watches.pump(&second);
-        assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
-        assert!(!watches.reconcile(|g| second.reconciled(g)));
+        assert_eq!(watches.state("C0AAAA"), Some(State::Complete));
+        assert!(!watches.reconcile(|g| second.reconciled(g)) || second.gap().is_some());
         second.stop(Duration::from_secs(3)).await;
         fake.shutdown().await;
+    })
+    .await;
+}
+
+fn inert() -> Service {
+    use crate::api::Api;
+    use crate::http::{Http, Secret};
+    Service::inert(std::sync::Arc::new(Api::new(Http::new().unwrap(), Secret::new("xoxb-test"), WS).unwrap()))
+}
+
+fn edit() -> crate::normalize::Normalized {
+    use sot_protocol::chat::{ChatAuthor, ChatRecord, Origin, Ts};
+    crate::normalize::Normalized::Edited(ChatRecord {
+        workspace: WS.into(),
+        channel: "C0AAAA".into(),
+        ts: Ts::parse("1.000000").unwrap(),
+        thread_ts: Ts::parse("1.000000").unwrap(),
+        author: ChatAuthor { id: "U0AAAA".into(), name: String::new() },
+        origin: Origin::Member,
+        text: "x".into(),
+        truncated: false,
+        reply_count: 0,
+        files: Vec::new(),
+        latest_reply: None,
+        limited: false,
+        omitted: false,
+        files_omitted: 0,
+    })
+}
+
+#[tokio::test]
+async fn wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the_stop() {
+    use crate::socket::GapCause;
+    bounded(async {
+        let service = inert();
+        let mut watches = service.watches().unwrap();
+        let short = Duration::from_millis(100);
+        service.lose(GapCause::Reconnect);
+        assert!(service.wait(Duration::from_secs(20)).await, "no wake for a gap");
+        service.feed(edit());
+        assert!(service.wait(Duration::from_secs(20)).await, "no wake for an event");
+        // Nothing was taken, so what is queued is still seen at once, with no new wake.
+        assert!(service.wait(short).await, "a queued event was not seen");
+        watches.pump(&service);
+        service.stop(Duration::from_secs(3)).await;
+        assert!(!service.wait(short).await, "a stopped service woke");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_wait_in_flight_ends_at_the_stop() {
+    use crate::socket::GapCause;
+    bounded(async {
+        let service = inert();
+        let mut watches = service.watches().unwrap();
+        service.lose(GapCause::Reconnect);
+        watches.pump(&service);
+        // The permit the latch left is spent, so the wait below has nothing to see.
+        service.wait(Duration::ZERO).await;
+        // A zero bound polls the wait once and gives up: no clock decides the result.
+        let mut wait = Box::pin(service.wait(Duration::from_secs(20)));
+        assert!(tokio::time::timeout(Duration::ZERO, &mut wait).await.is_err(), "the wait had something to see");
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(tokio::time::timeout(Duration::ZERO, &mut wait).await, Ok(false), "the stop did not end the wait");
     })
     .await;
 }

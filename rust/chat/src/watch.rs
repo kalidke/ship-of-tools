@@ -4,6 +4,8 @@
 //! while a snapshot is pending, live changes go into a bounded overlay applied after it.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use sot_protocol::chat::ChatRecord;
 
@@ -98,9 +100,11 @@ impl Channel {
     }
 }
 
-/// The watched channels of one workspace and the socket gap they answer to.
-#[derive(Default)]
+/// The watched channels of one workspace and the socket gap they answer to. One per `Service`, made by
+/// `Service::watches`.
 pub struct Watches {
+    /// The service's claim, released on drop; none for a model with no service (tests).
+    claim: Option<Arc<AtomicBool>>,
     gap: Option<Gap>,
     /// The highest gap number seen. The gap moves forward only: a value read earlier, handed in later, is ignored.
     seen: u64,
@@ -109,8 +113,17 @@ pub struct Watches {
 }
 
 impl Watches {
-    pub fn new() -> Watches {
-        Watches::default()
+    pub(crate) fn claimed(claim: Arc<AtomicBool>) -> Watches {
+        Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new() -> Watches {
+        Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+    }
+
+    pub(crate) fn claims(&self, claim: &Arc<AtomicBool>) -> bool {
+        self.claim.as_ref().is_some_and(|c| Arc::ptr_eq(c, claim))
     }
 
     /// Register a channel, before its snapshot. Watching one already watched changes nothing.
@@ -165,14 +178,14 @@ impl Watches {
     /// no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
     /// unwatched or its snapshot is already pending or done (the events are applied either way).
     pub fn begin(&mut self, channel: &str, service: &Service) -> Option<u64> {
-        self.begin_taken(channel, service.take())
+        self.begin_taken(channel, service.take(self))
     }
 
-    /// The events pending in the socket, applied and the gap synced: what a caller does between snapshots. The take
-    /// happens under this exclusive borrow, so no caller holds a taken event across a lock or an await while another
+    /// The events pending in the socket, applied and the gap synced: what a caller does whenever `wait` says look,
+    /// a snapshot pending or not. The take happens under this exclusive borrow, so no caller holds a taken event across a lock or an await while another
     /// applies newer ones.
     pub fn pump(&mut self, service: &Service) {
-        self.apply_taken(service.take());
+        self.apply_taken(service.take(self));
     }
 
     pub(crate) fn apply_taken(&mut self, taken: Taken) {
@@ -264,5 +277,13 @@ impl Watches {
             return true;
         }
         false
+    }
+}
+
+impl Drop for Watches {
+    fn drop(&mut self) {
+        if let Some(c) = &self.claim {
+            c.store(false, Ordering::SeqCst);
+        }
     }
 }

@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use crate::api::{Api, ApiError};
 use crate::config::{Config, Credentials};
 use crate::http::{Http, Secret};
 use crate::socket::{self, Gap, Socket, Taken, SocketError, Timing, BASE};
+use crate::watch::Watches;
 
 /// Why a service did not start, or why a call was refused. Fixed codes: no path, token or Slack text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +71,8 @@ enum Phase {
 pub struct Service {
     api: Arc<Api>,
     phase: Mutex<Phase>,
+    /// Set while a `Watches` made by `watches` lives: the one reader of this service's events.
+    claim: Arc<AtomicBool>,
 }
 
 /// The lock file's name: built from the validated workspace id alone.
@@ -127,7 +131,7 @@ impl Service {
         // From here an early return drops the lock; the socket, once started, owns it.
         let own = api.auth_test().await.map_err(ServiceError::Api)?;
         let socket = Socket::launch(http, app, own, workspace, base, timing, Box::new(lock)).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)) })
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim: Arc::new(AtomicBool::new(false)) })
     }
 
     /// The Slack API, or `Stopped`. A call already begun runs to its own deadline; a mutation already sent is neither
@@ -139,14 +143,20 @@ impl Service {
         }
     }
 
-    /// Wait for something to take (`Socket::wait`); false once stopped.
+    /// The one `Watches` of this service, or none while another made here is alive: a second would take events the
+    /// first never sees and hold stale content as complete. The claim is released when the `Watches` is dropped.
+    pub fn watches(&self) -> Option<Watches> {
+        (!self.claim.swap(true, Ordering::SeqCst)).then(|| Watches::claimed(self.claim.clone()))
+    }
+
+    /// Wait for something to take (`Socket::wait`); false once stopped, a wait in flight included. One waiter: the pump.
     pub async fn wait(&self, within: Duration) -> bool {
         let waiter = match &*self.phase.lock().unwrap() {
             Phase::Running(s) => Some(s.waiter()),
             _ => None,
         };
         match waiter {
-            Some(w) => w.wait(within).await,
+            Some(w) => w.wait(within).await && matches!(&*self.phase.lock().unwrap(), Phase::Running(_)),
             None => false,
         }
     }
@@ -159,10 +169,11 @@ impl Service {
         }
     }
 
-    /// `Socket::take` (empty once stopped), for `Watches`, which takes and applies in one call.
-    pub(crate) fn take(&self) -> Taken {
+    /// `Socket::take` (empty once stopped) for the `Watches` this service made, which takes and applies in one call;
+    /// empty for any other.
+    pub(crate) fn take(&self, by: &Watches) -> Taken {
         match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => s.take(),
+            Phase::Running(s) if by.claims(&self.claim) => s.take(),
             _ => Taken::default(),
         }
     }
@@ -201,5 +212,25 @@ impl Service {
         self.api.close();
         socket.stop_within(within).await;
         *self.phase.lock().unwrap() = Phase::Stopped;
+    }
+
+    /// A service over a socket with no task, for the test to push events and latch gaps into.
+    #[cfg(test)]
+    pub(crate) fn inert(api: Arc<Api>) -> Service {
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim: Arc::new(AtomicBool::new(false)) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn feed(&self, event: crate::normalize::Normalized) {
+        if let Phase::Running(s) = &*self.phase.lock().unwrap() {
+            s.feed(event);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lose(&self, cause: socket::GapCause) {
+        if let Phase::Running(s) = &*self.phase.lock().unwrap() {
+            s.lose(cause);
+        }
     }
 }

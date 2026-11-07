@@ -1,10 +1,15 @@
 //! Tests of `watch`: the model alone, driven the way its callers will drive it. No clock, no network.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 use sot_protocol::chat::{ChatAuthor, ChatRecord, Origin, Ts};
 
+use crate::api::Api;
+use crate::http::{Http, Secret};
 use crate::normalize::{ts_key, Normalized};
+use crate::service::Service;
 use crate::socket::{Gap, GapCause, Taken};
 use crate::watch::{
     Loaded, State, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
@@ -344,10 +349,13 @@ fn a_gap_read_before_a_newer_one_was_seen_cannot_roll_the_model_back() {
     assert_eq!(w.state(C), Some(State::Complete), "a gap already seen and cleared came back");
 }
 
-/// One consumer, one producer, every order: the model of M after any interleaving of a snapshot task (begin, fetch,
-/// read the gap, answer), a pump task (two pumps, a reconcile) and the source (two edits, then a third that is either
-/// delivered or lost into a gap). Each step is atomic on the one `Watches`. A complete channel never holds a text the
-/// world no longer has, once the last events are pumped, and a gap is never cleared over a stale model.
+/// One consumer, one producer, every order, through the real socket state: a `Service` over a socket with no task,
+/// where the source's edits are queued and its loss is latched, and the product's own take and wake run (`pump`,
+/// `begin`, `gap`, `reconciled`, `wait`). The orders are every interleaving of a snapshot task (begin, fetch, read the
+/// gap, answer), a pump task (two pumps, a reconcile; one more pump when `wait` says look at the end) and the source
+/// (two edits, then a third that is either delivered or lost into a gap). Each step is atomic. A complete channel
+/// never holds a text the world no longer has, once the last events are pumped, and a gap is never cleared over a
+/// stale model.
 #[derive(Clone, Copy, Debug)]
 enum Op {
     Begin,
@@ -362,65 +370,54 @@ enum Op {
 }
 
 struct World {
+    service: Service,
     w: Watches,
-    queue: Vec<Normalized>,
-    gap: Option<Gap>,
     text: String,
     ticket: Option<u64>,
     page: Option<String>,
     now: Option<Gap>,
     lost: bool,
-    /// A wake is owed to the pump: something was queued or latched since the last take.
-    wake: bool,
+}
+
+/// A wait that leaves nothing owed: the permit a push or latch left, if any, is consumed. After a take every one is
+/// spurious (the take saw all of it), so the next `wait` is true only for a change after the take.
+async fn settle(service: &Service) -> bool {
+    service.wait(Duration::ZERO).await
 }
 
 impl World {
-    fn take(&mut self) -> Taken {
-        self.wake = false;
-        Taken { gap: self.gap, events: std::mem::take(&mut self.queue) }
-    }
-
-    fn step(&mut self, op: Op) {
+    async fn step(&mut self, op: Op) {
         match op {
             Op::Begin => {
-                let taken = self.take();
-                self.ticket = self.w.begin_taken(C, taken);
+                self.ticket = self.w.begin(C, &self.service);
+                settle(&self.service).await;
             }
             Op::Fetch => self.page = Some(self.text.clone()),
-            Op::ReadNow => self.now = self.gap,
+            Op::ReadNow => self.now = self.service.gap(),
             Op::Loaded => {
                 if let (Some(t), Some(page)) = (self.ticket, self.page.clone()) {
                     self.w.loaded(C, t, vec![rec("1.000000", &page)], self.now);
                 }
             }
             Op::Pump => {
-                let taken = self.take();
-                self.w.apply_taken(taken);
+                self.w.pump(&self.service);
+                settle(&self.service).await;
             }
             Op::Reconcile => {
-                let gap = &mut self.gap;
-                self.w.reconcile(|g| {
-                    if *gap == Some(g) {
-                        *gap = None;
-                        true
-                    } else {
-                        false
-                    }
-                });
+                let service = &self.service;
+                self.w.reconcile(|g| service.reconciled(g));
             }
             Op::Edit1 | Op::Edit2 => {
-                self.wake = true;
                 let v = if matches!(op, Op::Edit1) { "v1" } else { "v2" };
                 self.text = v.into();
-                self.queue.push(edited("1.000000", v));
+                self.service.feed(edited("1.000000", v));
             }
             Op::Edit3 => {
-                self.wake = true;
                 self.text = "v3".into();
                 if self.lost {
-                    self.gap = Some(Gap::for_test(2, GapCause::Failed));
+                    self.service.lose(GapCause::Failed);
                 } else {
-                    self.queue.push(edited("1.000000", "v3"));
+                    self.service.feed(edited("1.000000", "v3"));
                 }
             }
         }
@@ -448,8 +445,13 @@ fn interleavings(seqs: &[&[Op]], at: &mut Vec<usize>, run: &mut Vec<Op>, out: &m
     }
 }
 
-#[test]
-fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost_event() {
+fn test_api() -> Arc<Api> {
+    Arc::new(Api::new(Http::new().unwrap(), Secret::new("xoxb-test"), "T0TEAM").unwrap())
+}
+
+#[tokio::test]
+async fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost_event() {
+    let api = test_api();
     let snapshot = [Op::Begin, Op::Fetch, Op::ReadNow, Op::Loaded];
     let pump = [Op::Pump, Op::Pump, Op::Reconcile];
     let source = [Op::Edit1, Op::Edit2, Op::Edit3];
@@ -460,36 +462,38 @@ fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost
         for lost in [false, true] {
             for run in &runs {
                 // The channel starts needing a snapshot (a hello's gap not yet cleared) or complete and clean.
+                let service = Service::inert(api.clone());
+                service.lose(GapCause::Reconnect);
+                let mut w = service.watches().unwrap();
+                w.watch(C).unwrap();
+                w.pump(&service);
+                if held_at_start {
+                    let t = w.begin(C, &service).unwrap();
+                    w.loaded(C, t, vec![rec("1.000000", "v0")], service.gap());
+                    assert!(w.reconcile(|g| service.reconciled(g)));
+                }
+                settle(&service).await;
                 let mut m = World {
-                    w: Watches::new(),
-                    queue: Vec::new(),
-                    gap: Some(Gap::for_test(1, GapCause::Reconnect)),
+                    service,
+                    w,
                     text: "v0".into(),
                     ticket: None,
                     page: None,
                     now: None,
                     lost,
-                    wake: false,
                 };
-                m.w.watch(C).unwrap();
-                m.w.sync(m.gap);
-                if held_at_start {
-                    let t = m.w.begin_taken(C, Taken { gap: m.gap, events: vec![] }).unwrap();
-                    m.w.loaded(C, t, vec![rec("1.000000", "v0")], m.gap);
-                    assert!(m.w.reconcile(|_| true));
-                    m.gap = None;
-                }
                 for op in run {
-                    m.step(*op);
+                    m.step(*op).await;
                 }
                 let what = format!("{run:?} held_at_start={held_at_start} lost={lost}");
-                // A gap cleared over a model that is not the world's is a silent loss.
-                if m.gap.is_none() && lost && run.iter().any(|o| matches!(o, Op::Edit3)) {
+                // A gap cleared over a model that is not the world's is a silent loss: the clear happened with
+                // the loss latched, so the service still holds a gap unless the model had seen it.
+                if lost && run.iter().any(|o| matches!(o, Op::Edit3)) && m.service.gap().is_none() {
                     assert_eq!(m.held().as_deref(), Some("v3"), "gap cleared over a stale model: {what}");
                 }
-                // The pump runs once more only when a wake is owed: a quiet channel is never healed by luck.
-                if m.wake {
-                    m.step(Op::Pump);
+                // The pump runs once more only when the wake says look: a quiet channel is never healed by luck.
+                if settle(&m.service).await {
+                    m.w.pump(&m.service);
                 }
                 if m.w.state(C) == Some(State::Complete) {
                     assert_eq!(m.held(), Some(m.text.clone()), "complete and stale: {what}");
@@ -497,4 +501,46 @@ fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost
             }
         }
     }
+}
+
+#[tokio::test]
+async fn pump_and_begin_apply_the_services_events_in_the_call_that_takes_them() {
+    let other = "C0BBBB";
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.watch(C).unwrap();
+    let t = w.begin(C, &service).unwrap();
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "a")], None), Loaded::Complete);
+    // A queued edit reaches the model through `pump`, and leaves the socket.
+    service.feed(edited("1.000000", "pumped"));
+    w.pump(&service);
+    assert_eq!(texts(&w, C), ["pumped"], "pump dropped the service's events");
+    w.pump(&service);
+    assert_eq!(texts(&w, C), ["pumped"]);
+    // And through `begin` of another channel.
+    w.watch(other).unwrap();
+    service.feed(edited("1.000000", "begun"));
+    assert!(w.begin(other, &service).is_some());
+    assert_eq!(texts(&w, C), ["begun"], "begin dropped the service's events");
+}
+
+#[tokio::test]
+async fn a_service_has_one_watches_and_no_other_reads_its_events() {
+    let api = test_api();
+    let service = Service::inert(api.clone());
+    let mut first = service.watches().expect("the first");
+    assert!(service.watches().is_none(), "a second Watches for one service");
+    first.watch(C).unwrap();
+    let t = first.begin(C, &service).unwrap();
+    first.loaded(C, t, vec![rec("1.000000", "a")], None);
+    // A Watches of another service takes nothing from this one.
+    let elsewhere = Service::inert(api);
+    let mut stranger = elsewhere.watches().unwrap();
+    service.feed(edited("1.000000", "edit"));
+    stranger.pump(&service);
+    first.pump(&service);
+    assert_eq!(texts(&first, C), ["edit"], "a Watches of another service took the events");
+    // The claim goes with the Watches.
+    drop(first);
+    assert!(service.watches().is_some(), "the claim outlived its Watches");
 }

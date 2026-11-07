@@ -118,7 +118,7 @@ pub enum GapCause {
 }
 
 /// Every latch of every socket in the process takes the next number, so a gap of one socket never equals a gap of
-/// another (a model that outlives its service cannot take the next service's first hello as one it knows).
+/// another (no two gaps are ever equal, and the model's order by number is total).
 fn next_seq() -> u64 {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     SEQ.fetch_add(1, Ordering::Relaxed) + 1
@@ -189,9 +189,8 @@ impl Shared {
     fn push(&self, event: Normalized, cost: usize) {
         let mut s = self.state.lock().unwrap();
         if s.queue.len() >= MAX_PENDING || s.bytes + cost > MAX_PENDING_BYTES {
+            // No wake of its own: an overflow needs a queue that is not empty, which `wait` reports.
             s.gap = Some(Gap { seq: next_seq(), cause: GapCause::Overflow });
-            drop(s);
-            self.ready.notify_one();
             return;
         }
         s.bytes += cost;
@@ -341,6 +340,8 @@ impl Socket {
     /// `stop` with the join bound given: after it the task is gone, ended or aborted and awaited.
     pub async fn stop_within(mut self, within: Duration) {
         let _ = self.stop.send(true);
+        // A wait in flight looks, and finds the service stopped.
+        self.shared.ready.notify_one();
         // The handle stays in `self`, so a stop future dropped mid-wait drops the socket and `Drop` aborts the task.
         if let Some(task) = self.task.as_mut() {
             if tokio::time::timeout(within, &mut *task).await.is_err() {
@@ -348,6 +349,25 @@ impl Socket {
                 let _ = task.await;
             }
         }
+    }
+
+    /// A socket with no task and no connection: what the test pushes and latches is what `take` and `wait` see.
+    #[cfg(test)]
+    pub(crate) fn inert() -> Socket {
+        let shared = Arc::new(Shared { state: Mutex::new(State::default()), ready: Notify::new() });
+        Socket { shared, stop: watch::channel(false).0, task: None, timing: Timing::PRODUCT }
+    }
+
+    /// Queue an event as the listener would.
+    #[cfg(test)]
+    pub(crate) fn feed(&self, event: Normalized) {
+        self.shared.push(event, 100);
+    }
+
+    /// Latch a gap as the listener would.
+    #[cfg(test)]
+    pub(crate) fn lose(&self, cause: GapCause) {
+        self.shared.latch(cause);
     }
 
     /// Pending events and their bytes.

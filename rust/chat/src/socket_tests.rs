@@ -1163,10 +1163,13 @@ async fn wait_wakes_on_a_gap_and_on_an_event_and_takes_nothing() {
         assert_eq!(socket.pending().0, 0);
         let taken = socket.take();
         assert!(taken.gap.is_some() && taken.events.is_empty());
-        // An event queued later wakes it, and the wait leaves the event queued.
-        go.store(true, Ordering::SeqCst);
-        eventually("the event queued", || socket.pending().0 == 1).await;
-        assert!(socket.wait(Duration::from_secs(20)).await, "no wake for an event");
+        // An event that arrives while the wait is waiting wakes it (the queue is empty when the wait begins), and
+        // the wait leaves the event queued.
+        let (woke, ()) = tokio::join!(socket.wait(Duration::from_secs(20)), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            go.store(true, Ordering::SeqCst);
+        });
+        assert!(woke, "no wake for an event");
         assert_eq!(socket.pending().0, 1, "wait took the event");
         assert_eq!(socket.take().events.len(), 1);
         socket.stop().await;

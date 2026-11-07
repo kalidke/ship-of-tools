@@ -670,12 +670,22 @@ A landing's record goes here, with its measured times; the package page holds on
   read. The third fix moved the order into one call that takes the events and the gap under one lock. Cause of the miss: the
   guarantee's interleavings were found by the reviewers' probes one round at a time, and the first fix answered a race with a
   rule for the caller. A rule a caller must keep is a fix only when no call shape can hold it. As landed, a daemon with two event
-  readers (a pump and a snapshot task) could still leave a watch complete and stale. Its follow-up, two review rounds of its own,
-  made `take` private to the crate: a daemon reaches events only through a `Watches`, whose `begin` and `pump` each take and
-  apply in one call, and waits on the service's `wait`, which a gap also wakes. Two `Watches` against one service stays a stated limit.
+  readers (a pump and a snapshot task) could still leave a watch complete and stale. Its follow-up, below, closed that.
+- B2c's follow-up, 2026-11-06: 19:25 to main 20:07, 42 minutes, a miss. Every gate passed first time. Four review rounds, each
+  finding one more interleaving of a pump, a snapshot and a gap: a stale contract sentence, then an older gap read rolling a
+  shared watch back, then another stale sentence, until the fix made a watch's gap move forward only and one test ran all 4,200
+  orders of a small scenario; the check's three wider enumerations then found nothing. `take` is private to the crate: a daemon
+  reaches events only through a `Watches`, whose `begin` and `pump` each take and apply in one call, and waits on the service's
+  `wait`, which a gap also wakes. Two `Watches` against one service stayed a stated limit. Cause of the miss: the enumeration
+  came in the fourth round. For a guarantee about orderings, the first brief asks for the enumeration.
 - B2d, the chat operations in wire, 2026-11-06: 20:14 to main 20:42, 28 minutes, first gate passed (scoped, 2 minutes), review
   without a blocker, run beside the gate. Requests `chat.resolve`, `watch`, `unwatch`, `history` and `post`, their replies and the
   events `changed` and `status` join the one op declaration, so the generated admission fixtures cover them; the record's bounds
   now hold on decode. About 300 product lines against an estimate of 125, and 230 test lines. The admission suite would not start
   `sotd` outside the gate's container, on this computer or on the gate host, at the base as well; the hosted Linux run passed it
   on this commit. That run was red on macOS, on a chat socket test this commit does not touch (its own record follows).
+- B2d's follow-up, 2026-11-06: 20:42 to main 21:01, 19 minutes, two fix rounds and a third short look, none with a blocker,
+  every gate passed first time. A chat request now ignores an unknown field, so a payload grows by defaulted fields both ways; a
+  refusal decodes without a code, as an old daemon's unknown-op answer has none; a newer daemon's service state, watch state,
+  resolve state, post outcome or record origin reads as a fallback, never as the app's own post and never as a post to resend; the
+  record's bounds have one copy, in wire, which chat uses.
