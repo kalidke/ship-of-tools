@@ -391,11 +391,10 @@ async fn the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing(
         eventually("the hello's gap", || service.gap().is_some()).await;
         let mut watches = Watches::new();
         watches.watch("C0AAAA").unwrap();
-        watches.sync(service.gap());
-        let ticket = watches.begin("C0AAAA").unwrap();
+        let ticket = watches.begin("C0AAAA", service.take()).unwrap();
         // The snapshot is not complete yet, so nothing clears.
         assert!(!watches.reconcile(|g| service.reconciled(g)));
-        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new()), Loaded::Complete);
+        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new(), service.gap()), Loaded::Complete);
         let gap = service.gap().unwrap();
         assert!(watches.reconcile(|g| service.reconciled(g)));
         assert!(matches!(service.status(), Status::Running { gap: false, .. }));
@@ -416,9 +415,8 @@ async fn a_watch_that_outlives_its_service_does_not_know_the_next_services_first
         eventually("the first hello", || first.gap().is_some()).await;
         let mut watches = Watches::new();
         watches.watch("C0AAAA").unwrap();
-        watches.sync(first.gap());
-        let ticket = watches.begin("C0AAAA").unwrap();
-        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new()), Loaded::Complete);
+        let ticket = watches.begin("C0AAAA", first.take()).unwrap();
+        assert_eq!(watches.loaded("C0AAAA", ticket, Vec::new(), first.gap()), Loaded::Complete);
         // The first service stops before the gap was cleared; the next one's first hello is a new gap.
         first.stop(Duration::from_secs(3)).await;
         let second = start(&fake, &dir.0).await.expect("second");

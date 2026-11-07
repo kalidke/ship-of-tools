@@ -112,11 +112,6 @@ pub(crate) fn ts_key(ts: &Ts) -> (u128, u32) {
     (secs.parse().unwrap_or(0), frac.parse().unwrap_or(0))
 }
 
-/// The one total order on validated timestamps.
-pub fn ts_cmp(a: &Ts, b: &Ts) -> std::cmp::Ordering {
-    ts_key(a).cmp(&ts_key(b))
-}
-
 pub(crate) fn valid_id(s: &str) -> bool {
     (1..=MAX_ID).contains(&s.len())
         && s.bytes()

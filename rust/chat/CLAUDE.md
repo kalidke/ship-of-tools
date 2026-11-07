@@ -166,7 +166,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `Api(wrong_workspace)` before serving, and the lock is released. `stop(within)` is bounded and final: the signal, a join
    within `within`, then abort and await; a second call returns at once, and `api()` is `Stopped` and every handle already taken answers `Closed` (the API itself is closed, before the socket is
    signaled) from the moment a stop begins; only the call that began the stop waits for the listener, any other returns at once;
-   a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until `Watches::reconcile` clears it through `Service::reconciled`; `Service::gap` is the value to read, and both answer nothing once a stop has begun),
+   a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until `Watches::reconcile` clears it through `Service::reconciled`; `Service::gap` and `Service::take` are the values to read, and all three answer nothing once a stop has begun),
    `Stopping` or `Stopped`. A service holds three things: the workspace lock, its phase, and the API's closed state (set when a stop begins, never cleared, seen by every handle). A stop whose caller stops waiting (its future is dropped, as lifecycle's 1 s retirement bound does) leaves that service at `Stopping` for good, not `Stopped`: every handle answers `Closed` and the task is aborted, so the lock frees when the runtime drops the task and a `start` right after may wait platform's short retry; nothing may poll for `Stopped` after cancelling. A service refused or never started has no value, its state is `start`'s error. The error codes are
    the existing ones plus `held`, `lock`, `stopped`, and `closed`, which a handle answers once its service has begun to stop. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
    a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another and freed when the
@@ -181,14 +181,12 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
 23. **Watching cannot lose the snapshot/event overlap silently (M5).** `Watches` is a model with no task and no call,
    one per `Service` (two against one service could clear each other's gap, and nothing here enforces it); its caller
    (the wire and daemon landings, which also hand out `Socket::next`, not yet exposed by `Service`; until then the
-   tests) feeds it the socket's events (`apply`), the gap (`sync(Service::gap())`) and each snapshot's answer. The
-   caller's order is fixed: apply every event the socket holds, then `sync`, then `begin`, then keep applying. The model
-   cannot tell an event queued before `begin` from a live one, and one applied after `begin` wins over a newer snapshot,
-   so the order is the record, not a check. A channel is registered (`watch`) before its snapshot is begun (`begin`,
+   tests) feeds it the socket's events (`apply`, `sync(Service::gap())`) and each snapshot's answer. A channel is registered (`watch`) before its snapshot is begun (`begin`,
    which returns a ticket), so no event falls between them. While the snapshot is pending, live changes go into an
    overlay of at most 128, applied after the snapshot in order: an edit or delete seen live wins over the snapshot's
    older content, a message the snapshot lacks is kept, and a new message never replaces one held. An edit of a message
-   not held is never added (it is older than the page; a newer one missed would have been a gap), and a delete of one
+   not held is never added (it rests on the socket delivering a message's new event before its edits, which B2e
+   checks against Slack; it is older than the page; a newer one missed would have been a gap), and a delete of one
    never held is a no-op. An overlay past its bound is dropped and its snapshot refused (`Resync`, the channel `Needed`,
    nothing kept from it). Every gap, every hello included, makes every complete watch `Needed`, and a snapshot is
    accepted only when no gap newer than the one known when it began has been seen, so a gap latched while one is
@@ -199,7 +197,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    (`reconcile(|g| service.reconciled(g))`) only when every watch that exists is `Complete`, hence resynced from a
    snapshot begun after that gap was read, and the socket refuses it when anything was lost since; with nothing watched
    it clears at once. The set is the watches today, and B3's mail joins it. One total order on timestamps
-   (`normalize::ts_cmp`, also `Bounds`'): numeric on the validated form, so `9.000000` precedes `10.000000` and
+   (`normalize::ts_key`, also `Bounds`'): numeric on the validated form, so `9.000000` precedes `10.000000` and
    `007.000000` is `7.000000`, one message. Bounds: 32 channels, 100 messages a channel (the oldest leave), 128 overlay
    changes, a channel id of at most 64 characters; the worst case is 32 x (100 + 128) x 32 KiB, about 228 MiB. Limits:
    "complete" is the latest page of history (at most 20 messages, `Page`) plus every change since, never older
@@ -207,13 +205,19 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    neither kept from a snapshot nor applied live (a parent's reply count is not tracked); a snapshot nobody answers
    leaves its channel `Pending`, so the caller answers every ticket with `loaded` or `failed`; one watch that can never
    complete (a channel the bot cannot read) keeps the gap, so the caller unwatches it; a gap newer than the model's,
-   not yet synced, is seen only at the next `sync`; a held record keeps the spelling of its first timestamp.
+   not yet synced, is seen only at the next `sync`.
+   **A snapshot's order is not the caller's.** `Watches::begin(channel, Service::take())` takes the events pending in
+   the socket and the gap in force under one lock (`Socket::take`), syncs the gap, applies the events to the channels
+   and only then marks the channel pending, so an event queued before the snapshot never wins over it (applied after
+   `begin` it would, and the model cannot tell a queued old event from a live one). `loaded(.., Service::gap())` syncs
+   the gap read as the answer arrives, so a loss after the take, a burst included, refuses the snapshot (`Resync`) and
+   the gap does not clear. A caller that applies a pre-`begin` event after `begin` by its own path loses that protection.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
 
 ## Owns
-`normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_cmp` and the bound constants. `http.rs`: `Http`,
+`normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key` and the bound constants. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
 `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the bound and deadline constants. `socket.rs`: `Socket`,
@@ -290,7 +294,7 @@ Paths are under `rust/chat/src/`.
 | 20 | websocket bounds and destinations | `socket_tests.rs`: `a_message_over_one_mib_is_refused_before_it_is_read_whole` (one byte over is not delivered, exactly the bound is), `a_foreign_websocket_url_fails_visibly_and_leaks_nothing` (also eight spellings refused by `Http::websocket`) |
 | 21 | configuration (M1, M2, C14's load half) | `config_tests.rs`: `mapping_refuses_aliases_duplicates_and_inert_anchor`, `resolve_explains_unmapped_invalid_and_disabled_delivery`, `a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load`, `every_refusal_has_an_input_a_code_a_place_and_its_own_explanation` (a row per `ConfigError` variant, the boundaries, the two file names), `a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value`, `loading_the_configuration_opens_no_secret_file` (an observing reader), `the_real_read_takes_a_regular_file_up_to_the_cap_and_nothing_else`, `a_planted_fifo_or_device_is_refused_without_a_wait` (the read runs on a thread with a 10 s guard that only a failing read reaches), `the_files_are_named_in_platforms_config_folder` |
 | 22 | one listener (C14's running half) | `service_tests.rs`: `duplicate_workspace_or_app_has_one_listener` (a second service in this process: `Held`, no call, no socket; start after stop), `a_token_for_another_workspace_is_refused_before_serving`, `stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener` (a peer that ignores close; the lock held while stopping, free after), `a_handle_kept_across_stop_is_refused_by_every_call`, `the_lock_is_dropped_with_the_task_before_stop_returns` (the abort is awaited), `a_lock_that_cannot_be_made_is_not_held_and_the_codes_are_fixed`, `a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped`, `a_stop_before_the_socket_connected_returns`, `a_dropped_service_releases_the_lock_only_with_its_listener`, `a_killed_holder_leaves_the_workspace_free` (a second process; SIGKILL), `a_child_started_by_the_daemon_does_not_keep_the_lock` (Unix only; relies on platform's close-on-exec, which no chat mutation reaches) |
-| 23 | watching (M5) | `watch_tests.rs`: `watch_snapshot_overlap_and_lag_resynchronize` (live edit, delete and add during a snapshot; a new message never replaces; the overlay at its bound and one past it), `a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_then` (a gap pending, a second gap during a resync, a refused clear, the value given), `a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync`, `events_nobody_keeps_and_answers_nobody_wants` (an unwatched channel, replies, an unwatch and a re-watch during a snapshot, a failed snapshot, an old page's edit and an unheld delete), `syncing_a_gap_already_known_keeps_a_complete_watch`, `a_snapshot_keeps_only_this_channels_top_level_messages`, `events_applied_before_begin_are_replaced_by_the_snapshot`, `timestamps_order_numerically_on_validated_values`, `the_watch_is_bounded_in_channels_ids_and_messages`; `service_tests.rs`: `the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing`, `a_watch_that_outlives_its_service_does_not_know_the_next_services_first_gap` |
+| 23 | watching (M5) | `watch_tests.rs`: `watch_snapshot_overlap_and_lag_resynchronize` (live edit, delete and add during a snapshot; a new message never replaces; the overlay at its bound and one past it), `a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_then` (a gap pending, a second gap during a resync, a refused clear, the value given), `a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync`, `events_nobody_keeps_and_answers_nobody_wants` (an unwatched channel, replies, an unwatch and a re-watch during a snapshot, a failed snapshot, an old page's edit and an unheld delete), `syncing_a_gap_already_known_keeps_a_complete_watch`, `a_snapshot_replaces_what_is_held_and_a_queued_event_never_wins_over_it`, `a_burst_after_the_events_were_taken_refuses_the_snapshot`, `a_snapshot_keeps_only_this_channels_top_level_messages`, `timestamps_order_numerically_on_validated_values`, `the_watch_is_bounded_in_channels_ids_and_messages`; `service_tests.rs`: `the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing`, `a_watch_that_outlives_its_service_does_not_know_the_next_services_first_gap` |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.

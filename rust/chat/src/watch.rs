@@ -5,10 +5,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use sot_protocol::chat::{ChatRecord, Ts};
+use sot_protocol::chat::ChatRecord;
 
 use crate::normalize::{ts_key, valid_id, Normalized};
-use crate::socket::Gap;
+use crate::socket::{Gap, Taken};
 
 /// Channels watched at once.
 pub const MAX_CHANNELS: usize = 32;
@@ -18,10 +18,6 @@ pub const MAX_KEPT: usize = 100;
 pub const MAX_OVERLAY: usize = 128;
 
 type Key = (u128, u32);
-
-fn key(ts: &Ts) -> Key {
-    ts_key(ts)
-}
 
 /// Why a channel could not be watched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,7 +73,7 @@ impl Channel {
                 self.messages.remove(&k);
             }
             Change::Put { record, edited } => {
-                let k = key(&record.ts);
+                let k = ts_key(&record.ts);
                 if edited {
                     // An edit of a message not held is not added: it is older than the page, and a newer one
                     // missed would have been a gap.
@@ -160,11 +156,15 @@ impl Watches {
         }
     }
 
-    /// Begin a channel's snapshot, after the channel was registered. The caller first applies every event the socket
-    /// holds (the model cannot tell a queued old event from a live one, and applied after `begin` it would win over a
-    /// newer snapshot), then `sync`s, then begins. The ticket goes back with the answer; `None` when the channel is
-    /// unwatched or its snapshot is already pending or done.
-    pub fn begin(&mut self, channel: &str) -> Option<u64> {
+    /// Begin a channel's snapshot, after the channel was registered. `taken` is `Service::take()`: its gap is known
+    /// and its events are applied here, before the channel goes pending, so an event queued before the snapshot never
+    /// wins over it and no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
+    /// unwatched or its snapshot is already pending or done (the events are applied either way).
+    pub fn begin(&mut self, channel: &str, taken: Taken) -> Option<u64> {
+        self.sync(taken.gap);
+        for event in &taken.events {
+            self.apply(event);
+        }
         let read = self.gap;
         let c = self.channels.get_mut(channel).filter(|c| matches!(c.phase, Phase::Needed))?;
         self.tickets += 1;
@@ -172,9 +172,11 @@ impl Watches {
         Some(self.tickets)
     }
 
-    /// The snapshot is the channel's latest page. Only its top-level messages of this channel are kept. The overlay is
+    /// The snapshot is the channel's latest page; `now` is the socket's gap read as it arrives (`Service::gap()`), so a
+    /// loss since `begin` refuses it. Only its top-level messages of this channel are kept. The overlay is
     /// applied after it, so a live edit or delete wins over the snapshot's older content.
-    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>) -> Loaded {
+    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, now: Option<Gap>) -> Loaded {
+        self.sync(now);
         let gap = self.gap;
         let Some(c) = self.channels.get_mut(channel) else { return Loaded::Stale };
         let Phase::Pending { ticket: t, read, overlay, overflow } = &mut c.phase else { return Loaded::Stale };
@@ -186,8 +188,8 @@ impl Watches {
             return Loaded::Resync;
         }
         let overlay = std::mem::take(overlay);
-        let top = |r: &ChatRecord| r.channel == channel && key(&r.thread_ts) == key(&r.ts);
-        c.messages = records.into_iter().filter(top).map(|r| (key(&r.ts), r)).collect();
+        let top = |r: &ChatRecord| r.channel == channel && ts_key(&r.thread_ts) == ts_key(&r.ts);
+        c.messages = records.into_iter().filter(top).map(|r| (ts_key(&r.ts), r)).collect();
         c.trim();
         for change in overlay {
             c.apply(change);
@@ -210,13 +212,13 @@ impl Watches {
     pub fn apply(&mut self, event: &Normalized) -> bool {
         let (channel, change) = match event {
             Normalized::New(r) | Normalized::Edited(r) => {
-                if key(&r.thread_ts) != key(&r.ts) {
+                if ts_key(&r.thread_ts) != ts_key(&r.ts) {
                     return false;
                 }
                 let edited = matches!(event, Normalized::Edited(_));
                 (&r.channel, Change::Put { record: r.clone(), edited })
             }
-            Normalized::Deleted { channel, ts, .. } => (channel, Change::Delete(key(ts))),
+            Normalized::Deleted { channel, ts, .. } => (channel, Change::Delete(ts_key(ts))),
             _ => return false,
         };
         let Some(c) = self.channels.get_mut(channel) else { return false };

@@ -13,7 +13,7 @@ use sot_platform::Error as PlatformError;
 use crate::api::{Api, ApiError};
 use crate::config::{Config, Credentials};
 use crate::http::{Http, Secret};
-use crate::socket::{self, Gap, Socket, SocketError, Timing, BASE};
+use crate::socket::{self, Gap, Socket, Taken, SocketError, Timing, BASE};
 
 /// Why a service did not start, or why a call was refused. Fixed codes: no path, token or Slack text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +144,14 @@ impl Service {
         match &*self.phase.lock().unwrap() {
             Phase::Running(s) => s.gap(),
             _ => None,
+        }
+    }
+
+    /// `Socket::take` (empty once stopped), for `Watches::begin`.
+    pub fn take(&self) -> Taken {
+        match &*self.phase.lock().unwrap() {
+            Phase::Running(s) => s.take(),
+            _ => Taken::default(),
         }
     }
 

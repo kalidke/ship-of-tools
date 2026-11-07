@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 
 use sot_protocol::chat::{ChatAuthor, ChatRecord, Origin, Ts};
 
-use crate::normalize::{ts_cmp, Normalized};
-use crate::socket::{Gap, GapCause};
+use crate::normalize::{ts_key, Normalized};
+use crate::socket::{Gap, GapCause, Taken};
 use crate::watch::{
     Loaded, State, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
 };
@@ -62,12 +62,12 @@ fn gap(seq: u64) -> Gap {
 /// A watched channel with its snapshot begun.
 fn pending(w: &mut Watches) -> u64 {
     w.watch(C).unwrap();
-    w.begin(C).unwrap()
+    w.begin(C, Taken::default()).unwrap()
 }
 
 #[test]
 fn timestamps_order_numerically_on_validated_values() {
-    let cmp = |a: &str, b: &str| ts_cmp(&ts(a), &ts(b));
+    let cmp = |a: &str, b: &str| ts_key(&ts(a)).cmp(&ts_key(&ts(b)));
     // A string order puts "10" before "9".
     assert_eq!(cmp("9.000000", "10.000000"), Ordering::Less);
     // Leading zeros are one value, and so one message.
@@ -85,7 +85,7 @@ fn timestamps_order_numerically_on_validated_values() {
     // The model keeps one message for two spellings of one timestamp.
     let mut w = Watches::new();
     let t = pending(&mut w);
-    assert_eq!(w.loaded(C, t, vec![rec("007.000000", "old")]), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, vec![rec("007.000000", "old")], None), Loaded::Complete);
     assert!(w.apply(&edited("7.000000", "new")));
     assert_eq!(texts(&w, C), ["new"]);
 }
@@ -101,7 +101,7 @@ fn watch_snapshot_overlap_and_lag_resynchronize() {
     assert!(w.apply(&new("4.000000", "arrived")));
     // The snapshot is older than all three.
     let snapshot = vec![rec("1.000000", "stale"), rec("2.000000", "deleted"), rec("3.000000", "kept")];
-    assert_eq!(w.loaded(C, t, snapshot), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, snapshot, None), Loaded::Complete);
     assert_eq!(texts(&w, C), ["edited", "kept", "arrived"]);
     assert_eq!(w.state(C), Some(State::Complete));
 
@@ -115,13 +115,13 @@ fn watch_snapshot_overlap_and_lag_resynchronize() {
     for n in 0..=MAX_OVERLAY {
         assert!(w.apply(&edited(&format!("{}.000000", n + 1), "x")));
     }
-    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "snap")]), Loaded::Resync);
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "snap")], None), Loaded::Resync);
     assert_eq!(w.state(C), Some(State::Needed));
     assert!(w.messages(C).is_empty(), "a refused snapshot kept content");
     // The next snapshot, with room in its overlay, completes.
-    let t2 = w.begin(C).unwrap();
+    let t2 = w.begin(C, Taken::default()).unwrap();
     assert!(w.apply(&edited("1.000000", "live")));
-    assert_eq!(w.loaded(C, t2, vec![rec("1.000000", "snap")]), Loaded::Complete);
+    assert_eq!(w.loaded(C, t2, vec![rec("1.000000", "snap")], None), Loaded::Complete);
     assert_eq!(texts(&w, C), ["live"]);
     // Exactly the bound fits.
     let mut w = Watches::new();
@@ -129,7 +129,7 @@ fn watch_snapshot_overlap_and_lag_resynchronize() {
     for n in 0..MAX_OVERLAY {
         w.apply(&new(&format!("{}.000000", n + 1), "x"));
     }
-    assert_eq!(w.loaded(C, t, vec![]), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, vec![], None), Loaded::Complete);
 }
 
 #[test]
@@ -138,19 +138,19 @@ fn a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_the
     w.watch(C).unwrap();
     w.watch("C0BBBB").unwrap();
     w.sync(Some(gap(1)));
-    let (a, b) = (w.begin(C).unwrap(), w.begin("C0BBBB").unwrap());
-    assert_eq!(w.loaded(C, a, vec![rec("1.000000", "a")]), Loaded::Complete);
+    let (a, b) = (w.begin(C, Taken::default()).unwrap(), w.begin("C0BBBB", Taken::default()).unwrap());
+    assert_eq!(w.loaded(C, a, vec![rec("1.000000", "a")], None), Loaded::Complete);
     // One watch is still pending: the gap is not cleared, and `clear` is not asked.
     assert!(!w.reconcile(|_| panic!("asked to clear with a watch pending")));
     // A second gap during the resync: the pending snapshot began before it, and so does the finished one.
     w.sync(Some(gap(2)));
     assert_eq!(w.state(C), Some(State::Needed));
-    assert_eq!(w.loaded("C0BBBB", b, vec![]), Loaded::Resync);
+    assert_eq!(w.loaded("C0BBBB", b, vec![], None), Loaded::Resync);
     assert_eq!(w.state("C0BBBB"), Some(State::Needed));
     // Resynced from snapshots begun after the second gap: the gap clears, once, with the value read.
-    let (a, b) = (w.begin(C).unwrap(), w.begin("C0BBBB").unwrap());
-    assert_eq!(w.loaded(C, a, vec![]), Loaded::Complete);
-    assert_eq!(w.loaded("C0BBBB", b, vec![]), Loaded::Complete);
+    let (a, b) = (w.begin(C, Taken::default()).unwrap(), w.begin("C0BBBB", Taken::default()).unwrap());
+    assert_eq!(w.loaded(C, a, vec![], None), Loaded::Complete);
+    assert_eq!(w.loaded("C0BBBB", b, vec![], None), Loaded::Complete);
     let mut given = None;
     assert!(w.reconcile(|g| {
         given = Some(g);
@@ -160,18 +160,18 @@ fn a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_the
     assert!(!w.reconcile(|_| panic!("a cleared gap is cleared again")));
     // A loss during the resync, seen by the socket but not yet by the model: `clear` refuses and the gap stays.
     w.sync(Some(gap(3)));
-    let a = w.begin(C).unwrap();
-    w.loaded(C, a, vec![]);
-    let b = w.begin("C0BBBB").unwrap();
-    w.loaded("C0BBBB", b, vec![]);
+    let a = w.begin(C, Taken::default()).unwrap();
+    w.loaded(C, a, vec![], None);
+    let b = w.begin("C0BBBB", Taken::default()).unwrap();
+    w.loaded("C0BBBB", b, vec![], None);
     assert!(!w.reconcile(|_| false));
     // The loss is seen: every watch owes a snapshot again.
     w.sync(Some(gap(4)));
     assert_eq!((w.state(C), w.state("C0BBBB")), (Some(State::Needed), Some(State::Needed)));
     // A gap latched while a snapshot is pending: the answer is refused.
-    let a = w.begin(C).unwrap();
+    let a = w.begin(C, Taken::default()).unwrap();
     w.sync(Some(gap(5)));
-    assert_eq!(w.loaded(C, a, vec![rec("1.000000", "x")]), Loaded::Resync);
+    assert_eq!(w.loaded(C, a, vec![rec("1.000000", "x")], None), Loaded::Resync);
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync(
     w.sync(Some(gap(1)));
     assert!(w.reconcile(|g| g == gap(1)));
     let t = pending(&mut w);
-    assert_eq!(w.loaded(C, t, vec![]), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, vec![], None), Loaded::Complete);
 }
 
 #[test]
@@ -195,23 +195,23 @@ fn events_nobody_keeps_and_answers_nobody_wants() {
     assert!(!w.apply(&Normalized::Unsupported));
     // An unwatch during the snapshot: its answer is stale, even when the channel is watched again.
     w.unwatch(C);
-    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "x")]), Loaded::Stale);
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "x")], None), Loaded::Stale);
     w.watch(C).unwrap();
     assert!(w.messages(C).is_empty());
-    let t2 = w.begin(C).unwrap();
-    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "x")]), Loaded::Stale);
+    let t2 = w.begin(C, Taken::default()).unwrap();
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "x")], None), Loaded::Stale);
     assert_eq!(w.state(C), Some(State::Pending));
     // A snapshot that fails, or whose service stopped, leaves a new one owed; a late failure of an old one does not.
     w.failed(C, t);
     assert_eq!(w.state(C), Some(State::Pending));
     w.failed(C, t2);
     assert_eq!(w.state(C), Some(State::Needed));
-    assert_eq!(w.loaded(C, t2, vec![]), Loaded::Stale);
-    let t3 = w.begin(C).unwrap();
-    assert_eq!(w.begin(C), None, "a second snapshot begun over a pending one");
+    assert_eq!(w.loaded(C, t2, vec![], None), Loaded::Stale);
+    let t3 = w.begin(C, Taken::default()).unwrap();
+    assert_eq!(w.begin(C, Taken::default()), None, "a second snapshot begun over a pending one");
     // A delete of a message never held, and an edit of one older than the page, change nothing.
     let page: Vec<_> = (10..13).map(|n| rec(&format!("{n}.000000"), "p")).collect();
-    assert_eq!(w.loaded(C, t3, page), Loaded::Complete);
+    assert_eq!(w.loaded(C, t3, page, None), Loaded::Complete);
     assert!(w.apply(&deleted("11.500000")));
     assert!(w.apply(&edited("5.000000", "older")));
     assert_eq!(texts(&w, C), ["p", "p", "p"]);
@@ -236,7 +236,7 @@ fn the_watch_is_bounded_in_channels_ids_and_messages() {
     let mut w = Watches::new();
     let t = pending(&mut w);
     let page: Vec<_> = (1..=MAX_KEPT + 5).map(|n| rec(&format!("{n}.000000"), &n.to_string())).collect();
-    assert_eq!(w.loaded(C, t, page), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, page, None), Loaded::Complete);
     assert_eq!(w.messages(C).len(), MAX_KEPT);
     assert_eq!(w.messages(C)[0].text, "6");
     assert!(w.apply(&edited("2.000000", "back")));
@@ -256,7 +256,7 @@ fn a_snapshot_keeps_only_this_channels_top_level_messages() {
     let mut w = Watches::new();
     let t = pending(&mut w);
     let page = vec![rec("1.000000", "top"), rec_in(C, "3.000000", "1.000000", "broadcast"), rec_in("C0BBBB", "2.000000", "2.000000", "other")];
-    assert_eq!(w.loaded(C, t, page), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, page, None), Loaded::Complete);
     assert_eq!(texts(&w, C), ["top"]);
     // A reply is as absent live as it is in the snapshot.
     assert!(!w.apply(&Normalized::Edited(rec_in(C, "3.000000", "1.000000", "edited"))));
@@ -267,20 +267,39 @@ fn syncing_a_gap_already_known_keeps_a_complete_watch() {
     let mut w = Watches::new();
     w.sync(Some(gap(1)));
     let t = pending(&mut w);
-    assert_eq!(w.loaded(C, t, vec![]), Loaded::Complete);
+    assert_eq!(w.loaded(C, t, vec![], None), Loaded::Complete);
     w.sync(Some(gap(1)));
     assert_eq!(w.state(C), Some(State::Complete));
 }
 
 #[test]
-fn events_applied_before_begin_are_replaced_by_the_snapshot() {
-    // The caller's order: apply what the socket holds, sync, then begin. Older queued events then lose to the snapshot.
+fn a_snapshot_replaces_what_is_held_and_a_queued_event_never_wins_over_it() {
+    // A message deleted during a gap leaves the model: the snapshot replaces, it does not merge.
     let mut w = Watches::new();
-    w.watch(C).unwrap();
+    let t = pending(&mut w);
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "a"), rec("2.000000", "b")], None), Loaded::Complete);
     w.sync(Some(gap(1)));
-    assert!(w.apply(&edited("1.000000", "queued, older")));
-    let t = w.begin(C).unwrap();
-    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "newer")]), Loaded::Complete);
-    assert_eq!(texts(&w, C), ["newer"]);
-    assert!(w.reconcile(|g| g == gap(1)));
+    let t = w.begin(C, Taken::default()).unwrap();
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "a2")], None), Loaded::Complete);
+    assert_eq!(texts(&w, C), ["a2"]);
+}
+
+#[test]
+fn a_burst_after_the_events_were_taken_refuses_the_snapshot() {
+    // The events were queued before the gap's loss; a newer edit was dropped after the take. The snapshot holds it.
+    let mut w = Watches::new();
+    let t = pending(&mut w);
+    w.loaded(C, t, vec![rec("1.000000", "v0")], None);
+    let taken = Taken { gap: Some(gap(1)), events: vec![edited("1.000000", "stale")] };
+    let t = w.begin(C, taken).unwrap();
+    assert_eq!(texts(&w, C), ["stale"], "a taken event was not applied before the snapshot began");
+    // A loss after the take is a gap the model has not seen: the fresh read at `loaded` finds it.
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "fresh")], Some(gap(2))), Loaded::Resync);
+    assert_eq!(w.state(C), Some(State::Needed));
+    assert!(!w.reconcile(|_| panic!("a gap was cleared over a refused snapshot")));
+    // Without a loss the same snapshot completes, and the taken event is older than it.
+    let taken = Taken { gap: Some(gap(2)), events: vec![edited("1.000000", "stale")] };
+    let t = w.begin(C, taken).unwrap();
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "fresh")], Some(gap(2))), Loaded::Complete);
+    assert_eq!(texts(&w, C), ["fresh"]);
 }

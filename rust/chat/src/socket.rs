@@ -139,6 +139,13 @@ impl Gap {
     }
 }
 
+/// What `Socket::take` handed over.
+#[derive(Debug, Default)]
+pub struct Taken {
+    pub gap: Option<Gap>,
+    pub events: Vec<Normalized>,
+}
+
 /// The listener as the caller sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
@@ -266,6 +273,14 @@ impl Socket {
                 .await
                 .ok()?;
         }
+    }
+
+    /// Every pending event and the gap in force, read under one lock: an event that arrives or is lost after this
+    /// call is newer than the gap returned, and a loss after it is a gap this value does not name.
+    pub fn take(&self) -> Taken {
+        let mut s = self.shared.state.lock().unwrap();
+        s.bytes = 0;
+        Taken { gap: s.gap, events: s.queue.drain(..).map(|(e, _)| e).collect() }
     }
 
     /// The reconciliation requirement, when anything was lost since it was last cleared.
