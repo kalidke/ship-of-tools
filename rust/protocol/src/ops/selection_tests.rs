@@ -38,12 +38,14 @@ fn selection_set_round_trips_and_the_digest_is_fnv1a_64() {
         assert_eq!(serde_json::to_value(res.clone()).unwrap(), json!({"state": s}));
         assert_eq!(serde_json::from_value::<SelectionSetRes>(json!({"state": s})).unwrap(), res);
     }
-    // the published FNV-1a 64 test vectors, and a multi-byte and a multi-line text
+    // the published FNV-1a 64 vectors, then multi-byte and LF-joined texts from an independent implementation
     assert_eq!(selection_digest(""), 0xcbf2_9ce4_8422_2325);
     assert_eq!(selection_digest("a"), 0xaf63_dc4c_8601_ec8c);
     assert_eq!(selection_digest("foobar"), 0x8594_4171_f739_67e8);
     assert_ne!(selection_digest("a\nb"), selection_digest("a\r\nb"));
-    assert_eq!(crate::selection_digest("é"), selection_digest("é"));
+    assert_eq!(crate::selection_digest("é"), 0x0ac2_1707_b718_1e01);
+    assert_eq!(selection_digest("a\nb"), 0xe5be_b119_0415_e670);
+    assert_eq!(selection_digest("日本\n語"), 0xf969_a301_a4d5_b1d7);
 }
 
 #[test]
