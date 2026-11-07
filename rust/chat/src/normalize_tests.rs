@@ -449,3 +449,9 @@ fn an_unreadable_bot_id_is_still_a_bot() {
     assert!(r.omitted);
     assert_eq!(r.origin, Origin::Bot);
 }
+
+#[test]
+fn chat_and_wire_agree_on_the_numbers_they_share() {
+    assert_eq!(crate::watch::MAX_CHANNELS, sot_protocol::ops::MAX_WATCHED);
+    assert_eq!(usize::from(crate::api::MAX_PAGE) + 1, sot_protocol::ops::MAX_PAGE_RECORDS);
+}

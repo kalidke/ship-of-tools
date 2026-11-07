@@ -5,14 +5,21 @@
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
-/// The record's bounds, enforced when it is decoded (a decoder holds nothing past them): ids, text, names, MIME and
-/// the file list. `sot-chat` builds a record within the same numbers.
+/// The record's bounds, the one copy: a decoder enforces them (and holds nothing past them) and `sot-chat` builds a
+/// record within them, by using these constants. A record's encoded size is also held to `MAX_RECORD_BYTES` by
+/// `sot-chat`, not by the decoder: the per-field bounds alone allow about 72 KiB.
+pub const MAX_RECORD_BYTES: usize = 32 * 1024;
 pub const MAX_ID: usize = 64;
 pub const MAX_TEXT: usize = 8 * 1024;
 pub const MAX_FILES: usize = 8;
 pub const MAX_NAME: usize = 160;
 pub const MAX_FILENAME: usize = 256;
 pub const MAX_MIME: usize = 128;
+
+/// An id as Slack and this app spell one: 1 to `MAX_ID` ASCII letters, digits, `_` and `-`.
+pub fn is_id(s: &str) -> bool {
+    (1..=MAX_ID).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
 
 /// `deserialize_with` for a string of at most `N` bytes.
 pub(crate) fn within<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<String, D::Error> {
@@ -23,7 +30,7 @@ pub(crate) fn within<'de, D: Deserializer<'de>, const N: usize>(d: D) -> Result<
     Ok(s)
 }
 
-/// `deserialize_with` for a list of at most `N` items; the item after the `N`th is refused unread.
+/// `deserialize_with` for a list of at most `N` items; the item after the `N`th is decoded, then refused.
 pub(crate) fn at_most<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: usize>(d: D) -> Result<Vec<T>, D::Error> {
     struct Cap<T, const N: usize>(std::marker::PhantomData<T>);
     impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for Cap<T, N> {

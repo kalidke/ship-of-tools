@@ -4,14 +4,8 @@
 use serde_json::{Map, Value};
 use sot_protocol::chat::{ChatAuthor, ChatFile, ChatRecord, Origin, Ts};
 
-/// 32 KiB of encoded JSON per record.
-pub const MAX_RECORD_BYTES: usize = 32 * 1024;
-pub const MAX_TEXT: usize = 8 * 1024;
-pub const MAX_FILES: usize = 8;
-pub const MAX_ID: usize = 64;
-pub const MAX_NAME: usize = 160;
-pub const MAX_FILENAME: usize = 256;
-pub const MAX_MIME: usize = 128;
+pub use sot_protocol::chat::{MAX_FILENAME, MAX_FILES, MAX_ID, MAX_MIME, MAX_NAME, MAX_RECORD_BYTES, MAX_TEXT};
+pub(crate) use sot_protocol::chat::is_id as valid_id;
 
 /// What the caller knows that the message does not. The own-app identity is the caller's (from `auth.test`): an own
 /// post is decided by it alone, never by text or a username a member can type.
@@ -110,12 +104,6 @@ fn wrap(r: Result<ChatRecord, Unrepresentable>, f: fn(ChatRecord) -> Normalized)
 pub(crate) fn ts_key(ts: &Ts) -> (u128, u32) {
     let (secs, frac) = ts.as_str().split_once('.').unwrap_or(("0", "0"));
     (secs.parse().unwrap_or(0), frac.parse().unwrap_or(0))
-}
-
-pub(crate) fn valid_id(s: &str) -> bool {
-    (1..=MAX_ID).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// `s` cut to at most `max` bytes on a character boundary, and whether it was cut.

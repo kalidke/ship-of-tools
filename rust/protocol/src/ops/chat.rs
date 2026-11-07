@@ -1,14 +1,18 @@
 // the project chat's operations and events (B2d): what the window and the daemon say about one watched channel
 
 use super::*;
-use crate::chat::{at_most, within, ChatRecord, Ts, MAX_ID, MAX_NAME, MAX_TEXT};
+use crate::chat::{at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_NAME, MAX_TEXT};
 
-/// The most records one page, or one `chat.changed` event, carries: 20 and a thread's parent.
-pub const MAX_PAGE_RECORDS: usize = 21;
+/// The most messages a history page asks for or holds.
+pub const MAX_PAGE: u16 = 20;
+/// The most records one page, or one `chat.changed` event, carries: a page and a thread's parent.
+pub const MAX_PAGE_RECORDS: usize = MAX_PAGE as usize + 1;
 /// A history cursor; the daemon binds it to its whole query.
 pub const MAX_CURSOR: usize = 1024;
 /// The most channels watched at once (the watch model's bound), so the most a status can name.
 pub const MAX_WATCHED: usize = 32;
+/// The longest wait a `limited` post reply can name, in seconds.
+pub const MAX_RETRY_SECS: u64 = 3600;
 const MAX_ROW: usize = 256;
 
 /// A channel id: 1 to 64 ASCII letters, digits, `_` and `-`.
@@ -19,8 +23,7 @@ pub struct ChatChannel(String);
 impl TryFrom<String> for ChatChannel {
     type Error = String;
     fn try_from(s: String) -> Result<Self, String> {
-        let ok = (1..=MAX_ID).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-        if ok { Ok(ChatChannel(s)) } else { Err("not a channel id".to_string()) }
+        if is_id(&s) { Ok(ChatChannel(s)) } else { Err("not a channel id".to_string()) }
     }
 }
 
@@ -39,7 +42,6 @@ impl ChatChannel {
 /// What a request acts on: the canonical row and the (Slack workspace, channel) pair the caller expects it to map to.
 /// The daemon rechecks both before acting; a mismatch is `stale_row` or `stale_mapping`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatTarget {
     #[serde(deserialize_with = "within::<_, MAX_ROW>")]
     pub row: String,
@@ -70,12 +72,13 @@ pub enum ChatCode {
 /// The body of a refusal, as a reader decodes it (`error`, the fixed text, is ignored).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRefusal {
-    pub code: ChatCode,
+    /// Absent in an older daemon's unknown-op refusal (`{error}` alone), the answer to a chat op it does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<ChatCode>,
 }
 
 /// `chat.resolve`: what is mapped to this row. The only request that names no expected pair.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatResolveReq {
     #[serde(deserialize_with = "within::<_, MAX_ROW>")]
     pub row: String,
@@ -97,7 +100,6 @@ pub enum ChatResolveRes {
 
 /// `chat.watch`: register the channel and begin its snapshot. Also the request to resync after a status asks for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatWatchReq {
     pub target: ChatTarget,
 }
@@ -118,7 +120,6 @@ pub struct ChatWatchRes {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatUnwatchReq {
     pub target: ChatTarget,
 }
@@ -139,7 +140,6 @@ pub enum ChatUpper {
 /// `chat.history`: one page of the channel, or of the thread whose parent is `thread`. `after` is exclusive. `limit` is
 /// 1 to 20. `cursor` continues the page a reply named, and only under the same query.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatHistoryReq {
     pub target: ChatTarget,
     #[serde(default)]
@@ -156,7 +156,12 @@ pub struct ChatHistoryReq {
 
 fn page_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
     let n = u16::deserialize(d)?;
-    if (1..=20).contains(&n) { Ok(n) } else { Err(serde::de::Error::custom("limit is 1 to 20")) }
+    if (1..=MAX_PAGE).contains(&n) { Ok(n) } else { Err(serde::de::Error::custom("limit is 1 to 20")) }
+}
+
+fn retry_wait<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let n = u64::deserialize(d)?;
+    if n <= MAX_RETRY_SECS { Ok(n) } else { Err(serde::de::Error::custom("wait is at most an hour")) }
 }
 
 fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -187,7 +192,6 @@ pub enum ChatPostKind {
 
 /// `chat.post`: one message, submitted once and never resent. `name` is the author shown beside the app's name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatPostReq {
     pub target: ChatTarget,
     #[serde(default)]
@@ -206,7 +210,13 @@ pub struct ChatPostReq {
 pub enum ChatPostRes {
     Posted { ts: Ts },
     Refused { code: ChatCode },
-    Limited { retry_after_secs: u64, assumed: bool },
+    Limited {
+        #[serde(deserialize_with = "retry_wait")]
+        retry_after_secs: u64,
+        assumed: bool,
+    },
+    /// Also what a reader takes an outcome added later for: the post may exist, so it is never resent.
+    #[serde(other)]
     Unknown,
 }
 
@@ -230,6 +240,9 @@ pub enum ChatService {
     Running,
     Stopping,
     Stopped,
+    /// A phase added later: a reader treats it as not running and resyncs every watch.
+    #[serde(other)]
+    Other,
 }
 
 /// `chat.status` evt: the service's phase, whether a gap is open, and the watched channels that need a new snapshot

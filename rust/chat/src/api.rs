@@ -25,16 +25,13 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 pub const POST_DEADLINE: Duration = Duration::from_secs(30);
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
-/// A display page: up to 20 messages (a thread parent may make 21 records).
-pub const MAX_PAGE: u16 = 20;
-/// A wrapped continuation, bound to its whole query.
-pub const MAX_CURSOR: usize = 1024;
+pub use sot_protocol::ops::{MAX_CURSOR, MAX_PAGE};
 /// Author names kept; the oldest entry leaves first.
 pub const MAX_NAMES: usize = 1024;
 /// Reads wait this long after a rate limit whose retry header is missing or invalid.
 pub const ASSUMED_RETRY: Duration = Duration::from_secs(30);
 /// A hostile or mistaken retry header cannot silence reads longer than this.
-pub const MAX_RETRY: Duration = Duration::from_secs(3600);
+pub const MAX_RETRY: Duration = Duration::from_secs(sot_protocol::ops::MAX_RETRY_SECS);
 
 const BASE: &str = "https://slack.com/api/";
 const JSON: &str = "application/json; charset=utf-8";

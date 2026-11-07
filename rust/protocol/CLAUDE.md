@@ -93,8 +93,9 @@ name is in this crate's one op table.
     absent. `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
     refuse any other number of fraction digits, because Slack answers such a bound with an empty page and no error.
     Mechanism: a new type and no new op, so every existing payload and `PROTOCOL_VERSION` (4) are unchanged. Bounds, enforced on decode since the chat family (guarantee 12): ids 64 bytes, text 8 KiB, author name 160, file name 256,
-    MIME 128, eight files. Limit: the 32 KiB total is not checked as a sum (the per-field bounds keep a record far under it), and
-    what a cut field means (`truncated`) is `sot-chat`'s normalization; a record's unknown field is ignored (growth).
+    MIME 128, eight files. `sot-chat` uses these constants. Limit: the 32 KiB total (`MAX_RECORD_BYTES`) is not checked on decode (the per-field
+    bounds alone allow about 72 KiB); `sot-chat`'s normalization holds it, and a test pins that a page of 21 records of
+    32 KiB and a cursor fit the envelope. What a cut field means (`truncated`) is `sot-chat`'s normalization; a record's unknown field is ignored (growth).
     Tests `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`,
     `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`,
     `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode`.
@@ -109,16 +110,21 @@ name is in this crate's one op table.
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
-    first excess item); `upper` is `before` or `until`, never both; every timestamp is a `Ts`. A request refuses an unknown
-    field; a reply or event ignores one (guarantee 3's growth). The seven names are in `op_table!`, so `op::ALL` and the
+    first excess item); `upper` is `before` or `until`, never both; every timestamp is a `Ts`. Every payload, a request
+    included, ignores an unknown field, so guarantee 3's growth by defaulted fields holds both ways. Every enum a reader
+    could meet a new member of reads it safely: a `ChatCode` as `other`, a `service` as `other` (not running; resync every
+    watch), a post `outcome` as `unknown` (the post may exist; never resent). A `limited` wait is at most an hour
+    (`MAX_RETRY_SECS`). `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
     admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
     `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
-    stays 4; an older daemon answers a chat op as any unknown op. Limits: no handler yet (B2e, B2f); a duplicate JSON key reaches
-    a typed decoder only as text (`from_str` refuses it), while the frame codec reads a payload as a `Value`, where the last wins;
+    stays 4; an older daemon answers a chat op as any unknown op. Limits: no handler yet (B2e, B2f); a duplicate JSON key in a frame's payload is not refused (the codec reads a
+    `Value`, where the last wins); `chat.status` names the channels that need a snapshot, and nothing yet says a watch became
+    complete (B2f decides the carrier); the watch count `MAX_WATCHED` is also `sot-chat`'s `watch::MAX_CHANNELS`, held equal by a test;
     a cursor is bounded here and bound to its query by `sot-chat`; `chat.fetch` and `chat.post_file` are B4's.
     Tests `ops/chat_tests.rs`: `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
-    `a_page_and_an_event_carry_records_that_round_trip`, `a_code_added_later_reads_as_other`,
-    `a_request_with_an_unknown_field_is_refused_and_a_reply_ignores_one`, `a_duplicate_key_is_refused_by_the_typed_decoder`,
+    `a_page_carries_records_that_round_trip`, `a_code_added_later_reads_as_other`,
+    `an_older_daemons_unknown_op_refusal_reads_as_a_refusal_with_no_code`, `a_phase_or_outcome_added_later_reads_as_the_safe_one`,
+    `a_wait_is_at_most_an_hour`, `a_legal_page_fits_the_envelope`,
     `a_number_where_a_string_belongs_is_refused`, `a_timestamp_with_the_wrong_digits_is_refused_in_a_request`,
     `both_upper_bounds_cannot_be_asked_for`, `a_limit_is_one_to_twenty`, `a_cursor_a_text_and_a_name_stop_at_their_bounds`,
     `a_target_names_a_real_channel_and_bounded_ids`, `a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds`.
