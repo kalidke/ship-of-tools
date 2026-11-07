@@ -160,20 +160,37 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    slash, de-verbatimed and in the system's letter case on Windows; a relative spelling or a folder that does not exist
    is unknown); then `Credentials::read`; then the lock folder (`<daemon state>/chat`, private); then registration with
    lifecycle's `retire::participants()`, made with the phase lock already held and kept until the start task is in
-   place, so a retirement that reaches `request_stop` after the registration finds the start and aborts it (refused
-   once retirement began, and then no start; pinned by
+   place, so a retirement that reaches `request_stop` after the registration finds the start and aborts it (pinned by
    `a_retirement_reaching_request_stop_between_register_and_starting_finds_the_start`, through a test-only hook in
-   lifecycle's `Registry`); then the start on a task, so boot never waits on Slack. A non-hub opens no chat file and
+   lifecycle's `Registry`, which pins the lock order; the refusal of a registration once retirement began, and then no
+   start, is pinned by `retirement_that_began_first_refuses_the_start`); then the start on a task, so boot never waits on Slack. A non-hub opens no chat file and
    registers nothing; a hub with no `chat.toml` is off (`Refused(Missing)`) and writes nothing; a malformed one opens no
    secret file. Every open goes through the one `Reader` passed to `begin`, and `begin` is the only caller of
    `Config::load` and `Credentials::read`: the status, its words, `resolve`, a stop and a wait read memory. The hub fact
    is read once. A daemon that stops being the hub after its start (the topology changes or vanishes) keeps its running
    service until it ends and opens no file again; a reload does not exist, and a start after a stop is a second `begin`
-   (a restart of the daemon in practice). A failed start is final until the daemon restarts, and `resolve` answers from
-   the file alone (a handler joins it with `status()`). Rows made after the start are not seen: a mapping to a folder no
+   (a restart of the daemon in practice). A failed start is final until the daemon restarts. **M3, `Chat::admit` and
+   `Chat::resolve`.** `Chat::service` is private: every action (`Action::ALL`: watch, unwatch, history, post, and a
+   watch's snapshot, each admitted again whenever it is made; B4's fetch and file post join the table) reaches the
+   service only through `admit`, which reads the registry's current entry for the row id at that moment (an exact
+   id, never a slug) and refuses: no running service (not the hub, no or refused `chat.toml`, no secrets, a failed,
+   starting, stopping or stopped service) as `unavailable`; a removed row, a row replaced under a new id, an id that
+   never existed, an empty one and a folder that no longer exists as `stale_row`; the inert anchor, and a folder the
+   file does not map, as `unmapped`; a folder mapped to another workspace or channel than the request expects, or an
+   expected channel the file does not hold, as `stale_mapping`. A new row in the same folder does not inherit a
+   request that named the old id, and a request naming the new id works. An unwatch needs only the running service: it
+   calls nothing, and refusing it for a stale row would leave the watch holding one of the bounded slots. The
+   mapping is the configuration loaded at start. The tests (`stale_row_or_mapping_cannot_post_or_fetch`,
+   `no_action_is_admitted_unless_the_service_runs`, `every_action_is_in_the_one_table`) prove a refusal by no service
+   being handed out, since the backend has no fake Slack. `resolve` answers `NotHub` for a non-hub, `StaleRow` for a
+   row that is gone and `Unmapped` for the anchor; otherwise the file's mapping in every service status, with
+   `delivers` only while the service runs (starting, failed, secrets missing, stopping and stopped show the mapping
+   and do not deliver) and `Invalid` for a refused `chat.toml`. Limit: the check is at admission and holds no rows
+   lock across a Slack call, so a call already made, a history page's name lookups included, is not recalled when its
+   row is removed afterwards; the next action, a watch's next snapshot, is refused and the caller drops the watch. Rows made after the start are not seen: a mapping to a folder no
    row held then makes `chat.toml` refused (`UnknownFolder`) until the daemon restarts. A second daemon of the account
    on a home that names the same hub reads the files like the first and is `Held` by C14's lock. Retirement: lifecycle
-   closes admission (the chat has none yet: a handler reads `service()`, `None` once the stop begins), then
+   closes admission (the chat has none yet: a handler's `admit` is `unavailable` once the stop begins), then
    `request_stop` spawns `Service::stop(500 ms)` on the daemon's runtime (a start still under way is aborted;
    `retiring_a_start_under_way_drops_its_future`, and `a_start_that_finishes_as_retirement_arrives_is_stopped_at_once`
    for a service made as retirement arrives, each failing at a 10 s bound with a message naming the rule), and
