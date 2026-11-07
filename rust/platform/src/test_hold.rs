@@ -75,7 +75,10 @@ impl Arm {
     pub async fn reached_async(&self, ticket: usize) {
         let id = self.id;
         match tokio::task::spawn_blocking(move || hold::wait_arrival(id, ticket, WAIT)).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                // The runtime may have been held until a give-up (a sync point on its thread): read it now.
+                self.arrivals();
+            }
             Ok(Err(failure)) => panic!("{failure}"),
             Err(joined) => panic!("hold point {}: the wait ended abnormally: {joined}", self.point),
         }
@@ -97,7 +100,9 @@ impl Arm {
 impl Drop for Arm {
     fn drop(&mut self) {
         if let Some(failure) = hold::uninstall(self.id) {
-            if !std::thread::panicking() {
+            if std::thread::panicking() {
+                eprintln!("{failure}");
+            } else {
                 panic!("{failure}");
             }
         }

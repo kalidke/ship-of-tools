@@ -81,22 +81,12 @@ fn a_keyed_arm_sees_only_its_key() {
 }
 
 #[test]
-fn an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm() {
-    let arm = Holds::here().arm("t.giveup").give_up_after(Duration::from_millis(200)).hold(1);
-    let gone = arrives("t.giveup", None);
-    goes_on(&gone, "after its give-up");
-    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
-    assert!(text.contains("t.giveup") && text.contains("arrival 0") && text.contains("went on"), "{text}");
-    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
-    assert!(text.contains("t.giveup") && text.contains("arrival 0"), "{text}");
-}
-
-#[test]
 fn reached_fails_by_name_within_its_bound() {
     let arm = Holds::here().arm("t.never").hold(1);
     let started = std::time::Instant::now();
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.reached_within(0, Duration::from_millis(200)))));
     assert!(text.contains("t.never") && text.contains("arrival 0") && text.contains("0 arrivals seen"), "{text}");
+    assert!(text.contains("reached_async"), "the failure names its usual fix: {text}");
     assert!(started.elapsed() < SEEN);
 }
 
@@ -119,15 +109,32 @@ fn dropping_an_arm_releases_every_held_arrival() {
     goes_on(&arrives("t.drop", None), "an arrival after the drop");
 }
 
+/// The test panics while its arm has a give-up: the arm's drop prints its failure (it may not panic a second time),
+/// which only a child's stderr shows, so the test reruns itself as a child and the parent reads that stderr.
 #[test]
-fn dropping_an_arm_while_the_test_panics_does_not_abort() {
-    let result = catch_unwind(|| {
-        let _arm = Holds::here().arm("t.panicking").give_up_after(Duration::from_millis(100)).hold(1);
-        let gone = arrives("t.panicking", None);
-        goes_on(&gone, "after its give-up");
-        panic!("the test's own failure");
-    });
-    assert_eq!(panic_text(result), "the test's own failure");
+fn a_panicking_test_still_prints_the_arms_failure_and_does_not_abort() {
+    use crate::test_isolated::{drain, enter, test_command, ISOLATION_TIMEOUT};
+    const NAME: &str = "test_hold::tests::a_panicking_test_still_prints_the_arms_failure_and_does_not_abort";
+    const CHILD: &str = "SOT_HOLD_TEST_PRINT_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        enter(NAME);
+        let result = catch_unwind(|| {
+            let _arm = Holds::here().arm("t.print").give_up_after(Duration::from_millis(100)).hold(1);
+            goes_on(&arrives("t.print", None), "after its give-up");
+            panic!("the test's own failure");
+        });
+        assert_eq!(panic_text(result), "the test's own failure");
+        return;
+    }
+    let (mut command, entry) = test_command(NAME);
+    command.env(CHILD, "1").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child = command.spawn().expect("spawn the child");
+    let pid = child.id();
+    let (status, _out, err) = drain(child).wait_within(ISOLATION_TIMEOUT);
+    entry.assert_once(pid);
+    assert!(status.success(), "the child did not end cleanly (an abort is a second panic): {status}\n{err}");
+    assert!(err.contains("t.print") && err.contains("arrival 0") && err.contains("hold_point_async!"), "{err}");
+    assert_eq!(err.matches("panicked at").count(), 1, "one panic, the test's own: {err}");
 }
 
 #[test]
@@ -186,10 +193,94 @@ async fn a_sync_point_in_a_task_on_a_current_thread_runtime_fails_the_arm_by_nam
         crate::hold_point!("t.sync.task");
     });
     // The task holds the runtime's only thread until its give-up, so this resumes after it.
-    arm.reached_async(0).await;
     task.await.expect("the product side never panics");
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
     assert!(text.contains("t.sync.task") && text.contains("hold_point_async!"), "{text}");
+}
+
+/// The same case as the test's own `reached_async` meets it: it resumes after the give-up and fails by name.
+#[tokio::test(flavor = "current_thread")]
+#[should_panic(expected = "hold_point_async!")]
+async fn reached_async_resumed_after_a_give_up_fails_by_name() {
+    // Never dropped: the panic must come from `reached_async` itself, not from the arm's drop.
+    let arm = std::mem::ManuallyDrop::new(Holds::here().arm("t.sync.resume").give_up_after(Duration::from_millis(200)).hold(1));
+    tokio::spawn(async {
+        crate::hold_point!("t.sync.resume");
+    });
+    arm.reached_async(0).await;
+}
+
+/// A cancelled `reached_async` leaves its wait on the blocking pool after the arm is gone: it must end with an error,
+/// never a panic on that thread.
+#[test]
+fn a_wait_that_outlives_its_arm_ends_with_an_error() {
+    let arm = Holds::here().arm("t.cancelled").hold(1);
+    let id = arm.id;
+    drop(arm);
+    let failure = hold::wait_arrival(id, 0, SEEN).expect_err("the arm is gone");
+    assert!(failure.contains("ended"), "{failure}");
+}
+
+/// A plain executor: a thread parked until woken.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Wake(std::thread::Thread);
+    impl std::task::Wake for Wake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Wake(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let std::task::Poll::Ready(out) = future.as_mut().poll(&mut context) {
+            return out;
+        }
+        std::thread::park();
+    }
+}
+
+#[test]
+fn an_async_point_polled_outside_a_runtime_waits_like_a_sync_one_and_fails_the_arm() {
+    let arm = Holds::here().arm("t.async.plain").give_up_after(Duration::from_millis(200)).hold(1);
+    let (done, gone) = mpsc::channel();
+    std::thread::spawn(move || {
+        block_on(async { crate::hold_point_async!("t.async.plain") });
+        done.send(()).ok();
+    });
+    goes_on(&gone, "after its give-up");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
+    assert!(text.contains("t.async.plain") && text.contains("went on"), "its ticket is not left held: {text}");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.async.plain"), "{text}");
+}
+
+/// Every shape of key a point may carry compiles in this (dev) build, and the release expansion type-checks the same
+/// expression (`__hold_key!`); a release build of these shapes is the gate's `--release` check.
+#[test]
+fn every_shape_of_key_compiles_and_an_unarmed_point_ignores_it() {
+    fn side() -> &'static str {
+        "side"
+    }
+    fn maybe() -> Result<String, std::io::Error> {
+        Ok("maybe".into())
+    }
+    fn run(dir: &std::path::Path, only: u64) -> Result<(), std::io::Error> {
+        crate::hold_point!("t.keys.display", dir.display());
+        crate::hold_point!("t.keys.call", side());
+        crate::hold_point!("t.keys.format", format!("k-{}", 7));
+        crate::hold_point!("t.keys.var", only);
+        crate::hold_point!("t.keys.try", maybe()?);
+        Ok(())
+    }
+    async fn later() {
+        async fn key() -> String {
+            "async".into()
+        }
+        crate::hold_point_async!("t.keys.async", key().await);
+    }
+    run(std::path::Path::new("/x"), 3).unwrap();
+    block_on(later());
 }
 
 #[test]
@@ -234,16 +325,5 @@ fn an_arrival_wakes_the_reached_that_waits_for_it() {
         go.send(()).unwrap();
         arm.reached_within(ticket, BOUND);
         assert!(started.elapsed() < BOUND / 2, "reached woke only at its bound: {:?}", started.elapsed());
-    }
-}
-
-#[test]
-fn a_drop_wakes_every_arrival_held_at_the_point() {
-    for _ in 0..5 {
-        let arm = Holds::here().arm("t.wake.drop").hold(1);
-        let gone = arrives("t.wake.drop", None);
-        arm.reached(0);
-        drop(arm);
-        goes_on(&gone, "after the drop");
     }
 }
