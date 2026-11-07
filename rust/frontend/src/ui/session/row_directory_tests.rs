@@ -194,3 +194,26 @@ fn authoritative_replacement_reports_only_retired_canonical_identities() {
         (host, removed.workspace_id)
     );
 }
+
+/// The daemon's list drops the selected row only when the host listed it before and the new list lacks it by slug
+/// and by id; another host's list, a first list and a replaced listing that keeps the slug drop nothing.
+#[test]
+fn a_list_drops_only_a_row_the_host_listed_before_and_no_longer_lists() {
+    let host = "alpha".to_string();
+    let mut directory = RowDirectory::default();
+    let mut project = ws_info("project", "t");
+    project.workspace_id = "id-project".into();
+    let other = ws_info("other", "t2");
+    let mut update = directory.prepare_replace(host.clone(), vec![project.clone(), other.clone()]);
+    assert!(!directory.drops(&host, &update, "project"), "a first list drops nothing");
+    directory.commit_replace(update);
+    update = directory.prepare_replace(host.clone(), vec![other.clone()]);
+    assert!(directory.drops(&host, &update, "project"));
+    assert!(directory.drops(&host, &update, "id-project"));
+    assert!(!directory.drops(&host, &update, "other"));
+    assert!(!directory.drops("beta", &update, "project"), "another host never listed it");
+    let mut successor = ws_info("project", "t3");
+    successor.workspace_id = "id-new".into();
+    update = directory.prepare_replace(host.clone(), vec![successor, other]);
+    assert!(!directory.drops(&host, &update, "project"), "a same-slug successor keeps the selection");
+}
