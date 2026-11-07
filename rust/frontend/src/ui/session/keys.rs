@@ -196,6 +196,8 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
                 "destroy '{target_label}' failed · channel closed"
             ));
         } else {
+            // In flight: the row is no longer a place to go, should another destroy of the row in view answer first.
+            state.row_directory.note_destroyed(&target_host, &target_id);
             state.status.set(format!("destroying '{target_label}'…"));
         }
         state.window.request_redraw();

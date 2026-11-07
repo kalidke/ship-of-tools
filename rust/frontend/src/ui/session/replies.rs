@@ -413,30 +413,18 @@ impl State {
             }
             Ok(info) => {
                 // The destroyed row's owed result and attempts die with it,
-                // before the bounce or any cache cleanup can touch them.
+                // before the move or any cache cleanup can touch them.
                 let effects = self.result_ledger.row_outcome(
                     &ResultRowIdentity { host: event_host.clone(), workspace_id: info.workspace_id.clone() },
                     ResultRowOutcome::Removed,
                     self.selected.host(),
                 );
                 self.apply_result_effects(effects);
-                // The row the window is showing was destroyed: move to its
-                // neighbor. Gated on the destroyed row's OWN host (ADR 0042
-                // L2a): a same-named slug/id destroyed on a DIFFERENT host
-                // must not move us off what we're actually viewing.
-                if *self.selected.host() == event_host
-                    && self
-                        .selected
-                        .workspace_id()
-                        .as_deref()
-                        .map(|s| s == info.slug || s == info.workspace_id)
-                        .unwrap_or(false)
-                {
-                    let gone = self.row_presentation.selected_key(self.selected.host(), self.selected.workspace_id().as_deref());
-                    let neighbor = self.row_presentation.successor(
-                        self.selected.host(), self.selected.workspace_id().as_deref(), |key| Some(key) != gone.as_ref());
-                    self.leave_gone_row(event_host.clone(), neighbor);
-                }
+                // The row the window is showing was destroyed: move to its neighbor. A row of another host with
+                // the same name never moves it (ADR 0042 L2a).
+                self.row_directory.note_destroyed(&event_host, &info.slug);
+                let leave = self.leave_for(&event_host, None);
+                self.apply_leave(event_host.clone(), leave);
                 self.forget_destroyed_row_views(&event_host, &info.slug);
                 let tmux_note = if info.tmux_killed {
                     ""
@@ -491,21 +479,17 @@ impl State {
         // Reconcile canonical pending-result identities before rebuilding workspace caches from an authoritative host list.
         let update = self.row_directory.prepare_replace(event_host.clone(), workspaces);
         // A destroy the window did not make itself (another window, the command line, a row's end) reaches it
-        // only as this list: if the selected row is the one that dropped out, the view leaves it below.
-        let leaving = self.selected.workspace_id().clone().filter(|spelling| {
-            *self.selected.host() == event_host && self.row_directory.drops(&event_host, &update, spelling)
-        });
-        // The neighbor is picked from the strip as it was, among the rows the new list still has.
-        let neighbor = leaving.as_ref().map(|spelling| {
-            let survives = |key: &WsKey| key.0 != event_host || update.lists(&key.1);
-            self.row_presentation.successor(&event_host, Some(spelling), survives)
-        });
+        // only as this list: decided before the commit consumes the update, carried out after the caches rebuild.
+        let leave = self.leave_for(&event_host, Some(&update));
+        let leaving = self.selected.workspace_id().clone();
         self.reconcile_pending_results(&update);
         self.row_directory.commit_replace(update);
         self.rebuild_workspace_caches();
-        if let (Some(neighbor), Some(spelling)) = (neighbor, leaving) {
-            self.leave_gone_row(event_host.clone(), neighbor);
-            self.forget_destroyed_row_views(&event_host, &spelling);
+        if leave != Leave::Stay {
+            self.apply_leave(event_host.clone(), leave);
+            if let Some(slug) = leaving {
+                self.forget_destroyed_row_views(&event_host, &slug);
+            }
         }
         self.prune_warm_attach(&event_host);
         // No handle declaration is sent for message routing: the daemon files for

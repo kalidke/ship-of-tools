@@ -944,3 +944,17 @@ fn a_copy_decodes_to_its_text_and_bad_base64_is_refused_with_why() {
     assert!(copied_text(b"").unwrap_err().contains("nothing"));
     assert!(copied_text(b"@@@").unwrap_err().contains("base64"));
 }
+
+/// The no-session state shows an empty pane: a row's client that ended, with its last screen, is not kept once the
+/// switch finds no attachment to open.
+#[test]
+fn leaving_for_a_row_with_no_attachment_empties_the_pane() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "a", "gone", b"work in progress", t);
+    step(&mut p, &wire, Step { dead: true, status: Some("ended"), ..Default::default() }, t);
+    assert_ne!(pixels(&mut p).0, PaneScreen::Empty, "the ended session's screen is held");
+    p.invalidate_kept_attachment();
+    assert_eq!(pixels(&mut p), (PaneScreen::Empty, "".into()));
+    assert_eq!(p.target(), None);
+}

@@ -63,7 +63,7 @@ pub enum OutgoingReq {
     /// (Sessions-Enter, Shift+Left/Right cycling) — it tells the daemon a
     /// person looked at this workspace, which clears a `done` row's blue
     /// (ADR 0044). Every other caller (agent-driven switches, `create`'s
-    /// auto-switch, the destroy bounce, reconnect re-announce) sends
+    /// auto-switch, the move off a destroyed row, reconnect re-announce) sends
     /// `false`.
     WorkspaceActivate { workspace_id: Option<String>, read: bool },
     /// "A person is providing real input right now" (`fe.presence`,

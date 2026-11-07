@@ -132,7 +132,7 @@ impl<C: PaneClient> AgentPane<C> {
         client.is_dead().then(|| client.status_line().to_string())
     }
 
-    /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
+    /// State has already admitted the kept-row outcome, or a switch to a row with no attachment. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
         self.pane_attach_term = None;

@@ -546,38 +546,3 @@ fn next_row_follows_the_chosen_order() {
     assert_eq!(p.next_row(1, "a", Some("a2")), Some(("a".into(), "a3".into())));
     assert_eq!(p.next_row(-1, "a", Some("a2")), Some(("a".into(), "a1".into())));
 }
-
-/// Where the view goes when the selected row is gone, by the window's own destroy (only that row is gone) and by the
-/// daemon's list (every row of the host the new list lacks is gone): the row below, else the one above, else nothing.
-#[test]
-fn the_view_leaves_a_gone_row_for_its_neighbor_below_else_above() {
-    let mut d = RowDirectory::default();
-    replace(&mut d, "a", ["a1", "a2", "a3"].map(|s| row(s, "idle", "")).to_vec());
-    replace(&mut d, "b", vec![row("b1", "idle", "")]);
-    let mut p = RowPresentation::default();
-    refresh(&mut p, &d, Instant::now());
-    assert_eq!(slugs(&p), ["a/a1", "a/a2", "a/a3", "b/b1"]);
-    let key = |h: &str, s: &str| (h.to_string(), s.to_string());
-    // (host, selected, slugs the host's list no longer has, expected)
-    let table: [(&str, &str, &[&str], Option<WsKey>); 6] = [
-        ("a", "a1", &["a1"], Some(key("a", "a2"))),
-        ("a", "a2", &["a2"], Some(key("a", "a3"))),
-        // Last of its host block: the next row is the other host's, still listed.
-        ("a", "a3", &["a3"], Some(key("b", "b1"))),
-        ("a", "a1", &["a1", "a2", "a3"], Some(key("b", "b1"))),
-        // Last in the strip: the one above.
-        ("b", "b1", &["b1"], Some(key("a", "a3"))),
-        ("a", "a2", &["a2", "a3"], Some(key("b", "b1"))),
-    ];
-    for (host, selected, gone, expected) in table {
-        let by_own_destroy = p.successor(host, Some(selected), |k| *k != key(host, selected));
-        let by_list = p.successor(host, Some(selected), |k| k.0 != host || !gone.contains(&k.1.as_str()));
-        if gone.len() == 1 {
-            assert_eq!(by_own_destroy, expected, "own destroy of {selected}");
-        }
-        assert_eq!(by_list, expected, "list without {gone:?} while on {selected}");
-        assert_ne!(by_list, Some(key(host, selected)), "the gone row stays selected");
-    }
-    assert_eq!(p.successor("b", Some("b1"), |_| false), None, "a lone row has no neighbor");
-    assert_eq!(p.successor("a", Some("absent"), |_| true), None, "a row the strip lacks has no successor");
-}

@@ -437,10 +437,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   catch-up; insertion retains unmentioned values but may overwrite mentioned ones, without freshness arbitration.
   Default migration preserves an existing destination record and rewrites only matching host-qualified routes;
   lifecycle retains raw slugs. Destroy forgets only the named parked record at State's existing cleanup point.
-- A selected row that is destroyed never stays selected: the window's own destroy reply and a `workspace.list` that no longer
-  has a row the host listed before (another window, the command line, a row's end) both switch, through
-  `switch_to_workspace`, to `RowPresentation::successor`, the surviving row just below it in the strip, else the nearest
-  above, else the host's default row; a destroy of any other row leaves the view as it is.
+- A selected row that is destroyed is left at once: the window's own destroy reply and a `workspace.list` that no longer
+  has a row the host listed before (another window, the command line, a row's end) both ask `RowDirectory::leave`,
+  which names the host's next row in the Sessions list's order (the listing's: default first, then by slug), below the
+  selected one, else above it, among visible rows the list still has and the window has not destroyed. `apply_leave`
+  switches there through `switch_to_workspace`; with no such row the view goes to the host's default row, and a switch
+  to a row with no attachment leaves the pane empty. A destroy of any other row leaves the view as it is. Limits: a
+  selection resumed before its host's first list is never "gone" (a row destroyed while the window was closed stays
+  selected until the person moves), and a neighbor or default row whose `resolve` refuses leaves the view where it was
+  (the refusal is shown).
 - Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
   beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
   Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the
@@ -484,7 +489,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `State` applies REPL catch-up, migration on every applicable refresh, then status before attachments,
   declarations, capture cycling and tree rebuild. Switching snapshots before host/default changes and restores
   REPL independently of the general UI snapshot. Connected reopening still precedes session on_connected;
-  destruction still reconciles the ledger before bounce/cache cleanup. The exhaustive router is unchanged.
+  destruction still reconciles the ledger before the move and cache cleanup. The exhaustive router is unchanged.
 - Final window teardown has one shared three-second OS-clock process deadline, independent of the UI and transport runtime; it starts at the terminal decision, after any daemon acknowledgement and notice presentation.
 - `FocusPrompts` privately owns focus, nav prompts, captured scale focus, stayed notice and quit hint. It lends
   immutable observations and owned drafts, never takes State or exposes mutable storage. `State::set_focus` only
