@@ -67,7 +67,7 @@ Guarantees, each with the mechanism it rests on:
   measured wall time, longest first; a job with no measurement starts before every measured one; every job still starts
   exactly once. The times are kept per checkout in `<CARGO_TARGET_DIR>/rc-gate-times.tsv`, keyed by a name unique to the
   job (a test binary by its target, a shell suite by its path) and written at the run's end from the jobs that ran (a
-  failed or timed-out job's time counts; a job that did not run keeps its old time; an interrupted run writes none). `user-manager-tests.sh` runs when the scope selects `backend`, `capsule`,
+  failed or timed-out job's time counts; a job that did not run keeps its old time). `user-manager-tests.sh` runs when the scope selects `backend`, `capsule`,
   `platform` or `containment`, since its five tests are the backend's over those. A job the scope
   does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no
   longer has fails (101). A scoped summary says so: `scoped base <sha>` and one `scope <piece>` line each (a widened
