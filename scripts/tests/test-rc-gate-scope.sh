@@ -139,7 +139,7 @@ pipeline() { # <name> <scope base or -> <scope lines>
     [ "$b" != - ] || b=
     RCG_D=$work/$n RCG_L=$work/L-$n RCG_BUILD_RC=0 RCG_CARGO_DIR=$work/tools RCG_JULIA_DIR=$work/tools RCG_BASH32=${UB32:-} RCG_UB_PARSE=${UBP:-1} RCG_UB_SUITES=${UBS:-1} \
         RCG_SCOPE_BASE=$b RCG_SCOPE_SEL=$sel HOME=$work CARGO_TARGET_DIR=$work/target XDG_RUNTIME_DIR=$work/run \
-        bash "$gate" --pipeline 4 > "$work/$n.out" 2>&1
+        bash "$gate" --pipeline ${CAP:-4} > "$work/$n.out" 2>&1
 }
 rcof() { cat "$work/L-$1/$2.rc" 2> /dev/null; }
 
@@ -252,6 +252,44 @@ fixture sc4; rm "$work/sc4/julia/kernel/Project.toml"; rm "$work/sc4/agents/test
 pipeline sc4 b $'julia julia/kernel\nshell agents'
 check "scoped: a julia package the tree no longer has is a failure" '[ "$(rcof sc4 steps/julia-julia-kernel)" = 101 ]'
 check "scoped: a shell group with no suite is a failure" '[ "$(rcof sc4 steps/scope-shell-agents)" = 101 ]'
+
+# ---- longest first: the order jobs start in, one at a time (CAP=1), from the times file the last run kept
+times=$work/target/rc-gate-times.tsv
+ordfixture() { # <name>: three test binaries that log their start; the third carries a build hash in its name
+    fixture "$1"
+    local t x
+    for t in bin-platform bin-backend; do
+        printf '#!/bin/sh\necho %s >> "%s"\nexit 0\n' "$t" "$work/order-$1" > "$work/tools/$t"
+    done
+    x=$work/tools/bin-gamma-0123456789abcdef
+    printf '#!/bin/sh\necho gamma >> "%s"\nexit 0\n' "$work/order-$1" > "$x"; chmod +x "$x"
+    printf 'bin_gamma\t%s\t%s\n' "$x" "$repo/rust/platform" >> "$work/L-$1/tests.tsv"
+}
+starts() { tr '\n' ' ' < "$work/order-$1"; }
+rm -f "$times"
+ordfixture o1; CAP=1 pipeline o1 -
+check "longest first: with no times file the jobs keep the producer's order" '[ "$(starts o1)" = "bin-platform bin-backend gamma " ]'
+printf 'bin:bin-backend\t50\nbin:bin-platform\t10\nbin:bin-gamma\t1\nbin:gone\t999\ngarbage\nbin:x\tabc\nbin:y\t5\textra\n' > "$times"
+ordfixture o2; CAP=1 pipeline o2 -
+check "longest first: B named longer than A starts before A, and a key without the binary's hash names the hashed binary" '[ "$(starts o2)" = "bin-backend bin-platform gamma " ]'
+check "longest first: a job the file names that the run lacks, and a malformed line, add no job and no error" '[ "$(wc -l < "$work/order-o2")" -eq 3 ] && [ "$(ls "$work/L-o2/rust" | grep -c "^bin-.*rc$")" -eq 3 ] && ! grep -q "rc-gate:" "$work/o2.out"'
+printf 'bin:bin-backend\t50\nbin:bin-platform\t10\n' > "$times"
+ordfixture o3; CAP=1 pipeline o3 -
+check "longest first: a job the file does not name starts before every named one" '[ "$(starts o3)" = "gamma bin-backend bin-platform " ]'
+check "longest first: every job starts once and writes its result once" '[ -z "$(sort "$work/order-o3" | uniq -d)" ] && [ "$(wc -l < "$work/order-o3")" -eq 3 ] && [ "$(rcof o3 rust/bin-gamma-0123456789abcdef)" = 0 ]'
+rm -f "$times"
+# the dispatcher records each job's seconds under its hash-free key, a failed job's included; the run's end merges them
+fixture tm; printf '#!/bin/sh\nexit 3\n' > "$work/tools/bin-fail-0123456789abcdef"; chmod +x "$work/tools/bin-fail-0123456789abcdef"
+RCG_D=$work/tm RCG_L=$work/L-tm RCG_CARGO_DIR=$work/tools RCG_JULIA_DIR=$work/tools HOME=$work CARGO_TARGET_DIR=$work/target XDG_RUNTIME_DIR=$work/run \
+    bash "$gate" --job "$(printf 'bin\tbin-fail-0123456789abcdef\t%s\t%s' "$work/tools/bin-fail-0123456789abcdef" "$work/tm")"
+check "a job's seconds are recorded under its hash-free key, a failed job's too" '[ "$(rcof tm rust/bin-fail-0123456789abcdef)" = 3 ] && grep -qP "^bin:bin-fail\t[0-9]+$" "$work"/L-tm/times/*'
+mergefn=$(sed -n '/^merge_times() {/,/^}/p' "$gate")
+check "the run's end writes this run's jobs over the file and keeps a job that did not run" '(
+    eval "$mergefn"
+    L=$work/L-tm; RCG_TIMES=$work/merged.tsv
+    printf "bin:bin-fail\t99\nbin:kept\t7\nbad line\n" > "$RCG_TIMES"
+    merge_times
+    [ "$(cut -f1 "$RCG_TIMES" | tr "\n" " ")" = "bin:bin-fail bin:kept " ] && grep -qP "^bin:kept\t7$" "$RCG_TIMES" && ! grep -q "99" "$RCG_TIMES")'
 
 # ---- the verdict, the summary lines and the refusals the main flows call, driven as they are called
 check "a whole run that passed ends ALLDONE" '[ "$(unset RCG_SCOPE_BASE; gate_verdict 0)" = ALLDONE ]'
