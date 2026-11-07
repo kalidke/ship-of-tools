@@ -116,8 +116,9 @@ name is in this crate's one op table.
     watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
     A request's `kind` is the other direction: an older daemon refuses a kind it does not know, with a `bad_request` code.
-    A `limited` wait is clamped to an hour (`MAX_RETRY_SECS`). A `chat.post` reply that carries no `code` and does not decode
-    is read as `unknown`, never resent: wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's, at B2g. `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
+    A `limited` wait is clamped to an hour (`MAX_RETRY_SECS`). A `chat.post` reply with no `error` field that does not decode
+    as `ChatPostRes` is read as `unknown`, never resent (a reply with `error` is a refusal, an older daemon's unknown-op answer
+    among them): wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's, at B2g. `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
     admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
     `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
     stays 4; an older daemon answers a chat op as any unknown op. Limits: no handler yet (B2e, B2f); a duplicate JSON key in a frame's payload is not refused (the codec reads a
