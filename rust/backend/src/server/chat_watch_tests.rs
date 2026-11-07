@@ -174,11 +174,16 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     home.write(CONFIG_FILE, &text);
     home.secrets();
     let rows = Workspaces::new();
-    let ids = folders.iter().enumerate().map(|(i, f)| (rows.insert(row(&format!("r{i}"), f)).workspace_id.clone(), f.clone())).collect();
+    let ids: Vec<(String, std::path::PathBuf)> = folders.iter().enumerate().map(|(i, f)| (rows.insert(row(&format!("r{i}"), f)).workspace_id.clone(), f.clone())).collect();
     let spare = rows.insert(row("spare", &home.folder("spare"))).workspace_id.clone();
     let chat = Chat::begin(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
     running(&chat).await;
     assert_eq!(chat.status(), Status::Running);
+    // The socket's hello owes every complete watch a snapshot again, and owed snapshots are asked for by a watch, so a
+    // snapshot read before the hello would leave its channel `Needed`: watch only after it.
+    let target = ChatTarget { row: ids[0].0.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0000".to_string()).unwrap() };
+    let service = chat.admit(&rows, &target).expect("the service runs");
+    eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, .. } if socket.connected)).await;
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
@@ -192,6 +197,7 @@ async fn a_watch_is_admitted_and_bounded_per_connection() {
     let n = sot_protocol::ops::MAX_WATCHED + 1;
     let (_home, services, rows, mut ids, spare, _root) = many(&fake, n).await;
     let hub = services.chat.hub().clone();
+    let probe = hub.connect();
     let mut conn = connect(services.clone()).await;
     let mut id = 10;
     // The row's folder maps to C0000: another channel is a changed mapping.
@@ -224,7 +230,7 @@ async fn a_watch_is_admitted_and_bounded_per_connection() {
     let mut other = connect(services.clone()).await;
     assert_eq!(code(&other.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await), "too_many_watches");
     assert!(ok_watch(&other.ask(3, op::CHAT_WATCH, watch(&ids[0].0, "C0000")).await));
-    until("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
+    until("a snapshot for each channel", || (0..n - 1).all(|i| probe.conn.state(&format!("C{i:04}")) == ChatWatchState::Complete)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -628,16 +634,18 @@ async fn a_closed_connections_channels_leave_the_model() {
     let n = sot_protocol::ops::MAX_WATCHED + 1;
     let (_home, services, _rows, ids, _spare, _root) = many(&fake, n).await;
     let hub = services.chat.hub().clone();
+    let probe = hub.connect();
     let mut a = connect(services.clone()).await;
     for (i, (row_id, _)) in ids.iter().enumerate().take(n - 1) {
         assert!(ok_watch(&a.ask(10 + i as u64, op::CHAT_WATCH, watch(row_id, &format!("C{i:04}"))).await));
     }
-    until("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
+    until("a snapshot for each channel", || (0..n - 1).all(|i| probe.conn.state(&format!("C{i:04}")) == ChatWatchState::Complete)).await;
     let Conn { crx, ctx, task } = a;
     drop((crx, ctx));
     let _ = task.await.unwrap();
     assert!(hub.slots().is_empty());
     let mut b = connect(services.clone()).await;
     assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await));
-    until("the new channel's snapshot", || lv.histories.load(Ordering::SeqCst) == n).await;
+    let last = format!("C{:04}", n - 1);
+    until("the new channel's snapshot", || probe.conn.state(&last) == ChatWatchState::Complete).await;
 }
