@@ -25,6 +25,7 @@ pub(super) struct Services {
     pub(super) topology_store: Arc<TopologyStore>,
     pub(super) topo_changed_tx: broadcast::Sender<TopologyChanged>,
     pub(super) leases: Arc<Leases>,
+    pub(super) chat: Arc<crate::chat::Chat>,
 }
 
 #[cfg(test)]
@@ -48,6 +49,7 @@ impl Services {
             topology_store: Arc::new(TopologyStore::new(root.join("hosts.toml"))),
             topo_changed_tx: broadcast::channel(8).0,
             leases: Arc::new(Leases::new(Some("boot".to_string()), None, None, false)),
+            chat: crate::chat::Chat::off(),
         }
     }
 }

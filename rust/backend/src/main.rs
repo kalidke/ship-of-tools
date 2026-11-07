@@ -13,6 +13,7 @@
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
 mod agents;
+mod chat;
 mod clients;
 mod comm;
 mod daemon_log;

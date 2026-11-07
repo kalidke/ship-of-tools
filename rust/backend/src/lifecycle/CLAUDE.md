@@ -69,7 +69,7 @@ of each.
    removes its Julia children's temporary folders waiting at most `FOLDERS_WAIT` (2 s) (`sidecars::child::remove_own`),
    then makes the process's one raw exit; when no thread can be started for the fire it exits without it, logging that.
    Between the claim and the fire the terminal retires the in-process services registered with
-   `retire::participants()` (the project chat is the first; nothing else is migrated): every participant's admission
+   `retire::participants()` (the project chat, `chat::Chat`, registers when the daemon is the hub and its files admit it; nothing else is migrated): every participant's admission
    closes, then every stop is asked, then each is awaited, all by one bound, `RETIRE_WAIT` (1 s), on a thread of its
    own. The fire waits only what is left of `FIRE_WAIT`, so the terminal's total stays `FIRE_WAIT` + `FOLDERS_WAIT`.
    A participant not confirmed retired is named and logged as incomplete; the code is chosen before retirement and
