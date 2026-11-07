@@ -18,12 +18,20 @@ use crate::rows::{Workspace, Workspaces};
 /// The file's name in the row's state folder.
 const FILE_NAME: &str = "selection.json";
 
-/// `selection.set`: one reply, `held` for an accepted selection (no leg carries the hook yet), `shared` for a clear.
+/// The marker's name in the row's state folder: present when the row's current agent was started with the hook.
+const MARKER_NAME: &str = "selection-hook";
+
+/// The agent kinds that take a selection; every other kind answers `no_agent`. `codex` is here until the plan's H2
+/// decides whether Codex hears one at all.
+const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
+
+/// `selection.set`: one reply. `window` is whether the connection holds a roster entry. An accepted selection answers
+/// `shared` when the row's agent was started with the hook and `held` when it was not; a clear answers `shared`.
 pub(crate) async fn handle_selection_set(
-    req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces,
+    req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces, window: bool,
 ) -> Result<HandlerOutput> {
     let req: SelectionSetReq = serde_json::from_value(payload).context("selection.set payload")?;
-    let frame = match state_root.map_or(Err(selection_code::PUBLISH_FAILED), |root| set_selection(root, workspaces, &req)) {
+    let frame = match state_root.map_or(Err(selection_code::PUBLISH_FAILED), |root| set_selection(root, workspaces, window, &req)) {
         Ok(state) => Frame::res(req_id, op::SELECTION_SET, serde_json::to_value(SelectionSetRes { state })?),
         Err(code) => {
             let payload = serde_json::json!({ "error": format!("selection not shared: {code}"), "code": code });
@@ -35,8 +43,11 @@ pub(crate) async fn handle_selection_set(
 
 /// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`.
 fn set_selection(
-    state_root: &Path, workspaces: &Workspaces, req: &SelectionSetReq,
+    state_root: &Path, workspaces: &Workspaces, window: bool, req: &SelectionSetReq,
 ) -> Result<SelectionState, &'static str> {
+    if !window {
+        return Err(selection_code::NOT_A_WINDOW);
+    }
     let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
     let file = state_dir_for(state_root, &ws.workspace_id).join(FILE_NAME);
     let withdraw = || sot_platform::host::remove_durable(&file).map_err(|_| selection_code::PUBLISH_FAILED);
@@ -44,7 +55,8 @@ fn set_selection(
         withdraw()?;
         return Ok(SelectionState::Shared);
     };
-    let rendering = match render(&ws, sel) {
+    let checked = if takes_selection(&ws.agent()) { render(&ws, sel) } else { Err(selection_code::NO_AGENT) };
+    let rendering = match checked {
         Ok(r) => r,
         Err(code) => {
             withdraw()?;
@@ -55,7 +67,13 @@ fn set_selection(
         let _ = withdraw();
         return Err(selection_code::PUBLISH_FAILED);
     }
-    Ok(SelectionState::Held)
+    let hooked = state_dir_for(state_root, &ws.workspace_id).join(MARKER_NAME).exists();
+    Ok(if hooked { SelectionState::Shared } else { SelectionState::Held })
+}
+
+/// Whether an agent of `kind` takes a selection.
+fn takes_selection(kind: &str) -> bool {
+    TAKES_SELECTION.contains(&kind)
 }
 
 /// The hook's output for `sel`, from the file's own text: resolved as `preview.get` resolves (a link out of the root is
@@ -66,10 +84,10 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
     let bytes = read_prefix(&path).ok_or(selection_code::NOT_FILE_TEXT)?;
     let text = check_selection(&bytes, sel).ok_or(selection_code::NOT_FILE_TEXT)?;
     let absolute = path.to_string_lossy().into_owned();
-    // the resolver's own check keeps every resolved path under the root
-    let relative = path.strip_prefix(files.root_path()).expect("a resolved node lies under the root");
-    let relative = relative.to_string_lossy().replace('\\', "/");
-    Ok(render_selection(&text, &absolute, &relative))
+    let id = files.path_to_node_id(&path).ok_or(selection_code::BAD_NODE_ID)?;
+    // the id is the files tree's prefix, a colon, then the root-relative path with forward slashes
+    let relative = id.split_once(':').map_or(id.as_str(), |(_, rest)| rest);
+    Ok(render_selection(&text, &absolute, relative))
 }
 
 /// The first `PREVIEW_BYTE_CAP` bytes of a regular file (never a pipe or device, whose open may wait), or `None`.

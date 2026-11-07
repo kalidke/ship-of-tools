@@ -23,7 +23,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     let project = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let workspaces = Workspaces::new();
-    let mut row = Workspace::from_label("sel", project.path().to_path_buf(), false, "none".into(), String::new(), String::new());
+    let mut row = Workspace::from_label("sel", project.path().to_path_buf(), false, "claude".into(), String::new(), String::new());
     row.workspace_id = "ws-sel-1".to_string();
     let ws = workspaces.insert(row);
     workspaces.set_default(&ws.workspace_id);
@@ -32,7 +32,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join(FILE_NAME);
     let held = || std::fs::read_to_string(&file).ok();
-    let set = |workspace: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, &req(workspace, s));
+    let set = |workspace: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, true, &req(workspace, s));
     // the rendering of lines `first` to `last` of `name`: the absolute path and the project-relative path differ
     let expect = |name: &str, text: &str, first: usize, last: usize| {
         let absolute = root.join(name).to_string_lossy().into_owned();
@@ -168,7 +168,7 @@ async fn the_replies_are_the_wire_frames() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let workspaces = Workspaces::new();
-    let mut row = Workspace::from_label("rep", project.path().to_path_buf(), false, "none".into(), String::new(), String::new());
+    let mut row = Workspace::from_label("rep", project.path().to_path_buf(), false, "claude".into(), String::new(), String::new());
     row.workspace_id = "ws-rep-1".to_string();
     workspaces.insert(row);
     std::fs::create_dir_all(state_dir_for(state.path(), "ws-rep-1")).unwrap();
@@ -177,7 +177,7 @@ async fn the_replies_are_the_wire_frames() {
         let payload = serde_json::to_value(req(workspace, s)).unwrap();
         let workspaces = workspaces.clone();
         let root = root.map(Path::to_path_buf);
-        async move { handle_selection_set(7, payload, root.as_deref(), &workspaces).await.unwrap() }
+        async move { handle_selection_set(7, payload, root.as_deref(), &workspaces, true).await.unwrap() }
     };
     let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
     let only = |out: HandlerOutput| {
@@ -197,5 +197,56 @@ async fn the_replies_are_the_wire_frames() {
     // a request the wire refuses at decode is a handler error and changes nothing
     let mut bad = serde_json::to_value(req("ws-rep-1", good())).unwrap();
     bad["selection"]["len"] = 0.into();
-    assert!(handle_selection_set(7, bad, root, &workspaces).await.is_err());
+    assert!(handle_selection_set(7, bad.clone(), root, &workspaces, true).await.is_err());
+    assert_eq!(only(ask(root, "ws-rep-1", good()).await), serde_json::json!({"state": "held"}), "the file was published");
+    assert!(handle_selection_set(7, bad, root, &workspaces, true).await.is_err());
+    assert!(state_dir_for(state.path(), "ws-rep-1").join(FILE_NAME).exists(), "a decode refusal changes nothing");
+}
+
+#[test]
+fn the_reply_says_who_will_hear() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    let insert = |id: &str, agent: &str| {
+        let mut row = Workspace::from_label(id, project.path().to_path_buf(), false, agent.into(), String::new(), String::new());
+        row.workspace_id = id.to_string();
+        std::fs::create_dir_all(state_dir_for(state.path(), id)).unwrap();
+        workspaces.insert(row);
+    };
+    std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
+    let good = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
+    let ask = |window: bool, id: &str, s: Option<SelectedText>| set_selection(state.path(), &workspaces, window, &req(id, s));
+    let file = |id: &str| state_dir_for(state.path(), id).join(FILE_NAME);
+
+    // 1. a connection with no roster entry is refused before any row work, and a file a window set stays
+    insert("ws-claude", "claude");
+    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held));
+    for (name, s) in [("a set", good()), ("a clear", None)] {
+        assert_eq!(ask(false, "ws-claude", s), Err(selection_code::NOT_A_WINDOW), "row 1: {name}");
+        assert!(file("ws-claude").exists(), "row 1: {name} changes nothing");
+    }
+    assert_eq!(ask(false, "ws-nope", good()), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the row");
+
+    // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
+    for kind in ["claude", "codex"] {
+        insert(&format!("ws-{kind}-k"), kind);
+        assert_eq!(ask(true, &format!("ws-{kind}-k"), good()), Ok(SelectionState::Held), "row 2: {kind} takes one");
+    }
+    for kind in ["none", "gemini", ""] {
+        let id = format!("ws-{kind}-k");
+        insert(&id, kind);
+        std::fs::write(file(&id), "old").unwrap();
+        assert_eq!(ask(true, &id, good()), Err(selection_code::NO_AGENT), "row 2: {kind:?} takes none");
+        assert!(!file(&id).exists(), "row 2: {kind:?} refusal removes the file");
+        assert_eq!(ask(true, &id, None), Ok(SelectionState::Shared), "row 2: a clear for {kind:?}");
+    }
+
+    // 3. an accepted selection is shared when the marker exists and held when it does not
+    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: no marker");
+    std::fs::write(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME), "").unwrap();
+    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Shared), "row 3: marker");
+    std::fs::remove_file(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME)).unwrap();
+    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: marker removed");
+    assert_eq!(ask(true, "ws-codex-k", good()), Ok(SelectionState::Held), "row 3: codex with no marker");
 }

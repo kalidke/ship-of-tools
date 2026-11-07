@@ -216,7 +216,9 @@ of each.
   `resolve_ccx`, `agent_env`, `NESTING_ENV_VARS_TO_SCRUB`, `account_spawn_env`, `capsule_supervisor_env`,
   `row_self_file`, `own_sotd_bin`, the awareness env, accounts and their links, the folder-trust record and its
   declaration, the auto-memory flag, and `sotd agent-exec` and `accounts.list`.
-- The selection handler (`rust/backend/src/agents/selection.rs`, served `INLINE` as `selection.set`). The row's file
+- The selection handler (`rust/backend/src/agents/selection.rs`, served `INLINE` as `selection.set`). The handler is told by the server whether the connection holds a roster entry (`dispatch` passes
+  `shared.serial != 0`; serials start at 1 and 0 is a connection with no entry); without one it answers `not_a_window` before
+  any row work and changes nothing, a file a window set included. The row's file
   `<row state folder>/selection.json` holds exactly the rendering of the last selection the daemon accepted for that
   row, or nothing; the one exception is a removal that itself fails, which leaves the old file and answers
   `publish_failed`. The handler resolves the workspace (`unknown_workspace`, an empty id included, writes nothing),
@@ -226,20 +228,26 @@ of each.
   never further than the preview reads; it reads at most the preview's 2 MiB (`PREVIEW_BYTE_CAP`) of a regular file (a
   directory, a pipe or device, a missing or unreadable file is `not_file_text`), then `check_selection` and
   `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
-  answers `held` (no leg carries the hook yet); a clear removes the file and answers `shared`; every refusal
-  (`not_file_text`, `bad_node_id`) and a failed publish (`publish_failed`) removes it first. A removal that fails
+  answers `shared` when the marker `<row state folder>/selection-hook` exists (the row's current agent was started with
+  the hook) and `held` when it does not; only `claude` and `codex` rows (`TAKES_SELECTION`) take a selection, any other
+  kind answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
+  (`not_file_text`, `bad_node_id`, `no_agent`) and a failed publish (`publish_failed`) removes it first. A removal that fails
   answers `publish_failed` in place of the refusal's own code, and the old file stays. A request the wire refuses at
   decode (a start not before the end, a `len` outside 1 to 2 MiB, an over-long id) is answered `handler_error` and
   changes nothing, so the previous file stays. The row's state folder
   is the capsule's and exists once the row has started; for a row that never started an accepted selection answers
-  `publish_failed` and a clear answers `shared`. The published text is the file's text at the read; a file that changes
+  `publish_failed` and a clear answers `shared`; no marker exists there either. The relative path in the rendering is
+  files' `path_to_node_id` less its prefix, so on Unix a file named `a\b.txt` is shown as `a/b.txt`. A file swapped for a
+  named pipe between the type check and the open blocks the connection loop, the stall the server contract states.
+  Codex is a kind that takes a selection until the plan's H2 decides whether Codex hears one; until A5 writes any marker
+  a Codex row answers `held`, and if H2 fails Codex rows will answer `no_agent`. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Limits: two connections setting one row race, the shared
   temporary file included (the lock is A4's); on Windows a publish or removal that meets an open read can fail, which is
-  `publish_failed` and the old file may remain. Unbuilt: `not_a_window` and `no_agent` and `shared` from the leg's marker
-  (A3b); the map of who set each file, the removal at a connection's end and the start-up walk (A4); the hook, the leg's
-  variable and the marker (A5); the window's clear after an error reply (A7). Tests:
+  `publish_failed` and the old file may remain. Unbuilt: the map of who set each file, the removal at a connection's end and the start-up walk (A4); the hook, the leg's
+  variable and writing the marker (A5); the window's clear after an error reply (A7). Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
-  row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`.
+  row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`
+  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`not_a_window`, `no_agent`, `shared` and `held`).
 - The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
   `check_selection` accepts exactly the file's own text at the
   window's range: it refuses (`not_file_text`) a start not before the end (the wire's decode refuses it too; the function
