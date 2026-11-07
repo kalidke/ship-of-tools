@@ -30,15 +30,17 @@ async fn bounded<T>(body: impl Future<Output = T>) -> T {
         .expect("the test exceeded its bound")
 }
 
-/// Runs a test whose rule is that a link survives an idle bound. A host that pauses the whole process for half the bound
-/// (a loaded or descheduled runner) makes the client see a silent peer, and the rule rightly retires that link; so each
-/// attempt runs beside a ticker, and an attempt that failed while the ticker saw such a pause is run again. An attempt
-/// that fails on a host that did not pause fails the test, and so does a host that paused every attempt.
-async fn steady<F, Fut>(idle: Duration, attempt: F)
+/// Runs a test that holds a link or a measured duration against a bound. A host that pauses the whole process for about
+/// as long as the bound's margin (a loaded or descheduled runner) lengthens every measured interval and makes the client
+/// see a silent peer, which the rule rightly retires. Each attempt runs beside a ticker, and an attempt that failed
+/// while the ticker saw a pause of `margin` is run again. An attempt that fails on a host that did not pause fails the
+/// test, naming the longest tick seen, and so does a host that paused every attempt.
+async fn steady<F, Fut>(margin: Duration, attempt: F)
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<(), String>>,
 {
+    let mut longest_ever = 0;
     for _ in 0..5 {
         let longest = Arc::new(AtomicUsize::new(0));
         let seen = longest.clone();
@@ -51,14 +53,22 @@ where
         });
         let result = attempt().await;
         ticker.abort();
-        let paused = longest.load(Ordering::SeqCst) as u128 >= idle.as_millis() / 2;
+        let longest = longest.load(Ordering::SeqCst);
+        longest_ever = longest_ever.max(longest);
+        let paused = longest as u128 >= margin.as_millis();
         match result {
             Ok(()) => return,
-            Err(why) if !paused => panic!("{why}"),
+            Err(why) if !paused => panic!(
+                "{why} (longest tick {longest} ms, a pause counts from {} ms)",
+                margin.as_millis()
+            ),
             Err(_) => {}
         }
     }
-    panic!("the host paused during every attempt");
+    panic!(
+        "the host paused during every attempt (longest tick {longest_ever} ms, a pause counts from {} ms)",
+        margin.as_millis()
+    );
 }
 
 /// Short waits: pacing of tens of milliseconds, a close bound of 300 ms.
@@ -248,7 +258,7 @@ async fn socket_ack_precedes_slow_api_and_dispatch() {
 
 #[tokio::test]
 async fn disconnect_refresh_and_silent_close_keep_one_socket() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(1000), || async move {
         let fake = fake(|i, mut peer| async move {
             peer.send(&hello()).await;
             match i {
@@ -273,10 +283,7 @@ async fn disconnect_refresh_and_silent_close_keep_one_socket() {
         eventually("six sockets", || fake.sockets().2 >= 6).await;
         let stopping = Instant::now();
         socket.stop().await;
-        assert!(
-            stopping.elapsed() < Duration::from_millis(1500),
-            "stop is bounded by the close bound, not by the cycle"
-        );
+        let stopped_in = stopping.elapsed();
         let (_, peak, total) = fake.sockets();
         assert_eq!(peak, 1, "two sockets were open at once");
         // Shutdown prevents another connect.
@@ -284,13 +291,18 @@ async fn disconnect_refresh_and_silent_close_keep_one_socket() {
         assert_eq!(fake.sockets().2, total, "a socket was opened after stop");
         eventually("the last socket to be gone", || fake.sockets().0 == 0).await;
         fake.shutdown().await;
-    })
+        (stopped_in < Duration::from_millis(1500))
+            .then_some(())
+            .ok_or_else(|| {
+                format!("stop is bounded by the close bound, not by the cycle: {stopped_in:?}")
+            })
+    }))
     .await;
 }
 
 #[tokio::test]
 async fn a_peer_that_ignores_close_is_forced_down_within_the_bound() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(1000), || async move {
         let times = Arc::new(Mutex::new(Vec::<(&str, Instant)>::new()));
         let t = times.clone();
         let fake = fake(move |i, mut peer| {
@@ -314,19 +326,22 @@ async fn a_peer_that_ignores_close_is_forced_down_within_the_bound() {
         let times = times.lock().unwrap().clone();
         let held = times[1].1 - times[0].1;
         assert!(
-            held >= Duration::from_millis(250) && held < Duration::from_millis(1500),
-            "the close was neither waited for nor bounded: {held:?}"
+            held >= Duration::from_millis(250),
+            "the close was not waited for: {held:?}"
         );
         assert_eq!(fake.sockets().1, 1);
         socket.stop().await;
         fake.shutdown().await;
-    })
+        (held < Duration::from_millis(1500))
+            .then_some(())
+            .ok_or_else(|| format!("the close was not bounded: {held:?}"))
+    }))
     .await;
 }
 
 #[tokio::test]
 async fn a_silent_socket_is_replaced_after_the_idle_bound() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(1000), || async move {
         // Socket 0's span from its hello to the client being gone: idle plus the close wait, no handshakes.
         let span = Arc::new(Mutex::new(None));
         let seen = span.clone();
@@ -358,12 +373,14 @@ async fn a_silent_socket_is_replaced_after_the_idle_bound() {
         // under 2.8 s, which leaves 2 s of slack on a span that holds no handshake.
         let span = span.lock().unwrap().expect("socket 0 ended");
         assert!(span >= Duration::from_millis(800), "{span:?}");
-        assert!(span < Duration::from_millis(2800), "{span:?}");
         assert_eq!(fake.sockets().1, 1);
         assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
         socket.stop().await;
         fake.shutdown().await;
-    })
+        (span < Duration::from_millis(2800))
+            .then_some(())
+            .ok_or_else(|| format!("the silent socket was replaced late: {span:?}"))
+    }))
     .await;
 }
 
@@ -743,7 +760,7 @@ async fn a_failed_event_or_a_lost_socket_during_a_reconciliation_keeps_the_gap()
 
 #[tokio::test]
 async fn reconnects_are_paced_after_a_refusal_and_after_a_hello() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(100), || async move {
         // A refusing Slack is asked at 0, 200, 600 and 1400 ms: the pause doubles.
         let times = Arc::new(Mutex::new(Vec::new()));
         let fake_a = fake_with(opens(&times, usize::MAX), |_, _| async {}).await;
@@ -793,20 +810,24 @@ async fn reconnects_are_paced_after_a_refusal_and_after_a_hello() {
         // reset it, so the second reopen did not wait the doubled 400 ms.
         let t = times.lock().unwrap().clone();
         let g = gone.lock().unwrap().clone();
-        for i in 0..2 {
-            let pause = t[i + 1] - g[i];
-            assert!(pause >= Duration::from_millis(180), "{pause:?}");
-            assert!(pause < Duration::from_millis(300), "{pause:?}");
+        let pauses: Vec<Duration> = (0..2).map(|i| t[i + 1] - g[i]).collect();
+        for pause in &pauses {
+            assert!(*pause >= Duration::from_millis(180), "{pause:?}");
         }
         socket.stop().await;
         fake_b.shutdown().await;
-    })
+        pauses
+            .iter()
+            .all(|p| *p < Duration::from_millis(300))
+            .then_some(())
+            .ok_or_else(|| format!("the pause after a hello was not reset: {pauses:?}"))
+    }))
     .await;
 }
 
 #[tokio::test]
 async fn stop_during_the_reconnect_pause_does_not_wait_for_it() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(250), || async move {
         let fake = fake(|_, mut peer| async move {
             peer.send(&hello()).await;
             peer.send(&disconnect("refresh_requested")).await;
@@ -830,21 +851,20 @@ async fn stop_during_the_reconnect_pause_does_not_wait_for_it() {
         .await;
         let began = Instant::now();
         socket.stop().await;
-        assert!(
-            began.elapsed() < Duration::from_millis(500),
-            "{:?}",
-            began.elapsed()
-        );
+        let took = began.elapsed();
         assert_eq!(fake.sockets().2, 1);
         fake.shutdown().await;
-    })
+        (took < Duration::from_millis(500))
+            .then_some(())
+            .ok_or_else(|| format!("stop waited for the pause: {took:?}"))
+    }))
     .await;
 }
 
 #[tokio::test]
 async fn a_link_that_answers_is_kept_past_the_idle_bound() {
     let idle = Duration::from_millis(500);
-    bounded(steady(idle, || async move {
+    bounded(steady(idle / 2, || async move {
         let fake = fake(|_, mut peer| async move {
             peer.send(&hello()).await;
             peer.drain().await;
@@ -876,7 +896,7 @@ async fn a_link_that_answers_is_kept_past_the_idle_bound() {
 #[tokio::test]
 async fn a_chatty_peer_that_never_answers_keeps_its_link() {
     let idle = Duration::from_millis(500);
-    bounded(steady(idle, || async move {
+    bounded(steady(idle / 2, || async move {
         // The peer is chatty for 1.8 s, past three idle bounds, then goes silent; the link is judged when the peer has
         // sent its last frame, not at a time the test guesses.
         let done = Arc::new(AtomicBool::new(false));
@@ -1010,7 +1030,7 @@ async fn every_slack_ping_is_answered_with_its_payload_while_the_consumer_stalls
 #[tokio::test]
 async fn a_peer_that_only_pings_keeps_its_link() {
     let idle = Duration::from_millis(700);
-    bounded(steady(idle, || async move {
+    bounded(steady(idle / 2, || async move {
         // The peer pings every 40 ms for 1.4 s, twice the idle bound (17 times its own gap), and never reads, so
         // never answers ours.
         let done = Arc::new(AtomicBool::new(false));
@@ -1048,7 +1068,7 @@ async fn a_peer_that_only_pings_keeps_its_link() {
 
 #[tokio::test]
 async fn a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(1000), || async move {
         // Socket 0 says hello and vanishes with no close and no disconnect; socket 1 says nothing. The idle bound
         // (60 s) is far past the test, so only the end of stream can have ended socket 0.
         let go = Arc::new(AtomicBool::new(false));
@@ -1078,15 +1098,14 @@ async fn a_bare_end_of_stream_is_replaced_within_the_pacing_and_latches_a_gap() 
         go.store(true, Ordering::SeqCst);
         eventually("the replacement", || times.lock().unwrap().len() == 2).await;
         let t = times.lock().unwrap().clone();
-        assert!(
-            t[1] - t[0] < Duration::from_secs(5),
-            "replaced by the idle bound, not by the end: {:?}",
-            t[1] - t[0]
-        );
+        let replaced_in = t[1] - t[0];
         assert!(socket.gap().is_some_and(|g| g.cause == GapCause::Reconnect));
         socket.stop().await;
         fake.shutdown().await;
-    })
+        (replaced_in < Duration::from_secs(5))
+            .then_some(())
+            .ok_or_else(|| format!("replaced by the idle bound, not by the end: {replaced_in:?}"))
+    }))
     .await;
 }
 
@@ -1105,7 +1124,7 @@ fn the_product_numbers_are_the_measured_ones() {
 
 #[tokio::test]
 async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() {
-    bounded(async {
+    bounded(steady(Duration::from_millis(1000), || async move {
         // The peer sends acknowledged frames and never reads, so the client's acknowledgements fill the buffers
         // and one write stalls. Idle is 60 s, so only the write bound can end the socket; the peer times from its
         // stalled send, if any, to the connection dropping.
@@ -1144,13 +1163,8 @@ async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() 
         let out = ended.lock().unwrap().take().unwrap();
         // The write bound (200 ms) and the close wait (300 ms), with 2.5 s of slack for a slow host. An unbounded
         // write never drops the connection, so the flood ends held, stalled.
-        match out {
-            Flood::Dropped(stalled) => {
-                assert!(
-                    stalled.is_none_or(|s| s < Duration::from_millis(3000)),
-                    "{stalled:?}"
-                )
-            }
+        let late = match out {
+            Flood::Dropped(stalled) => stalled.filter(|s| *s >= Duration::from_millis(3000)),
             Flood::Held {
                 stalled: true,
                 frames,
@@ -1158,11 +1172,14 @@ async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() 
             Flood::Held { frames, .. } => {
                 panic!("the flood never stalled a write within its caps: {frames} frames")
             }
-        }
+        };
         eventually("the replacement", || fake.sockets().2 >= 2).await;
         socket.stop().await;
         fake.shutdown().await;
-    })
+        late.map_or(Ok(()), |s| {
+            Err(format!("the stalled write was dropped late: {s:?}"))
+        })
+    }))
     .await;
 }
 
