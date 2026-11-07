@@ -872,3 +872,48 @@ A landing's record goes here, with its measured times; the package page holds on
   real-daemon assertion composing its own path while the leg gets the canonical state folder, which on Windows is verbatim
   and would have given `//?/C:/...`; a third round, bounded to that fix, ran on the session's decision. Its two text
   should-fixes ride the next agents change.
+- The session start after a clear, 2026-11-07: builder launched 10:51, main 11:36 (cfa67f9ab), 45 minutes. A regression
+  seen by the maintainer: the hook entries that ran the comm session start after `/clear` and a compaction were lost when the
+  hooks moved into the launch recipe. Every Claude row leg's `--settings` now carries SessionStart on `clear` and `compact`;
+  the hook runs a read-only session start that prints the handle, the line naming the handoff, the open question and the
+  unread count, joins nothing and writes nothing, so the row's work-state survives a clear. It stands down when comm hooks
+  are off, sends a refusal's reason to stdout and always exits 0; it lives with the registry and the installer ships it flat.
+  A `/resume` typed in a live row runs nothing, and rows started before the update get it at their next start. About 50
+  product and 150 test lines. Where the minutes went: the build 8; two review rounds of 16 and 13 minutes (blockers 1, 0);
+  one fix round of 5; two scoped gates of 10, each beside its review. Round 1 found that the first form re-joined the
+  session, and a join writes a fresh registry entry that keeps only the open question, so a compaction in mid-turn ended the
+  row gray and dropped a stamped wait; the fix found the join records nothing a clear changes and made the start read-only.
+  Three should-fixes are left for a later messaging change: the read-only start's tail repeats the full start's (two of its
+  lines unpinned), its unread line takes the inbox lock, and its failure line reuses wording about sending.
+- Destroying a session, 2026-11-07: builder launched 10:56, main 11:55 (fb209be81, 35bd32680, 201ba89b5), 59 minutes. Seen by
+  the maintainer: destroying a session left the window in between. The window's own destroy bounced to the default row, and a
+  destroy learned from a listing (another window, the command line, a row's end, another computer) never compared the list
+  with the selection, so the view stayed on a session that no longer existed. One decision both paths call now moves the
+  view to the next session in the Sessions list, below else above, across computers, and shows the no-session state with an
+  empty pane only when no session remains; destroying another session changes nothing. About 230 product and 160 test
+  lines. Where the minutes went: the build 6; three review rounds of 11, 12 and 14 minutes (blockers 1, 0, 0); fix rounds of
+  4 and about 20 (the second added the move across computers, the session's decision, and a native fixture that runs only in
+  the hosted release gate); two scoped gates of 2 minutes; moving the commits onto a main that had moved, about 3. Each round
+  found real defects: the last session left its dead pane painted, two quick destroys could land on a row already gone, the
+  wiring was unpinned, and a pending destroy's note lived too short or too long. The third round's six should-fixes are the
+  follow-up below.
+- Two tests that passed only on a slow run, 2026-11-07: builder launched 11:38, main 12:05 (f1738deba), 27 minutes. The gate
+  is to run its test jobs 20 at a time; measured at 20, the quarto shutdown test left its stub sleeper alive past its end
+  (the gate's leftover check failed) and the dropped-chat test read the listener's count before it fell to one. The sleeper
+  now waits on a file the test removes, and the test asserts it gone; the chat test polls the count to one within its bound.
+  Test lines only, about 13. Where the minutes went: the build 5; one review round of 21 minutes, no blocker, with 50-run
+  loops under load; two scoped gates of 3 and 2 minutes, the second at 20 jobs. Under extreme starvation the quarto test
+  failed 4 of 30 at its unchanged five-second start bound, a note. From this landing the gate runs 20 jobs at once, or 10
+  when the build server's load is above 32 at the start, and its user-manager tests run beside the release gate.
+- Destroying a session, the follow-up, 2026-11-07: builder launched 11:56, main 12:14 (6afa7e579), 18 minutes. A destroy's
+  note ends when its row is known alive (a kept answer, a refusal, a lost connection to that computer); the pane is emptied
+  before the view moves to a neighbor that must still attach, so the destroyed session's screen is never shown; the cleanup
+  of rows a listing drops is keyed by computer and name as given; the manual and the window's contract say the order the
+  code uses. About 90 product and 130 test lines. Where the minutes went: the build 4; one review round of 13 minutes, no
+  blocker; two scoped gates of 2 minutes at 20 jobs (the second after moving the commit onto a main that had moved). Its
+  three should-fixes are test pins: the pane clear before the move, a lost link clearing only its own computer's notes, and
+  one native-fixture assertion that cannot fail. The two native fixtures run only in the hosted release gate.
+- The conversation that held the seven landings above from the selection variable on (id 6113927f-2127-4aef-847a-70da25d024b3,
+  10:00 to 12:15) ends here, at about 465K tokens. Besides the landings it ran the diagnosis of the trust entries lost at an
+  account move (a measured lost update), two plans (the shared test tool with the test-run cut, and drawing in the preview
+  pane, whose three questions wait on the maintainer) and the change of rules at 10:44 that dropped the half-hour mark.
