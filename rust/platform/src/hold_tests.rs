@@ -254,34 +254,6 @@ fn an_async_point_polled_outside_a_runtime_waits_like_a_sync_one_and_fails_the_a
     assert!(text.contains("t.async.plain"), "{text}");
 }
 
-/// Every shape of key runs here, unarmed, in the dev build; the release build's expansion is this one (`ON` is the only
-/// difference), and the doc test in `hold.rs` compiles the same shapes under `cargo test --release --doc`.
-#[test]
-fn every_shape_of_key_compiles_and_an_unarmed_point_ignores_it() {
-    fn side() -> &'static str {
-        "side"
-    }
-    fn maybe() -> Result<String, std::io::Error> {
-        Ok("maybe".into())
-    }
-    fn run(dir: &std::path::Path, only: u64) -> Result<(), std::io::Error> {
-        crate::hold_point!("t.keys.display", dir.display());
-        crate::hold_point!("t.keys.call", side());
-        crate::hold_point!("t.keys.format", format!("k-{}", 7));
-        crate::hold_point!("t.keys.var", only);
-        crate::hold_point!("t.keys.try", maybe()?);
-        Ok(())
-    }
-    async fn later() {
-        async fn key() -> String {
-            "async".into()
-        }
-        crate::hold_point_async!("t.keys.async", key().await);
-    }
-    run(std::path::Path::new("/x"), 3).unwrap();
-    block_on(later());
-}
-
 #[test]
 fn every_call_of_an_arm_that_gave_up_fails_by_name() {
     let arm = Holds::here().arm("t.gaveup.calls").give_up_after(Duration::from_millis(100)).hold(1);
@@ -327,23 +299,39 @@ fn an_arrival_wakes_the_reached_that_waits_for_it() {
     }
 }
 
-/// A runtime dropped under a held async arrival cancels its future; the ticket's own waiter is a plain thread, so the
-/// give-up still lands on the arm and no ticket stays held with nobody waiting.
+/// Through the handle of a runtime already dropped, the wait's blocking task is cancelled unrun: the ticket must not
+/// stay held with the product gone on; the arm fails by name.
 #[test]
-fn an_async_point_held_when_its_runtime_is_dropped_fails_the_arm_by_name() {
-    let arm = Holds::here().arm("t.async.dropped").give_up_after(Duration::from_millis(200)).hold(1);
+fn an_async_point_through_a_dropped_runtimes_handle_fails_the_arm_by_name() {
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    let task = runtime.spawn(async { crate::hold_point_async!("t.async.dropped") });
-    runtime.block_on(arm.reached_async(0));
-    drop(task);
+    let handle = runtime.handle().clone();
+    drop(runtime);
+    let arm = Holds::here().arm("t.dead.handle").hold(1);
+    let (done, gone) = mpsc::channel();
+    std::thread::spawn(move || {
+        handle.block_on(async { crate::hold_point_async!("t.dead.handle") });
+        done.send(()).ok();
+    });
+    goes_on(&gone, "through a dead handle");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
+    assert!(text.contains("t.dead.handle") && text.contains("went on"), "{text}");
+    let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
+    assert!(text.contains("t.dead.handle"), "{text}");
+}
+
+/// A multi-thread runtime dropped while an async arrival is held: its give-up (or the lost waiter) lands on the arm.
+#[test]
+fn an_async_point_held_when_a_multi_thread_runtime_is_dropped_fails_the_arm_by_name() {
+    let arm = Holds::here().arm("t.dropped.multi").give_up_after(Duration::from_millis(200)).hold(1);
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).build().unwrap();
+    let _task = runtime.spawn(async { crate::hold_point_async!("t.dropped.multi") });
+    arm.reached(0);
     drop(runtime);
     let started = std::time::Instant::now();
     while catch_unwind(AssertUnwindSafe(|| { arm.arrivals(); })).is_ok() {
-        assert!(started.elapsed() < SEEN, "the held ticket was never given up: it reads Held with nobody waiting");
+        assert!(started.elapsed() < SEEN, "the held ticket was never failed: it reads Held with nobody waiting");
         std::thread::yield_now();
     }
-    let text = panic_text(catch_unwind(AssertUnwindSafe(|| arm.release(0))));
-    assert!(text.contains("t.async.dropped") && text.contains("went on"), "{text}");
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
-    assert!(text.contains("t.async.dropped"), "{text}");
+    assert!(text.contains("t.dropped.multi"), "{text}");
 }
