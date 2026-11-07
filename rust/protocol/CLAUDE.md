@@ -144,7 +144,10 @@ name is in this crate's one op table.
     them: `workspace_id` 256 bytes, `node_id` 4096, `start` before `end` by (line, byte), `len` 1 to 2 MiB
     (`MAX_SELECTION_LEN`), numbers typed (a string, a negative or a fractional number is refused). An unknown field is ignored
     (growth, as the chat family). Mechanism: one new op and new payloads, so `PROTOCOL_VERSION` stays 4; an older daemon
-    answers it as any unknown op. Limits: an older daemon ignores `drawing`, so it reads a drawing with `selection: null` as a clear and answers `shared`; the window must not send a drawing to a daemon that cannot take one (the window's piece, D6, gates on the daemon's version). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
+    answers it as any unknown op. Limits: a daemon built before the `drawing` field (one that has `selection.set`) ignores
+    `drawing`, so it reads a drawing with `selection: null` as a clear and answers `shared`; the window must not send a
+    drawing to a daemon that cannot take one, and the window's drawing share, when it is built, gates on the daemon's version
+    (unbuilt). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
     key is not refused (the codec reads a `Value`, the last wins). The `drawing` field is defaulted (absent reads as none and
     is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
     `{"figure": {"node_id"}}` (4096 bytes), each point `[x, y]` as `u16` fractions of the base's width and height
@@ -163,7 +166,7 @@ name is in this crate's one op table.
     paints them. Taking the maximum makes painting
     order-free, so the window painting segment by segment and the daemon painting the whole drawing get the same bytes.
     `CANVAS_DIMS` (1600 x 1000) and `INK_RGB` are the canvas raster and the one ink color. Test `ink_tests.rs`:
-    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 12 s as 15,360 full-diagonal segments, so a caller paints it off the UI thread and the connection's loop.
+    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 13 s at worst, one 16,384-point stroke of full-diagonal segments, so a caller paints it off the UI thread and the connection's loop.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
