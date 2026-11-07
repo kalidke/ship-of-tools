@@ -25,6 +25,16 @@ async fn bounded<T>(what: &str, f: impl Future<Output = T>) -> T {
     tokio::time::timeout(LONG, f).await.unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
+/// `eventually` with the file's own deadline, for waits on many snapshots at once.
+async fn until(what: &str, mut check: impl FnMut() -> bool) {
+    bounded(what, async {
+        while !check() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
 /// The fake's levers: its history answer, a gate the first history call waits on, the socket's feed and what it saw.
 struct Levers {
     mode: Arc<AtomicU8>,
@@ -214,7 +224,7 @@ async fn a_watch_is_admitted_and_bounded_per_connection() {
     let mut other = connect(services.clone()).await;
     assert_eq!(code(&other.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await), "too_many_watches");
     assert!(ok_watch(&other.ask(3, op::CHAT_WATCH, watch(&ids[0].0, "C0000")).await));
-    eventually("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
+    until("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -564,7 +574,9 @@ async fn a_stop_tells_each_connection_its_own_channels_and_an_idle_one_nothing()
     let (name, payload) = b.evt("b's chat.status for the stop").await;
     assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0BBBB"])));
     // The idle connection's first frame after its hello is the reply to its ping.
-    assert_eq!(idle.ask(9, op::PING, json!({})).await["ok"], true);
+    idle.send(9, op::PING, json!({})).await;
+    let first = idle.frame("the idle connection's first frame").await;
+    assert_eq!((first.kind, first.id, first.op.as_str()), (Kind::Res, 9, op::PING), "{first:?}");
 }
 
 /// A burst larger than a page, delivered while the snapshot is held, reaches the watcher in pages the wire allows.
@@ -620,12 +632,12 @@ async fn a_closed_connections_channels_leave_the_model() {
     for (i, (row_id, _)) in ids.iter().enumerate().take(n - 1) {
         assert!(ok_watch(&a.ask(10 + i as u64, op::CHAT_WATCH, watch(row_id, &format!("C{i:04}"))).await));
     }
-    eventually("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
+    until("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
     let Conn { crx, ctx, task } = a;
     drop((crx, ctx));
     let _ = task.await.unwrap();
     assert!(hub.slots().is_empty());
     let mut b = connect(services.clone()).await;
     assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await));
-    eventually("the new channel's snapshot", || lv.histories.load(Ordering::SeqCst) == n).await;
+    until("the new channel's snapshot", || lv.histories.load(Ordering::SeqCst) == n).await;
 }
