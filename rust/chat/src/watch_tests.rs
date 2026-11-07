@@ -303,3 +303,24 @@ fn a_burst_after_the_events_were_taken_refuses_the_snapshot() {
     assert_eq!(w.loaded(C, t, vec![rec("1.000000", "fresh")], Some(gap(2))), Loaded::Complete);
     assert_eq!(texts(&w, C), ["fresh"]);
 }
+
+#[test]
+fn begin_applies_the_events_it_is_given_to_every_channel_whether_or_not_it_begins() {
+    let other = "C0BBBB";
+    let mut w = Watches::new();
+    let t = pending(&mut w);
+    w.loaded(C, t, vec![rec("1.000000", "a")], None);
+    w.watch(other).unwrap();
+    // The begun channel is another one: the edit of the first is applied, and the begun one goes pending.
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a2")] };
+    assert!(w.begin(other, taken).is_some());
+    assert_eq!(texts(&w, C), ["a2"], "an event for another channel was not applied");
+    // No snapshot begins (already pending), and the events are applied all the same.
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a3")] };
+    assert_eq!(w.begin(other, taken), None);
+    assert_eq!(texts(&w, C), ["a3"], "events given to a refused begin were thrown away");
+    // Nor for an unwatched channel.
+    let taken = Taken { gap: None, events: vec![edited("1.000000", "a4")] };
+    assert_eq!(w.begin("C0CCCC", taken), None);
+    assert_eq!(texts(&w, C), ["a4"]);
+}

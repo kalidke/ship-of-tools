@@ -141,6 +141,7 @@ impl Gap {
 
 /// What `Socket::take` handed over.
 #[derive(Debug, Default)]
+#[must_use = "the events in a Taken are gone from the socket"]
 pub struct Taken {
     pub gap: Option<Gap>,
     pub events: Vec<Normalized>,
@@ -258,8 +259,10 @@ impl Socket {
         })
     }
 
-    /// The next pending event, waiting at most `within`.
-    pub async fn next(&self, within: Duration) -> Option<Normalized> {
+    /// The next pending event, waiting at most `within`. Tests only: in the product `take` is the one way events leave
+    /// the socket, so a second reader cannot apply an older event after a newer one.
+    #[cfg(test)]
+    pub(crate) async fn next(&self, within: Duration) -> Option<Normalized> {
         let end = Instant::now() + within;
         loop {
             {
@@ -276,7 +279,8 @@ impl Socket {
     }
 
     /// Every pending event and the gap in force, read under one lock: an event that arrives or is lost after this
-    /// call is newer than the gap returned, and a loss after it is a gap this value does not name.
+    /// call is newer than the gap returned, and a loss after it is a gap this value does not name. The one way events
+    /// leave the socket; the caller applies what it takes in the call that took it.
     pub fn take(&self) -> Taken {
         let mut s = self.shared.state.lock().unwrap();
         s.bytes = 0;

@@ -1120,3 +1120,32 @@ async fn a_write_that_cannot_finish_retires_the_socket_within_the_write_bound() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn take_hands_over_every_pending_event_and_the_gap_and_frees_the_budget() {
+    bounded(async {
+        // Ten events of 900,000 bytes: the budget holds nine and the tenth is dropped into a gap.
+        let acked = Arc::new(AtomicUsize::new(0));
+        let batch: Vec<Value> = (0..10).map(|i| envelope(&format!("E{i}"), i, "hi", 900_000)).collect();
+        let go = Arc::new(AtomicBool::new(false));
+        let more = Some((go.clone(), envelope("EX", 99, "late", 900_000)));
+        let fake = fake(flood(batch, more, acked.clone())).await;
+        let socket = start(&fake, timing());
+        eventually("all acknowledged", || acked.load(Ordering::SeqCst) == 10).await;
+        let (count, _) = socket.pending();
+        let gap = socket.gap().expect("a byte overflow leaves a gap");
+        let taken = socket.take();
+        assert_eq!(taken.events.len(), count, "take dropped pending events");
+        assert_eq!(taken.gap, Some(gap));
+        assert_eq!(socket.pending(), (0, 0), "take left the byte budget charged");
+        assert_eq!(socket.gap(), Some(gap), "take cleared the gap");
+        // The budget is free again: one more big event is queued, not dropped.
+        go.store(true, Ordering::SeqCst);
+        eventually("the extra event acknowledged", || acked.load(Ordering::SeqCst) == 11).await;
+        assert_eq!(socket.pending().0, 1, "the event after a take was dropped");
+        assert_eq!(socket.gap(), Some(gap), "no new loss");
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
