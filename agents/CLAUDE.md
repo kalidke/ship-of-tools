@@ -216,6 +216,18 @@ of each.
   `resolve_ccx`, `agent_env`, `NESTING_ENV_VARS_TO_SCRUB`, `account_spawn_env`, `capsule_supervisor_env`,
   `row_self_file`, `own_sotd_bin`, the awareness env, accounts and their links, the folder-trust record and its
   declaration, the auto-memory flag, and `sotd agent-exec` and `accounts.list`.
+- The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, not yet called: the
+  handler that reads the file and publishes is unbuilt). `check_selection` accepts exactly the file's own text at the
+  window's range: it refuses (`not_file_text`) bytes that are not UTF-8 before the range's end, a CR not before an LF or
+  a U+2028, U+2029 or U+0085 before the end, a position outside its line or inside a character, and a `len` or `digest`
+  (`sot_protocol::selection_digest`) that differs from the file's text; the wire bounds neither, so this is the only
+  place a position near `u32::MAX` or a wrong `len` is refused. The bytes may be a prefix ending mid-character after
+  the range. `render_selection` builds the hook's one JSON object (`hookSpecificOutput` and `systemMessage`, nothing
+  else) with 1-based inclusive lines. Every cap counts UTF-16 code units, Claude Code's own count and never below a
+  character count: the range's text is cut at 2000 (suffix names the whole size), the path in the context at 4096, the
+  context is at most 9,000 and the message at most 200, a path cut from the left with `...`. Tests:
+  `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
+  `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.
 - The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`,
