@@ -500,14 +500,13 @@ owned by `docs/CLAUDE.md`.
 - **PANE-CONNECT** [feature] Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
   text preparation (the first glyph-atlas fill) and its first dial has no parked spare; hosted macOS first panes were
   1.26 to 1.45 s against 0.13 to 0.93 s later. An improvement, not a defect.
-- **SCRATCH-PAD** [feature] A drawable preview pane. A sketch is a file, an SVG in the workspace with one path per
-  stroke, versioned with git and previewed on every machine; a blank pad, or ink over an existing image as an overlay
-  SVG beside it. The preview pane takes press/drag/release in a drawing mode (as `ui/input/mouse.rs` does for the agent
-  pane's selection), strokes are kept in image-pixel coordinates through ADR 0022's capture mapping so they stay put
-  under zoom and pan, and a release appends the stroke to the SVG through `file.write`. One key toggles the mode, with
-  undo and clear. For the agent, the sketch is rasterized and sent through ADR 0022's capture-to-agent path. Owners:
-  fe-ui (input, the live stroke), files (the SVG write); needs an ADR, the manual's preview page and
-  `docs/integration.md` rows.
+- **SCRATCH-PAD** [feature] A drawable preview pane: the requirement "The agent sees what the user draws" in
+  `requirements.md`, approved by the maintainer 2026-11-07. Decided then: a drawing travels the selection's road (the row
+  has one slot, text or a drawing); the window draws the ink and the daemon composites the picture the agent reads with
+  one small rasterizer both use, in wire; drawings are not kept as files (the window keeps each row's drawing; the picture
+  is written inside the project for the agent); the left button draws and the right erases whole strokes. Owners: wire
+  (the shape and the raster), files (the picture), agents (the slot), fe-ui and fe-net (input, ink, sharing). Not built;
+  the window's pieces follow the selection's window side.
 
 ## distribution
 
