@@ -571,6 +571,9 @@ owned by `docs/CLAUDE.md`.
   then move the pin on purpose.
 - **RUST-YML-PUSH-FILTER** [note] `rust.yml`'s push filter omits `core/**` and `julia/**`, which its Rust tests exercise; a
   271-line catalog proves a 24-line runner (a source-spelling test).
+- **SECRET-SCAN-AFTER-PUSH** [note] The secret scan (`.github/workflows/gitleaks.yml`) runs only after a push and reads every
+  pushed branch, and the pre-push publish guard does not scan for secrets, so a real token committed on a branch is public
+  before anyone sees it. Seen when a made-up Slack app token in a test reached four pushed branches and turned main's scan red.
 
 ## chat
 

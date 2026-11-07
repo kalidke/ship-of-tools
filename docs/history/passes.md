@@ -708,3 +708,17 @@ A landing's record goes here, with its measured times; the package page holds on
   measured duration now runs beside a ticker and is judged only on an attempt with no pause as long as its margin; the review
   found the reconnect-pacing test more exposed than the one that went red, which is why the class was swept in a second round.
   The product's behavior under a stall is a stated limit. Load found a second, unrelated failure, CHAT-FLOOD-CAP-UNDER-LOAD.
+- The selection requirement, 2026-11-06: 22:26 to main 22:30, 4 minutes. The maintainer's answer to the selection plan (every
+  recommendation taken) put its requirement into `requirements.md` in the words he approved, checked against them by a script;
+  no reviewer read it, since the text was his. Scoped gate one minute, passed first time.
+- The selection op on the wire, 2026-11-06: 22:31 to main 22:59, 28 minutes, inside. `selection.set`, its reply and the one
+  selection digest, every payload bounded at decode, built beside the chat's hub piece in another worktree. 100 product and 110
+  test lines. The first scoped gate passed in two minutes; the review found one blocker, a test gap: the digest was compared only
+  with itself, so a version hashing one byte per character passed, and fixed vectors now pin it to the UTF-8 bytes. A second
+  review passed it, and the gate passed again.
+- The secret scan's allowlist for a chat test fixture, 2026-11-06: 23:14 to main 23:31, 17 minutes. Main's hosted secret scan
+  went red on the selection op's merge, from a made-up Slack app token in the chat hub piece's tests: the scan reads every
+  pushed branch, and four unmerged branches of that piece carried it. Deleting those branches was refused as destructive and
+  stays with the maintainer, so the value is allowed by its exact text under the app-token rule only, as the other test
+  fixtures are; a full-history scan then found nothing. The same run's documentation job failed on a network reset during
+  `npm install`, and its rerun was requested. The scan's timing is SECRET-SCAN-AFTER-PUSH.
