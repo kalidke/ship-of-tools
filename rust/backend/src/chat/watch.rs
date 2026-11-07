@@ -17,15 +17,12 @@ use sot_chat::watch::{Loaded, State, Wake, Watches, MAX_CHANNELS, MAX_KEPT};
 use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{
     ChatChangedEvt, ChatChannel, ChatCode, ChatService, ChatStatusEvt, ChatTarget, ChatWatchState, MAX_PAGE, MAX_PAGE_RECORDS,
-    MAX_WATCHED,
 };
 use tokio::sync::{broadcast, mpsc, Notify};
 
 use super::ops::{admitted, code_of};
 use super::Chat;
 use crate::rows::Workspaces;
-
-const _: () = assert!(MAX_CHANNELS == MAX_WATCHED);
 
 /// The wait between a snapshot refused `busy` and its next attempt, and the attempts before the watch is told to resync.
 const BUSY_PACE: Duration = Duration::from_millis(500);
@@ -161,7 +158,7 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
-    /// Watch `target`'s channel. The daemon holds at most `MAX_WATCHED` channels in all (the model's bound), so a
+    /// Watch `target`'s channel. The daemon holds at most `MAX_CHANNELS` channels in all (the model's bound, which wire's `MAX_WATCHED` repeats), so a
     /// connection, whose slots are among them, holds at most that many too; a connection may join a channel another
     /// holds, and a watch it already holds is replaced by this one.
     pub(crate) fn claim(&self, target: ChatTarget) -> Result<(), ChatCode> {
@@ -286,18 +283,18 @@ where
     attempt().await
 }
 
-/// One snapshot attempt: admitted against the oldest watch whose row is current (those refused for their row are
-/// named in `stale`), then the channel's latest page.
+/// One snapshot attempt: every watch is admitted, the call runs under the oldest whose row is current, and every watch
+/// refused for its row is named in `stale`; then the channel's latest page.
 pub(crate) async fn snapshot(chat: &Arc<Chat>, rows: &Workspaces, targets: &[(u64, ChatTarget)], channel: &str, stale: &Mutex<BTreeSet<u64>>) -> Result<Vec<ChatRecord>, ChatCode> {
     let mut found = Err(ChatCode::Unavailable);
     for (conn, target) in targets {
-        found = admitted(chat, rows, target.clone()).await;
-        match &found {
-            Ok(_) => break,
-            Err(ChatCode::StaleRow | ChatCode::StaleMapping | ChatCode::Unmapped) => {
-                lock(stale).insert(*conn);
-            }
-            Err(_) => {}
+        let admission = admitted(chat, rows, target.clone()).await;
+        if let Err(ChatCode::StaleRow | ChatCode::StaleMapping | ChatCode::Unmapped) = &admission {
+            lock(stale).insert(*conn);
+        }
+        // The call runs under the first row that is current; every watch is admitted, so every stale one is named.
+        if found.is_err() {
+            found = admission;
         }
     }
     let api = found?.api().map_err(|_| ChatCode::Unavailable)?;

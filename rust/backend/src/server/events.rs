@@ -392,7 +392,7 @@ where
 /// Translates one chat event into its evt frame for the connection `conn`. A `chat.changed` is written only when the
 /// connection still watches its channel when it reaches the loop (a connection that never watched, or that unwatched or
 /// was refused since, is written none), and a `chat.status` only to the connections its entries name, each its own.
-/// A lagged one writes `bus.lost`: the chat events are `chat.changed`'s, and the window resyncs every watch.
+/// A lagged one writes `bus.lost` for `chat.changed`; what a window does with it is the window's.
 pub(super) async fn write_chat_event<W>(
     tx: &mut W,
     evt: Result<crate::chat::watch::Evt, broadcast::error::RecvError>,

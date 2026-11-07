@@ -1,5 +1,6 @@
 use super::*;
 use sot_protocol::chat::{ChatAuthor, Origin};
+use sot_protocol::ops::MAX_WATCHED;
 use std::sync::atomic::AtomicU32;
 
 fn record(ts: &str, text: &str) -> ChatRecord {

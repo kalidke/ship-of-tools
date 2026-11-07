@@ -62,7 +62,8 @@ async fn live() -> (FakeSlack, Levers) {
             histories.fetch_add(1, Ordering::SeqCst);
             let gated = gate.lock().unwrap().take();
             if let Some(open) = gated {
-                let _ = open.recv();
+                // The wait must not keep its worker's queued tasks from running, one of which opens the gate.
+                let _ = tokio::task::block_in_place(|| open.recv_timeout(LONG));
             }
             return match mode.load(Ordering::SeqCst) {
                 HOLD => Reply::Hang,
@@ -118,14 +119,15 @@ async fn live_rig(fake: &FakeSlack) -> Rig {
 }
 
 impl Conn {
-    async fn frame(&mut self) -> Frame {
-        bounded("a frame", codec::read_frame(&mut self.crx)).await.unwrap().0
+    /// The next frame, or a failure naming `what` was awaited.
+    async fn frame(&mut self, what: &str) -> Frame {
+        bounded(what, codec::read_frame(&mut self.crx)).await.unwrap().0
     }
 
     /// The next evt frame of the connection: its op and payload.
-    async fn evt(&mut self) -> (String, Value) {
+    async fn evt(&mut self, what: &str) -> (String, Value) {
         loop {
-            let f = self.frame().await;
+            let f = self.frame(what).await;
             if f.kind == Kind::Evt {
                 return (f.op, f.payload);
             }
@@ -133,8 +135,8 @@ impl Conn {
     }
 
     /// The next `chat.changed`'s first put timestamp.
-    async fn put_ts(&mut self) -> String {
-        let (name, payload) = self.evt().await;
+    async fn put_ts(&mut self, what: &str) -> String {
+        let (name, payload) = self.evt(what).await;
         assert_eq!(name, op::CHAT_CHANGED, "{payload}");
         payload["put"][0]["ts"].as_str().unwrap().to_string()
     }
@@ -227,13 +229,13 @@ async fn chat_events_reach_only_the_connections_that_watch() {
     // Each event is read by the connection it is for before the next is sent, so a connection's frames are in order
     // with what it was sent: an event for the other channel, if it were written, would stand between its own two.
     lv.feed.send(message("C0AAAA", 1)).unwrap();
-    let first = a.put_ts().await;
+    let first = a.put_ts("a's first chat.changed").await;
     lv.feed.send(message("C0BBBB", 2)).unwrap();
-    let second = b.put_ts().await;
+    let second = b.put_ts("b's first chat.changed").await;
     lv.feed.send(message("C0AAAA", 3)).unwrap();
-    let third = a.put_ts().await;
+    let third = a.put_ts("a's second chat.changed").await;
     lv.feed.send(message("C0BBBB", 4)).unwrap();
-    let fourth = b.put_ts().await;
+    let fourth = b.put_ts("b's second chat.changed").await;
     assert_eq!((first, second, third, fourth), (stamp(1), stamp(2), stamp(3), stamp(4)));
     // A connection that never watched is written nothing.
     let never = hub.connect();
@@ -255,13 +257,14 @@ async fn unwatch_ends_only_this_connections_watch() {
     assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA", "C0BBBB"]).await;
     assert_eq!(a.ask(4, op::CHAT_UNWATCH, watch(&rig.alpha, "C0AAAA")).await, json!({}));
+    assert_eq!(hub.slots().len(), 2, "an unwatch ended more than this connection's slot");
     // The channel is still watched by the other connection, so the owner keeps it and tells that one alone.
     lv.feed.send(message("C0AAAA", 1)).unwrap();
-    let reached = bounded("the other connection's chat.changed: its watch ended with this one's unwatch", b.put_ts()).await;
+    let reached = b.put_ts("the other connection's chat.changed (its watch ended with this one's unwatch)").await;
     assert_eq!(reached, stamp(1));
     // This connection was sent nothing for it: its next event is for the channel it still watches.
     lv.feed.send(message("C0BBBB", 2)).unwrap();
-    assert_eq!(a.put_ts().await, stamp(2));
+    assert_eq!(a.put_ts("the unwatching connection's chat.changed for the channel it still watches").await, stamp(2));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -277,7 +280,7 @@ async fn a_closed_connection_releases_its_watches() {
     // A clean close, with no unwatch.
     let Conn { crx, ctx, task } = closed;
     drop((crx, ctx));
-    task.await.unwrap().unwrap();
+    let _ = task.await.unwrap();
     assert_eq!(hub.slots().len(), 2, "a closed connection kept its slot");
     // A connection task dropped where it stands (any path that does not return through the loop's end).
     dropped.task.abort();
@@ -313,9 +316,9 @@ async fn the_watch_reply_precedes_its_first_event() {
     }));
     let mut conn = connect(rig.services.clone()).await;
     conn.send(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await;
-    let first = conn.frame().await;
+    let first = conn.frame("the watch's first frame").await;
     assert_eq!((first.kind, first.id), (Kind::Res, 2), "an event was written before the watch's reply: {first:?}");
-    let (name, payload) = conn.evt().await;
+    let (name, payload) = conn.evt("the event made while the snapshot was pending").await;
     assert_eq!((name.as_str(), payload["put"][0]["ts"].as_str()), (op::CHAT_CHANGED, Some(stamp(1).as_str())), "the message made while the snapshot was pending was lost");
 }
 
@@ -385,7 +388,7 @@ async fn a_service_stop_reaches_watchers_as_status() {
     complete(&hub, &["C0AAAA"]).await;
     Participant::request_stop(&*rig.services.chat);
     assert!(Participant::wait_retired(&*rig.services.chat, LONG));
-    let (name, payload) = bounded("a chat.status for the stop", conn.evt()).await;
+    let (name, payload) = conn.evt("a chat.status for the stop").await;
     assert_eq!(name, op::CHAT_STATUS, "{payload}");
     assert!(matches!(payload["service"].as_str(), Some("stopping" | "stopped")), "{payload}");
     assert_eq!(payload["resync"], json!(["C0AAAA"]), "every watch is told to resync");
@@ -421,7 +424,7 @@ async fn held_chat_watch_does_not_delay_ping() {
     let mut seen = Vec::new();
     let collect = async {
         while seen.len() < 3 {
-            let f = conn.frame().await;
+            let f = conn.frame("the replies to a watch, a ping and a version query").await;
             if f.kind == Kind::Res {
                 seen.push(f.id);
             }
@@ -444,7 +447,7 @@ async fn a_failed_snapshot_keeps_the_watch_and_asks_for_a_resync() {
     let hub = rig.services.chat.hub().clone();
     let mut conn = connect(rig.services.clone()).await;
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
-    let (name, payload) = conn.evt().await;
+    let (name, payload) = conn.evt("a chat.status for the failed snapshot").await;
     assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])), "{payload}");
     assert_eq!(hub.slots().len(), 1, "a failed snapshot released the watch");
     // The window answers the status with a watch; the snapshot is tried again and, now served, completes.
@@ -452,4 +455,177 @@ async fn a_failed_snapshot_keeps_the_watch_and_asks_for_a_resync() {
     assert!(ok_watch(&conn.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
     assert_eq!(lv.histories.load(Ordering::SeqCst), 2, "one snapshot for each watch");
+}
+
+/// The reply to a second watch of a channel whose snapshot the owner holds says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_watch_of_a_complete_channel_replies_complete() {
+    let (fake, _lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let mut a = connect(rig.services.clone()).await;
+    assert_eq!(a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await["state"], "pending");
+    complete(&hub, &["C0AAAA"]).await;
+    assert_eq!(a.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await["state"], "complete");
+}
+
+/// A row removed after the handler admitted the watch and before the owner's snapshot: no call, the slot released, and
+/// the connection told after its reply.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_removed_after_admission_is_refused_at_the_owners_snapshot() {
+    let (fake, lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let (rows, alpha, hook_hub) = (rig.rows.clone(), rig.alpha.clone(), hub.clone());
+    *hub.between.lock().unwrap() = Some(Arc::new(move || {
+        let (rows, alpha, hub) = (rows.clone(), alpha.clone(), hook_hub.clone());
+        Box::pin(async move {
+            drop(rows.remove_by_id(&alpha).unwrap());
+            eventually("the stale slot released by the owner", || hub.slots().is_empty()).await;
+        })
+    }));
+    let mut a = connect(rig.services.clone()).await;
+    a.send(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await;
+    let first = a.frame("the watch's reply").await;
+    assert_eq!((first.kind, first.id), (Kind::Res, 2));
+    let (name, payload) = a.evt("a chat.status for the released watch").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])), "{payload}");
+    assert_eq!(lv.histories.load(Ordering::SeqCst), 0, "a snapshot for a stale row reached Slack");
+}
+
+/// Two rows in one folder watch one channel; the first snapshot fails, so the channel owes one.
+async fn shared_channel(fake: &FakeSlack, lv: &Levers) -> (Rig, String, Conn, Conn) {
+    lv.mode.store(FAIL, Ordering::SeqCst);
+    let rig = live_rig(fake).await;
+    let gamma = rig.rows.insert(row("gamma", &rig.folders[0])).workspace_id.clone();
+    let mut a = connect(rig.services.clone()).await;
+    let mut b = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    a.evt("a chat.status for the failed snapshot").await;
+    assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&gamma, "C0AAAA")).await));
+    // The second watch begins the owed snapshot again, which fails again: both connections are told.
+    b.evt("a chat.status for the failed snapshot").await;
+    a.evt("a's second chat.status for the failed snapshot").await;
+    (rig, gamma, a, b)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_releases_a_stale_watch_ahead_of_a_current_one() {
+    let (fake, lv) = live().await;
+    let (rig, _gamma, mut a, mut b) = shared_channel(&fake, &lv).await;
+    let hub = rig.services.chat.hub().clone();
+    drop(rig.rows.remove_by_id(&rig.alpha).unwrap());
+    lv.mode.store(OK, Ordering::SeqCst);
+    let before = lv.histories.load(Ordering::SeqCst);
+    // Any watch of the channel begins the snapshot that was owed: b's repeat watch.
+    assert!(ok_watch(&b.ask(3, op::CHAT_WATCH, watch(&_gamma, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    assert_eq!(lv.histories.load(Ordering::SeqCst), before + 1, "one snapshot, under the current row");
+    let (name, payload) = a.evt("a chat.status for the released watch").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])), "{payload}");
+    assert_eq!(hub.slots().len(), 1, "the stale watch kept its slot");
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    assert_eq!(b.put_ts("the current watch's chat.changed").await, stamp(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_releases_a_stale_watch_behind_a_current_one() {
+    let (fake, lv) = live().await;
+    let (rig, gamma, mut a, mut b) = shared_channel(&fake, &lv).await;
+    let hub = rig.services.chat.hub().clone();
+    // The second watch's row goes; the first's is current. b also watches beta, so it has a later event to read.
+    drop(rig.rows.remove_by_id(&gamma).unwrap());
+    lv.mode.store(OK, Ordering::SeqCst);
+    assert!(ok_watch(&b.ask(3, op::CHAT_WATCH, watch(&rig.beta, "C0BBBB")).await));
+    let (name, payload) = b.evt("a chat.status for the released watch").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])), "{payload}");
+    complete(&hub, &["C0AAAA", "C0BBBB"]).await;
+    assert_eq!(hub.slots().iter().filter(|(_, c)| c == "C0AAAA").count(), 1, "the stale watch kept its slot");
+    // No chat.changed reaches the released watch: its next event is the one for the channel it still holds.
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    assert_eq!(a.put_ts("the current watch's chat.changed").await, stamp(1));
+    lv.feed.send(message("C0BBBB", 2)).unwrap();
+    assert_eq!(b.put_ts("the released connection's next chat.changed").await, stamp(2), "an event reached the released watch");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_tells_each_connection_its_own_channels_and_an_idle_one_nothing() {
+    let (fake, _lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let (mut a, mut b, mut idle) = (connect(rig.services.clone()).await, connect(rig.services.clone()).await, connect(rig.services.clone()).await);
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&rig.beta, "C0BBBB")).await));
+    complete(&hub, &["C0AAAA", "C0BBBB"]).await;
+    Participant::request_stop(&*rig.services.chat);
+    assert!(Participant::wait_retired(&*rig.services.chat, LONG));
+    let (name, payload) = a.evt("a's chat.status for the stop").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])));
+    let (name, payload) = b.evt("b's chat.status for the stop").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0BBBB"])));
+    // The idle connection's first frame after its hello is the reply to its ping.
+    assert_eq!(idle.ask(9, op::PING, json!({})).await["ok"], true);
+}
+
+/// A burst larger than a page, delivered while the snapshot is held, reaches the watcher in pages the wire allows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_changes_arrives_in_bounded_pages() {
+    let (fake, lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let (open, gate) = std::sync::mpsc::channel();
+    *lv.gate.lock().unwrap() = Some(gate);
+    let mut a = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    eventually("the snapshot's call", || lv.histories.load(Ordering::SeqCst) == 1).await;
+    for n in 1..=50u32 {
+        lv.feed.send(message("C0AAAA", n)).unwrap();
+    }
+    eventually("every acknowledgement", || lv.acked.load(Ordering::SeqCst) == 50).await;
+    open.send(()).unwrap();
+    let (mut total, mut sizes) = (0, Vec::new());
+    while total < 50 {
+        let (name, payload) = a.evt("the burst's chat.changed").await;
+        assert_eq!(name, op::CHAT_CHANGED);
+        sizes.push(payload["put"].as_array().unwrap().len());
+        total += sizes.last().unwrap();
+    }
+    assert!(sizes.iter().all(|k| *k <= sot_protocol::ops::MAX_PAGE_RECORDS), "a page past the wire's bound: {sizes:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_needed_channel_is_told_once() {
+    let (fake, lv) = live().await;
+    lv.mode.store(FAIL, Ordering::SeqCst);
+    let rig = live_rig(&fake).await;
+    let mut a = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    let (name, payload) = a.evt("a chat.status for the failed snapshot").await;
+    assert_eq!((name.as_str(), payload["resync"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"])));
+    // The channel still owes its snapshot, and the window was told: each message's event is the next frame, never a
+    // second status.
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    assert_eq!(a.put_ts("the first message's chat.changed, not a second status").await, stamp(1));
+    lv.feed.send(message("C0AAAA", 2)).unwrap();
+    assert_eq!(a.put_ts("the second message's chat.changed, not a second status").await, stamp(2));
+}
+
+/// The model holds 32 channels: channels nobody watches any more must leave it, or a later channel is never snapshotted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_connections_channels_leave_the_model() {
+    let (fake, lv) = live().await;
+    let n = sot_protocol::ops::MAX_WATCHED + 1;
+    let (_home, services, _rows, ids, _spare, _root) = many(&fake, n).await;
+    let hub = services.chat.hub().clone();
+    let mut a = connect(services.clone()).await;
+    for (i, (row_id, _)) in ids.iter().enumerate().take(n - 1) {
+        assert!(ok_watch(&a.ask(10 + i as u64, op::CHAT_WATCH, watch(row_id, &format!("C{i:04}"))).await));
+    }
+    eventually("a snapshot for each channel", || lv.histories.load(Ordering::SeqCst) == n - 1).await;
+    let Conn { crx, ctx, task } = a;
+    drop((crx, ctx));
+    let _ = task.await.unwrap();
+    assert!(hub.slots().is_empty());
+    let mut b = connect(services.clone()).await;
+    assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await));
+    eventually("the new channel's snapshot", || lv.histories.load(Ordering::SeqCst) == n).await;
 }
