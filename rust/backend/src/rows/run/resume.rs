@@ -69,6 +69,11 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         .filter(|ws| !workspaces.is_inert_default_anchor(ws))
         .collect();
 
+    // A selection file an earlier process left names a window that is gone; one a live connection set since survives.
+    for ws in workspaces.list() {
+        crate::agents::selection::clear_unowned(&state_root, &ws.workspace_id);
+    }
+
     // Covers both boot load and adoption of a still-live prior authority.
     for ws in &capsule_rows {
         super::observer::ensure_running(&workspaces, ws);
@@ -228,3 +233,7 @@ fn log_orphaned_state_dirs(state_root: &Path, workspaces: &Workspaces) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "resume_selection_tests.rs"]
+mod selection_tests;

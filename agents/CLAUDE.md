@@ -245,13 +245,25 @@ of each.
   reached only where a test writes the marker. Codex is a kind that takes a selection until the plan's H2 decides whether
   Codex hears one; if H2 fails Codex rows will answer `no_agent`. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
   file's JSON escapes. The published text is the file's text at the read; a file that changes
-  later leaves that snapshot until the window clears it. Limits: two connections setting one row race, the shared
-  temporary file included (the lock is A4's); on Windows a publish or removal that meets an open read can fail, which is
-  `publish_failed` and the old file may remain. Unbuilt: the map of who set each file, the removal at a connection's end and the start-up walk (A4); the hook, the leg's
+  later leaves that snapshot until the window clears it. Withdrawal: one process-wide map behind one lock holds per
+  row the roster serial of the connection that set the file and the file's path; every publish and removal holds the
+  lock (never across an `.await`), so two connections setting one row are serialized and the newest accepted selection
+  wins and owns the file. An accepted selection records its setter; a clear, a refusal, `no_agent` and a failed
+  publish drop the row's entry; `not_a_window` changes nothing. `ClientGuard::drop` calls `selection::forget(serial)`,
+  which removes every file that serial set and none another set (a redialed window's old connection cannot erase what
+  its new one sent). `rows::run::resume::resume_all` calls `selection::clear_unowned` for every registered row first,
+  which removes the row's file only when the map holds no entry for it, so a file an earlier process left goes and a
+  share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
+  connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
+  Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
+  entry is dropped, and the next walk removes the file; a daemon start that ends its rows without a resume
+  (the startup Cleanup) runs no walk; on Windows a publish or removal that meets an open read can fail, which is
+  `publish_failed` and the old file may remain. Unbuilt: the hook, the leg's
   variable and writing the marker (A5); the window's clear after an error reply (A7). Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
   row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`
-  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`); `server::context::tests::only_a_named_frontends_connection_may_share_a_selection` (real connections of each
+  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`),
+  `rows::run::resume::selection_tests::the_walk_clears_each_registered_rows_unowned_selection` (the walk's call); `server::context::tests::only_a_named_frontends_connection_may_share_a_selection` (real connections of each
   role: only a named `fe` is not `not_a_window`).
 - The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
   `check_selection` accepts exactly the file's own text at the

@@ -159,6 +159,8 @@ of each.
     that owner's newest live named `fe` connection, and `PageVerbs` publishes with its name and serial. The bus writer
     writes only to that serial, so another window and an older redial receive nothing. No live connection answers
     503 `window_gone` at the page server. A disconnect after selection remains the bus's best-effort delivery limit.
+    A connection's end also calls `agents::selection::forget(serial)` from `ClientGuard::drop`, beside the page
+    reaping, which removes the selection files that serial set (agents' contract; test `selection_tests.rs`).
     `fe.command.send` refuses `cmd: "page_reply"` with code `reserved` before publishing anything, with an explicit
     target or without one. Only the page server publishes that offer (`tests/page_channel.rs::a_session_cannot_open_a_reply_bar`).
 14. **A handler is given what it may use as arguments; the compiler enforces part of that.** The daemon's services are

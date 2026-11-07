@@ -172,6 +172,9 @@ Ends:
   concurrently, at most `LANE_CONCURRENCY` at a time, tries a refused end again once a second until the deadline it is
   given, and reports each row ended, not ended, or to forget; `forget` drops the rows a past end could not remove. With
   `run::resume::resume_all` and `Workspaces::close_gate_and_settle` that is all lifecycle calls.
+- The resume walk (`run::resume::resume_all`) first calls `agents::selection::clear_unowned` for every registered row,
+  whatever its runtime, which removes a selection file no connection of this process set (agents' contract; test
+  `run::resume::selection_tests`).
 - The start sweep removes every tombstone, and removes a state folder no registry names only on a whole load of every
   registry, when nothing runs in it, it holds no `row-scopes` record and nothing in it was written for 24 hours; a link
   at or inside the `workspaces` folder is never followed (`state_folder.rs`).

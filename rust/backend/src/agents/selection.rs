@@ -1,9 +1,13 @@
 //! `selection.set`: the row's selection file holds exactly the rendering of the last selection the daemon accepted for
 //! that row, or nothing. An accepted selection publishes `<row state folder>/selection.json`; a clear, every refusal and
-//! a failed publish remove it. The check and the rendering are `selection_check.rs`'s.
+//! a failed publish remove it. The check and the rendering are `selection_check.rs`'s. A process-wide map, behind one lock,
+//! keeps per row the connection that set the file; that connection's end (`forget`) and the start-up walk
+//! (`clear_unowned`) remove the files nobody live set.
 
 use std::io::Read;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context, Result};
 use sot_protocol::ops::{op, selection_code, SelectedText, SelectionSetReq, SelectionSetRes, SelectionState};
@@ -17,7 +21,7 @@ use crate::rows::spawn::state_root::state_dir_for;
 use crate::rows::{Workspace, Workspaces};
 
 /// The file's name in the row's state folder.
-const FILE_NAME: &str = "selection.json";
+pub(crate) const FILE_NAME: &str = "selection.json";
 
 /// The marker's name in the row's state folder: present when the row's current agent was started with the hook.
 const MARKER_NAME: &str = "selection-hook";
@@ -26,13 +30,48 @@ const MARKER_NAME: &str = "selection-hook";
 /// decides whether Codex hears one at all.
 const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
 
-/// `selection.set`: one reply. `window` is whether the connection is a window's, the server's one definition (`clients::window_name`). An accepted selection answers
-/// `shared` when the row's agent was started with the hook and `held` when it was not; a clear answers `shared`.
+/// The rows whose file a live connection set: row id to the setting connection's roster serial and the file's path.
+/// Every publish and removal of a selection file holds the lock, and no holder awaits.
+static SETTERS: LazyLock<Mutex<HashMap<String, (u64, PathBuf)>>> = LazyLock::new(Mutex::default);
+
+/// The map under its lock. A holder that panicked left the map whole (each change is one insert or remove), so a
+/// poisoned lock is taken as it is rather than stopping the daemon.
+fn setters() -> MutexGuard<'static, HashMap<String, (u64, PathBuf)>> {
+    SETTERS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Removes `file`; a failure has nobody to answer, so it is logged and the next start-up walk removes it.
+fn remove_logged(row: &str, file: &Path) {
+    if let Err(e) = sot_platform::host::remove_durable(file) {
+        tracing::warn!(row, error = %e, "a selection file was not removed; the next start-up walk removes it");
+    }
+}
+
+/// A connection's end: removes every file that `serial` set, and none another connection set.
+pub(crate) fn forget(serial: u64) {
+    setters().retain(|row, (setter, file)| {
+        if *setter == serial {
+            remove_logged(row, file);
+        }
+        *setter != serial
+    });
+}
+
+/// The start-up walk's call for one row: removes its file only when no live connection of this process set it.
+pub(crate) fn clear_unowned(state_root: &Path, row: &str) {
+    let map = setters();
+    if !map.contains_key(row) {
+        remove_logged(row, &state_dir_for(state_root, row).join(FILE_NAME));
+    }
+}
+
+/// `selection.set`: one reply. `window` is whether the connection is a window's, the server's one definition
+/// (`clients::window_name`); `serial` is its roster serial. An accepted selection answers `shared` when the row's agent was started with the hook and `held` when it was not; a clear answers `shared`.
 pub(crate) async fn handle_selection_set(
-    req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces, window: bool,
+    req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64,
 ) -> Result<HandlerOutput> {
     let req: SelectionSetReq = serde_json::from_value(payload).context("selection.set payload")?;
-    let frame = match set_selection(state_root, workspaces, window, &req) {
+    let frame = match set_selection(state_root, workspaces, window, serial, &req) {
         Ok(state) => Frame::res(req_id, op::SELECTION_SET, serde_json::to_value(SelectionSetRes { state })?),
         Err(code) => {
             let payload = serde_json::json!({ "error": format!("selection not shared: {code}"), "code": code });
@@ -44,7 +83,7 @@ pub(crate) async fn handle_selection_set(
 
 /// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`.
 fn set_selection(
-    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, req: &SelectionSetReq,
+    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, req: &SelectionSetReq,
 ) -> Result<SelectionState, &'static str> {
     if !window {
         return Err(selection_code::NOT_A_WINDOW);
@@ -52,12 +91,23 @@ fn set_selection(
     let state_root = state_root.ok_or(selection_code::PUBLISH_FAILED)?;
     let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
     let file = state_dir_for(state_root, &ws.workspace_id).join(FILE_NAME);
-    let withdraw = || sot_platform::host::remove_durable(&file).map_err(|_| selection_code::PUBLISH_FAILED);
+    let mut map = setters();
+    let result = apply(&file, &state_dir_for(state_root, &ws.workspace_id), &ws, req);
+    match (&result, &req.selection) {
+        (Ok(_), Some(_)) => map.insert(ws.workspace_id.clone(), (serial, file)),
+        _ => map.remove(&ws.workspace_id),
+    };
+    result
+}
+
+/// The file and its row's state folder after `req`, with the map's lock held by the caller.
+fn apply(file: &Path, folder: &Path, ws: &Workspace, req: &SelectionSetReq) -> Result<SelectionState, &'static str> {
+    let withdraw = || sot_platform::host::remove_durable(file).map_err(|_| selection_code::PUBLISH_FAILED);
     let Some(sel) = &req.selection else {
         withdraw()?;
         return Ok(SelectionState::Shared);
     };
-    let checked = if takes_selection(&ws.agent()) { render(&ws, sel) } else { Err(selection_code::NO_AGENT) };
+    let checked = if takes_selection(&ws.agent()) { render(ws, sel) } else { Err(selection_code::NO_AGENT) };
     let rendering = match checked {
         Ok(r) => r,
         Err(code) => {
@@ -65,11 +115,11 @@ fn set_selection(
             return Err(code);
         }
     };
-    if sot_platform::host::write_durable(&file, rendering.as_bytes()).is_err() {
+    if sot_platform::host::write_durable(file, rendering.as_bytes()).is_err() {
         let _ = withdraw();
         return Err(selection_code::PUBLISH_FAILED);
     }
-    let hooked = state_dir_for(state_root, &ws.workspace_id).join(MARKER_NAME).exists();
+    let hooked = folder.join(MARKER_NAME).exists();
     Ok(if hooked { SelectionState::Shared } else { SelectionState::Held })
 }
 

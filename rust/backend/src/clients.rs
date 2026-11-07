@@ -492,6 +492,7 @@ impl Drop for ClientGuard {
         if let Some(owner) = ended {
             crate::pages::site::remove_root(owner);
         }
+        crate::agents::selection::forget(self.serial);
         tracing::info!(
             client_id = %self.client_id,
             connections = count,
