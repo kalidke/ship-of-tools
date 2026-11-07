@@ -255,41 +255,61 @@ check "scoped: a shell group with no suite is a failure" '[ "$(rcof sc4 steps/sc
 
 # ---- longest first: the order jobs start in, one at a time (CAP=1), from the times file the last run kept
 times=$work/target/rc-gate-times.tsv
-ordfixture() { # <name>: three test binaries that log their start; the third carries a build hash in its name
+ordfixture() { # <name> [extra]: test binaries that log their start (the third has a build hash in its name, plus <extra> more)
     fixture "$1"
-    local t x
+    local t x i
     for t in bin-platform bin-backend; do
         printf '#!/bin/sh\necho %s >> "%s"\nexit 0\n' "$t" "$work/order-$1" > "$work/tools/$t"
     done
     x=$work/tools/bin-gamma-0123456789abcdef
     printf '#!/bin/sh\necho gamma >> "%s"\nexit 0\n' "$work/order-$1" > "$x"; chmod +x "$x"
     printf 'bin_gamma\t%s\t%s\n' "$x" "$repo/rust/platform" >> "$work/L-$1/tests.tsv"
+    for ((i = 1; i <= ${2:-0}; i++)); do
+        x=$work/tools/$(printf 'bin-k%03d' "$i")
+        printf '#!/bin/sh\necho k%03d >> "%s"\nexit 0\n' "$i" "$work/order-$1" > "$x"; chmod +x "$x"
+        printf 'k%03d\t%s\t%s\n' "$i" "$x" "$repo/rust/platform" >> "$work/L-$1/tests.tsv"
+    done
 }
 starts() { tr '\n' ' ' < "$work/order-$1"; }
 rm -f "$times"
-ordfixture o1; CAP=1 pipeline o1 -
-check "longest first: with no times file the jobs keep the producer's order" '[ "$(starts o1)" = "bin-platform bin-backend gamma " ]'
-printf 'bin:bin-backend\t50\nbin:bin-platform\t10\nbin:bin-gamma\t1\nbin:gone\t999\ngarbage\nbin:x\tabc\nbin:y\t5\textra\n' > "$times"
+ordfixture o1 100; CAP=1 pipeline o1 -
+check "longest first: with no times file 103 jobs keep the producer's order, past the 10th and the 100th" '[ "$(starts o1)" = "bin-platform bin-backend gamma $(printf "k%03d " $(seq 1 100))" ]'
+printf 'bin:bin_backend\t50\nbin:bin_platform\t10\nbin:bin_gamma\t1\nbin:gone\t999\ngarbage\nbin:x\tabc\nbin:y\t5\textra\n' > "$times"
 ordfixture o2; CAP=1 pipeline o2 -
-check "longest first: B named longer than A starts before A, and a key without the binary's hash names the hashed binary" '[ "$(starts o2)" = "bin-backend bin-platform gamma " ]'
+check "longest first: B named longer than A starts before A; the key names the target, not the hashed file" '[ "$(starts o2)" = "bin-backend bin-platform gamma " ]'
 check "longest first: a job the file names that the run lacks, and a malformed line, add no job and no error" '[ "$(wc -l < "$work/order-o2")" -eq 3 ] && [ "$(ls "$work/L-o2/rust" | grep -c "^bin-.*rc$")" -eq 3 ] && ! grep -q "rc-gate:" "$work/o2.out"'
-printf 'bin:bin-backend\t50\nbin:bin-platform\t10\n' > "$times"
+printf 'bin:bin_backend\t50\nbin:bin_platform\t10\n' > "$times"
 ordfixture o3; CAP=1 pipeline o3 -
 check "longest first: a job the file does not name starts before every named one" '[ "$(starts o3)" = "gamma bin-backend bin-platform " ]'
 check "longest first: every job starts once and writes its result once" '[ -z "$(sort "$work/order-o3" | uniq -d)" ] && [ "$(wc -l < "$work/order-o3")" -eq 3 ] && [ "$(rcof o3 rust/bin-gamma-0123456789abcdef)" = 0 ]'
+printf 'bin:bin_backend\t99999999999\nbin:bin_platform\t10\nbin:bin_gamma\tabc\n' > "$times"
+ordfixture o5; CAP=1 pipeline o5 -
+check "longest first: a value that is not under ten digits, on a job the run has, leaves it unmeasured" '[ "$(starts o5)" = "bin-backend gamma bin-platform " ]'
 rm -f "$times"
-# the dispatcher records each job's seconds under its hash-free key, a failed job's included; the run's end merges them
-fixture tm; printf '#!/bin/sh\nexit 3\n' > "$work/tools/bin-fail-0123456789abcdef"; chmod +x "$work/tools/bin-fail-0123456789abcdef"
+# keys are unique per job: two test binaries whose file names differ only in the hash, two suites with one basename
+ordfixture o6; printf '#!/bin/sh\nexit 0\n' > "$work/o6/agents/tests/test-c.sh"
+x=$work/tools/bin-gamma-fedcba9876543210; printf '#!/bin/sh\necho gamma2 >> "%s"\nexit 0\n' "$work/order-o6" > "$x"; chmod +x "$x"
+printf 'bin_gamma2\t%s\t%s\n' "$x" "$work/o6/rust/platform" >> "$work/L-o6/tests.tsv"
+CAP=1 pipeline o6 -
+check "keys: every job of a whole run has a key of its own, none shared by a hash-stripped name or a basename" '[ "$(cat "$work"/L-o6/times/* | wc -l)" -ge 10 ] && [ -z "$(cut -f1 "$work"/L-o6/times/* | sort | uniq -d)" ] && grep -q "^bin:bin_gamma2	" "$work"/L-o6/times/* && grep -q "^shell:comm/tests/test-c.sh	" "$work"/L-o6/times/* && grep -q "^shell:agents/tests/test-c.sh	" "$work"/L-o6/times/* && ! cut -f1 "$work"/L-o6/times/* | grep -q ":$" && grep -q "^julia	" "$work"/L-o6/times/* && grep -q "^install-smoke	" "$work"/L-o6/times/* && grep -q "^cargo-chain	" "$work"/L-o6/times/*'
+# the dispatcher records each job's seconds under its key, a failed job's included; the run's end merges them
+fixture tm; printf '#!/bin/sh\nsleep 2\nexit 3\n' > "$work/tools/bin-fail-0123456789abcdef"; chmod +x "$work/tools/bin-fail-0123456789abcdef"
+printf 'bin_fail\t%s/tools/bin-fail-0123456789abcdef\t%s\n' "$work" "$work/tm" >> "$work/L-tm/tests.tsv"
 RCG_D=$work/tm RCG_L=$work/L-tm RCG_CARGO_DIR=$work/tools RCG_JULIA_DIR=$work/tools HOME=$work CARGO_TARGET_DIR=$work/target XDG_RUNTIME_DIR=$work/run \
     bash "$gate" --job "$(printf 'bin\tbin-fail-0123456789abcdef\t%s\t%s' "$work/tools/bin-fail-0123456789abcdef" "$work/tm")"
-check "a job's seconds are recorded under its hash-free key, a failed job's too" '[ "$(rcof tm rust/bin-fail-0123456789abcdef)" = 3 ] && grep -qP "^bin:bin-fail\t[0-9]+$" "$work"/L-tm/times/*'
+check "a job's seconds are recorded under its key, after it ran, a failed job's too" '[ "$(rcof tm rust/bin-fail-0123456789abcdef)" = 3 ] && grep -qP "^bin:bin_fail\t[2-9]$" "$work"/L-tm/times/*'
 mergefn=$(sed -n '/^merge_times() {/,/^}/p' "$gate")
 check "the run's end writes this run's jobs over the file and keeps a job that did not run" '(
     eval "$mergefn"
     L=$work/L-tm; RCG_TIMES=$work/merged.tsv
-    printf "bin:bin-fail\t99\nbin:kept\t7\nbad line\n" > "$RCG_TIMES"
+    printf "bin:bin_fail\t99\nbin:kept\t7\nbad line\n" > "$RCG_TIMES"
     merge_times
-    [ "$(cut -f1 "$RCG_TIMES" | tr "\n" " ")" = "bin:bin-fail bin:kept " ] && grep -qP "^bin:kept\t7$" "$RCG_TIMES" && ! grep -q "99" "$RCG_TIMES")'
+    [ "$(cut -f1 "$RCG_TIMES" | tr "\n" " ")" = "bin:bin_fail bin:kept " ] && grep -qP "^bin:kept\t7$" "$RCG_TIMES" && ! grep -q "99" "$RCG_TIMES")'
+check "the first run on a target, with no times file, writes this run's jobs" '(
+    eval "$mergefn"
+    L=$work/L-tm; RCG_TIMES=$work/first.tsv; rm -f "$RCG_TIMES"
+    merge_times
+    grep -qP "^bin:bin_fail\t[2-9]$" "$RCG_TIMES")'
 
 # ---- the verdict, the summary lines and the refusals the main flows call, driven as they are called
 check "a whole run that passed ends ALLDONE" '[ "$(unset RCG_SCOPE_BASE; gate_verdict 0)" = ALLDONE ]'
