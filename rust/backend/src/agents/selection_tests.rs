@@ -47,8 +47,11 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     // 1. an accepted selection publishes exactly the rendering of the file's own text
     assert_eq!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 2), (1, 2), "pha\nbe"))), Ok(SelectionState::Held));
     assert_eq!(held(), Some(expect("a.txt", "pha\nbe", 1, 2)), "row 1: an accepted selection publishes the file");
-    assert!(held().unwrap().contains(&root.join("a.txt").to_string_lossy().into_owned()), "row 1: the absolute path");
-    assert!(held().unwrap().contains("\"Selection: a.txt lines 1-2\""), "row 1: the relative path");
+    // the file is JSON, so a Windows path's backslashes are escaped in it: compare the decoded text the agent reads
+    let doc: serde_json::Value = serde_json::from_str(&held().unwrap()).unwrap();
+    let context = doc["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(context.contains(&root.join("a.txt").to_string_lossy().into_owned()), "row 1: the absolute path");
+    assert_eq!(doc["systemMessage"], "Selection: a.txt lines 1-2", "row 1: the relative path");
 
     // 2. a second accepted selection replaces the first
     assert_eq!(set(&ws.workspace_id, Some(sel("files:b.txt", (1, 0), (1, 3), "two"))), Ok(SelectionState::Held));

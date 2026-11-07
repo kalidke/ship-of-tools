@@ -90,6 +90,11 @@ fn the_rendering_is_the_hook_output_both_agents_accept_within_the_caps() {
     );
     assert_eq!(v["systemMessage"], "Selection: src/f.jl lines 3-4");
 
+    // a Windows path reaches the agent with its backslashes, escaped only in the JSON text
+    let raw = render_selection(&file_text("x", 1, 1), "C:\\proj\\src\\f.jl", "src/f.jl");
+    assert!(!raw.contains("C:\\proj\\src"), "the file's JSON text escapes each backslash");
+    assert!(parse(&raw)["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains(" of C:\\proj\\src\\f.jl in the"));
+
     // a file name never breaks a line or carries an escape
     let v = parse(&render_selection(&file_text("x", 1, 1), "/p/a\nb\u{1b}[2J\u{2028}c\u{9b}\u{7f}", "a\nb\u{1b}c\u{2029}\u{9b}\u{7f}"));
     assert_eq!(v["systemMessage"], "Selection: a?b?c??? lines 1-1");
