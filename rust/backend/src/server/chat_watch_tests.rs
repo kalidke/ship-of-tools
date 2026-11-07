@@ -44,6 +44,9 @@ struct Levers {
     acked: Arc<AtomicUsize>,
     /// History calls that reached the fake, counted before the gate.
     histories: Arc<AtomicUsize>,
+    /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
+    /// `forget_permits` and opens it with `add_permits`.
+    hello: Arc<tokio::sync::Semaphore>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, and the socket says
@@ -57,8 +60,9 @@ async fn live() -> (FakeSlack, Levers) {
         feed,
         acked: Arc::new(AtomicUsize::new(0)),
         histories: Arc::new(AtomicUsize::new(0)),
+        hello: Arc::new(tokio::sync::Semaphore::new(1000)),
     };
-    let (mode, gate, acked, histories) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone());
+    let (mode, gate, acked, histories, hello) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -82,10 +86,11 @@ async fn live() -> (FakeSlack, Levers) {
             };
         }
         if seen.upgrade {
-            let (rx, acked) = (rx.clone(), acked.clone());
+            let (rx, acked, hello) = (rx.clone(), acked.clone(), hello.clone());
             return Reply::socket(move |mut peer| {
-                let (rx, acked) = (rx.clone(), acked.clone());
+                let (rx, acked, hello) = (rx.clone(), acked.clone(), hello.clone());
                 async move {
+                    hello.acquire().await.unwrap().forget();
                     peer.send(&json!({"type": "hello", "num_connections": 1})).await;
                     let mut rx = rx.lock().await;
                     while let Some(envelope) = rx.recv().await {
@@ -123,9 +128,14 @@ fn alpha_target(rig: &Rig) -> ChatTarget {
 /// The rig, once the service's socket has said hello (so its first gap is latched before any watch begins).
 async fn live_rig(fake: &FakeSlack) -> Rig {
     let rig = rig(fake).await;
-    let service = rig.services.chat.admit(&rig.rows, &alpha_target(&rig)).expect("the service runs");
-    eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, .. } if socket.connected)).await;
+    after_hello(&rig.services.chat, &rig.rows, &alpha_target(&rig)).await;
     rig
+}
+
+/// Waits until the service `target` is admitted against has had its socket say hello.
+async fn after_hello(chat: &Chat, rows: &Workspaces, target: &ChatTarget) {
+    let service = chat.admit(rows, target).expect("the service runs");
+    eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, .. } if socket.connected)).await;
 }
 
 impl Conn {
@@ -153,9 +163,14 @@ impl Conn {
 }
 
 /// Waits until the owner holds every channel's snapshot.
-async fn complete(hub: &Arc<Hub>, channels: &[&str]) {
+async fn complete(hub: &Arc<Hub>, channels: &[impl AsRef<str>]) {
     let probe = hub.connect();
-    eventually("the snapshots", || channels.iter().all(|c| probe.conn.state(c) == ChatWatchState::Complete)).await;
+    until("the snapshots", || channels.iter().all(|c| probe.conn.state(c.as_ref()) == ChatWatchState::Complete)).await;
+}
+
+/// `C0000`... for `n` channels.
+fn names(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("C{i:04}")).collect()
 }
 
 fn ok_watch(reply: &Value) -> bool {
@@ -180,10 +195,8 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     running(&chat).await;
     assert_eq!(chat.status(), Status::Running);
     // The socket's hello owes every complete watch a snapshot again, and owed snapshots are asked for by a watch, so a
-    // snapshot read before the hello would leave its channel `Needed`: watch only after it.
-    let target = ChatTarget { row: ids[0].0.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0000".to_string()).unwrap() };
-    let service = chat.admit(&rows, &target).expect("the service runs");
-    eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, .. } if socket.connected)).await;
+    // snapshot begun or completed before the hello would leave its channel `Needed`: watch only after it.
+    after_hello(&chat, &rows, &ChatTarget { row: ids[0].0.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0000".to_string()).unwrap() }).await;
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
@@ -197,7 +210,6 @@ async fn a_watch_is_admitted_and_bounded_per_connection() {
     let n = sot_protocol::ops::MAX_WATCHED + 1;
     let (_home, services, rows, mut ids, spare, _root) = many(&fake, n).await;
     let hub = services.chat.hub().clone();
-    let probe = hub.connect();
     let mut conn = connect(services.clone()).await;
     let mut id = 10;
     // The row's folder maps to C0000: another channel is a changed mapping.
@@ -230,7 +242,7 @@ async fn a_watch_is_admitted_and_bounded_per_connection() {
     let mut other = connect(services.clone()).await;
     assert_eq!(code(&other.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await), "too_many_watches");
     assert!(ok_watch(&other.ask(3, op::CHAT_WATCH, watch(&ids[0].0, "C0000")).await));
-    until("a snapshot for each channel", || (0..n - 1).all(|i| probe.conn.state(&format!("C{i:04}")) == ChatWatchState::Complete)).await;
+    complete(&hub, &names(n - 1)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -630,22 +642,64 @@ async fn a_needed_channel_is_told_once() {
 /// The model holds 32 channels: channels nobody watches any more must leave it, or a later channel is never snapshotted.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closed_connections_channels_leave_the_model() {
-    let (fake, lv) = live().await;
+    let (fake, _lv) = live().await;
     let n = sot_protocol::ops::MAX_WATCHED + 1;
     let (_home, services, _rows, ids, _spare, _root) = many(&fake, n).await;
     let hub = services.chat.hub().clone();
-    let probe = hub.connect();
     let mut a = connect(services.clone()).await;
     for (i, (row_id, _)) in ids.iter().enumerate().take(n - 1) {
         assert!(ok_watch(&a.ask(10 + i as u64, op::CHAT_WATCH, watch(row_id, &format!("C{i:04}"))).await));
     }
-    until("a snapshot for each channel", || (0..n - 1).all(|i| probe.conn.state(&format!("C{i:04}")) == ChatWatchState::Complete)).await;
+    complete(&hub, &names(n - 1)).await;
     let Conn { crx, ctx, task } = a;
     drop((crx, ctx));
     let _ = task.await.unwrap();
     assert!(hub.slots().is_empty());
     let mut b = connect(services.clone()).await;
     assert!(ok_watch(&b.ask(2, op::CHAT_WATCH, watch(&ids[n - 1].0, &format!("C{:04}", n - 1))).await));
-    let last = format!("C{:04}", n - 1);
-    until("the new channel's snapshot", || probe.conn.state(&last) == ChatWatchState::Complete).await;
+    complete(&hub, &[format!("C{:04}", n - 1)]).await;
+}
+
+/// A watch that completes before the socket's hello (an ordinary daemon start) is owed a snapshot again by the hello:
+/// the watch is told by `chat.status` with the gap, and a repeat `chat.watch` completes it and clears the gap.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hello_after_a_complete_snapshot_owes_the_watch_a_resync() {
+    let (fake, lv) = live().await;
+    lv.hello.forget_permits(1000);
+    let rig = rig(&fake).await;
+    let service = rig.services.chat.admit(&rig.rows, &alpha_target(&rig)).expect("the service runs");
+    let hub = rig.services.chat.hub().clone();
+    let mut a = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    lv.hello.add_permits(1);
+    let (name, payload) = a.evt("the status the hello owes").await;
+    assert_eq!((name.as_str(), payload["resync"].clone(), payload["gap"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"]), json!(true)));
+    assert!(ok_watch(&a.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    eventually("the gap cleared", || matches!(service.status(), ServiceStatus::Running { gap: false, .. })).await;
+}
+
+/// The same for a snapshot still under way when the hello comes: it is refused, the watch is told, and a repeat
+/// `chat.watch` completes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hello_during_a_snapshot_refuses_it_and_tells_the_watch() {
+    let (fake, lv) = live().await;
+    lv.hello.forget_permits(1000);
+    let rig = rig(&fake).await;
+    let service = rig.services.chat.admit(&rig.rows, &alpha_target(&rig)).expect("the service runs");
+    let hub = rig.services.chat.hub().clone();
+    let (open, gate) = std::sync::mpsc::channel::<()>();
+    *lv.gate.lock().unwrap() = Some(gate);
+    let mut a = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    eventually("the snapshot's call", || lv.histories.load(Ordering::SeqCst) == 1).await;
+    lv.hello.add_permits(1);
+    eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, gap, .. } if socket.connected && gap)).await;
+    open.send(()).unwrap();
+    let (name, payload) = a.evt("the status the refused snapshot owes").await;
+    assert_eq!((name.as_str(), payload["resync"].clone(), payload["gap"].clone()), (op::CHAT_STATUS, json!(["C0AAAA"]), json!(true)));
+    assert!(ok_watch(&a.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    eventually("the gap cleared", || matches!(service.status(), ServiceStatus::Running { gap: false, .. })).await;
 }
