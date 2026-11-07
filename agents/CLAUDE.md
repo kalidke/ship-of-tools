@@ -89,10 +89,12 @@ of each.
    `SKILL.md`; then `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next
    argument, and an absolute path, since the leg's working folder is the project's) and a `hooks` key, built from `HOOKS`
    in `layer.rs` (`comm-status-working.sh`, `comm-status-blocked.sh`, `comm-status-heartbeat.sh` and, on the SessionStart
-   sources `clear` and `compact`, the session-start hook script, which runs the comm session start again so a session that
-   lost its context is told its handle and its handoff file, and stands down on `SOT_COMM_HOOKS=off`; from the comm
-   folder's `bin/`, by quoted absolute path; a leg's first start and a resume are not those sources, and the bootstrap
-   prompt covers them), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
+   sources `clear` and `compact`, the session-start hook script (messaging's), which runs the comm session start read-only
+   (`--again`: it joins and writes nothing, so the row's work-state is kept) so a session that lost its context is told
+   its handle, its handoff file and its unread mail, and stands down on `SOT_COMM_HOOKS=off`; from the comm folder's
+   `bin/`, by quoted absolute path; a leg's first start and a leg started with `--resume <id>` run the start through the
+   bootstrap prompt; `/resume` typed in a live row is the `resume` source, which the recipe does not carry the hook for
+   and no test covers), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
    there but not ready is left out with a warning in the daemon's log, and the leg does not name `/sot-session-start`;
    a box with no layer folder at all (the installer has not run) still names it. A plain `claude` reads none of it; a
    capsule leg, a reauth leg and a `ccb` session read all of it. The end-of-turn mail check (`comm-status-idle.sh` on

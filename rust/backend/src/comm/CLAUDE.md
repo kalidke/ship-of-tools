@@ -33,10 +33,16 @@ Address:
   declaration keep it, and a newer join moves it (rows' `set_agent_handle`). A process acts as a row's handle only from
   inside that row: the identity (`identity::context`) discards a handle whose registry entry binds another row, and a
   session outside any row never takes or reads a handle a row holds (the daemon's `agent.join` with an empty row id
-  rules on each join from outside any row). A Claude row's leg runs the session start again after a clear or a
-  compaction through a SessionStart hook (`work_state/hooks/comm-session-start-hook.sh`, carried by the leg's settings:
-  agents' guarantee 7), which prints the handle and the handoff line and stands down on `SOT_COMM_HOOKS=off`; a leg's
-  first start and a resume run it through the bootstrap prompt. Test: `comm/tests/test-session-start-hook.sh`.
+  rules on each join from outside any row). A Claude row's leg runs the session start after a clear or a
+  compaction through a SessionStart hook (`registry/comm-session-start-hook.sh`, carried by the leg's settings:
+  agents' guarantee 7) in its read-only form, `comm-session-start.sh --again`: it resolves the identity, joins and writes
+  nothing (a join rewrites the registry entry whole, which would end a compacting turn gray and drop a stamped wait),
+  and prints the handle, the handoff line, the open question, the unread count and the start's teaching; a handle with
+  no registry entry of this project prints `identity=FAIL` and says to run `/sot-session-start`. The hook sends the
+  start's stderr to stdout, stands down on `SOT_COMM_HOOKS=off` and always exits 0. A leg's first start and a leg
+  started with `--resume <id>` run the full start through the bootstrap prompt; `/resume` typed in a live row runs none
+  (the hook is not carried for the `resume` source). Tests: `comm/tests/test-session-start-hook.sh`,
+  `cli::start::tests::a_start_again_*`.
 - Each handle has one inbox, `inbox/<h>.jsonl` in the comm folder of the box where its session runs (one folder for
   every computer that shares the home).
 

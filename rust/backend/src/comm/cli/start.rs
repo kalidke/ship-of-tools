@@ -1,5 +1,8 @@
 //! `sotd comm session-start` (comm-session-start.sh): the receive bootstrap. Resolve the identity, join, print one
-//! `BOOTSTRAP-ARM` line and the start lines, and stop: the daemon wakes the row, so there is nothing to arm.
+//! `BOOTSTRAP-ARM` line and the start lines, and stop: the daemon wakes the row, so there is nothing to arm. With
+//! `--again` (the SessionStart hook after a clear or a compaction) it joins nothing and writes nothing: the process
+//! lives on and the row stays joined, so the session is told its handle, handoff and unread mail, and the join, which
+//! rewrites the registry entry, never wipes the row's work-state.
 
 use crate::comm::Env;
 use super::{context, gate, join, Out};
@@ -33,8 +36,9 @@ pub(crate) fn handoff_line(handle: &str, cwd: &std::path::Path) -> Option<String
 
 pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     let mut o = Out::default();
-    if !args.is_empty() {
-        o.err("usage: comm-session-start.sh");
+    let again = args == ["--again"];
+    if !args.is_empty() && !again {
+        o.err("usage: comm-session-start.sh [--again]");
         return o.exit(2);
     }
     let fail = |mut o: Out| {
@@ -70,6 +74,9 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
         ));
         return o;
     }
+    if again {
+        return start_again(env, o, &ctx);
+    }
     let joined = join::join(env, &[]);
     let mut text = joined.stderr.clone();
     text.push_str(&joined.stdout);
@@ -91,6 +98,35 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     }
     if let Some(line) = open_question_line(&ctx, &handle) {
         o.out(line);
+    }
+    o.out(WORKSTATE_RULE);
+    o.out(CAPABILITIES);
+    if let Some(line) = row_note(env) {
+        o.out(line);
+    }
+    o
+}
+
+/// `--again`: the start lines for a session whose context was cleared or compacted, from the identity as it resolves;
+/// nothing is joined or written. A handle with no registry entry of this project is a failure that names the way back.
+fn start_again(env: &Env, mut o: Out, ctx: &crate::comm::identity::context::Context) -> Out {
+    let handle = ctx.name.as_str();
+    if let Err(why) = super::routable(env, handle, &ctx.project_root, &ctx.registry()) {
+        o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
+        o.out(format!("comm-session-start: {why} Run /sot-session-start to join."));
+        return o;
+    }
+    o.out(format!("BOOTSTRAP-ARM handle={handle} identity=ok WAKE: daemon"));
+    o.out(format!("Your context was cleared or compacted; you are still joined as @{handle}, and nothing was re-joined. Read mail with comm-poll.sh, send with comm-send.sh."));
+    if let Some(line) = handoff_line(handle, &std::env::current_dir().unwrap_or_default()) {
+        o.out(line);
+    }
+    if let Some(line) = open_question_line(ctx, handle) {
+        o.out(line);
+    }
+    let unread = super::poll::unread(env, &[handle.to_string()]);
+    if let Some(n) = unread.stdout.split_whitespace().nth(1).and_then(|n| n.parse::<u64>().ok()).filter(|n| *n > 0) {
+        o.out(format!("UNREAD: {n} message(s) wait in your inbox; read them with comm-poll.sh."));
     }
     o.out(WORKSTATE_RULE);
     o.out(CAPABILITIES);

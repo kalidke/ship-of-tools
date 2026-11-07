@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Environment variables scrubbed from the spawned supervisor's (and
 /// hence its capsule leg's) environment before launch, and from `sotd agent-exec`'s own (the scrub `ccb` runs through),
-/// for the one reason: a
-/// spawning parent's own Claude Code nesting markers make a fresh
+/// for the reason below: a spawning parent's own Claude Code nesting markers make a fresh
 /// `claude` mis-detect itself as nested/forked and exit silently.
 /// `CLAUDECODE`/`AI_AGENT`/`CLAUDE_CODE_SESSION_ID` make it think it is
 /// running INSIDE another claude; `CLAUDE_CODE_FORK_SUBAGENT`/
