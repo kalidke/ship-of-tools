@@ -12,8 +12,8 @@ use sot_platform::Error as PlatformError;
 
 use crate::api::{Api, ApiError};
 use crate::config::{Config, Credentials};
-use crate::http::Http;
-use crate::socket::{self, Socket, SocketError, Timing};
+use crate::http::{Http, Secret};
+use crate::socket::{self, Socket, SocketError, Timing, BASE};
 
 /// Why a service did not start, or why a call was refused. Fixed codes: no path, token or Slack text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,7 +87,7 @@ impl Service {
         dir: &Path,
     ) -> Result<Service, ServiceError> {
         let api = Api::new(http.clone(), credentials.bot, config.workspace()).map_err(ServiceError::Api)?;
-        Service::launch(config.workspace(), credentials.app, api, http, dir, None).await
+        Service::launch(config.workspace(), credentials.app, api, http, dir, BASE.into(), Timing::PRODUCT).await
     }
 
     #[cfg(test)]
@@ -102,16 +102,17 @@ impl Service {
         let api = Api::new(http.clone(), credentials.bot, config.workspace())
             .map_err(ServiceError::Api)?
             .with_base(base.clone());
-        Service::launch(config.workspace(), credentials.app, api, http, dir, Some((base, timing))).await
+        Service::launch(config.workspace(), credentials.app, api, http, dir, base, timing).await
     }
 
     async fn launch(
         workspace: &str,
-        app: crate::http::Secret,
+        app: Secret,
         api: Api,
         http: Http,
         dir: &Path,
-        fixture: Option<(String, Timing)>,
+        base: String,
+        timing: Timing,
     ) -> Result<Service, ServiceError> {
         let path = dir.join(lock_name(workspace));
         // The take waits up to platform's short retry, so it runs off the runtime's threads.
@@ -119,20 +120,13 @@ impl Service {
             .await
             .map_err(|_| ServiceError::Lock)?
             .map_err(|e| match e {
+                // Platform's only `State` refusal here is a lock another holder keeps.
                 PlatformError::State(_) => ServiceError::Held,
                 _ => ServiceError::Lock,
             })?;
         // From here an early return drops the lock; the socket, once started, owns it.
         let own = api.auth_test().await.map_err(ServiceError::Api)?;
-        let held: Box<dyn Send + Sync> = Box::new(lock);
-        let socket = match fixture {
-            None => Socket::start_held(http, app, own, workspace, held),
-            #[cfg(test)]
-            Some((base, timing)) => Socket::start_held_for_test(http, app, own, workspace, base, timing, held),
-            #[cfg(not(test))]
-            Some(_) => unreachable!("only the fixture passes a base"),
-        }
-        .map_err(ServiceError::Socket)?;
+        let socket = Socket::launch(http, app, own, workspace, base, timing, Box::new(lock)).map_err(ServiceError::Socket)?;
         Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)) })
     }
 
@@ -153,17 +147,22 @@ impl Service {
         }
     }
 
-    /// End the listener: after this returns the task is gone (ended, or aborted and awaited after `within`) and the
-    /// lock is released. A second call, or one before the socket connected, returns at once or within `within`.
+    /// End the listener. The call that begins the stop closes the API for every handle, then returns after the
+    /// task is gone (ended, or aborted and awaited once `within` passes) and the lock is released. Any other call,
+    /// including one made while that stop is waiting, returns at once. A stop future dropped before it finishes
+    /// leaves the status `Stopping`; dropping it drops the socket, which aborts the task.
     pub async fn stop(&self, within: Duration) {
-        let was = std::mem::replace(&mut *self.phase.lock().unwrap(), Phase::Stopping);
-        let socket = match was {
-            Phase::Running(s) => s,
-            other => {
-                *self.phase.lock().unwrap() = other;
-                return;
+        let socket = {
+            let mut phase = self.phase.lock().unwrap();
+            match std::mem::replace(&mut *phase, Phase::Stopping) {
+                Phase::Running(s) => s,
+                other => {
+                    *phase = other;
+                    return;
+                }
             }
         };
+        self.api.close();
         socket.stop_within(within).await;
         *self.phase.lock().unwrap() = Phase::Stopped;
     }

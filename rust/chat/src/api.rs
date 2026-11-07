@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -71,6 +72,8 @@ pub enum ApiError {
     Missing,
     /// A wrapped continuation would pass `MAX_CURSOR`.
     TooLarge,
+    /// The owner closed this client (its service stopped): nothing is sent.
+    Closed,
 }
 
 impl ApiError {
@@ -89,6 +92,7 @@ impl ApiError {
             ApiError::Repeated => "repeated_continuation",
             ApiError::Missing => "missing_continuation",
             ApiError::TooLarge => "continuation_too_large",
+            ApiError::Closed => "closed",
         }
     }
 }
@@ -338,6 +342,7 @@ pub struct Api {
     /// Reads are not eligible before this instant (the last rate limit's retry header).
     eligible: Mutex<Option<Instant>>,
     names: Mutex<Names>,
+    closed: AtomicBool,
 }
 
 impl Api {
@@ -359,7 +364,13 @@ impl Api {
             own: Mutex::new(None),
             eligible: Mutex::new(None),
             names: Mutex::new(Names::default()),
+            closed: AtomicBool::new(false),
         })
+    }
+
+    /// Refuse every later call, on every handle. A call already sent runs to its own deadline.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
     }
 
     /// The fixture's logical base URL; the product has no endpoint override.
@@ -519,6 +530,9 @@ impl Api {
         name: &str,
         text: &str,
     ) -> Result<PostOutcome, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
         let name_ok = !name.is_empty() && name == clean(name, MAX_NAME).0 && name.len() <= MAX_NAME;
         let thread = thread
             .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
@@ -638,6 +652,9 @@ impl Api {
     /// One read: refused while a rate limit's wait is running, one request otherwise, and the answer is the JSON
     /// object with `ok: true` or an error.
     async fn read(&self, method: &str, params: &[(&str, String)]) -> Result<Value, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
         let wait = (*self.eligible.lock().unwrap())
             .and_then(|t| t.checked_duration_since(Instant::now()))
             .filter(|d| !d.is_zero());

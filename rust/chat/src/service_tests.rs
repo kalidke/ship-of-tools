@@ -56,7 +56,7 @@ fn credentials(config: &Config) -> Credentials {
 fn timing() -> Timing {
     Timing {
         open: Duration::from_secs(5),
-        close: Duration::from_secs(30),
+        close: Duration::from_secs(600),
         write: Duration::from_secs(2),
         idle: Duration::from_secs(60),
         ping: Duration::from_secs(30),
@@ -266,6 +266,95 @@ async fn a_child_started_by_the_daemon_does_not_keep_the_lock() {
         child.kill().expect("kill the child");
         child.wait().expect("reap the child");
         again.expect("a child kept the lock's descriptor").stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_handle_kept_across_stop_is_refused_by_every_call() {
+    bounded(async {
+        let dir = Scratch::new("handle");
+        let fake = holding_fake(WS).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        let held = service.api().expect("api while running");
+        service.stop(Duration::from_secs(3)).await;
+        let before = calls(&fake);
+        assert_eq!(held.auth_test().await.err(), Some(crate::api::ApiError::Closed));
+        let post = held.post("C0AAAA", None, crate::api::PostKind::Row, "a", "t").await;
+        assert_eq!(post.err(), Some(crate::api::ApiError::Closed));
+        assert_eq!(calls(&fake), before, "a stopped service's handle reached Slack");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_lock_is_dropped_with_the_task_before_stop_returns() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Flag(std::sync::Arc<AtomicBool>);
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    bounded(async {
+        let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
+        let config = config();
+        let creds = credentials(&config);
+        let dropped = std::sync::Arc::new(AtomicBool::new(false));
+        let api = crate::api::Api::new(fake.http(), creds.bot, WS).unwrap().with_base(fake.url("slack.com", "/api/"));
+        let own = api.auth_test().await.unwrap();
+        let socket = crate::socket::Socket::launch(
+            fake.http(), creds.app, own, WS, fake.url("slack.com", "/api/"), timing(), Box::new(Flag(dropped.clone())),
+        )
+        .unwrap();
+        eventually("connected", || socket.status().connected).await;
+        assert!(!dropped.load(Ordering::SeqCst));
+        // 200 ms is the bound asked; the close bound is 600 s and the guard here 20 s, so only `within` can end it.
+        tokio::time::timeout(Duration::from_secs(20), socket.stop_within(Duration::from_millis(200)))
+            .await
+            .expect("stop_within ignored its bound");
+        assert!(dropped.load(Ordering::SeqCst), "stop returned while the task could still hold the lock");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_lock_that_cannot_be_made_is_not_held_and_the_codes_are_fixed() {
+    bounded(async {
+        let fake = holding_fake(WS).await;
+        let missing = std::env::temp_dir().join(format!("sot-chat-service-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        let err = start(&fake, &missing).await.err();
+        assert_eq!(err, Some(ServiceError::Lock));
+        assert_eq!(calls(&fake), 0, "a refused service reached Slack");
+        assert_eq!(
+            [ServiceError::Held.code(), ServiceError::Lock.code(), ServiceError::Stopped.code()],
+            ["held", "lock", "stopped"]
+        );
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped() {
+    bounded(async {
+        let dir = Scratch::new("concurrent");
+        let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
+        let service = std::sync::Arc::new(start(&fake, &dir.0).await.expect("service"));
+        eventually("connected", || matches!(service.status(), Status::Running { socket, .. } if socket.connected)).await;
+        let first = {
+            let s = service.clone();
+            tokio::spawn(async move { s.stop(Duration::from_secs(1)).await })
+        };
+        eventually("stopping", || service.status() == Status::Stopping).await;
+        service.stop(Duration::from_secs(1)).await;
+        assert_eq!(service.status(), Status::Stopping, "the second stop disturbed the first");
+        first.await.unwrap();
+        assert_eq!(service.status(), Status::Stopped);
         fake.shutdown().await;
     })
     .await;

@@ -28,7 +28,7 @@ pub const MAX_PENDING_BYTES: usize = 8 << 20;
 const MAX_ENVELOPE_ID: usize = 128;
 /// A websocket URL from Slack is a host, a path and a ticket.
 const MAX_URL: usize = 2048;
-const BASE: &str = "https://slack.com/api/";
+pub(crate) const BASE: &str = "https://slack.com/api/";
 const FORM: &str = "application/x-www-form-urlencoded";
 
 /// The waits of one listener. Each is a bound, so no wait is open-ended.
@@ -192,18 +192,6 @@ impl Socket {
         Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, Box::new(()))
     }
 
-    /// As `start`, and `held` lives exactly as long as the listener's task: it is dropped when the task ends or is
-    /// aborted, never while the task can still run. The service's lock rides here.
-    pub(crate) fn start_held(
-        http: Http,
-        app: Secret,
-        own: Identity,
-        workspace: &str,
-        held: Box<dyn Send + Sync>,
-    ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, held)
-    }
-
     /// The fixture's logical base URL and short waits; the product has neither.
     #[cfg(test)]
     pub(crate) fn start_for_test(
@@ -217,20 +205,9 @@ impl Socket {
         Socket::launch(http, app, own, workspace, base, timing, Box::new(()))
     }
 
-    #[cfg(test)]
-    pub(crate) fn start_held_for_test(
-        http: Http,
-        app: Secret,
-        own: Identity,
-        workspace: &str,
-        base: String,
-        timing: Timing,
-        held: Box<dyn Send + Sync>,
-    ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, base, timing, held)
-    }
-
-    fn launch(
+    /// The one constructor: `base` and `timing` are the product's from `start`, the fixture's from a test, and `held`
+    /// lives exactly as long as the listener's task (dropped when the task ends or is aborted, never while it can run).
+    pub(crate) fn launch(
         http: Http,
         app: Secret,
         own: Identity,
