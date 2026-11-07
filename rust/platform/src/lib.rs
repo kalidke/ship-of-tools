@@ -2,6 +2,7 @@
 //! the log masking among them (`CLAUDE.md` is its contract). It depends on nothing of ours; every other crate names its items by path (`sot_platform::host::...`),
 //! and nothing re-exports them.
 
+pub mod hold;
 pub mod host;
 pub mod identity;
 pub mod secret;
@@ -14,6 +15,8 @@ pub mod test_copy;
 pub mod test_exec;
 #[cfg(all(unix, feature = "test-support"))]
 pub mod test_foreign;
+#[cfg(all(debug_assertions, feature = "test-support"))]
+pub mod test_hold;
 #[cfg(feature = "test-support")]
 pub mod test_isolated;
 #[cfg(feature = "test-support")]
