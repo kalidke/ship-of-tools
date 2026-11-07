@@ -43,14 +43,17 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    failure is `Tls`, before any HTTP byte. There is no endpoint override, insecure mode, test-root setting or plaintext
    path in a shipped build. `Http::for_test`, under `cfg(test)` or the `test-support` feature alone, takes the fixture's
    CA as the only root and a resolver that maps the fixture's logical hosts to loopback and refuses every other name
-   (`Connect`, no connection). The feature, which also builds the fake Slack with the key of that CA, is enabled by
-   dev-dependencies only (`sot-backend`'s); `scripts/tests/release-features-check.sh` reads what Cargo resolves for each
-   release build command (`-p sot-frontend`; `-p sot-backend -p sot-capsule`; `--workspace`, the macOS and Windows builds,
-   taken from release.yml and pack-build.sh, which it also holds free of `--features` and `--all-features`) and fails
-   naming the feature and the binary when sot-chat's `test-support` is in it, whether set on a normal dependency of any
-   crate in the selection, in `default`, or by another member of `--workspace`; it runs in every gate run, with the faults
-   put in. Limits: a re-export of `for_test` or the fake outside its cfg, and a key included outside the fake's folder
-   (the check refuses only the second), rest on review.
+   (`Connect`, no connection). The feature also builds the fake Slack, whose committed server key (the CA's key was discarded)
+   lets anyone impersonate the fixture's Slack hosts to a client that trusts the fixture CA, so it is enabled by
+   dev-dependencies only (`sot-backend`'s). `scripts/tests/release-features-check.sh` resolves `--workspace` over the normal
+   and build edges for the release targets (one resolution covers `-p sot-frontend`, `-p sot-backend -p sot-capsule` and the
+   macOS and Windows `--workspace` builds, since resolver 2 gives a package in a subset of the workspace a subset of its
+   features) and fails, naming the feature and the crates that enable it, when sot-chat's `test-support` is in it, whether set
+   on a normal dependency of any crate (also under a target table), in `default`, or by a member only `--workspace` builds. It
+   also fails when release.yml, pack-build.sh or pack-build.ps1 names `features` or a `-F` token anywhere. It runs in every
+   gate run with each of those faults put in (`--prove`). Source builds by users (`launch-sot.sh`) are not release builds and
+   are not read. Limits, resting on review: a re-export of `for_test` or the fake outside its cfg, and code written to
+   include the fixture's files from outside the gated module.
 7. **An operation has one owner-held deadline and bounded admission.** `Request` carries its deadline; `send` runs the
    operation as a task that holds the deadline and the permit, so connection, headers, redirects and body share one
    bound and a caller that stops waiting neither frees the permit nor cancels a mutation already sent. Sixteen
@@ -302,7 +305,7 @@ record's representation (wire's). Offer another way to the network, a retry help
 Pinned as measured on the branch `stack/web-tls`: `reqwest =0.13.5` (no default features; `rustls-no-provider`, `json`,
 `stream`), `rustls =0.23.46` (no default features; `ring`, `std`, `tls12`), `webpki-roots =1.0.11`, all in the workspace
 table; `tokio` from the workspace; `tokio-tungstenite =0.30.0` (no default features; `connect`, `rustls-tls-webpki-roots`, the
-pin measured on that branch) and `futures-util 0.3` for the socket; dev only: `tokio-rustls 0.26` (no default
+pin measured on that branch) and `futures-util 0.3` for the socket; dev, and optional under `test-support`: `tokio-rustls 0.26` (no default
 features; `ring`, `tls12`) and `sot-platform` with `test-support`. The HTTP change added 37 `[[package]]` entries to
 `Cargo.lock`, the socket 14 (`tungstenite`, `tokio-tungstenite`, `sha1` and its digest family, `data-encoding`, `rand`
 0.10 and `webpki-roots` 0.26, which the websocket feature brings beside 1.0.11; its roots are never used, because
@@ -342,7 +345,7 @@ Paths are under `rust/chat/src/`.
 | 3 | bounds | `normalize_tests.rs`: `text_is_cut_on_a_character_boundary_and_marked`, `names_filenames_and_mime_are_cut_and_marked`, `only_eight_files_are_summarized_and_the_rest_counted`, `an_id_over_64_bytes_or_not_ascii_is_not_carried`, `a_record_never_exceeds_32_kib_of_json`, `names_lose_control_characters`, `a_normalized_record_round_trips_through_the_wire` |
 | 4 | attachment only | `normalize_tests.rs`: `an_attachment_only_message_keeps_its_files_and_has_no_text` |
 | 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations`, `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect`, `an_ambient_proxy_variable_is_ignored` (the test re-runs itself through `sot_platform::test_isolated` as a child with every proxy variable naming a dead address and expects a direct request; the helper fails the parent when the body was not entered exactly once or exited non-zero), `the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations` (no network) |
-| 6 | verified server, and no test root in a shipped binary | `scripts/tests/release-features-check.sh --prove` (the gate runs it: green for the real tree and for the feature on a dev-dependency alone, red with the feature on a normal dependency, in `default`, on the frontend, or on a member only `--workspace` builds), and `sot-backend`'s `the_exported_fake_slack_answers_one_scripted_reply` (the export works); `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
+| 6 | verified server, and no test root in a shipped binary | `scripts/tests/release-features-check.sh --prove` (the gate runs it: green for the real tree and for the feature on a dev-dependency alone; red with the feature on a normal dependency, in `default`, on the frontend, in a target table, on a member only `--workspace` builds, or a feature flag in a release file), and `sot-backend`'s `the_exported_fake_slack_answers_one_scripted_reply` (the export works); `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
 | 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |

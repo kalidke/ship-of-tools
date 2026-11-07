@@ -22,7 +22,7 @@ regexes = [
 ]
 
 [[allowlists]]
-description = "the chat's fake Slack: two test-only TLS keys (a CA-signed server key and a self-signed rogue key) with no use outside that folder"
+description = "the chat's fake Slack: two test-only TLS keys (a CA-signed server key and a self-signed rogue key) with no use outside that folder (sot-backend's tests compile them in through the chat crate's test-support feature, which no shipped build resolves)"
 targetRules = ["private-key"]
 paths = [
   '''^rust/chat/src/fake_slack/(server|rogue)\.key$''',

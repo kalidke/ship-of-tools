@@ -20,7 +20,8 @@ futures-util = "0.3"
 tokio-rustls = { workspace = true, optional = true }
 
 [features]
-# The fake Slack (`fake_slack`) and `Http::for_test`: a client that trusts a CA whose key is committed to this repository.
+# The fake Slack (`fake_slack`) and `Http::for_test`: a client that trusts the fixture CA, and a server key committed to this repository that
+# lets anyone impersonate the fixture's Slack hosts to it.
 # Enabled only by a dev-dependency of another crate; `scripts/tests/release-features-check.sh` fails if a shipped binary's
 # resolution has it.
 test-support = ["dep:tokio-rustls"]

@@ -525,7 +525,7 @@ fn target(row: &str, workspace: &str, channel: &str) -> ChatTarget {
 
 /// A hub with a running service, rows `alpha` (folder a, mapped to C0AAAA) and `beta` (folder b, C0BBBB), and a folder
 /// c no mapping names. The service is a listener that holds no Slack: a refusal is proved by the adapter handing out
-/// no service, the only way to a call (`Chat::service` is private), since the backend has no fake Slack.
+/// no service, the only way to a call (`Chat::service` is private), since the backend's tests do not use the fake Slack yet.
 struct World {
     /// Keeps the temporary folders alive.
     _home: Home,
