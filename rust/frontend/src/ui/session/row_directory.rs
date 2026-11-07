@@ -1,6 +1,6 @@
 //! Authoritative host listings and their identities. Presentation caches stay with the session view.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::WorkspaceInfo;
@@ -62,6 +62,17 @@ impl ResolvedWorkspace {
 pub(in crate::ui) struct RowDirectory {
     workspace_lists: HashMap<HostKey, Vec<WorkspaceInfo>>,
     workspace_id_slugs: HashMap<(HostKey, String), WsKey>,
+    /// Rows the window destroyed whose host has not listed since.
+    destroyed: HashSet<WsKey>,
+}
+
+/// Where the window's view goes when its selected row may be gone.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum Leave {
+    Stay,
+    To(WsKey),
+    /// No other row to show: the host's default row, and an empty pane when it has no attachment.
+    NoSession,
 }
 
 /// Prepared without changing the directory, so the coordinator can reconcile results before commitment.
@@ -76,9 +87,9 @@ impl RowDirectoryUpdate {
         &self.retired
     }
 
-    /// Whether the new listing still has a row the spelling names.
-    pub(in crate::ui) fn lists(&self, spelling: &str) -> bool {
-        self.rows.iter().any(|row| row.slug == spelling || row.workspace_id == spelling)
+    /// Whether the new listing still has the row.
+    fn lists(&self, slug: &str) -> bool {
+        self.rows.iter().any(|row| row.slug == slug)
     }
 }
 
@@ -117,6 +128,7 @@ impl RowDirectory {
     /// Every installed host participates, even a synthetic host outside State's fixed connections;
     /// display order scopes presentation projections, not the directory's identity translation.
     pub(in crate::ui) fn commit_replace(&mut self, update: RowDirectoryUpdate) {
+        self.destroyed.retain(|(host, _)| *host != update.host);
         self.workspace_lists.insert(update.host, update.rows);
         self.workspace_id_slugs.clear();
         for (host, rows) in &self.workspace_lists {
@@ -129,13 +141,39 @@ impl RowDirectory {
         }
     }
 
-    /// A row the host listed before that this update's listing no longer has: a destroyed one. A spelling never listed
-    /// (a resumed selection before the first list) is not dropped.
-    pub(in crate::ui) fn drops(&self, host: &str, update: &RowDirectoryUpdate, spelling: &str) -> bool {
-        let listed = self
+    /// A destroy the window made (requested, or answered) before the host's next listing: the row, named by slug or
+    /// workspace id, is no longer a place to go. The next listing of the host replaces the record.
+    pub(in crate::ui) fn note_destroyed(&mut self, host: &str, spelling: &str) {
+        let slug = self
             .rows(host)
-            .is_some_and(|rows| rows.iter().any(|row| row.slug == spelling || row.workspace_id == spelling));
-        listed && !update.lists(spelling)
+            .and_then(|rows| rows.iter().find(|row| row.slug == spelling || row.workspace_id == spelling))
+            .map_or(spelling, |row| row.slug.as_str())
+            .to_string();
+        self.destroyed.insert((host.to_string(), slug));
+    }
+
+    /// What the window does with its selected row `(host, selected)` once a row of the host is gone: by the window's
+    /// own destroy (`update` None: the rows `note_destroyed` names are gone) or by the host's next listing (`update`
+    /// Some: the rows it lacks are gone). Called before `commit_replace`, which consumes the update. A row never
+    /// listed (a selection resumed before the first list) is not gone. The neighbor is the host's next row in the
+    /// Sessions list's order (the listing's: default first, then by slug), below the selected one, else above it,
+    /// among visible rows that survive.
+    pub(in crate::ui) fn leave(&self, host: &str, selected: Option<&str>, update: Option<&RowDirectoryUpdate>) -> Leave {
+        let (Some(slug), Some(rows)) = (selected, self.rows(host)) else { return Leave::Stay };
+        let Some(at) = rows.iter().position(|row| row.slug == slug) else { return Leave::Stay };
+        let survives = |row: &WorkspaceInfo| match update {
+            Some(update) => update.lists(&row.slug),
+            None => !self.destroyed.contains(&(host.to_string(), row.slug.clone())),
+        };
+        if survives(&rows[at]) {
+            return Leave::Stay;
+        }
+        let below = rows[at + 1..].iter();
+        let above = rows[..at].iter().rev();
+        below
+            .chain(above)
+            .find(|row| !row.is_inert_anchor() && survives(row))
+            .map_or(Leave::NoSession, |row| Leave::To((host.to_string(), row.slug.clone())))
     }
 
     /// None distinguishes a host that has not answered from one whose authoritative list is empty.
