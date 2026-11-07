@@ -32,7 +32,7 @@ impl Holds {
 
     /// The variable a child needs to be held by this folder's arms.
     pub fn env(&self) -> (&'static str, &Path) {
-        ("SOT_TEST_HOLDS", self.0.as_deref().expect("Holds::here() has no folder: a child needs Holds::folder"))
+        (hold::FOLDER_VAR, self.0.as_deref().expect("Holds::here() has no folder: a child needs Holds::folder"))
     }
 
     pub fn arm(&self, point: &'static str) -> ArmSpec {

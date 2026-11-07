@@ -602,3 +602,31 @@ fn a_child_whose_wait_is_cancelled_before_it_runs_fails_the_arm_by_name() {
     let text = panic_text(catch_unwind(AssertUnwindSafe(|| drop(arm))));
     assert!(text.contains("t.child.dead") && text.contains("waiter was lost"), "{text}");
 }
+
+#[test]
+fn a_childs_give_up_is_never_past_the_cap_whatever_the_arm_file_says() {
+    for (text, want) in [
+        ("hold 1\ngive_up_ms 90000\n", Some(GIVE_UP)),
+        ("hold 1\ngive_up_ms 18446744073709551615\n", Some(GIVE_UP)),
+        ("hold 1\ngive_up_ms 250\nkey a b\n", Some(Duration::from_millis(250))),
+        ("hold 1\n", None),
+        ("hold 1\ngive_up_", None),
+        ("hold 1\ngive_up_ms 99999999999999999999999\n", None),
+    ] {
+        assert_eq!(hold::parse_terms(text).map(|(_, give_up, _)| give_up), want, "{text:?}");
+    }
+    assert_eq!(hold::parse_terms("hold 2\ngive_up_ms 5\nkey a b\n").unwrap().2, Some("a b"));
+}
+
+#[test]
+fn arrivals_after_an_arms_drop_create_no_ticket_files() {
+    let (_tmp, holds, out) = folder_for("hold-after-");
+    let arm = holds.arm("t.child.after").hold(1);
+    drop(arm);
+    let files = || std::fs::read_dir(holds.env().1).unwrap().count();
+    let before = files();
+    let child = start_child(&holds, &out, "t.child.after", 1);
+    assert_eq!(pass_of(&out, &child, 1), "go");
+    child.ends();
+    assert_eq!(files(), before, "an arrival after the drop made a ticket file");
+}

@@ -143,12 +143,12 @@ where each lives).
     A child started with `SOT_TEST_HOLDS` (`Holds::folder(dir)`, then `env()` on the child's command before it starts; read
     once per process, and only with debug assertions) is held at a marked line by the same arm, tickets and bounds, through
     files of that folder: tickets are numbered across every process sharing it by an exclusive file create (`<point>.<t>.at`),
-    a release, the arm's drop and a give-up are files (`.go`, `.all`, `.gaveup`), the arm's terms are renamed into place
+    a release, the arm's drop and a give-up are files (`.go`, `.all`, `.gaveup`), a wait cancelled before it ran (a dropped runtime) is a file (`.lost`) that fails the arm by name, the arm's terms are renamed into place
     whole, and no file is deleted while the folder lives, so one folder takes one arm of a point for its life (a second is
-    refused). A held child always goes on by its give-up (at most 60 s) and the arm fails by
+    refused). A held child always goes on by its give-up (at most 60 s, whatever the arm file says; arrivals after the arm's drop take no ticket) and the arm fails by
     name; an arrival before the arm is not seen; a child killed while held records no give-up. A daemon passes the
     variable on to the supervisors it starts, so one folder serves both. Limits:
-    a wait cancelled before it runs (a dropped runtime) leaves `<point>.<t>.lost`, which fails the arm by name; the arming
+    the `.lost` write checks before it creates, so one made after the arm's final scan goes unseen (a window of microseconds); the arming
     process's own arrivals pass uncounted; arms of one point serialize even with distinct keys in a process; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 

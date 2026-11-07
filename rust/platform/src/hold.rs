@@ -114,9 +114,9 @@ pub fn arrive_async(point: &'static str, key: Option<&dyn std::fmt::Display>) ->
 #[cfg(all(debug_assertions, feature = "test-support"))]
 pub use imp::{GIVE_UP, WAIT};
 #[cfg(all(debug_assertions, feature = "test-support"))]
-pub(crate) use imp::{arrivals, folder_arrivals, folder_install, folder_release, folder_uninstall, folder_wait, install, release, uninstall, wait_arrival, FolderArm};
+pub(crate) use imp::{arrivals, folder_arrivals, folder_install, folder_release, folder_uninstall, folder_wait, install, FOLDER_VAR, release, uninstall, wait_arrival, FolderArm};
 #[cfg(all(debug_assertions, test))]
-pub(crate) use imp::waiting_arms;
+pub(crate) use imp::{parse_terms, waiting_arms};
 
 /// Nothing on the product side panics or refuses: whatever an arrival meets (a hold on a thread the test needs, a
 /// release that never comes) is recorded on its ticket, and the arm fails the test by name at its next call or drop.
@@ -320,21 +320,23 @@ mod imp {
     }
 
     /// The failure a give-up or a lost waiter leaves on its arm, naming the point, the ticket and the usual cause.
-    fn gave_up(slot: &Slot) -> Option<String> {
-        let failed = slot.tickets.iter().position(|ticket| matches!(ticket, Ticket::GaveUp | Ticket::Lost))?;
-        Some(if slot.tickets[failed] == Ticket::Lost {
+    fn failure_text(point: &str, ticket: usize, lost: bool, give_up: Duration) -> String {
+        if lost {
             format!(
-                "hold point {}: arrival {failed}'s waiter was lost before it finished (a cancelled blocking task or a dropped \
-                 runtime), so the hold ended early",
-                slot.point
+                "hold point {point}: arrival {ticket}'s waiter was lost before it finished (a cancelled blocking task or a dropped \
+                 runtime), so the hold ended early"
             )
         } else {
             format!(
-                "hold point {}: arrival {failed} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
-                 runtime's own thread, it stops the test that must release it: use hold_point_async!)",
-                slot.point, slot.give_up
+                "hold point {point}: arrival {ticket} was held past its {give_up:?} bound and went on (if a sync point sits on a current-thread \
+                 runtime's own thread, it stops the test that must release it: use hold_point_async!)"
             )
-        })
+        }
+    }
+
+    fn gave_up(slot: &Slot) -> Option<String> {
+        let failed = slot.tickets.iter().position(|ticket| matches!(ticket, Ticket::GaveUp | Ticket::Lost))?;
+        Some(failure_text(slot.point, failed, slot.tickets[failed] == Ticket::Lost, slot.give_up))
     }
 
     /// Ends an arm: every held arrival goes on and later arrivals pass. Returns its give-up failure, if any.
@@ -405,15 +407,17 @@ mod imp {
     // `<point>.armed` (created exclusive by the one arm), `<point>.arm` (the arm's terms, written to a temporary file and
     // renamed, so a reader sees all or nothing), `<point>.<t>.at` (created exclusive by the arrival that takes ticket `t`,
     // so tickets are numbered across every process sharing the folder), `<point>.<t>.go` (the test's release),
-    // `<point>.all` (the arm's drop), `<point>.<t>.gaveup`. Calls used, each the same on Linux, macOS and Windows:
+    // `<point>.all` (the arm's drop), `<point>.<t>.gaveup`, `<point>.<t>.lost` (a wait that never ran). Calls used, each the same on Linux, macOS and Windows:
     // `create_new` (O_EXCL / CREATE_NEW: exactly one creator, a loser sees `AlreadyExists`), a rename onto a name nothing
     // has (atomic on one volume; the name is never replaced, because `.armed` admits one arm), `exists`, `read_to_string`
     // of a file nobody rewrites, and a 5 ms poll. The rename retries, as an indexer may hold the temporary file briefly.
+    /// The variable that names a child's folder.
+    pub(crate) const FOLDER_VAR: &str = "SOT_TEST_HOLDS";
     const POLL: Duration = Duration::from_millis(5);
 
     fn folder() -> Option<&'static Path> {
         static FOLDER: OnceLock<Option<PathBuf>> = OnceLock::new();
-        FOLDER.get_or_init(|| std::env::var_os("SOT_TEST_HOLDS").filter(|v| !v.is_empty()).map(PathBuf::from)).as_deref()
+        FOLDER.get_or_init(|| std::env::var_os(FOLDER_VAR).filter(|v| !v.is_empty()).map(PathBuf::from)).as_deref()
     }
 
     fn part(dir: &Path, point: &str, part: &str) -> PathBuf {
@@ -456,14 +460,23 @@ mod imp {
         }
     }
 
+    /// The arm file's terms: the hold count, the give-up (never past `GIVE_UP`, whoever wrote the file) and the key.
+    /// `None` for a file missing a term or cut short.
+    pub(crate) fn parse_terms(text: &str) -> Option<(usize, Duration, Option<&str>)> {
+        let term = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
+        let give_up = Duration::from_millis(term("give_up_ms")?.parse().ok()?).min(GIVE_UP);
+        Some((term("hold")?.parse().ok()?, give_up, term("key")))
+    }
+
     fn claim_folder(point: &'static str, key: Option<&dyn Display>) -> Option<FolderHeld> {
         let dir = folder()?;
+        if part(dir, point, "all").exists() {
+            return None;
+        }
         // Read at every arrival, never cached: an arm written after the child started holds its next arrival.
         let text = std::fs::read_to_string(part(dir, point, "arm")).ok()?;
-        let term = |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
-        let hold: usize = term("hold")?.parse().ok()?;
-        let give_up = Duration::from_millis(term("give_up_ms")?.parse().ok()?);
-        if let Some(wanted) = term("key") {
+        let (hold, give_up, wanted) = parse_terms(&text)?;
+        if let Some(wanted) = wanted {
             if key.map(|key| key.to_string()).as_deref() != Some(wanted) {
                 return None;
             }
@@ -519,19 +532,10 @@ mod imp {
     pub(crate) fn folder_arrivals(arm: &FolderArm) -> Result<usize, String> {
         let seen = (0..).find(|&ticket| !at(arm, ticket, "at").exists()).unwrap_or(0);
         let ended = |what| (0..seen.min(arm.hold)).find(|&ticket| at(arm, ticket, what).exists());
-        if let Some(failed) = ended("lost") {
-            return Err(format!(
-                "hold point {}: arrival {failed}'s waiter was lost before it finished (a cancelled blocking task or a dropped \
-                 runtime), so the hold ended early",
-                arm.point
-            ));
-        }
-        if let Some(failed) = ended("gaveup") {
-            return Err(format!(
-                "hold point {}: arrival {failed} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
-                 runtime's own thread, it stops the test that must release it: use hold_point_async!)",
-                arm.point, arm.give_up
-            ));
+        for (what, lost) in [("lost", true), ("gaveup", false)] {
+            if let Some(failed) = ended(what) {
+                return Err(failure_text(arm.point, failed, lost, arm.give_up));
+            }
         }
         Ok(seen)
     }
