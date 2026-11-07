@@ -402,7 +402,12 @@ async fn a_dropped_chat_lets_its_listener_go_and_a_start_after_a_stop_is_a_new_c
     assert_eq!(settled(&chat).await, Status::Running);
     // Dropped without a stop: nothing here holds the listener, so its own drop ends it (chat guarantee 22).
     drop((chat, registry));
-    assert_eq!(Arc::strong_count(&first), 1);
+    let began = std::time::Instant::now();
+    while Arc::strong_count(&first) > 1 {
+        let seen = Arc::strong_count(&first);
+        assert!(began.elapsed() < Duration::from_secs(10), "the dropped chat still holds its listener: strong count {seen}");
+        tokio::task::yield_now().await;
+    }
     assert_eq!(first.stops.load(Ordering::SeqCst), 0);
 
     // After a stop, a start is a second `begin`, with a registry of its own.

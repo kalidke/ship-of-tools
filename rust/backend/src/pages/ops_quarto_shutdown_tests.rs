@@ -148,10 +148,13 @@ async fn quarto_never_holds_a_freed_group_number() {
     let _pin = JuliaPin::new(&dir.path().join("julia"), None);
     let sleeper = dir.path().join("sleeper");
     let leftover = Leftover::of_file(sleeper.clone());
-    leftover.kept_alive();
+    // The sleeper lives while `keep` exists (its own 120 s ceiling kept as a count), so the test ends it.
+    let keep = dir.path().join("keep");
+    std::fs::write(&keep, "").unwrap();
     let stub = dir.path().join("stub-quarto");
     // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
-    let body = "setsid sleep 120 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
+    let hold = format!("setsid sh -c 'n=0; while [ -e {} ] && [ $n -lt 1200 ]; do n=$((n+1)); sleep 0.1; done' &\np=$!", keep.display());
+    let body = format!("{hold}\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n");
     sot_platform::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
     let sig: &'static sot_containment::Signal = Box::leak(Box::new(sot_containment::Signal::new()));
     let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
@@ -175,6 +178,8 @@ async fn quarto_never_holds_a_freed_group_number() {
         .expect("the render outlived the shutdown")
         .expect("render task")
         .expect("run_quarto");
+    std::fs::remove_file(&keep).unwrap();
+    assert!(leftover.gone(), "the stub's sleeper outlived its test");
 }
 
 /// A real resolver error fails the render before Quarto starts, with the resolver's diagnostic preserved.
