@@ -12,6 +12,13 @@ const CONTEXT_CAP: usize = 9_000;
 const PATH_CAP: usize = 4096;
 /// The most UTF-16 code units of the `systemMessage`.
 const MESSAGE_CAP: usize = 200;
+/// The fixed words of the context: its lead around two line numbers (at most 20 digits each), its tail, and the
+/// cut's suffix around the range's size (at most 20 digits).
+const LEAD_WORDS: &str = "The user selected lines  to  of  in the Ship of Tools window:\n";
+const TAIL: &str = "\nThis may or may not be related to the current task.";
+const CUT_WORDS: &str = "... (truncated; the range holds  characters)";
+// the context never passes the cap, whatever the paths, text and line numbers (all ASCII words: bytes are units)
+const _: () = assert!(LEAD_WORDS.len() + 40 + PATH_CAP + TEXT_CUT + CUT_WORDS.len() + 20 + TAIL.len() <= CONTEXT_CAP);
 
 /// A range the file's own text matched: its text and the 1-based inclusive lines it covers.
 #[derive(Debug, PartialEq, Eq)]
@@ -44,7 +51,7 @@ pub(crate) fn check_selection(bytes: &[u8], sel: &SelectedText) -> Option<FileTe
     for (i, raw) in valid.split('\n').enumerate() {
         let content = raw.strip_suffix('\r').unwrap_or(raw);
         if i == el {
-            if eb > content.len() || !content.is_char_boundary(eb) {
+            if !content.is_char_boundary(eb) {
                 return None;
             }
             end_off = off + eb;
@@ -70,7 +77,7 @@ pub(crate) fn check_selection(bytes: &[u8], sel: &SelectedText) -> Option<FileTe
         }
     }
     let first = lines[sl];
-    if sb > first.len() || !first.is_char_boundary(sb) {
+    if !first.is_char_boundary(sb) {
         return None;
     }
     let text = if sl == el {
@@ -107,6 +114,12 @@ fn head(s: &str, max: usize) -> &str {
     s
 }
 
+/// `s` with each control character (Unicode Cc), U+2028 and U+2029 a `?`: a file name never breaks a line or carries
+/// an escape into the agent's prompt or the status line.
+fn plain(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() || c == '\u{2028}' || c == '\u{2029}' { '?' } else { c }).collect()
+}
+
 /// `s` if it fits in `max` UTF-16 code units, else `...` and the longest tail that fits with it.
 fn left_cut(s: &str, max: usize) -> String {
     if units(s) <= max {
@@ -126,24 +139,25 @@ fn left_cut(s: &str, max: usize) -> String {
 }
 
 /// The one JSON object the selection hook prints: exactly `hookSpecificOutput` and `systemMessage`. `path` is the
-/// file's absolute path, `rel` its path in the project. Every cap counts UTF-16 code units (Claude Code's `length`,
-/// never smaller than a character count): the range's text is cut at 2000 with its whole size named, the path in the
-/// context at 4096, the context is at most 9,000 and the message at most 200, whatever the paths.
+/// file's absolute path, `rel` its path in the project, each with control characters made `?`. Every cap counts
+/// UTF-16 code units (Claude Code's `length`, never smaller than a character count): the range's text is cut at 2000,
+/// the path in the context at 4096, the message at 200, and the context stays under 9,000 by the assertion above. The
+/// suffix names the range's whole size in Unicode scalar values.
 #[cfg_attr(not(test), allow(dead_code, reason = "the selection handler (A3) is the first caller"))]
 pub(crate) fn render_selection(f: &FileText, path: &str, rel: &str) -> String {
     let (a, b) = (f.first_line, f.last_line);
-    let lead = format!("The user selected lines {a} to {b} of {} in the Ship of Tools window:\n", left_cut(path, PATH_CAP));
-    let tail = "\nThis may or may not be related to the current task.";
-    let n = units(&f.text);
-    let cut = format!("... (truncated; the range holds {n} characters)");
-    let room = CONTEXT_CAP.saturating_sub(units(&lead) + units(tail) + units(&cut));
-    let text = if n > TEXT_CUT.min(room) { format!("{}{cut}", head(&f.text, TEXT_CUT.min(room))) } else { f.text.clone() };
+    let lead = format!("The user selected lines {a} to {b} of {} in the Ship of Tools window:\n", left_cut(&plain(path), PATH_CAP));
+    let text = if units(&f.text) > TEXT_CUT {
+        format!("{}... (truncated; the range holds {} characters)", head(&f.text, TEXT_CUT), f.text.chars().count())
+    } else {
+        f.text.clone()
+    };
     let (pre, post) = ("Selection: ", format!(" lines {a}-{b}"));
-    let message = format!("{pre}{}{post}", left_cut(rel, MESSAGE_CAP.saturating_sub(units(pre) + units(&post))));
+    let message = format!("{pre}{}{post}", left_cut(&plain(rel), MESSAGE_CAP.saturating_sub(units(pre) + units(&post))));
     serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": format!("{lead}{text}{tail}"),
+            "additionalContext": format!("{lead}{text}{TAIL}"),
         },
         "systemMessage": message,
     })

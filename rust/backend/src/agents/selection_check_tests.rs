@@ -29,7 +29,8 @@ fn only_the_files_own_text_at_the_range_is_shared() {
         ("start inside a character", "é\nx".as_bytes(), (0, 1), (1, 1), "\u{a9}\nx"),
         ("end inside a character", "aé".as_bytes(), (0, 0), (0, 2), "a\u{c3}"),
         ("positions near u32::MAX", b"ab", (u32::MAX - 1, 0), (u32::MAX, u32::MAX), "x"),
-        ("start not before end", b"ab", (0, 1), (0, 1), "a"),
+        ("start after end", b"abc", (0, 3), (0, 1), "ab"),
+        ("an empty range", b"abc", (0, 1), (0, 1), ""),
     ];
     for (name, bytes, s, e, shown) in refused {
         assert_eq!(check_selection(bytes, &sel(s, e, shown)), None, "{name}");
@@ -89,12 +90,17 @@ fn the_rendering_is_the_hook_output_both_agents_accept_within_the_caps() {
     );
     assert_eq!(v["systemMessage"], "Selection: src/f.jl lines 3-4");
 
-    // 1500 astral characters are 3000 UTF-16 units: cut at 2000 units (1000 characters), the whole size named
+    // a file name never breaks a line or carries an escape
+    let v = parse(&render_selection(&file_text("x", 1, 1), "/p/a\nb\u{1b}[2J\u{2028}c", "a\nb\u{1b}c\u{2029}"));
+    assert_eq!(v["systemMessage"], "Selection: a?b?c? lines 1-1");
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains(" of /p/a?b?[2J?c in the"));
+
+    // 1500 astral characters are 3000 UTF-16 units: cut at 2000 units (1000 characters), the size named in characters
     let emoji = "\u{1F600}".repeat(1500);
     let v = parse(&render_selection(&file_text(&emoji, 1, 1), "/p/f", "f"));
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     let kept = "\u{1F600}".repeat(1000);
-    assert!(ctx.contains(&format!("{kept}... (truncated; the range holds 3000 characters)\n")), "{ctx}");
+    assert!(ctx.contains(&format!("{kept}... (truncated; the range holds 1500 characters)\n")), "{ctx}");
     assert!(!ctx.contains(&"\u{1F600}".repeat(1001)));
     let plain = "x".repeat(2000);
     let v = parse(&render_selection(&file_text(&plain, 1, 1), "/p/f", "f"));

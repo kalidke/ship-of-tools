@@ -220,12 +220,14 @@ of each.
   handler that reads the file and publishes is unbuilt). `check_selection` accepts exactly the file's own text at the
   window's range: it refuses (`not_file_text`) bytes that are not UTF-8 before the range's end, a CR not before an LF or
   a U+2028, U+2029 or U+0085 before the end, a position outside its line or inside a character, and a `len` or `digest`
-  (`sot_protocol::selection_digest`) that differs from the file's text; the wire bounds neither, so this is the only
-  place a position near `u32::MAX` or a wrong `len` is refused. The bytes may be a prefix ending mid-character after
+  (`sot_protocol::selection_digest`) that differs from the file's text; the wire refuses a `len` outside 1 to 2 MiB and a start
+  not before the end, but checks neither `len` against the text nor any position, so this is the only place a position near
+  `u32::MAX` or a wrong `len` is refused. The bytes may be a prefix ending mid-character after
   the range. `render_selection` builds the hook's one JSON object (`hookSpecificOutput` and `systemMessage`, nothing
   else) with 1-based inclusive lines. Every cap counts UTF-16 code units, Claude Code's own count and never below a
-  character count: the range's text is cut at 2000 (suffix names the whole size), the path in the context at 4096, the
-  context is at most 9,000 and the message at most 200, a path cut from the left with `...`. Tests:
+  character count: the range's text is cut at 2000, the path in the context at 4096, the message at 200 (a path cut
+  from the left with `...`), and a compile-time assertion keeps the context under 9,000. The cut's suffix names the
+  range's whole size in Unicode scalar values. A control character, U+2028 or U+2029 in a path is shown as `?`. Tests:
   `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
