@@ -819,3 +819,24 @@ A landing's record goes here, with its measured times; the package page holds on
   scoped gates passed; the third, on the contract fix alone, failed one chat test no commit of the landing touched
   (CHAT-STOP-STATUS-UNDER-LOAD), and the landing went in on the gate of the byte-identical code. Cause of the miss: a brief
   premise of the session's own, two review rounds and twelve-minute gates in series.
+- The selection replies, 2026-11-07: 07:38 to main 08:23, 45 minutes, a miss. The reply to `selection.set` tells the window
+  who will hear: the handler's first check refuses `not_a_window` for any connection that is not a window's and changes
+  nothing, before the state root and any row; a row whose agent kind takes no selection (one named list, `claude` and `codex`)
+  is refused `no_agent` and its file removed; an accepted selection answers `shared` when the row's marker exists and `held`
+  when it does not, and until the hook piece writes the marker every accepted selection answers `held`. The server holds one
+  definition of a window (role `fe` with a non-empty name, the client's own declaration), set once from the hello on the
+  connection's handler arguments; four earlier copies of the same rule call it, and the one that differs (the active window's
+  lookup accepts an empty name) is stated. The relative path now comes from the files subsystem's own node-id rule. About 58
+  product lines added and 20 removed, 96 test lines; the builder took 4 minutes. Two review rounds (blockers 1, 2): round 1
+  found that `not_a_window` could never fire, since the plan's test for a window (a roster entry) holds for every control
+  session and the table passed the flag as a literal; the fix put one definition in the server and pinned it by driving real
+  connections. Round 2 found the product correct, a stale comment and an unpinned order, both fixed as it named them without
+  a third round. All three scoped gates passed first time. Cause of the miss: a plan premise the brief carried unchecked, two
+  review rounds and three ten-minute gates in series.
+- The selection test on Windows, 2026-11-07: 08:25 to main 08:37, 12 minutes, inside. The hosted Windows job failed the
+  selection handler's table at its absolute-path line, from the first part's landing on: the row's file is JSON, so a Windows
+  path's backslashes are escaped and the test's search of the raw text for the path missed them; the exact rendering on the
+  line before it passed. The row now reads the file as JSON, and a check renders a path with backslashes, which the old
+  raw-text form fails on Linux. Test lines only (about 10), no product change. The scoped gate and the branch's hosted Windows
+  shard passed first time; one review round, no blocker; its one should-fix, a contract clause about what the agent reads
+  (the hook is unbuilt), was cut in the records commit.

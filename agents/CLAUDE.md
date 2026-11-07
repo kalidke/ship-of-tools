@@ -244,7 +244,7 @@ of each.
   Nothing writes the marker until A5, so until then every accepted selection of every row answers `held`; `shared` is
   reached only where a test writes the marker. Codex is a kind that takes a selection until the plan's H2 decides whether
   Codex hears one; if H2 fails Codex rows will answer `no_agent`. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
-  file's JSON escapes and the agent reads decoded. The published text is the file's text at the read; a file that changes
+  file's JSON escapes. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Limits: two connections setting one row race, the shared
   temporary file included (the lock is A4's); on Windows a publish or removal that meets an open read can fail, which is
   `publish_failed` and the old file may remain. Unbuilt: the map of who set each file, the removal at a connection's end and the start-up walk (A4); the hook, the leg's
