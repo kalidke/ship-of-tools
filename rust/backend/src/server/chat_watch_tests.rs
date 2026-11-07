@@ -163,9 +163,13 @@ impl Conn {
 }
 
 /// Waits until the owner holds every channel's snapshot.
-async fn complete(hub: &Arc<Hub>, channels: &[impl AsRef<str>]) {
-    let probe = hub.connect();
-    until("the snapshots", || channels.iter().all(|c| probe.conn.state(c.as_ref()) == ChatWatchState::Complete)).await;
+#[track_caller]
+fn complete<'a>(hub: &'a Arc<Hub>, channels: &'a [impl AsRef<str>]) -> impl Future<Output = ()> + 'a {
+    let at = std::panic::Location::caller();
+    async move {
+        let probe = hub.connect();
+        until(&format!("the snapshots (waited at {at})"), || channels.iter().all(|c| probe.conn.state(c.as_ref()) == ChatWatchState::Complete)).await;
+    }
 }
 
 /// `C0000`... for `n` channels.
