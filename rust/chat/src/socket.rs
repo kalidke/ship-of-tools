@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::future::Future;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -148,7 +149,14 @@ impl Waiter {
         if !self.0.state.lock().unwrap().queue.is_empty() {
             return true;
         }
-        tokio::time::timeout(within, self.0.ready.notified()).await.is_ok()
+        let notified = self.0.ready.notified();
+        if within.is_zero() {
+            // A bound of nothing is one look, with no timer: a timer's first expiry costs a clock tick (15 ms on
+            // Windows), which a caller that only asks "is anything owed" would pay on every call.
+            tokio::pin!(notified);
+            return std::future::poll_fn(|cx| std::task::Poll::Ready(notified.as_mut().poll(cx).is_ready())).await;
+        }
+        tokio::time::timeout(within, notified).await.is_ok()
     }
 }
 
