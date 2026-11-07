@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 11] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 12] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -148,6 +148,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "the_bars_enter_sends_page_reply_to_the_pages_host",
             State::the_bars_enter_sends_page_reply_to_the_pages_host,
+        ),
+        (
+            "a_destroyed_session_moves_the_view_to_a_neighbor",
+            State::a_destroyed_session_moves_the_view_to_a_neighbor,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

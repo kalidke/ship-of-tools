@@ -132,13 +132,21 @@ impl<C: PaneClient> AgentPane<C> {
         client.is_dead().then(|| client.status_line().to_string())
     }
 
-    /// State has already admitted the kept-row outcome, or a switch to a row with no attachment. Other pane state deliberately survives it.
+    /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
         self.pane_attach_term = None;
         self.pane_inputs_discarded = 0;
         self.bl_pane_target = None;
         self.pane_feed = PaneFeed::Pending;
+    }
+
+    /// A switch to a row with no attachment (the no-session state): the pane paints exactly as a new one, whatever the
+    /// last session left, its client, held screen, dial error or feed.
+    pub(in crate::ui) fn show_no_attachment(&mut self) {
+        self.invalidate_kept_attachment();
+        self.pane_hold = None;
+        self.pane_dial_error = None;
     }
 }
 

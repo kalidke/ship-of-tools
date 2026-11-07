@@ -73,7 +73,7 @@ impl State {
 
     /// Carry out `RowDirectory::leave`: switch, as any switch does, to the neighbor it names. With no neighbor, or one
     /// that cannot be attached, the view goes to the host's default row, which a destroy never removes; a default row
-    /// with no attachment leaves the pane empty (`retarget_workspace`). Not a person's choice: blue is left as-is.
+    /// with no attachment shows an empty pane (`retarget_workspace`). Not a person's choice: blue is left as-is.
     pub(in crate::ui) fn apply_leave(&mut self, host: HostKey, leave: Leave) {
         let target = match leave {
             Leave::Stay => return,
@@ -84,15 +84,6 @@ impl State {
             Some(target) => self.switch_to_resolved_workspace(target, false),
             None => self.switch_to_workspace(host, None, None, false),
         }
-    }
-
-    /// What the window does with its selected row when a row of `host` is gone (see `RowDirectory::leave`); a row of
-    /// another host never moves it.
-    pub(in crate::ui) fn leave_for(&self, host: &str, update: Option<&RowDirectoryUpdate>) -> Leave {
-        if self.selected.host() != host {
-            return Leave::Stay;
-        }
-        self.row_directory.leave(host, self.selected.workspace_id().as_deref(), update)
     }
 
     /// Clean up per-workspace snapshot maps so a recreated workspace with the same slug doesn't inherit stale
@@ -270,7 +261,7 @@ impl State {
             self.attach_session_to_bl(self.selected.host().clone(), target);
         } else {
             // A row with no attachment shows an empty pane, never the row just left.
-            self.agent_pane.invalidate_kept_attachment();
+            self.agent_pane.show_no_attachment();
         }
         old_tree_key
     }
