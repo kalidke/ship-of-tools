@@ -1,10 +1,11 @@
 //! The product half of the hold tool: a marked line a test may hold a thread at until it releases it (`test_hold` is the
 //! test half). Both profiles expand a point to the same code, `if ON { arrive(..) }`, with `ON` the build's
-//! `cfg!(debug_assertions)`: a release build type-checks exactly what a debug build compiles, and the optimizer drops
-//! the dead branch, so no call is made, no key is evaluated and no name is kept (`strings` on a release build shows
-//! none). Every test build is the dev profile and every shipped build is `--release`, so tests always have the points
-//! and no installed binary has one. A point goes on a decision path (once per op, per attempt, per tick), never in a
-//! per-byte or per-frame loop, and changes nothing when unarmed.
+//! `cfg!(debug_assertions)`, and `arrive` and `arrive_async` have one signature each with a body only under debug
+//! assertions, so a release caller type-checks against the same signatures a debug caller does. `ON` is false in a
+//! release build, so no key is evaluated, and the optimizer drops the call and the name (`strings` on a release build
+//! shows none). Every test build is the dev profile and every shipped build is `--release`, so tests always have the
+//! points and no installed binary has one. A point goes on a decision path (once per op, per attempt, per tick), never
+//! in a per-byte or per-frame loop, and changes nothing when unarmed.
 //!
 //! A point's name is a string literal of `a-z 0-9 . _ -`, `<subsystem>.<place>`, checked at compile time:
 //!
@@ -16,8 +17,8 @@
 //! sot_platform::hold_point!("Doc Name Not Fine");
 //! ```
 //!
-//! A key is anything `Display`, whatever its shape; this compiles, and runs unarmed, in both profiles (the doc tests
-//! run under `cargo test --release --doc` too):
+//! A key is anything `Display`, whatever its shape; this compiles and runs unarmed. (rustdoc builds doc tests with debug
+//! assertions even under `--release`, so no doc test pins the release body; a `--release` build of a keyed point does.)
 //!
 //! ```
 //! # use std::path::Path;
@@ -52,8 +53,7 @@ macro_rules! hold_point {
     }};
 }
 
-/// Marks a line in async code: the arrival waits on its own thread and the future on that thread's oneshot, never
-/// holding a runtime thread.
+/// Marks a line in async code: the arrival waits on `spawn_blocking`, never on a runtime thread.
 #[macro_export]
 macro_rules! hold_point_async {
     ($name:literal $(, $key:expr)? $(,)?) => {{
@@ -86,17 +86,29 @@ pub const fn check_name(name: &str) {
     }
 }
 
-#[cfg(debug_assertions)]
-pub use imp::{arrive, arrive_async};
-/// A release build's points: the same signatures, never called (`ON` is false), nothing in them.
-#[cfg(not(debug_assertions))]
+/// The call a point makes: one signature in both profiles, a body only with debug assertions.
 #[doc(hidden)]
-pub fn arrive(_: &'static str, _: Option<&dyn std::fmt::Display>) {}
-#[cfg(not(debug_assertions))]
-#[doc(hidden)]
-pub fn arrive_async(_: &'static str, _: Option<&dyn std::fmt::Display>) -> std::future::Ready<()> {
-    std::future::ready(())
+pub fn arrive(point: &'static str, key: Option<&dyn std::fmt::Display>) {
+    #[cfg(debug_assertions)]
+    imp::arrive(point, key);
+    #[cfg(not(debug_assertions))]
+    let _ = (point, key);
 }
+
+/// The async call a point makes: one signature in both profiles, a body only with debug assertions.
+#[doc(hidden)]
+pub fn arrive_async(point: &'static str, key: Option<&dyn std::fmt::Display>) -> impl std::future::Future<Output = ()> + Send + 'static {
+    #[cfg(debug_assertions)]
+    {
+        imp::arrive_async(point, key)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (point, key);
+        std::future::ready(())
+    }
+}
+
 #[cfg(all(debug_assertions, feature = "test-support"))]
 pub use imp::{GIVE_UP, WAIT};
 #[cfg(all(debug_assertions, feature = "test-support"))]
@@ -186,6 +198,19 @@ mod imp {
         }
     }
 
+    impl Drop for Held {
+        /// A wait that never ran (its blocking task cancelled with its runtime) leaves its ticket to fail the arm.
+        fn drop(&mut self) {
+            let mut state = lock();
+            if let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == self.arm) {
+                if slot.tickets[self.ticket] == Ticket::Held {
+                    slot.tickets[self.ticket] = Ticket::GaveUp;
+                    self.changed.notify_all();
+                }
+            }
+        }
+    }
+
     /// Takes the next ticket at `point` if an arm matches the key; `Some` only when the ticket is held.
     fn claim(point: &'static str, key: Option<&dyn Display>) -> Option<Held> {
         let mut state = lock();
@@ -208,26 +233,17 @@ mod imp {
         }
     }
 
-    /// The claim is made at the call, so the future holds no borrow of the key. A held arrival waits on a plain
-    /// thread and the future waits on that thread's oneshot (on `spawn_blocking` when a runtime is there, so paused tokio
-    /// time cannot pass the hold): a runtime dropped under it cancels only the future, the thread still waits for its
-    /// release or give-up, so the ticket never reads Held with nobody waiting.
+    /// The claim is made at the call, so the future holds no borrow of the key. A runtime dropped under the wait cancels
+    /// its blocking task unrun; the `Drop` of `Held` then fails the ticket, so nothing goes on holding it.
     pub fn arrive_async(point: &'static str, key: Option<&dyn Display>) -> impl Future<Output = ()> + Send + 'static {
-        let woke = claim(point, key).map(|held| {
-            let (done, woke) = tokio::sync::oneshot::channel();
-            std::thread::spawn(move || {
-                held.wait();
-                done.send(()).ok();
-            });
-            woke
-        });
+        let held = claim(point, key);
         async move {
-            if let Some(woke) = woke {
-                // A pending blocking task keeps paused tokio time from advancing past the hold; with no runtime to
-                // run one, the oneshot is awaited directly.
-                match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => drop(runtime.spawn_blocking(move || woke.blocking_recv()).await),
-                    Err(_) => drop(woke.await),
+            if let Some(held) = held {
+                // Polled outside a tokio runtime there is no pool to wait on: wait as a sync point does.
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    tokio::task::spawn_blocking(move || held.wait()).await.ok();
+                } else {
+                    held.wait();
                 }
             }
         }
