@@ -750,3 +750,25 @@ A landing's record goes here, with its measured times; the package page holds on
   about ten minutes each and a ten-minute gate run in series, and a gate on the first versions, started before the reviews
   ended, held the gate host five minutes after both fixes were ready. The two landed together on one gate of the stacked
   changes.
+- The fake Slack for the backend's tests, 2026-11-07: 00:41 to main 01:42, 61 minutes, a miss. `sot-chat`'s `test-support`
+  feature exposes the fake Slack and `Http::for_test` to other crates' tests, and `sot-backend` enables it as a dev-dependency
+  only. Two guards keep it out of a shipped build: a check the gate runs on every run resolves the workspace's release build
+  for the release targets and fails when the feature is on, and the feature refuses to compile without debug assertions,
+  whatever spelling turned it on. About 20 product, 90 script and 15 test lines, built in 7 minutes. Three review rounds
+  (blockers 4, 2, 0); every blocker was in a text search of the release files for feature flags, or in the gate's pin of the
+  check's self-proof, never in the resolution check; the captain was told before round 3, which replaced the search with the
+  compile error. The first whole gate failed on the repo's portable-sed lint; the next two passed. Cause of the miss: the brief
+  asked that every path to the feature be caught, closed or named, and the command-line path was caught with a text pattern
+  that each round beat with a new spelling; a guard that reads no text closed it.
+- The chat request ops, 2026-11-07: 01:45 to main 02:52, 67 minutes, a miss. `chat.resolve`, `chat.history` and `chat.post` run
+  as jobs off the connection loop, their admission on the blocking pool, so a stalled Slack reply delays no ping or other op
+  (M4); each passes the one admission, so a removed, replaced, remapped or anchor row makes no call on the fake Slack (M3 end to
+  end); a post is sent once; `chat.watch` and `chat.unwatch` answer `unavailable` until their subscriptions land. About 190
+  product and 330 test lines. The builder stopped at three minutes on a premise of the brief, taken from a review note and never
+  run: the service's Slack address is fixed, so the backend could not reach the fake; one start seam taking a base URL was then
+  exported under `test-support`, held out of shipped builds by the same guards. Every whole gate passed first time (three).
+  Three review rounds (blockers 3, 1, 0): round 1 found no product defect and three false or stale record sentences; round 2
+  found that the contract said all three ops run off the loop while the test held only a history, so `chat.post` placed on the
+  loop left every server test green; the captain was told before round 3, which pinned the three placements and made the
+  error-to-code map name every case. The export's leftover pin rode it: the release-features check's self-proof now shows the
+  compile error. Cause of the miss: a brief premise no one had run, and a guarantee sentence over three ops with a test for one.
