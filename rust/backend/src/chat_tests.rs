@@ -169,7 +169,7 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
         assert_eq!(chat.status(), Status::NotHub, "{what}");
         assert!(!called.load(Ordering::SeqCst), "{what}");
         // The status and its words, the answer for a folder, a stop and a wait open nothing either.
-        let _ = (chat.status().to_string(), chat.resolve(&row.to_string_lossy()), chat.service().is_none());
+        let _ = (chat.status().to_string(), chat.mapping(&row.to_string_lossy()), chat.service().is_none());
         chat.request_stop();
         assert!(chat.wait_retired(Duration::ZERO), "{what}");
         assert_eq!(seen.opened(), Vec::<PathBuf>::new(), "{what}: a non-hub opened a chat file");
@@ -190,7 +190,7 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
     home.list("elsewhere");
     assert_eq!(chat.status(), Status::Running);
     assert!(chat.service().is_some());
-    assert!(matches!(chat.resolve(&row.to_string_lossy()), Resolution::Mapped { .. }));
+    assert!(matches!(chat.mapping(&row.to_string_lossy()), Resolution::Mapped { .. }));
     std::fs::remove_file(home.config().join("hosts.toml")).unwrap();
     assert_eq!(chat.status(), Status::Running);
     assert!(chat.service().is_some());
@@ -222,7 +222,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
     let chat = begin(&home, &[fact(&row, false)], &seen, &registry, never(&called));
     assert!(matches!(chat.status(), Status::Refused(ConfigError::Malformed(_))));
     assert_eq!(seen.opened(), vec![home.config().join(CONFIG_FILE)]);
-    assert!(matches!(chat.resolve(&row.to_string_lossy()), Resolution::Invalid(ConfigError::Malformed(_))));
+    assert!(matches!(chat.mapping(&row.to_string_lossy()), Resolution::Invalid(ConfigError::Malformed(_))));
 
     // Good chat.toml, no secrets: both looked for, no start.
     home.chat_toml(&[row.to_string_lossy().into_owned()]);
@@ -245,16 +245,16 @@ async fn a_non_hub_in_a_shared_home_answers_not_hub_where_a_hub_without_the_row_
     };
     let (home, row) = shared("elsewhere");
     let non_hub = begin(&home, &[], &Observed::new(), &Registry::new(), refuses("unused"));
-    assert_eq!(non_hub.resolve(&row.to_string_lossy()), Resolution::NotHub);
+    assert_eq!(non_hub.mapping(&row.to_string_lossy()), Resolution::NotHub);
     assert!(Resolution::NotHub.explain().contains("not the configured hub"));
     // The same home on the hub, with no such row, is `UnknownFolder`: the hub decision came before the load.
     let (home, row) = shared(SELF);
     let hub = begin(&home, &[], &Observed::new(), &Registry::new(), refuses("unused"));
     assert_eq!(hub.status(), Status::Refused(ConfigError::UnknownFolder(1)));
-    assert_eq!(hub.resolve(&row.to_string_lossy()), Resolution::Invalid(ConfigError::UnknownFolder(1)));
+    assert_eq!(hub.mapping(&row.to_string_lossy()), Resolution::Invalid(ConfigError::UnknownFolder(1)));
     // With its row, the hub maps the folder.
     let hub = begin(&home, &[fact(&row, false)], &Observed::new(), &Registry::new(), refuses("held"));
-    assert!(matches!(hub.resolve(&row.to_string_lossy()), Resolution::Mapped { .. }));
+    assert!(matches!(hub.mapping(&row.to_string_lossy()), Resolution::Mapped { .. }));
 }
 
 #[test]
@@ -509,4 +509,189 @@ async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_
     let done = retiring.lock().unwrap().take().unwrap().join().unwrap();
     assert!(done.incomplete.is_empty(), "{done:?}");
     assert_eq!(chat.status(), Status::Stopped, "a start began after its retirement was reported complete");
+}
+
+// ---- M3: the adapter every chat action passes ----
+
+use sot_protocol::ops::ChatChannel;
+
+fn row(label: &str, folder: &Path) -> Workspace {
+    Workspace::from_label(label, folder.to_path_buf(), false, "none".into(), String::new(), String::new())
+}
+
+fn target(row: &str, workspace: &str, channel: &str) -> ChatTarget {
+    ChatTarget { row: row.into(), workspace: workspace.into(), channel: ChatChannel::try_from(channel.to_string()).unwrap() }
+}
+
+/// A hub with a running service, rows `alpha` (folder a, mapped to C0AAAA) and `beta` (folder b, C0BBBB), and a folder
+/// c no mapping names. The service is a listener that holds no Slack: a refusal is proved by the adapter handing out
+/// no service, the only way to a call (`Chat::service` is private), since the backend has no fake Slack.
+struct World {
+    home: Home,
+    rows: Workspaces,
+    chat: Arc<Chat<Fake>>,
+    alpha: String,
+    folders: [PathBuf; 3],
+}
+
+async fn world() -> World {
+    let home = Home::new(Some(SELF));
+    let folders = [home.folder("a"), home.folder("b"), home.folder("c")];
+    home.chat_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
+    home.secrets();
+    let rows = Workspaces::new();
+    let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
+    rows.insert(row("beta", &folders[1]));
+    let chat = begin(&home, &row_facts(&rows), &Observed::new(), &Registry::new(), gives(&Arc::new(Fake::default())));
+    assert_eq!(settled(&chat).await, Status::Running);
+    World { home, rows, chat, alpha, folders }
+}
+
+fn admitted(w: &World, id: &str, workspace: &str, channel: &str) -> Vec<Result<(), ChatCode>> {
+    let t = target(id, workspace, channel);
+    Action::ALL.iter().map(|a| w.chat.admit(*a, &w.rows, &t).map(|_| ())).collect()
+}
+
+/// What each action answers: every action but an unwatch the same, and an unwatch only needs the service.
+fn all(refusal: ChatCode) -> Vec<Result<(), ChatCode>> {
+    Action::ALL.iter().map(|a| if *a == Action::Unwatch { Ok(()) } else { Err(refusal) }).collect()
+}
+
+fn ok() -> Vec<Result<(), ChatCode>> {
+    vec![Ok(()); Action::ALL.len()]
+}
+
+#[test]
+fn every_action_is_in_the_one_table() {
+    // Adding a variant stops this match compiling; the table must then name it.
+    let named = |a: Action| match a {
+        Action::Watch | Action::Unwatch | Action::History | Action::Post | Action::Snapshot => a,
+    };
+    for a in Action::ALL {
+        assert_eq!(named(a), a);
+    }
+    let mut seen = Action::ALL.to_vec();
+    seen.dedup();
+    assert_eq!(seen.len(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_row_or_mapping_cannot_post_or_fetch() {
+    let w = world().await;
+    let id = w.alpha.clone();
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), ok());
+
+    // A removed row, an id that never existed, an empty id and a slug used as an id: no service.
+    for what in ["ws-nothing-0", "", "alpha"] {
+        assert_eq!(admitted(&w, what, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow), "{what:?}");
+    }
+    // A watch admitted while the row was current: once the row goes, its next snapshot is refused and it can be dropped.
+    assert!(w.chat.admit(Action::Watch, &w.rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
+    w.rows.remove_by_id(&id).unwrap();
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
+
+    // Replaced: a new row in the folder under a new id does not inherit a request that named the old id, and a request
+    // naming the new id works.
+    let new = w.rows.insert(row("alpha", &w.folders[0])).workspace_id.clone();
+    assert_ne!(new, id);
+    assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), ok());
+
+    // A pair the mapping does not hold: another channel, another workspace, a channel the file does not list.
+    for (workspace, channel) in [("T0AAAA", "C0BBBB"), ("T0ZZZZ", "C0AAAA"), ("T0AAAA", "C0ZZZZ")] {
+        assert_eq!(admitted(&w, &new, workspace, channel), all(ChatCode::StaleMapping), "{workspace} {channel}");
+    }
+    // The same id re-rooted (a same-slug insert keeps the id): onto folder b it maps to C0BBBB, not what was expected;
+    // onto folder c it maps to nothing; and the row that went away with its folder is gone.
+    w.rows.insert(row("alpha", &w.folders[1]));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::StaleMapping));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0BBBB"), ok());
+    w.rows.insert(row("alpha", &w.folders[2]));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::Unmapped));
+    std::fs::remove_dir_all(&w.folders[2]).unwrap();
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::StaleRow));
+
+    // The inert anchor never acts, though its folder is still mapped.
+    w.rows.insert(row("alpha", &w.folders[0]));
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), ok());
+    w.rows.set_default(&new);
+    assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), all(ChatCode::Unmapped));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_action_is_admitted_unless_the_service_runs() {
+    let rows = Workspaces::new();
+    let t = |id: &str| target(id, "T0AAAA", "C0AAAA");
+    let unavailable = |chat: &Chat<Fake>, id: &str| Action::ALL.iter().all(|a| chat.admit(*a, &rows, &t(id)).err() == Some(ChatCode::Unavailable));
+
+    // Not the hub, a hub with no chat.toml, one with no secrets, and one whose start failed.
+    let other = Home::new(Some("elsewhere"));
+    let folder = other.configured();
+    assert!(unavailable(&begin(&other, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    let bare = Home::new(Some(SELF));
+    assert!(unavailable(&begin(&bare, &[], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    let no_secrets = Home::new(Some(SELF));
+    let folder = no_secrets.configured();
+    std::fs::remove_file(no_secrets.config().join(SECRETS_FILE)).unwrap();
+    assert!(unavailable(&begin(&no_secrets, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    let failing = Home::new(Some(SELF));
+    let folder = failing.configured();
+    let chat = begin(&failing, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("down"));
+    assert_eq!(settled(&chat).await, Status::Failed("down"));
+    assert!(unavailable(&chat, "r"));
+
+    // Starting, and stopped after running.
+    let starting = Home::new(Some(SELF));
+    let folder = starting.configured();
+    let chat = begin(&starting, &[fact(&folder, false)], &Observed::new(), &Registry::new(), pending());
+    assert_eq!(chat.status(), Status::Starting);
+    assert!(unavailable(&chat, "r"));
+    let w = world().await;
+    let t = target(&w.alpha, "T0AAAA", "C0AAAA");
+    assert!(w.chat.admit(Action::Post, &w.rows, &t).is_ok());
+    w.chat.request_stop();
+    assert!(w.chat.wait_retired(LONG));
+    assert!(Action::ALL.iter().all(|a| w.chat.admit(*a, &w.rows, &t).err() == Some(ChatCode::Unavailable)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolve_joins_the_mapping_with_the_row_and_the_service_status() {
+    let w = world().await;
+    let mapped = |delivers| Ok((Resolution::Mapped { workspace: "T0AAAA".into(), channel: "C0AAAA".into(), mail_after: Some(sot_protocol::chat::Ts::parse("1.000000").unwrap()) }, delivers));
+    assert_eq!(w.chat.resolve(&w.rows, &w.alpha), mapped(true));
+    let gamma = w.rows.insert(row("gamma", &w.folders[2])).workspace_id.clone();
+    assert_eq!(w.chat.resolve(&w.rows, &gamma), Ok((Resolution::Unmapped, false)));
+    assert_eq!(w.chat.resolve(&w.rows, ""), Err(ChatCode::StaleRow));
+    assert_eq!(w.chat.resolve(&w.rows, "alpha"), Err(ChatCode::StaleRow));
+    w.rows.set_default(&w.alpha);
+    assert_eq!(w.chat.resolve(&w.rows, &w.alpha), Ok((Resolution::Unmapped, false)));
+    w.rows.set_default(&gamma);
+    // Once the service is stopped the file's mapping still shows, and nothing delivers.
+    w.chat.request_stop();
+    assert!(w.chat.wait_retired(LONG));
+    assert_eq!(w.chat.resolve(&w.rows, &w.alpha), mapped(false));
+    w.rows.remove_by_id(&w.alpha);
+    assert_eq!(w.chat.resolve(&w.rows, &w.alpha), Err(ChatCode::StaleRow));
+
+    // Starting, a start that failed, and missing secrets show the mapping and do not deliver; not the hub and a
+    // refused chat.toml say so.
+    let starting = Home::new(Some(SELF));
+    let folder = starting.configured();
+    let rows = Workspaces::new();
+    let id = rows.insert(row("alpha", &folder)).workspace_id.clone();
+    let chat = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), pending());
+    assert_eq!(chat.resolve(&rows, &id), mapped(false));
+    let failed = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("down"));
+    assert_eq!(settled(&failed).await, Status::Failed("down"));
+    assert_eq!(failed.resolve(&rows, &id), mapped(false));
+    std::fs::remove_file(starting.config().join(SECRETS_FILE)).unwrap();
+    let bare = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("x"));
+    assert_eq!(bare.status(), Status::Secrets(ConfigError::Missing));
+    assert_eq!(bare.resolve(&rows, &id), mapped(false));
+    starting.write(CONFIG_FILE, "workspace = [[[");
+    let refused = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("x"));
+    assert!(matches!(refused.resolve(&rows, &id), Ok((Resolution::Invalid(ConfigError::Malformed(_)), false))));
+    let non_hub = Home::new(Some("elsewhere"));
+    let chat = begin(&non_hub, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::NotHub, false)));
 }
