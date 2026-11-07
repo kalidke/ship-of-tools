@@ -16,7 +16,7 @@ fn sel(node: &str, start: (u32, u32), end: (u32, u32), shown: &str) -> SelectedT
 }
 
 fn req(workspace: &str, selection: Option<SelectedText>) -> SelectionSetReq {
-    SelectionSetReq { workspace_id: workspace.to_string(), selection }
+    SelectionSetReq { workspace_id: workspace.to_string(), selection, drawing: None }
 }
 
 #[test]

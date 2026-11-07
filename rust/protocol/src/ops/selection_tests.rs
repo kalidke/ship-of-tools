@@ -27,10 +27,11 @@ fn selection_set_round_trips_and_the_digest_is_fnv1a_64() {
             len: 9,
             digest: 5,
         }),
+        drawing: None,
     };
     assert_eq!(serde_json::to_value(&r).unwrap(), req(sel()));
     assert_eq!(serde_json::from_value::<SelectionSetReq>(req(sel())).unwrap(), r);
-    let clear = SelectionSetReq { workspace_id: "ws-1".into(), selection: None };
+    let clear = SelectionSetReq { workspace_id: "ws-1".into(), selection: None, drawing: None };
     assert_eq!(serde_json::to_value(&clear).unwrap(), req(Value::Null));
     assert_eq!(serde_json::from_value::<SelectionSetReq>(req(Value::Null)).unwrap(), clear);
     for (s, v) in [("shared", SelectionState::Shared), ("held", SelectionState::Held)] {
@@ -106,7 +107,62 @@ fn a_wrong_type_is_refused_and_an_added_field_is_ignored() {
 fn the_refusal_codes_are_fixed() {
     use selection_code::*;
     assert_eq!(
-        [UNKNOWN_WORKSPACE, BAD_NODE_ID, NOT_FILE_TEXT, NO_AGENT, NOT_A_WINDOW, PUBLISH_FAILED],
-        ["unknown_workspace", "bad_node_id", "not_file_text", "no_agent", "not_a_window", "publish_failed"]
+        [UNKNOWN_WORKSPACE, BAD_NODE_ID, NOT_FILE_TEXT, NO_AGENT, NOT_A_WINDOW, PUBLISH_FAILED, NOT_AN_IMAGE, TOO_LARGE],
+        ["unknown_workspace", "bad_node_id", "not_file_text", "no_agent", "not_a_window", "publish_failed", "not_an_image", "too_large"]
     );
+}
+
+fn drawing_req(drawing: Value) -> Value {
+    json!({"workspace_id": "ws-1", "selection": null, "drawing": drawing})
+}
+
+#[test]
+fn a_drawing_rides_selection_set_within_its_bounds() {
+    let figure = json!({"base": {"figure": {"node_id": "plots/fit.png"}}, "strokes": [[[0, 0], [65535, 65535]], [[7, 9]]]});
+    let r = serde_json::from_value::<SelectionSetReq>(drawing_req(figure.clone())).unwrap();
+    assert_eq!(r.selection, None);
+    let d = r.drawing.clone().unwrap();
+    assert_eq!(d.base, InkBase::Figure { node_id: "plots/fit.png".into() });
+    assert_eq!(d.strokes, vec![vec![[0, 0], [65535, 65535]], vec![[7, 9]]]);
+    assert_eq!(serde_json::to_value(&r).unwrap(), drawing_req(figure));
+    let canvas = json!({"base": "canvas", "strokes": [[[1, 2]]]});
+    let r = serde_json::from_value::<SelectionSetReq>(drawing_req(canvas.clone())).unwrap();
+    assert_eq!(r.drawing.as_ref().unwrap().base, InkBase::Canvas);
+    assert_eq!(serde_json::to_value(&r).unwrap(), drawing_req(canvas));
+    // a request without the field decodes as before, and a clear carries no drawing key
+    let old = serde_json::from_value::<SelectionSetReq>(req(sel())).unwrap();
+    assert_eq!(old.drawing, None);
+    assert!(serde_json::to_value(&old).unwrap().get("drawing").is_none());
+    // both, no stroke, an empty stroke
+    let mut both = drawing_req(json!({"base": "canvas", "strokes": [[[1, 2]]]}));
+    both["selection"] = sel();
+    assert!(refused(both));
+    assert!(refused(drawing_req(json!({"base": "canvas", "strokes": []}))));
+    assert!(refused(drawing_req(json!({"base": "canvas", "strokes": [[[1, 2]], []]}))));
+    // strokes and points: the last allowed, then one more
+    let strokes = |n: usize, per: usize| json!({"base": "canvas", "strokes": vec![vec![[1, 2]; per]; n]});
+    assert!(!refused(drawing_req(strokes(MAX_INK_STROKES, 1))));
+    assert!(refused(drawing_req(strokes(MAX_INK_STROKES + 1, 1))));
+    assert!(!refused(drawing_req(strokes(1, MAX_INK_POINTS))));
+    assert!(refused(drawing_req(strokes(1, MAX_INK_POINTS + 1))));
+    assert!(!refused(drawing_req(strokes(2, MAX_INK_POINTS / 2))));
+    assert!(refused(drawing_req(json!({"base": "canvas", "strokes": [vec![[1, 2]; MAX_INK_POINTS / 2], vec![[1, 2]; MAX_INK_POINTS / 2 + 1]]}))));
+    // a coordinate is a u16, a node id is bounded
+    assert!(refused(drawing_req(json!({"base": "canvas", "strokes": [[[65536, 0]]]}))));
+    let fig = |n: usize| json!({"base": {"figure": {"node_id": "n".repeat(n)}}, "strokes": [[[1, 2]]]});
+    assert!(!refused(drawing_req(fig(MAX_SELECTION_NODE))));
+    assert!(refused(drawing_req(fig(MAX_SELECTION_NODE + 1))));
+    // the largest drawing, at its widest numbers, encodes under the envelope
+    let per = MAX_INK_POINTS / MAX_INK_STROKES;
+    let widest = SelectionSetReq {
+        workspace_id: "w".repeat(MAX_SELECTION_WORKSPACE),
+        selection: None,
+        drawing: Some(Drawing {
+            base: InkBase::Figure { node_id: "n".repeat(MAX_SELECTION_NODE) },
+            strokes: vec![vec![[65535, 65535]; per]; MAX_INK_STROKES],
+        }),
+    };
+    let bytes = serde_json::to_vec(&widest).unwrap().len();
+    assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES / 2, "{bytes}");
+    assert!(serde_json::from_slice::<SelectionSetReq>(&serde_json::to_vec(&widest).unwrap()).is_ok());
 }

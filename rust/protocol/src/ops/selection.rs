@@ -1,7 +1,7 @@
 // the selection op (A1): a window tells the daemon which text of a previewed file it shows selected
 
 use super::*;
-use crate::chat::within;
+use crate::chat::{at_most, within};
 
 /// The longest `workspace_id` (a row id, as the chat family bounds a row).
 pub const MAX_SELECTION_WORKSPACE: usize = 256;
@@ -9,6 +9,10 @@ pub const MAX_SELECTION_WORKSPACE: usize = 256;
 pub const MAX_SELECTION_NODE: usize = 4096;
 /// The most bytes a selection may span, the daemon's read of the project file.
 pub const MAX_SELECTION_LEN: u32 = 2 * 1024 * 1024;
+/// The most strokes a drawing may hold.
+pub const MAX_INK_STROKES: usize = 1024;
+/// The most points a drawing may hold in all strokes together.
+pub const MAX_INK_POINTS: usize = 16384;
 
 /// The fixed refusal codes of `selection.set`, the `code` of the standard error payload.
 pub mod selection_code {
@@ -18,6 +22,8 @@ pub mod selection_code {
     pub const NO_AGENT: &str = "no_agent";
     pub const NOT_A_WINDOW: &str = "not_a_window";
     pub const PUBLISH_FAILED: &str = "publish_failed";
+    pub const NOT_AN_IMAGE: &str = "not_an_image";
+    pub const TOO_LARGE: &str = "too_large";
 }
 
 /// FNV-1a 64 of the selected text's UTF-8 bytes, lines joined by LF: what the window computes over what it shows and
@@ -69,14 +75,78 @@ impl TryFrom<RawSelectedText> for SelectedText {
     }
 }
 
-/// `selection.set`: `selection: null` clears. The field is required, so a request that lost it is refused rather than
-/// read as a clear.
+/// What a drawing is drawn on: the row's blank canvas, or an image node of the project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SelectionSetReq {
+#[serde(rename_all = "snake_case")]
+pub enum InkBase {
+    Canvas,
+    Figure {
+        #[serde(deserialize_with = "within::<_, MAX_SELECTION_NODE>")]
+        node_id: String,
+    },
+}
+
+/// What a decoder reads before it checks the bounds a `Drawing` keeps.
+#[derive(Deserialize)]
+struct RawDrawing {
+    base: InkBase,
+    #[serde(deserialize_with = "at_most::<_, _, MAX_INK_STROKES>")]
+    strokes: Vec<Vec<[u16; 2]>>,
+}
+
+/// Ink over a base: each point is `[x, y]`, `x / 65535` and `y / 65535` the fractions of the base's width and height.
+/// At least one stroke, each with a point, at most `MAX_INK_STROKES` strokes and `MAX_INK_POINTS` points in all. A
+/// one-point stroke is a dot. Decoding refuses a drawing that breaks these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawDrawing")]
+pub struct Drawing {
+    pub base: InkBase,
+    pub strokes: Vec<Vec<[u16; 2]>>,
+}
+
+impl TryFrom<RawDrawing> for Drawing {
+    type Error = String;
+    fn try_from(r: RawDrawing) -> Result<Self, String> {
+        if r.strokes.is_empty() || r.strokes.iter().any(Vec::is_empty) {
+            return Err("a drawing needs strokes, each with a point".to_string());
+        }
+        if r.strokes.iter().map(Vec::len).sum::<usize>() > MAX_INK_POINTS {
+            return Err(format!("more than {MAX_INK_POINTS} points"));
+        }
+        Ok(Drawing { base: r.base, strokes: r.strokes })
+    }
+}
+
+/// What a decoder reads before it checks that the request shares one thing.
+#[derive(Deserialize)]
+struct RawSelectionSetReq {
     #[serde(deserialize_with = "within::<_, MAX_SELECTION_WORKSPACE>")]
-    pub workspace_id: String,
+    workspace_id: String,
     #[serde(deserialize_with = "Option::deserialize")]
+    selection: Option<SelectedText>,
+    #[serde(default)]
+    drawing: Option<Drawing>,
+}
+
+/// `selection.set`: `selection: null` and no `drawing` clears; at most one of the two is set. The `selection` field is
+/// required, so a request that lost it is refused rather than read as a clear; `drawing` defaults to none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawSelectionSetReq")]
+pub struct SelectionSetReq {
+    pub workspace_id: String,
     pub selection: Option<SelectedText>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drawing: Option<Drawing>,
+}
+
+impl TryFrom<RawSelectionSetReq> for SelectionSetReq {
+    type Error = String;
+    fn try_from(r: RawSelectionSetReq) -> Result<Self, String> {
+        if r.selection.is_some() && r.drawing.is_some() {
+            return Err("both a selection and a drawing".to_string());
+        }
+        Ok(SelectionSetReq { workspace_id: r.workspace_id, selection: r.selection, drawing: r.drawing })
+    }
 }
 
 /// `shared`: published and the row's agent takes it; `held`: published, the agent started without the hook.

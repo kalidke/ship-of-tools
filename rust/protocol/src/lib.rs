@@ -9,6 +9,7 @@ pub mod annotation;
 pub mod chat;
 pub mod child_lines;
 pub mod codec;
+pub mod ink;
 pub mod ir;
 pub mod ops;
 pub mod page_reply;

@@ -134,7 +134,7 @@ name is in this crate's one op table.
     `a_target_names_a_real_channel_and_bounded_ids`, `a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds`.
 
 13. **`selection.set` is one op in the table, its request bounded at decode, its digest defined once.** `ops/selection.rs`:
-    `SelectionSetReq { workspace_id, selection }` -> `SelectionSetRes { state }` (`shared`, `held`; a later state reads as
+    `SelectionSetReq { workspace_id, selection, drawing }` -> `SelectionSetRes { state }` (`shared`, `held`; a later state reads as
     `other`, not shared), with `selection` a `SelectedText { node_id, start, end, len, digest }` or `null` to clear; the field
     is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a preview-buffer line
     and a UTF-8 byte offset, `end` exclusive. The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
@@ -145,15 +145,28 @@ name is in this crate's one op table.
     (`MAX_SELECTION_LEN`), numbers typed (a string, a negative or a fractional number is refused). An unknown field is ignored
     (growth, as the chat family). Mechanism: one new op and new payloads, so `PROTOCOL_VERSION` stays 4; an older daemon
     answers it as any unknown op. Limits: the daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
-    key is not refused (the codec reads a `Value`, the last wins). Tests `ops/selection_tests.rs`:
+    key is not refused (the codec reads a `Value`, the last wins). The `drawing` field is defaulted (absent reads as none and
+    is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
+    `{"figure": {"node_id"}}` (4096 bytes), each point `[x, y]` as `u16` fractions of the base's width and height
+    (`/ 65535`). Decode refuses a request with both a selection and a drawing, no stroke, an empty stroke, more than
+    `MAX_INK_STROKES` (1024) strokes or `MAX_INK_POINTS` (16384) points in all; the largest drawing is far under the
+    envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:
     `selection_set_round_trips_and_the_digest_is_fnv1a_64`, `a_missing_selection_is_refused_not_read_as_a_clear`,
-    `ids_are_bounded_at_decode`, `a_range_starts_before_it_ends`, `len_is_one_to_two_mib`,
+    `a_drawing_rides_selection_set_within_its_bounds`, `ids_are_bounded_at_decode`, `a_range_starts_before_it_ends`, `len_is_one_to_two_mib`,
     `a_wrong_type_is_refused_and_an_added_field_is_ignored`, `the_refusal_codes_are_fixed`.
+
+14. **A drawing has one raster.** `ink.rs`: `raster_dims` keeps the base's aspect with the long side at most 2000
+    (`INK_RASTER_MAX`); `ink_radius` is half of 3 pixels or 1/200 of the long side; `paint_segment` gives each pixel the
+    larger of what it holds and `r + 0.5` minus its center's distance to the segment, clamped to 0..1, as 0..255; `mask`
+    paints every consecutive pair of every stroke, a one-point stroke as a dot. Taking the maximum makes painting
+    order-free, so the window painting segment by segment and the daemon painting the whole drawing get the same bytes.
+    `CANVAS_DIMS` (1600 x 1000) and `INK_RGB` are the canvas raster and the one ink color. Test `ink_tests.rs`:
+    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the selection op, its payloads and `selection_digest` (`ops/selection.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too) and `selection_digest` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -192,6 +205,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
 | 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12) |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
+| 14 | the drawing's raster | `ink_tests.rs::one_raster_for_a_drawing_whatever_order_its_segments_are_painted` |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours
@@ -200,6 +214,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/chat.rs`: `ChatRecord`, `ChatAuthor`, `ChatFile`, `Origin` and `Ts`, the one normalized chat record and its validated timestamp.
 - `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
+- `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `mask`.
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
 - `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13)
