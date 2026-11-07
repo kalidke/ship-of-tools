@@ -108,7 +108,7 @@ gate_ub_decide() {
     [ "$RCG_UB_PARSE$RCG_UB_SUITES" != 00 ] || return 0
     RCG_BASH32=$(bash "$3") &&
         case $("$RCG_BASH32" -c 'echo "$BASH_VERSION"' 2> /dev/null) in 3.2.57*) ;; *) false ;; esac ||
-        { echo "rc-gate: no bash 3.2.57" >&2; RCG_BASH32=; return 2; }
+        { echo "rc-gate: no bash 3.2.57 (got ${RCG_BASH32:-none})" >&2; RCG_BASH32=; return 2; }
 }
 
 # gate_scope_resolve <checkout> <who>: reads RCG_SCOPE (the base commit-ish a caller asks for) and sets and exports

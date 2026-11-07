@@ -204,10 +204,11 @@ check "gate_scope_ub: a script under agents/ sets both" '(gate_scope_ub "$ubr" H
 check "gate_scope_ub: an empty diff sets neither" '(gate_scope_ub "$ubr" HEAD; [ "$RCG_UB_PARSE$RCG_UB_SUITES" = 00 ])'
 check "under-bash.sh --list keeps the old order: comm, agents, scripts" '[ "$(bash "$here/under-bash.sh" --list | cut -d/ -f1 | uniq | tr "\n" " ")" = "comm agents scripts " ]'
 mkdir -p "$ubr/scripts/tests"
-printf '#!/bin/sh\necho 3.2.57\n' > "$work/fake32"; chmod +x "$work/fake32"
-stub() { # ok | bad | empty | five: the bash32.sh the main flow's decision builds with; each call is logged
+for v in 3.2.57 3.2.48 5.2.0; do printf '#!/bin/sh\necho %s\n' "$v" > "$work/fake$v"; chmod +x "$work/fake$v"; done
+stub() { # ok | bad | empty | five | old: the bash32.sh the main flow's decision builds with; each call is logged
     case $1 in
-        ok) out="echo $work/fake32" ;; bad) out="exit 1" ;; empty) out=: ;; five) out="echo $BASH" ;;
+        ok) out="echo $work/fake3.2.57" ;; bad) out="exit 1" ;; empty) out=: ;; five) out="echo $work/fake5.2.0" ;;
+        old) out="echo $work/fake3.2.48" ;;
     esac
     printf '#!/bin/sh\necho x >> "%s"\n%s\n' "$work/b32calls" "$out" > "$ubr/scripts/tests/bash32.sh"
 }
@@ -226,7 +227,7 @@ check "decide: a whole run given a line that differs runs both" '[ "$(decide - "
 check "decide: a scoped run with a markdown change alone runs the scans only" '[ "$(decide HEAD~1 "shell agents")" = "10 bash builds=1" ]'
 check "decide: a scoped run with a script change runs both" '[ "$(decide HEAD~2 "shell agents")" = "11 bash builds=1" ]'
 check "decide: a scoped run with nothing under the three folders skips both and builds none" '[ "$(decide HEAD "rust backend")" = "00 skipped builds=0" ]'
-for s in bad empty five; do
+for s in bad empty five old; do
     stub $s
     check "decide: a $s bash 3.2 ends the run (2) naming it, whenever a job is selected, given a line or not" '
         fails() { out=$("$@" 2>&1); [ $? -eq 2 ] && grep -q "no bash 3.2.57" <<< "$out"; }

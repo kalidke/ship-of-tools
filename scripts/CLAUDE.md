@@ -62,8 +62,9 @@ Guarantees, each with the mechanism it rests on:
   option, as release-gate.yml calls it, does everything one after another; `--parse-only`, `--no-parse` and `--list`
   serve the gate's jobs. Markdown is skipped for the suites because no suite's verdict on a markdown input depends on
   which bash runs it. When the decision selects any bash 3.2 job the run builds bash 3.2 and runs every selected job, or
-  fails naming the build; it never ends `ALLDONE` with a selected job missing. `user-manager-tests.sh` runs when the
-  scope selects `backend`, `capsule`, `platform` or `containment`, since its five tests are the backend's over those. A job the scope
+  fails naming the build (and its path, when one was built), also when the bash built reports another version; it never
+  ends `ALLDONE` with a selected job missing. `user-manager-tests.sh` runs when the scope selects `backend`, `capsule`,
+  `platform` or `containment`, since its five tests are the backend's over those. A job the scope
   does not select has no result file; one it selects starts `unrun`, and a selected package or shell group the tree no
   longer has fails (101). A scoped summary says so: `scoped base <sha>` and one `scope <piece>` line each (a widened
   scope says `scope whole <path>`), and it ends `ALLDONE SCOPED`, never `ALLDONE` (`ALLDONE FAILED` as always). A
