@@ -245,7 +245,7 @@ pub(crate) fn spawn_detached_supervisor(
     super::retire_06::retire_06(state_dir)
         .map_err(|e| std::io::Error::other(format!("retiring the 0.6 row: {e}")))?;
     let account_env_extra = crate::agents::env::account_spawn_env(agent_kind, account, cwd, workspace_id)?;
-    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind);
+    let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind, state_dir);
     // A row created with a handle keeps it: its pinned self file names it before the session first joins. A file that
     // cannot be written fails the start, as the session would otherwise join under another handle.
     if let Some((_, self_file)) = crate::agents::env::row_self_file(workspace_id) {
@@ -282,18 +282,25 @@ pub(crate) fn spawn_detached_supervisor(
         }
     };
     // The environment: the daemon's own, minus the nesting variables, plus the row's.
-    let env = || -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-        let mut env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString> =
-            std::env::vars_os().collect();
-        for var in NESTING_ENV_VARS_TO_SCRUB {
-            env.remove(std::ffi::OsStr::new(var));
-        }
-        for (k, v) in supervisor_env.iter().chain(account_env_extra.iter()) {
-            env.insert(k.into(), v.into());
-        }
-        env.into_iter().collect()
-    };
+    let env = || leg_env(std::env::vars_os().collect(), &supervisor_env, &account_env_extra);
     spawn_detached(line, env, state_dir, cwd, workspace_id)
+}
+
+/// A leg's environment: the daemon's own with the nesting variables removed first, then the row's pairs, then the
+/// account's, so a row's own pair is never stripped by the scrub and an account's `CLAUDE_CONFIG_DIR` wins.
+fn leg_env(
+    inherited: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    row: &[(String, String)],
+    account: &[(String, String)],
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = inherited;
+    for var in NESTING_ENV_VARS_TO_SCRUB {
+        env.remove(std::ffi::OsStr::new(var));
+    }
+    for (k, v) in row.iter().chain(account.iter()) {
+        env.insert(k.into(), v.into());
+    }
+    env.into_iter().collect()
 }
 
 /// A supervisor's command line as plain data: the program, its arguments, and where in them the claim flags go.

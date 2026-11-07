@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 /// the next daemon) painted every row's agent colourless on Windows,
 /// where the pty sets no `TERM`/`COLORTERM` and `NO_COLOR` overrides
 /// ConPTY's own VT detection (field report, 2026-09-17).
+/// `SOT_SELECTION_FILE` names the row's selection file, so a nested row or a `ccb` session that inherited it would read
+/// the outer row's selection into its own prompts; the row's own leg gets it after this scrub, from its own pairs.
 pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_FORK_SUBAGENT",
     "CLAUDE_CODE_CHILD_SESSION",
@@ -29,6 +31,7 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "AI_AGENT",
     "CLAUDE_CODE_SESSION_ID",
     "NO_COLOR",
+    "SOT_SELECTION_FILE",
 ];
 
 /// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
@@ -44,6 +47,13 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
 /// pin).
 fn capsule_comm_home_str() -> Option<String> {
     Some(crate::comm::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
+}
+
+/// The `SOT_SELECTION_FILE` value: the row's `selection.json` in its state folder, in the forward-slash form a Git Bash
+/// shell reads when `forward_slashes` (Windows), as `SOT_COMM_HOME` is.
+fn selection_file_value(state_dir: &Path, forward_slashes: bool) -> String {
+    let file = state_dir.join(crate::agents::selection::FILE_NAME).to_string_lossy().into_owned();
+    if forward_slashes { file.replace('\\', "/") } else { file }
 }
 
 /// The `SOTD_BIN` value for a session: the path this daemon was started by, made absolute the way its start found it,
@@ -153,8 +163,11 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// declared handle is the row's (`rows::handle::bound_handle`); the daemon never
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
-/// own binary; empty when that path is not a runnable file ([`sotd_bin_pair`]).
-pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_kind: &str) -> Vec<(String, String)> {
+/// own binary; empty when that path is not a runnable file ([`sotd_bin_pair`]). `SOT_SELECTION_FILE` is the row's
+/// selection file in `state_dir`, for every agent kind ([`selection_file_value`]).
+pub fn capsule_supervisor_env(
+    workspace_id: &str, slug: &str, cwd: &Path, agent_kind: &str, state_dir: &Path,
+) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     // The kind is an input to the session's derived handle (`comm::identity::derive::Kind`).
     env.push(("SOT_AGENT_KIND".to_string(), agent_kind.to_string()));
@@ -165,6 +178,7 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
     // daemon inherited (detach.rs applies these pairs with `Command::env`).
     env.push(sotd_bin_pair(own_sotd_bin()));
+    env.push(("SOT_SELECTION_FILE".to_string(), selection_file_value(state_dir, cfg!(windows))));
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
     // any OS. Only this switch: telemetry and nonessential traffic stay

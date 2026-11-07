@@ -17,7 +17,7 @@
 
 # Same env scrub as ccb: a daemon-spawned row inherits the daemon's env,
 # which may carry another agent's nesting markers.
-unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
+unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID SOT_SELECTION_FILE
 
 # Daemon-spawned rows lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
 # on it, and resolve codex by full path — it typically lives in an nvm bin

@@ -16,8 +16,33 @@ fn nesting_env_scrub_list_matches_ccb() {
             "AI_AGENT",
             "CLAUDE_CODE_SESSION_ID",
             "NO_COLOR",
+            "SOT_SELECTION_FILE",
         ]
     );
+}
+
+#[test]
+fn every_row_leg_names_its_selection_file() {
+    let _guard = self_file_env_guarded();
+    for kind in ["claude", "codex"] {
+        let env = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), kind, Path::new("/state/ws-1"));
+        let named: Vec<_> = env.iter().filter(|(k, _)| k == "SOT_SELECTION_FILE").collect();
+        assert_eq!(named.len(), 1, "{kind}: {env:?}");
+        assert!(!cfg!(windows) || !named[0].1.contains('\\'), "{kind}: a Git Bash shell reads forward slashes");
+        assert_eq!(named[0].1.replace('\\', "/"), "/state/ws-1/selection.json", "{kind}");
+    }
+    // Exact strings: the native form, and the form a Git Bash shell reads.
+    assert_eq!(selection_file_value(Path::new("/state/ws-1"), false), format!("/state/ws-1{}selection.json", std::path::MAIN_SEPARATOR));
+    assert_eq!(selection_file_value(Path::new(r"C:\state\ws-1"), true), "C:/state/ws-1/selection.json");
+}
+
+#[test]
+fn ccx_unsets_the_selection_file_as_the_scrub_list_does() {
+    let ccx = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/codex/bin/ccx")).unwrap();
+    let unset = ccx.lines().find(|l| l.starts_with("unset ")).expect("ccx has an unset line");
+    for var in NESTING_ENV_VARS_TO_SCRUB.iter().filter(|v| **v != "NO_COLOR") {
+        assert!(unset.split(' ').any(|w| w == *var), "ccx's unset line leaves {var} inherited");
+    }
 }
 
 #[test]
@@ -72,7 +97,7 @@ fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
     assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
     assert_eq!(get("SOT_WORKSPACE_ID"), Some("ws-myrepo-1a2b"));
@@ -113,7 +138,7 @@ fn capsule_supervisor_env_disables_the_feedback_survey() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
     assert_eq!(hits.len(), 1, "exactly one survey switch");
     assert_eq!(hits[0].1, "1");
@@ -130,7 +155,7 @@ fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
     std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
-    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude");
+    let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
     assert_eq!(hits.len(), 1, "exactly one agent-view switch");
     assert_eq!(hits[0].1, "1");
@@ -265,6 +290,6 @@ fn the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected() {
     let (name, value) = sotd_bin_pair(None);
     env.insert(name, value);
     assert_eq!(env["SOTD_BIN"], "");
-    let pairs = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), "claude");
+    let pairs = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), "claude", Path::new("/state/ws-1"));
     assert_eq!(pairs.iter().filter(|(k, _)| k == "SOTD_BIN").count(), 1, "{pairs:?}");
 }
