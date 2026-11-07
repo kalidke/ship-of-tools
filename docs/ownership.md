@@ -242,6 +242,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `agent.message` (a UI notification) | event, bus | messaging | `rust/backend/src/comm/mail/bus.rs`; `rust/backend/src/server/events.rs` `write_agent_message` |
 | `bus.lost` (a connection fell behind a bus) | event | server | `rust/backend/src/server/events.rs` `write_bus_lost` |
 | `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status` (declared; no handler yet) | op, event | wire | `rust/protocol/src/ops/chat.rs`; `rust/protocol/src/ops/mod.rs` `CHAT_RESOLVE` ... `CHAT_STATUS` |
+| the chat service in `sotd`: the hub fact, the row facts, the start and the retirement | state, rule | chat | `rust/backend/src/chat.rs` `Chat::begin`, `is_hub`, `row_facts`, `folder_of` |
 | the hub's linked daemons and their offers (`link` hello role) | state, op | messaging | `rust/backend/src/comm/mail/links.rs` `Links`, `LinkEnd`; `rust/protocol/src/ops/session.rs` `LINK_ROLE` |
 | `comm.file` | op | messaging | `rust/backend/src/comm/mail/filer.rs` `handle_comm_file`, `comm_file_verdict` |
 | `agent.join`; a row's `agent_handle` (stored in the row toml) and its bound handle | op, state | rows | `rust/backend/src/rows/ops/join.rs` `handle_agent_join`; `rust/backend/src/rows/workspace.rs` `agent_handle`; `rust/backend/src/rows/handle.rs` `bound_handle` |
