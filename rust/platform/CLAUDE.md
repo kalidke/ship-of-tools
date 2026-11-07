@@ -121,18 +121,22 @@ where each lives).
     not promised refused. No test runs a named pipe there.
 16. **A test holds a thread at a marked line until it releases it, and no hold outlives its bounds.** Product code marks a
     line with `hold_point!("<subsystem>.<place>", key?)` (sync) or `hold_point_async!` (async: the arrival waits on
-    `spawn_blocking`); the name is a literal of `a-z 0-9 . _ -`, checked at compile time. A test arms the point with
-    `test_hold::Holds::here().arm(point).key(k).hold(n)`: arrivals whose key matches take tickets 0, 1, 2 in claim order,
-    tickets below `n` wait until `release(t)`, the rest pass and are counted; `reached(t)` waits for arrival `t`. Bounds:
-    every test-side wait 30 s (`WAIT`), a held arrival 60 s (`GIVE_UP`), after which it goes on and its arm fails the test
-    by name at its next call or drop; never an exit or a hang; every wait uses the system clock, so paused tokio time
-    fires no bound. An arm is exclusive per point (a second waits for the first), `release` of an arrival that has not
-    arrived or is not held is refused, and a sync `reached` or a held sync point on a current-thread runtime's own
-    thread is refused (a blocking-pool thread is told by tokio's default thread name). Dropping an arm releases every
-    held arrival and never panics while the test is already panicking. A build without debug assertions has no point:
-    the macros expand to `()` (no call, no argument evaluated, no name in the binary; checked with `strings` on a
-    release build, not pinned by a test). Limits: in-process only (a child process's folder is not built); in a test
-    binary whose other tests reach the same point the arm names a key only its own arrivals carry.
+    `spawn_blocking`); the name is a literal of `a-z 0-9 . _ -`, checked at compile time, and a key is formatted only
+    when an arm asks for one. A test arms the point with `test_hold::Holds::here().arm(point).key(k).hold(n)`: arrivals
+    whose key matches take tickets 0, 1, 2 in claim order, tickets below `n` wait until `release(t)`, the rest pass and
+    are counted; `reached(t)` waits for arrival `t`. Bounds: every test-side wait 30 s (`WAIT`), a held arrival 60 s
+    (`GIVE_UP`), after which it goes on; `give_up_after` and `reached_within` refuse a longer bound. No product-side
+    path panics or refuses: whatever an arrival meets is recorded on its ticket, and the arm fails the test by name (with
+    the usual cause) at its next call, `reached`, `reached_async`, `release`, `arrivals`, or its drop; never an exit or a
+    hang. Every wait uses the system clock, so paused tokio time fires no bound. An arm is exclusive per point (a second
+    waits for the first), each arm has its own wake, and `release` of an arrival that has not arrived or is not held is
+    refused. A sync point held, or a sync `reached`, on a current-thread runtime's own thread is not detected (tokio has
+    no stable way to tell): it stops the test that must release it, gives up at its bound and fails the arm, naming
+    `hold_point_async!` / `reached_async`. Dropping an arm releases every held arrival and never panics while the test
+    is already panicking. A build without debug assertions has no point: the macros expand to `()` (no call, no argument
+    evaluated, no name in the binary; checked with `strings` on a release build, not pinned by a test). Limits:
+    in-process only (a child process's folder is not built); arms of one point serialize even with distinct keys; in a
+    test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
