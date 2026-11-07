@@ -26,7 +26,10 @@ macro_rules! hold_point {
         }
         #[cfg(not(debug_assertions))]
         {
-            let _ = || ($( &$key, )?);
+            // The same expression the debug build evaluates, type-checked and never run.
+            if false {
+                let _ = $crate::__hold_key!($($key)?);
+            }
         }
     }};
 }
@@ -44,7 +47,10 @@ macro_rules! hold_point_async {
         }
         #[cfg(not(debug_assertions))]
         {
-            let _ = || ($( &$key, )?);
+            // The same expression the debug build evaluates, type-checked and never run.
+            if false {
+                let _ = $crate::__hold_key!($($key)?);
+            }
         }
     }};
 }
@@ -187,7 +193,12 @@ mod imp {
         let held = claim(point, key);
         async move {
             if let Some(held) = held {
-                tokio::task::spawn_blocking(move || held.wait()).await.ok();
+                // Polled outside a tokio runtime there is no pool to wait on: wait as a sync point does.
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    tokio::task::spawn_blocking(move || held.wait()).await.ok();
+                } else {
+                    held.wait();
+                }
             }
         }
     }
@@ -229,8 +240,8 @@ mod imp {
     fn gave_up(slot: &Slot) -> Option<String> {
         let ticket = slot.tickets.iter().position(|ticket| *ticket == Ticket::GaveUp)?;
         Some(format!(
-            "hold point {}: arrival {ticket} was held past its {:?} bound and went on (a sync point on a current-thread \
-             runtime's own thread stops the test that must release it: use hold_point_async!)",
+            "hold point {}: arrival {ticket} was held past its {:?} bound and went on (if a sync point sits on a current-thread \
+             runtime's own thread, it stops the test that must release it: use hold_point_async!)",
             slot.point, slot.give_up
         ))
     }
@@ -256,7 +267,10 @@ mod imp {
         let deadline = Instant::now() + bound;
         let mut state = lock();
         loop {
-            let slot = slot_of(&mut state, arm);
+            // A cancelled `reached_async` leaves this wait running after its arm is gone.
+            let Some(slot) = state.slots.iter_mut().find(|slot| slot.arm == arm) else {
+                return Err(format!("hold arm {arm} ended"));
+            };
             if let Some(failure) = gave_up(slot) {
                 return Err(failure);
             }
@@ -266,8 +280,8 @@ mod imp {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(format!(
-                    "hold point {}: arrival {ticket} not reached within {bound:?}; {} arrivals seen (a sync reached on a \
-                     current-thread runtime's own thread can never see an arrival: use reached_async)",
+                    "hold point {}: arrival {ticket} not reached within {bound:?}; {} arrivals seen (if this is a sync reached on a \
+                     current-thread runtime's own thread, it can never see an arrival: use reached_async)",
                     slot.point,
                     slot.tickets.len()
                 ));
