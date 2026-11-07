@@ -13,6 +13,11 @@ fn one_raster_for_a_drawing_whatever_order_its_segments_are_painted() {
     assert_eq!(ink_radius((600, 300)), 1.5);
     assert_eq!(ink_radius((2000, 1500)), 5.0);
 
+    // a wire point maps x to the width and y to the height, 65535 to the far edge
+    assert_eq!(to_raster([65535, 0], (100, 50)), (100.0, 0.0));
+    assert_eq!(to_raster([0, 65535], (100, 50)), (0.0, 50.0));
+    assert_eq!(to_raster([0, 0], (100, 50)), (0.0, 0.0));
+
     // one segment: 255 on it, 0 past r + 0.5, partial between
     let dims = (100, 50);
     let r = 2.0;
@@ -73,4 +78,73 @@ fn one_raster_for_a_drawing_whatever_order_its_segments_are_painted() {
     }
     // a point at the far edge stays inside the buffer
     assert_eq!(mask(&[vec![[65535, 65535]]], (10, 10)).len(), 100);
+}
+
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// Every pixel against every segment: the distance rule with no box and no row spans.
+fn reference(strokes: &[Vec<[u16; 2]>], (rw, rh): (u32, u32)) -> Vec<u8> {
+    let r = ink_radius((rw, rh));
+    let segs: Vec<_> = segments(strokes, (rw, rh)).collect();
+    let mut m = vec![0u8; (rw * rh) as usize];
+    for y in 0..rh {
+        for x in 0..rw {
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            for &(a, b) in &segs {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let len2 = dx * dx + dy * dy;
+                let t = if len2 > 0.0 { (((cx - a.0) * dx + (cy - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let (ex, ey) = (cx - a.0 - t * dx, cy - a.1 - t * dy);
+                let v = (255.0 * (r + 0.5 - (ex * ex + ey * ey).sqrt()).clamp(0.0, 1.0)).round() as u8;
+                m[(y * rw + x) as usize] = m[(y * rw + x) as usize].max(v);
+            }
+        }
+    }
+    m
+}
+
+#[test]
+fn the_mask_is_the_distance_rule_on_every_pixel() {
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    for case in 0..300 {
+        let dims = (1 + rng.below(60) as u32, 1 + rng.below(60) as u32);
+        let pick = |rng: &mut Rng| match rng.below(5) {
+            0 => 0u16,
+            1 => 65535,
+            _ => rng.below(65536) as u16,
+        };
+        let strokes: Vec<Vec<[u16; 2]>> =
+            (0..1 + rng.below(3)).map(|_| (0..1 + rng.below(4)).map(|_| [pick(&mut rng), pick(&mut rng)]).collect()).collect();
+        assert_eq!(mask(&strokes, dims), reference(&strokes, dims), "case {case} {dims:?} {strokes:?}");
+    }
+    // the window's order: a dot at the press, then the segment to the next point, is the two-point stroke
+    let dims = (80, 40);
+    let r = ink_radius(dims);
+    let (a, b) = (to_raster([5000, 9000], dims), to_raster([50000, 40000], dims));
+    let mut m = vec![0u8; 3200];
+    paint_segment(&mut m, dims, a, a, r);
+    paint_segment(&mut m, dims, a, b, r);
+    assert_eq!(m, mask(&[vec![[5000, 9000], [50000, 40000]]], dims));
+}
+
+#[test]
+fn a_segment_costs_its_own_area_not_its_bounding_box() {
+    let dims = (2000, 2000);
+    let r = ink_radius(dims);
+    let mut m = vec![0u8; 2000 * 2000];
+    // the longest diagonal, and a shallow and a steep one: pixels visited stay within 3 times the area 2r+1 wide
+    for (a, b) in [((0.0f32, 0.0f32), (2000.0f32, 2000.0f32)), ((0.0, 0.0), (2000.0, 100.0)), ((10.0, 0.0), (110.0, 2000.0))] {
+        let len = ((b.0 - a.0) * (b.0 - a.0) + (b.1 - a.1) * (b.1 - a.1)).sqrt();
+        let area = len * (2.0 * r + 1.0);
+        let visited = paint_segment(&mut m, dims, a, b, r);
+        assert!((visited as f32) < 3.0 * area, "{a:?} {b:?}: {visited} pixels, area {area}");
+    }
 }

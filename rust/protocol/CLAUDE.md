@@ -144,24 +144,26 @@ name is in this crate's one op table.
     them: `workspace_id` 256 bytes, `node_id` 4096, `start` before `end` by (line, byte), `len` 1 to 2 MiB
     (`MAX_SELECTION_LEN`), numbers typed (a string, a negative or a fractional number is refused). An unknown field is ignored
     (growth, as the chat family). Mechanism: one new op and new payloads, so `PROTOCOL_VERSION` stays 4; an older daemon
-    answers it as any unknown op. Limits: the daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
+    answers it as any unknown op. Limits: an older daemon ignores `drawing`, so it reads a drawing with `selection: null` as a clear and answers `shared`; the window must not send a drawing to a daemon that cannot take one (the window's piece, D6, gates on the daemon's version). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
     key is not refused (the codec reads a `Value`, the last wins). The `drawing` field is defaulted (absent reads as none and
     is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
     `{"figure": {"node_id"}}` (4096 bytes), each point `[x, y]` as `u16` fractions of the base's width and height
-    (`/ 65535`). Decode refuses a request with both a selection and a drawing, no stroke, an empty stroke, more than
-    `MAX_INK_STROKES` (1024) strokes or `MAX_INK_POINTS` (16384) points in all; the largest drawing is far under the
-    envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:
+    (`/ 65535`). Decode refuses a request with both a selection and a drawing, no stroke, an empty stroke, or more than
+    `MAX_INK_POINTS` (16384) points in all; each stroke has a point, so that one bound also bounds the strokes, and the
+    largest drawing is far under the envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:
     `selection_set_round_trips_and_the_digest_is_fnv1a_64`, `a_missing_selection_is_refused_not_read_as_a_clear`,
     `a_drawing_rides_selection_set_within_its_bounds`, `ids_are_bounded_at_decode`, `a_range_starts_before_it_ends`, `len_is_one_to_two_mib`,
     `a_wrong_type_is_refused_and_an_added_field_is_ignored`, `the_refusal_codes_are_fixed`.
 
 14. **A drawing has one raster.** `ink.rs`: `raster_dims` keeps the base's aspect with the long side at most 2000
-    (`INK_RASTER_MAX`); `ink_radius` is half of 3 pixels or 1/200 of the long side; `paint_segment` gives each pixel the
-    larger of what it holds and `r + 0.5` minus its center's distance to the segment, clamped to 0..1, as 0..255; `mask`
-    paints every consecutive pair of every stroke, a one-point stroke as a dot. Taking the maximum makes painting
+    (`INK_RASTER_MAX`); `ink_radius` is `max(3, long side / 200) / 2` raster pixels; `paint_segment` gives each pixel the
+    larger of what it holds and `r + 0.5` minus its center's distance to the segment, clamped to 0..1, as 0..255, visiting
+    per row only the pixels within reach of the segment, so its cost follows the segment's own area (pinned by pixels
+    visited, not time); `segments` yields every consecutive pair of every stroke, a one-point stroke as a dot, and `mask`
+    paints them. Taking the maximum makes painting
     order-free, so the window painting segment by segment and the daemon painting the whole drawing get the same bytes.
     `CANVAS_DIMS` (1600 x 1000) and `INK_RGB` are the canvas raster and the one ink color. Test `ink_tests.rs`:
-    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`.
+    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 12 s as 15,360 full-diagonal segments, so a caller paints it off the UI thread and the connection's loop.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
@@ -205,7 +207,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
 | 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12) |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
-| 14 | the drawing's raster | `ink_tests.rs::one_raster_for_a_drawing_whatever_order_its_segments_are_painted` |
+| 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 
 ## Files
 - `Cargo.toml`: the crate manifest; depends on platform alone of ours
@@ -214,7 +216,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/chat.rs`: `ChatRecord`, `ChatAuthor`, `ChatFile`, `Origin` and `Ts`, the one normalized chat record and its validated timestamp.
 - `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
-- `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `mask`.
+- `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `segments`, `mask`.
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
 - `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13)

@@ -139,10 +139,10 @@ fn a_drawing_rides_selection_set_within_its_bounds() {
     assert!(refused(both));
     assert!(refused(drawing_req(json!({"base": "canvas", "strokes": []}))));
     assert!(refused(drawing_req(json!({"base": "canvas", "strokes": [[[1, 2]], []]}))));
-    // strokes and points: the last allowed, then one more
+    // points in all, one stroke or many: the last allowed, then one more (the points also bound the strokes)
     let strokes = |n: usize, per: usize| json!({"base": "canvas", "strokes": vec![vec![[1, 2]; per]; n]});
-    assert!(!refused(drawing_req(strokes(MAX_INK_STROKES, 1))));
-    assert!(refused(drawing_req(strokes(MAX_INK_STROKES + 1, 1))));
+    assert!(!refused(drawing_req(strokes(MAX_INK_POINTS, 1))));
+    assert!(refused(drawing_req(strokes(MAX_INK_POINTS + 1, 1))));
     assert!(!refused(drawing_req(strokes(1, MAX_INK_POINTS))));
     assert!(refused(drawing_req(strokes(1, MAX_INK_POINTS + 1))));
     assert!(!refused(drawing_req(strokes(2, MAX_INK_POINTS / 2))));
@@ -153,13 +153,13 @@ fn a_drawing_rides_selection_set_within_its_bounds() {
     assert!(!refused(drawing_req(fig(MAX_SELECTION_NODE))));
     assert!(refused(drawing_req(fig(MAX_SELECTION_NODE + 1))));
     // the largest drawing, at its widest numbers, encodes under the envelope
-    let per = MAX_INK_POINTS / MAX_INK_STROKES;
+    let (n, per) = (1024, MAX_INK_POINTS / 1024);
     let widest = SelectionSetReq {
         workspace_id: "w".repeat(MAX_SELECTION_WORKSPACE),
         selection: None,
         drawing: Some(Drawing {
             base: InkBase::Figure { node_id: "n".repeat(MAX_SELECTION_NODE) },
-            strokes: vec![vec![[65535, 65535]; per]; MAX_INK_STROKES],
+            strokes: vec![vec![[65535, 65535]; per]; n],
         }),
     };
     let bytes = serde_json::to_vec(&widest).unwrap().len();

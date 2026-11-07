@@ -1,7 +1,7 @@
 // the selection op (A1): a window tells the daemon which text of a previewed file it shows selected
 
 use super::*;
-use crate::chat::{at_most, within};
+use crate::chat::within;
 
 /// The longest `workspace_id` (a row id, as the chat family bounds a row).
 pub const MAX_SELECTION_WORKSPACE: usize = 256;
@@ -9,9 +9,7 @@ pub const MAX_SELECTION_WORKSPACE: usize = 256;
 pub const MAX_SELECTION_NODE: usize = 4096;
 /// The most bytes a selection may span, the daemon's read of the project file.
 pub const MAX_SELECTION_LEN: u32 = 2 * 1024 * 1024;
-/// The most strokes a drawing may hold.
-pub const MAX_INK_STROKES: usize = 1024;
-/// The most points a drawing may hold in all strokes together.
+/// The most points a drawing may hold in all strokes together; each stroke has a point, so this also bounds the strokes.
 pub const MAX_INK_POINTS: usize = 16384;
 
 /// The fixed refusal codes of `selection.set`, the `code` of the standard error payload.
@@ -90,12 +88,11 @@ pub enum InkBase {
 #[derive(Deserialize)]
 struct RawDrawing {
     base: InkBase,
-    #[serde(deserialize_with = "at_most::<_, _, MAX_INK_STROKES>")]
     strokes: Vec<Vec<[u16; 2]>>,
 }
 
 /// Ink over a base: each point is `[x, y]`, `x / 65535` and `y / 65535` the fractions of the base's width and height.
-/// At least one stroke, each with a point, at most `MAX_INK_STROKES` strokes and `MAX_INK_POINTS` points in all. A
+/// At least one stroke, each with a point, and at most `MAX_INK_POINTS` points in all. A
 /// one-point stroke is a dot. Decoding refuses a drawing that breaks these.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawDrawing")]
