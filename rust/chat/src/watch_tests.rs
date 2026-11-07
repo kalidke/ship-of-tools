@@ -324,3 +324,177 @@ fn begin_applies_the_events_it_is_given_to_every_channel_whether_or_not_it_begin
     assert_eq!(w.begin_taken("C0CCCC", taken), None);
     assert_eq!(texts(&w, C), ["a4"]);
 }
+
+#[test]
+fn a_gap_read_before_a_newer_one_was_seen_cannot_roll_the_model_back() {
+    let mut w = Watches::new();
+    w.watch(C).unwrap();
+    w.sync(Some(gap(1)));
+    let t = w.begin_taken(C, Taken::default()).unwrap();
+    // Another task's pump saw a newer gap; the snapshot's answer carries the value read before it.
+    w.sync(Some(gap(2)));
+    assert_eq!(w.loaded(C, t, vec![rec("1.000000", "old")], Some(gap(1))), Loaded::Resync);
+    assert_eq!(w.state(C), Some(State::Needed));
+    // A cleared gap is not seen again from an old read.
+    let t = w.begin_taken(C, Taken::default()).unwrap();
+    assert_eq!(w.loaded(C, t, vec![], Some(gap(2))), Loaded::Complete);
+    assert!(w.reconcile(|g| g == gap(2)));
+    w.sync(Some(gap(1)));
+    w.sync(Some(gap(2)));
+    assert_eq!(w.state(C), Some(State::Complete), "a gap already seen and cleared came back");
+}
+
+/// One consumer, one producer, every order: the model of M after any interleaving of a snapshot task (begin, fetch,
+/// read the gap, answer), a pump task (two pumps, a reconcile) and the source (two edits, then a third that is either
+/// delivered or lost into a gap). Each step is atomic on the one `Watches`. A complete channel never holds a text the
+/// world no longer has, once the last events are pumped, and a gap is never cleared over a stale model.
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    Begin,
+    Fetch,
+    ReadNow,
+    Loaded,
+    Pump,
+    Reconcile,
+    Edit1,
+    Edit2,
+    Edit3,
+}
+
+struct World {
+    w: Watches,
+    queue: Vec<Normalized>,
+    gap: Option<Gap>,
+    text: String,
+    ticket: Option<u64>,
+    page: Option<String>,
+    now: Option<Gap>,
+    lost: bool,
+    /// A wake is owed to the pump: something was queued or latched since the last take.
+    wake: bool,
+}
+
+impl World {
+    fn take(&mut self) -> Taken {
+        self.wake = false;
+        Taken { gap: self.gap, events: std::mem::take(&mut self.queue) }
+    }
+
+    fn step(&mut self, op: Op) {
+        match op {
+            Op::Begin => {
+                let taken = self.take();
+                self.ticket = self.w.begin_taken(C, taken);
+            }
+            Op::Fetch => self.page = Some(self.text.clone()),
+            Op::ReadNow => self.now = self.gap,
+            Op::Loaded => {
+                if let (Some(t), Some(page)) = (self.ticket, self.page.clone()) {
+                    self.w.loaded(C, t, vec![rec("1.000000", &page)], self.now);
+                }
+            }
+            Op::Pump => {
+                let taken = self.take();
+                self.w.apply_taken(taken);
+            }
+            Op::Reconcile => {
+                let gap = &mut self.gap;
+                self.w.reconcile(|g| {
+                    if *gap == Some(g) {
+                        *gap = None;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            Op::Edit1 | Op::Edit2 => {
+                self.wake = true;
+                let v = if matches!(op, Op::Edit1) { "v1" } else { "v2" };
+                self.text = v.into();
+                self.queue.push(edited("1.000000", v));
+            }
+            Op::Edit3 => {
+                self.wake = true;
+                self.text = "v3".into();
+                if self.lost {
+                    self.gap = Some(Gap::for_test(2, GapCause::Failed));
+                } else {
+                    self.queue.push(edited("1.000000", "v3"));
+                }
+            }
+        }
+    }
+
+    /// The model's text of M, when it holds one.
+    fn held(&self) -> Option<String> {
+        self.w.messages(C).first().map(|r| r.text.clone())
+    }
+}
+
+fn interleavings(seqs: &[&[Op]], at: &mut Vec<usize>, run: &mut Vec<Op>, out: &mut Vec<Vec<Op>>) {
+    if at.iter().zip(seqs).all(|(i, s)| *i == s.len()) {
+        out.push(run.clone());
+        return;
+    }
+    for k in 0..seqs.len() {
+        if at[k] < seqs[k].len() {
+            run.push(seqs[k][at[k]]);
+            at[k] += 1;
+            interleavings(seqs, at, run, out);
+            at[k] -= 1;
+            run.pop();
+        }
+    }
+}
+
+#[test]
+fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost_event() {
+    let snapshot = [Op::Begin, Op::Fetch, Op::ReadNow, Op::Loaded];
+    let pump = [Op::Pump, Op::Pump, Op::Reconcile];
+    let source = [Op::Edit1, Op::Edit2, Op::Edit3];
+    let mut runs = Vec::new();
+    interleavings(&[&snapshot, &pump, &source], &mut vec![0; 3], &mut Vec::new(), &mut runs);
+    assert_eq!(runs.len(), 4200);
+    for held_at_start in [false, true] {
+        for lost in [false, true] {
+            for run in &runs {
+                // The channel starts needing a snapshot (a hello's gap not yet cleared) or complete and clean.
+                let mut m = World {
+                    w: Watches::new(),
+                    queue: Vec::new(),
+                    gap: Some(Gap::for_test(1, GapCause::Reconnect)),
+                    text: "v0".into(),
+                    ticket: None,
+                    page: None,
+                    now: None,
+                    lost,
+                    wake: false,
+                };
+                m.w.watch(C).unwrap();
+                m.w.sync(m.gap);
+                if held_at_start {
+                    let t = m.w.begin_taken(C, Taken { gap: m.gap, events: vec![] }).unwrap();
+                    m.w.loaded(C, t, vec![rec("1.000000", "v0")], m.gap);
+                    assert!(m.w.reconcile(|_| true));
+                    m.gap = None;
+                }
+                for op in run {
+                    m.step(*op);
+                }
+                let what = format!("{run:?} held_at_start={held_at_start} lost={lost}");
+                // A gap cleared over a model that is not the world's is a silent loss.
+                if m.gap.is_none() && lost && run.iter().any(|o| matches!(o, Op::Edit3)) {
+                    assert_eq!(m.held().as_deref(), Some("v3"), "gap cleared over a stale model: {what}");
+                }
+                // The pump runs once more only when a wake is owed: a quiet channel is never healed by luck.
+                if m.wake {
+                    m.step(Op::Pump);
+                }
+                if m.w.state(C) == Some(State::Complete) {
+                    assert_eq!(m.held(), Some(m.text.clone()), "complete and stale: {what}");
+                }
+            }
+        }
+    }
+}

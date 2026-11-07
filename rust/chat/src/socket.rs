@@ -128,7 +128,7 @@ fn next_seq() -> u64 {
 /// was lost since this value was read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gap {
-    seq: u64,
+    pub(crate) seq: u64,
     pub cause: GapCause,
 }
 
@@ -302,7 +302,7 @@ impl Socket {
         }
     }
 
-    /// Every pending event and the gap in force, read under one lock (the gap is never newer than the events: a loss
+    /// Every pending event and the gap in force, read under one lock (gap and events are of one instant: a loss
     /// after the call is a gap this value does not name, so it is seen, never missed). The one way events leave the
     /// socket in the product. A `Taken` is not for holding: `Watches` takes and applies in one call, under its own
     /// exclusive borrow, so no call shape holds one across a lock.

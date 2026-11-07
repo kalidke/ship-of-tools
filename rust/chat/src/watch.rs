@@ -102,6 +102,8 @@ impl Channel {
 #[derive(Default)]
 pub struct Watches {
     gap: Option<Gap>,
+    /// The highest gap number seen. The gap moves forward only: a value read earlier, handed in later, is ignored.
+    seen: u64,
     tickets: u64,
     channels: HashMap<String, Channel>,
 }
@@ -144,11 +146,12 @@ impl Watches {
         self.channels.get(channel).map(|c| c.messages.values().collect()).unwrap_or_default()
     }
 
-    /// The socket's gap as the caller read it. A gap this model has not seen makes every complete channel owe a
-    /// snapshot, and one pending is refused when it is answered. Call it before trusting any state.
-    pub fn sync(&mut self, current: Option<Gap>) {
-        if current.is_some() && current != self.gap {
-            self.gap = current;
+    /// The socket's gap as a caller read it. A gap newer than any seen makes every complete channel owe a snapshot,
+    /// and one pending is refused when it is answered; an older value, read before a newer one was seen, changes nothing.
+    pub(crate) fn sync(&mut self, current: Option<Gap>) {
+        if let Some(g) = current.filter(|g| g.seq > self.seen) {
+            self.seen = g.seq;
+            self.gap = Some(g);
             for c in self.channels.values_mut() {
                 if matches!(c.phase, Phase::Complete) {
                     c.phase = Phase::Needed;
@@ -172,7 +175,7 @@ impl Watches {
         self.apply_taken(service.take());
     }
 
-    fn apply_taken(&mut self, taken: Taken) {
+    pub(crate) fn apply_taken(&mut self, taken: Taken) {
         self.sync(taken.gap);
         for event in &taken.events {
             self.apply(event);
@@ -225,7 +228,7 @@ impl Watches {
 
     /// One socket event. True when a watch took it; an event for a channel nobody watches, a thread reply (replies
     /// belong to the thread, and a parent's count is not tracked) and a non-message are not kept.
-    pub fn apply(&mut self, event: &Normalized) -> bool {
+    pub(crate) fn apply(&mut self, event: &Normalized) -> bool {
         let (channel, change) = match event {
             Normalized::New(r) | Normalized::Edited(r) => {
                 if ts_key(&r.thread_ts) != ts_key(&r.ts) {
