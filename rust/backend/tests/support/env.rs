@@ -38,6 +38,9 @@ pub struct Env {
     pub home_root: PathBuf,
     pub comm_root: PathBuf,
     pub socket_path: PathBuf,
+    /// This test's hold folder (platform's `test_hold`, guarantee 16): every daemon this `Env` starts gets it as
+    /// `SOT_TEST_HOLDS`, and passes it to the supervisors it starts, so a test can hold either at a marked line.
+    pub holds: sot_platform::test_hold::Holds,
     /// LU4 review round 2, F4: the currently-live `sotd` child, owned by
     /// `Env` itself (not a separate `KillGuard` local) so `Env`'s own
     /// `Drop` can kill it FIRST, before it ever sweeps this env's own
@@ -169,6 +172,7 @@ impl Env {
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
         let (home_root, comm_root) = comm_isolation_dirs(tmp.path());
         let socket_path = test_socket_path(runtime_tmp.path(), tag);
+        let holds = sot_platform::test_hold::Holds::folder(&tmp.path().join("holds"));
         Self {
             _tmp: tmp,
             _runtime_tmp: runtime_tmp,
@@ -180,6 +184,7 @@ impl Env {
             home_root,
             comm_root,
             socket_path,
+            holds,
             daemon: RefCell::new(None),
             user_service_unit: RefCell::new(None),
         }
@@ -264,6 +269,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
+            .env("SOT_TEST_HOLDS", self.holds.env().1)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -480,6 +486,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
+            .env("SOT_TEST_HOLDS", self.holds.env().1)
             .env("PATH", path)
             .envs(extra.iter().copied())
             .stdin(Stdio::null())
@@ -514,6 +521,7 @@ impl Env {
             .env("HOME", &self.home_root)
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
+            .env("SOT_TEST_HOLDS", self.holds.env().1)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -567,6 +575,7 @@ impl Env {
             .arg(setenv("XDG_CONFIG_HOME", self.config_root.as_os_str()))
             .arg(setenv("SOT_SELF_HOST", std::ffi::OsStr::new(TEST_STATE_HOST)))
             .arg(setenv("SOT_RUNTIME_DIR", self._runtime_tmp.path().as_os_str()))
+            .arg(setenv("SOT_TEST_HOLDS", self.holds.env().1.as_os_str()))
             .arg(setenv("PATH", &path))
             .arg(setenv("HOME", &home));
         // The Julia every other test daemon is given (`sotd_command`), so this one's kernel never runs a juliaup launcher.
