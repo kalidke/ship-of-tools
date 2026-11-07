@@ -501,7 +501,7 @@ timekey() {
   case $k in
     bin|one) t=$(awk -F'\t' -v e="$b" '$2 == e {print $1; exit}' "$L/tests.tsv" 2> /dev/null); REPLY=$k:${t:-$a}${d:+:$d} ;;
     shell) REPLY=$k:${b#"$D/"} ;;
-    *) REPLY=$k:$a ;;
+    *) REPLY=$k${a:+:$a} ;;
   esac
 }
 # order_listing: the job lines on stdin, a job the times file does not name first (in their order), then the named ones,
