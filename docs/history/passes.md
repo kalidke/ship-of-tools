@@ -772,3 +772,17 @@ A landing's record goes here, with its measured times; the package page holds on
   loop left every server test green; the captain was told before round 3, which pinned the three placements and made the
   error-to-code map name every case. The export's leftover pin rode it: the release-features check's self-proof now shows the
   compile error. Cause of the miss: a brief premise no one had run, and a guarantee sentence over three ops with a test for one.
+- The chat watches, 2026-11-07: 02:57 to main 05:27, 150 minutes, a miss. `chat.watch` and `chat.unwatch` run in the
+  connection's loop, so the reply to a watch is written before the loop reads another chat event; one owner task holds the
+  service's one `Watches`, runs each snapshot off the loop and routes `chat.changed` and `chat.status` to the connections that
+  watch. A connection's watches end with it through a drop on its side, an unwatch ends only that connection's watch, every
+  snapshot admits every watch on its channel again and releases each whose row went away, a busy snapshot is retried with the
+  watch kept, and a stop reaches every watcher as `chat.status`. About 550 product and 770 test lines against an estimate of
+  150 and a ceiling of 300 product lines; the builder did not stop at the ceiling, and the change landed whole, since a split
+  after the build adds a gate and a landing. Built in 37 minutes; every scoped gate passed first time (three). Two review rounds
+  (blockers 2, 0): round 1 found one product defect, a snapshot that stopped at the first watch with a current row, so a stale
+  watch behind it kept its slot and its events, plus a stale ownership row and eight rules no test pinned; round 2 probed every
+  order of three watchers and found no stale watch kept, and its one should-fix, a stop test whose idle-connection check read
+  past events, rode a last two-line commit with the 32-channel tests' waits lengthened after they failed under heavy load.
+  Cause of the miss: an estimate off nearly fourfold for a piece with ten guarantees, and two reviews of about half an hour
+  each in series with a half-hour fix round.
