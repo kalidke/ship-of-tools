@@ -840,3 +840,17 @@ A landing's record goes here, with its measured times; the package page holds on
   raw-text form fails on Linux. Test lines only (about 10), no product change. The scoped gate and the branch's hosted Windows
   shard passed first time; one review round, no blocker; its one should-fix, a contract clause about what the agent reads
   (the hook is unbuilt), was cut in the records commit.
+- The selection withdrawal, 2026-11-07: 08:49 to main 09:47, 58 minutes, a miss. A row's selection file now names only a
+  selection a live window connection of this process set, once the start-up walk is done. One process-wide map behind one lock
+  holds each row's setting connection serial and file; the handler resolves and renders before taking the lock, which covers
+  only the write and the map update. A connection's end (`ClientGuard::drop`, every exit of the connection included) removes
+  the files its serial set and nothing another set; the start-up walk removes a row's file only when the map names no setter
+  for it, so a share made before the walk reaches its row survives; a failed removal keeps its setter, so the setter's end or
+  a later clear retries, and the next walk removes what is left. Connection serials became one process-wide counter, since
+  the map's key must be unique across the process. The planned piece also held R11, the whole path through a test daemon; its
+  half that reaches the agent's hook needs the hook, so it moved to that piece. About 105 product and 120 test lines; the
+  builder took 6 minutes. Two review rounds (blockers 1, 0): round 1 found the suite intermittently red (18 of 150 repeats),
+  since each test roster started its serials at 1 and a test connection's end removed other tests' files; the cause was
+  twofold (the per-roster counter and the tests' own constant serials), measured at 20 of 150 before and 0 of 160 after.
+  Round 2 repeated the filter 300 times clean. Both scoped gates passed first time (the first on luck, given the red the
+  review found). Cause of the miss: two review rounds and two ten-minute gates in series after a build of 6 minutes.

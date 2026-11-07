@@ -1,3 +1,5 @@
+// The setter map is process-wide, so these tests take their serials from 9_00x_xxx and give each row an id of its own:
+// a test that reused a real roster's serial or another test's row id would remove that test's files.
 use super::*;
 use crate::agents::selection_check::FileText;
 use sot_protocol::ops::TextPos;

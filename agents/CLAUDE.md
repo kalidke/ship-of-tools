@@ -248,8 +248,8 @@ of each.
   later leaves that snapshot until the window clears it. Withdrawal: one process-wide map behind one lock holds per
   row the roster serial of the connection that set the file and the file's path; the serial comes from one counter for
   the process (`clients::NEXT_SERIAL`), so it is never reused. The row is resolved and the project file read and
-  rendered before the lock; the lock covers only the file's publish or removal and the map update (never an `.await`),
-  so two connections setting one row are serialized and the newest accepted selection wins and owns the file. A clear
+  rendered before the lock is taken: `apply` takes the rendered text, so a render under the lock needs a visible edit;
+  no test pins that scope. The lock is never held across an `.await`, so two connections setting one row are serialized and the newest accepted selection wins and owns the file. A clear
   or refusal from any connection removes the file whoever set it. An accepted selection records its setter; a clear, a
   refusal after the row resolves, `no_agent` and a failed publish drop the row's entry once the file is gone; when a
   removal fails the file stays and so does its entry, so the setter's end or a later clear retries it; `not_a_window`,
