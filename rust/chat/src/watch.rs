@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use sot_protocol::chat::ChatRecord;
 
 use crate::normalize::{ts_key, valid_id, Normalized};
+use crate::service::Service;
 use crate::socket::{Gap, Taken};
 
 /// Channels watched at once.
@@ -156,15 +157,30 @@ impl Watches {
         }
     }
 
-    /// Begin a channel's snapshot, after the channel was registered. `taken` is `Service::take()`: its gap is known
-    /// and its events are applied here, before the channel goes pending, so an event queued before the snapshot never
-    /// wins over it and no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
+    /// Begin a channel's snapshot, after the channel was registered. The service's pending events and gap are taken
+    /// here and applied before the channel goes pending, so an event queued before the snapshot never wins over it and
+    /// no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
     /// unwatched or its snapshot is already pending or done (the events are applied either way).
-    pub fn begin(&mut self, channel: &str, taken: Taken) -> Option<u64> {
+    pub fn begin(&mut self, channel: &str, service: &Service) -> Option<u64> {
+        self.begin_taken(channel, service.take())
+    }
+
+    /// The events pending in the socket, applied and the gap synced: what a caller does between snapshots. The take
+    /// happens under this exclusive borrow, so no caller holds a taken event across a lock or an await while another
+    /// applies newer ones.
+    pub fn pump(&mut self, service: &Service) {
+        self.apply_taken(service.take());
+    }
+
+    fn apply_taken(&mut self, taken: Taken) {
         self.sync(taken.gap);
         for event in &taken.events {
             self.apply(event);
         }
+    }
+
+    pub(crate) fn begin_taken(&mut self, channel: &str, taken: Taken) -> Option<u64> {
+        self.apply_taken(taken);
         let read = self.gap;
         let c = self.channels.get_mut(channel).filter(|c| matches!(c.phase, Phase::Needed))?;
         self.tickets += 1;

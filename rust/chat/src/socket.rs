@@ -139,12 +139,23 @@ impl Gap {
     }
 }
 
+pub(crate) struct Waiter(Arc<Shared>);
+
+impl Waiter {
+    pub(crate) async fn wait(&self, within: Duration) -> bool {
+        if !self.0.state.lock().unwrap().queue.is_empty() {
+            return true;
+        }
+        tokio::time::timeout(within, self.0.ready.notified()).await.is_ok()
+    }
+}
+
 /// What `Socket::take` handed over.
 #[derive(Debug, Default)]
 #[must_use = "the events in a Taken are gone from the socket"]
-pub struct Taken {
-    pub gap: Option<Gap>,
-    pub events: Vec<Normalized>,
+pub(crate) struct Taken {
+    pub(crate) gap: Option<Gap>,
+    pub(crate) events: Vec<Normalized>,
 }
 
 /// The listener as the caller sees it.
@@ -172,12 +183,15 @@ struct Shared {
 impl Shared {
     fn latch(&self, cause: GapCause) {
         self.state.lock().unwrap().gap = Some(Gap { seq: next_seq(), cause });
+        self.ready.notify_one();
     }
 
     fn push(&self, event: Normalized, cost: usize) {
         let mut s = self.state.lock().unwrap();
         if s.queue.len() >= MAX_PENDING || s.bytes + cost > MAX_PENDING_BYTES {
             s.gap = Some(Gap { seq: next_seq(), cause: GapCause::Overflow });
+            drop(s);
+            self.ready.notify_one();
             return;
         }
         s.bytes += cost;
@@ -198,7 +212,7 @@ pub struct Socket {
 
 impl Socket {
     /// Start the listener. `app` is the app-level token; `own` is the bot identity (normalization decides own posts
-    /// by it alone). Events for `workspace` arrive through `next`.
+    /// by it alone). Events for `workspace` leave through `take`.
     pub fn start(
         http: Http,
         app: Secret,
@@ -259,8 +273,18 @@ impl Socket {
         })
     }
 
-    /// The next pending event, waiting at most `within`. Tests only: in the product `take` is the one way events leave
-    /// the socket, so a second reader cannot apply an older event after a newer one.
+    /// Wait at most `within` for something to take: an event queued or a gap latched since the last wait, or anything
+    /// still queued. True means look (`take`), and may be spurious; nothing leaves the socket here.
+    pub async fn wait(&self, within: Duration) -> bool {
+        self.waiter().wait(within).await
+    }
+
+    /// The wait without the socket, for a caller that cannot hold a lock across an await.
+    pub(crate) fn waiter(&self) -> Waiter {
+        Waiter(self.shared.clone())
+    }
+
+    /// The next pending event, waiting at most `within`. Tests only: the product reads events through `take`.
     #[cfg(test)]
     pub(crate) async fn next(&self, within: Duration) -> Option<Normalized> {
         let end = Instant::now() + within;
@@ -278,10 +302,11 @@ impl Socket {
         }
     }
 
-    /// Every pending event and the gap in force, read under one lock: an event that arrives or is lost after this
-    /// call is newer than the gap returned, and a loss after it is a gap this value does not name. The one way events
-    /// leave the socket; the caller applies what it takes in the call that took it.
-    pub fn take(&self) -> Taken {
+    /// Every pending event and the gap in force, read under one lock (the gap is never newer than the events: a loss
+    /// after the call is a gap this value does not name, so it is seen, never missed). The one way events leave the
+    /// socket in the product. A `Taken` is not for holding: `Watches` takes and applies in one call, under its own
+    /// exclusive borrow, so no call shape holds one across a lock.
+    pub(crate) fn take(&self) -> Taken {
         let mut s = self.shared.state.lock().unwrap();
         s.bytes = 0;
         Taken { gap: s.gap, events: s.queue.drain(..).map(|(e, _)| e).collect() }

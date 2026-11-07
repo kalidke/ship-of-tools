@@ -1149,3 +1149,28 @@ async fn take_hands_over_every_pending_event_and_the_gap_and_frees_the_budget() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn wait_wakes_on_a_gap_and_on_an_event_and_takes_nothing() {
+    bounded(async {
+        let acked = Arc::new(AtomicUsize::new(0));
+        let go = Arc::new(AtomicBool::new(false));
+        let more = Some((go.clone(), envelope("EX", 99, "late", 0)));
+        let fake = fake(flood(vec![], more, acked.clone())).await;
+        let socket = start(&fake, timing());
+        // The hello latches a gap and queues nothing: the wait wakes for the gap alone.
+        assert!(socket.wait(Duration::from_secs(20)).await, "no wake for a gap");
+        assert_eq!(socket.pending().0, 0);
+        let taken = socket.take();
+        assert!(taken.gap.is_some() && taken.events.is_empty());
+        // An event queued later wakes it, and the wait leaves the event queued.
+        go.store(true, Ordering::SeqCst);
+        eventually("the event queued", || socket.pending().0 == 1).await;
+        assert!(socket.wait(Duration::from_secs(20)).await, "no wake for an event");
+        assert_eq!(socket.pending().0, 1, "wait took the event");
+        assert_eq!(socket.take().events.len(), 1);
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}

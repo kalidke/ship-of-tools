@@ -663,11 +663,13 @@ A landing's record goes here, with its measured times; the package page holds on
 - B2c, the chat watch, 2026-11-06: 18:42 to main 19:24, 42 minutes, a miss, stopped and written up here. 6 of change, then three
   rounds of review and fix (6 and 3, 8 and 4, 9), every gate about a minute and every one passed. `watch.rs` keeps a watched
   channel's latest page true across live events, its snapshot and the socket's gaps: a bounded overlay while a snapshot loads, and
-  a gap clears only once every watch has resynced from a snapshot begun after it. About 250 product lines against an estimate of
-  100, and 354 test lines. Four blockers, three of them product defects every test had passed: an event queued before a snapshot
+  a gap clears only once every watch has resynced from a snapshot begun after it. About 320 product lines across six files (249 in
+  `watch.rs`) against an estimate of 100, and 354 test lines. Four blockers, three of them product defects every test had passed: an event queued before a snapshot
   began overwrote it and the gap cleared; a watch kept past its service took the next service's first gap as covered, since gap
   numbers restarted; and the first fix, a call order written into the contract, still lost an edit to a burst before the gap was
   read. The third fix moved the order into one call that takes the events and the gap under one lock. Cause of the miss: the
   guarantee's interleavings were found by the reviewers' probes one round at a time, and the first fix answered a race with a
-  rule for the caller. A rule a caller must keep is a fix only when no call shape can hold it. A daemon with two event paths
-  (a pump and a snapshot task) can still leave a watch complete and stale; the follow-up makes one path.
+  rule for the caller. A rule a caller must keep is a fix only when no call shape can hold it. As landed, a daemon with two event
+  readers (a pump and a snapshot task) could still leave a watch complete and stale. Its follow-up, two review rounds of its own,
+  made `take` private to the crate: a daemon reaches events only through a `Watches`, whose `begin` and `pump` each take and
+  apply in one call, and waits on the service's `wait`, which a gap also wakes. Two `Watches` against one service stays a stated limit.

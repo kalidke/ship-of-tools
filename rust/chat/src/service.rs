@@ -139,7 +139,19 @@ impl Service {
         }
     }
 
-    /// The socket's gap, for the watch to read (`Watches::sync`); none once stopped.
+    /// Wait for something to take (`Socket::wait`); false once stopped.
+    pub async fn wait(&self, within: Duration) -> bool {
+        let waiter = match &*self.phase.lock().unwrap() {
+            Phase::Running(s) => Some(s.waiter()),
+            _ => None,
+        };
+        match waiter {
+            Some(w) => w.wait(within).await,
+            None => false,
+        }
+    }
+
+    /// The socket's gap, for `Watches::loaded`; none once stopped.
     pub fn gap(&self) -> Option<Gap> {
         match &*self.phase.lock().unwrap() {
             Phase::Running(s) => s.gap(),
@@ -147,8 +159,8 @@ impl Service {
         }
     }
 
-    /// `Socket::take` (empty once stopped), for `Watches::begin`.
-    pub fn take(&self) -> Taken {
+    /// `Socket::take` (empty once stopped), for `Watches`, which takes and applies in one call.
+    pub(crate) fn take(&self) -> Taken {
         match &*self.phase.lock().unwrap() {
             Phase::Running(s) => s.take(),
             _ => Taken::default(),
