@@ -14,7 +14,7 @@ use sot_platform::Error as PlatformError;
 use crate::api::{Api, ApiError};
 use crate::config::{Config, Credentials};
 use crate::http::{Http, Secret};
-use crate::socket::{self, Gap, Socket, Taken, SocketError, Timing, BASE};
+use crate::socket::{self, Gap, Socket, SocketError, Taken, Timing, Waiter, BASE};
 use crate::watch::Watches;
 
 /// Why a service did not start, or why a call was refused. Fixed codes: no path, token or Slack text.
@@ -149,15 +149,29 @@ impl Service {
         (!self.claim.swap(true, Ordering::SeqCst)).then(|| Watches::claimed(self.claim.clone()))
     }
 
-    /// Wait for something to take (`Socket::wait`); false once stopped, a wait in flight included. One waiter: the pump.
-    pub async fn wait(&self, within: Duration) -> bool {
-        let waiter = match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => Some(s.waiter()),
+    /// Whether `by` is this service's `Watches`.
+    pub(crate) fn owns(&self, by: &Watches) -> bool {
+        by.claims(&self.claim)
+    }
+
+    /// The wake, for this service's `Watches` while running; `Watches::wait` is its one caller, so one wait is ever in
+    /// flight.
+    pub(crate) fn waiter(&self, by: &Watches) -> Option<Waiter> {
+        match &*self.phase.lock().unwrap() {
+            Phase::Running(s) if self.owns(by) => Some(s.waiter()),
             _ => None,
-        };
-        match waiter {
-            Some(w) => w.wait(within).await && matches!(&*self.phase.lock().unwrap(), Phase::Running(_)),
-            None => false,
+        }
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        matches!(&*self.phase.lock().unwrap(), Phase::Running(_))
+    }
+
+    /// The gap as `Watches::loaded` reads it: `None` (outer) once stopped.
+    pub(crate) fn running_gap(&self) -> Option<Option<Gap>> {
+        match &*self.phase.lock().unwrap() {
+            Phase::Running(s) => Some(s.gap()),
+            _ => None,
         }
     }
 
@@ -169,17 +183,20 @@ impl Service {
         }
     }
 
-    /// `Socket::take` (empty once stopped) for the `Watches` this service made, which takes and applies in one call;
-    /// empty for any other.
+    /// `Socket::take` for the `Watches` this service made, which takes and applies in one call; empty for any other,
+    /// and `ended` once the service is no longer running.
     pub(crate) fn take(&self, by: &Watches) -> Taken {
+        if !self.owns(by) {
+            return Taken::default();
+        }
         match &*self.phase.lock().unwrap() {
-            Phase::Running(s) if by.claims(&self.claim) => s.take(),
-            _ => Taken::default(),
+            Phase::Running(s) => s.take(),
+            _ => Taken { ended: true, ..Taken::default() },
         }
     }
 
     /// `Socket::reconciled`, for `Watches::reconcile`; a service that is stopping or stopped clears nothing.
-    pub fn reconciled(&self, gap: Gap) -> bool {
+    pub(crate) fn reconciled(&self, gap: Gap) -> bool {
         match &*self.phase.lock().unwrap() {
             Phase::Running(s) => s.reconciled(gap),
             _ => false,

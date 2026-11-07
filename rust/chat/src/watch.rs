@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use sot_protocol::chat::ChatRecord;
 
@@ -188,7 +189,28 @@ impl Watches {
         self.apply_taken(service.take(self));
     }
 
+    /// Wait at most `within` for something to take: an event queued or a gap latched, or anything still queued. True
+    /// means look (`pump`) and may be spurious; false is a bound reached or the service stopped, a wait in flight
+    /// included. The caller pumps after every wait. Taking `&mut self` is what makes one wait in flight the only
+    /// wait: a second waiter would take the wake the pump needs.
+    pub async fn wait(&mut self, service: &Service, within: Duration) -> bool {
+        match service.waiter(self) {
+            Some(w) => w.wait(within).await && service.running(),
+            None => false,
+        }
+    }
+
+    /// The service stopped: nothing held is current.
+    fn ended(&mut self) {
+        for c in self.channels.values_mut() {
+            c.phase = Phase::Needed;
+        }
+    }
+
     pub(crate) fn apply_taken(&mut self, taken: Taken) {
+        if taken.ended {
+            self.ended();
+        }
         self.sync(taken.gap);
         for event in &taken.events {
             self.apply(event);
@@ -204,10 +226,21 @@ impl Watches {
         Some(self.tickets)
     }
 
-    /// The snapshot is the channel's latest page; `now` is the socket's gap read as it arrives (`Service::gap()`), so a
+    /// The snapshot is the channel's latest page; the service's gap is read as it arrives, so a
     /// loss since `begin` refuses it. Only its top-level messages of this channel are kept. The overlay is
     /// applied after it, so a live edit or delete wins over the snapshot's older content.
-    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, now: Option<Gap>) -> Loaded {
+    pub fn loaded(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, service: &Service) -> Loaded {
+        if !service.owns(self) {
+            return Loaded::Stale;
+        }
+        let now = service.running_gap().unwrap_or_else(|| {
+            self.ended();
+            None
+        });
+        self.loaded_at(channel, ticket, records, now)
+    }
+
+    pub(crate) fn loaded_at(&mut self, channel: &str, ticket: u64, records: Vec<ChatRecord>, now: Option<Gap>) -> Loaded {
         self.sync(now);
         let gap = self.gap;
         let Some(c) = self.channels.get_mut(channel) else { return Loaded::Stale };
@@ -268,9 +301,13 @@ impl Watches {
         true
     }
 
-    /// Clear the socket's gap, through `clear` (`Socket::reconciled`), when every watch has resynced from a snapshot
+    /// Clear the socket's gap, through the service (`Socket::reconciled`), when every watch has resynced from a snapshot
     /// begun after that gap was read. `clear` refuses when something was lost since, and the gap stays.
-    pub fn reconcile(&mut self, clear: impl FnOnce(Gap) -> bool) -> bool {
+    pub fn reconcile(&mut self, service: &Service) -> bool {
+        self.reconcile_with(|g| service.reconciled(g))
+    }
+
+    pub(crate) fn reconcile_with(&mut self, clear: impl FnOnce(Gap) -> bool) -> bool {
         let Some(gap) = self.gap else { return false };
         if self.channels.values().all(|c| matches!(c.phase, Phase::Complete)) && clear(gap) {
             self.gap = None;
