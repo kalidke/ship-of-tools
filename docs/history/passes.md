@@ -1162,3 +1162,23 @@ A landing's record goes here, with its measured times; the package page holds on
 - On Windows the relative open refuses a file at a record's folder by itself, 2026-11-08: decided 05:20, main 05:25
   (f06e68542), 5 minutes. The check P8's second round added pinned nothing (its test passed on Windows without it), so
   it, its import and its comment are deleted. About 6 product lines removed. One Windows probe, one gate of 2 minutes.
+- The scratch guard test's probes write their files whole, 2026-11-08: red seen on main's hosted Windows run at 05:33,
+  diagnosis launched 05:34, builder 05:52, main 06:08 (366a34551, ebc49bc19, 29ac38c46), 35 minutes from the red. The
+  concurrent-runs case of `test-scratch-guard.ps1` polled a file its long probe was still appending line by line with
+  `Add-Content`, which opens with write sharing only, so an append that met a poll read failed and the probe exited 1. Each
+  probe now writes its file whole under another name and renames it into place, the daemon probe's later line is appended
+  with sharing for readers, and the failure details print what each check tested and the run's stderr. About 30 test
+  lines. Where the minutes went: the diagnosis (17 minutes, from PowerShell's own source); one-job Windows probes with a
+  patch that holds the file open as a poll read does (red on the old test, green on the new, three times through the
+  rounds); one review round (blockers 0) and two fix rounds, the second for an unquoted string the session caught that
+  would have run as a command; two gates of 3 minutes. SCRATCH-GUARD-RMDIR-STOP noted.
+- The rows' activation barrier is on the hold tool, 2026-11-08: builder launched 05:29, main 06:30 (a409f7a3a moved onto
+  main as 4214e54e3), 61 minutes, a minute past the maintainer's hour. `SOT_TEST_ACTIVATION_BARRIER` and its markers give
+  way to the points `rows.activation.start`, `rows.watchdog.restart`, `rows.activation.wait_for_settle` and
+  `rows.activation.completed`; an ordering a test claims that no longer holds now fails the test where the barrier timed
+  out after 30 seconds and went on. About 8 product lines added and 69 removed; the tests about 64 added and 117 removed.
+  The tests take as long as before (84 and 11 seconds): no passing run waited on the old timeout. Where the minutes went:
+  the build (26 minutes: the capsule workspace suite runs about 9 minutes here and ran whole, with a mutant per point);
+  one review round (blockers 0), which ran the suites on old and new trees (30 minutes); one hosted run on the branch; two
+  gates of 2 minutes, the second after the move onto main past the scratch guard's landing. Why past the hour: the suite's
+  length, run whole by both builder and reviewer.

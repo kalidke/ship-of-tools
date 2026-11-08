@@ -183,6 +183,11 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **DEGRADE-TEST-ROW-SCOPE** [note] `platform::capsule_launch_degrades_when_no_user_scope_is_available`
+  (`rust/backend/tests/capsule_workspaces/`) fails when the test itself runs inside a Ship of Tools row: its witness, "not
+  in a `sot-row-*.scope`", reads the row the test runs in as the daemon's. Seen on a build computer, on main and with the
+  activation change; green on the hosted runners. Fix: a witness the test's own place cannot fool (not in the scope the
+  daemon would make for this row, or in the test process's own cgroup).
 - **WORK-STATE-HOOKS-READ-FILES** [note] The work-state shell side reads and writes daemon-owned files by hand:
   `comm/work_state/hooks/comm-status-heartbeat.sh` gates on the registry file existing, `comm-status-idle.sh` gates its
   mail check on the inbox being readable, `comm-status.sh` writes turn, question and dialog markers, and

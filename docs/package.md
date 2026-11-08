@@ -188,7 +188,7 @@ landed, and so has the daemon's picture (the figure with the person's ink, insid
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the window's drawing is next. Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
-platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's and the wake's test
-seams and its absence waits are on it, and the activation barrier is next. Queued, not started: the
+platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
+rows' activation test seams and the wake's absence waits are on it, and the spawn suite's fixed cost is next. Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),
 and each subsystem's findings in `docs/defects.md`, handled at its pass.
