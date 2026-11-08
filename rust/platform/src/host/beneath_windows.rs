@@ -70,7 +70,7 @@ pub(super) fn write_beneath_at(
         .map_err(status_error)?;
     let mut renamed = false;
     let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
-    if !renamed {
+    if false && !renamed {
         // The handle names the temporary file alone; a failure here changes nothing.
         let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
         unsafe {
