@@ -177,3 +177,20 @@ fn the_wait_asks_about_the_file_a_real_preparation_marks() {
     crate::agents::env::account_spawn_env("claude", "dst", &cwd, &ws.workspace_id).unwrap();
     assert!(LiveTrust.recent_start(&ws), "the preparation of the row's own account marks the file the restart asks about");
 }
+
+/// A closed leg is not looked up at all, and a root outside the prefix is closed at once rather than waiting out a recent
+/// start on the trust file.
+#[test]
+fn a_closed_leg_is_not_looked_up_and_an_outside_root_does_not_wait() {
+    let (workspaces, ws, g) = leg_row("closed-leg");
+    let fx = Fake::new(true);
+    ws.trust_passed(g);
+    assert_eq!(restart(&workspaces, &ws, g, &fx), TrustRestart::Left);
+    assert_eq!(fx.calls(), Vec::<&str>::new(), "a closed leg is not looked up");
+
+    let (workspaces, ws, g) = leg_row("outside-recent");
+    let fx = Fake::new(false);
+    *fx.recent.borrow_mut() = true;
+    assert_eq!(restart(&workspaces, &ws, g, &fx), TrustRestart::Left, "an outside root is not made to wait");
+    assert_eq!(ws.trust_reading(), None, "and its leg is closed");
+}
