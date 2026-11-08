@@ -1,11 +1,13 @@
 //! The Unix arm of the write and the new folder beneath a root (`write_beneath_at`, `create_dir_beneath_at`): `openat`
-//! relative to the folder before, no link followed.
+//! relative to the folder before, no link followed; and of a record's write in its own folder (`open_followed`,
+//! `remove_in`, `write_in`), the folder opened once by its path, a link followed, and every step relative to it.
 
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use libc::c_int;
@@ -30,9 +32,10 @@ pub(super) fn write_beneath_at(
     Ok(root.join(rel))
 }
 
-/// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
+/// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place. Only a
+/// folder opens, so a pipe or device at its name answers at once.
 pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
-    File::open(folder)
+    std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY).open(folder)
 }
 
 /// Removes `name` in `dir`, a link at it as itself; a folder there is an error.
@@ -53,7 +56,8 @@ fn create_and_publish(dir: &File, temp: &CStr, last: &CStr, bytes: &[u8], at: &m
     let fd = own(unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), flags, 0o666 as c_int) })?;
     let result = publish(dir, File::from(fd), temp, last, bytes, at);
     if result.is_err() {
-        // The temporary name is ours alone; after a rename it is already gone, and a failure here changes nothing.
+        // The temporary name is this write's alone (fresh, or a record's one writer); after a rename it is already gone,
+        // and a failure here changes nothing.
         unsafe { libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0) };
     }
     result

@@ -171,24 +171,16 @@ fn write_durable_refuses_an_entry_that_reappears_at_the_temporary_name() {
     assert!(!target.exists());
 }
 
+/// A scanner or indexer holding the stale name open with delete sharing does not stop the next write.
+#[cfg(windows)]
 #[test]
-#[cfg(unix)]
-fn a_folder_swapped_between_the_create_and_the_rename_keeps_the_record_in_the_opened_folder() {
+fn a_stale_temporary_name_held_open_with_delete_sharing_does_not_stop_the_write() {
+    use std::os::windows::fs::OpenOptionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().join("root");
-    let moved = dir.path().join("moved");
-    let other = dir.path().join("other");
-    std::fs::create_dir(&folder).unwrap();
-    std::fs::create_dir(&other).unwrap();
-    let target = folder.join("record");
-    super::super::beneath::write_in_folder(&target, b"new", || {}, |step| {
-        if step == super::super::beneath::Step::Temp {
-            std::fs::rename(&folder, &moved)?;
-            std::os::unix::fs::symlink(&other, &folder)?;
-        }
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(std::fs::read(moved.join("record")).unwrap(), b"new");
-    assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+    let path = dir.path().join("record");
+    std::fs::write(dir.path().join("record.tmp"), b"stale").unwrap();
+    let held = std::fs::OpenOptions::new().read(true).share_mode(0x7).open(dir.path().join("record.tmp")).unwrap();
+    write_durable(&path, b"new").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    drop(held);
 }

@@ -468,15 +468,15 @@ fn flush_renamed(to: &Path) -> Result<()> {
 /// folder's sync. The folder is opened once and every step runs relative to it, so the record lands in the folder the
 /// write opened. An existing `path` is replaced; `publish_noreplace` is the form that refuses to. The temporary file is
 /// always a new file this call creates: whatever sits at its name is removed first, and the create refuses a name that
-/// exists. Windows renames by the temporary file's handle with write-through.
+/// exists. Windows renames by the temporary file's handle, after the file's flush and before the folder's.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    super::beneath::write_in_folder(path, bytes, || {}, |_| Ok(()))
+    super::beneath::write_in_folder(path, bytes, || {})
 }
 
 /// [`write_durable`] with `between` run after the stale temporary name is removed and before it is created (a test seam).
 #[cfg(test)]
 fn write_durable_between(path: &Path, bytes: &[u8], between: impl FnOnce()) -> std::io::Result<()> {
-    super::beneath::write_in_folder(path, bytes, between, |_| Ok(()))
+    super::beneath::write_in_folder(path, bytes, between)
 }
 
 /// Deletes `path` if it exists, then syncs its directory, so `Ok` means the absence is durable even when an earlier try

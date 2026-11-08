@@ -739,3 +739,60 @@ fn a_parent_swapped_for_a_link_after_its_open_takes_no_folder() {
         assert_eq!(entries(&folder.with_file_name("d.moved")), ["new"], "depth {depth}");
     }
 }
+
+#[test]
+fn a_folder_swapped_before_the_create_keeps_the_record_in_the_opened_folder() {
+    let (_g, root, outside) = setup();
+    let folder = root.join("d");
+    std::fs::create_dir(&folder).unwrap();
+    write_in_folder(&folder.join("record"), b"new", || swap_for_link(&folder, &outside)).unwrap();
+    assert_eq!(std::fs::read(root.join("d.moved/record")).unwrap(), b"new");
+    assert!(entries(&outside).is_empty());
+}
+
+/// A folder cannot be renamed while a file in it is open on Windows, so this swap is Unix only.
+#[cfg(unix)]
+#[test]
+fn a_folder_swapped_after_the_create_keeps_the_record_in_the_opened_folder() {
+    let (_g, root, outside) = setup();
+    let folder = root.join("d");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(outside.join("record.tmp"), b"keep").unwrap();
+    write_in_folder_at(&folder.join("record"), b"new", || {}, |s| {
+        if s == Step::Temp {
+            swap_for_link(&folder, &outside);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(root.join("d.moved/record")).unwrap(), b"new");
+    assert_eq!(entries(&outside), ["record.tmp"]);
+    assert_eq!(std::fs::read(outside.join("record.tmp")).unwrap(), b"keep");
+}
+
+#[test]
+fn a_record_whose_folder_is_reached_through_a_link_is_written_in_the_target() {
+    let (_g, root, outside) = setup();
+    link_dir(&outside, &root.join("link")).unwrap();
+    write_in_folder(&root.join("link/record"), b"new", || {}).unwrap();
+    assert_eq!(std::fs::read(outside.join("record")).unwrap(), b"new");
+    assert_eq!(entries(&outside), ["record"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_at_the_records_folder_answers_at_once() {
+    use std::os::unix::ffi::OsStrExt;
+    let (_g, root, _outside) = setup();
+    let fifo = root.join("fifo");
+    let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a plain mkfifo(3) of a path in this test's own folder.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    // The write runs on its own thread so a write that blocks fails this test instead of hanging the suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(write_in_folder(&fifo.join("record"), b"x", || {}));
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the write answered within the bound");
+    assert!(got.is_err());
+}

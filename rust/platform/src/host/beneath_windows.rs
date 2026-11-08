@@ -16,13 +16,13 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
+    RtlNtStatusToDosError, ERROR_DIRECTORY, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FileAttributeTagInfo, FileDispositionInfo, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE,
+    FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE,
     FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+    FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
     FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
@@ -53,7 +53,12 @@ pub(super) fn write_beneath_at(
 
 /// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
 pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
-    std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)
+    let dir = std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)?;
+    // Only a folder is one: a file at its name answers at once.
+    if tag_info(&dir)?.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::from_raw_os_error(ERROR_DIRECTORY as i32));
+    }
+    Ok(dir)
 }
 
 /// Removes the file `name` in `dir`, a file link as itself; a folder there is an error.
@@ -85,11 +90,17 @@ fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], at: &mut
     result
 }
 
+/// Deletes the open `file` with POSIX semantics, which frees its name at once even while another program holds it open
+/// with delete sharing; a volume that refuses them gets the classic delete.
 fn delete_on_close(file: &File) -> io::Result<()> {
+    let handle = file.as_raw_handle() as HANDLE;
+    let ex = FILE_DISPOSITION_INFO_EX { Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS };
+    let ok = unsafe { SetFileInformationByHandle(handle, FileDispositionInfoEx, &ex as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO_EX>() as u32) };
+    if ok != 0 {
+        return Ok(());
+    }
     let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-    let ok = unsafe {
-        SetFileInformationByHandle(file.as_raw_handle() as HANDLE, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32)
-    };
+    let ok = unsafe { SetFileInformationByHandle(handle, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32) };
     if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
@@ -227,15 +238,17 @@ fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32,
 
 /// A file, symlink, junction or mount point (a name-surrogate tag) is refused; other reparse points stay ordinary.
 fn refuse_link(f: &File, what: &str) -> io::Result<()> {
-    let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
-    let ok = unsafe { GetFileInformationByHandleEx(f.as_raw_handle() as HANDLE, FileAttributeTagInfo, &mut info as *mut _ as *mut c_void, size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let info = tag_info(f)?;
     if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 || names_another_place(info.FileAttributes, info.ReparseTag) {
         return Err(invalid(format!("{what:?} is not a plain folder")));
     }
     Ok(())
+}
+
+fn tag_info(f: &File) -> io::Result<FILE_ATTRIBUTE_TAG_INFO> {
+    let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
+    let ok = unsafe { GetFileInformationByHandleEx(f.as_raw_handle() as HANDLE, FileAttributeTagInfo, &mut info as *mut _ as *mut c_void, size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) };
+    if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(info) }
 }
 
 fn status_error(s: NTSTATUS) -> io::Error {

@@ -25,9 +25,11 @@ where each lives).
    manager's `XDG_RUNTIME_DIR`; macOS: none; Windows: no runtime base). A boot without logind binds at
    `/tmp/sot-<uid>`.
 2. **A publication is durable and never clobbers.** `publish_noreplace` renames without replacing, flushes the
-   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (opens the record's folder once, by path; then, relative to that open folder, a stale `<name>.tmp` is removed, a fresh one is created refusing an existing name and following no link, written and synced, renamed over the record by `write_beneath`'s steps, and the folder synced) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
+   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (opens the record's folder once, by path, following a link; then, relative to that open folder, a stale `<name>.tmp` is removed, a fresh one is created refusing an existing name and following no link, written and synced, renamed over the record by `write_beneath`'s steps, and the folder synced) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
    removal has no parent sync (Win32 has no write-through delete). Rests on
-   renameat2/renamex_np/MoveFileEx write-through; only linux, macos and windows build.
+   renameat2/renamex_np/MoveFileEx for a publication, the rename relative to the record's folder (Unix `renameat`,
+   Windows by handle) for a record, and the folder's flush (on Windows `FlushFileBuffers` on a folder handle); only
+   linux, macos and windows build.
 3. **A lock is the kernel's.** A fence, the daemon's single-instance lock and a held folder's lock are released at
    once by a dropped guard (`WriterLock`'s Drop unlocks) and when the holder dies and the last descriptor of the locked
    file closes; a forked child that kept a copy holds it. The descriptors this crate opens are close-on-exec, so no
@@ -184,14 +186,13 @@ Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MS
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
 Bash's `/proc/<pid>/winpid` carries the chain); a Windows console is cp437 unless the process sets UTF-8, so a prompt
 glyph read back through a pipe becomes `?` and a gate comparing a pane line to it never matches; an antivirus scanner
-or indexer can hold a freshly written or extracted file open for seconds, so every Windows rename and delete here
-retries within `RETRY_DEADLINE_MS` and the updater's extraction retries longer; the background service on Linux is
+or indexer can hold a freshly written or extracted file open for seconds, so every Windows rename here
+retries within `RETRY_DEADLINE_MS` (the removal of a record's stale temporary file does not: it deletes with POSIX semantics, which a scanner's open does not hold off) and the updater's extraction retries longer; the background service on Linux is
 the user manager's unit (`deploy/sotd.service`), and the runtime base is stable only while that user manager runs (linger),
 so a boot without it binds sockets at `/tmp/sot-<uid>`.
 
 ## Owns
-The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
-the write beneath a root and its folder twin (`host/beneath.rs`, its arms `beneath_unix.rs` and `beneath_windows.rs`);
+The folders and host name above (`host/state_dir.rs`); durable publication and remove (`host/durable.rs`); a record's durable write and the write beneath a root with its folder twin (`host/beneath.rs`, its arms `beneath_unix.rs` and `beneath_windows.rs`);
 kernel locks and held folders (`host/lock.rs`, `host/held_dir.rs`); descriptor birth and the native process-birth
 launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory pin (`host/pinned_dir.rs`); the volume
 preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`, guarantee 12);
@@ -248,7 +249,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | # | guarantee | test |
 |---|---|---|
 | 1 | one answer, `host_name` errs | `host/state_dir_tests.rs`: `the_state_folder_has_one_rule_and_the_config_folder_is_its_sibling_rule`, `the_daemons_state_folder_is_the_state_folder_and_falls_back_to_tmp_without_a_home` (and its Windows pair), `host_name_prefers_sot_self_host_when_set` and the three `host_name_falls_back_*`/`_takes_*` cases, `a_raw_host_name_gives_its_first_lowercase_label_or_an_error`; `host/state_dir_hash_tests.rs`; `host/state_dir_runtime_dir_tests.rs`; `identity/os_account_tests.rs` |
-| 2 | durable, no clobber | `host/durable_tests.rs`: `publish_noreplace_refuses_an_existing_target_and_leaves_both_files`, `a_folder_swapped_between_the_create_and_the_rename_keeps_the_record_in_the_opened_folder` (Unix), `write_durable_replaces_a_record_and_leaves_no_temporary_file`, `remove_durable_is_idempotent_and_accepts_a_missing_folder`, `ensure_container_*` |
+| 2 | durable, no clobber | the record's write (in `host/beneath_tests.rs`): `a_folder_swapped_before_the_create_keeps_the_record_in_the_opened_folder`, `a_folder_swapped_after_the_create_keeps_the_record_in_the_opened_folder` (Unix), `a_record_whose_folder_is_reached_through_a_link_is_written_in_the_target`, `a_fifo_at_the_records_folder_answers_at_once` (Unix); Windows, in `host/durable_tests.rs`: `a_stale_temporary_name_held_open_with_delete_sharing_does_not_stop_the_write`; `host/durable_tests.rs`: `publish_noreplace_refuses_an_existing_target_and_leaves_both_files`, `write_durable_replaces_a_record_and_leaves_no_temporary_file`, `remove_durable_is_idempotent_and_accepts_a_missing_folder`, `ensure_container_*` |
 | 3 | kernel lock | `host/lock_tests.rs`: `a_dropped_writer_lock_is_free_while_a_forked_child_waits_to_exec`, `a_dropped_daemon_lock_is_free_while_a_forked_child_waits_to_exec`, `a_child_spawned_while_the_daemon_lock_is_held_never_holds_it`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder` |
 | 4 | held folder | `host/held_dir_tests.rs`: `a_held_folder_goes_once_its_maker_has_ended_and_only_then`, `a_held_folder_goes_while_a_removal_holds_its_lock_file_open` |
 | 5 | cloexec births | `host/fd_tests.rs` (socket, pipe, pty, the fork birth lock); `tests/winhandle_windows.rs` |

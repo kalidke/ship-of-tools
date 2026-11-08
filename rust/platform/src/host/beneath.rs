@@ -1,6 +1,7 @@
 //! A write or a new folder beneath a root that follows no link: the root is opened once, each folder below it is opened
 //! relative to the one before, and the file is created, renamed and synced (or the folder made) relative to the last
-//! folder. No path is used after the root.
+//! folder. No path is used after the root. A record's write (`write_in_folder`) opens its own folder once by path,
+//! following a link, and runs the same steps relative to it.
 //! The arms are `beneath_unix.rs` (`openat`) and `beneath_windows.rs` (relative `NtCreateFile`).
 
 use std::io;
@@ -17,7 +18,7 @@ use arm::{create_dir_beneath_at, open_followed, remove_in, write_beneath_at, wri
 
 /// The points a test may stop at, each after the step it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Step {
+enum Step {
     Root,
     Folder(usize),
     /// A folder's open found nothing; the make follows.
@@ -37,7 +38,11 @@ pub fn write_beneath(root: &Path, rel: &str, bytes: &[u8]) -> io::Result<PathBuf
 /// Writes `bytes` at `path` durably (the guarantee of [`super::write_durable`]): the parent folder is opened once, by its
 /// path, and the stale `<name>.tmp` is removed, the file created, written, synced, renamed and the folder synced relative
 /// to that open folder. `before_create` runs after the removal and `at` after each later step, as seams for a test.
-pub(super) fn write_in_folder(path: &Path, bytes: &[u8], before_create: impl FnOnce(), mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+pub(super) fn write_in_folder(path: &Path, bytes: &[u8], before_create: impl FnOnce()) -> io::Result<()> {
+    write_in_folder_at(path, bytes, before_create, |_| Ok(()))
+}
+
+fn write_in_folder_at(path: &Path, bytes: &[u8], before_create: impl FnOnce(), mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| invalid(format!("{path:?} names no file")))?;
     let folder = match path.parent() {
         Some(p) if p.as_os_str().is_empty() => Path::new("."),
