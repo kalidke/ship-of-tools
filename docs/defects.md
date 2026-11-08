@@ -55,10 +55,6 @@ owned by `docs/CLAUDE.md`.
 - **CHILD-RENAMES-NO-RETRY** [note] Three test children rename a file into place with `std::fs::rename`, which does not
   retry on Windows while a scanner holds the new file, as platform's renames do: `test_barrier.rs`, the capsule's
   `tests/supervisor/main.rs` and `contained_job.rs`. Route each through `publish_noreplace`.
-- **BENEATH-SUPERSEDED-WRITER-ERRS** [note] `host::write_beneath` checks after its rename that the entry at the final name
-  is the file it wrote, so of two writers of one name, one whose file the other replaces between its rename and its check
-  answers "the written file is not the entry at its name" although its file was published whole. Seen 2026-11-07 in a
-  hosted run (Linux and macOS) of a two-writers test on a branch; no caller exists yet.
 
 ## wire
 
@@ -676,6 +672,8 @@ owned by `docs/CLAUDE.md`.
 ## Closed
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **BENEATH-SUPERSEDED-WRITER-ERRS** (platform) closed by d79396550, 2026-11-07: the write beneath a root no longer checks the final name after its rename, so two writers of one name each answer Ok; Ok means the entry at the temporary name was renamed into place.
 
 - **GATE-LEFTOVER-ENDPOINT-STUBS** (messaging) closed by 4ed49a71d and 61874b765, 2026-11-07: the endpoint gate suite's stubs left their `sleep 30` children running, and a gate whose last jobs included that suite failed its census; each stub now starts in its own group and is ended with it.
 - **HOLD-CHILD-PASS-TORN** (platform) closed by bf04197f6 and fe6291036, 2026-11-07: the hold tool's child and the exit-process fixture's child wrote a file a test polls for by create and then write, so a test could read it empty (seen on macOS in a hosted run); both now rename a whole file into place.
