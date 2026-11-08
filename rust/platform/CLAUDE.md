@@ -152,17 +152,21 @@ where each lives).
     process's own arrivals pass uncounted; arms of one point serialize even with distinct keys in a process; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
 17. **A write beneath a root follows no link, whether present when it runs or put there while it runs, inside the root.** `host::write_beneath(root, rel, bytes)`
-    (Unix) takes a `root` that is its own canonical path and opens its last name without following it, then each
-    folder below it relative to the one before, the same way (`O_NOFOLLOW|O_DIRECTORY`; a missing folder is made with
-    `mkdirat` and opened the same way). It creates its temporary file exclusively under a fresh `.sot-<16 hex>.tmp`
-    name, renames and syncs relative to the same folder; `Ok` means the entry at the temporary name was renamed into
+    takes a `root` that is its own canonical path and opens its last name without following it, then each
+    folder below it relative to the one before, the same way (Unix: `O_NOFOLLOW|O_DIRECTORY`, a missing folder made with
+    `mkdirat` and opened the same way; Windows: one relative `NtCreateFile` per name with `FILE_OPEN_REPARSE_POINT`, a
+    missing folder made by `FILE_OPEN_IF`, and a name-surrogate reparse tag, which is a symlink, junction or mount
+    point, refused). It creates its temporary file exclusively under a fresh `.sot-<16 hex>.tmp`
+    name, renames and syncs relative to the same folder (Windows: the file is held with share-read alone, so no other
+    open renames or deletes it, and is renamed by its handle, retried while a scanner holds the name); `Ok` means the entry at the temporary name was renamed into
     place. No path is used after the root, and every name is converted before the root is opened. A root that is not
     its own canonical path (one that does not exist, a link to nothing included, is `NotFound`), a `rel` that is not
-    `/`-joined plain names, and a link or file at a folder's name are `InvalidInput`. Limits: Linux and macOS, no
-    caller yet. A crash between the create and the rename leaves a `.sot-<hex>.tmp` that no later write removes.
+    `/`-joined plain names (on Windows none holding `\` or `:`), and a link or file at a folder's name are
+    `InvalidInput`. A Windows root is its own canonical path when std's canonical form without its verbatim prefix equals
+    it, ASCII case aside. Limits: no caller yet. A crash between the create and the rename leaves a `.sot-<hex>.tmp` that no later write removes.
     Folders made before a later error stay. After the rename the old file is gone: an error in the folder sync leaves
     the entry renamed into place at the name. The returned path names
-    the file only while nobody renames its folders. A mount inside the root is followed. A folder with write and
+    the file only while nobody renames its folders. A mount inside the root is followed on Unix and refused on Windows. A folder with write and
     search but no read permission is refused. Entries inside the root may change while the call runs: a folder that
     becomes a link before its open is refused (a missing folder's make and open count as its open), one renamed after
     its open, a link put at its name, keeps the write in the folder that was opened, one removed after its open
@@ -181,7 +185,7 @@ so a boot without it binds sockets at `/tmp/sot-<uid>`.
 
 ## Owns
 The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
-the write beneath a root (`host/beneath.rs`);
+the write beneath a root (`host/beneath.rs`, its arms `beneath_unix.rs` and `beneath_windows.rs`);
 kernel locks and held folders (`host/lock.rs`, `host/held_dir.rs`); descriptor birth and the native process-birth
 launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory pin (`host/pinned_dir.rs`); the volume
 preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`, guarantee 12);
@@ -202,13 +206,13 @@ converts its own reader in its own pass and then deletes it.
 
 ## Calls in
 The OS (renameat2, renamex_np, MoveFileEx, flock, LockFileEx, SO_PEERCRED, pidfd, kqueue, the TCP owner tables), the
-C compiler for the native launcher (build time), and std, libc, windows-sys, tokio and tracing (peer_owner only),
+C compiler for the native launcher (build time), and std, libc, windows-sys (its `Wdk_Foundation`, `Wdk_Storage_FileSystem` and `Win32_System_Kernel` features for the Windows write beneath a root), tokio and tracing (peer_owner only),
 gethostname, sha2, thiserror, getrandom; tracing-subscriber and tempfile for the test support alone.
 
 ## Calls out
 Everything above; each name is a path under `sot_platform::`: `host::state_dir::{sot_state_dir, sot_config_dir,
 runtime_sot_dir, host_name, kernel_host_name, state_dir_hash, is_private_dir}`, `host::{publish_noreplace,
-write_durable, write_beneath (Unix), remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir,
+write_durable, write_beneath, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir,
 remove_ended, preflight_volume,
 storage_exhaustion, dir_identity, PinnedDir, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
 `host::redial::{Redial, STABLE}`, `host::env::Env`, `identity::challenge::*`, `identity::exchange::{IdentityExchange,
@@ -252,7 +256,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 | 16 | hold tool | `hold_tests.rs` (child cases through a rerun of the test binary: `a_child_started_with_the_folder_is_held_at_its_line_and_released`, `two_children_sharing_a_folder_take_distinct_tickets`, `the_arm_drop_releases_a_held_child`; the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
-| 17 | write beneath a root | `host/beneath_tests.rs`: `a_link_at_any_folder_takes_no_write`, `the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical`, `a_name_that_is_not_one_plain_entry_is_refused`, `a_planted_temporary_name_is_never_written_through`, `a_link_at_the_final_name_is_replaced_not_followed`, `a_temporary_file_replaced_before_the_rename_writes_nothing_outside`, `a_root_that_does_not_resolve_answers_by_what_is_wrong`, `each_write_creates_its_temporary_file_under_a_fresh_name`, `missing_folders_are_created_and_the_path_is_returned`, `a_folder_swapped_for_a_link_after_its_open_keeps_the_write_inside`, `a_folder_swapped_for_a_link_before_its_open_takes_no_write`, `a_missing_folder_is_opened_after_its_make_like_any_folder`, `a_folder_with_another_below_it_swapped_after_its_open_keeps_the_write_inside`, `a_folder_removed_after_its_open_takes_no_write`, `a_final_name_planted_before_the_rename_is_replaced_not_followed`, `an_error_at_every_step_leaves_no_temporary_file`, `two_writers_of_one_name_each_publish_a_whole_file`, `a_folder_at_the_final_name_is_an_error_and_is_kept` |
+| 17 | write beneath a root | `host/beneath_tests.rs`: `a_link_at_any_folder_takes_no_write`, `the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical`, `a_name_that_is_not_one_plain_entry_is_refused`, `a_planted_temporary_name_is_never_written_through`, `a_link_at_the_final_name_is_replaced_not_followed`, `a_temporary_file_replaced_before_the_rename_writes_nothing_outside`, `a_root_that_does_not_resolve_answers_by_what_is_wrong`, `each_write_creates_its_temporary_file_under_a_fresh_name`, `missing_folders_are_created_and_the_path_is_returned`, `a_folder_swapped_for_a_link_after_its_open_keeps_the_write_inside`, `a_folder_swapped_for_a_link_before_its_open_takes_no_write`, `a_missing_folder_is_opened_after_its_make_like_any_folder`, `a_folder_with_another_below_it_swapped_after_its_open_keeps_the_write_inside`, `a_folder_removed_after_its_open_takes_no_write`, `a_final_name_planted_before_the_rename_is_replaced_not_followed`, `an_error_at_every_step_leaves_no_temporary_file`, `two_writers_of_one_name_each_publish_a_whole_file`, `a_folder_at_the_final_name_is_an_error_and_is_kept`; Windows: `the_temporary_file_cannot_be_renamed_away_while_it_is_written`, `a_root_spelled_in_another_case_is_its_own_canonical_path` |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter
