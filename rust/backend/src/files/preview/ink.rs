@@ -4,12 +4,12 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use image::ImageEncoder;
 use sot_protocol::ink::{self, CANVAS_DIMS, INK_RGB};
 use sot_protocol::ops::selection_code::{BAD_NODE_ID, NOT_AN_IMAGE, PUBLISH_FAILED, TOO_LARGE};
 use sot_protocol::ops::{Drawing, InkBase};
 
-use super::decode_limited;
 use crate::files::tree::{mime_for_path, FilesMode};
 
 /// A source over this many pixels is refused before any decode.
@@ -25,7 +25,7 @@ pub(crate) type Refusal = (&'static str, String);
 pub(crate) fn captures_file(files: &FilesMode, name: &str) -> anyhow::Result<PathBuf> {
     let path = files.node_id_to_path_confined(&format!("files:.sot/captures/{name}"))?;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
     }
     Ok(path)
 }
@@ -63,16 +63,20 @@ fn figure_raster(files: &FilesMode, node_id: &str) -> Result<image::RgbaImage, R
     if !mime.starts_with("image/") {
         return Err((NOT_AN_IMAGE, format!("{path:?} is not an image (mime {mime})")));
     }
-    let open = || -> Result<_, Refusal> {
-        image::ImageReader::open(&path)
-            .and_then(|r| r.with_guessed_format())
-            .map_err(|e| (NOT_AN_IMAGE, format!("open {path:?}: {e}")))
-    };
-    let (w, h) = open()?.into_dimensions().map_err(|e| (NOT_AN_IMAGE, format!("{path:?}: {e}")))?;
+    // One open: the header is read from the decoder that then decodes, so a figure replaced between the check and
+    // the decode cannot skip the size check.
+    let mut reader = image::ImageReader::open(&path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|e| (NOT_AN_IMAGE, format!("open {path:?}: {e}")))?;
+    let mut limits = image::Limits::no_limits();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| (NOT_AN_IMAGE, format!("{path:?}: {e}")))?;
+    let (w, h) = image::ImageDecoder::dimensions(&decoder);
     if u64::from(w) * u64::from(h) > MAX_SOURCE_PIXELS {
         return Err((TOO_LARGE, format!("{path:?} is {w}x{h}, over 40 megapixels")));
     }
-    let src = decode_limited(open()?, MAX_DECODE_ALLOC)
+    let src = image::DynamicImage::from_decoder(decoder)
         .map_err(|e| (NOT_AN_IMAGE, format!("decode {path:?}: {e}")))?
         .to_rgba8();
     let (rw, rh) = ink::raster_dims(w, h);

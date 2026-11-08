@@ -21,11 +21,12 @@ Per workspace row (built in `rows/workspace.rs`):
 - Every write under `.sot/captures/` (the crop's PNG, a drawing's picture) names its file through `captures_file`, which
   resolves through that confined resolver and creates the folder only after the check: a `.sot` or `captures` link that
   leads out of the root takes no write. Tested on Unix by `ink_tests::a_captures_folder_that_leads_out_of_the_root_takes_no_write`;
-  on Windows the same resolver holds it and the test makes no link (creating one needs a privilege).
+  on Windows the same resolver holds it, tested with a directory junction (which needs no privilege).
 - A drawing's picture (`preview/ink.rs` `compose`, on the blocking pool) is the figure scaled to `raster_dims` with the
   ink over it, or a white canvas with the ink, written whole (`write_durable`) to `.sot/captures/ink-<row id>.png`. A
-  source over 40 megapixels is `too_large` by its header, before any decode; bytes that do not decode are
-  `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`.
+  source over 40 megapixels is `too_large` by the header of the one decoder that then decodes, before it allocates; bytes that do not decode are
+  `not_an_image`. A figure is a node `mime_for_path` calls `image/*` (png, jpg, jpeg, gif, webp, bmp; an svg passes the
+  name and fails the decode); TIFF is not one, so a `.tif` is `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`.
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait

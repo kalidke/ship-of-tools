@@ -155,7 +155,7 @@ fn seed_contents(target: &Path, link: &Path, stub: Option<&str>) -> io::Result<(
 /// A directory junction (no privilege needed, local NTFS only) at `link`, a name the caller owns: create the folder,
 /// then set its reparse point.
 #[cfg(windows)]
-pub(super) fn make_junction(target: &Path, link: &Path) -> io::Result<()> {
+pub(crate) fn make_junction(target: &Path, link: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
