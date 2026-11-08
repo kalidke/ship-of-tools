@@ -159,10 +159,11 @@ async fn wait_pings(log: &Path, want: usize, within: Duration) -> bool {
 }
 
 struct Row {
-    // The wake's points (armed in [`start_full`]); declared before `env` so they drop while its holds folder lives.
+    // The wake's points (armed in [`start_full`]; `looked` counts the ticks' decisions for `HANDLE`); declared before `env` so they drop while its holds folder lives.
     hold: Arm,
     final_ok: Arm,
     done: Arm,
+    looked: Arm,
     env: Env,
     conn: Conn,
     next_id: u64,
@@ -220,7 +221,20 @@ async fn phase_of_row(row: &mut Row, ws: &str) -> String {
     find_row(&payload, ws).and_then(|r| r["phase"].as_str().map(str::to_string)).unwrap_or_default()
 }
 
-/// Three ticks (2 s each) plus slack.
+/// Returns once the wake has made two more decisions for `HANDLE` than it had when this was called: the first may have
+/// begun before the condition the caller waited for, the second began after it. An absence is proved over these, never
+/// over a span of the clock.
+async fn two_looks(row: &Row) {
+    row.looked.reached_async(row.looked.arrivals() + 1).await;
+}
+
+/// [`two_looks`] and one more: the tick's page-reply release runs after its decision, so the third decision's tick
+/// is the first whose release began wholly after the condition.
+async fn three_looks(row: &Row) {
+    row.looked.reached_async(row.looked.arrivals() + 2).await;
+}
+
+/// Three ticks (2 s each) plus slack: paces the stub while no daemon runs.
 const THREE_TICKS: Duration = Duration::from_secs(8);
 
 async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
@@ -228,7 +242,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 }
 
 /// [`start`], with `ctl` control files (see [`write_stub_claude`], `name` or `name=content`) created before the row starts, and `extra`
-/// env vars on the daemon. The wake's points `comm.wake.hold`, `final_ok` and `done` are armed on the row's holds folder
+/// env vars on the daemon. The wake's points `comm.wake.hold`, `final_ok`, `done` and `looked` (keyed by `HANDLE`) are armed on the row's holds folder
 /// before the daemon starts, counting only.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
     start_full(tag, log, in_dialog, ctl, extra, 0, 0).await
@@ -256,6 +270,7 @@ async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     let hold = env.holds.arm("comm.wake.hold").hold(hold_holds);
     let final_ok = env.holds.arm("comm.wake.final_ok").hold(final_holds);
     let done = env.holds.arm("comm.wake.done").hold(0);
+    let looked = env.holds.arm("comm.wake.looked").key(HANDLE).hold(0);
     env.spawn_sotd_with_path_and_env(&stub_dir, extra);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
@@ -272,7 +287,7 @@ async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     next_id += 1;
     assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
-    Row { hold, final_ok, done, env, conn, next_id, ws, log, dialog, spin, foot, stub_dir }
+    Row { hold, final_ok, done, looked, env, conn, next_id, ws, log, dialog, spin, foot, stub_dir }
 }
 
 /// An idle row is woken by one appended line, and only once.
@@ -283,7 +298,7 @@ async fn an_idle_row_is_woken_once() {
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
     // The mail is still unread; the same batch is not woken again.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
     row.env.kill_daemon_bounded().await;
 }
@@ -295,7 +310,8 @@ async fn a_row_in_a_dialog_is_not_typed_into_until_it_closes() {
     let _serial = SERIAL.lock().await;
     let mut row = start("cwd", None, true).await;
     append_mail(&row.env, 1);
-    tokio::time::sleep(Duration::from_secs(7)).await;
+    wait_for_screen(&mut row, "Allow this action").await;
+    two_looks(&row).await;
     assert!(row.screen_has("Allow this action").await, "the dialog is not on screen");
     assert!(!row.screen_has("[sot-comm]").await, "typed into a dialog");
     std::fs::remove_file(&row.dialog).unwrap();
@@ -318,7 +334,7 @@ async fn a_row_holding_a_persons_unsent_text_is_never_typed_into() {
         let mut row = start_with(tag, None, false, &[&ctl], &[]).await;
         assert!(row.screen_has("close the worktrees").await, "{ctl}: the draft is not on screen");
         append_mail(&row.env, 1);
-        tokio::time::sleep(THREE_TICKS).await;
+        two_looks(&row).await;
         assert!(!row.screen_has("[sot-comm]").await, "{ctl}: typed into a person's unsent text: {:?}", row.screen().await);
         assert_eq!((pings(&row.log), others(&row.log)), (0, 0), "{ctl}: a line was sent");
         std::fs::write(row.env._tmp.path().join("ctl/clear-draft"), b"").unwrap();
@@ -341,7 +357,7 @@ async fn a_line_a_person_typed_and_did_not_send_is_never_typed_into() {
     assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
     wait_for_screen(&mut row, "close the worktrees").await;
     append_mail(&row.env, 1);
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert!(!row.screen_has("[sot-comm]").await, "typed into a person's unsent line: {:?}", row.screen().await);
     assert_eq!((pings(&row.log), others(&row.log)), (0, 0), "a line was sent");
     let kill = serde_json::json!({ "workspace_id": row.ws, "data_b64": base64_of("\u{15}"), "enter": false });
@@ -364,10 +380,11 @@ fn base64_of(text: &str) -> String {
 #[tokio::test]
 async fn a_working_row_is_not_typed_into_until_it_rests() {
     let _serial = SERIAL.lock().await;
-    let row = start("cww", None, false).await;
+    let mut row = start("cww", None, false).await;
     std::fs::write(&row.spin, b"").unwrap();
     append_mail(&row.env, 1);
-    tokio::time::sleep(THREE_TICKS).await;
+    wait_for_screen(&mut row, "spinner").await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 0, "typed into a working row");
     std::fs::remove_file(&row.spin).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the row coming to rest");
@@ -410,7 +427,7 @@ async fn a_row_whose_stop_hook_is_running_is_not_typed_into() {
     let row = start("cws", None, false).await;
     set_entry(&row.env, serde_json::json!({ "state": "working", "floor": "user", "status_at": iso_at(0), "stop_at": iso_at(0) }));
     append_mail(&row.env, 1);
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 0, "typed into a row whose Stop hook is running");
     set_entry(&row.env, serde_json::json!({ "state": "done", "done": true, "status_at": iso_at(0) }));
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the mark going");
@@ -431,14 +448,14 @@ async fn a_stop_mark_past_the_bound_does_not_hold_the_wake() {
 
 /// A Stop that never ends releases the row when its mark expires. The mark
 /// is 40 s old, so with STOP_HOOK_BOUND = 60 it expires 20 s in: the row is
-/// held through THREE_TICKS (8 s) and woken after, well inside the hang guard.
+/// held through two ticks and woken after, well inside the hang guard.
 #[tokio::test]
 async fn an_unfinished_stop_releases_the_row_within_the_bound() {
     let _serial = SERIAL.lock().await;
     let row = start("cwu", None, false).await;
     set_entry(&row.env, serde_json::json!({ "state": "working", "floor": "user", "status_at": iso_at(0), "stop_at": iso_at(-40) }));
     append_mail(&row.env, 1);
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 0, "typed into a row inside the bound");
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the mark expiring");
     row.env.kill_daemon_bounded().await;
@@ -477,7 +494,7 @@ async fn a_restarted_daemon_wakes_a_row_with_unread_mail_once() {
     row.env.kill_daemon_bounded().await;
     row.env.spawn_sotd_with_prepended_path(&row.stub_dir);
     assert!(wait_pings(&row.log, 2, Duration::from_secs(30)).await, "the restarted daemon never woke the row");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 2);
     row.env.kill_daemon_bounded().await;
 }
@@ -489,7 +506,7 @@ async fn one_batch_gives_one_line() {
     let row = start("cwb", None, false).await;
     append_mail(&row.env, 3);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await);
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
     row.env.kill_daemon_bounded().await;
 }
@@ -535,7 +552,7 @@ async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
     }
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no row was woken");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1, "the wake did not reach exactly one row");
     assert!(!row.screen_has("[sot-comm]").await, "the older row was typed into");
     let id = row.next_id;
@@ -586,7 +603,7 @@ async fn two_tomls_on_one_handle_keep_it_on_the_last_joiner_at_boot() {
     row.next_id = next_id;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no row was woken");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1, "the wake did not reach exactly one row");
     assert!(!row.screen_has("[sot-comm]").await, "the older row was typed into");
     let id = row.next_id;
@@ -626,7 +643,7 @@ async fn a_dead_row_is_never_restarted_by_a_wake() {
     // Unblock the stub, so a restart WOULD let it draw a prompt and be woken.
     std::fs::remove_file(row.dialog.with_extension("down")).unwrap();
     append_mail(&row.env, 1);
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 0, "a dead row was typed a wake");
     assert_eq!(phase_of_row(&mut row, &ws).await, before, "the wake restarted the row");
     row.env.kill_daemon_bounded().await;
@@ -722,7 +739,7 @@ async fn a_slow_echo_is_entered_in_the_same_attempt() {
     let row = start_with("cwse", None, false, &["echo-after=0.6"], &[]).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     assert!(!daemon_log(&row.env).contains("did not show in main's input box"), "the wake gave up on the line");
@@ -738,7 +755,7 @@ async fn a_wake_line_left_unsent_is_completed_by_the_next_tick() {
     let row = start_with("cwlu", None, false, &["echo-after=8"], &[]).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     let said = daemon_log(&row.env).matches("did not show in main's input box").count();
@@ -779,7 +796,7 @@ async fn a_restarted_daemon_completes_a_wake_line_left_typed() {
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
     row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[]);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     row.env.kill_daemon_bounded().await;
@@ -800,7 +817,7 @@ async fn a_restarted_daemon_leaves_other_text_in_the_prompt_and_looks_once() {
     let before = row.done.arrivals();
     row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[]);
     row.done.reached_async(before).await;
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(row.done.arrivals(), before + 1, "a later tick attached to the row again");
     assert_eq!(pings(&row.log), 0);
     assert_eq!(others(&row.log), 0, "the draft was sent");
@@ -843,7 +860,7 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     let before = row.done.arrivals();
     row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
     row.done.reached_async(before).await;
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 0, "the new run's box owed no Enter");
     assert_eq!(others(&row.log), 0, "the wake line was typed again");
     assert_eq!(row.env.daemon_log_since(second_daemon_from).matches("boot look waits").count(), 1, "the wait should be logged once");
@@ -866,7 +883,7 @@ async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
     std::fs::remove_file(row.env._tmp.path().join("ctl").join("echo-after")).unwrap();
     kill_supervisor(&row.env.state_root);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the new run was not woken within {WAKE_WITHIN:?}: its box owed no Enter");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!(pings(&row.log), 1, "one wake for one batch");
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     row.env.kill_daemon_bounded().await;
@@ -902,7 +919,7 @@ async fn an_attempt_never_types_into_a_run_it_did_not_check() {
     assert!(!screen.iter().any(|l| l.contains("[sot-comm]")), "the old run's attempt typed into the new run's dialog: {screen:?}");
     std::fs::remove_file(&row.dialog).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the new run was not woken once its dialog closed");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert_eq!((pings(&row.log), others(&row.log)), (1, 0), "one wake line, once");
     row.env.kill_daemon_bounded().await;
 }
@@ -1061,7 +1078,7 @@ async fn a_page_reply_left_typed_is_never_entered_or_retried_by_the_wake() {
     append_mail(&row.env, 1);
     let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
     assert_eq!(res["outcome"], "not_free", "an identical draft cannot authorize Enter: {res}");
-    tokio::time::sleep(THREE_TICKS).await;
+    two_looks(&row).await;
     assert!(received(&row).is_empty(), "a later wake or reply sent the pending line");
     row.env.kill_daemon_bounded().await;
 }
@@ -1087,12 +1104,12 @@ async fn a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees() 
     assert!(received(&row).is_empty(), "typed into a working row");
     let deliveries = || daemon_log(&row.env).lines().filter(|line| line.contains("page reply delivery")).map(String::from).collect::<Vec<_>>();
     assert_eq!(deliveries().len(), 1, "the first attempt is logged");
-    tokio::time::sleep(THREE_TICKS).await;
+    three_looks(&row).await;
     assert_eq!(deliveries().len(), 1, "unchanged held attempts must stay quiet");
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws, "stop_at": iso_at(0)}));
     wait_for("the changed held detail", || deliveries().iter().any(|line| line.contains("stop hook running"))).await;
     assert_eq!(deliveries().len(), 2, "a changed detail must be logged");
-    tokio::time::sleep(THREE_TICKS).await;
+    three_looks(&row).await;
     assert_eq!(deliveries().len(), 2, "the new unchanged detail must stay quiet");
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
     std::fs::remove_file(&row.spin).unwrap();
@@ -1117,7 +1134,7 @@ async fn a_direct_reply_is_refused_at_a_draft_and_types_nothing() {
     assert_eq!(res["outcome"], "refused", "{res}");
     assert!(res["detail"].as_str().unwrap().starts_with("draft"), "{res}");
     assert!(res["detail"].as_str().unwrap().ends_with("; the box holds \"unsent words\""), "{res}");
-    tokio::time::sleep(THREE_TICKS).await;
+    three_looks(&row).await;
     assert!(received(&row).is_empty(), "a refused reply reached the pane");
     row.env.kill_daemon_bounded().await;
 }
