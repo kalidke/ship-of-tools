@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use sot_chat::config::{self, CONFIG_FILE};
 use sot_chat::fake_slack::{eventually, FakeSlack, Identity, Reply};
 use sot_chat::service::Status as ServiceStatus;
+use sot_platform::test_hold::Holds;
 use sot_protocol::ops::{ChatChannel, ChatTarget, ChatWatchState};
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -329,25 +330,20 @@ async fn the_watch_reply_precedes_its_first_event() {
     // The first snapshot is held at the fake until the hook opens it.
     let (open, gate) = std::sync::mpsc::channel();
     *lv.gate.lock().unwrap() = Some(gate);
-    let open = Mutex::new(open);
-    let open = Arc::new(open);
-    let (feed, acked, histories, hub_for_hook) = (lv.feed.clone(), lv.acked.clone(), lv.histories.clone(), hub.clone());
     // Between the registration and the reply: wait for the snapshot to be begun, deliver a message while it is pending,
     // open the snapshot and wait until the event is published to the connections' receivers. The reply is not yet
     // written, so an event that overtakes it is one the loop wrote first.
-    *hub.between.lock().unwrap() = Some(Arc::new(move || {
-        let (feed, acked, histories, hub, open) = (feed.clone(), acked.clone(), histories.clone(), hub_for_hook.clone(), open.clone());
-        Box::pin(async move {
-            let mut events = hub.subscribe();
-            eventually("the snapshot's call", || histories.load(Ordering::SeqCst) == 1).await;
-            feed.send(message("C0AAAA", 1)).unwrap();
-            eventually("the message's acknowledgement", || acked.load(Ordering::SeqCst) == 1).await;
-            open.lock().unwrap().send(()).unwrap();
-            while !matches!(bounded("the event", events.recv()).await, Ok(Evt::Changed(_))) {}
-        })
-    }));
+    let arm = Holds::here().arm("chat.watch.between").key(Arc::as_ptr(&hub) as usize).hold(1);
     let mut conn = connect(rig.services.clone()).await;
+    let mut events = hub.subscribe();
     conn.send(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await;
+    arm.reached_async(0).await;
+    eventually("the snapshot's call", || lv.histories.load(Ordering::SeqCst) == 1).await;
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    eventually("the message's acknowledgement", || lv.acked.load(Ordering::SeqCst) == 1).await;
+    open.send(()).unwrap();
+    while !matches!(bounded("the event", events.recv()).await, Ok(Evt::Changed(_))) {}
+    arm.release(0);
     let first = conn.frame("the watch's first frame").await;
     assert_eq!((first.kind, first.id), (Kind::Res, 2), "an event was written before the watch's reply: {first:?}");
     let (name, payload) = conn.evt("the event made while the snapshot was pending").await;
@@ -508,16 +504,13 @@ async fn a_row_removed_after_admission_is_refused_at_the_owners_snapshot() {
     let (fake, lv) = live().await;
     let rig = live_rig(&fake).await;
     let hub = rig.services.chat.hub().clone();
-    let (rows, alpha, hook_hub) = (rig.rows.clone(), rig.alpha.clone(), hub.clone());
-    *hub.between.lock().unwrap() = Some(Arc::new(move || {
-        let (rows, alpha, hub) = (rows.clone(), alpha.clone(), hook_hub.clone());
-        Box::pin(async move {
-            drop(rows.remove_by_id(&alpha).unwrap());
-            eventually("the stale slot released by the owner", || hub.slots().is_empty()).await;
-        })
-    }));
+    let arm = Holds::here().arm("chat.watch.between").key(Arc::as_ptr(&hub) as usize).hold(1);
     let mut a = connect(rig.services.clone()).await;
     a.send(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await;
+    arm.reached_async(0).await;
+    drop(rig.rows.remove_by_id(&rig.alpha).unwrap());
+    eventually("the stale slot released by the owner", || hub.slots().is_empty()).await;
+    arm.release(0);
     let first = a.frame("the watch's reply").await;
     assert_eq!((first.kind, first.id), (Kind::Res, 2));
     let (name, payload) = a.evt("a chat.status for the released watch").await;
