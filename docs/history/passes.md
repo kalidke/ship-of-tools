@@ -1237,3 +1237,17 @@ A landing's record goes here, with its measured times; the package page holds on
   landing's test: its failed spawn, on a state folder inside the root that did not exist yet, was not refused there.
   Fixed forward, 2026-11-08, red seen 10:13, main 10:23 (e4fa098af): the test creates the folder and asserts the refusal's
   own text; the product question went to `docs/defects.md` (STATE-ROOT-CHECK-NEW-FOLDER).
+- The trust restart, 2026-11-08: builder launched 09:54, main 11:58 (108cc184d, 0f73aa32a, a6d3b975b), 124 minutes, past
+  the maintainer's hour: a failure of the standard. The third landing: a Ready Claude row whose leg shows Claude Code's
+  folder-trust dialog, with its root under the declared prefix, is stopped and spawned again with its own argv (a
+  reauth's resume id kept), once per episode, under its guard and never waited on, never by keys; the spawn records trust
+  again. The restart waits while this daemon started a Claude leg on the same trust file less than 2 s ago; a dialog it
+  leaves still reads red. Found on the way: the dialog tick returned early when the comm registry file was missing, so a
+  row with an open leg was never read; it now reads such rows. REAUTH-TRUST-LOST stays open: the tests use a stub agent,
+  not the real lost update. About 264 product lines and 568 test lines. Where the minutes went: the build (38 minutes);
+  two review rounds (blockers 0, 0; 33 and 32 minutes) and two fix rounds (7 and 3 minutes); three gates of 3 minutes and
+  two hosted runs on the branch, beside the reviews. Why past the hour: the change itself was too large for one landing
+  after the split in three (about 220 product lines against a planned 150: the restart and the tick that calls it would
+  have been two landings), and each review of a path that can stop a working session took over half an hour; the first
+  round found a rule nothing tested (a dialog the restart leaves must still read red), whose fix reordered the restart's
+  checks and needed a second round.
