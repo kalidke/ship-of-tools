@@ -151,6 +151,12 @@ where each lives).
     the `.lost` write checks before it creates, so one made after the arm's final scan goes unseen (a window of microseconds); the arming
     process's own arrivals pass uncounted; arms of one point serialize even with distinct keys in a process; in a
     test binary whose other tests reach the same point the arm names a key only its own arrivals carry.
+17. **A write beneath a root follows no link that is present when it runs.** `host::write_beneath(root, rel, bytes)` (Unix)
+    opens the root and each folder below it relative to the one before without following it (`O_NOFOLLOW|O_DIRECTORY`; a
+    missing folder is made with `mkdirat` and opened the same way), creates its temporary file exclusively under a fresh
+    `.sot-<16 hex>.tmp` name, and renames and syncs relative to the same folder, checking that the entry at the final name
+    is the file it wrote; no path is used after the root. A name that is not `/`-joined plain names, or a link or file at
+    a folder's name, is `InvalidInput`. Limit: this arm is Linux and macOS, with no caller yet.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
@@ -162,7 +168,7 @@ the user manager's unit (`deploy/sotd.service`), and the runtime base is stable 
 so a boot without it binds sockets at `/tmp/sot-<uid>`.
 
 ## Owns
-The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`);
+The folders and host name above (`host/state_dir.rs`); durable publication, write and remove (`host/durable.rs`); the write beneath a root (`host/beneath.rs`);
 kernel locks and held folders (`host/lock.rs`, `host/held_dir.rs`); descriptor birth and the native process-birth
 launcher (`host/fd.rs`, `host/process_tree/`, one native C file); the directory pin (`host/pinned_dir.rs`); the volume
 preflight; storage recognition; `Redial`; the Windows descriptors and SIDs (`host/winsec.rs`, `host/winhandle.rs`) and the anonymous kill-on-close job (`host/winjob.rs`, guarantee 12);
@@ -189,7 +195,7 @@ gethostname, sha2, thiserror, getrandom; tracing-subscriber and tempfile for the
 ## Calls out
 Everything above; each name is a path under `sot_platform::`: `host::state_dir::{sot_state_dir, sot_config_dir,
 runtime_sot_dir, host_name, kernel_host_name, state_dir_hash, is_private_dir}`, `host::{publish_noreplace,
-write_durable, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir, remove_ended, preflight_volume,
+write_durable, write_beneath (Unix), remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir, remove_ended, preflight_volume,
 storage_exhaustion, dir_identity, PinnedDir, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
 `host::redial::{Redial, STABLE}`, `host::env::Env`, `identity::challenge::*`, `identity::exchange::{IdentityExchange,
 ExchangeDecode}`, `identity::deadline::run_with_deadline`, `identity::os_account::own_account_id`,
@@ -232,6 +238,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 | 16 | hold tool | `hold_tests.rs` (child cases through a rerun of the test binary: `a_child_started_with_the_folder_is_held_at_its_line_and_released`, `two_children_sharing_a_folder_take_distinct_tickets`, `the_arm_drop_releases_a_held_child`; the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
+| 17 | write beneath a root | `host/beneath_tests.rs`: `a_link_at_any_folder_takes_no_write`, `the_root_is_refused_when_its_entry_is_a_link`, `a_name_that_is_not_one_plain_entry_is_refused`, `a_planted_temporary_name_is_never_written_through`, `a_link_at_the_final_name_is_replaced_not_followed`, `a_failed_write_leaves_the_old_file_and_no_temporary_file`, `missing_folders_are_created_and_the_path_is_returned` |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter
