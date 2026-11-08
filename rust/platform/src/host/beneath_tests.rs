@@ -215,7 +215,10 @@ fn a_planted_temporary_name_is_never_written_through() {
             continue;
         }
         let got = write_beneath_at(&root, "f.txt", b"data", Some(temp), |_| Ok(()));
-        assert_eq!(kind(got), io::ErrorKind::AlreadyExists, "{what}");
+        // Windows refuses a create of a file over a folder (a junction is one) as access denied, before the name collides.
+        let want = if cfg!(windows) && matches!(what, "junction" | "folder") { io::ErrorKind::PermissionDenied } else { io::ErrorKind::AlreadyExists };
+        assert_eq!(kind(got), want, "{what}");
+        assert!(std::fs::symlink_metadata(root.join(temp)).is_ok(), "{what}");
         assert_eq!(std::fs::read(&target).unwrap(), b"original", "{what}");
         assert!(!outside.join("made.txt").exists(), "{what}");
         assert!(!root.join("f.txt").exists(), "{what}");
