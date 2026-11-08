@@ -651,21 +651,31 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime, lease_notice, handle_fe_command_send relay diagnostics.
 
 ## Chat owner
-`ChatOwner` (`drawer/chat/`) holds one watched channel (its host, target, fill: `Needed`, `Reading`, `Complete` or `Gap`, and its
-records), the one post in flight and the last post's outcome. It sends nothing itself and replays no mutation: each method
+`ChatOwner` (`drawer/chat/`) holds one watched channel (its host, target, fill: `Needed`, `Reading`, `Complete` or `Gap`, and
+its records), the one post in flight and the last post's outcome. It sends nothing itself and replays no mutation: each method
 returns the requests for State to send. Rules, each with its test in `drawer/chat/tests.rs`:
-- A lost chat bus (`bus.lost` for `chat.changed` or `chat.status`) marks the watched state incomplete and starts one
-  `chat.history` read (`a_lost_chat_bus_marks_the_state_incomplete_and_reads_once`).
-- A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`); a post to a host that is
-  not connected, or waiting when its link ends, reads as unknown (`a_post_while_disconnected_reads_as_unknown`).
-- A `chat.status` that says events were lost, or an `Unreadable` event, resyncs with one read: one in flight at a time, five
-  seconds apart (`tick` makes the owed one), three without a completed snapshot ending in `Gap`, shown and not retried until
-  the link returns (`a_lost_status_resyncs_with_a_paced_and_capped_read`, `an_unreadable_chat_event_resyncs`). A snapshot of
-  more than one page is `Gap` too: only the first page is read.
-- A status entry for another channel, or any status with nothing watched, is ignored (`a_status_entry_for_an_unwatched_channel_is_ignored`).
+- One recovery serves every loss: the link returning, `bus.lost` for `chat.changed`, a `chat.status` that lists the channel or
+  says the service is not running, and an `Unreadable` event. It forgets the registration and sends `chat.watch`
+  (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_and_capped_watch`,
+  `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
+  `chat.history` read; a pending watch is sent again by `tick`. Watches are five seconds apart and three without a completed
+  snapshot end in `Gap`, so a link that keeps failing is bounded; a stream of losses whose recoveries succeed is paced, not
+  capped. A refused watch is `Gap` (`a_refused_watch_is_a_gap_and_a_duplicate_reply_starts_no_read`). `Gap` is shown and ends
+  only when the link returns; the drawer owes a way out.
+- A snapshot replaces the held records, and its `next` cursor (older history, the drawer's to page) is not a gap
+  (`a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap`). A read's reply is applied only while that read is the
+  one in flight (`a_second_reply_to_one_read_is_not_applied`), and the reply of a read a loss outdated replaces nothing
+  (`the_late_reply_of_a_stale_read_leaves_the_state_needed`). `chat.changed` for the watched channel puts and deletes records
+  (`changed_events_put_and_delete_the_watched_channels_records`).
+- A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`). One waiting when its link
+  ends is `Unknown` (it may exist); one to a host that is not connected is never written and is `Refused(Unavailable)`
+  (`a_post_is_unknown_only_when_it_may_exist`); each reply reads as it proves (`a_posts_outcome_reads_as_the_reply_proves`). The
+  owner sets the post in flight before State sends it, and `post` returns `None` both for a second post and a refused one.
+- A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
+  (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-- A read's reply is applied only while that read is the one in flight, so a second reply is ignored (`a_second_reply_to_one_read_is_not_applied`).
-Limits: `chat.resolve` replies are not read (the drawer starts at a resolve), and the owner has no view.
+Limits: `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
+owner has no view.
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
