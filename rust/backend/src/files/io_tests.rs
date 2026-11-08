@@ -152,6 +152,30 @@ fn a_save_through_a_folder_link_takes_no_write() {
     assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 0);
 }
 
+/// A save at a name that is a link is refused as a node id and writes nothing, whether the link leads in or out.
+#[cfg(unix)]
+#[test]
+fn a_save_at_a_name_that_is_a_link_takes_no_write() {
+    let s = Scratch::new("write_name_link");
+    let outside = Scratch::new("write_name_link_outside");
+    let out_file = outside.path("target.txt");
+    std::fs::write(&out_file, "old").unwrap();
+    std::fs::write(s.path("real.txt"), "old").unwrap();
+    std::os::unix::fs::symlink(&out_file, s.path("out.txt")).unwrap();
+    std::os::unix::fs::symlink(s.path("real.txt"), s.path("in.txt")).unwrap();
+    for id in ["files:out.txt", "files:in.txt"] {
+        for expected in [None, Some(content_version(b"old"))] {
+            let e = write_file(&s.files(), id, "x", expected.as_deref()).unwrap_err();
+            let kind = e.downcast_ref::<std::io::Error>().map(|e| e.kind());
+            assert_eq!(kind, Some(std::io::ErrorKind::InvalidInput), "{id}: {e:#}");
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "old");
+    assert_eq!(std::fs::read_to_string(s.path("real.txt")).unwrap(), "old");
+    assert!(std::fs::symlink_metadata(s.path("out.txt")).unwrap().file_type().is_symlink());
+    assert!(std::fs::symlink_metadata(s.path("in.txt")).unwrap().file_type().is_symlink());
+}
+
 #[test]
 fn trash_fallback_moves_into_sot_trash() {
     let s = Scratch::new("trash_fallback");

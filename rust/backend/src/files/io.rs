@@ -73,15 +73,23 @@ pub fn read_file(abs: &Path) -> Result<Option<ReadResult>> {
 ///   explicit force-save).
 ///
 /// The write is `FilesMode::write`: beneath the project root, following no link, atomic, parent
-/// folders created as needed.
+/// folders created as needed. A name that is itself a link is refused (`InvalidInput`), before any version check.
 pub fn write_file(
     files: &FilesMode,
     node_id: &str,
     content: &str,
     expected: Option<&str>,
 ) -> Result<WriteResult> {
+    // A save at a name that is a link is refused: the link and the file it leads to stay as they were.
+    let abs = files.node_id_to_path(node_id)?;
+    if std::fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("a save at a link is refused: {node_id}"),
+        )
+        .into());
+    }
     if let Some(expected) = expected {
-        let abs = files.node_id_to_path(node_id)?;
         let current = match std::fs::read(&abs) {
             Ok(b) => Some(b),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

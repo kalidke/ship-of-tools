@@ -16,11 +16,15 @@ Per workspace row (built in `rows/workspace.rs`):
 ## Promises
 - Node ids are `files:<rel>` with `/` on every OS; an id holding `..` or an absolute path is refused
   (`FilesMode::path_to_node_id`, `compose_node_path`).
-- Reads follow links (`node_id_to_path`). Writes go through `FilesMode::write`; `dir.create` and a delete resolve
-  through `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
-- `file.write` writes beneath the root through `FilesMode::write`, following no link: a save through a link at a folder of
-  its path, wherever the link leads, is refused `bad_node_id` and writes nothing. Its version check reads through the read
-  resolver. On Windows a save, like the rename it replaces, fails while another program holds the file open without sharing; `write_beneath` retries that rename for a window first. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`, `a_save_through_a_folder_link_takes_no_write`.
+- Reads follow links (`node_id_to_path`). `file.write`, the crop and the drawing's picture write through
+  `FilesMode::write`, beneath the root and following no link: a save through a link at a folder of its path, wherever the
+  link leads, is refused `bad_node_id` and writes nothing. `dir.create` and a delete resolve through
+  `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
+- `file.write`'s version check reads through the read resolver. A save at a name that is a link is refused
+  `bad_node_id` and writes nothing. On Windows a save fails when another program still holds the file open after
+  `write_beneath`'s retry window, whatever sharing that program allows. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`,
+  `a_save_through_a_folder_link_takes_no_write`, `a_save_at_a_name_that_is_a_link_takes_no_write`;
+  `io_ops_tests::a_save_through_a_folder_link_answers_bad_node_id` (the reply code).
 - The crop's PNG and a drawing's picture are written under `.sot/captures/` through `FilesMode::write`, which
   follows no link (platform's `write_beneath`, guarantee 17): the folder is created beneath the root and a `.sot` or
   `captures` link, wherever it leads, takes no write. Tested (a symlink, a junction on Windows) by
@@ -68,6 +72,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types, the write beneath the root.
 - `io.rs`: editor file IO: read, version-checked write and contained trash with a wait budget.
 - `io_trash_tests.rs`: absolute trash fixtures, checked cleanup before fallback, error diagnostics and the command's null streams.
+- `io_ops_tests.rs`: the handler-level reply code of a refused save (`io_ops.rs`).
 - `preview/`: preview.get, preview.set_scale, image.crop, `ink.rs` (a drawing's picture).
 - `concept.rs`: the `.concept/` annotation store.
 - `confine.rs`: workspace confinement: whether a path lies under a root, and the canonical form of a path that may not exist yet.

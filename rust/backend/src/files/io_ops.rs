@@ -382,3 +382,7 @@ fn resolve_file_node(
         )]),
     }
 }
+
+#[cfg(test)]
+#[path = "io_ops_tests.rs"]
+mod tests;
