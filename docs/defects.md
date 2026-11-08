@@ -673,8 +673,8 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-WATCH-STALE-SLOT** (chat) closed by 585800d2f, 2026-11-07: a chat watch dispatch test failed on macOS in 2 of 6 hosted runs ("timed out waiting for the stale slot released by the owner") because the owner's snapshot could check the row before the test removed it; the snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.
 - **BENEATH-SUPERSEDED-WRITER-ERRS** (platform) closed by d79396550, 2026-11-07: the write beneath a root no longer checks the final name after its rename, so two writers of one name each answer Ok; Ok means the entry at the temporary name was renamed into place.
-
 - **GATE-LEFTOVER-ENDPOINT-STUBS** (messaging) closed by 4ed49a71d and 61874b765, 2026-11-07: the endpoint gate suite's stubs left their `sleep 30` children running, and a gate whose last jobs included that suite failed its census; each stub now starts in its own group and is ended with it.
 - **HOLD-CHILD-PASS-TORN** (platform) closed by bf04197f6 and fe6291036, 2026-11-07: the hold tool's child and the exit-process fixture's child wrote a file a test polls for by create and then write, so a test could read it empty (seen on macOS in a hosted run); both now rename a whole file into place.
 
