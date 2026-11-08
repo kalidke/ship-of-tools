@@ -461,8 +461,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   (`request_destroy`, `note_connection`, the reply, the sweep, `apply_leave`'s clear and move and the key of the sweep) by
   `a_destroyed_session_moves_the_view_to_a_neighbor` and
   `a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window` in the native State fixtures (the
-  `window_minimized` target, run by the hand-dispatched release gate on Windows and macOS and on a host with a display;
-  the local gate and the per-landing run compile these fixtures but do not run them).
+  `window_minimized` target: the per-landing hosted run executes them alone on Linux under a virtual display and
+  Mesa's software Vulkan driver (`child fixtures`), and the hand-dispatched release gate runs the whole target on Windows
+  and macOS; the local gate compiles these fixtures but does not run them).
 - Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
   beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
   Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the

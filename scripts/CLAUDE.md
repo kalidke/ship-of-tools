@@ -163,7 +163,7 @@ and lock release using recording setup tools, with no build or user manager.
 
 Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
 writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
-a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites;
+a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites, and its Linux rest-0 build+test job runs the window's State fixtures alone (the `window_minimized` target's `child fixtures`) under `xvfb-run` with Mesa's lavapipe, its log naming the adapter;
 release-gate.yml's slow checks job runs the comm and agents suites.
 
 rust.yml's Julia setup step has a five-minute bound. Windows build/test jobs allow 17 minutes, preserving their

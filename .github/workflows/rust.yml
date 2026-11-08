@@ -116,8 +116,9 @@ jobs:
     # its system plus two minutes for the runner's own set-up and completion: a step's bound always fires first and
     # names the slow step, so a slow runner never ends the job with every step green (seen 2026-11-03: a macOS runner
     # at a quarter speed spent 4 of rest-0's 12 minutes building, and the job's ceiling ended it mid-test). Windows:
-    # 3+1+3+5+3+3+5+12+10+5+5+3 = 58; Linux and macOS: 3+3+5+3+3+5+12+6+3+10+5+15+3 = 76. Change both with a step.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 78 }}
+    # 3+1+3+5+3+3+5+12+10+5+5+3 = 58; Linux and macOS: 3+3+5+3+3+5+12+6+3+10+5+15+3 = 76, and the
+    # State fixtures' three steps (rest-0 shard, Linux) add 3+8+3 = 14. Change both with a step.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 60 || 92 }}
     strategy:
       fail-fast: false
       matrix:
@@ -226,6 +227,28 @@ jobs:
             python3 ../scripts/tests/installer-publish-guard.py --repo .. --scenario "$scenario" \
               --sotd target/debug/sotd --sot target/debug/sot --capsule target/debug/sot-capsule
           done
+      # The window's State fixtures (`child fixtures` of the window_minimized target; the target's workload phase runs
+      # for minutes and stays in release-gate.yml). The renderer asks wgpu for a Vulkan adapter, which a hosted runner
+      # has only from Mesa's software driver (lavapipe), under a virtual display; the vulkaninfo line names the adapter
+      # the run got. One shard runs them: rest-0.
+      - name: Install the software renderer and virtual display (Linux)
+        if: runner.os == 'Linux' && contains(matrix.shard, 'rest-0')
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          sudo timeout 90 apt-get update -q
+          sudo timeout 120 apt-get install -y -q --no-install-recommends xvfb mesa-vulkan-drivers libvulkan1 vulkan-tools
+          xvfb-run -a vulkaninfo --summary | grep -E 'deviceName|deviceType|driverName'
+      - name: Build the State fixtures (Linux)
+        if: runner.os == 'Linux' && contains(matrix.shard, 'rest-0')
+        timeout-minutes: 8
+        shell: bash
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked --no-run
+      - name: Run the State fixtures (Linux)
+        if: runner.os == 'Linux' && contains(matrix.shard, 'rest-0')
+        timeout-minutes: 3
+        shell: bash
+        run: xvfb-run -a cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked -- child fixtures
       # Every test of a named target runs in exactly one shard of .github/test-shards.txt; a test unassigned or assigned twice
       # fails the run here, named.
       - name: Check that every test runs in exactly one shard
