@@ -10,7 +10,7 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
-use sot_protocol::ops::{SelectedText, SelectionSetReq, TextPos};
+use sot_protocol::ops::{Drawing, InkBase, SelectedText, SelectionSetReq, TextPos};
 use sot_protocol::{op, selection_digest, HelloReq};
 use support::{call, connect_and_hello, poll_for_phase, poll_until, sot_capsule_exe, try_connect, Conn, Env, BOUND};
 
@@ -60,10 +60,10 @@ fn run_hook(record: &str) -> String {
     sot_platform::test_wait::run_within(&mut cmd, BOUND).ok().stdout
 }
 
-#[tokio::test]
-async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
+/// A started Claude row in `env`'s project (holding `a.txt` and `fig.png`) whose stub `claude` recorded its environment:
+/// the daemon's connection, the row id and the recorded environment.
+async fn start_row(env: &Env) -> (Conn, String, String) {
     assert!(sot_capsule_exe().is_file(), "sot-capsule not found next to sotd: build it first");
-    let env = Env::new("selhook");
     // the Claude layer, so the leg's recipe carries the hooks and the row's marker is written
     let skill = env.comm_root.join("claude-layer/.claude/skills/sot-session-start");
     std::fs::create_dir_all(&skill).unwrap();
@@ -72,6 +72,7 @@ async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_i
     let stub = env._tmp.path().join("stubbin");
     write_recording_claude(&stub, &record);
     std::fs::write(env.workspace_project_root.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    image::RgbImage::from_pixel(64, 48, image::Rgb([10, 200, 30])).save(env.workspace_project_root.join("fig.png")).unwrap();
     env.spawn_sotd_with_path_and_env(&stub, &[]);
 
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
@@ -90,6 +91,14 @@ async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_i
     let recorded = poll_until(|| async { std::fs::read_to_string(&record).ok() }, BOUND, "the stub claude's recorded environment").await;
     assert!(recorded.lines().any(|l| l.starts_with("SOT_SELECTION_FILE=")), "the leg names its selection file: {recorded}");
     assert_eq!(run_hook(&recorded), "", "before any selection the hook prints nothing");
+
+    (conn, ws, recorded)
+}
+
+#[tokio::test]
+async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
+    let env = Env::new("selhook");
+    let (_control, ws, recorded) = start_row(&env).await;
 
     // 1. a window's selection is shared, and the hook prints it
     let (mut window, mut window_id) = connect_as_window(&env).await;
@@ -110,5 +119,30 @@ async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_i
     assert!(run_hook(&recorded).contains("gamma"), "the second selection");
     drop(window);
     poll_until(|| async { run_hook(&recorded).is_empty().then_some(()) }, BOUND, "the window's end to withdraw its selection").await;
+    env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
+    let env = Env::new("seldraw");
+    let (_control, ws, recorded) = start_row(&env).await;
+    let (mut window, window_id) = connect_as_window(&env).await;
+
+    // a drawing over the figure is shared, and the hook names a picture that decodes
+    let drawing = Drawing { base: InkBase::Figure { node_id: "files:fig.png".to_string() }, strokes: vec![vec![[20_000, 20_000], [40_000, 40_000]]] };
+    let req = SelectionSetReq { workspace_id: ws.clone(), selection: None, drawing: Some(drawing) };
+    let reply = call(&mut window, window_id, op::SELECTION_SET, serde_json::to_value(req).unwrap()).await.payload;
+    assert_eq!(reply["state"], "shared", "{reply}");
+    let printed: serde_json::Value = serde_json::from_str(&run_hook(&recorded)).expect("the hook prints one JSON object");
+    assert_eq!(printed["systemMessage"], "Drawing: fig.png (1 strokes)");
+    let context = printed["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    let picture = context.split(" is ").nth(1).and_then(|t| t.split(" (drawing ").next()).expect("the picture's path");
+    assert!(picture.ends_with(&format!(".sot/captures/ink-{ws}.png")), "{picture}");
+    assert_eq!(image::image_dimensions(picture).expect("the picture decodes"), (64, 48));
+
+    // the window's connection ending withdraws it; the picture stays
+    drop(window);
+    poll_until(|| async { run_hook(&recorded).is_empty().then_some(()) }, BOUND, "the window's end to withdraw its drawing").await;
+    assert!(Path::new(picture).is_file(), "the picture stays");
     env.kill_daemon_bounded().await;
 }

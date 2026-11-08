@@ -1,5 +1,5 @@
-//! `selection.set`: the row's selection file holds exactly the rendering of the last selection the daemon accepted for
-//! that row, or nothing. An accepted selection publishes `<row state folder>/selection.json`; a clear, every refusal and
+//! `selection.set`: the row's selection file holds exactly the rendering of the last selection (text or drawing) the daemon
+//! accepted for that row, or nothing. An accepted selection publishes `<row state folder>/selection.json`; a clear, every refusal and
 //! a failed publish remove it. The check and the rendering are `selection_check.rs`'s. A process-wide map, behind one lock,
 //! keeps per row the connection that set the file; that connection's end (`forget`) and the start-up walk
 //! (`clear_unowned`) remove the files nobody live set.
@@ -7,14 +7,15 @@
 use std::io::Read;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 use anyhow::{Context, Result};
-use sot_protocol::ops::{op, selection_code, SelectedText, SelectionSetReq, SelectionSetRes, SelectionState};
+use sot_protocol::ops::{op, selection_code, Drawing, InkBase, SelectedText, SelectionSetReq, SelectionSetRes, SelectionState};
 use sot_protocol::reply::HandlerOutput;
-use sot_protocol::Frame;
+use sot_protocol::{selection_digest, Frame};
 
-use super::selection_check::{check_selection, render_selection};
+use super::selection_check::{check_selection, render_drawing, render_selection};
+use crate::files::preview::ink::compose;
 use crate::files::preview::PREVIEW_BYTE_CAP;
 use crate::files::ID_PREFIX;
 use crate::rows::spawn::state_root::state_dir_for;
@@ -45,6 +46,14 @@ pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, S
 /// The agent kinds that take a selection; every other kind answers `no_agent`. `codex` is here until the plan's H2
 /// decides whether Codex hears one at all.
 const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
+
+/// The agent kinds that take a drawing; a Codex row answers `no_agent` for one until the plan's H-D2 decides it reads
+/// the picture.
+const TAKES_DRAWING: [&str; 1] = ["claude"];
+
+/// Held across a drawing's composite and its publish: one drawing at a time in the daemon, so the file names the
+/// picture on disk and the digest it states. A text selection takes only the setter lock.
+static COMPOSE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The rows whose file a live connection set: row id to the setting connection's roster serial and the file's path.
 /// Every publish and removal of a selection file holds the lock, and no holder awaits.
@@ -91,7 +100,11 @@ pub(crate) async fn handle_selection_set(
     req_id: u64, payload: serde_json::Value, state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64,
 ) -> Result<HandlerOutput> {
     let req: SelectionSetReq = serde_json::from_value(payload).context("selection.set payload")?;
-    let frame = match set_selection(state_root, workspaces, window, serial, &req) {
+    let result = match &req.drawing {
+        Some(drawing) => set_drawing(state_root, workspaces, window, serial, &req.workspace_id, drawing).await,
+        None => set_selection(state_root, workspaces, window, serial, &req),
+    };
+    let frame = match result {
         Ok(state) => Frame::res(req_id, op::SELECTION_SET, serde_json::to_value(SelectionSetRes { state })?),
         Err(code) => {
             let payload = serde_json::json!({ "error": format!("selection not shared: {code}"), "code": code });
@@ -101,29 +114,59 @@ pub(crate) async fn handle_selection_set(
     Ok(vec![(frame, None)])
 }
 
-/// Applies `req` to its row's file under `state_root`; the refusal is a `selection_code`. The row is resolved and the
-/// project file read and rendered before the lock; the lock covers the file's publish or removal and the map.
-fn set_selection(
-    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, req: &SelectionSetReq,
-) -> Result<SelectionState, &'static str> {
+/// The checks every request passes first, in order: a window's connection, the state root, the row. Answers the row
+/// and its state folder.
+fn row_of(
+    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, workspace: &str,
+) -> Result<(Arc<Workspace>, PathBuf), &'static str> {
     if !window {
         return Err(selection_code::NOT_A_WINDOW);
     }
     let state_root = state_root.ok_or(selection_code::PUBLISH_FAILED)?;
-    let ws = workspaces.resolve(Some(&req.workspace_id)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
+    let ws = workspaces.resolve(Some(workspace)).ok_or(selection_code::UNKNOWN_WORKSPACE)?;
     let folder = state_dir_for(state_root, &ws.workspace_id);
-    let file = folder.join(FILE_NAME);
+    Ok((ws, folder))
+}
+
+/// Applies a text selection or a clear (`req` holds no drawing) to its row's file under `state_root`; the refusal is a
+/// `selection_code`. The row is resolved and the project file read and rendered before the lock; the lock covers the
+/// file's publish or removal and the map.
+fn set_selection(
+    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, req: &SelectionSetReq,
+) -> Result<SelectionState, &'static str> {
+    let (ws, folder) = row_of(state_root, workspaces, window, &req.workspace_id)?;
     let checked = req.selection.as_ref().map(|sel| {
         if takes_selection(&ws.agent()) { render(&ws, sel) } else { Err(selection_code::NO_AGENT) }
     });
+    publish(&ws.workspace_id, &folder, serial, checked, req.selection.is_some())
+}
+
+/// Applies a drawing to its row's file. After the row's checks and its agent's, the composite and the publish run
+/// under `COMPOSE`, so the file always names the picture it describes. The composite runs on the blocking pool, off
+/// the connection's loop; the setter lock is taken only inside `publish`, after the await.
+async fn set_drawing(
+    state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, workspace: &str, drawing: &Drawing,
+) -> Result<SelectionState, &'static str> {
+    let (ws, folder) = row_of(state_root, workspaces, window, workspace)?;
+    let _one_at_a_time = COMPOSE.lock().await;
+    let checked = if takes_drawing(&ws.agent()) { render_picture(&ws, drawing).await } else { Err(selection_code::NO_AGENT) };
+    publish(&ws.workspace_id, &folder, serial, Some(checked), true)
+}
+
+/// The file after `checked` (`None` for a clear): applied under the setter lock, which then records the setter for a
+/// request that `sets` and drops it otherwise.
+fn publish(
+    row: &str, folder: &Path, serial: u64, checked: Option<Result<String, &'static str>>, sets: bool,
+) -> Result<SelectionState, &'static str> {
+    let file = folder.join(FILE_NAME);
     let hooked = folder.join(MARKER_NAME).exists();
     let mut map = setters();
     let result = apply(&file, checked, hooked);
-    match (&result, &req.selection) {
-        (Ok(_), Some(_)) => map.insert(ws.workspace_id.clone(), (serial, file)),
+    match (&result, sets) {
+        (Ok(_), true) => map.insert(row.to_string(), (serial, file)),
         // a removal that failed leaves the file and its setter's entry, so that setter's end or a later clear retries it
         (Err(_), _) if file.exists() => None,
-        _ => map.remove(&ws.workspace_id),
+        _ => map.remove(row),
     };
     result
 }
@@ -149,6 +192,11 @@ fn apply(file: &Path, checked: Option<Result<String, &'static str>>, hooked: boo
     Ok(if hooked { SelectionState::Shared } else { SelectionState::Held })
 }
 
+/// Whether an agent of `kind` takes a drawing.
+fn takes_drawing(kind: &str) -> bool {
+    TAKES_DRAWING.contains(&kind)
+}
+
 /// Whether an agent of `kind` takes a selection.
 fn takes_selection(kind: &str) -> bool {
     TAKES_SELECTION.contains(&kind)
@@ -165,6 +213,37 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
     let id = files.path_to_node_id(&path).ok_or(selection_code::BAD_NODE_ID)?;
     let relative = id.strip_prefix(ID_PREFIX).ok_or(selection_code::BAD_NODE_ID)?;
     Ok(render_selection(&text, &absolute, relative))
+}
+
+/// The hook's output for `drawing`: its picture composed on the blocking pool, then named with the figure's paths and
+/// the digest of the drawing as the wire serializes it.
+async fn render_picture(ws: &Arc<Workspace>, drawing: &Drawing) -> Result<String, &'static str> {
+    let files = ws.files_mode().map_err(|_| selection_code::BAD_NODE_ID)?;
+    let (row, owned) = (ws.workspace_id.clone(), drawing.clone());
+    let composed = {
+        let files = files.clone();
+        tokio::task::spawn_blocking(move || compose(&files, &row, &owned)).await
+    };
+    let picture = match composed {
+        Ok(Ok(picture)) => picture,
+        Ok(Err((code, message))) => {
+            tracing::debug!(row = %ws.workspace_id, code, %message, "a drawing was not composed");
+            return Err(code);
+        }
+        Err(_) => return Err(selection_code::PUBLISH_FAILED),
+    };
+    let figure = match &drawing.base {
+        InkBase::Canvas => None,
+        InkBase::Figure { node_id } => {
+            let path = files.node_id_to_path(node_id).map_err(|_| selection_code::BAD_NODE_ID)?;
+            let id = files.path_to_node_id(&path).ok_or(selection_code::BAD_NODE_ID)?;
+            let relative = id.strip_prefix(ID_PREFIX).ok_or(selection_code::BAD_NODE_ID)?.to_string();
+            Some((path.to_string_lossy().into_owned(), relative))
+        }
+    };
+    let digest = selection_digest(&serde_json::to_string(drawing).map_err(|_| selection_code::PUBLISH_FAILED)?);
+    let figure = figure.as_ref().map(|(abs, rel)| (abs.as_str(), rel.as_str()));
+    Ok(render_drawing(figure, &picture.to_string_lossy(), drawing.strokes.len(), digest))
 }
 
 /// The first `PREVIEW_BYTE_CAP` bytes of a regular file (never a pipe or device, whose open may wait), or `None`.

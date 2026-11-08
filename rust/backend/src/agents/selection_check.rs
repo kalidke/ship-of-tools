@@ -20,6 +20,19 @@ const CUT_WORDS: &str = "... (truncated; the range holds  characters)";
 // the context never passes the cap, whatever the paths, text and line numbers (all ASCII words: bytes are units)
 const _: () = assert!(LEAD_WORDS.len() + 40 + PATH_CAP + TEXT_CUT + CUT_WORDS.len() + 20 + TAIL.len() <= CONTEXT_CAP);
 
+/// The fixed words of a drawing's context, in order around its two paths and its digest (16 hex digits).
+const FIGURE_WORDS: [&str; 4] = [
+    "The user drew over the image ",
+    " in the Ship of Tools window. The image with the drawing over it is ",
+    " (drawing ",
+    "); read that image to see what the user marked.",
+];
+const SKETCH_WORDS: [&str; 3] = ["The user drew a sketch in the Ship of Tools window. The sketch is the image ", " (drawing ", "); read that image to see it."];
+const _: () = assert!(
+    FIGURE_WORDS[0].len() + FIGURE_WORDS[1].len() + FIGURE_WORDS[2].len() + FIGURE_WORDS[3].len() + 2 * PATH_CAP + 16 + TAIL.len() <= CONTEXT_CAP
+);
+const _: () = assert!(SKETCH_WORDS[0].len() + SKETCH_WORDS[1].len() + SKETCH_WORDS[2].len() + PATH_CAP + 16 + TAIL.len() <= CONTEXT_CAP);
+
 /// A range the file's own text matched: its text and the 1-based inclusive lines it covers.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FileText {
@@ -157,6 +170,31 @@ pub(crate) fn render_selection(f: &FileText, path: &str, rel: &str) -> String {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": format!("{lead}{text}{TAIL}"),
         },
+        "systemMessage": message,
+    })
+    .to_string()
+}
+
+/// The hook's output for a drawing, in `render_selection`'s shape and caps. `figure` is the base image's absolute path and
+/// its path in the project, or `None` for the canvas; `picture` is the picture's absolute path; `digest` names the
+/// drawing, so a changed drawing reads as a new picture.
+pub(crate) fn render_drawing(figure: Option<(&str, &str)>, picture: &str, strokes: usize, digest: u64) -> String {
+    let pic = left_cut(&plain(picture), PATH_CAP);
+    let context = match figure {
+        Some((abs, _)) => {
+            let [a, b, c, d] = FIGURE_WORDS;
+            format!("{a}{}{b}{pic}{c}{digest:016x}{d}{TAIL}", left_cut(&plain(abs), PATH_CAP))
+        }
+        None => {
+            let [a, b, c] = SKETCH_WORDS;
+            format!("{a}{pic}{b}{digest:016x}{c}{TAIL}")
+        }
+    };
+    let (pre, post) = ("Drawing: ", format!(" ({strokes} strokes)"));
+    let name = figure.map_or_else(|| "sketch".to_string(), |(_, rel)| plain(rel));
+    let message = format!("{pre}{}{post}", left_cut(&name, MESSAGE_CAP.saturating_sub(units(pre) + units(&post))));
+    serde_json::json!({
+        "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": context },
         "systemMessage": message,
     })
     .to_string()

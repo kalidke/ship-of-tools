@@ -2,7 +2,7 @@
 // a test that reused a real roster's serial or another test's row id would remove that test's files.
 use super::*;
 use crate::agents::selection_check::FileText;
-use sot_protocol::ops::TextPos;
+use sot_protocol::ops::{Drawing, InkBase, TextPos};
 use sot_protocol::selection_digest;
 
 fn sel(node: &str, start: (u32, u32), end: (u32, u32), shown: &str) -> SelectedText {
@@ -393,4 +393,143 @@ fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
 /// The temporary file `write_durable` creates first, so a folder there makes a publish fail.
 fn folder_tmp(file: &Path) -> PathBuf {
     file.with_extension("json.tmp")
+}
+
+fn drawing(base: InkBase, x: u16) -> Drawing {
+    Drawing { base, strokes: vec![vec![[x, 20_000], [x, 40_000]]] }
+}
+
+/// A row of kind `kind` in a fresh project and state folder; the project holds `fig.png`.
+fn drawing_row(kind: &str, id: &str) -> (tempfile::TempDir, tempfile::TempDir, Workspaces, PathBuf) {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    let mut row = Workspace::from_label(id, project.path().to_path_buf(), false, kind.into(), String::new(), String::new());
+    row.workspace_id = id.to_string();
+    workspaces.insert(row);
+    let folder = state_dir_for(state.path(), id);
+    std::fs::create_dir_all(&folder).unwrap();
+    image::RgbImage::from_pixel(64, 48, image::Rgb([10, 200, 30])).save(project.path().join("fig.png")).unwrap();
+    (state, project, workspaces, folder)
+}
+
+/// The picture path and the digest a published file names, read the way the agent reads the context.
+fn named_by(file: &Path) -> (PathBuf, String) {
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let ctx = doc["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+    let (head, tail) = ctx.split_once(" (drawing ").unwrap();
+    let picture = head.rsplit_once(" is ").or_else(|| head.rsplit_once("image ")).unwrap().1;
+    (PathBuf::from(picture), tail[..16].to_string())
+}
+
+fn digest_of(d: &Drawing) -> String {
+    format!("{:016x}", selection_digest(&serde_json::to_string(d).unwrap()))
+}
+
+#[tokio::test]
+async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
+    let (state, project, workspaces, folder) = drawing_row("claude", "ws-dr-1");
+    let file = folder.join(FILE_NAME);
+    let figure = || InkBase::Figure { node_id: "files:fig.png".to_string() };
+    let draw = |serial: u64, id: &str, d: Drawing| {
+        let (workspaces, root) = (workspaces.clone(), state.path().to_path_buf());
+        let id = id.to_string();
+        async move { set_drawing(Some(&root), &workspaces, true, serial, &id, &d).await }
+    };
+    let picture = project.path().join(".sot/captures/ink-ws-dr-1.png");
+
+    // 1. a shared drawing publishes the file, which names a picture that exists and the drawing's digest
+    let d = drawing(figure(), 30_000);
+    assert_eq!(draw(9_003_001, "ws-dr-1", d.clone()).await, Ok(SelectionState::Held), "row 1: no marker");
+    let (named, digest) = named_by(&file);
+    assert_eq!(std::fs::canonicalize(&named).unwrap(), std::fs::canonicalize(&picture).unwrap(), "row 1: the picture");
+    assert_eq!(digest, digest_of(&d), "row 1: the digest");
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(doc["systemMessage"], "Drawing: fig.png (1 strokes)", "row 1: the message");
+    std::fs::write(folder.join(MARKER_NAME), "").unwrap();
+    assert_eq!(draw(9_003_001, "ws-dr-1", d.clone()).await, Ok(SelectionState::Shared), "row 1: marker");
+    let canvas = drawing(InkBase::Canvas, 10_000);
+    assert!(draw(9_003_001, "ws-dr-1", canvas.clone()).await.is_ok());
+    assert_eq!(named_by(&file).1, digest_of(&canvas), "row 1: a canvas replaces it");
+
+    // 2. a clear removes the file and never the picture
+    assert_eq!(set_selection(Some(state.path()), &workspaces, true, 9_003_001, &req("ws-dr-1", None)), Ok(SelectionState::Shared));
+    assert!(!file.exists() && picture.exists(), "row 2: the file goes, the picture stays");
+
+    // 3. a refusal and a failed composite leave no file
+    assert!(draw(9_003_001, "ws-dr-1", d.clone()).await.is_ok());
+    std::fs::write(project.path().join("junk.png"), b"not a png").unwrap();
+    let junk = drawing(InkBase::Figure { node_id: "files:junk.png".into() }, 30_000);
+    assert_eq!(draw(9_003_001, "ws-dr-1", junk).await, Err(selection_code::NOT_AN_IMAGE), "row 3: not an image");
+    assert!(!file.exists(), "row 3: the refusal removes the file");
+    assert!(draw(9_003_001, "ws-dr-1", d.clone()).await.is_ok());
+    let gone = drawing(InkBase::Figure { node_id: "files:nope.png".into() }, 30_000);
+    assert_eq!(draw(9_003_001, "ws-dr-1", gone).await, Err(selection_code::NOT_AN_IMAGE), "row 3: a missing figure");
+    assert!(!file.exists(), "row 3: a failed composite removes the file");
+    assert!(picture.exists(), "row 3: the old picture stays, named by nothing");
+    assert!(draw(9_003_001, "ws-dr-1", d.clone()).await.is_ok());
+    assert_eq!(draw(9_003_001, "ws-nope", d.clone()).await, Err(selection_code::UNKNOWN_WORKSPACE), "row 3: no such row");
+    assert_eq!(
+        set_drawing(Some(state.path()), &workspaces, false, 9_003_001, "ws-dr-1", &d).await,
+        Err(selection_code::NOT_A_WINDOW),
+        "row 3: not a window"
+    );
+    assert!(file.exists(), "row 3: a row that is none, or not a window, changes nothing");
+
+    // 4. a text selection and a drawing replace each other, and a setter's end withdraws either
+    std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
+    let text = || Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
+    assert!(set_selection(Some(state.path()), &workspaces, true, 9_003_002, &req("ws-dr-1", text())).is_ok());
+    assert!(std::fs::read_to_string(&file).unwrap().contains("alpha"), "row 4: the text replaced the drawing");
+    assert!(draw(9_003_003, "ws-dr-1", d.clone()).await.is_ok());
+    assert_eq!(named_by(&file).1, digest_of(&d), "row 4: the drawing replaced the text");
+    forget(9_003_002);
+    assert!(file.exists(), "row 4: the text's setter no longer owns the file");
+    forget(9_003_003);
+    assert!(!file.exists() && picture.exists(), "row 4: the drawing's setter's end removes the file, not the picture");
+    assert!(draw(9_003_004, "ws-dr-1", d.clone()).await.is_ok());
+    assert!(!clear_unowned(state.path(), "ws-dr-1"), "row 4: a live connection's drawing survives the walk");
+    forget(9_003_004);
+    std::fs::write(&file, "from an earlier process").unwrap();
+    assert!(clear_unowned(state.path(), "ws-dr-1") && !file.exists(), "row 4: the walk removes an unowned file");
+
+    // 5. only a Claude row takes a drawing; a Codex row still takes text
+    for kind in ["codex", "none", ""] {
+        let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-k");
+        std::fs::write(folder.join(FILE_NAME), "old").unwrap();
+        let got = set_drawing(Some(state.path()), &workspaces, true, 9_003_005, "ws-dr-k", &d).await;
+        assert_eq!(got, Err(selection_code::NO_AGENT), "row 5: {kind:?}");
+        assert!(!folder.join(FILE_NAME).exists(), "row 5: {kind:?} refusal removes the file");
+        assert!(!project.path().join(".sot").exists(), "row 5: {kind:?} composes nothing");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_drawings_at_once_leave_the_file_naming_the_picture_it_holds() {
+    let (state, project, workspaces, folder) = drawing_row("claude", "ws-dr-2");
+    let file = folder.join(FILE_NAME);
+    let picture = project.path().join(".sot/captures/ink-ws-dr-2.png");
+    // the bytes each drawing's picture has, composed apart from the row
+    let apart = tempfile::tempdir().unwrap();
+    let files = crate::files::tree::FilesMode::new(apart.path().to_path_buf()).unwrap();
+    for round in 0..20u16 {
+        let (a, b) = (drawing(InkBase::Canvas, 8_000 + round), drawing(InkBase::Canvas, 50_000 - round));
+        let (ra, rb) = (
+            set_drawing(Some(state.path()), &workspaces, true, 9_004_001, "ws-dr-2", &a),
+            set_drawing(Some(state.path()), &workspaces, true, 9_004_002, "ws-dr-2", &b),
+        );
+        let (ra, rb) = tokio::join!(ra, rb);
+        assert!(ra.is_ok() && rb.is_ok());
+        let held = std::fs::read(&picture).unwrap();
+        let mut holds = None;
+        for d in [&a, &b] {
+            let alone = crate::files::preview::ink::compose(&files, "alone", d).unwrap();
+            if std::fs::read(alone).unwrap() == held {
+                holds = Some(digest_of(d));
+            }
+        }
+        assert_eq!(Some(named_by(&file).1), holds, "round {round}: the file names the drawing the picture holds");
+    }
+    forget(9_004_001);
+    forget(9_004_002);
 }

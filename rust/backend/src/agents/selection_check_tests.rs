@@ -126,3 +126,49 @@ fn the_rendering_is_the_hook_output_both_agents_accept_within_the_caps() {
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert!(ctx.contains(&format!(" of ...{} in the", "d".repeat(4093))));
 }
+
+#[test]
+fn a_drawing_renders_as_the_hook_output_within_the_caps() {
+    let keys = |v: &serde_json::Value| {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    let v = parse(&render_drawing(Some(("/p/fig.png", "fig.png")), "/p/.sot/captures/ink-r1.png", 3, 0xabc));
+    assert_eq!(keys(&v), ["hookSpecificOutput", "systemMessage"]);
+    assert_eq!(keys(&v["hookSpecificOutput"]), ["additionalContext", "hookEventName"]);
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+    assert_eq!(v["systemMessage"], "Drawing: fig.png (3 strokes)");
+    assert_eq!(
+        v["hookSpecificOutput"]["additionalContext"],
+        "The user drew over the image /p/fig.png in the Ship of Tools window. The image with the drawing over it is \
+         /p/.sot/captures/ink-r1.png (drawing 0000000000000abc); read that image to see what the user marked.\n\
+         This may or may not be related to the current task."
+    );
+
+    // the canvas has no figure: its wording and its message say sketch
+    let v = parse(&render_drawing(None, "/p/.sot/captures/ink-r1.png", 1, u64::MAX));
+    assert_eq!(v["systemMessage"], "Drawing: sketch (1 strokes)");
+    assert_eq!(
+        v["hookSpecificOutput"]["additionalContext"],
+        "The user drew a sketch in the Ship of Tools window. The sketch is the image /p/.sot/captures/ink-r1.png \
+         (drawing ffffffffffffffff); read that image to see it.\nThis may or may not be related to the current task."
+    );
+
+    // control characters in a path never reach the prompt or the status line
+    let v = parse(&render_drawing(Some(("/p/a\nb", "a\u{1b}b")), "/p/c\nd", 2, 1));
+    assert_eq!(v["systemMessage"], "Drawing: a?b (2 strokes)");
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("/p/a?b in the"));
+
+    // two 4,096-unit paths, the most strokes and the longest names: the caps hold in UTF-16 units
+    let long = format!("/{}", "\u{1F600}".repeat(2047));
+    let longer = format!("/{}", "d".repeat(100_000));
+    for (fig, pic) in [(long.as_str(), long.as_str()), (longer.as_str(), longer.as_str())] {
+        let v = parse(&render_drawing(Some((fig, fig)), pic, 16_384, u64::MAX));
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(ctx.encode_utf16().count() <= 9_000, "{}", ctx.encode_utf16().count());
+        let msg = v["systemMessage"].as_str().unwrap();
+        assert!(msg.encode_utf16().count() <= 200, "{}", msg.encode_utf16().count());
+        assert!(msg.starts_with("Drawing: ...") && msg.ends_with(" (16384 strokes)"), "{msg}");
+    }
+}
