@@ -367,6 +367,11 @@ fn a_note_ends_when_its_row_is_known_to_be_alive() {
     directory.note_destroyed("g", "b1");
     directory.clear_destroyed("h");
     assert_eq!(shown(&directory), to("h", "base"));
+    // g's note stands: from g's shown b1, the b2 being destroyed is still skipped after h's link is lost.
+    let mut notes = listing(&[("g", &["b1", "b2", "b3"]), ("h", &["a1"])]);
+    notes.note_destroyed("g", "b2");
+    notes.clear_destroyed("h");
+    assert_eq!(notes.leave(&hosts_gh(), ("g", Some("b1")), "g", Gone::Replied("b1")), to("g", "b3"), "h's lost link ended g's note");
     let mut quiet = listing(&LISTED);
     quiet.note_destroyed("h", "id-a2");
     let reconnect = quiet.prepare_replace("h".into(), rows_of(&["a1", "a2", "a3"]));

@@ -141,6 +141,12 @@ impl<C: PaneClient> AgentPane<C> {
         self.pane_feed = PaneFeed::Pending;
     }
 
+    /// Test only: leave a held screen in the pane, as a session's last screen is left when its row goes.
+    #[cfg(test)]
+    pub(in crate::ui) fn plant_held_screen(&mut self) {
+        self.pane_hold = Some(screen::HeldPaneScreen(vt100::Parser::new(24, 80, 0).screen().clone()));
+    }
+
     /// A switch to a row with no attachment (the no-session state): the pane paints exactly as a new one, whatever the
     /// last session left, its client, held screen, dial error or feed.
     pub(in crate::ui) fn show_no_attachment(&mut self) {

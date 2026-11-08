@@ -1407,9 +1407,12 @@ impl State {
         self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
         let at = |state: &Self, host: &HostKey, slug: Option<&str>| *state.selected.host() == *host && state.selected.workspace_id().as_deref() == slug;
         // The window's own destroy of the shown row: the reply moves the view below, and the pane follows.
+        self.agent_pane.plant_held_screen();
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s2")));
         anyhow::ensure!(at(self, &a, Some("s3")) && self.agent_pane.target() == Some((a.clone(), "s3-session".into())),
             "own destroy of the shown row did not move the view to the session below");
+        anyhow::ensure!(self.agent_pane.view(None).0 != PaneScreen::Hold,
+            "the gone session's screen is held under its neighbor");
         // The listing that follows has the neighbor and moves nothing; a destroy of a row not shown moves nothing.
         self.on_workspaces(a.clone(), list(&["s1", "s3"]));
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
@@ -1478,24 +1481,27 @@ impl State {
         self.on_workspace_destroyed(c.clone(), Ok(destroyed("u1")));
         anyhow::ensure!(at(self, &c, Some("u2")), "a refused destroy left its row skipped as a neighbor");
         // A row a listing drops: its parked view goes under its own computer's key. Computer b has a session named
-        // as the default row of computer a.
-        let (d, e) = (hosts[0].clone(), hosts[1].clone());
-        self.on_workspaces(d.clone(), list("base-d", &["v1"]));
-        self.on_workspaces(e.clone(), {
-            let mut rows = list("base-e", &[]);
-            rows.push(probe_row("base-d", "id-e-base-d", false));
+        // as the default row of computer a, and a default row of its own that was visited and left.
+        self.on_workspaces(a.clone(), list("base-a", &["v1"]));
+        self.on_workspaces(b.clone(), {
+            let mut rows = list("base-b", &[]);
+            rows.push(probe_row("base-a", "id-b-base-a", false));
             rows
         });
-        self.switch_to_workspace(d.clone(), None, None, false);
-        self.switch_to_workspace(e.clone(), Some("base-d".into()), None, false);
-        self.switch_to_workspace(d.clone(), None, None, false);
-        self.switch_to_workspace(d.clone(), Some("v1".into()), None, false);
-        let (twin, default) = ((e.clone(), "base-d".to_string()), (d.clone(), "<default>".to_string()));
+        self.switch_to_workspace(b.clone(), None, None, false);
+        self.switch_to_workspace(a.clone(), None, None, false);
+        self.switch_to_workspace(b.clone(), Some("base-a".into()), None, false);
+        self.switch_to_workspace(a.clone(), None, None, false);
+        self.switch_to_workspace(a.clone(), Some("v1".into()), None, false);
+        let (twin, a_default, b_default) =
+            ((b.clone(), "base-a".to_string()), (a.clone(), "<default>".to_string()), (b.clone(), "<default>".to_string()));
         anyhow::ensure!(self.parked_views.view(&twin).is_some(), "the twin row's view was not parked");
-        let default_parked = self.parked_views.view(&default).is_some();
-        self.on_workspaces(e.clone(), list("base-e", &[]));
+        anyhow::ensure!(self.parked_views.view(&b_default).is_some(), "computer b's default view was not parked");
+        let a_default_parked = self.parked_views.view(&a_default).is_some();
+        self.on_workspaces(b.clone(), list("base-b", &[]));
         anyhow::ensure!(self.parked_views.view(&twin).is_none(), "a row a listing dropped kept its parked view");
-        anyhow::ensure!(self.parked_views.view(&default).is_some() == default_parked,
+        anyhow::ensure!(self.parked_views.view(&b_default).is_some(), "dropping a row purged its computer's default view");
+        anyhow::ensure!(self.parked_views.view(&a_default).is_some() == a_default_parked,
             "dropping another computer's row purged a default row's parked view");
         drop(receivers);
         Ok(())
