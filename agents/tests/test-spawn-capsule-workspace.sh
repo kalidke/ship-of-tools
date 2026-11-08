@@ -77,8 +77,12 @@ start_stub_daemon() {
     mkfifo "$fifo"
     : > "$REQLOG"
 
-    local hello_reply create_reply
+    local hello_reply create_reply version_reply
     hello_reply='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
+    # A real daemon answers version.query with the host it declares; unanswered, comm-spawn waits its whole 10 s send
+    # window on every spawn before it assumes the local box.
+    version_reply="$(jq -nc --arg h "$(hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" \
+        '{v:1,id:1,kind:"res",op:"version.query",payload:{daemon:{host:$h}}}')"
     create_reply="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$REPO_PATH" \
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
 
@@ -92,6 +96,7 @@ start_stub_daemon() {
         local op; op="$(printf '%s' "$line" | jq -r '.op // empty' 2>/dev/null)"
         case "$op" in
             hello) printf '%s\n' "$hello_reply" >&3 ;;
+            version.query) printf '%s\n' "$version_reply" >&3 ;;
             workspace.create) created=1; printf '%s\n' "$create_reply" >&3 ;;
             workspace.list)
                 if [ "$created" -eq 0 ]; then
