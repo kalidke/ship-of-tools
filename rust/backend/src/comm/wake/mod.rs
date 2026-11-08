@@ -39,10 +39,9 @@
 //! synthetic (built from the bundle's layout; no menu screen has been
 //! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
 //! while the NBSP is not required there, an agents-view task box with an empty
-//! placeholder (a voice state) reads free. Known test gap: no test covers the
-//! re-check after the hold (`wake_if_free` asks `is_free` again before typing),
-//! nor `check_row`'s registry-then-clock order; deleting either passes every
-//! test, and a test that does not flake needs a seam.
+//! placeholder (a voice state) reads free. Known test gap: no test covers
+//! `check_row`'s registry-then-clock order; deleting it passes every test, and a test that does not flake needs a
+//! seam.
 //!
 //! Nothing but spaces may follow the NBSP, and the free test reads the cursor's row with dim cells blank
 //! (`screen::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
@@ -231,10 +230,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                     }
                     _ => {}
                 }
-                let key = handle.clone();
                 settle(&mut woken, &mut streaks, handle, step, Instant::now());
-                // Test point: this tick's decision for the row is applied (a test counts looks, never the clock).
-                sot_platform::hold_point!("comm.wake.looked", key);
             }
         }
         // A direct page reply a busy row holds gets the same tick, through the same gate and its per-row exclusion.
