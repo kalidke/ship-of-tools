@@ -75,18 +75,12 @@ enum Owner {
     Ended,
 }
 
-/// A test's hook, run between a watch's registration and its reply.
-#[cfg(test)]
-pub(crate) type Between = Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
-
 pub(crate) struct Hub {
     table: Mutex<Table>,
     kick: Notify,
     events: broadcast::Sender<Evt>,
     owner: Mutex<Owner>,
     conns: AtomicU64,
-    #[cfg(test)]
-    pub(crate) between: Mutex<Option<Between>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -101,8 +95,6 @@ impl Hub {
             events: broadcast::channel(EVENTS_QUEUE).0,
             owner: Mutex::new(Owner::Idle),
             conns: AtomicU64::new(0),
-            #[cfg(test)]
-            between: Mutex::new(None),
         })
     }
 
@@ -205,13 +197,8 @@ impl Conn {
             return Err(code);
         }
         self.hub.kick.notify_one();
-        #[cfg(test)]
-        {
-            let hook = lock(&self.hub.between).clone();
-            if let Some(hook) = hook {
-                hook().await;
-            }
-        }
+        // A test's hold point, keyed by the hub's address, between the registration and the reply.
+        sot_platform::hold_point_async!("chat.watch.between", Arc::as_ptr(&self.hub) as usize);
         Ok(self.state(&channel))
     }
 }
