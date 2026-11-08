@@ -1110,3 +1110,15 @@ A landing's record goes here, with its measured times; the package page holds on
   hosted branch run, which showed the junction at the final name replaced (round 1's blocker); two review rounds
   (blockers 1, 0) and two fix rounds; five one-job Windows probes (each new case red on main, every beneath test green on
   the change, the directory symlink case red by name); two gates of 2 minutes.
+- The window's new folder is created beneath the project root, 2026-11-08: builder launched 02:18, main 03:02
+  (0ced502a3, 84485924a, aa01be3f2), 44 minutes. Platform's `create_dir_beneath` shares the write's one walk per system
+  (the root and each parent opened relative to the one before, following no link) and creates the last name relative to
+  its parent, so an entry of any kind at the name is `AlreadyExists` and is never followed; the parent is synced.
+  `dir.create` calls it through `FilesMode::create_dir`: a link or a file at a folder of its path answers `bad_node_id`,
+  and a link at the name itself now answers `already_exists` (it answered `bad_node_id` before); every other reply keeps
+  its code, through one files-mode lookup that `file.read`, `file.write`, `file.delete` and `dir.create` share. The
+  confined resolver now serves the delete alone. About 175 product lines added and 112 removed (the walk shared), and
+  132 test lines. Where the minutes went: the build (7 minutes) with a stress probe on a second build server (621 swaps
+  of a parent against 1,000 creates, none outside); two review rounds (blockers 0, 0), the first with 19,000 swap calls
+  of its own, and three fix rounds (the last text only); three Windows probes and one hosted run on the branch; three
+  gates of 2 minutes.
