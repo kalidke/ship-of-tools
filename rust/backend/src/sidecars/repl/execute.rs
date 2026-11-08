@@ -293,34 +293,57 @@ fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<Repl
     (stdout, stderr, values, image_frames, frame_error_kind)
 }
 
-/// Writes the image frames under the run's folder and returns their paths.
+/// Writes the image frames beneath the project root, through the workspace's files mode (which follows no link), and
+/// returns their paths. A frame that cannot be written is logged and ends the spill: the paths returned are the
+/// figures written before it.
 async fn spill_exec_figures(ws: &crate::rows::Workspace, run_id: &String, image_frames: Vec<(String, String)>)
     -> Vec<String> {
-    let mut figures: Vec<String> = Vec::new();
-    if !image_frames.is_empty() {
-        let runs_dir = ws.project_root.join(".sot").join("runs").join(&run_id);
-        let run_id_blk = run_id.clone();
-        let spill = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<String>, String> {
-            use base64::engine::general_purpose::STANDARD;
-            use base64::Engine as _;
-            std::fs::create_dir_all(&runs_dir).map_err(|e| format!("create {runs_dir:?}: {e}"))?;
-            let mut out = Vec::new();
-            for (i, (mime, b64)) in image_frames.iter().enumerate() {
-                let bytes = STANDARD.decode(b64).map_err(|e| format!("fig {i} base64: {e}"))?;
-                let p = runs_dir.join(format!("fig-{i}.{}", exec_mime_ext(mime)));
-                std::fs::write(&p, &bytes).map_err(|e| format!("write {p:?}: {e}"))?;
-                out.push(p.to_string_lossy().into_owned());
+    if image_frames.is_empty() {
+        return Vec::new();
+    }
+    let files = match ws.files_mode() {
+        Ok(files) => files,
+        Err(e) => {
+            tracing::warn!(run_id = %run_id, "figure spill failed: {e:#}");
+            return Vec::new();
+        }
+    };
+    let runs_dir = ws.project_root.join(".sot").join("runs").join(run_id);
+    let run_id_blk = run_id.clone();
+    let spill = tokio::task::spawn_blocking(move || {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        let mut out = Vec::new();
+        let mut failed = None;
+        for (i, (mime, b64)) in image_frames.iter().enumerate() {
+            let name = format!("fig-{i}.{}", exec_mime_ext(mime));
+            let written = STANDARD
+                .decode(b64)
+                .map_err(|e| format!("fig {i} base64: {e}"))
+                .and_then(|bytes| files.write(&format!("files:.sot/runs/{run_id_blk}/{name}"), &bytes).map_err(|e| format!("{e:#}")));
+            match written {
+                Ok(_) => out.push(runs_dir.join(name).to_string_lossy().into_owned()),
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
             }
-            Ok(out)
-        })
-        .await;
-        match spill {
-            Ok(Ok(paths)) => figures = paths,
-            Ok(Err(e)) => tracing::warn!(run_id = %run_id_blk, "figure spill failed: {e}"),
-            Err(e) => tracing::warn!(run_id = %run_id_blk, "figure spill task panicked: {e}"),
+        }
+        (out, failed)
+    })
+    .await;
+    match spill {
+        Ok((out, failed)) => {
+            if let Some(e) = failed {
+                tracing::warn!(run_id = %run_id, "figure spill failed: {e}");
+            }
+            out
+        }
+        Err(e) => {
+            tracing::warn!(run_id = %run_id, "figure spill task panicked: {e}");
+            Vec::new()
         }
     }
-    figures
 }
 
 /// Closes the drawer run `announce_exec_started` opened, with a `done` frame the shim did not send, after an `error`
