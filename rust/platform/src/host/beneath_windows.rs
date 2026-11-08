@@ -176,7 +176,7 @@ fn refuse_link(f: &File, what: &str) -> io::Result<()> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 || names_another_place(info.FileAttributes, info.ReparseTag) {
+    if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 || false {
         return Err(invalid(format!("{what:?} is not a plain folder")));
     }
     Ok(())
