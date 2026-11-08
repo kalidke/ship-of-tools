@@ -1216,3 +1216,21 @@ A landing's record goes here, with its measured times; the package page holds on
   the ordering test, which had passed with the lock released early and taken about 30 seconds, became one held arrival
   of about a second through a hold point before the publish) and one fix round of 3 minutes; one hosted run on the
   branch; two gates of 3 minutes.
+- The trust restart's two readers, 2026-11-08: builder launched 09:16, main 09:51 (9c21d4f41, f28a337be), 35 minutes. The
+  first of three landings for REAUTH-TRUST-LOST's restart, built beside the second: `startup_of` tells Claude Code's
+  folder-trust dialog from its main box and from every other dialog (the safety-check line, the trust option followed by
+  the dialog's footer alone, and never the variant for a folder already trusted); `under_declared_prefix` asks the scope
+  the trust record uses, through one helper both share; and each trust file keeps the instant of its last Claude
+  preparation, for the restart's wait. Two real Linux captures of the dialog from Claude Code 2.1.319 are the fixtures,
+  taken with a scratch home and configuration holding no credentials. About 117 product lines and 161 test lines; unused
+  by product code until the restart lands. Where the minutes went: the build (7 minutes); one review round (blockers 0;
+  the reader took the dialog's words quoted above another dialog for the dialog, which would restart a working session,
+  and each of its four conditions lacked a test row) and one fix round of 4 minutes; two gates of 3 minutes.
+- The trust restart's leg record, 2026-11-08: builder launched 09:16, main 09:59 (28893f299, 402d95e35), 43 minutes. The
+  second landing: a row's watch state keeps the argv of the Claude supervisor spawned at its current generation whose agent
+  has not shown its main box, and whether a trust restart ran since the last main box, so a row is restarted at most once
+  per episode; the start path and the watchdog's restart open it, and the next spawn closes it. About 80 product lines and
+  87 test lines; the two places that open the record are read, not tested, since a unit test cannot start a supervisor.
+  Where the minutes went: the build (12 minutes); one review round (blockers 0; the generation rule of a main box
+  unpinned, an unreachable branch, and logging under the row's lock) and one fix round of 3 minutes; two gates of 3
+  minutes, the second after moving onto main past the first landing.

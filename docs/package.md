@@ -190,6 +190,8 @@ progress: the daemon test run toward the maintainer's four minutes, and one shar
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
 rows' activation test seams and the wake's absence waits are on it; the spawn suite's fixed wait is gone (about 225
-seconds to 29). Queued, not started: the
+seconds to 29). Also in progress: a Claude row stopped at Claude Code's folder-trust dialog under the declared prefix is
+restarted once (REAUTH-TRUST-LOST); its screen and scope readers and its leg record have landed, and the restart is
+next. Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),
 and each subsystem's findings in `docs/defects.md`, handled at its pass.
