@@ -1,7 +1,7 @@
 //! The Unix arm of the write and the new folder beneath a root (`write_beneath_at`, `create_dir_beneath_at`): `openat`
 //! relative to the folder before, no link followed.
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -26,16 +26,37 @@ pub(super) fn write_beneath_at(
     let last = names.pop().expect("plain_names returns at least one name");
     let ctemp = CString::new(temp_name(temp)?).map_err(|_| invalid("the temporary name holds a NUL".into()))?;
     let dir = walk(root, &names, true, &mut at)?;
-    // Create the temporary file, then write, rename and sync.
+    create_and_publish(&dir, &ctemp, &last, bytes, &mut at)?;
+    Ok(root.join(rel))
+}
+
+/// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
+pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
+    File::open(folder)
+}
+
+/// Removes `name` in `dir`, a link at it as itself; a folder there is an error.
+pub(super) fn remove_in(dir: &File, name: &OsStr) -> io::Result<()> {
+    let name = CString::new(name.as_bytes()).map_err(|_| invalid("the name holds a NUL".into()))?;
+    check(unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) })
+}
+
+/// The names of [`create_and_publish`] from a record's folder.
+pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+    let name = |n: &OsStr| CString::new(n.as_bytes()).map_err(|_| invalid("the name holds a NUL".into()));
+    create_and_publish(dir, &name(temp)?, &name(last)?, bytes, at)
+}
+
+/// Create the temporary file in `dir`, then write, rename and sync.
+fn create_and_publish(dir: &File, temp: &CStr, last: &CStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    let fd = own(unsafe { libc::openat(dir.as_raw_fd(), ctemp.as_ptr(), flags, 0o666 as c_int) })?;
-    let result = publish(&dir, File::from(fd), &ctemp, &last, bytes, &mut at);
+    let fd = own(unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), flags, 0o666 as c_int) })?;
+    let result = publish(dir, File::from(fd), temp, last, bytes, at);
     if result.is_err() {
         // The temporary name is ours alone; after a rename it is already gone, and a failure here changes nothing.
-        unsafe { libc::unlinkat(dir.as_raw_fd(), ctemp.as_ptr(), 0) };
+        unsafe { libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0) };
     }
-    result?;
-    Ok(root.join(rel))
+    result
 }
 
 /// The Unix [`super::create_dir_beneath_at`]: the walk makes no folder, and the last name is made relative to the

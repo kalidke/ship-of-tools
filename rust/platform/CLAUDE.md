@@ -25,8 +25,7 @@ where each lives).
    manager's `XDG_RUNTIME_DIR`; macOS: none; Windows: no runtime base). A boot without logind binds at
    `/tmp/sot-<uid>`.
 2. **A publication is durable and never clobbers.** `publish_noreplace` renames without replacing, flushes the
-   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (a fresh tmp: a stale entry at the name is removed, the create refuses an existing name and follows no link; fsync, replace,
-   directory sync) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
+   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (opens the record's folder once, by path; then, relative to that open folder, a stale `<name>.tmp` is removed, a fresh one is created refusing an existing name and following no link, written and synced, renamed over the record by `write_beneath`'s steps, and the folder synced) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
    removal has no parent sync (Win32 has no write-through delete). Rests on
    renameat2/renamex_np/MoveFileEx write-through; only linux, macos and windows build.
 3. **A lock is the kernel's.** A fence, the daemon's single-instance lock and a held folder's lock are released at
@@ -249,7 +248,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | # | guarantee | test |
 |---|---|---|
 | 1 | one answer, `host_name` errs | `host/state_dir_tests.rs`: `the_state_folder_has_one_rule_and_the_config_folder_is_its_sibling_rule`, `the_daemons_state_folder_is_the_state_folder_and_falls_back_to_tmp_without_a_home` (and its Windows pair), `host_name_prefers_sot_self_host_when_set` and the three `host_name_falls_back_*`/`_takes_*` cases, `a_raw_host_name_gives_its_first_lowercase_label_or_an_error`; `host/state_dir_hash_tests.rs`; `host/state_dir_runtime_dir_tests.rs`; `identity/os_account_tests.rs` |
-| 2 | durable, no clobber | `host/durable_tests.rs`: `publish_noreplace_refuses_an_existing_target_and_leaves_both_files`, `write_durable_replaces_a_record_and_leaves_no_temporary_file`, `remove_durable_is_idempotent_and_accepts_a_missing_folder`, `ensure_container_*` |
+| 2 | durable, no clobber | `host/durable_tests.rs`: `publish_noreplace_refuses_an_existing_target_and_leaves_both_files`, `a_folder_swapped_between_the_create_and_the_rename_keeps_the_record_in_the_opened_folder` (Unix), `write_durable_replaces_a_record_and_leaves_no_temporary_file`, `remove_durable_is_idempotent_and_accepts_a_missing_folder`, `ensure_container_*` |
 | 3 | kernel lock | `host/lock_tests.rs`: `a_dropped_writer_lock_is_free_while_a_forked_child_waits_to_exec`, `a_dropped_daemon_lock_is_free_while_a_forked_child_waits_to_exec`, `a_child_spawned_while_the_daemon_lock_is_held_never_holds_it`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder` |
 | 4 | held folder | `host/held_dir_tests.rs`: `a_held_folder_goes_once_its_maker_has_ended_and_only_then`, `a_held_folder_goes_while_a_removal_holds_its_lock_file_open` |
 | 5 | cloexec births | `host/fd_tests.rs` (socket, pipe, pty, the fork birth lock); `tests/winhandle_windows.rs` |

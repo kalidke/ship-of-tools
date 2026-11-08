@@ -464,36 +464,19 @@ fn flush_renamed(to: &Path) -> Result<()> {
     }
 }
 
-/// Writes `bytes` to `path` for a record a later start acts on: a temporary file beside it, fsync, the replace, then the
-/// directory's sync (Windows replaces with MoveFileExW write-through, which returns once the move is on disk). An
-/// existing `path` is replaced; `publish_noreplace` is the form that refuses to. The temporary file is always a new file
-/// this call creates: whatever sits at its name is removed by name first, and the create refuses a name that exists.
+/// Writes `bytes` to `path` for a record a later start acts on: a temporary file beside it, fsync, the rename, then the
+/// folder's sync. The folder is opened once and every step runs relative to it, so the record lands in the folder the
+/// write opened. An existing `path` is replaced; `publish_noreplace` is the form that refuses to. The temporary file is
+/// always a new file this call creates: whatever sits at its name is removed first, and the create refuses a name that
+/// exists. Windows renames by the temporary file's handle with write-through.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_durable_between(path, bytes, || {})
+    super::beneath::write_in_folder(path, bytes, || {}, |_| Ok(()))
 }
 
 /// [`write_durable`] with `between` run after the stale temporary name is removed and before it is created (a test seam).
+#[cfg(test)]
 fn write_durable_between(path: &Path, bytes: &[u8], between: impl FnOnce()) -> std::io::Result<()> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = std::path::PathBuf::from(tmp);
-    let named = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", tmp.display()));
-    match std::fs::remove_file(&tmp) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        r => r.map_err(|e| named("remove stale temporary file", e))?,
-    }
-    between();
-    {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|e| named("create temporary file", e))?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    replace_file(&tmp, path)
+    super::beneath::write_in_folder(path, bytes, between, |_| Ok(()))
 }
 
 /// Deletes `path` if it exists, then syncs its directory, so `Ok` means the absence is durable even when an earlier try
@@ -506,28 +489,6 @@ pub fn remove_durable(path: &Path) -> std::io::Result<()> {
     match sync_dir_of(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         r => r,
-    }
-}
-
-/// The replace step of [`write_durable`]. Unix renames, then syncs the directory so the rename is durable.
-fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
-        let wide = |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let (from, to) = (wide(tmp), wide(path));
-        // SAFETY: both buffers are NUL-terminated and outlive the call.
-        let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(tmp, path)?;
-        sync_dir_of(path)
     }
 }
 

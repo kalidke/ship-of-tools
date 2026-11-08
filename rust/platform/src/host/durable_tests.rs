@@ -170,3 +170,25 @@ fn write_durable_refuses_an_entry_that_reappears_at_the_temporary_name() {
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     assert!(!target.exists());
 }
+
+#[test]
+#[cfg(unix)]
+fn a_folder_swapped_between_the_create_and_the_rename_keeps_the_record_in_the_opened_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("root");
+    let moved = dir.path().join("moved");
+    let other = dir.path().join("other");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let target = folder.join("record");
+    super::super::beneath::write_in_folder(&target, b"new", || {}, |step| {
+        if step == super::super::beneath::Step::Temp {
+            std::fs::rename(&folder, &moved)?;
+            std::os::unix::fs::symlink(&other, &folder)?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(moved.join("record")).unwrap(), b"new");
+    assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+}

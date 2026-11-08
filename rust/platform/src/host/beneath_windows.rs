@@ -2,7 +2,7 @@
 //! name is its own `NtCreateFile` relative to the handle before, a name-surrogate reparse point (symlink, junction,
 //! mount point) is refused, and the temporary file is renamed by its handle.
 
-use std::ffi::c_void;
+use std::ffi::{c_void, OsStr};
 use std::fs::File;
 use std::io::{self, Write};
 use std::os::windows::fs::OpenOptionsExt;
@@ -47,20 +47,50 @@ pub(super) fn write_beneath_at(
     let (last, folders) = names.split_last().expect("plain_names returns at least one name");
     let temp = temp_name(temp)?;
     let dir = walk(root, folders, true, &mut at)?;
-    // Create the temporary file exclusively, held with share-read alone so no other open can rename or delete it.
-    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
+    create_and_publish(&dir, &temp, last, bytes, &mut at)?;
+    Ok(root.join(rel))
+}
+
+/// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
+pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)
+}
+
+/// Removes the file `name` in `dir`, a file link as itself; a folder there is an error.
+pub(super) fn remove_in(dir: &File, name: &OsStr) -> io::Result<()> {
+    let file = nt_open(dir, utf8(name)?, DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN, FILE_NON_DIRECTORY_FILE)
+        .map_err(status_error)?;
+    delete_on_close(&file)
+}
+
+/// The names of [`create_and_publish`] from a record's folder.
+pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+    create_and_publish(dir, utf8(temp)?, utf8(last)?, bytes, at)
+}
+
+fn utf8(name: &OsStr) -> io::Result<&str> {
+    name.to_str().ok_or_else(|| invalid(format!("{name:?} is not UTF-8")))
+}
+
+/// Create the temporary file in `dir` exclusively, held with share-read alone so no other open can rename or delete it.
+fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+    let file = nt_open(dir, temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
     let mut renamed = false;
-    let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
+    let result = publish(dir, &file, last, bytes, &mut renamed, at);
     if !renamed {
         // The handle names the temporary file alone; a failure here changes nothing.
-        let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-        unsafe {
-            SetFileInformationByHandle(file.as_raw_handle() as HANDLE, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32)
-        };
+        let _ = delete_on_close(&file);
     }
-    result?;
-    Ok(root.join(rel))
+    result
+}
+
+fn delete_on_close(file: &File) -> io::Result<()> {
+    let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    let ok = unsafe {
+        SetFileInformationByHandle(file.as_raw_handle() as HANDLE, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32)
+    };
+    if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
 /// The Windows [`super::create_dir_beneath_at`]: the walk makes no folder, and the last name is created relative to the
