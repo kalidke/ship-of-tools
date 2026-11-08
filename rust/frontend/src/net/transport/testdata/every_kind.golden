@@ -34,21 +34,21 @@
 > {"v":4,"id":35,"kind":"req","op":"docs.open","payload":{"direct":{"scope":"all"},"path":"do.path"}}
 > {"v":4,"id":36,"kind":"req","op":"page.reply","payload":{"handle":"pr.handle","line":"pr.line","workspace_id":"pr.ws"}}
 > {"v":4,"id":37,"kind":"req","op":"quarto.open","payload":{"execute":true,"path":"qo.path"}}
-> {"v":4,"id":38,"kind":"req","op":"chat.resolve","payload":{"row":"cres.row"}}
-> {"v":4,"id":39,"kind":"req","op":"chat.watch","payload":{"target":{"channel":"Ccw","row":"cw.row","workspace":"cw.ws"}}}
-> {"v":4,"id":40,"kind":"req","op":"chat.unwatch","payload":{"target":{"channel":"Ccu","row":"cu.row","workspace":"cu.ws"}}}
-> {"v":4,"id":41,"kind":"req","op":"chat.history","payload":{"after":null,"cursor":null,"limit":7,"target":{"channel":"Cch","row":"ch.row","workspace":"ch.ws"},"thread":null,"upper":null}}
-> {"v":4,"id":42,"kind":"req","op":"chat.post","payload":{"kind":"row","name":"cp.name","target":{"channel":"Ccp","row":"cp.row","workspace":"cp.ws"},"text":"cp.text","thread":null}}
-> {"v":4,"id":43,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}
-> {"v":4,"id":44,"kind":"req","op":"file.download","payload":{"path":"fdl.path"}}
-> {"v":4,"id":45,"kind":"req","op":"file.upload","payload":{"data_b64":"AQID","dir":"fu.dir","eof":true,"name":"fu.name","offset":117,"total":118}}
-> {"v":4,"id":46,"kind":"req","op":"monitor.subscribe","payload":{}}
-> {"v":4,"id":47,"kind":"req","op":"monitor.unsubscribe","payload":{}}
-> {"v":4,"id":48,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
-> {"v":4,"id":49,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
-> {"v":4,"id":50,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
-> {"v":4,"id":51,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
-> {"v":4,"id":52,"kind":"req","op":"repl.interrupt","payload":{"eval_ids":[206],"force":true,"workspace_id":"rif.ws"}}
+> {"v":4,"id":38,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}
+> {"v":4,"id":39,"kind":"req","op":"file.download","payload":{"path":"fdl.path"}}
+> {"v":4,"id":40,"kind":"req","op":"file.upload","payload":{"data_b64":"AQID","dir":"fu.dir","eof":true,"name":"fu.name","offset":117,"total":118}}
+> {"v":4,"id":41,"kind":"req","op":"monitor.subscribe","payload":{}}
+> {"v":4,"id":42,"kind":"req","op":"monitor.unsubscribe","payload":{}}
+> {"v":4,"id":43,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
+> {"v":4,"id":44,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
+> {"v":4,"id":45,"kind":"req","op":"tree.root","payload":{"mode":"files","workspace_id":"rt.ws"}}
+> {"v":4,"id":46,"kind":"req","op":"tree.children","payload":{"node_id":"rc.parent","workspace_id":"rc.ws"}}
+> {"v":4,"id":47,"kind":"req","op":"repl.interrupt","payload":{"eval_ids":[206],"force":true,"workspace_id":"rif.ws"}}
+> {"v":4,"id":48,"kind":"req","op":"chat.resolve","payload":{"row":"cres.row"}}
+> {"v":4,"id":49,"kind":"req","op":"chat.watch","payload":{"target":{"channel":"Ccw","row":"cw.row","workspace":"cw.ws"}}}
+> {"v":4,"id":50,"kind":"req","op":"chat.unwatch","payload":{"target":{"channel":"Ccu","row":"cu.row","workspace":"cu.ws"}}}
+> {"v":4,"id":51,"kind":"req","op":"chat.history","payload":{"after":null,"cursor":null,"limit":7,"target":{"channel":"Cch","row":"ch.row","workspace":"ch.ws"},"thread":null,"upper":null}}
+> {"v":4,"id":52,"kind":"req","op":"chat.post","payload":{"kind":"row","name":"cp.name","target":{"channel":"Ccp","row":"cp.row","workspace":"cp.ws"},"text":"cp.text","thread":null}}
 < golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [] }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
@@ -79,11 +79,6 @@
 < golden DocsOpened { result: Err("err-docs.open") }
 < golden PageReplied { handle: "pr.handle", outcome: "error", detail: "err-page.reply [code-page.reply]" }
 < golden QuartoOpened { result: Err("err-quarto.open") }
-< golden Chat(Resolved { row: "cres.row", reply: Refused(Other) })
-< golden Chat(Watched { target: ChatTarget { row: "cw.row", workspace: "cw.ws", channel: ChatChannel("Ccw") }, reply: Refused(Other) })
-< golden Event { op: "chat.unwatch", payload: Object {"code": String("code-chat.unwatch"), "error": String("err-chat.unwatch")} }
-< golden Chat(History { req: ChatHistoryReq { target: ChatTarget { row: "ch.row", workspace: "ch.ws", channel: ChatChannel("Cch") }, thread: None, after: None, upper: None, limit: 7, cursor: None }, reply: Refused(Other) })
-< golden Chat(Posted { req: ChatPostReq { target: ChatTarget { row: "cp.row", workspace: "cp.ws", channel: ChatChannel("Ccp") }, thread: None, kind: Row, name: "cp.name", text: "cp.text" }, reply: Done(Unknown) })
 < golden ReplRunFileDone { eval_id: 116, result: Err("err-repl.run_file") }
 < golden FileTransferFailed { op: "download", message: "err-file.download" }
 < golden FileTransferFailed { op: "upload", message: "err-file.upload" }
@@ -92,3 +87,8 @@
 < golden ResultTree { attempt: ResultAttemptId { workspace_id: "rt.ws", result_serial: 201, attempt_serial: 202 }, reply: Failed { request: Root, error: "err-tree.root" } }
 < golden ResultTree { attempt: ResultAttemptId { workspace_id: "rc.ws", result_serial: 203, attempt_serial: 204 }, reply: Failed { request: Children { parent_id: "rc.parent" }, error: "err-tree.children" } }
 < golden Event { op: "repl.interrupt", payload: Object {"code": String("code-repl.interrupt"), "error": String("err-repl.interrupt")} }
+< golden Chat(Resolved { row: "cres.row", reply: Refused(Other) })
+< golden Chat(Watched { target: ChatTarget { row: "cw.row", workspace: "cw.ws", channel: ChatChannel("Ccw") }, reply: Refused(Other) })
+< golden Event { op: "chat.unwatch", payload: Object {"code": String("code-chat.unwatch"), "error": String("err-chat.unwatch")} }
+< golden Chat(History { req: ChatHistoryReq { target: ChatTarget { row: "ch.row", workspace: "ch.ws", channel: ChatChannel("Cch") }, thread: None, after: None, upper: None, limit: 7, cursor: None }, reply: Refused(Other) })
+< golden Chat(Posted { req: ChatPostReq { target: ChatTarget { row: "cp.row", workspace: "cp.ws", channel: ChatChannel("Ccp") }, thread: None, kind: Row, name: "cp.name", text: "cp.text" }, reply: Done(Unknown) })

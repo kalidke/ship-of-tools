@@ -108,3 +108,19 @@ async fn a_chat_post_without_its_answer_is_unknown_and_never_written_again() {
     assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatWatch { .. })), "the watch is replayable and kept");
     assert!(outbox.recv().await.is_none());
 }
+
+/// A post whose write fails (an envelope over the cap ends the session) has already been recorded, so its connection's
+/// end still gives it one `Done(Unknown)`.
+#[tokio::test]
+async fn a_chat_post_whose_write_fails_is_still_unknown() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let mut req = post_req();
+    req.text = "x".repeat(2 << 20);
+    let mut entries = HashMap::new();
+    let kind = Some(PendingKind::ChatPost { req: req.clone() });
+    let sent = send_chat(&mut Vec::new(), &mut entries, 3, op::CHAT_POST, req, kind).await;
+    assert!(sent.is_err(), "the oversize envelope is refused at the write");
+    drop(PendingGuard { map: entries, evt_tx: &evt_tx, host: "h".into() });
+    let ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
+    assert!(matches!(ended.as_slice(), [e] if e.contains("Posted") && e.contains("Done(Unknown)")), "{ended:?}");
+}

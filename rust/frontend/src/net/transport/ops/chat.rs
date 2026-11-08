@@ -38,9 +38,11 @@ pub(crate) async fn send_chat<W: AsyncWrite + Unpin>(
     kind: Option<PendingKind>,
 ) -> Result<()> {
     tracing::debug!(id, "→ {op}");
-    codec::write_frame(&mut tx, &Frame::req(id, op, serde_json::to_value(payload)?), None).await?;
-    // `chat.unwatch` is fire-and-forget: its empty answer is not tracked.
+    let payload = serde_json::to_value(payload)?;
+    // Recorded before the write, so a write that fails (an oversize envelope ends the session) still ends the request
+    // once, by the guard. `chat.unwatch` is fire-and-forget: its empty answer is not tracked.
     pending.extend(kind.map(|k| (id, k)));
+    codec::write_frame(&mut tx, &Frame::req(id, op, payload), None).await?;
     Ok(())
 }
 

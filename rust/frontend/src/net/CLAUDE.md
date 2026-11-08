@@ -57,7 +57,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`. Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:
@@ -68,7 +68,7 @@ through the channel types below.
   0), never the generic `Event`; the window's one arm only logs it, so no pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
-  channel (`remote_chat_adds_no_link_or_login`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
+  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
   and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
