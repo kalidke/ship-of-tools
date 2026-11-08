@@ -304,6 +304,7 @@ fn a_peer_of_another_uid_is_dropped_at_accept() {
     let own = sot_platform::host::state_dir::current_uid();
     let server = RowServer::bind_as_uid_for_test(&path, Arc::clone(&looped.run), own.wrapping_add(1)).expect("bind");
     let mut raw = std::os::unix::net::UnixStream::connect(&path).expect("the socket accepts the connect");
+    std::thread::sleep(Duration::from_millis(300));
     raw.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let _ = raw.write_all(b"{\"v\":3,\"id\":1,\"kind\":\"req\",\"op\":\"row.hello\",\"payload\":{\"build\":\"t\",\"row\":1}}\n");
     let mut buf = [0u8; 64];
