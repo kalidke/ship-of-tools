@@ -52,6 +52,13 @@ owned by `docs/CLAUDE.md`.
 - **PER-POINT-ARM-SERIALIZES** [note] The hold tool's in-process arms are exclusive per point even when their keys differ
   (`hold.rs`), so a test that fails while armed makes the next test arming that point fail with "another arm of it did not
   end within 30s", naming the wrong cause. Exclusive per point and key would fix the class; only in-process users meet it.
+- **CHILD-RENAMES-NO-RETRY** [note] Three test children rename a file into place with `std::fs::rename`, which does not
+  retry on Windows while a scanner holds the new file, as platform's renames do: `test_barrier.rs`, the capsule's
+  `tests/supervisor/main.rs` and `contained_job.rs`. Route each through `publish_noreplace`.
+- **BENEATH-SUPERSEDED-WRITER-ERRS** [note] `host::write_beneath` checks after its rename that the entry at the final name
+  is the file it wrote, so of two writers of one name, one whose file the other replaces between its rename and its check
+  answers "the written file is not the entry at its name" although its file was published whole. Seen 2026-11-07 in a
+  hosted run (Linux and macOS) of a two-writers test on a branch; no caller exists yet.
 
 ## wire
 
@@ -308,6 +315,19 @@ owned by `docs/CLAUDE.md`.
 - **COMPACTION-SUPPORT** [feature] A handoff command and template, a `/handoff` skill, read-back in the reset
   hooks, a usage tap in the statuslines and an installer default for `autoCompactWindow`; a port of the unmerged
   handoff branch, not a merge.
+- **BASH32-RANGE-LOCALE** [note] Under bash 3.2.57 with a glibc collation locale (`en_US.UTF-8`), a `[a-z]` range in a
+  pattern also matches `A` to `Y`, so the endpoint check in `comm/lib/comm-lib-client.sh` (the `ssh:` value's host)
+  accepts `ssh:Hub`. Seen 2026-11-07 when the endpoint gate suite ran with that bash first on PATH and that locale; the
+  gates run with no locale and pass. Whether macOS's `/bin/bash` behaves so is not known. The same range appears in
+  `agents/sot-fe/sot-fe-row.sh` and `agents/worktree/comm-worktree-new.sh`. Fix: name the characters or use a class, in
+  each owner's pass.
+- **COMM-SUITES-BASH-CLAIM** [note] `comm/CLAUDE.md` says `under-bash.sh` runs every hermetic suite under bash 3.2.57;
+  `under-bash.sh` runs only `scripts/tests/` suites with that bash and the others with the bash that started it (the
+  gate's and CI's are newer), the scripts under test reaching 3.2 only through PATH. The page should say which.
+- **WAKE-REATTACH-BOUND** [note] The wake's run-fence test (`an_attempt_never_types_into_a_run_it_did_not_check`) waits
+  the attach client's redial cap plus 1 s after the new run shows, so that the attempt's own client is on the new run
+  before the test releases its hold: one order kept by a bound from a product constant, not a hold. A hold point where the
+  capsule's attach worker completes an attach would force it.
 
 ## agents
 
@@ -599,6 +619,10 @@ owned by `docs/CLAUDE.md`.
 - **GATE-NO-RELEASE-PROFILE** [note] No local gate job and no hosted run before a tag compiles the release profile, so a
   release-only compile error is first seen at the tag build (`release.yml`). Seen 2026-11-07 in review: a hold point's
   release expansion did not compile; the hold tool now expands one form in both profiles.
+- **GATE-KEEPS-NO-FAILED-LOGS** [note] The local gate deletes its log folder at each run's start, so a failed job's log is
+  gone once the next run starts. Seen 2026-11-07: a run failed the sotd unit tests' first part (`sotd__sotd-c-1`, exit
+  101) once, the runs before and after it were clean, and the next run had deleted its log, so the failing test is
+  unknown. Fix: keep each run's summary and every failed job's log under a folder named by the commit.
 
 ## chat
 
@@ -652,6 +676,9 @@ owned by `docs/CLAUDE.md`.
 ## Closed
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **GATE-LEFTOVER-ENDPOINT-STUBS** (messaging) closed by 4ed49a71d and 61874b765, 2026-11-07: the endpoint gate suite's stubs left their `sleep 30` children running, and a gate whose last jobs included that suite failed its census; each stub now starts in its own group and is ended with it.
+- **HOLD-CHILD-PASS-TORN** (platform) closed by bf04197f6 and fe6291036, 2026-11-07: the hold tool's child and the exit-process fixture's child wrote a file a test polls for by create and then write, so a test could read it empty (seen on macOS in a hosted run); both now rename a whole file into place.
 
 - **CHAT-STOP-STATUS-UNDER-LOAD** (chat) closed by the landing that fixes it, 2026-11-07: a test race; `retire` reports at its bound before its thread reaches a late `request_stop`, and the test now reads what the stop sets only after the stop began, forcing that order once per run.
 - **ROW-CLEAR-NO-SESSION-START** (agents) closed by the session-start hook landing: a Claude row leg's `--settings` (for legs started after the update) carries SessionStart on `clear` and `compact`, running the read-only comm session start, whose output names the handle and the handoff. Not covered: `/resume` typed in a live row, Codex rows.

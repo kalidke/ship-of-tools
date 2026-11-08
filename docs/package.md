@@ -183,8 +183,11 @@ configuration, the service, the watch model, the wire family, the hub compositio
 events have landed; the window's side (fe-net, then its first chat owner) is next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built; the hook, the marker, the Codex wiring and A7 are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
-first channel moves. Also in progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
+first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
+landed, and the picture waits on platform's write beneath a root (its guarantee 17), built for Linux and macOS, whose
+Windows arm is next. Also in progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
-platform's hold tool (its guarantee 16) works in one process; the tool across processes and the conversion of the wake,
-chat-watch and activation tests to it are next. Queued, not started: the installer-observation pass (`pass/install-observe`), 26.04 runner support,
+platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's and the wake's test
+seams are on it, and the wake's absence sleeps and the activation barrier are next. Queued, not started: the
+installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),
 and each subsystem's findings in `docs/defects.md`, handled at its pass.

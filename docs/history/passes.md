@@ -1007,3 +1007,36 @@ A landing's record goes here, with its measured times; the package page holds on
   entry at its temp name and creates the temp with an exclusive create that never follows a link, for every caller of
   `write_durable`. About 15 product and 70 test lines. Where the minutes went: the build 4; one review round of 23 minutes
   (blocker 0) and a test pin of 2; gates of 2 and 4 minutes; a hosted run on Windows and macOS.
+- A child's file that a test polls for is renamed into place whole, 2026-11-07: builder launched 18:46, main 19:14
+  (bf04197f6, fe6291036), 28 minutes. Main's hosted macOS run failed the hold tool's two-children test, which read a
+  child's pass file between its create and its write (HOLD-CHILD-PASS-TORN); the window's exit-process fixture had the same
+  shape. Both children now write a part name and rename it into place through `publish_noreplace`. Test lines only. Where
+  the minutes went: the build 2 and the second site 3; one review round of 12 minutes (blocker 0) and its fix of 1; gates
+  of 2 and 2 minutes.
+- A write beneath a root follows no link (Linux and macOS), 2026-11-07: builder launched 18:46, main 19:55 (bfbb8b524,
+  56f7577d7, 7a566efb6, 1a46fdec1), 69 minutes, past the maintainer's hour. Platform's guarantee 17: `write_beneath` takes
+  a root that is its own canonical path, opens it and each folder below relative to the one before without following a
+  link, creates its temporary file exclusively under a fresh name, and renames and syncs within the same folder. No caller
+  yet; the drawing's picture is the first. About 155 product and 230 test lines. Where the minutes went: the build 8 and
+  its red table 2; three review rounds of 17, 18 and 10 minutes (blockers 0, 0, 0) and fixes of 4, 2 and 2; three gates
+  of 2 minutes; three hosted runs on the branch beside them. Why past the hour: each round found a should-fix worth its
+  time: the root's rule (first its spelling, then the canonical path), the folder syncs on macOS (now std's, which flushes
+  the drive), a conversion moved before the first call, and the error a root that does not resolve answers. A hosted run
+  of the next piece's two-writers test then found BENEATH-SUPERSEDED-WRITER-ERRS in this one.
+- The endpoint gate's stubs are ended with their children, 2026-11-07: diagnosis 19:03 to 19:52, builder launched 19:52,
+  main 20:28 (4ed49a71d, 61874b765), 36 minutes from the builder. Two local gates of the wake's change failed on two
+  `sleep 30` processes alive at the census (GATE-LEFTOVER-ENDPOINT-STUBS); the diagnosis found them on every run of main's
+  endpoint gate suite alone. Test lines only, and the stub pids renamed so the existing scan pins the fix. Where the
+  minutes went: the diagnosis 49 (on a second build server); the build 2; one review round of 17 minutes (blocker 0) and
+  its fix of 1; gates of 2 and 2 minutes. The review also found BASH32-RANGE-LOCALE and COMM-SUITES-BASH-CLAIM.
+- The wake's test seams are hold points, 2026-11-07: builder launched 18:29, main 20:33 (4666d73ce, 5ed658e9b,
+  43509908f), 124 minutes, far past the maintainer's hour. Two test variables a release build read are gone; the wake
+  marks `comm.wake.hold`, `comm.wake.final_ok` and `comm.wake.done`, its tests arm them on their own folder, three fixed
+  holds of 6 to 9 s became held arrivals, and the typing guard is released before `done`. About 25 product lines removed.
+  The whole wake suite still takes about 635 s in one process: the absence sleeps are the next piece. Where the minutes
+  went: the build 22; two review rounds of 38 and 22 minutes (blockers 1, 0) with mutant runs on a second build server,
+  and fixes of 13 and 1; four gates of 2 to 3 minutes, two of them failed by the endpoint suite's leftover above, whose
+  diagnosis and landing it waited for. Why far past the hour: that leftover, and round 1's blocker: the run-fence test
+  could pass under its mutant when the restart landed just after a dial of the attempt's client. It now waits the
+  client's redial cap after the new run shows, a bound rather than a hold (WAKE-REATTACH-BOUND). Its second gate also
+  failed the sotd unit tests once, with its log lost (GATE-KEEPS-NO-FAILED-LOGS).
