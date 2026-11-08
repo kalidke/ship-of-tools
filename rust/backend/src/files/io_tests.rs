@@ -15,6 +15,9 @@ impl Scratch {
     fn path(&self, rel: &str) -> PathBuf {
         self.0.join(rel)
     }
+    fn files(&self) -> FilesMode {
+        FilesMode::new(self.0.clone()).unwrap()
+    }
 }
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -58,7 +61,7 @@ fn read_non_utf8_errors() {
 fn write_new_file_unconditional() {
     let s = Scratch::new("write_new");
     let p = s.path("sub/dir/new.txt"); // parents created
-    let res = write_file(&p, "hi", None).unwrap();
+    let res = write_file(&s.files(), "files:sub/dir/new.txt", "hi", None).unwrap();
     match res {
         WriteResult::Written { version } => assert_eq!(version, content_version(b"hi")),
         _ => panic!("expected Written"),
@@ -72,7 +75,7 @@ fn write_with_matching_version_succeeds_and_bumps() {
     let p = s.path("a.txt");
     std::fs::write(&p, "v1").unwrap();
     let v1 = content_version(b"v1");
-    let res = write_file(&p, "v2", Some(&v1)).unwrap();
+    let res = write_file(&s.files(), "files:a.txt", "v2", Some(&v1)).unwrap();
     match res {
         WriteResult::Written { version } => assert_eq!(version, content_version(b"v2")),
         _ => panic!("expected Written"),
@@ -87,7 +90,7 @@ fn write_with_stale_version_conflicts_without_clobbering() {
     std::fs::write(&p, "ondisk").unwrap();
     // The frontend thinks the file is still at the version of "old".
     let stale = content_version(b"old");
-    let res = write_file(&p, "mine", Some(&stale)).unwrap();
+    let res = write_file(&s.files(), "files:a.txt", "mine", Some(&stale)).unwrap();
     match res {
         WriteResult::Conflict {
             current_content,
@@ -106,9 +109,47 @@ fn write_with_stale_version_conflicts_without_clobbering() {
 fn write_expected_but_file_vanished_is_conflict() {
     let s = Scratch::new("write_vanished");
     let p = s.path("gone.txt");
-    let res = write_file(&p, "mine", Some("anyhash")).unwrap();
+    let res = write_file(&s.files(), "files:gone.txt", "mine", Some("anyhash")).unwrap();
     assert!(matches!(res, WriteResult::Conflict { .. }));
     assert!(!p.exists()); // not recreated
+}
+
+/// A save is written beneath the project root, following no link: nothing is ever written at `<file>.sot-tmp`.
+#[cfg(unix)]
+#[test]
+fn a_link_at_the_old_temporary_name_is_never_written() {
+    let s = Scratch::new("write_old_tmp");
+    let outside = Scratch::new("write_old_tmp_outside");
+    let target = outside.path("target.txt");
+    std::fs::write(&target, "outside").unwrap();
+    std::fs::write(s.path("a.txt"), "v1").unwrap();
+    std::fs::hard_link(&target, s.path("a.sot-tmp")).unwrap();
+    write_file(&s.files(), "files:a.txt", "v2", None).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+    std::fs::remove_file(s.path("a.sot-tmp")).unwrap();
+    std::os::unix::fs::symlink(&target, s.path("a.sot-tmp")).unwrap();
+    write_file(&s.files(), "files:a.txt", "v3", None).unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+    assert_eq!(std::fs::read_to_string(s.path("a.txt")).unwrap(), "v3");
+}
+
+/// A save through a link at a folder of its path is refused as a node id and writes nothing.
+#[cfg(unix)]
+#[test]
+fn a_save_through_a_folder_link_takes_no_write() {
+    let s = Scratch::new("write_folder_link");
+    let outside = Scratch::new("write_folder_link_outside");
+    std::os::unix::fs::symlink(&outside.0, s.path("lnk")).unwrap();
+    let inside = s.path("real");
+    std::fs::create_dir(&inside).unwrap();
+    std::os::unix::fs::symlink(&inside, s.path("alias")).unwrap();
+    for id in ["files:lnk/a.txt", "files:lnk/new/a.txt", "files:alias/a.txt"] {
+        let e = write_file(&s.files(), id, "x", None).unwrap_err();
+        let kind = e.downcast_ref::<std::io::Error>().map(|e| e.kind());
+        assert_eq!(kind, Some(std::io::ErrorKind::InvalidInput), "{id}: {e:#}");
+    }
+    assert_eq!(std::fs::read_dir(&outside.0).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 0);
 }
 
 #[test]

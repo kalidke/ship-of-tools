@@ -12,10 +12,11 @@
 // `DefaultHasher`), so a version handed to the frontend before a restart still
 // compares correctly after one.
 
-use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
+
+use super::tree::FilesMode;
 
 /// FNV-1a 64-bit hash of `bytes`, lowercase zero-padded hex.
 pub fn content_version(bytes: &[u8]) -> String {
@@ -63,20 +64,25 @@ pub fn read_file(abs: &Path) -> Result<Option<ReadResult>> {
     }
 }
 
-/// Write `content` to `abs` with optimistic concurrency.
+/// Write `content` at the node `node_id` with optimistic concurrency.
 ///
-/// - `expected = Some(v)` — the current on-disk version must equal `v`, else
-///   `Conflict` and **no write**. A missing file counts as version `""`, so a
+/// - `expected = Some(v)` — the current on-disk version (read through the read resolver, as `file.read`
+///   does) must equal `v`, else `Conflict` and **no write**. A missing file counts as version `""`, so a
 ///   file that vanished after you read it is a conflict (not a silent recreate).
 /// - `expected = None` — create/overwrite unconditionally (new file, or an
 ///   explicit force-save).
 ///
-/// On a match (or `None`) the write is atomic: a sibling temp file is written
-/// then renamed over the target, so a crash mid-write never truncates the
-/// original. Parent directories are created as needed.
-pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<WriteResult> {
+/// The write is `FilesMode::write`: beneath the project root, following no link, atomic, parent
+/// folders created as needed.
+pub fn write_file(
+    files: &FilesMode,
+    node_id: &str,
+    content: &str,
+    expected: Option<&str>,
+) -> Result<WriteResult> {
     if let Some(expected) = expected {
-        let current = match std::fs::read(abs) {
+        let abs = files.node_id_to_path(node_id)?;
+        let current = match std::fs::read(&abs) {
             Ok(b) => Some(b),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(anyhow!("read {} (conflict check): {e}", abs.display())),
@@ -92,50 +98,7 @@ pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<W
             });
         }
     }
-    if let Some(parent) = abs.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create_dir_all {}", parent.display()))?;
-    }
-    let tmp = abs.with_extension("sot-tmp");
-    // TOCTOU guard (security review): the confinement check that got the
-    // caller `abs` in the first place only proves the path resolved inside
-    // the workspace root AT CHECK TIME. Between then and here, a writer with
-    // access to this same workspace directory could plant a symlink at
-    // `tmp`'s path pointing anywhere this process can write (e.g. a dotfile
-    // outside the workspace). Plain `std::fs::write` uses `File::create`
-    // semantics, which FOLLOWS an existing symlink and would happily write
-    // `content` through it. `O_NOFOLLOW` makes that open fail instead
-    // (typically `ELOOP`) rather than silently escaping through the symlink.
-    // The following `rename` does NOT need the same treatment: POSIX
-    // `rename(2)` never dereferences its destination — if `abs` itself were
-    // a symlink, rename replaces that directory entry atomically rather than
-    // writing through to whatever it points at, so the existing call is
-    // already safe.
-    //
-    // Scope of the guarantee: exploiting this requires the attacker to
-    // already have WRITE access to this workspace directory (to race the
-    // symlink into place before this open) — a foreign local user does NOT
-    // have that under normal `0700`/`0755` workspace-root permissions. This
-    // closes the window for a same-workspace-writable attacker (e.g. a
-    // shared/group-writable workspace, or a race with another Ship of Tools
-    // operation); it is not a claim of an absolute guarantee against every
-    // possible permission configuration.
-    let mut open_opts = std::fs::OpenOptions::new();
-    open_opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        open_opts.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut tmp_file = open_opts
-        .open(&tmp)
-        .with_context(|| format!("open {}", tmp.display()))?;
-    tmp_file
-        .write_all(content.as_bytes())
-        .with_context(|| format!("write {}", tmp.display()))?;
-    drop(tmp_file);
-    std::fs::rename(&tmp, abs)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), abs.display()))?;
+    files.write(node_id, content.as_bytes())?;
     Ok(WriteResult::Written {
         version: content_version(content.as_bytes()),
     })

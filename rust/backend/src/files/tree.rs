@@ -13,8 +13,8 @@
 // Both resolvers reject `..` segments and absolute paths in the id itself.
 // READS (tree.children, preview.get, file.read) FOLLOW symlinks — including
 // out-of-root ones like `data/results/` → NAS, this deployment's convention.
-// MUTATIONS (file.write, file.delete) use `node_id_to_path_confined`, which
-// additionally canonicalizes and refuses paths escaping the root.
+// WRITES (file.write) go through `FilesMode::write`, beneath the root and following no link; file.delete
+// uses `node_id_to_path_confined`, which additionally canonicalizes and refuses paths escaping the root.
 //
 // Directory listings skip hidden entries (leading `.`) UNLESS the per-
 // workspace `show_hidden` flag is set — the frontend flips it with the `.`
@@ -133,7 +133,7 @@ impl FilesMode {
     /// file.read, image.crop's source) use this. String-level `..`/absolute
     /// injections in the node id itself are still rejected.
     ///
-    /// MUTATING callers (file.write, file.delete) must use
+    /// MUTATING callers (file.delete) must use
     /// [`node_id_to_path_confined`] instead, which keeps the full
     /// canonicalize+confine escape guard from the security review.
     pub fn node_id_to_path(&self, node_id: &str) -> Result<PathBuf> {
@@ -170,7 +170,7 @@ impl FilesMode {
             .ok_or_else(|| anyhow!("not a files-mode id: {node_id}"))?;
         sot_platform::host::write_beneath(&self.root, rel, bytes).map_err(|e| {
             if e.kind() == std::io::ErrorKind::InvalidInput {
-                anyhow!("node id cannot be written: {node_id}: {e}")
+                anyhow::Error::new(e).context(format!("node id cannot be written: {node_id}"))
             } else {
                 anyhow::Error::new(e).context(format!("write {node_id}"))
             }

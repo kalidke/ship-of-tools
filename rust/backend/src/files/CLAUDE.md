@@ -16,8 +16,11 @@ Per workspace row (built in `rows/workspace.rs`):
 ## Promises
 - Node ids are `files:<rel>` with `/` on every OS; an id holding `..` or an absolute path is refused
   (`FilesMode::path_to_node_id`, `compose_node_path`).
-- Reads follow links (`node_id_to_path`). `file.write`, `dir.create` and `file.delete` resolve through
-  `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
+- Reads follow links (`node_id_to_path`). Writes go through `FilesMode::write`; `dir.create` and a delete resolve
+  through `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
+- `file.write` writes beneath the root through `FilesMode::write`, following no link: a save through a link at a folder of
+  its path, wherever the link leads, is refused `bad_node_id` and writes nothing. Its version check reads through the read
+  resolver. On Windows a save, like the rename it replaces, fails while another program holds the file open without sharing; `write_beneath` retries that rename for a window first. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`, `a_save_through_a_folder_link_takes_no_write`.
 - The crop's PNG and a drawing's picture are written under `.sot/captures/` through `FilesMode::write`, which
   follows no link (platform's `write_beneath`, guarantee 17): the folder is created beneath the root and a `.sot` or
   `captures` link, wherever it leads, takes no write. Tested (a symlink, a junction on Windows) by
@@ -32,7 +35,7 @@ Per workspace row (built in `rows/workspace.rs`):
   (Unix; `ink_tests::a_fifo_named_like_an_image_answers_at_once`); the crop picks its decoder from the file's bytes, not its name (a file of
   an unsupported format answers `decode_failed`), and is a PNG of the clamped rect
   (`a_crop_is_a_png_of_the_rect_beneath_the_captures_folder`).
-- `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
+- `write_file` (`file.write`) refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
   budget of 5 s. Only a confirmed zero exit counts as system trash; an unconfirmed one after which the file is already

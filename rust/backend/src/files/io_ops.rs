@@ -111,13 +111,21 @@ pub async fn handle_file_write(
         &req.node_id,
         req.workspace_id.as_deref(),
         workspaces,
-        true,
+        false,
     ) {
         Ok(p) => p,
         Err(out) => return Ok(out),
     };
+    // resolve_file_node validated the workspace and built its FilesMode; the write goes through the same one.
+    let files_mode = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::FILE_WRITE)
+        .map(|ws| ws.files_mode())
+    {
+        Ok(Ok(fm)) => fm,
+        Ok(Err(e)) => return Err(e),
+        Err(reply) => return Ok(reply),
+    };
 
-    match io::write_file(&path, &req.content, req.expected_version.as_deref()) {
+    match io::write_file(&files_mode, &req.node_id, &req.content, req.expected_version.as_deref()) {
         Ok(WriteResult::Written { version }) => {
             let res = FileWriteRes {
                 node_id: req.node_id.clone(),
@@ -152,14 +160,21 @@ pub async fn handle_file_write(
             ),
             None,
         )]),
-        Err(e) => Ok(vec![(
-            Frame::res(
-                req_id,
-                op::FILE_WRITE,
-                json!({ "error": format!("{e:#}"), "code": "file_write_failed", "node_id": req.node_id }),
-            ),
-            None,
-        )]),
+        Err(e) => {
+            // A name the write refuses answers as a node id, like the resolver's refusals.
+            let refused = e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::InvalidInput);
+            let code = if refused { "bad_node_id" } else { "file_write_failed" };
+            Ok(vec![(
+                Frame::res(
+                    req_id,
+                    op::FILE_WRITE,
+                    json!({ "error": format!("{e:#}"), "code": code, "node_id": req.node_id }),
+                ),
+                None,
+            )])
+        }
     }
 }
 
