@@ -231,7 +231,10 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                     }
                     _ => {}
                 }
+                let key = handle.clone();
                 settle(&mut woken, &mut streaks, handle, step, Instant::now());
+                // Test point: this tick's decision for the row is applied (a test counts looks, never the clock).
+                sot_platform::hold_point!("comm.wake.looked", key);
             }
         }
         // A direct page reply a busy row holds gets the same tick, through the same gate and its per-row exclusion.

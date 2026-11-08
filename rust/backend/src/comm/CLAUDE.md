@@ -116,7 +116,7 @@ Waking:
   a daemon whose watchdog restarts the killed supervisor). Within one attempt the typing and its Enter are fenced to the
   run whose screen the gate read: the attempt sends them for that run, and a row whose run was replaced after the check
   refuses them, so a run the attempt did not check is typed into by no one
-  (`comm_wake::an_attempt_never_types_into_a_run_it_did_not_check`, over the seam `SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS`). A restarted daemon's boot look knows no run, so it sends Enter
+  (`comm_wake::an_attempt_never_types_into_a_run_it_did_not_check`, over the hold point `comm.wake.final_ok`). A restarted daemon's boot look knows no run, so it sends Enter
   alone only into a box that holds the wake line, and types nothing else (WAKE-RESTART-LOOK,
   `comm_wake::a_restarted_daemon_completes_a_wake_line_left_typed`;
   `comm_wake::a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_box_alone`).
@@ -238,7 +238,7 @@ The environment: comm's identity and commands read variables only from an `Env` 
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
 record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
 (`read_comm_agents`, `try_read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
-call and pass it to their `_in` form. One read remains of the process: `wake`'s test-only `SOT_TEST_WAKE_MARKS`.
+call and pass it to their `_in` form. No read of the process remains in comm; the wake's test points (`comm.wake.hold`, `final_ok`, `done`, `looked`) go through platform's hold tool.
 
 Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) and passes it, so none writes the
 process environment and none needs a lock for one; a test that starts a child sets the child's environment on its

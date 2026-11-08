@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use sot_platform::test_hold::Arm;
 use sot_protocol::op;
 
 mod support;
@@ -52,22 +53,23 @@ printf '\r\n'
 /// footer, is drawn once; while `foot` exists the loop also redraws it every
 /// 0.2 s with a counter.
 ///
-/// More control files, in `ctl` (the daemon's `SOT_TEST_WAKE_MARKS` is `ctl/marks`): `suggest` draws a dim
+/// More control files, in `ctl` (the daemon's wake points are files in the `Env`'s holds folder, `holds/<point>.<ticket>.at`): `suggest` draws a dim
 /// suggestion after the prompt's NBSP; `draft`, `draft-home`, `draft-wrap` and `draft-nl` (their content the text)
 /// draw a person's unsent text in the box, not dim: the cursor after it, the cursor moved back to its start, the text
 /// wrapped onto a second row (`and push every branch`) with the cursor at its end, and a newline after it with the
 /// cursor on the empty second row; `clear-draft` then redraws the box empty, as a person's send or clear leaves it; `panel` draws a leader agents panel (`● main`, `◯ worker`, the
 /// `← for agents` hint) under the lower rule in place of the footer, which reads free; with `panel`, `focus-hold`
-/// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`marks/hold`), and
-/// `focus-after` does the same once its final check has passed (`marks/final-ok`) and then leaves the cursor on
+/// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`holds/comm.wake.hold.0.at`), and
+/// `focus-after` does the same once its final check has passed (`holds/comm.wake.final_ok.0.at`) and then leaves the cursor on
 /// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were. The stub
-/// writes `marks/focus-moved` at the moment it redraws for either of them. `echo-after` (its content, the seconds)
+/// writes `ctl/focus-moved` at the moment it redraws for either of them. `echo-after` (its content, the seconds)
 /// reads typed input without the tty's echo and prints it where the cursor is that many seconds after its first
 /// byte (`READ_SLOW_ECHO`; with `focus-after` also not before the stub has moved focus), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
 /// and `other` for anything else, so a line typed twice shows.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
+    let holds = ctl.parent().expect("ctl folder has a parent").join("holds").display().to_string();
     let slow = dir.join("read-slow-echo.sh");
     std::fs::write(&slow, READ_SLOW_ECHO).expect("write slow-echo reader");
     let script = format!(
@@ -94,9 +96,9 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
            else\n\
              printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$sug\" \"$rule\"\n\
            fi\n\
-           ( n=0; fh=0; fa=0; dc=0; while :; do n=$((n+1)); if [ $dc = 0 ] && [ -f '{ctl}/clear-draft' ]; then dc=1; if [ -f '{ctl}/draft-wrap' ] || [ -f '{ctl}/draft-nl' ]; then printf '\\r\\033[M\\033[1A'; fi; printf '\\r\\342\\235\\257\\302\\240\\033[K\\033[3G'; fi; if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/marks/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/marks/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
+           ( n=0; fh=0; fa=0; dc=0; while :; do n=$((n+1)); if [ $dc = 0 ] && [ -f '{ctl}/clear-draft' ]; then dc=1; if [ -f '{ctl}/draft-wrap' ] || [ -f '{ctl}/draft-nl' ]; then printf '\\r\\033[M\\033[1A'; fi; printf '\\r\\342\\235\\257\\302\\240\\033[K\\033[3G'; fi; if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{holds}/comm.wake.hold.0.at' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{holds}/comm.wake.final_ok.0.at' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
-           if [ -f '{ctl}/echo-after' ]; then w=''; [ -f '{ctl}/focus-after' ] && w='{ctl}/marks/focus-moved'; bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line' \"$w\"; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
+           if [ -f '{ctl}/echo-after' ]; then w=''; [ -f '{ctl}/focus-after' ] && w='{ctl}/focus-moved'; bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line' \"$w\"; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
            kill $spid\n\
            printf '%s\\n' \"$line\" >> '{ctl}/received'\n\
            case \"$line\" in\n\
@@ -157,6 +159,10 @@ async fn wait_pings(log: &Path, want: usize, within: Duration) -> bool {
 }
 
 struct Row {
+    // The wake's points (armed in [`start_full`]); declared before `env` so they drop while its holds folder lives.
+    hold: Arm,
+    final_ok: Arm,
+    done: Arm,
     env: Env,
     conn: Conn,
     next_id: u64,
@@ -222,8 +228,15 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 }
 
 /// [`start`], with `ctl` control files (see [`write_stub_claude`], `name` or `name=content`) created before the row starts, and `extra`
-/// env vars on the daemon. `SOT_TEST_WAKE_MARKS` is always set, to `ctl/marks`.
+/// env vars on the daemon. The wake's points `comm.wake.hold`, `final_ok` and `done` are armed on the row's holds folder
+/// before the daemon starts, counting only.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
+    start_full(tag, log, in_dialog, ctl, extra, 0).await
+}
+
+/// [`start_with`], the first `final_holds` arrivals at `comm.wake.final_ok` held (after the wake's last check, before
+/// its typing) until the test releases them.
+async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)], final_holds: usize) -> Row {
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
@@ -240,11 +253,10 @@ async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     if in_dialog {
         std::fs::write(&dialog, b"").unwrap();
     }
-    let marks = ctl_dir.join("marks");
-    let marks = marks.to_string_lossy().to_string();
-    let mut env_vars = vec![("SOT_TEST_WAKE_MARKS", marks.as_str())];
-    env_vars.extend_from_slice(extra);
-    env.spawn_sotd_with_path_and_env(&stub_dir, &env_vars);
+    let hold = env.holds.arm("comm.wake.hold").hold(0);
+    let final_ok = env.holds.arm("comm.wake.final_ok").hold(final_holds);
+    let done = env.holds.arm("comm.wake.done").hold(0);
+    env.spawn_sotd_with_path_and_env(&stub_dir, extra);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
         "label": "wake-row",
@@ -260,7 +272,7 @@ async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     next_id += 1;
     assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
-    Row { env, conn, next_id, ws, log, dialog, spin, foot, stub_dir }
+    Row { hold, final_ok, done, env, conn, next_id, ws, log, dialog, spin, foot, stub_dir }
 }
 
 /// An idle row is woken by one appended line, and only once.
@@ -656,16 +668,10 @@ async fn wait_for_panel(row: &mut Row) {
     wait_for_screen(row, "for agents").await;
 }
 
-/// The wake attempt's marks (`SOT_TEST_WAKE_MARKS`, see [`start_with`]).
-fn marks(row: &Row) -> PathBuf {
-    row.env._tmp.path().join("ctl").join("marks")
-}
-
-/// Waits for the daemon's boot look at the row (a `done` mark, see `check_row`), then clears the mark, so a test that
-/// waits for the mail's attempt by its `done` mark does not take the look's for it.
-async fn pass_boot_look(m: &Path) {
-    wait_for("the boot look's done mark", || m.join("done").exists()).await;
-    std::fs::remove_file(m.join("done")).expect("clear the done mark");
+/// Waits for the daemon's boot look at the row (arrival 0 of `comm.wake.done`, see `check_row`); a test that waits for
+/// the mail's attempt by the next arrival (1) does not take the look's for it.
+async fn pass_boot_look(row: &Row) {
+    row.done.reached_async(0).await;
 }
 
 /// Focus moves to the agents panel during the hold while the rows through the box and the cursor stay put: the
@@ -677,13 +683,12 @@ async fn panel_focus_arriving_during_the_hold_is_refused() {
     let _serial = SERIAL.lock().await;
     let mut row = start_with("cwph", None, false, &["panel", "focus-hold"], &[]).await;
     wait_for_panel(&mut row).await;
-    let m = marks(&row);
-    pass_boot_look(&m).await;
+    pass_boot_look(&row).await;
     append_mail(&row.env, 1);
-    wait_for("the attempt's done mark", || m.join("done").exists()).await;
-    assert!(m.join("focus-moved").exists(), "the stub never moved focus");
-    assert!(m.join("hold").exists(), "no attempt reached the hold");
-    assert!(!m.join("final-ok").exists(), "the final check passed with focus on the panel");
+    row.done.reached_async(1).await;
+    assert!(row.env._tmp.path().join("ctl/focus-moved").exists(), "the stub never moved focus");
+    assert!(row.hold.arrivals() > 0, "no attempt reached the hold");
+    assert_eq!(row.final_ok.arrivals(), 0, "the final check passed with focus on the panel");
     assert!(!row.screen_has("[sot-comm]").await, "the wake line was typed into the row");
     assert_eq!(pings(&row.log), 0, "typed into a row whose focus had moved to the panel");
     row.env.kill_daemon_bounded().await;
@@ -696,11 +701,10 @@ async fn focus_moving_after_the_final_check_gets_no_enter() {
     let _serial = SERIAL.lock().await;
     let mut row = start_with("cwfa", None, false, &["panel", "focus-after", "echo-after=1"], &[]).await;
     wait_for_panel(&mut row).await;
-    let m = marks(&row);
-    pass_boot_look(&m).await;
+    pass_boot_look(&row).await;
     append_mail(&row.env, 1);
-    wait_for("the attempt's done mark", || m.join("done").exists()).await;
-    assert!(m.join("focus-moved").exists(), "the stub never moved focus");
+    row.done.reached_async(1).await;
+    assert!(row.env._tmp.path().join("ctl/focus-moved").exists(), "the stub never moved focus");
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     assert!(daemon_log(&row.env).contains("no Enter sent"), "the warn line does not say no Enter was sent");
     assert_eq!(pings(&row.log), 0, "sent Enter with focus off main's box");
@@ -763,15 +767,14 @@ async fn a_wake_line_left_unsent_is_completed_after_the_mail_is_read() {
 #[tokio::test]
 async fn a_restarted_daemon_completes_a_wake_line_left_typed() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("cwrl", None, false, &["echo-after=5"], &[]).await;
+    let row = start_with("cwrl", None, false, &["echo-after=5"], &[]).await;
     append_mail(&row.env, 1);
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     read_mail(&row.env, 1);
     row.env.kill_daemon_bounded().await;
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
-    let marks = marks(&row).to_string_lossy().to_string();
-    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks.as_str())]);
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[]);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 1);
@@ -791,14 +794,11 @@ async fn a_restarted_daemon_leaves_other_text_in_the_prompt_and_looks_once() {
     assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
     wait_for_screen(&mut row, "draft").await;
     row.env.kill_daemon_bounded().await;
-    let done = marks(&row).join("done");
-    let _ = std::fs::remove_file(&done);
-    let marks_dir = marks(&row).to_string_lossy().to_string();
-    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks_dir.as_str())]);
-    wait_for("the boot look", || done.exists()).await;
-    std::fs::remove_file(&done).unwrap();
+    let before = row.done.arrivals();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[]);
+    row.done.reached_async(before).await;
     tokio::time::sleep(THREE_TICKS).await;
-    assert!(!done.exists(), "a later tick attached to the row again");
+    assert_eq!(row.done.arrivals(), before + 1, "a later tick attached to the row again");
     assert_eq!(pings(&row.log), 0);
     assert_eq!(others(&row.log), 0, "the draft was sent");
     row.env.kill_daemon_bounded().await;
@@ -837,11 +837,9 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
     end_supervisor(&row.env);
-    let marks_dir = marks(&row).to_string_lossy().to_string();
-    let done = marks(&row).join("done");
-    let _ = std::fs::remove_file(&done);
-    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_WAKE_MARKS", marks_dir.as_str()), ("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
-    wait_for("the boot look", || done.exists()).await;
+    let before = row.done.arrivals();
+    row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[("SOT_TEST_RECOVERY_DELAY_MS", "7000")]);
+    row.done.reached_async(before).await;
     tokio::time::sleep(THREE_TICKS).await;
     assert_eq!(pings(&row.log), 0, "the new run's box owed no Enter");
     assert_eq!(others(&row.log), 0, "the wake line was typed again");
@@ -878,10 +876,9 @@ async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
 #[tokio::test]
 async fn an_attempt_never_types_into_a_run_it_did_not_check() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("cwfr", None, false, &[], &[SHORT_BACKOFF, ("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "9000")]).await;
+    let mut row = start_full("cwfr", None, false, &[], &[SHORT_BACKOFF], 1).await;
     append_mail(&row.env, 1);
-    let final_ok = marks(&row).join("final-ok");
-    wait_for("the attempt's final check", || final_ok.exists()).await;
+    row.final_ok.reached_async(0).await;
     // The new run draws the dialog, not the prompt.
     std::fs::write(&row.dialog, b"").unwrap();
     kill_supervisor(&row.env.state_root);
@@ -891,7 +888,11 @@ async fn an_attempt_never_types_into_a_run_it_did_not_check() {
         assert!(Instant::now() < deadline, "the new run never drew its dialog");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // The held attempt goes on only now, with its worker reconnected to the new run.
+    // (One attempt per row at a time: the next `done` is this attempt's.)
+    let done_before = row.done.arrivals();
+    row.final_ok.release(0);
+    row.done.reached_async(done_before).await;
     let screen = screen_now(&mut row).await.unwrap_or_default();
     assert!(!screen.iter().any(|l| l.contains("[sot-comm]")), "the old run's attempt typed into the new run's dialog: {screen:?}");
     std::fs::remove_file(&row.dialog).unwrap();
@@ -913,7 +914,7 @@ async fn screen_now(row: &mut Row) -> Option<Vec<String>> {
 /// Use literal wire names and marks so these tests compile at the pre-2a base and fail by behavior.
 async fn prepare_page_reply(row: &Row) {
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
-    pass_boot_look(&marks(row)).await;
+    pass_boot_look(row).await;
 }
 
 async fn page_reply(row: &mut Row, handle: &str, line: &str) -> serde_json::Value {
@@ -983,14 +984,14 @@ async fn page_reply_never_types_into_a_dialog_a_draft_or_a_working_row() {
 #[tokio::test]
 async fn a_page_reply_and_a_wake_never_type_at_once() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("pr-wake", None, false, &[], &[("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "6000")]).await;
-    let m = marks(&row);
+    let mut row = start_full("pr-wake", None, false, &[], &[], 1).await;
     prepare_page_reply(&row).await;
     append_mail(&row.env, 1);
-    wait_for("the wake's held final check", || m.join("final-ok").exists()).await;
+    row.final_ok.reached_async(0).await;
     let res = page_reply(&mut row, HANDLE, "[sot-page] approve").await;
     assert_eq!(res["outcome"], "not_free", "{res}");
     assert!(res["detail"].as_str().unwrap().contains("another typing"), "{res}");
+    row.final_ok.release(0);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await);
     assert_eq!(received(&row), ["[sot-comm] you have mail: run comm-poll.sh"]);
     row.env.kill_daemon_bounded().await;
@@ -999,8 +1000,7 @@ async fn a_page_reply_and_a_wake_never_type_at_once() {
 #[tokio::test]
 async fn two_page_reply_attempts_share_one_guard_and_the_connection_stays_live() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("pr-two", None, false, &[], &[("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS", "6000")]).await;
-    let m = marks(&row);
+    let mut row = start_full("pr-two", None, false, &[], &[], 1).await;
     prepare_page_reply(&row).await;
     let id = row.next_id;
     row.next_id += 1;
@@ -1008,12 +1008,13 @@ async fn two_page_reply_attempts_share_one_guard_and_the_connection_stays_live()
         "workspace_id": row.ws, "handle": HANDLE, "line": "[sot-page] first"
     }));
     sot_protocol::codec::write_frame(row.conn.get_mut(), &frame, None).await.unwrap();
-    wait_for("the first reply's held final check", || m.join("final-ok").exists()).await;
+    row.final_ok.reached_async(0).await;
     // A second job on the same connection is answered while the first attempt is still held.
     let second = page_reply(&mut row, HANDLE, "[sot-page] second").await;
     assert_eq!(second["outcome"], "not_free", "{second}");
     assert!(second["detail"].as_str().unwrap().contains("another typing"));
-    assert!(!m.join("done").exists(), "the connection answered only after the first typing ended");
+    assert_eq!(row.done.arrivals(), 1, "the connection answered only after the first typing ended");
+    row.final_ok.release(0);
     let first = tokio::time::timeout(BOUND, async {
         loop {
             let (frame, _) = sot_protocol::codec::read_frame(&mut row.conn).await.unwrap();
