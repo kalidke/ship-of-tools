@@ -505,13 +505,19 @@ async fn a_row_removed_after_admission_is_refused_at_the_owners_snapshot() {
     let (fake, lv) = live().await;
     let rig = live_rig(&fake).await;
     let hub = rig.services.chat.hub().clone();
-    let arm = Holds::here().arm("chat.watch.between").key(Arc::as_ptr(&hub) as usize).hold(1);
+    let key = Arc::as_ptr(&hub) as usize;
+    // The handler kicks the owner before the reply's hold point, so the owner's snapshot is held at its own: the row
+    // goes while both are held, and the reply goes on only once the owner has released the slot.
+    let reply = Holds::here().arm("chat.watch.between").key(key).hold(1);
+    let snapshot = Holds::here().arm("chat.watch.snapshot").key(key).hold(1);
     let mut a = connect(rig.services.clone()).await;
     a.send(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await;
-    arm.reached_async(0).await;
+    reply.reached_async(0).await;
+    snapshot.reached_async(0).await;
     drop(rig.rows.remove_by_id(&rig.alpha).unwrap());
+    snapshot.release(0);
     eventually("the stale slot released by the owner", || hub.slots().is_empty()).await;
-    arm.release(0);
+    reply.release(0);
     let first = a.frame("the watch's reply").await;
     assert_eq!((first.kind, first.id), (Kind::Res, 2));
     let (name, payload) = a.evt("a chat.status for the released watch").await;
