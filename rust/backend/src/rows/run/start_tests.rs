@@ -56,13 +56,18 @@ async fn only_a_started_claude_spawn_opens_a_leg_and_the_next_spawn_closes_it() 
     open_leg_after_start(&workspaces, &codex.workspace_id, g, "codex", vec!["codex".to_string()]);
     assert_eq!(codex.trust_reading(), None, "a Codex row opens no leg");
 
-    // A failed spawn: the state folder lies inside the project root, so it returns before anything started.
+    // A failed spawn: the state folder lies inside the project root, so it returns before anything started. The folder
+    // exists, so both sides canonicalize alike (a missing one keeps its raw spelling, which on Windows differs from the
+    // root's `\\?\` form and escapes the containment check).
     let ws = row("claude", "claude");
+    let state = ws.project_root.join("state");
+    std::fs::create_dir_all(&state).unwrap();
     let failed = spawn_and_watch(
-        &permit, Path::new("sot-capsule"), &ws.project_root.join("state"), StartMode::Start, &reauth, &ws.project_root, "",
+        &permit, Path::new("sot-capsule"), &state, StartMode::Start, &reauth, &ws.project_root, "",
         ws.workspace_id.clone(), ws.slug.clone(), workspaces.clone(),
     );
-    assert!(failed.is_err());
+    let refusal = failed.expect_err("a state folder inside the project root is refused");
+    assert!(refusal.to_string().contains("lies inside the project root"), "refused for that reason: {refusal}");
     assert_eq!(ws.trust_reading(), None, "a failed spawn opens no leg");
 
     let g = ws.begin_spawn();
