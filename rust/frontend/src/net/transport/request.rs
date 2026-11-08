@@ -338,6 +338,15 @@ pub enum OutgoingReq {
     /// Type the reply a person confirmed on the reply bar into the row's prompt, marked as from a page. Sent only by
     /// the bar's Enter. Response surfaces as `IncomingEvt::PageReplied`.
     PageReply { workspace_id: String, handle: String, line: String },
+    /// The project chat's requests (the daemon rechecks each one's row and channel). Replies surface as
+    /// `IncomingEvt::Chat`; `ChatUnwatch` has none.
+    ChatResolve { row: String },
+    ChatWatch { target: sot_protocol::ops::ChatTarget },
+    ChatUnwatch { target: sot_protocol::ops::ChatTarget },
+    ChatHistory { req: sot_protocol::ops::ChatHistoryReq },
+    /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
+    /// owner sends the next only after the last one's reply.
+    ChatPost { req: sot_protocol::ops::ChatPostReq },
     /// Render a Quarto/markdown doc on the backend and open it in the OS
     /// browser. `execute = false` (`o`) = fast no-execute render; `execute =
     /// true` (`O`) runs code chunks. Response surfaces as
@@ -420,7 +429,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -454,6 +463,10 @@ impl OutgoingReq {
             | OutgoingReq::VideoOpen { .. }
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
+            | OutgoingReq::ChatResolve { .. }
+            | OutgoingReq::ChatWatch { .. }
+            | OutgoingReq::ChatUnwatch { .. }
+            | OutgoingReq::ChatHistory { .. }
             | OutgoingReq::FileDownload { .. }
             | OutgoingReq::FileUpload { .. }
             | OutgoingReq::MonitorSubscribe
@@ -512,6 +525,25 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::VideoOpen { path } => send_video_open(&mut tx, pending, id, path).await?,
         OutgoingReq::DocsOpen { path, direct } => send_docs_open(&mut tx, pending, id, path, direct).await?,
         OutgoingReq::PageReply { workspace_id, handle, line } => send_page_reply(&mut tx, pending, id, workspace_id, handle, line).await?,
+        OutgoingReq::ChatResolve { row } => {
+            let kind = PendingKind::ChatResolve { row: row.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_RESOLVE, sot_protocol::ops::ChatResolveReq { row }, Some(kind)).await?
+        }
+        OutgoingReq::ChatWatch { target } => {
+            let kind = PendingKind::ChatWatch { target: target.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_WATCH, sot_protocol::ops::ChatWatchReq { target }, Some(kind)).await?
+        }
+        OutgoingReq::ChatUnwatch { target } => {
+            send_chat(&mut tx, pending, id, op::CHAT_UNWATCH, sot_protocol::ops::ChatUnwatchReq { target }, None).await?
+        }
+        OutgoingReq::ChatHistory { req } => {
+            let kind = PendingKind::ChatHistory { req: req.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_HISTORY, req, Some(kind)).await?
+        }
+        OutgoingReq::ChatPost { req } => {
+            let kind = PendingKind::ChatPost { req: req.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_POST, req, Some(kind)).await?
+        }
         OutgoingReq::QuartoOpen { path, execute } => send_quarto_open(&mut tx, pending, id, path, execute).await?,
         OutgoingReq::ReplRunFile { eval_id, path, fresh, workspace_id } => send_repl_run_file(&mut tx, pending, id, eval_id, path, fresh, workspace_id).await?,
         OutgoingReq::FileDownload { path, dest } => send_file_download(&mut tx, pending, id, path, dest).await?,

@@ -67,6 +67,21 @@ through the channel types below.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
   0), never the generic `Event`; the window's one arm only logs it, so no pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
+- The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
+  channel (`remote_chat_adds_no_link_or_login`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
+  and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
+  history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
+  request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
+  know). `chat.unwatch` is fire-and-forget. `chat.changed` and `chat.status` are decoded into `ChatEvt::Changed` and
+  `ChatEvt::Status`; one that does not parse is dropped with a warning. A post is written on one connection at most
+  (`ChatPost` is not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
+  reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
+  ends first are unknown, never refused, so the window never offers to resend (tests
+  `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again`,
+  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`). Limits: fe-net does
+  not order posts (the composer sends the next after the last one's reply), does not resync after `bus.lost` or a
+  `chat.status`, and does not pace resyncs; a watch, history or resolve in flight when a connection ends gets no event.
+  Those belong to the chat's view owner, which does not exist yet; `ui/events.rs` drops `IncomingEvt::Chat`.
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
   the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`). That is every
@@ -95,7 +110,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
-`page.reply`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
+`page.reply`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

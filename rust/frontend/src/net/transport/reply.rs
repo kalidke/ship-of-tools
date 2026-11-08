@@ -117,6 +117,19 @@ pub(super) enum PendingKind {
         handle: String,
     },
     QuartoOpen,
+    ChatResolve {
+        row: String,
+    },
+    ChatWatch {
+        target: sot_protocol::ops::ChatTarget,
+    },
+    ChatHistory {
+        req: sot_protocol::ops::ChatHistoryReq,
+    },
+    /// A `chat.post`: its answer is about THIS request, and a connection that ends before it is the unknown outcome.
+    ChatPost {
+        req: sot_protocol::ops::ChatPostReq,
+    },
     ReplRunFile {
         eval_id: u64,
         path: String,
@@ -228,6 +241,11 @@ impl Drop for PendingGuard<'_> {
                     outcome: "unknown".into(),
                     detail: "the connection to the daemon ended before it answered".into(),
                 },
+                // Posted once and never resent, and the daemon may have sent it before the connection ended.
+                PendingKind::ChatPost { req } => IncomingEvt::Chat(ChatEvt::Posted {
+                    req,
+                    reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Unknown),
+                }),
                 _ => continue,
             };
             let _ = self.evt_tx.send((self.host.clone(), event));
@@ -341,6 +359,10 @@ pub(super) fn handle_response_frame(
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
             PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
+            PendingKind::ChatResolve { row } => on_chat_resolve(frame, &emit, row),
+            PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
+            PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),
+            PendingKind::ChatPost { req } => on_chat_post(frame, &emit, req),
             PendingKind::ReplRunFile { eval_id, path, fresh } => {
                 if frame.payload.get("frames").is_some() {
                     eval_running(pending, eval_id);
@@ -375,6 +397,10 @@ pub(super) fn handle_response_frame(
             Ok(ev) => emit(IncomingEvt::BusLost { bus: ev.bus, skipped: ev.skipped }),
             Err(e) => tracing::warn!(error = %e, "bus.lost evt parse failed"),
         }
+        return;
+    }
+    if frame.kind == sot_protocol::Kind::Evt && (frame.op == op::CHAT_CHANGED || frame.op == op::CHAT_STATUS) {
+        on_chat_event(frame, &emit);
         return;
     }
     emit(IncomingEvt::Event {

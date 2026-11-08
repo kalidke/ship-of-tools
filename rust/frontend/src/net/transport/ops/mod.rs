@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod chat;
 mod concept;
 mod files;
 mod kernel;
@@ -33,8 +34,9 @@ fn is_unsupported(op: &str, payload: &serde_json::Value) -> bool {
         && payload.get("error").and_then(|v| v.as_str()).is_some_and(|e| e.strip_prefix("unknown op: ") == Some(op))
 }
 
-pub(super) use {concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, tree::*, workspace::*};
+pub(super) use {chat::*, concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, tree::*, workspace::*};
 pub(crate) use {
+    chat::{ChatEvt, ChatReply},
     concept::ConceptWriteResult,
     files::{DirCreateResult, FileDeleteResult, FileWriteResult},
     kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ScanModule, ScanType},

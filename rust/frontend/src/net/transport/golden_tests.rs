@@ -8,6 +8,11 @@ impl Redraw for GoldenWindow {
     fn request_redraw(&self) {}
 }
 
+fn chat_target(tag: &str) -> sot_protocol::ops::ChatTarget {
+    serde_json::from_value(serde_json::json!({ "row": format!("{tag}.row"), "workspace": format!("{tag}.ws"), "channel": format!("C{tag}") }))
+        .unwrap()
+}
+
 /// One of every `OutgoingReq` kind, in the order of `run_session`'s old
 /// request match. Every field value is distinct, so two arguments of the
 /// same type passed in the wrong order change the golden.
@@ -77,6 +82,18 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         OutgoingReq::DocsOpen { path: s("do.path"), direct: sot_protocol::ReplyScope::All },
         OutgoingReq::PageReply { workspace_id: s("pr.ws"), handle: s("pr.handle"), line: s("pr.line") },
         OutgoingReq::QuartoOpen { path: s("qo.path"), execute: true },
+        OutgoingReq::ChatResolve { row: s("cres.row") },
+        OutgoingReq::ChatWatch { target: chat_target("cw") },
+        OutgoingReq::ChatUnwatch { target: chat_target("cu") },
+        OutgoingReq::ChatHistory {
+            req: serde_json::from_value(serde_json::json!({ "target": chat_target("ch"), "limit": 7 })).unwrap(),
+        },
+        OutgoingReq::ChatPost {
+            req: serde_json::from_value(serde_json::json!({
+                "target": chat_target("cp"), "kind": "row", "name": "cp.name", "text": "cp.text"
+            }))
+            .unwrap(),
+        },
         OutgoingReq::ReplRunFile { eval_id: 116, path: s("rf.path"), fresh: true, workspace_id: o("rf.ws") },
         OutgoingReq::FileDownload { path: s("fdl.path"), dest: download_dest.to_path_buf() },
         OutgoingReq::FileUpload {

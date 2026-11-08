@@ -559,30 +559,23 @@ async fn fake_far_daemon(conn: tokio::io::DuplexStream) {
         return;
     }
     while let Ok((req, _)) = codec::read_frame(&mut rx).await {
-        let reply = if req.op == op::PING { serde_json::json!({ "ok": true }) } else { serde_json::json!({ "error": "not here", "code": "io" }) };
+        let reply = match req.op.as_str() {
+            op::PING => serde_json::json!({ "ok": true }),
+            op::CHAT_RESOLVE => serde_json::json!({ "state": "unmapped" }),
+            _ => serde_json::json!({ "error": "not here", "code": "io" }),
+        };
         if codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply), None).await.is_err() {
             return;
         }
     }
 }
 
-/// fe-net and topology 5: a remote host costs the window one login for its control connection, two page connections
-/// and three lane dials. The host is reached through a hub relay socket this test serves, where each connection is one
-/// hub-to-far login; behind it a far router in this process carries the link's channels to a fake daemon.
+/// A hub relay socket at `sock_path` (each connection one hub-to-far login) with a far router in this process behind
+/// it, carrying the link's channels to a fake daemon; the runtime it runs on, and its counts of logins and channels.
 #[cfg(unix)]
-#[test]
-fn a_remote_host_costs_one_login_for_control_pages_and_rows() {
+fn serve_far_relay(sock_path: &std::path::Path) -> (tokio::runtime::Runtime, Arc<std::sync::atomic::AtomicUsize>, Arc<std::sync::atomic::AtomicUsize>) {
     use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
-    use sot_capsule::endpoint::Endpoint;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let _env = crate::net::state::test_env::set_test_env();
-    let sock_path = {
-        use std::os::unix::fs::DirBuilderExt;
-        let dir = std::path::PathBuf::from(format!("/tmp/sot-one-login-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
-        dir.join("sot-host-far.sock")
-    };
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let logins = Arc::new(AtomicUsize::new(0));
     let channels = Arc::new(AtomicUsize::new(0));
@@ -606,6 +599,26 @@ fn a_remote_host_costs_one_login_for_control_pages_and_rows() {
             }
         });
     });
+    (rt, logins, channels)
+}
+
+/// fe-net and topology 5: a remote host costs the window one login for its control connection, two page connections
+/// and three lane dials. The host is reached through a hub relay socket this test serves, where each connection is one
+/// hub-to-far login; behind it a far router in this process carries the link's channels to a fake daemon.
+#[cfg(unix)]
+#[test]
+fn a_remote_host_costs_one_login_for_control_pages_and_rows() {
+    use sot_capsule::endpoint::Endpoint;
+    use std::sync::atomic::Ordering;
+    let _env = crate::net::state::test_env::set_test_env();
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-one-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("sot-host-far.sock")
+    };
+    let (rt, logins, channels) = serve_far_relay(&sock_path);
     let handle = sot_topology::link::LinkHandle::default();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     let (_out_tx, out_rx) = outgoing_channel();
@@ -643,6 +656,108 @@ fn a_remote_host_costs_one_login_for_control_pages_and_rows() {
     assert_eq!(channels.load(Ordering::SeqCst), 5, "each page connection and each lane dial is a channel");
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+}
+
+/// M7: a remote host's chat is requests and events on its control connection, which is channel 0 of the link the window
+/// already has: a resolve, a watch, a history read and a post cost no login and open no channel, and each is answered.
+#[cfg(unix)]
+#[test]
+fn remote_chat_adds_no_link_or_login() {
+    use std::sync::atomic::Ordering;
+    let _env = crate::net::state::test_env::set_test_env();
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-chat-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("sot-host-far.sock")
+    };
+    let (rt, logins, channels) = serve_far_relay(&sock_path);
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (out_tx, out_rx) = outgoing_channel();
+    let config = TransportConfig { dial: Dial::Relay(sock_path.clone()), token: None };
+    let handle = sot_topology::link::LinkHandle::default();
+    spawn(&rt, "chat-link".to_string(), config, evt_tx, out_rx, NoWindow, Arc::new(tokio::sync::Notify::new()), handle, crate::lease::Leases::new(true, Vec::new()));
+    let target: sot_protocol::ops::ChatTarget =
+        serde_json::from_value(serde_json::json!({ "row": "r", "workspace": "T1", "channel": "C1" })).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut answered = Vec::new();
+    while answered.len() < 3 {
+        match evt_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok((_, IncomingEvt::Connected { .. })) => {
+                out_tx.send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+                out_tx.send(OutgoingReq::ChatWatch { target: target.clone() }).unwrap();
+                let req = serde_json::json!({ "target": target, "kind": "person", "name": "n", "text": "t" });
+                out_tx.send(OutgoingReq::ChatPost { req: serde_json::from_value(req).unwrap() }).unwrap();
+            }
+            Ok((_, IncomingEvt::Chat(evt))) => answered.push(format!("{evt:?}")),
+            Ok((_, IncomingEvt::Disconnected { reason, .. })) => panic!("the control session ended: {reason}"),
+            Ok(_) => {}
+            Err(_) => panic!("chat answers over the link within 10 s, got {answered:?}"),
+        }
+    }
+    println!("chat link: logins={} channels={} answered={answered:?}", logins.load(Ordering::SeqCst), channels.load(Ordering::SeqCst));
+    assert!(answered[0].contains("Resolved") && answered[0].contains("Done(Unmapped)"), "{answered:?}");
+    assert_eq!((logins.load(Ordering::SeqCst), channels.load(Ordering::SeqCst)), (1, 0), "one login, no channel besides channel 0");
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    let _ = std::fs::remove_dir_all(sock_path.parent().unwrap());
+}
+
+/// M6: an older daemon answers a chat op with its generic unknown-op answer. That ends only that request, as
+/// unsupported, and the connection goes on: an ordinary request after it, and a chat request the daemon does know,
+/// get their own answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn old_daemon_chat_refusal_preserves_other_requests() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let (near, far) = tokio::io::duplex(1 << 16);
+    let daemon = tokio::spawn(async move {
+        let (rx, mut tx) = tokio::io::split(far);
+        let mut rx = codec::buffered(rx);
+        for n in 0..6 {
+            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let reply = match (n, req.op.as_str()) {
+                (0, _) => hello_ok(),
+                (_, op::CHAT_WATCH) => serde_json::json!({ "error": "unknown op: chat.watch" }),
+                (_, op::CHAT_RESOLVE) => serde_json::json!({ "state": "unmapped" }),
+                (_, op::PAGE_REPLY) => serde_json::json!({ "outcome": "sent", "detail": "recorded" }),
+                _ => serde_json::json!({ "error": "cannot read the default directory", "code": "io" }),
+            };
+            codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, reply).with_rev(0), None).await.unwrap();
+        }
+        std::future::pending::<()>().await
+    });
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let session = tokio::spawn(async move {
+        let (rx, tx) = tokio::io::split(near);
+        run_protocol("old-chat".into(), codec::buffered(rx), tx, None, &evt_tx, &mut Outbox::new(out_rx), &NoWindow, ResolvedDial::Local, None).await
+    });
+    let target: sot_protocol::ops::ChatTarget =
+        serde_json::from_value(serde_json::json!({ "row": "r", "workspace": "T1", "channel": "C1" })).unwrap();
+    loop {
+        if let (_, IncomingEvt::Connected { .. }) = evt_rx.recv_timeout(std::time::Duration::from_secs(10)).expect("Connected") {
+            break;
+        }
+    }
+    out_tx.send(OutgoingReq::ChatWatch { target }).unwrap();
+    out_tx.send(OutgoingReq::PageReply { workspace_id: "w".into(), handle: "repo__box".into(), line: "l".into() }).unwrap();
+    out_tx.send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+    let mut answers = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while answers.len() < 3 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match evt_rx.recv_timeout(left).expect("the three answers") {
+            (_, IncomingEvt::Chat(evt)) => answers.push(format!("{evt:?}")),
+            (_, IncomingEvt::PageReplied { outcome, .. }) => answers.push(outcome),
+            _ => {}
+        }
+    }
+    assert!(answers[0].contains("Watched") && answers[0].contains("Unsupported"), "{answers:?}");
+    assert_eq!(answers[1], "sent");
+    assert!(answers[2].contains("Resolved") && answers[2].contains("Done(Unmapped)"), "{answers:?}");
+    assert!(!session.is_finished(), "the connection goes on serving");
+    session.abort();
+    daemon.abort();
 }
 
 // --- Field incident 2026-09-08: a peer closing the LOCAL connection

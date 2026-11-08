@@ -557,4 +557,6 @@ pub enum IncomingEvt {
         bus: String,
         skipped: u64,
     },
+    /// The project chat's replies and pushed events (`ops/chat.rs`): typed, never bytes. No view reads them yet.
+    Chat(ChatEvt),
 }
