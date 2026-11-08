@@ -197,7 +197,8 @@ impl Conn {
             return Err(code);
         }
         self.hub.kick.notify_one();
-        // A test's hold point, keyed by the hub's address, between the registration and the reply.
+        // A test's hold point, keyed by the hub's address, between the registration and the reply. The owner is kicked
+        // above, so its snapshot runs while this is held; `chat.watch.snapshot` holds that.
         sot_platform::hold_point_async!("chat.watch.between", Arc::as_ptr(&self.hub) as usize);
         Ok(self.state(&channel))
     }
@@ -357,7 +358,10 @@ impl Own {
             let Some(ticket) = self.step(watches, None, |w| w.begin(&channel, &service)) else { continue };
             let targets: Vec<(u64, ChatTarget)> = lock(&self.hub.table).slots.iter().filter(|(_, t)| t.channel.as_str() == channel).cloned().collect();
             let (chat, rows, done) = (self.chat.clone(), self.rows.clone(), done.clone());
+            let key = Arc::as_ptr(&self.hub) as usize;
             tokio::spawn(async move {
+                // A test's hold point, keyed by the hub's address, before the snapshot's first admission.
+                sot_platform::hold_point_async!("chat.watch.snapshot", key);
                 let stale = Mutex::new(BTreeSet::new());
                 let result = paced(BUSY_PACE, BUSY_ATTEMPTS, || snapshot(&chat, &rows, &targets, &channel, &stale)).await;
                 let stale = lock(&stale).iter().copied().collect();
