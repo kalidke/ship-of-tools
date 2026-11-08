@@ -140,3 +140,38 @@ fn a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file() 
     assert!(lines[0].contains("INFO") && lines[0].contains("outcome=AlreadyTrusted"), "{}", lines[0]);
     assert!(lines[0].contains(&named) && lines[0].contains("fixture-row"), "{}", lines[0]);
 }
+
+#[test]
+fn a_claude_preparation_marks_its_trust_file_and_no_other_file() {
+    if !sot_platform::test_isolated::run_isolated(
+        "agents::env::trust_scope_controls::a_claude_preparation_marks_its_trust_file_and_no_other_file",
+    ) {
+        return;
+    }
+    use crate::agents::folder_trust::claude_prepared_within;
+    use std::time::Duration;
+    let _guard = self_file_env_guarded();
+    let temp = tempfile::tempdir().unwrap();
+    let home = platform_spelling(temp.path());
+    std::env::set_var("HOME", &home);
+    std::env::set_var("USERPROFILE", &home);
+    std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+    std::env::set_var("LOCALAPPDATA", home.join("local"));
+    std::env::remove_var("CLAUDE_CONFIG_DIR");
+    let cwd = home.join("repo");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let file = home.join(".claude.json");
+    let other = home.join("other").join(".claude.json");
+    let minute = Duration::from_secs(60);
+    assert!(!claude_prepared_within(&file, minute), "nothing prepared yet");
+
+    account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
+    assert!(claude_prepared_within(&file, minute), "a Claude preparation marks its trust file, declared or not");
+    assert!(!claude_prepared_within(&other, minute), "another file stays unmarked");
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(!claude_prepared_within(&file, Duration::from_millis(30)), "the answer turns false after the time");
+
+    let before = std::time::Instant::now();
+    account_spawn_env("codex", "default", &cwd, "fixture-row").unwrap();
+    assert!(!claude_prepared_within(&file, before.elapsed()), "a Codex preparation marks nothing");
+}

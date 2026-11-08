@@ -272,16 +272,65 @@ pub(crate) fn dialog_of(lines: &[String], agent: &str, windows: bool) -> Option<
             .any(|l| l.contains("Not logged in · Run /login"))
             .then(|| "claude: not logged in; run /login in this row".to_string());
     }
-    let end = lines.iter().rposition(|l| !l.trim_matches(' ').is_empty()).map_or(0, |row| row + 1);
-    let tail = &lines[end.saturating_sub(DIALOG_ROWS)..end];
-    if !tail.iter().any(|l| is_dialog_footer(l)) {
-        return None;
-    }
-    let trimmed = |l: &String| l.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string();
+    let tail = dialog_tail(lines)?;
     Some(match tail.iter().map(trimmed).rfind(|l| l.starts_with("Do you want to")) {
         Some(ask) => format!("claude dialog: {ask}").chars().take(DIALOG_TEXT_MAX).collect(),
         None => "claude dialog open".to_string(),
     })
+}
+
+/// The last [`DIALOG_ROWS`] rows, trailing empty rows dropped, when one of them is a dialog's footer.
+fn dialog_tail(lines: &[String]) -> Option<&[String]> {
+    let end = lines.iter().rposition(|l| !l.trim_matches(' ').is_empty()).map_or(0, |row| row + 1);
+    let tail = &lines[end.saturating_sub(DIALOG_ROWS)..end];
+    tail.iter().any(|l| is_dialog_footer(l)).then_some(tail)
+}
+
+/// A dialog row without surrounding whitespace or box-drawing bars.
+fn trimmed(line: &String) -> String {
+    line.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}').to_string()
+}
+
+/// What a Claude row's screen shows at its start.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Startup {
+    /// The main input box: the leg is past its start dialogs.
+    MainBox,
+    /// The folder-trust dialog, one a recorded trust would have answered.
+    TrustDialog,
+    /// Anything else, including a dialog this does not know.
+    Neither,
+}
+
+/// [`Startup`] of the screen. `TrustDialog` needs a dialog ([`dialog_of`]'s test) whose rows hold a `Quick safety
+/// check:` line and an option reading `Yes, I trust this folder` (after an optional cursor mark and `N.`), and no
+/// option `No, continue without these permissions`: that second form is drawn for a folder already trusted, and a
+/// restart cannot clear it. Both anchors are fixtures: the Windows 11 and Linux captures.
+pub(crate) fn startup_of(lines: &[String], agent: &str, windows: bool) -> Startup {
+    let glyphs = prompt_glyphs(agent, windows);
+    if glyphs.is_empty() {
+        return Startup::Neither;
+    }
+    if main_box_row(lines, glyphs, windows).is_some() {
+        return Startup::MainBox;
+    }
+    let Some(tail) = dialog_tail(lines) else { return Startup::Neither };
+    let rows: Vec<String> = tail.iter().map(trimmed).collect();
+    let option = |text: &str| {
+        rows.iter().any(|row| {
+            let row = row.trim_start_matches(['\u{276f}', '>']).trim_start();
+            let row = row.trim_start_matches(|c: char| c.is_ascii_digit());
+            row.strip_prefix('.').unwrap_or(row).trim() == text
+        })
+    };
+    if rows.iter().any(|row| row.starts_with("Quick safety check:"))
+        && option("Yes, I trust this folder")
+        && !option("No, continue without these permissions")
+    {
+        Startup::TrustDialog
+    } else {
+        Startup::Neither
+    }
 }
 
 /// The screen lines as the headless client reads them (`current_lines` in

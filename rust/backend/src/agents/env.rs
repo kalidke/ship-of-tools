@@ -246,6 +246,7 @@ pub(crate) fn account_spawn_env(
             if agent_kind == "claude" {
                 use crate::agents::folder_trust::TrustOutcome;
                 let prepared = effective_claude_trust_file(&home, &extra).and_then(|file| {
+                    crate::agents::folder_trust::mark_claude_prepared(&file);
                     crate::agents::folder_trust::trusted_root_prefix().and_then(|prefix| {
                         crate::agents::folder_trust::ensure_folder_trusted(
                             &file,

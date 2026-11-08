@@ -707,3 +707,51 @@ fn windows_short_name_keeps_the_cwd_key_when_available() {
 fn two_preparations_never_share_a_temporary_name() {
     assert_ne!(trust_temp_name(".claude.json"), trust_temp_name(".claude.json"));
 }
+
+// ---- the trust restart's question ----
+
+#[test]
+fn the_restart_asks_the_scope_the_record_uses() {
+    use super::super::support_tests::{platform_spelling, self_file_env_guarded};
+    if !sot_platform::test_isolated::run_isolated(
+        "agents::folder_trust::tests::the_restart_asks_the_scope_the_record_uses",
+    ) {
+        return;
+    }
+    let _guard = self_file_env_guarded();
+    let temp = tempfile::tempdir().unwrap();
+    let home = platform_spelling(temp.path());
+    std::env::set_var("HOME", &home);
+    std::env::set_var("USERPROFILE", &home);
+    std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+    std::env::set_var("LOCALAPPDATA", home.join("local"));
+    let prefix = home.join("projects");
+    let inside = prefix.join("repo");
+    let outside = home.join("outside");
+    touch_dir(&inside);
+    touch_dir(&outside);
+    let file = crate::rows::store::app_config_dir().join(SETTINGS_FILE);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let declare = |prefix: &str| {
+        let text = toml::to_string(&serde_json::json!({"trust": {"root_prefix": prefix}})).unwrap();
+        std::fs::write(&file, text).unwrap();
+    };
+
+    assert_eq!(under_declared_prefix(&inside), Ok(false), "no declaration");
+    declare(prefix.to_str().unwrap());
+    assert_eq!(under_declared_prefix(&inside), Ok(true));
+    assert_eq!(under_declared_prefix(&outside), Ok(false));
+    #[cfg(unix)]
+    {
+        let link = prefix.join("escape");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert_eq!(under_declared_prefix(&link), Ok(false), "a symlink out of the prefix");
+    }
+    assert!(under_declared_prefix(Path::new("relative/root")).is_err());
+    declare("relative/prefix");
+    assert!(under_declared_prefix(&inside).is_err(), "a relative prefix");
+    // The record answers the same: what it records is what the restart may restart.
+    declare(prefix.to_str().unwrap());
+    assert_eq!(ensure_folder_trusted(&home, "", &inside, Some(&prefix)), Ok(TrustOutcome::Recorded));
+    assert_eq!(ensure_folder_trusted(&home, "", &outside, Some(&prefix)), Ok(TrustOutcome::Outside));
+}

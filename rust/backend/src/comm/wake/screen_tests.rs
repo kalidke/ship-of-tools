@@ -933,3 +933,60 @@ fn the_draft_is_the_undimmed_text_after_the_prompt() {
     assert_eq!(draft("> w\x1b[2m try a suggestion\x1b[0m", true), "w");
     assert_eq!(draft("> w", false), "> w", "the ASCII glyph is Windows' alone");
 }
+
+// ---- startup_of: the folder-trust dialog, told from other dialogs and the main box ----
+
+/// `text` cut into rows no wider than `width` characters, as a narrow pane wraps them.
+fn narrow(text: &str, width: usize) -> Vec<String> {
+    text.lines()
+        .flat_map(|l| {
+            let cells: Vec<char> = l.chars().collect();
+            if cells.is_empty() { vec![String::new()] } else { cells.chunks(width).map(|c| c.iter().collect()).collect() }
+        })
+        .collect()
+}
+
+#[test]
+fn the_trust_dialog_is_told_from_other_dialogs_and_the_main_box() {
+    let win = include_str!("../../../tests/fixtures/comm_wake/win11-trust-dialog.txt");
+    let plain = include_str!("../../../tests/fixtures/comm_wake/linux-trust-dialog.txt");
+    let grants = include_str!("../../../tests/fixtures/comm_wake/linux-trust-dialog-grants.txt");
+    // Not a capture: the trusted-folder form (Claude Code 2.1.319's bundle strings, never seen drawn), made from the
+    // grants capture with the second option replaced.
+    let trusted = grants.replace("Yes, I trust this folder", "No, continue without these permissions");
+    // The same form with the trust option kept beside it.
+    let both = grants.replace("Yes, I trust this folder", "Yes, I trust this folder\n   No, continue without these permissions");
+    let mut tall = real(grants, true);
+    tall.resize(68, String::new());
+    // Numbered options, the cursor on the second.
+    let numbered = win.replace("> No, exit", "  1. No, exit").replace("   Yes, I trust", " > 2. Yes, I trust");
+    let quoting = {
+        let mut screen = real(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
+        screen.insert(0, " Quick safety check: Is this a project you created or one you trust?".to_string());
+        screen.insert(1, "   Yes, I trust this folder".to_string());
+        screen
+    };
+    for windows in [false, true] {
+        let at = |screen: &[String]| startup_of(screen, "claude", windows);
+        for dialog in [real(win, true), real(plain, true), real(grants, true), tall.clone(), narrow(grants, 50), real(&numbered, true)] {
+            assert_eq!(at(&dialog), Startup::TrustDialog);
+        }
+        for other in [real(&trusted, true), real(&both, true)] {
+            assert_eq!(at(&other), Startup::Neither, "the trusted-folder form is not restarted");
+        }
+        for name in [
+            real(include_str!("../../../tests/fixtures/comm_wake/real-permission-dialog.txt"), true),
+            real(include_str!("../../../tests/fixtures/comm_wake/real-model-menu.txt"), true),
+        ] {
+            assert_eq!(at(&name), Startup::Neither);
+        }
+        for main in [
+            real(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true),
+            real(include_str!("../../../tests/fixtures/comm_wake/linux-not-logged-in.txt"), true),
+            quoting.clone(),
+        ] {
+            assert_eq!(at(&main), Startup::MainBox);
+        }
+        assert_eq!(startup_of(&real(plain, true), "codex", windows), Startup::Neither);
+    }
+}

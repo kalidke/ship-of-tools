@@ -42,16 +42,18 @@ pub(crate) enum TrustOutcome {
 /// replace the other's. Another process's edit (claude's own) is not covered, as the writer's limit says.
 static PREPARING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Compare OS-resolved scope while recording the child cwd's spelling.
-/// Existing accepted bytes and unrelated JSON keys are preserved.
-/// Concurrent external edits remain the existing writer's scoped limit.
-pub fn ensure_folder_trusted(
-    path: &Path,
-    root: &Path,
-    prefix: Option<&Path>,
-) -> Result<TrustOutcome, String> {
+/// Where a root lies against the declared prefix.
+enum Scope {
+    Undeclared,
+    Outside,
+    Inside,
+}
+
+/// The record's scope test, the one place it is made: a declared prefix, absolute, and the OS-resolved root under the
+/// OS-resolved prefix. [`ensure_folder_trusted`] and [`under_declared_prefix`] both ask it.
+fn scope_of(root: &Path, prefix: Option<&Path>) -> Result<Scope, String> {
     let Some(prefix) = prefix else {
-        return Ok(TrustOutcome::NotDeclared);
+        return Ok(Scope::Undeclared);
     };
     if !prefix.is_absolute() {
         return Err(format!(
@@ -71,7 +73,47 @@ pub fn ensure_folder_trusted(
             .map_err(|e| format!("project root {root:?}: {e}"))?,
     );
     if !resolved_root.starts_with(&resolved_prefix) {
-        return Ok(TrustOutcome::Outside);
+        return Ok(Scope::Outside);
+    }
+    Ok(Scope::Inside)
+}
+
+/// Whether the declaration (read now) names a prefix the root lies under: the question the record answers, asked by
+/// the trust restart so that it never restarts a root the record would not have written. No declaration is `false`;
+/// a relative prefix, a root that is not absolute, or a path that cannot be resolved is an error.
+pub fn under_declared_prefix(root: &Path) -> Result<bool, String> {
+    Ok(matches!(scope_of(root, trusted_root_prefix()?.as_deref())?, Scope::Inside))
+}
+
+/// The instant of the last Claude preparation, per trust file.
+static LAST_CLAUDE_PREPARED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, std::time::Instant>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Note that a Claude leg is being prepared against `trust_file` now. Memory only.
+pub(crate) fn mark_claude_prepared(trust_file: &Path) {
+    let mut map = LAST_CLAUDE_PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    map.insert(trust_file.to_path_buf(), std::time::Instant::now());
+}
+
+/// Whether a Claude leg on `trust_file` was prepared less than `within` ago. The trust restart waits while it is
+/// true: Claude Code's own start saves this file, and the restart's record is the same unlocked write.
+pub fn claude_prepared_within(trust_file: &Path, within: std::time::Duration) -> bool {
+    let map = LAST_CLAUDE_PREPARED.lock().unwrap_or_else(|e| e.into_inner());
+    map.get(trust_file).is_some_and(|at| at.elapsed() < within)
+}
+
+/// Compare OS-resolved scope while recording the child cwd's spelling.
+/// Existing accepted bytes and unrelated JSON keys are preserved.
+/// Concurrent external edits remain the existing writer's scoped limit.
+pub fn ensure_folder_trusted(
+    path: &Path,
+    root: &Path,
+    prefix: Option<&Path>,
+) -> Result<TrustOutcome, String> {
+    match scope_of(root, prefix)? {
+        Scope::Undeclared => return Ok(TrustOutcome::NotDeclared),
+        Scope::Outside => return Ok(TrustOutcome::Outside),
+        Scope::Inside => (),
     }
 
     let _one_at_a_time = PREPARING.lock().unwrap_or_else(|e| e.into_inner());
