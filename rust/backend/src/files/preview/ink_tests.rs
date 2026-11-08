@@ -62,6 +62,17 @@ fn the_picture_is_the_base_with_its_ink() {
         assert_eq!(compose(&files, "r1", &stroke(base)).unwrap_err().0, NOT_AN_IMAGE, "{name}");
     }
 
+    // Only a file whose name says image is read as one, however its bytes decode.
+    image::RgbImage::from_pixel(8, 8, image::Rgb(FIGURE)).save_with_format(dir.path().join("fig.txt"), image::ImageFormat::Png).unwrap();
+    let named = InkBase::Figure { node_id: "files:fig.txt".into() };
+    assert_eq!(compose(&files, "r1", &stroke(named)).unwrap_err().0, NOT_AN_IMAGE);
+
+    // The ink's edge is coverage-blended over the figure: some pixels are neither figure nor ink.
+    let node_id = figure_png(dir.path(), "edge.png", 400, 200);
+    let out = compose(&files, "r4", &stroke(InkBase::Figure { node_id })).unwrap();
+    let blended = image::open(&out).unwrap().to_rgb8().pixels().filter(|p| p.0 != FIGURE && p.0 != INK_RGB).count();
+    assert!(blended > 0, "an antialiased edge has blended pixels");
+
     // The write is whole or none: where the temporary file cannot be made the old picture stays as it was.
     let picture = files.node_id_to_path("files:.sot/captures/ink-r3.png").unwrap();
     std::fs::write(&picture, b"OLD").unwrap();
@@ -89,6 +100,25 @@ fn a_captures_folder_that_leads_out_of_the_root_takes_no_write() {
         assert_eq!(refused.0, PUBLISH_FAILED, "{link_at}");
         let src = root.path().join("fit.png");
         assert!(crop_to_captures(&files, &src, "fit", (0, 0, 10, 10)).is_err(), "{link_at}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_captures_junction_that_leads_out_of_the_root_takes_no_write() {
+    use crate::agents::account_links::make_junction;
+    let outside = tempfile::tempdir().unwrap();
+    for link_at in [".sot", ".sot/captures"] {
+        let root = tempfile::tempdir().unwrap();
+        let files = FilesMode::new(root.path().to_path_buf()).unwrap();
+        if link_at == ".sot" {
+            make_junction(outside.path(), &root.path().join(".sot")).unwrap();
+        } else {
+            std::fs::create_dir(root.path().join(".sot")).unwrap();
+            make_junction(outside.path(), &root.path().join(".sot").join("captures")).unwrap();
+        }
+        assert_eq!(compose(&files, "r1", &stroke(InkBase::Canvas)).unwrap_err().0, PUBLISH_FAILED, "{link_at}");
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
     }
 }
