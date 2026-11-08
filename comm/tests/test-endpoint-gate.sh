@@ -488,10 +488,14 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     spy="$(cd "$spy" && pwd -P)"
     cp "$(command -v bash)" "$spy/spybash"; cp "$(command -v bash)" "$spy/sotd"
     printf '%s\n' 'printf "%s\n" "$BASH" >> "$(dirname "$0")/ran"' > "$spy/session-socket-path"
+    # Each stub's `sleep 30` is its child (`; :` keeps bash from exec'ing it, so the image stays the copy's), and a
+    # kill of the stub alone left that sleep running 30 s past the suite: each stub leads a group, which end_group ends.
+    set -m
     "$spy/spybash" -c 'sleep 30; :' & pida=$!
     "$spy/sotd" -c 'sleep 30; :' & pidb=$!
+    set +m
     await exe_is "$pida" "$spy/spybash" && await exe_is "$pidb" "$spy/sotd" \
-        || { kill "$pida" "$pidb" 2>/dev/null; echo "  the two stub children never ran"; return 1; }
+        || { end_group "$pida"; end_group "$pidb"; echo "  the two stub children never ran"; return 1; }
     fakebin="$(mktemp -d "$WORK/spy-fakebin-XXXXXX")"
     fakehome="$(mktemp -d "$WORK/spy-home-XXXXXX")"
     printf '#!/bin/sh\necho "%s spybash sotd"\necho "%s sotd"\n' "$pida" "$pidb" > "$fakebin/pgrep"
@@ -500,7 +504,7 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
         cd "$spy" && unset SOT_SOCKET SOTD_BIN
         PATH="$fakebin:$PATH" HOME="$fakehome" sot_daemon_endpoint 2>/dev/null
     )" || rc=$?
-    kill "$pida" "$pidb" 2>/dev/null; wait "$pida" "$pidb" 2>/dev/null
+    end_group "$pida"; end_group "$pidb"
     ran="$(cat "$spy/ran" 2>/dev/null)"
     [ "$rc" -ne 0 ] && [ -z "$out" ] || { echo "  rc $rc, endpoint '$out'"; return 1; }
     contains "$ran" "$spy/sotd" || { echo "  the sotd-named binary was never asked: '$ran'"; return 1; }
