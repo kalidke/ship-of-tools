@@ -794,5 +794,17 @@ fn a_fifo_at_the_records_folder_answers_at_once() {
         let _ = tx.send(write_in_folder(&fifo.join("record"), b"x", || {}));
     });
     let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the write answered within the bound");
-    assert!(got.is_err());
+    assert_eq!(got.unwrap_err().kind(), io::ErrorKind::NotADirectory);
+}
+
+#[test]
+fn a_file_at_the_records_folder_answers_at_once() {
+    let (_g, root, _outside) = setup();
+    std::fs::write(root.join("f"), b"x").unwrap();
+    let err = write_in_folder(&root.join("f/record"), b"new", || {}).unwrap_err();
+    #[cfg(unix)]
+    assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
+    #[cfg(not(unix))]
+    let _ = err;
+    assert_eq!(entries(&root), ["f"]);
 }

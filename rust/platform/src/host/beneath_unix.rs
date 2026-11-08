@@ -56,8 +56,8 @@ fn create_and_publish(dir: &File, temp: &CStr, last: &CStr, bytes: &[u8], at: &m
     let fd = own(unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), flags, 0o666 as c_int) })?;
     let result = publish(dir, File::from(fd), temp, last, bytes, at);
     if result.is_err() {
-        // The temporary name is this write's alone (fresh, or a record's one writer); after a rename it is already gone,
-        // and a failure here changes nothing.
+        // This write created the temporary name exclusively; after a rename it is already gone, and a failure here
+        // changes nothing.
         unsafe { libc::unlinkat(dir.as_raw_fd(), temp.as_ptr(), 0) };
     }
     result

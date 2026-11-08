@@ -44,10 +44,11 @@ owned by `docs/CLAUDE.md`.
 - **PLATFORM-WINDOWS-GAPS** [note] The Windows `preflight_volume` has no test; `resource_dir` and the native launcher are
   owned APIs with no guarantee test; Windows durable removal has no parent sync.
 - **NOREPLACE-NFS-EINVAL** [note] `publish_noreplace_refuses_an_existing_target_and_leaves_both_files` fails with `EINVAL`
-  when `TMPDIR` is on an NFS home: `renameat2` with `RENAME_NOREPLACE` is refused there. The product callers of
-  `publish_noreplace` are agents `trust_declaration.rs` (the declaration in an agent's config folder) and
-  `install/state.rs` (the install record); both write under the user's home, so they meet it wherever that home is on
-  NFS and its server refuses the flag; no run of either on such a home is known.
+  when `TMPDIR` is on an NFS (nfs4) home, seen 2026-11-08: `renameat2` with `RENAME_NOREPLACE` is refused there, with no
+  existing target. The callers of `publish_noreplace` are agents `trust_declaration.rs` (`settings.toml` in the config
+  folder) and `install/state.rs` (the `sotd.service` drop-in `state.conf`, published only when the default state root
+  is refused); both write under the user's home and neither falls back on `EINVAL`; neither has been run on an NFS
+  home.
 - **DURABLE-WRITERS-LEFT** [note] Writers that still do not use platform's durable publish, left to their owners' passes:
   topology `store.rs` and `relay_units.rs`, agents `folder_trust.rs` and
   `account_links.rs` (which also needs a Windows no-clobber move), messaging `registry.rs` and `identity/self_file.rs`.
