@@ -183,6 +183,13 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **STATE-ROOT-CHECK-NEW-FOLDER** [note] `state_root_inside_project` (`rows/spawn/state_root.rs`), the refusal of a row
+  whose state folder lies inside its project root, canonicalizes both paths and keeps the raw spelling of one that does
+  not exist. A row's state folder does not exist at its first launch, so where the canonical spelling differs from the raw
+  one (Windows, whose canonical paths carry `\\?\`; a project root reached through a link) the check can answer "not
+  inside" for a folder that is. Read from the code after a hosted Windows run of the trust restart's leg test, whose
+  failed spawn on a missing state folder inside the root was not refused there; the test now creates the folder.
+  Fix at rows' pass: compare the folder's nearest existing ancestor, canonicalized, with the rest appended.
 - **DEGRADE-TEST-ROW-SCOPE** [note] `platform::capsule_launch_degrades_when_no_user_scope_is_available`
   (`rust/backend/tests/capsule_workspaces/`) fails when the test itself runs inside a Ship of Tools row: its witness, "not
   in a `sot-row-*.scope`", reads the row the test runs in as the daemon's. Seen on a build computer, on main and with the

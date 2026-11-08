@@ -1233,4 +1233,7 @@ A landing's record goes here, with its measured times; the package page holds on
   87 test lines; the two places that open the record are read, not tested, since a unit test cannot start a supervisor.
   Where the minutes went: the build (12 minutes); one review round (blockers 0; the generation rule of a main box
   unpinned, an unreachable branch, and logging under the row's lock) and one fix round of 3 minutes; two gates of 3
-  minutes, the second after moving onto main past the first landing.
+  minutes, the second after moving onto main past the first landing. Main's hosted run then failed on Windows in that
+  landing's test: its failed spawn, on a state folder inside the root that did not exist yet, was not refused there.
+  Fixed forward, 2026-11-08, red seen 10:13, main 10:23 (e4fa098af): the test creates the folder and asserts the refusal's
+  own text; the product question went to `docs/defects.md` (STATE-ROOT-CHECK-NEW-FOLDER).
