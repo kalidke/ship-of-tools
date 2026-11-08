@@ -63,47 +63,17 @@ pub async fn handle_image_crop(
     // the filename carries the source stem + a microsecond stamp so repeated
     // captures don't clobber.
     let (req_x, req_y, req_w, req_h) = (req.x, req.y, req.w, req.h);
-    let captures_dir = ws.project_root.join(".sot").join("captures");
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("image")
         .to_string();
     let path_for_blk = path.clone();
-    type CropOk = (std::path::PathBuf, u32, u32, u32, u32, u32, u32);
-    let crop_result =
-        tokio::task::spawn_blocking(move || -> std::result::Result<CropOk, (String, String)> {
-            let img = image::open(&path_for_blk).map_err(|e| {
-                (
-                    "decode_failed".into(),
-                    format!("decode {path_for_blk:?}: {e}"),
-                )
-            })?;
-            let (src_w, src_h) = (img.width(), img.height());
-            if src_w == 0 || src_h == 0 {
-                return Err((
-                    "empty_image".into(),
-                    format!("{path_for_blk:?} has zero dimension"),
-                ));
-            }
-            let x = req_x.min(src_w - 1);
-            let y = req_y.min(src_h - 1);
-            let w = req_w.clamp(1, src_w - x);
-            let h = req_h.clamp(1, src_h - y);
-            let cropped = img.crop_imm(x, y, w, h);
-            std::fs::create_dir_all(&captures_dir)
-                .map_err(|e| ("io_error".into(), format!("create {captures_dir:?}: {e}")))?;
-            let micros = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_micros())
-                .unwrap_or(0);
-            let out_path = captures_dir.join(format!("{stem}-roi-{micros}.png"));
-            cropped
-                .save(&out_path)
-                .map_err(|e| ("io_error".into(), format!("write {out_path:?}: {e}")))?;
-            Ok((out_path, x, y, w, h, src_w, src_h))
-        })
-        .await;
+    let files_for_blk = files_mode.clone();
+    let crop_result = tokio::task::spawn_blocking(move || {
+        crop_to_captures(&files_for_blk, &path_for_blk, &stem, (req_x, req_y, req_w, req_h))
+    })
+    .await;
     let (out_path, x, y, w, h, src_w, src_h) = match crop_result {
         Ok(Ok(v)) => v,
         Ok(Err((code, msg))) => return err(&code, msg),
@@ -126,4 +96,39 @@ pub async fn handle_image_crop(
         Frame::res(req_id, op::IMAGE_CROP, serde_json::to_value(res)?).with_rev(rev),
         None,
     )])
+}
+
+type CropOk = (std::path::PathBuf, u32, u32, u32, u32, u32, u32);
+
+/// Decode + clamp + crop + write, on a blocking thread: `image::open` and `save` are synchronous CPU+IO and a large
+/// decode would otherwise stall the tokio executor. Returns the written path, the clamped rect and the source
+/// dimensions, or a (code, message) pair the caller turns into an error frame. The write lands in
+/// `<project_root>/.sot/captures/` (watcher-exempt) through [`super::ink::captures_file`]; the filename carries the
+/// source stem + a microsecond stamp so repeated captures don't clobber.
+pub(super) fn crop_to_captures(
+    files: &crate::files::tree::FilesMode,
+    src: &std::path::Path,
+    stem: &str,
+    (req_x, req_y, req_w, req_h): (u32, u32, u32, u32),
+) -> std::result::Result<CropOk, (String, String)> {
+    let img = image::open(src).map_err(|e| ("decode_failed".into(), format!("decode {src:?}: {e}")))?;
+    let (src_w, src_h) = (img.width(), img.height());
+    if src_w == 0 || src_h == 0 {
+        return Err(("empty_image".into(), format!("{src:?} has zero dimension")));
+    }
+    let x = req_x.min(src_w - 1);
+    let y = req_y.min(src_h - 1);
+    let w = req_w.clamp(1, src_w - x);
+    let h = req_h.clamp(1, src_h - y);
+    let cropped = img.crop_imm(x, y, w, h);
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros())
+        .unwrap_or(0);
+    let out_path = super::ink::captures_file(files, &format!("{stem}-roi-{micros}.png"))
+        .map_err(|e| ("io_error".into(), format!("{e:#}")))?;
+    cropped
+        .save(&out_path)
+        .map_err(|e| ("io_error".into(), format!("write {out_path:?}: {e}")))?;
+    Ok((out_path, x, y, w, h, src_w, src_h))
 }

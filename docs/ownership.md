@@ -103,7 +103,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<root>/.sot-trash/` | disk | files | `rust/backend/src/files/io.rs` `trash_file`, `trash_file_fallback` |
 | `<image>.scale.json` sidecars | disk | files | `rust/backend/src/files/preview/scale.rs` `merge_scale_sidecar` |
 | physical-scale schema and validity | rule | wire | `rust/protocol/src/physical_scale.rs` `PhysicalScale`, `parse_physical_scale`; consumers in files and fe-ui |
-| `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
+| `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/ink.rs` `captures_file` (every write), `compose`; `crop.rs` `crop_to_captures` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
 | a Julia child's or an updater command's temporary folder `std::env::temp_dir()`/`sotd-julia-*/child-*/`, in its process's held folder, and that folder's removal at the daemon's controlled end and, for a process that ended without one, at the next start | disk | sidecars | `rust/backend/src/sidecars/child/tmp.rs` `ChildTmp`, `retire`, `InHeld`, `remove_own`, `sweep_gone`; primitive `rust/platform/src/host/held_dir.rs` `HeldDir`, `remove_ended` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |

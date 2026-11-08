@@ -10,13 +10,22 @@ Per workspace row (built in `rows/workspace.rs`):
 - a `FilesMode` (tree.rs): the root and the `show_hidden` flag;
 - a `ConceptStore` (concept.rs) over `<root>/.concept`;
 - a `Watcher` (watcher.rs): non-recursive watches, up to a budget;
-- `<root>/.sot-trash/` (io.rs), the fallback trash.
+- `<root>/.sot-trash/` (io.rs), the fallback trash;
+- `<root>/.sot/captures/` (preview/ink.rs `captures_file`): the only writer of the folder's file names.
 
 ## Promises
 - Node ids are `files:<rel>` with `/` on every OS; an id holding `..` or an absolute path is refused
   (`FilesMode::path_to_node_id`, `compose_node_path`).
 - Reads follow links (`node_id_to_path`). Mutations resolve through `node_id_to_path_confined`, which canonicalizes and
   refuses a path outside the root.
+- Every write under `.sot/captures/` (the crop's PNG, a drawing's picture) names its file through `captures_file`, which
+  resolves through that confined resolver and creates the folder only after the check: a `.sot` or `captures` link that
+  leads out of the root takes no write. Tested on Unix by `ink_tests::a_captures_folder_that_leads_out_of_the_root_takes_no_write`;
+  on Windows the same resolver holds it and the test makes no link (creating one needs a privilege).
+- A drawing's picture (`preview/ink.rs` `compose`, on the blocking pool) is the figure scaled to `raster_dims` with the
+  ink over it, or a white canvas with the ink, written whole (`write_durable`) to `.sot/captures/ink-<row id>.png`. A
+  source over 40 megapixels is `too_large` by its header, before any decode; bytes that do not decode are
+  `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`.
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
@@ -50,7 +59,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types.
 - `io.rs`: editor file IO: read, version-checked write and contained trash with a wait budget.
 - `io_trash_tests.rs`: absolute trash fixtures, checked cleanup before fallback, error diagnostics and the command's null streams.
-- `preview/`: preview.get, preview.set_scale, image.crop.
+- `preview/`: preview.get, preview.set_scale, image.crop, `ink.rs` (a drawing's picture and `captures_file`).
 - `concept.rs`: the `.concept/` annotation store.
 - `confine.rs`: workspace confinement: whether a path lies under a root, and the canonical form of a path that may not exist yet.
 - `watcher.rs`: the notify-backed watcher that feeds `preview.changed`.
