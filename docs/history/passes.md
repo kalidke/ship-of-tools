@@ -1205,3 +1205,14 @@ A landing's record goes here, with its measured times; the package page holds on
   rounds (blockers 1, 0) and two fix rounds; two hosted runs on the branch; three gates of 3 minutes. Why past the hour: the
   first round found that the hook never read its input, so a prompt past the pipe's buffer would have drawn an error in
   every Claude session once installed, and the second found the same in the no-op for a missing script.
+- A window's drawing becomes the row's selection, 2026-11-08: builder launched 08:26, main 09:10 (bcc93fb20, 7c4083bc6,
+  7f4028e96), 44 minutes. The drawing plan's D3: `selection.set` with a drawing checks the window, the state root and the
+  row, then under one process-wide compose lock reads the agent kind (`claude` only; a Codex row answers `no_agent` for a
+  drawing and still takes text), has the files subsystem compose the picture on the blocking pool, renders the hook output
+  that names it with its digest, and publishes it through the same path as text, withdrawn as text is. Text and drawing
+  share one publish (`row_of` and `publish` split out of the text handler, its replies unchanged). About 139 product lines
+  and 226 test lines. Where the minutes went: the build (9 minutes); one review round (blockers 0, four wording and test
+  fixes: the file names the picture after each publish rather than always, the server contract names the new wait, and
+  the ordering test, which had passed with the lock released early and taken about 30 seconds, became one held arrival
+  of about a second through a hold point before the publish) and one fix round of 3 minutes; one hosted run on the
+  branch; two gates of 3 minutes.
