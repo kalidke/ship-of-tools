@@ -50,6 +50,15 @@ fn temp_name(fixed: Option<&str>) -> io::Result<String> {
     Ok(format!(".sot-{}.tmp", r.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
 
+/// Whether a reparse point names another place: a symlink, junction or mount point (`IsReparseTagNameSurrogate`, the
+/// tag's bit 29) on an entry that is a reparse point. Cloud placeholders and deduplicated entries are ordinary.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn names_another_place(attributes: u32, tag: u32) -> bool {
+    const REPARSE_POINT: u32 = 0x400;
+    const NAME_SURROGATE: u32 = 0x2000_0000;
+    attributes & REPARSE_POINT != 0 && tag & NAME_SURROGATE != 0
+}
+
 /// A relative root is never its own canonical path; refused before any call.
 fn absolute_root(root: &Path) -> io::Result<()> {
     if root.is_absolute() { Ok(()) } else { Err(invalid(format!("{root:?} is not its own canonical path"))) }

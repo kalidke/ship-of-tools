@@ -34,15 +34,22 @@ fn link_file(target: &Path, at: &Path) -> bool {
     #[cfg(unix)]
     symlink(target, at).unwrap();
     #[cfg(windows)]
-    match std::os::windows::fs::symlink_file(target, at) {
-        Ok(()) => {}
-        Err(e) if e.raw_os_error() == Some(1314) => {
-            eprintln!("skipped: this account may not create file symlinks");
-            return false;
+    return made(std::os::windows::fs::symlink_file(target, at));
+    #[cfg(unix)]
+    true
+}
+
+/// Whether a Windows symlink was made; false, saying so, where this account may not make one.
+#[cfg(windows)]
+fn made(r: io::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        Err(e) if e.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD as i32) => {
+            eprintln!("skipped: this account may not create symlinks");
+            false
         }
         Err(e) => panic!("{e}"),
     }
-    true
 }
 
 fn setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -69,7 +76,11 @@ fn kind(r: io::Result<PathBuf>) -> io::ErrorKind {
 #[test]
 fn a_link_at_any_folder_takes_no_write() {
     for depth in [1, 2] {
-        for case in ["outside folder", "dangling", "file"] {
+        #[cfg_attr(unix, allow(unused_mut))]
+        let mut cases = vec!["outside folder", "dangling", "file"];
+        #[cfg(windows)]
+        cases.push("directory symlink");
+        for case in cases {
             let (_g, root, outside) = setup();
             let (parent, rel_prefix) = if depth == 1 {
                 (root.clone(), "d".to_string())
@@ -81,6 +92,12 @@ fn a_link_at_any_folder_takes_no_write() {
             match case {
                 "outside folder" => link_dir(&outside, &at).unwrap(),
                 "dangling" => link_dangling_dir(&at, &outside.join("nothing")),
+                #[cfg(windows)]
+                "directory symlink" => {
+                    if !made(std::os::windows::fs::symlink_dir(&outside, &at)) {
+                        continue;
+                    }
+                }
                 _ => std::fs::write(&at, b"x").unwrap(),
             }
             let before = entries(&parent);
@@ -139,7 +156,9 @@ fn a_root_that_does_not_resolve_answers_by_what_is_wrong() {
     #[cfg(unix)]
     symlink(base.join("selfloop"), base.join("selfloop")).unwrap();
     std::fs::write(base.join("file"), b"x").unwrap();
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut cases = vec![
+        ("file", io::ErrorKind::InvalidInput),
         ("missing", io::ErrorKind::NotFound),
         ("dangling", io::ErrorKind::NotFound),
         // Windows answers a path under a file as a path that is not found.
@@ -149,11 +168,13 @@ fn a_root_that_does_not_resolve_answers_by_what_is_wrong() {
     cases.push(("selfloop", io::ErrorKind::InvalidInput));
     for (what, want) in cases {
         assert_eq!(kind(write_beneath(&base.join(what), "f.txt", b"data")), want, "{what}");
+        assert_eq!(std::fs::read(base.join("file")).unwrap(), b"x", "{what}");
     }
 }
 
 #[test]
 fn a_name_that_is_not_one_plain_entry_is_refused() {
+    #[cfg_attr(unix, allow(unused_mut))]
     let mut rels = vec!["..", ".", "", "/x", "a//b", "a/", "a/../b", "a\0b"];
     // Windows names no second folder, drive or stream through one name.
     #[cfg(windows)]
@@ -176,13 +197,16 @@ fn a_planted_temporary_name_is_never_written_through() {
     let temp = ".sot-fixed.tmp";
     let plant = |what: &str| {
         let _ = std::fs::remove_file(root.join(temp));
+        let _ = std::fs::remove_dir(root.join(temp));
         match what {
+            "junction" => link_dir(&outside, &root.join(temp)).map(|_| true).unwrap(),
+            "folder" => std::fs::create_dir(root.join(temp)).map(|_| true).unwrap(),
             "symlink" => link_file(&target, &root.join(temp)),
             "dangling" => link_file(&outside.join("made.txt"), &root.join(temp)),
             _ => std::fs::hard_link(&target, root.join(temp)).map(|_| true).unwrap(),
         }
     };
-    for what in ["symlink", "dangling", "hard link"] {
+    for what in ["symlink", "dangling", "hard link", "junction", "folder"] {
         if !plant(what) {
             continue;
         }
@@ -191,6 +215,7 @@ fn a_planted_temporary_name_is_never_written_through() {
         assert_eq!(std::fs::read(&target).unwrap(), b"original", "{what}");
         assert!(!outside.join("made.txt").exists(), "{what}");
         assert!(!root.join("f.txt").exists(), "{what}");
+        assert_eq!(entries(&outside), ["keep.txt"], "{what}");
     }
 }
 
@@ -223,6 +248,11 @@ fn missing_folders_are_created_and_the_path_is_returned() {
     assert_eq!(got, root.join("a/b/f.txt"));
     assert_eq!(std::fs::read(&got).unwrap(), b"data");
     assert_eq!(entries(&root.join("a/b")), ["f.txt"]);
+    // One-letter names: the rename's argument is shorter than its fixed part.
+    for rel in ["x", "a/b/1"] {
+        write_beneath(&root, rel, b"one").unwrap();
+        assert_eq!(std::fs::read(root.join(rel)).unwrap(), b"one", "{rel}");
+    }
 }
 
 // On Windows the temporary file cannot be replaced while it is held: its own test is below.
@@ -532,6 +562,11 @@ fn the_temporary_file_cannot_be_renamed_away_while_it_is_written() {
                 assert!(std::fs::rename(&t, outside.join("taken")).is_err());
                 assert!(std::fs::rename(&t, root.join("g.txt")).is_err());
                 assert!(std::fs::OpenOptions::new().write(true).open(&t).is_err());
+                // Another file renamed over its name is refused too.
+                let other = root.join("other.txt");
+                std::fs::write(&other, b"o").unwrap();
+                assert!(std::fs::rename(&other, &t).is_err());
+                std::fs::remove_file(&other).unwrap();
             }
             Ok(())
         })
@@ -540,5 +575,32 @@ fn the_temporary_file_cannot_be_renamed_away_while_it_is_written() {
         assert_eq!(entries(&root), ["f.txt"], "{step:?}");
         assert!(entries(&outside).is_empty(), "{step:?}");
         std::fs::remove_file(root.join("f.txt")).unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_junction_at_the_final_name_is_an_error_and_is_kept() {
+    let (_g, root, outside) = setup();
+    link_dir(&outside, &root.join("f.txt")).unwrap();
+    assert!(write_beneath(&root, "f.txt", b"data").is_err());
+    assert!(entries(&outside).is_empty());
+    assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[test]
+fn only_a_name_surrogate_tag_is_a_link() {
+    const REPARSE: u32 = 0x400;
+    for (tag, link) in [
+        (0xA000_0003, true), // mount point
+        (0xA000_000C, true), // symlink
+        (0xA000_001D, true), // another name surrogate
+        (0x9000_601A, false), // cloud placeholder
+        (0x8000_0013, false), // deduplicated
+        (0x8000_001B, false), // app execution link
+    ] {
+        assert_eq!(names_another_place(REPARSE, tag), link, "{tag:#x}");
+        // Without the reparse attribute the tag is not read.
+        assert!(!names_another_place(0x10, tag), "{tag:#x}");
     }
 }
