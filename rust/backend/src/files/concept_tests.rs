@@ -201,3 +201,61 @@ fn stored_header_hash_is_read_in_every_shape() {
         .unwrap();
     assert_eq!(s.read_synced_against("no-close").unwrap(), None);
 }
+
+/// A project with an outside file holding `keep`, for the write tests below.
+fn outside_file(dir: &Tmp) -> PathBuf {
+    let out = dir.path().join("outside.txt");
+    std::fs::write(&out, "keep").unwrap();
+    out
+}
+
+#[test]
+fn write_creates_the_note_and_replies_its_path() {
+    let dir = Tmp::new();
+    let s = ConceptStore::new(dir.path());
+    let (path, n) = s.write("modules/M", "hello").unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    assert_eq!(path, root.join(".concept/modules/M.md"));
+    assert_eq!((n, std::fs::read_to_string(&path).unwrap()), (5, "hello".to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn write_never_goes_through_a_symlink_at_the_old_temporary_name() {
+    let dir = Tmp::new();
+    let out = outside_file(&dir);
+    std::fs::create_dir_all(dir.path().join(".concept")).unwrap();
+    std::os::unix::fs::symlink(&out, dir.path().join(".concept/x.md.tmp")).unwrap();
+    let s = ConceptStore::new(dir.path());
+    s.write("x", "new").unwrap();
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "keep");
+    assert_eq!(std::fs::read_to_string(dir.path().join(".concept/x.md")).unwrap(), "new");
+}
+
+#[test]
+fn write_never_goes_through_a_hard_link_at_the_old_temporary_name() {
+    let dir = Tmp::new();
+    let out = outside_file(&dir);
+    std::fs::create_dir_all(dir.path().join(".concept")).unwrap();
+    std::fs::hard_link(&out, dir.path().join(".concept/x.md.tmp")).unwrap();
+    let s = ConceptStore::new(dir.path());
+    s.write("x", "new").unwrap();
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "keep");
+}
+
+#[cfg(unix)]
+#[test]
+fn write_takes_no_part_in_a_folder_that_is_a_link() {
+    let dir = Tmp::new();
+    let outd = dir.path().join("outdir");
+    std::fs::create_dir_all(&outd).unwrap();
+    // `.concept` itself a link, then a folder below it a link.
+    std::os::unix::fs::symlink(&outd, dir.path().join(".concept")).unwrap();
+    let s = ConceptStore::new(dir.path());
+    assert!(s.write("a/b", "new").is_err());
+    std::fs::remove_file(dir.path().join(".concept")).unwrap();
+    std::fs::create_dir_all(dir.path().join(".concept")).unwrap();
+    std::os::unix::fs::symlink(&outd, dir.path().join(".concept/sub")).unwrap();
+    assert!(s.write("sub/b", "new").is_err());
+    assert_eq!(std::fs::read_dir(&outd).unwrap().count(), 0);
+}

@@ -60,18 +60,15 @@ impl ConceptStore {
         Ok(sot_protocol::annotation::synced_against(&content))
     }
 
-    /// Atomic write via temp file + rename. Returns `(absolute path, byte
-    /// count)` on success.
+    /// Writes the note durably beneath the project root, creating `.concept/` and the folders below it, following no
+    /// link (platform's `write_beneath`). Returns `(absolute path, byte count)`; the path is for replies, never for IO.
     pub fn write(&self, target: &str, content: &str) -> Result<(PathBuf, u64)> {
         let path = self.target_to_path(target)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create_dir_all {parent:?}"))?;
-        }
-        let tmp = path.with_extension("md.tmp");
-        std::fs::write(&tmp, content).with_context(|| format!("write {tmp:?}"))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("rename {tmp:?} -> {path:?}"))?;
-        Ok((path.clone(), content.len() as u64))
+        let rel = path.strip_prefix(&self.project_root).with_context(|| format!("target outside the project root: {target}"))?;
+        let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+        let path = sot_platform::host::write_beneath(&self.project_root, &rel, content.as_bytes())
+            .with_context(|| format!("write {path:?}"))?;
+        Ok((path, content.len() as u64))
     }
 
     /// Recursively walk `.concept/` and return every target string that has

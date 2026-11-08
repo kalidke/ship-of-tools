@@ -52,6 +52,8 @@ Per workspace row (built in `rows/workspace.rs`):
   termination or reap.
 - A concept target never holds `..`, an absolute path or an empty segment, and `.md` is appended, never substituted
   (`ConceptStore::target_to_path`).
+- A concept note is written durably beneath the project root, creating `.concept/` and the folders below it, following no
+  link (`ConceptStore::write` through platform's `write_beneath`, guarantee 17).
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
   crosses a filesystem (`device_of`) and never exceeds its budget (`watch_budget`, `SOT_WATCH_BUDGET`).
 - `preview.changed` is live-only and carries no revision.
@@ -62,7 +64,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `directory.list`, `nav.toggle_hidden`, `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`,
 `concept.write`, `concept.list`, `file.read`, `file.write`, `file.delete`, `file.download`, `file.upload`,
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
-`rust/backend/src/rows/registry.rs`. Uses: `sot_platform::host::write_beneath`, `sot_platform::host::create_dir_beneath`, `sot_platform::host::open_regular`, `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
+`rust/backend/src/rows/registry.rs`. Uses: `sot_platform::host::write_beneath` (also for the concept note), `sot_platform::host::create_dir_beneath`, `sot_platform::host::open_regular`, `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
 `is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `ContainedStd::wait_within`, `sot_containment::process`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale.
 
