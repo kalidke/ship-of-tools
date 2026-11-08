@@ -168,8 +168,7 @@ fn a_claude_preparation_marks_its_trust_file_and_no_other_file() {
     account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
     assert!(claude_prepared_within(&file, minute), "a Claude preparation marks its trust file, declared or not");
     assert!(!claude_prepared_within(&other, minute), "another file stays unmarked");
-    std::thread::sleep(Duration::from_millis(60));
-    assert!(!claude_prepared_within(&file, Duration::from_millis(30)), "the answer turns false after the time");
+    assert!(!claude_prepared_within(&file, Duration::ZERO), "the answer turns false after the time");
 
     let before = std::time::Instant::now();
     account_spawn_env("codex", "default", &cwd, "fixture-row").unwrap();

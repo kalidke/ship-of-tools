@@ -741,6 +741,9 @@ fn the_restart_asks_the_scope_the_record_uses() {
     declare(prefix.to_str().unwrap());
     assert_eq!(under_declared_prefix(&inside), Ok(true));
     assert_eq!(under_declared_prefix(&outside), Ok(false));
+    let sibling = home.join("projects2").join("repo");
+    touch_dir(&sibling);
+    assert_eq!(under_declared_prefix(&sibling), Ok(false), "a sibling sharing the name prefix");
     #[cfg(unix)]
     {
         let link = prefix.join("escape");

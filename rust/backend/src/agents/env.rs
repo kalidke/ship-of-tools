@@ -287,7 +287,7 @@ pub(crate) fn account_spawn_env(
 }
 
 /// Select only the effective child's file; unsupported forms never guess another destination.
-fn effective_claude_trust_file(
+pub(crate) fn effective_claude_trust_file(
     home: &Path,
     additions: &[(String, String)],
 ) -> Result<PathBuf, String> {

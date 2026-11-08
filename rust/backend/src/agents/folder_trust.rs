@@ -79,8 +79,9 @@ fn scope_of(root: &Path, prefix: Option<&Path>) -> Result<Scope, String> {
 }
 
 /// Whether the declaration (read now) names a prefix the root lies under: the question the record answers, asked by
-/// the trust restart so that it never restarts a root the record would not have written. No declaration is `false`;
-/// a relative prefix, a root that is not absolute, or a path that cannot be resolved is an error.
+/// the trust restart so that it never restarts a root the record would not have written. No declaration is
+/// `Ok(false)`, before any other check; a malformed declaration, a relative prefix, a root that is not absolute, or a
+/// path that cannot be resolved is an error.
 pub fn under_declared_prefix(root: &Path) -> Result<bool, String> {
     Ok(matches!(scope_of(root, trusted_root_prefix()?.as_deref())?, Scope::Inside))
 }
@@ -97,6 +98,7 @@ pub(crate) fn mark_claude_prepared(trust_file: &Path) {
 
 /// Whether a Claude leg on `trust_file` was prepared less than `within` ago. The trust restart waits while it is
 /// true: Claude Code's own start saves this file, and the restart's record is the same unlocked write.
+/// `trust_file` is `env::effective_claude_trust_file`'s answer, the key each preparation marks.
 pub fn claude_prepared_within(trust_file: &Path, within: std::time::Duration) -> bool {
     let map = LAST_CLAUDE_PREPARED.lock().unwrap_or_else(|e| e.into_inner());
     map.get(trust_file).is_some_and(|at| at.elapsed() < within)

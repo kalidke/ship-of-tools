@@ -133,7 +133,8 @@ Waking:
   wake's free-prompt test does not change.
 - Beside `dialog_of`, `wake::screen::startup_of` reads a Claude row's start for the trust restart, which is unbuilt: `MainBox`
   when the main input box shows; `TrustDialog` when a dialog's rows hold a `Quick safety check:` line and an option
-  `Yes, I trust this folder` (after a cursor mark and `N.` if any) and no option `No, continue without these
+  `Yes, I trust this folder` (after a cursor mark and `N.` if any; the numbered form is synthetic, no capture shows it) followed by nothing
+  but the dialog's footer, and no option `No, continue without these
   permissions`, the trusted-folder form a restart cannot clear (read from bundle strings, never seen drawn); else
   `Neither`. Fixtures: the Windows 11 and two Linux captures.
 - The same attempt serves rows' `page.reply` through `wake::type_if_free`: the given line passes the same free-prompt,

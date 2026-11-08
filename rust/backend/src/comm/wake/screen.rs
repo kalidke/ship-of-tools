@@ -303,9 +303,10 @@ pub(crate) enum Startup {
 }
 
 /// [`Startup`] of the screen. `TrustDialog` needs a dialog ([`dialog_of`]'s test) whose rows hold a `Quick safety
-/// check:` line and an option reading `Yes, I trust this folder` (after an optional cursor mark and `N.`), and no
-/// option `No, continue without these permissions`: that second form is drawn for a folder already trusted, and a
-/// restart cannot clear it. Both anchors are fixtures: the Windows 11 and Linux captures.
+/// check:` line and an option reading `Yes, I trust this folder` (after an optional cursor mark and `N.`) followed
+/// by nothing but the dialog's footer, and no option `No, continue without these permissions`: that second form is
+/// read from Claude Code's strings, never seen drawn, for a folder already trusted, and a restart cannot clear it.
+/// The anchors are fixtures: the Windows 11 and Linux captures.
 pub(crate) fn startup_of(lines: &[String], agent: &str, windows: bool) -> Startup {
     let glyphs = prompt_glyphs(agent, windows);
     if glyphs.is_empty() {
@@ -316,16 +317,21 @@ pub(crate) fn startup_of(lines: &[String], agent: &str, windows: bool) -> Startu
     }
     let Some(tail) = dialog_tail(lines) else { return Startup::Neither };
     let rows: Vec<String> = tail.iter().map(trimmed).collect();
-    let option = |text: &str| {
-        rows.iter().any(|row| {
+    let option_at = |text: &str| {
+        rows.iter().position(|row| {
             let row = row.trim_start_matches(['\u{276f}', '>']).trim_start();
             let row = row.trim_start_matches(|c: char| c.is_ascii_digit());
             row.strip_prefix('.').unwrap_or(row).trim() == text
         })
     };
+    // The genuine dialog ends with the trust option and then its footer; quoted rows above another dialog do not.
+    let footed = option_at("Yes, I trust this folder").is_some_and(|at| {
+        let rest: Vec<&String> = rows[at + 1..].iter().filter(|r| !r.is_empty()).collect();
+        rest.len() == 1 && is_dialog_footer(rest[0])
+    });
     if rows.iter().any(|row| row.starts_with("Quick safety check:"))
-        && option("Yes, I trust this folder")
-        && !option("No, continue without these permissions")
+        && footed
+        && option_at("No, continue without these permissions").is_none()
     {
         Startup::TrustDialog
     } else {

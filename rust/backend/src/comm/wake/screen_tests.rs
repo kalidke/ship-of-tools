@@ -966,8 +966,27 @@ fn the_trust_dialog_is_told_from_other_dialogs_and_the_main_box() {
         screen.insert(1, "   Yes, I trust this folder".to_string());
         screen
     };
+    // One anchor missing at a time, from the grants capture.
+    let without_safety_row = grants.replace("Quick safety check:", "Quick check:");
+    let reworded_option = grants.replace("Yes, I trust this folder", "Yes, proceed");
+    let without_footer = grants.replace("Enter to confirm \u{b7} Esc to cancel", "");
+    // The fixture printed above another dialog, and two bare rows.
+    let above = |menu: Vec<String>, quoted: &str| {
+        let mut screen = real(quoted, true);
+        screen.extend(menu);
+        screen
+    };
+    let perm = perm_screen(&PERM_MENU);
+    let model = real(include_str!("../../../tests/fixtures/comm_wake/real-model-menu.txt"), true);
+    let bare = " Quick safety check: Is this a project you created or one you trust?\n   Yes, I trust this folder";
     for windows in [false, true] {
         let at = |screen: &[String]| startup_of(screen, "claude", windows);
+        for quoted in [above(perm.clone(), plain), above(perm.clone(), bare), above(model.clone(), plain)] {
+            assert_eq!(at(&quoted), Startup::Neither, "quoted anchors above another dialog");
+        }
+        for missing in [&without_safety_row, &reworded_option, &without_footer] {
+            assert_eq!(at(&real(missing, true)), Startup::Neither, "one anchor missing");
+        }
         for dialog in [real(win, true), real(plain, true), real(grants, true), tall.clone(), narrow(grants, 50), real(&numbered, true)] {
             assert_eq!(at(&dialog), Startup::TrustDialog);
         }
