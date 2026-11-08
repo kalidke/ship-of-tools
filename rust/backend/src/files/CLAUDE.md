@@ -11,7 +11,7 @@ Per workspace row (built in `rows/workspace.rs`):
 - a `ConceptStore` (concept.rs) over `<root>/.concept`;
 - a `Watcher` (watcher.rs): non-recursive watches, up to a budget;
 - `<root>/.sot-trash/` (io.rs), the fallback trash;
-- `<root>/.sot/captures/` (preview/ink.rs `compose`, preview/crop.rs `crop_to_captures`): written only through `FilesMode::write`.
+- `<root>/.sot/captures/` (preview/ink.rs `compose`, preview/crop.rs `crop_to_captures`): those two write only through `FilesMode::write`.
 
 ## Promises
 - Node ids are `files:<rel>` with `/` on every OS; an id holding `..` or an absolute path is refused

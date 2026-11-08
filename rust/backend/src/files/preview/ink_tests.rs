@@ -146,7 +146,14 @@ fn a_crop_is_a_png_of_the_rect_beneath_the_captures_folder() {
     let (out, x, y, w, h, ..) = crop_to_captures(&files, &src, "fit", (35, 15, 10, 10)).unwrap();
     assert_eq!((x, y, w, h), (35, 15, 5, 5));
     assert_eq!(image::open(&out).unwrap().to_rgb8().dimensions(), (5, 5));
-    // The decoder is picked from the bytes: a file of no supported format answers decode_failed.
+    // An origin past the edge is clamped to the last pixel.
+    let (_, x, y, w, h, ..) = crop_to_captures(&files, &src, "fit", (100, 100, 5, 5)).unwrap();
+    assert_eq!((x, y, w, h), (39, 19, 1, 1));
+    // The decoder is picked from the bytes, not the name: a PNG under a name that says JPEG still decodes,
+    // and bytes of no supported format answer decode_failed.
+    let named = root.path().join("fit-as.jpg");
+    std::fs::write(&named, std::fs::read(&src).unwrap()).unwrap();
+    assert!(crop_to_captures(&files, &named, "fit-as", (0, 0, 1, 1)).is_ok());
     std::fs::write(root.path().join("junk.png"), b"not an image").unwrap();
     let junk = root.path().join("junk.png");
     assert_eq!(crop_to_captures(&files, &junk, "junk", (0, 0, 1, 1)).unwrap_err().0, "decode_failed");
