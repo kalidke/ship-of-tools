@@ -221,13 +221,17 @@ owned by `docs/CLAUDE.md`.
   minutes later held no entry; Claude Code 2.1.319 saves the file under its own lock by reading it again and renaming its
   copy over it, and the daemon's write (`agents/folder_trust.rs`) is outside that lock, so a neighbor leg's start-up save
   replaced it. All three losses came 0.58 to 0.81 s after another leg on the same account started (3 of 6 records written
-  within 1 s of a start were lost, none of 15 written 1.44 s or more after one). Not built: when the dialog reader sees the
-  folder-trust dialog on a leg's first screen and the root lies under the declared prefix, record trust again and
-  restart that leg once with the same resume id (no turn has run); a second sight leaves the row red. The restart waits
-  until 2 s have passed since the last Claude leg start on the same trust file, since its own record is the same
-  unlocked write; the dialog's variant for a folder already trusted (option `No, continue without these permissions`),
-  which a restart cannot clear, is not restarted. Never answer the dialog by keys. Red tests first: a trust entry removed
-  after the spawn's record leaves the row restarted once and trusted; a root outside the prefix is never restarted.
+  within 1 s of a start were lost, none of 15 written 1.44 s or more after one). Built (rows, `run/trust_restart.rs`): the
+  dialog tick reads every Claude row whose started leg has not shown its main box, and at the folder-trust dialog with
+  the root under the declared prefix stops the leg and spawns it again with the same argv (a reauth's `--resume <id>`
+  kept), under the row's guard, once per row until a main box shows; the new spawn records trust again. A second sight, a
+  root outside the prefix and the already-trusted variant (option `No, continue without these permissions`) are left to
+  their person. The restart waits, tried again at the next tick, while a Claude leg on the same trust file started less
+  than 2 s ago, since its own record is the same unlocked write. Never keys. Tests: `capsule_workspaces::work_state`
+  (a reauthed leg and a watchdog-restarted leg, each with a stub that loses the record) and the unit tests of
+  `rows/run/trust_restart_tests.rs`. Open, not closed: those tests use a stub, never Claude Code, so they do not show the
+  recovery against the real lost update, the wait against a live neighbor start, or macOS (its dialog is uncaptured; a
+  wrong reading fails closed); it closes when a person has seen a lost record recovered in use.
 - **WRAPPED-DRAFT-READS-DIALOG** [note] A person's draft that wraps (or holds a newline) puts the cursor's row out of the
   box's one line, so `input_refused` returns "not in an input box" and `page_reply::refusal_name` names it `dialog`; the
   person is told a dialog is open when it is their unsent text. Rule if seen: a box identified by its two rules with text

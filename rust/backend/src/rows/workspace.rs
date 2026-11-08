@@ -93,7 +93,7 @@ pub(super) struct WatchState {
 pub(crate) enum TrustTake {
     /// No leg is open at that generation (a spawn moved it, or the leg never opened).
     NotOpen,
-    /// A restart already ran this episode; the leg is closed.
+    /// A restart already ran this episode and a leg was open; the leg is closed, so this answers once per leg.
     Spent,
     /// The row's root is not covered by the trust scope; the leg is closed.
     Outside,
@@ -260,7 +260,7 @@ impl Workspace {
         }
         let open = state.trust_leg.take();
         if state.trust_spent {
-            return TrustTake::Spent;
+            return if open.is_some() { TrustTake::Spent } else { TrustTake::NotOpen };
         }
         let Some(argv) = open else { return TrustTake::NotOpen };
         if !covered {

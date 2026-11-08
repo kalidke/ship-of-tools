@@ -1,8 +1,13 @@
 //! The dialog tick (ADR 0044, dialog amendment): a Claude row whose screen shows a dialog that waits on a person
-//! reads red, whatever its turn state.
+//! reads red, whatever its turn state. The same tick watches every Claude row whose started leg has not yet shown its
+//! main input box, whatever its handle, entry or question: where [`startup_of`] finds Claude Code's folder-trust dialog
+//! it asks rows' trust restart (`run/trust_restart.rs`) to rerun the leg, and writes no stamp for a screen about to be
+//! gone; where it finds the main box it closes the leg record (`Workspace::trust_passed`). A row is read for its leg only
+//! while its phase is `ready`.
 //!
 //! No Claude Code hook says when a permission dialog is on screen (its `PermissionRequest` fires when a request is
-//! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once, then each
+//! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once (unread, only
+//! the rows with a leg are read), then each
 //! Ready capsule row whose agent is `claude` and whose bound handle has an entry, but one red by its question ([`due`]:
 //! an AskUserQuestion menu, whose PreToolUse hook wrote the question before the menu drew, keeps that summary), one
 //! watcher attach each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-capsule's
@@ -22,9 +27,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::comm::wake::screen::{dialog_of, wake_lines};
+use crate::comm::wake::screen::{dialog_of, startup_of, wake_lines, Startup};
 use crate::rows::handle::bound_handle;
 use crate::rows::run::headless::{attach, checkpointed, SHUTDOWN_WAIT};
+use crate::rows::run::trust_restart::{restart_at_trust_dialog, LiveTrust};
+use crate::rows::workspace::Phase;
 use crate::rows::Workspaces;
 
 use super::{write_event, Event, StampError};
@@ -64,6 +71,20 @@ fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> 
     }
 }
 
+/// One row of a sweep: the handle its entry is under (empty when it has none), its state folder, and, while a started
+/// leg has not shown its main box, the row's id and generation (`Workspace::trust_reading`).
+pub(crate) struct Row {
+    pub handle: String,
+    pub state_dir: PathBuf,
+    pub trust: Option<(String, u64)>,
+}
+
+/// The generation to read a row's screen for the folder-trust dialog: only while the row's phase can show a screen (a
+/// resume over an ended run leaves a leg open with no agent).
+fn trust_to_read(ws: &crate::rows::Workspace) -> Option<(String, u64)> {
+    ws.trust_reading().filter(|_| ws.phase() == Phase::Ready).map(|generation| (ws.workspace_id.clone(), generation))
+}
+
 /// What a sweep leaves for the next, so each run of failures is told once: the handles whose last write failed (warned),
 /// the handles whose last read found nothing (logged), and whether the registry was unreadable (warned).
 #[derive(Debug, Default)]
@@ -78,25 +99,45 @@ pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Wor
     let runs = std::sync::Arc::new(std::sync::Mutex::new(Runs::default()));
     every(period, || {
         let all = workspaces.list();
-        let rows: Vec<(String, PathBuf)> = all
+        let rows: Vec<Row> = all
             .iter()
             .filter(|ws| ws.runtime == "capsule" && ws.agent() == "claude")
-            .map(|ws| (bound_handle(ws, &all), crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id)))
-            .filter(|(handle, _)| !handle.is_empty())
+            .map(|ws| Row {
+                handle: bound_handle(ws, &all),
+                state_dir: crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id),
+                trust: trust_to_read(ws),
+            })
+            .filter(|row| !row.handle.is_empty() || row.trust.is_some())
             .collect();
-        let (home, runs) = (comm_home.clone(), runs.clone());
+        let (home, runs, workspaces, state_root) = (comm_home.clone(), runs.clone(), workspaces.clone(), state_root.clone());
         async move {
             if rows.is_empty() {
                 return;
             }
             let _ = tokio::task::spawn_blocking(move || {
                 let mut held = runs.lock().unwrap_or_else(|e| e.into_inner());
-                check_rows(&home, &rows, &read_screen, &stamp_dialog, &mut held);
+                let trust = |id: &str, generation: u64, startup: Startup| trust_step(&workspaces, &state_root, id, generation, startup);
+                check_rows(&home, &rows, &read_screen, &stamp_dialog, &trust, &mut held);
             })
             .await;
         }
     })
     .await
+}
+
+/// What a row's [`Startup`] calls for: the main box closes the leg record (false: the screen was read all the same); the
+/// folder-trust dialog is the restart's, and true says it ran or will be tried again.
+fn trust_step(workspaces: &Workspaces, state_root: &Path, id: &str, generation: u64, startup: Startup) -> bool {
+    match startup {
+        Startup::MainBox => {
+            if let Some(ws) = workspaces.resolve(Some(id)) {
+                ws.trust_passed(generation);
+            }
+            false
+        }
+        Startup::TrustDialog => restart_at_trust_dialog(workspaces, state_root, id, generation, &LiveTrust).pending(),
+        Startup::Neither => false,
+    }
 }
 
 /// Runs `sweep` every `period`: each sweep is awaited before the next tick, and ticks missed while it ran are skipped,
@@ -114,14 +155,17 @@ where
     }
 }
 
-/// One tick over `rows` (handle, state dir): the registry read once, then each row with an entry read and, where
-/// [`stamp_for`] says so, written. A write is logged; an unreadable registry, a read that found nothing and a failed
+/// One tick over `rows`: the registry read once, then each row with an entry, or with a started leg to watch for the
+/// folder-trust dialog, read once. A row with a leg hands the screen's [`Startup`] to `trust`, which answers whether a
+/// restart ran or is to be tried again (the dialog is about to be gone, so no stamp is written for it); a row with an
+/// entry is written where [`stamp_for`] says so. A write is logged; an unreadable registry, a read that found nothing and a failed
 /// write are each told once per run (`runs`).
 fn check_rows(
     home: &Path,
-    rows: &[(String, PathBuf)],
+    rows: &[Row],
     read: &dyn Fn(&Path) -> Seen,
     write: &dyn Fn(&str, &Stamp) -> Result<(), String>,
+    trust: &dyn Fn(&str, u64, Startup) -> bool,
     runs: &mut Runs,
 ) {
     let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json"))
@@ -134,31 +178,42 @@ fn check_rows(
         }
         Err(e) => {
             if !std::mem::replace(&mut runs.registry, true) {
-                tracing::warn!("comm dialog: the registry was not read, so no row was ({e})");
+                tracing::warn!("comm dialog: the registry was not read, so no row with an entry was ({e})");
             }
-            return;
+            // No entry is found, so only the rows with a leg to watch are read.
+            serde_json::Value::Null
         }
     };
-    for (handle, state_dir) in rows {
-        let Some(entry) = registry.get("agents").and_then(|a| a.get(handle)).filter(|e| due(e)) else {
+    for Row { handle, state_dir, trust: leg } in rows {
+        let entry = registry.get("agents").and_then(|a| a.get(handle)).filter(|e| due(e));
+        // A row with a leg to watch may have no handle; its state folder names it then.
+        let name = if handle.is_empty() { state_dir.to_string_lossy().into_owned() } else { handle.clone() };
+        if entry.is_none() && leg.is_none() {
             continue;
-        };
+        }
         // A leg the probe shows ended shows no dialog any more; one that does not answer keeps its fact.
-        let shown = match read(state_dir) {
+        let lines = match read(state_dir) {
             Seen::Unknown(why) => {
-                if runs.unread.insert(handle.clone()) {
-                    tracing::info!(handle = %handle, "comm dialog: the row's screen was not read ({why}); its fact stays as it is");
+                if runs.unread.insert(name.clone()) {
+                    tracing::info!(handle = %name, "comm dialog: the row's screen was not read ({why}); its fact stays as it is");
                 }
                 continue;
             }
             seen => {
-                runs.unread.remove(handle);
+                runs.unread.remove(&name);
                 match seen {
-                    Seen::Screen(lines) => dialog_of(&lines, "claude", cfg!(windows)),
+                    Seen::Screen(lines) => Some(lines),
                     _ => None,
                 }
             }
         };
+        if let (Some((id, generation)), Some(lines)) = (leg, &lines) {
+            if trust(id, *generation, startup_of(lines, "claude", cfg!(windows))) {
+                continue;
+            }
+        }
+        let Some(entry) = entry else { continue };
+        let shown = lines.and_then(|lines| dialog_of(&lines, "claude", cfg!(windows)));
         let Some(s) = stamp_for(shown, entry) else {
             continue;
         };

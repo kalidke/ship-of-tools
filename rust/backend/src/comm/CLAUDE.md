@@ -131,7 +131,7 @@ Waking:
   its lower rule, which returns `claude: not logged in; run /login in this row`. Output above the box never supplies
   that notice. This stays in `dialog_of` so one reader identifies the main box and what waits on the person; the
   wake's free-prompt test does not change.
-- Beside `dialog_of`, `wake::screen::startup_of` reads a Claude row's start for the trust restart, which is unbuilt: `MainBox`
+- Beside `dialog_of`, `wake::screen::startup_of` reads a Claude row's start for rows' trust restart (`rows/run/trust_restart.rs`, called from the dialog tick): `MainBox`
   when the main input box shows; `TrustDialog` when a dialog's rows hold a `Quick safety check:` line and an option
   `Yes, I trust this folder` (after a cursor mark and `N.` if any; the numbered form is synthetic, no capture shows it) followed by nothing
   but the dialog's footer, and no option `No, continue without these

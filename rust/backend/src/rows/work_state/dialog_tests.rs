@@ -4,6 +4,15 @@
 use super::*;
 use serde_json::json;
 
+/// A row with an entry under `handle` and no leg to watch.
+fn plain(handle: &str) -> Row {
+    Row { handle: handle.to_string(), state_dir: PathBuf::from(handle), trust: None }
+}
+
+fn no_trust(_: &str, _: u64, _: Startup) -> bool {
+    false
+}
+
 const RULE: &str = "────────────────────────────────────────";
 
 /// A row at rest: the main input box, its glyph followed by the NBSP.
@@ -77,7 +86,7 @@ fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
         "left": {"state": "blocked", "dialog": "claude dialog: Do you want to proceed?"},
     }});
     std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
-    let rows: Vec<(String, PathBuf)> = ["idle", "done", "asked", "left"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
+    let rows: Vec<Row> = ["idle", "done", "asked", "left"].iter().map(|h| plain(h)).collect();
     let (reads, writes) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
     let read = |d: &Path| {
         reads.borrow_mut().push(d.to_path_buf());
@@ -87,7 +96,7 @@ fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &read, &write, &mut Runs::default());
+    check_rows(dir.path(), &rows, &read, &write, &no_trust, &mut Runs::default());
     assert_eq!(reads.into_inner(), ["idle", "done", "left"].map(PathBuf::from).to_vec());
     let open = Stamp::Dialog("claude dialog: Do you want to proceed?".into());
     assert_eq!(writes.into_inner(), vec![("idle".to_string(), open.clone()), ("done".to_string(), open)]);
@@ -97,7 +106,7 @@ fn a_row_at_rest_is_read_a_question_row_is_not_and_a_left_fact_clears() {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &free_read, &write, &mut Runs::default());
+    check_rows(dir.path(), &rows, &free_read, &write, &no_trust, &mut Runs::default());
     assert_eq!(writes.into_inner(), vec![("left".to_string(), Stamp::Resumed)]);
 }
 
@@ -107,14 +116,14 @@ fn an_ended_leg_clears_its_fact_and_an_unreachable_one_keeps_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let registry = json!({"agents": {"gone": {"state": "blocked", "dialog": "x"}, "mute": {"state": "blocked", "dialog": "x"}}});
     std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
-    let rows: Vec<(String, PathBuf)> = ["gone", "mute"].iter().map(|h| (h.to_string(), PathBuf::from(h))).collect();
+    let rows: Vec<Row> = ["gone", "mute"].iter().map(|h| plain(h)).collect();
     let read = |d: &Path| if d == Path::new("gone") { Seen::Ended } else { Seen::Unknown("phase starting".to_string()) };
     let writes = std::cell::RefCell::new(Vec::new());
     let write = |h: &str, s: &Stamp| {
         writes.borrow_mut().push((h.to_string(), s.clone()));
         Ok(())
     };
-    check_rows(dir.path(), &rows, &read, &write, &mut Runs::default());
+    check_rows(dir.path(), &rows, &read, &write, &no_trust, &mut Runs::default());
     assert_eq!(writes.into_inner(), vec![("gone".to_string(), Stamp::Resumed)]);
 }
 
@@ -124,17 +133,17 @@ fn an_ended_leg_clears_its_fact_and_an_unreachable_one_keeps_it() {
 #[test]
 fn a_row_not_read_and_an_unreadable_registry_are_each_told_once_per_run() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let rows = [("h".to_string(), PathBuf::from("h"))];
+    let rows = [plain("h")];
     let write = |_: &str, _: &Stamp| Ok(());
     let mut runs = Runs::default();
-    check_rows(dir.path(), &rows, &|_: &Path| Seen::Ended, &write, &mut runs);
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Ended, &write, &no_trust, &mut runs);
     assert!(runs.registry, "an unreadable registry was not held as a run");
     std::fs::write(dir.path().join("registry.json"), json!({"agents": {"h": {"state": "working"}}}).to_string()).expect("registry");
     let mute = |_: &Path| Seen::Unknown("attach: refused".to_string());
-    check_rows(dir.path(), &rows, &mute, &write, &mut runs);
+    check_rows(dir.path(), &rows, &mute, &write, &no_trust, &mut runs);
     assert!(!runs.registry, "a registry read did not end its run");
     assert!(runs.unread.contains("h"), "a row not read was not held as a run");
-    check_rows(dir.path(), &rows, &|_: &Path| Seen::Screen(free()), &write, &mut runs);
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Screen(free()), &write, &no_trust, &mut runs);
     assert!(runs.unread.is_empty(), "a screen read did not end the row's run");
 }
 
@@ -187,9 +196,9 @@ fn tick(home: &Path, screen: Vec<String>) -> Vec<Stamp> {
         writes.borrow_mut().push(s.clone());
         stamp_dialog(handle, s)
     };
-    let rows = [("h".to_string(), PathBuf::from("unused"))];
+    let rows = [plain("h")];
     let mut runs = Runs::default();
-    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &record, &mut runs);
+    check_rows(home, &rows, &|_: &Path| Seen::Screen(screen.clone()), &record, &no_trust, &mut runs);
     assert!(runs.failing.is_empty(), "a write failed");
     writes.into_inner()
 }
@@ -254,4 +263,104 @@ fn a_fact_left_by_a_former_run_clears_on_the_first_tick() {
         home_with(json!({"floor": "user", "state": "blocked", "dialog": "claude dialog open", "summary": "claude dialog open"}));
     assert_eq!(tick(home.path(), free()), vec![Stamp::Resumed]);
     assert_eq!(row(home.path())["state"].as_str(), Some("working"));
+}
+
+/// The Linux capture of the folder-trust dialog, as the wake reads it.
+fn trust_dialog() -> Vec<String> {
+    include_str!("../../../tests/fixtures/comm_wake/linux-trust-dialog.txt").lines().map(String::from).collect()
+}
+
+/// A trust dialog on a row with a started leg goes to the restart, and its stamp is not written (the screen is about
+/// to be gone); the same screen on a row with no leg is stamped as any dialog is. Fails if a leg's dialog is stamped
+/// red or the restart is asked of a row with no leg.
+#[test]
+fn a_trust_dialog_on_an_open_leg_goes_to_the_restart_and_is_not_stamped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = json!({"agents": {"leg": {"state": "working"}, "plain": {"state": "working"}}});
+    std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
+    let mut rows = vec![plain("leg"), plain("plain")];
+    rows[0].trust = Some(("ws-leg".to_string(), 4));
+    let (asked, writes) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
+    let trust = |id: &str, generation: u64, startup: Startup| {
+        asked.borrow_mut().push((id.to_string(), generation, startup));
+        true
+    };
+    let write = |h: &str, s: &Stamp| {
+        writes.borrow_mut().push((h.to_string(), s.clone()));
+        Ok(())
+    };
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Screen(trust_dialog()), &write, &trust, &mut Runs::default());
+    assert_eq!(asked.into_inner(), vec![("ws-leg".to_string(), 4, Startup::TrustDialog)]);
+    assert_eq!(writes.into_inner(), vec![("plain".to_string(), Stamp::Dialog("claude dialog open".into()))]);
+}
+
+/// A row with an open leg is read whatever its handle, entry or question: with no handle, with a handle the registry
+/// does not hold, and red by an AskUserQuestion menu; a row red by its question with no leg is still not read.
+#[test]
+fn an_open_leg_is_read_with_no_handle_or_red_by_its_question() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = json!({"agents": {"asked": {"state": "blocked", "question": "Which approach?"}, "asked-no-leg": {"state": "blocked", "question": "Which?"}}});
+    std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
+    let leg = |handle: &str, id: &str| Row { trust: Some((id.to_string(), 1)), ..plain(handle) };
+    let rows = vec![leg("", "ws-a"), leg("absent", "ws-b"), leg("asked", "ws-c"), plain("asked-no-leg")];
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .map(|mut r| {
+            r.state_dir = PathBuf::from(if r.handle.is_empty() { "no-handle".to_string() } else { r.handle.clone() });
+            r
+        })
+        .collect();
+    let (reads, asked) = (std::cell::RefCell::new(Vec::new()), std::cell::RefCell::new(Vec::new()));
+    let read = |d: &Path| {
+        reads.borrow_mut().push(d.to_path_buf());
+        Seen::Screen(free())
+    };
+    let trust = |id: &str, _: u64, startup: Startup| {
+        asked.borrow_mut().push((id.to_string(), startup));
+        false
+    };
+    let write = |_: &str, _: &Stamp| -> Result<(), String> { panic!("a free screen with no fact writes nothing") };
+    check_rows(dir.path(), &rows, &read, &write, &trust, &mut Runs::default());
+    assert_eq!(*reads.borrow(), ["no-handle", "absent", "asked"].map(PathBuf::from).to_vec());
+    let main = |id: &str| (id.to_string(), Startup::MainBox);
+    assert_eq!(*asked.borrow(), vec![main("ws-a"), main("ws-b"), main("ws-c")]);
+
+    // No registry at all: a row with an entry is not read, one with a leg still is.
+    std::fs::remove_file(dir.path().join("registry.json")).expect("remove registry");
+    reads.borrow_mut().clear();
+    check_rows(dir.path(), &rows, &read, &write, &trust, &mut Runs::default());
+    assert_eq!(reads.into_inner(), ["no-handle", "absent", "asked"].map(PathBuf::from).to_vec());
+}
+
+/// The main box closes the leg record at the generation read (and only that one), so the row is read no more; a leg
+/// is read only while the row's phase is `ready`. Fails if the seam ignores the main box or its generation.
+#[test]
+fn the_main_box_closes_the_trust_leg() {
+    use crate::rows::workspace::{Observation, SupervisorIdentity};
+    let workspaces = Workspaces::new();
+    let mut row = crate::rows::Workspace::from_label(
+        "main-box",
+        PathBuf::from("/tmp/sot-main-box"),
+        false,
+        "claude".to_string(),
+        String::new(),
+        String::new(),
+    );
+    row.runtime = "capsule".to_string();
+    let ws = workspaces.insert(row);
+    let g = ws.begin_spawn();
+    ws.open_trust_leg(g, vec!["claude".to_string()]);
+    assert_eq!(trust_to_read(&ws), None, "a row whose phase shows no screen is not read");
+    let id = SupervisorIdentity { pid: 1, created: 100 };
+    ws.begin_supervisor_epoch(id);
+    crate::rows::run::observer::observe(&ws, Observation::Phase { phase: Phase::Ready, supervisor: id, run: None });
+    assert_eq!(trust_to_read(&ws), Some((ws.workspace_id.clone(), g)));
+
+    let root = Path::new("/unused");
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g + 1, Startup::MainBox));
+    assert!(trust_to_read(&ws).is_some(), "a main box read at another generation closes nothing");
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::Neither));
+    assert!(trust_to_read(&ws).is_some(), "a screen that is neither closes nothing");
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::MainBox));
+    assert_eq!(trust_to_read(&ws), None, "the main box closed the leg");
 }
