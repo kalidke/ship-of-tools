@@ -180,7 +180,8 @@ in Rust, one workspace, a person's post under a custom author): its plan of reco
 Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization), B1b (the HTTP core) and B1c (the Slack calls) and B1d (the Socket Mode listener)
 have landed, which closes B1; the stage continues with B2, then B5, each landing alone within the half hour. Of B2, the
 configuration, the service, the watch model, the wire family, the hub composition, the per-action recheck, the request ops' dispatch and the watch ops with their
-events have landed; the window's side (fe-net, then its first chat owner) is next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+events have landed, and so has the window's network side of the family (fe-net's typed chat requests, replies and
+events); the window's first chat owner is next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook; the Codex wiring and A7 are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has

@@ -1281,3 +1281,13 @@ A landing's record goes here, with its measured times; the package page holds on
   round (blockers 1: the defect was not closed in the landing, which I had deferred to a records commit) and one fix round
   of 2 minutes; two gates of 4 minutes. Why past the hour: the premise lived only on the hosted runner, and each test of it
   was a 20-minute run; the library list should have been read from the event loop's sources before the first run.
+- B2g, the window's network layer speaks chat, 2026-11-08: builder launched 13:49, main 14:27 (022576bfe, 92a9303af), 38
+  minutes. fe-net carries the chat family as typed requests, replies and events: an old daemon's unknown chat operation
+  becomes an unsupported-chat reply while every other request on the connection completes (M6); chat rides the window's
+  existing link to a far host with no other login (M7, asserted in the one-login test); a post answered by a handler
+  error, with no answer, with an unparsable reply or with an `other` outcome reads as unknown, is never replayed, and its
+  pending entry is recorded before its write, so a write that ends the session still yields its unknown. About 168
+  product lines with comments (over the planned 80 and the brief's 120) and 232 test lines. The pre-push guard refused the
+  first push: a test fixture named a real person; the name was replaced before anything left the machine, and pushes are
+  now swept against the guard's own list. Where the minutes went: the build (9 minutes); one review round (blockers 0) and
+  one fix round of 1 minute; two gates of 3 minutes.
