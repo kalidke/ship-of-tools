@@ -359,7 +359,7 @@ fn a_final_name_planted_before_the_rename_is_replaced_not_followed() {
 
 #[test]
 fn an_error_at_every_step_leaves_no_temporary_file() {
-    // The steps come from a clean run of each layout, so a step added later is covered. Layout "present" has the
+    // The steps come from a clean run of each layout, so a later step that a clean run passes is covered. Layout "present" has the
     // folders and an old file; layout "missing" has neither, so its run sees the `Missing` steps.
     for layout in ["present", "missing"] {
         let prepare = |root: &Path| {
@@ -437,5 +437,14 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
         assert!(finished.iter().all(|r| r.is_ok()), "a writer erred");
         assert!(reads.unwrap() > 0);
     });
+    assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[test]
+fn a_folder_at_the_final_name_is_an_error_and_is_kept() {
+    let (_g, root, _outside) = setup();
+    std::fs::create_dir(root.join("f.txt")).unwrap();
+    assert!(write_beneath(&root, "f.txt", b"data").is_err());
+    assert!(std::fs::symlink_metadata(root.join("f.txt")).unwrap().is_dir());
     assert_eq!(entries(&root), ["f.txt"]);
 }
