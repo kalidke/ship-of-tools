@@ -27,6 +27,8 @@ pub(crate) enum ChatEvt {
     Posted { req: ChatPostReq, reply: ChatReply<ChatPostRes> },
     Changed(ChatChangedEvt),
     Status(ChatStatusEvt),
+    /// A pushed `chat.changed` or `chat.status` that did not parse: what it carried is lost, so the owner resyncs.
+    Unreadable,
 }
 
 pub(crate) async fn send_chat<W: AsyncWrite + Unpin>(
@@ -81,7 +83,7 @@ pub(crate) fn on_chat_post(frame: Frame, emit: &impl Fn(IncomingEvt), req: ChatP
     emit(IncomingEvt::Chat(ChatEvt::Posted { req, reply }));
 }
 
-/// `chat.changed` and `chat.status`, pushed unasked; one that does not parse is dropped with a warning.
+/// `chat.changed` and `chat.status`, pushed unasked; one that does not parse is a warning and a `ChatEvt::Unreadable`.
 pub(crate) fn on_chat_event(frame: Frame, emit: &impl Fn(IncomingEvt)) {
     let name = frame.op;
     let event = if name == op::CHAT_CHANGED {
@@ -91,7 +93,10 @@ pub(crate) fn on_chat_event(frame: Frame, emit: &impl Fn(IncomingEvt)) {
     };
     match event {
         Ok(event) => emit(IncomingEvt::Chat(event)),
-        Err(e) => tracing::warn!(%name, error = %e, "chat evt parse failed"),
+        Err(e) => {
+            tracing::warn!(%name, error = %e, "chat evt parse failed");
+            emit(IncomingEvt::Chat(ChatEvt::Unreadable));
+        }
     }
 }
 

@@ -53,7 +53,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   pass: `render/`, `render/pass/`.
 - Chrome, key bindings, help and paste: `chrome/` (panes, status line, nav spill, strip), `input/`.
 - The navigation trees: `nav/`. The session view and its switch: `session/`. The agent pane: `agent_pane/`.
-- The REPL, Terminal and Monitor drawers: `drawer/`. The preview pane, images, markdown and the editor: `preview/`.
+- The REPL, Terminal and Monitor drawers: `drawer/`. The project chat's owner: `drawer/chat/`. The preview pane, images, markdown and the editor: `preview/`.
 - The agent control surface (`fe.command`, the command directory, `fe-state.json`, the `sot_ui` envelope): `control/`.
 - UI persistence (settings.toml, keybindings.toml discovery, the per-host resume file): `persist/`. Downloads to disk:
   `nav/files/`.
@@ -650,6 +650,23 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 `OutgoingReq`, `IncomingEvt`, `HostTable`, `lane_dial`, `LinkHandle`, `ResolvedDial`, `--socket`, `--dial`, `--relaunched`,
 `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime, lease_notice, handle_fe_command_send relay diagnostics.
 
+## Chat owner
+`ChatOwner` (`drawer/chat/`) holds one watched channel (its host, target, fill: `Needed`, `Reading`, `Complete` or `Gap`, and its
+records), the one post in flight and the last post's outcome. It sends nothing itself and replays no mutation: each method
+returns the requests for State to send. Rules, each with its test in `drawer/chat/tests.rs`:
+- A lost chat bus (`bus.lost` for `chat.changed` or `chat.status`) marks the watched state incomplete and starts one
+  `chat.history` read (`a_lost_chat_bus_marks_the_state_incomplete_and_reads_once`).
+- A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`); a post to a host that is
+  not connected, or waiting when its link ends, reads as unknown (`a_post_while_disconnected_reads_as_unknown`).
+- A `chat.status` that says events were lost, or an `Unreadable` event, resyncs with one read: one in flight at a time, five
+  seconds apart (`tick` makes the owed one), three without a completed snapshot ending in `Gap`, shown and not retried until
+  the link returns (`a_lost_status_resyncs_with_a_paced_and_capped_read`, `an_unreadable_chat_event_resyncs`). A snapshot of
+  more than one page is `Gap` too: only the first page is read.
+- A status entry for another channel, or any status with nothing watched, is ignored (`a_status_entry_for_an_unwatched_channel_is_ignored`).
+- The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
+- A read's reply is applied only while that read is the one in flight, so a second reply is ignored (`a_second_reply_to_one_read_is_not_applied`).
+Limits: `chat.resolve` replies are not read (the drawer starts at a resolve), and the owner has no view.
+
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
 - `render/`: glyph text, the ratatui cell backend, textured quads, the surface and the capture readback.
@@ -667,6 +684,9 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
+- `drawer/chat/`: `ChatOwner`, the project chat's private owner (fields private, no open mutation); State holds it and
+  forwards chat events, `bus.lost` and each link's change to its methods, which return the requests to send. No drawer or key
+  reads it yet.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
