@@ -12,11 +12,11 @@ use std::ptr::{null, null_mut};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DIRECTORY_FILE,
+    FileRenameInformation, FileRenameInformationEx, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DIRECTORY_FILE,
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
+    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -32,6 +32,10 @@ use super::{absolute_root, invalid, names_another_place, plain_names, temp_name,
 use crate::host::durable::is_transient_hold;
 use crate::host::paths::simplify_verbatim;
 use crate::host::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
+
+/// `FILE_RENAME_FLAG_REPLACE_IF_EXISTS` and `FILE_RENAME_FLAG_POSIX_SEMANTICS`.
+const REPLACE_IF_EXISTS: u32 = 1;
+const POSIX_SEMANTICS: u32 = 2;
 
 const FOLDER_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
@@ -100,7 +104,9 @@ fn publish(
     dir.sync_all()
 }
 
-/// Renames the open `file` to `name` in `dir`, replacing an entry there; retried while a scanner holds the name.
+/// Renames the open `file` to `name` in `dir`, replacing an entry there; retried while a scanner holds the name. The
+/// classic rename goes first; when it is denied, the same rename with POSIX semantics replaces a name another program
+/// holds open with delete sharing, and its failure leaves the classic answer.
 fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let head = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
@@ -109,15 +115,21 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let mut buf = vec![0u64; len.div_ceil(8)];
     let info = buf.as_mut_ptr() as *mut FILE_RENAME_INFO;
     unsafe {
-        (*info).Anonymous.Flags = 1; // replace if it exists
         (*info).RootDirectory = dir.as_raw_handle() as HANDLE;
         (*info).FileNameLength = (wide.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(wide.as_ptr(), std::ptr::addr_of_mut!((*info).FileName) as *mut u16, wide.len());
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
-        let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-        let s = unsafe { NtSetInformationFile(file.as_raw_handle() as HANDLE, &mut iosb, info as *const c_void, len as u32, FileRenameInformation) };
+        let set = |class, flags: u32| {
+            let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+            unsafe { (*info).Anonymous.Flags = flags };
+            unsafe { NtSetInformationFile(file.as_raw_handle() as HANDLE, &mut iosb, info as *const c_void, len as u32, class) }
+        };
+        let mut s = set(FileRenameInformation, REPLACE_IF_EXISTS);
+        if s == STATUS_ACCESS_DENIED && set(FileRenameInformationEx, REPLACE_IF_EXISTS | POSIX_SEMANTICS) >= 0 {
+            s = 0;
+        }
         if s >= 0 {
             return Ok(());
         }

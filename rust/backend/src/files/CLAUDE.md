@@ -21,8 +21,8 @@ Per workspace row (built in `rows/workspace.rs`):
   link leads, is refused `bad_node_id` and writes nothing. `dir.create` and a delete resolve through
   `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
 - `file.write`'s version check reads through the read resolver. A save at a name that is a link is refused
-  `bad_node_id` and writes nothing. On Windows a save fails when another program still holds the file open after
-  `write_beneath`'s retry window, whatever sharing that program allows. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`,
+  `bad_node_id` and writes nothing. On Windows a save replaces a file another program holds open when that program allows delete sharing (its open keeps
+  the old file), and fails after `write_beneath`'s retry window when it does not. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`,
   `a_save_through_a_folder_link_takes_no_write`, `a_save_at_a_name_that_is_a_link_takes_no_write`;
   `io_ops_tests::a_save_through_a_folder_link_answers_bad_node_id` (the reply code).
 - The crop's PNG and a drawing's picture are written under `.sot/captures/` through `FilesMode::write`, which
