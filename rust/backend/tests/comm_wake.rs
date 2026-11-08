@@ -30,13 +30,14 @@ const MAX_SPREAD: Duration = Duration::from_secs(3);
 
 /// The stub's `echo-after` reader: `$1` seconds, `$2` the file the line goes to, `$3` (optional) a file the echo also
 /// waits for. No echo and no line editing, so the first byte is seen when it arrives; what has arrived by then, after
-/// `$1` seconds and `$3`, is printed in one go.
+/// `$1` seconds and `$3`, is printed in one go. Then `$2.shown` exists.
 const READ_SLOW_ECHO: &str = r#"stty -echo -icanon min 1 time 0
 IFS= read -r -N1 first
 sleep "$1"
 while [ -n "$3" ] && [ ! -f "$3" ]; do sleep 0.05; done
 if IFS= read -r -t 0.05 -n 4096 rest; then ended=1; else ended=0; fi
 printf '%s%s' "$first" "$rest"
+: > "$2.shown"
 [ $ended = 1 ] || IFS= read -r more
 printf '%s%s' "$first" "$rest$more" > "$2"
 stty echo icanon
@@ -223,19 +224,11 @@ async fn phase_of_row(row: &mut Row, ws: &str) -> String {
 
 /// Returns once the wake has made two more decisions for `HANDLE` than it had when this was called: the first may have
 /// begun before the condition the caller waited for, the second began after it. An absence is proved over these, never
-/// over a span of the clock.
+/// over a span of the clock. A held reply's release runs after its tick's decision, so the first counted look's release
+/// began after the call and ended before the second look.
 async fn two_looks(row: &Row) {
     row.looked.reached_async(row.looked.arrivals() + 1).await;
 }
-
-/// [`two_looks`] and one more: the tick's page-reply release runs after its decision, so the third decision's tick
-/// is the first whose release began wholly after the condition.
-async fn three_looks(row: &Row) {
-    row.looked.reached_async(row.looked.arrivals() + 2).await;
-}
-
-/// Three ticks (2 s each) plus slack: paces the stub while no daemon runs.
-const THREE_TICKS: Duration = Duration::from_secs(8);
 
 async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     start_with(tag, log, in_dialog, &[], &[]).await
@@ -792,7 +785,7 @@ async fn a_restarted_daemon_completes_a_wake_line_left_typed() {
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     read_mail(&row.env, 1);
     row.env.kill_daemon_bounded().await;
-    tokio::time::sleep(THREE_TICKS).await;
+    wait_for("the stub to draw the late echo", || row.env._tmp.path().join("ctl/line.shown").exists()).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
     row.env.spawn_sotd_with_path_and_env(&row.stub_dir, &[]);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the restarted daemon never sent the line's Enter");
@@ -854,7 +847,7 @@ async fn a_new_run_after_a_restart_owes_no_enter_and_the_boot_look_leaves_its_bo
     row.env.kill_daemon_bounded().await;
     // What the second daemon writes from here: the first daemon's boot look can wait once too, by timing.
     let second_daemon_from = row.env.daemon_log_len();
-    tokio::time::sleep(THREE_TICKS).await;
+    wait_for("the stub to draw the late echo", || row.env._tmp.path().join("ctl/line.shown").exists()).await;
     assert_eq!(pings(&row.log), 0, "the first daemon sent the Enter before it was killed");
     end_supervisor(&row.env);
     let before = row.done.arrivals();
@@ -1104,12 +1097,12 @@ async fn a_direct_reply_to_a_busy_row_is_held_and_typed_when_its_prompt_frees() 
     assert!(received(&row).is_empty(), "typed into a working row");
     let deliveries = || daemon_log(&row.env).lines().filter(|line| line.contains("page reply delivery")).map(String::from).collect::<Vec<_>>();
     assert_eq!(deliveries().len(), 1, "the first attempt is logged");
-    three_looks(&row).await;
+    two_looks(&row).await;
     assert_eq!(deliveries().len(), 1, "unchanged held attempts must stay quiet");
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws, "stop_at": iso_at(0)}));
     wait_for("the changed held detail", || deliveries().iter().any(|line| line.contains("stop hook running"))).await;
     assert_eq!(deliveries().len(), 2, "a changed detail must be logged");
-    three_looks(&row).await;
+    two_looks(&row).await;
     assert_eq!(deliveries().len(), 2, "the new unchanged detail must stay quiet");
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws}));
     std::fs::remove_file(&row.spin).unwrap();
@@ -1134,7 +1127,7 @@ async fn a_direct_reply_is_refused_at_a_draft_and_types_nothing() {
     assert_eq!(res["outcome"], "refused", "{res}");
     assert!(res["detail"].as_str().unwrap().starts_with("draft"), "{res}");
     assert!(res["detail"].as_str().unwrap().ends_with("; the box holds \"unsent words\""), "{res}");
-    three_looks(&row).await;
+    two_looks(&row).await;
     assert!(received(&row).is_empty(), "a refused reply reached the pane");
     row.env.kill_daemon_bounded().await;
 }
