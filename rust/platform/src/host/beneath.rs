@@ -50,6 +50,11 @@ fn temp_name(fixed: Option<&str>) -> io::Result<String> {
     Ok(format!(".sot-{}.tmp", r.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
 
+/// A relative root is never its own canonical path; refused before any call.
+fn absolute_root(root: &Path) -> io::Result<()> {
+    if root.is_absolute() { Ok(()) } else { Err(invalid(format!("{root:?} is not its own canonical path"))) }
+}
+
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }

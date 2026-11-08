@@ -25,7 +25,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
-use super::{invalid, plain_names, temp_name, Step};
+use super::{absolute_root, invalid, plain_names, temp_name, Step};
 use crate::host::durable::is_transient_hold;
 use crate::host::paths::simplify_verbatim;
 use crate::host::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
@@ -49,6 +49,7 @@ pub(super) fn write_beneath_at(
     let names = plain_names(rel)?;
     let (last, folders) = names.split_last().expect("plain_names returns at least one name");
     let temp = temp_name(temp)?;
+    absolute_root(root)?;
     // A root is its own canonical path when std's canonical form, de-verbatimed, equals it; the drive letter and
     // names compare without ASCII case, as the volume does.
     let canonical = std::fs::canonicalize(root).map_err(|e| match e.raw_os_error() {
@@ -56,7 +57,7 @@ pub(super) fn write_beneath_at(
         _ => e,
     })?;
     let same = |a: PathBuf, b: PathBuf| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
-    if !root.is_absolute() || !same(simplify_verbatim(canonical), simplify_verbatim(root.to_path_buf())) {
+    if !same(simplify_verbatim(canonical), simplify_verbatim(root.to_path_buf())) {
         return Err(invalid(format!("{root:?} is not its own canonical path")));
     }
     let mut dir = std::fs::OpenOptions::new()

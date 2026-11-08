@@ -163,7 +163,7 @@ where each lives).
     its own canonical path (one that does not exist, a link to nothing included, is `NotFound`), a `rel` that is not
     `/`-joined plain names (on Windows none holding `\` or `:`), and a link or file at a folder's name are
     `InvalidInput`. A Windows root is its own canonical path when std's canonical form without its verbatim prefix equals
-    it, ASCII case aside. Limits: no caller yet. A crash between the create and the rename leaves a `.sot-<hex>.tmp` that no later write removes.
+    it, ASCII case aside. A relative root is `InvalidInput` before any call. Windows answers some refusals by other kinds: a folder removed after its open is `PermissionDenied`, and a root under a file or spelled through `..` is `NotFound`. Limits: no caller yet. A crash between the create and the rename leaves a `.sot-<hex>.tmp` that no later write removes.
     Folders made before a later error stay. After the rename the old file is gone: an error in the folder sync leaves
     the entry renamed into place at the name. The returned path names
     the file only while nobody renames its folders. A mount inside the root is followed on Unix and refused on Windows. A folder with write and
