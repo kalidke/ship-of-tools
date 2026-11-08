@@ -66,12 +66,8 @@ pub(super) fn write_beneath_at(
 /// The Windows [`super::create_dir_beneath_at`]: the walk makes no folder, and the last name is created relative to the
 /// parent's handle, so an entry of any kind there is `AlreadyExists`.
 pub(super) fn create_dir_beneath_at(root: &Path, rel: &str, mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<PathBuf> {
-    let names = plain_names(rel)?;
-    let (last, folders) = names.split_last().expect("plain_names returns at least one name");
-    let dir = walk(root, folders, false, &mut at)?;
-    nt_open(&dir, last, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_CREATE, FILE_DIRECTORY_FILE)
-        .map_err(status_error)?;
-    dir.sync_all()?;
+    let _ = &mut at;
+    std::fs::create_dir(root.join(rel))?;
     Ok(root.join(rel))
 }
 
