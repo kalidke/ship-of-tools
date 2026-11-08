@@ -109,7 +109,7 @@ pub use held_dir::*;
 pub use fd::inherit_none;
 pub use lock::*;
 pub use pinned_dir::*;
-pub use regular::read_regular;
+pub use regular::{open_regular, read_regular};
 pub use storage::native_storage_code;
 pub use volume::*;
 #[cfg(windows)]

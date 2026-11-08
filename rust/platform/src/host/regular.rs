@@ -3,17 +3,10 @@
 use std::io::{self, Read};
 use std::path::Path;
 
-/// The text of a regular file of at most `cap` bytes. The file is opened without blocking and without taking a
-/// controlling terminal (Unix), so a FIFO planted at the path returns at once instead of waiting for a writer, and is
-/// checked on the open handle, so no swap between a check and the read can change what is read. Not a regular file (a
-/// FIFO, a device, a directory) is `InvalidInput`; a file over `cap` or not UTF-8 is `InvalidData`, each with its own
-/// message, the first after at most one byte over the cap has been read; a missing file is `NotFound`, as `File::open`
-/// says. Limit: only a FIFO's wait is ended; a regular file on a hung network mount still blocks in the OS.
-///
-/// Windows opens with std and applies the same handle check, cap and text rule. A directory is refused there too, but
-/// by the open itself (std's `File::open` on a directory fails with `PermissionDenied`); a named pipe's name is not
-/// promised refused, since no test runs one.
-pub fn read_regular(path: &Path, cap: u64) -> io::Result<String> {
+/// Opens `path` for reading only if it is a regular file: without blocking or taking a controlling terminal (Unix), so
+/// a FIFO returns at once, and checked on the open handle. Anything else (a FIFO, a device, a directory) is
+/// `InvalidInput`; a missing file is `NotFound`.
+pub fn open_regular(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -28,6 +21,21 @@ pub fn read_regular(path: &Path, cap: u64) -> io::Result<String> {
             "not a regular file",
         ));
     }
+    Ok(file)
+}
+
+/// The text of a regular file of at most `cap` bytes. The file is opened without blocking and without taking a
+/// controlling terminal (Unix), so a FIFO planted at the path returns at once instead of waiting for a writer, and is
+/// checked on the open handle, so no swap between a check and the read can change what is read. Not a regular file (a
+/// FIFO, a device, a directory) is `InvalidInput`; a file over `cap` or not UTF-8 is `InvalidData`, each with its own
+/// message, the first after at most one byte over the cap has been read; a missing file is `NotFound`, as `File::open`
+/// says. Limit: only a FIFO's wait is ended; a regular file on a hung network mount still blocks in the OS.
+///
+/// Windows opens with std and applies the same handle check, cap and text rule. A directory is refused there too, but
+/// by the open itself (std's `File::open` on a directory fails with `PermissionDenied`); a named pipe's name is not
+/// promised refused, since no test runs one.
+pub fn read_regular(path: &Path, cap: u64) -> io::Result<String> {
+    let file = open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(cap.saturating_add(1)).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > cap {

@@ -44,20 +44,6 @@ pub(crate) fn compose(files: &FilesMode, row_id: &str, drawing: &Drawing) -> Res
         .map_err(|e| (PUBLISH_FAILED, format!("{e:#}")))
 }
 
-/// Opens `path` for reading without blocking and refuses, on the open handle, anything but a regular file: a FIFO
-/// named like an image answers at once.
-pub(crate) fn open_regular(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOCTTY);
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
-    }
-    Ok(file)
-}
-
 /// The figure scaled to the wire's raster dimensions.
 fn figure_raster(files: &FilesMode, node_id: &str) -> Result<image::RgbaImage, Refusal> {
     let path = files.node_id_to_path(node_id).map_err(|e| (BAD_NODE_ID, format!("{e:#}")))?;
@@ -67,7 +53,7 @@ fn figure_raster(files: &FilesMode, node_id: &str) -> Result<image::RgbaImage, R
     }
     // One open: the header is read from the decoder that then decodes, so a figure replaced between the check and
     // the decode cannot skip the size check.
-    let mut reader = open_regular(&path)
+    let mut reader = sot_platform::host::open_regular(&path)
         .and_then(|f| image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format())
         .map_err(|e| (NOT_AN_IMAGE, format!("open {path:?}: {e}")))?;
     let mut limits = image::Limits::no_limits();

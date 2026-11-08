@@ -111,10 +111,11 @@ where each lives).
     to each write and reports the whole buffer written. Wired through it: the daemon's log and the window's log. Limits:
     the supervisor's own diagnostics go straight to its stderr and are not masked; a secret split across two writes is
     not seen (each write is masked alone).
-15. **A small configuration file is read bounded and only if regular.** `host::read_regular(path, cap)` returns the
-    file's text: it opens without blocking or taking a controlling terminal (Unix `O_NONBLOCK | O_NOCTTY`), refuses on
-    the open handle anything but a regular file (`InvalidInput`: a FIFO or a device never waits), reads at most `cap`
-    bytes, and refuses a larger file or invalid UTF-8 as `InvalidData` with a message of its own; a missing file is
+15. **A file is opened for reading only if regular, and a small configuration file is read bounded.**
+    `host::open_regular(path)` opens without blocking or taking a controlling terminal (Unix `O_NONBLOCK | O_NOCTTY`)
+    and refuses on the open handle anything but a regular file (`InvalidInput`: a FIFO or a device never waits); files'
+    figure and crop source are opened through it. `host::read_regular(path, cap)` returns the file's text through it,
+    reads at most `cap` bytes, and refuses a larger file or invalid UTF-8 as `InvalidData` with a message of its own; a missing file is
     `NotFound`. Chat's two files and hosts.toml (the store and sync included) are read through it. Limit: only a FIFO's
     wait is ended; a regular file on a hung network mount still blocks in the OS. On Windows a directory is refused by
     std's open (`PermissionDenied`) before the handle check; the cap and text rule apply, and a named pipe's name is
@@ -212,7 +213,7 @@ gethostname, sha2, thiserror, getrandom; tracing-subscriber and tempfile for the
 ## Calls out
 Everything above; each name is a path under `sot_platform::`: `host::state_dir::{sot_state_dir, sot_config_dir,
 runtime_sot_dir, host_name, kernel_host_name, state_dir_hash, is_private_dir}`, `host::{publish_noreplace,
-write_durable, write_beneath, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir,
+write_durable, write_beneath, open_regular, remove_durable, lock_writer, lock_supervisor, try_lock_daemon, HeldDir,
 remove_ended, preflight_volume,
 storage_exhaustion, dir_identity, PinnedDir, inherit_none, harden_own_stdio}`, `host::fd::*`, `host::winjob::{AnonymousJob, JobError}` (Windows), `host::process_tree::*`,
 `host::redial::{Redial, STABLE}`, `host::env::Env`, `identity::challenge::*`, `identity::exchange::{IdentityExchange,

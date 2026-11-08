@@ -54,9 +54,13 @@ fn a_planted_fifo_or_device_is_refused_without_a_wait() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the read of a FIFO blocked");
     assert_eq!(got.unwrap_err().kind(), ErrorKind::InvalidInput);
+    // The open alone answers the same, on the handle's kind.
+    let e = open_regular(&dir.path().join("fifo")).unwrap_err();
+    assert_eq!((e.kind(), e.to_string().as_str()), (ErrorKind::InvalidInput, "not a regular file"));
     // A device that never ends is not a regular file either.
     assert_eq!(
         read_regular(Path::new("/dev/zero"), 16).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
+    assert_eq!(open_regular(Path::new("/dev/zero")).unwrap_err().kind(), ErrorKind::InvalidInput);
 }

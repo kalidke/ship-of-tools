@@ -142,6 +142,14 @@ fn a_crop_is_a_png_of_the_rect_beneath_the_captures_folder() {
     let bytes = std::fs::read(&out).unwrap();
     assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Png);
     assert_eq!(image::load_from_memory(&bytes).unwrap().to_rgb8().dimensions(), (10, 10));
+    // A rect over the edge is clamped, in the reply and in the picture.
+    let (out, x, y, w, h, ..) = crop_to_captures(&files, &src, "fit", (35, 15, 10, 10)).unwrap();
+    assert_eq!((x, y, w, h), (35, 15, 5, 5));
+    assert_eq!(image::open(&out).unwrap().to_rgb8().dimensions(), (5, 5));
+    // The decoder is picked from the bytes: a file of no supported format answers decode_failed.
+    std::fs::write(root.path().join("junk.png"), b"not an image").unwrap();
+    let junk = root.path().join("junk.png");
+    assert_eq!(crop_to_captures(&files, &junk, "junk", (0, 0, 1, 1)).unwrap_err().0, "decode_failed");
 }
 
 #[test]

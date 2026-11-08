@@ -103,7 +103,7 @@ pub(super) fn crop_to_captures(
     stem: &str,
     (req_x, req_y, req_w, req_h): (u32, u32, u32, u32),
 ) -> std::result::Result<CropOk, (String, String)> {
-    let file = super::ink::open_regular(src).map_err(|e| ("decode_failed".into(), format!("open {src:?}: {e}")))?;
+    let file = sot_platform::host::open_regular(src).map_err(|e| ("decode_failed".into(), format!("open {src:?}: {e}")))?;
     let img = image::ImageReader::new(std::io::BufReader::new(file))
         .with_guessed_format()
         .and_then(|r| r.decode().map_err(std::io::Error::other))
