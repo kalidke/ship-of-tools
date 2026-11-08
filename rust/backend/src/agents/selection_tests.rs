@@ -100,7 +100,7 @@ fn the_row_file_holds_the_last_shared_selection_or_nothing() {
     // 5. a failed publish answers publish_failed and leaves no file (a folder where the temporary file goes)
     assert!(set(&ws.workspace_id, Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"))).is_ok());
     assert!(held().is_some());
-    // a folder at the temporary name `write_durable` writes first makes its create fail
+    // a folder at the temporary name `write_durable` writes first makes its removal fail
     std::fs::create_dir(folder.join("selection.json.tmp")).unwrap();
     assert_eq!(
         set(&ws.workspace_id, Some(sel("files:b.txt", (0, 0), (0, 3), "one"))),
