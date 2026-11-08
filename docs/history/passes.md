@@ -1100,3 +1100,13 @@ A landing's record goes here, with its measured times; the package page holds on
   of 2 minutes; two hosted runs on the branch. Why past the hour: round 1 took 39 minutes (00:54 to 01:33: its probes,
   its mutants, and a disassembly of the Windows standard library's rename, which found the held-open difference), and
   round 2 found the contract paragraph wider than the code, which took a second fix round.
+- On Windows a final name held open with delete sharing is replaced, 2026-11-08: builder launched 01:43, main 02:15
+  (2658a328d, 4ec7bced6, 824416005; the first round's d4127decb moved onto main), 32 minutes. The write beneath a root
+  renames by the temporary file's handle with the classic replace and, when that answers access denied, again with a
+  POSIX-semantics replace, as `std::fs::rename` does; a name held without delete sharing still fails after the retry
+  window, with the classic answer. A link at the final name, to a file or a folder, is now replaced and never followed
+  on every system: the second call replaces a junction or a directory symlink there, as Unix's rename already did.
+  Closes WIN-SAVE-HELD-OPEN. About 14 product and 46 test lines. Where the minutes went: the build (2 minutes); the
+  hosted branch run, which showed the junction at the final name replaced (round 1's blocker); two review rounds
+  (blockers 1, 0) and two fix rounds; five one-job Windows probes (each new case red on main, every beneath test green on
+  the change, the directory symlink case red by name); two gates of 2 minutes.
