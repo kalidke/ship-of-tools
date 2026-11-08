@@ -324,22 +324,41 @@ async fn lifecycles_retirement_stops_the_running_service_within_its_bound() {
     assert!(chat.wait_retired(Duration::ZERO));
 }
 
+/// Yield until the listener's stop has begun, failing at a 10 s bound. A retirement reports at its bound whether or
+/// not its thread has reached `request_stop` yet (lifecycle's bound covers every step), so what the stop sets is read
+/// after this, never right after `retire` returns.
+async fn stop_begun(listener: &Fake) {
+    let begun = async {
+        while listener.stops.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), begun).await.expect("the retirement never asked the service to stop");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_that_does_not_finish_is_reported_incomplete_and_final() {
-    let home = Home::new(Some(SELF));
-    let row = home.configured();
-    let (registry, listener) = (Registry::new(), Arc::new(Fake { hang: true, ..Fake::default() }));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&listener));
-    assert_eq!(settled(&chat).await, Status::Running);
+    // Twice: as it usually runs, and with the stop asked only after the report, the order a loaded host gives (the
+    // retirement's thread had not reached the chat within the bound), forced by holding the phase lock across it.
+    for late in [false, true] {
+        let home = Home::new(Some(SELF));
+        let row = home.configured();
+        let (registry, listener) = (Registry::new(), Arc::new(Fake { hang: true, ..Fake::default() }));
+        let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&listener));
+        assert_eq!(settled(&chat).await, Status::Running);
 
-    let done = retire(&registry, Duration::from_millis(50));
-    assert_eq!(done.incomplete, vec!["chat"]);
-    assert_eq!(chat.status(), Status::Stopping);
-    assert!(chat.service().is_none());
-    // A second ask neither stops again nor reads as retired.
-    chat.request_stop();
-    assert!(!chat.wait_retired(Duration::ZERO));
-    assert_eq!(listener.stops.load(Ordering::SeqCst), 1);
+        let held = late.then(|| chat.shared.lock());
+        let done = retire(&registry, Duration::from_millis(50));
+        drop(held);
+        assert_eq!(done.incomplete, vec!["chat"], "late: {late}");
+        stop_begun(&listener).await;
+        assert_eq!(chat.status(), Status::Stopping, "late: {late}");
+        assert!(chat.service().is_none());
+        // A second ask neither stops again nor reads as retired.
+        chat.request_stop();
+        assert!(!chat.wait_retired(Duration::ZERO));
+        assert_eq!(listener.stops.load(Ordering::SeqCst), 1, "late: {late}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

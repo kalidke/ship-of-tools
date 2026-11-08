@@ -120,6 +120,9 @@ owned by `docs/CLAUDE.md`.
   waits add up to 4 s, and the backstop is armed after the listener's teardown (`lifecycle/shutdown.rs`,
   `server/listen.rs`). Charge the tail inside the bound, with a test of the process's exit
   (`rust/backend/tests/daemon_lifetime/outcomes.rs`).
+- **RETIRE-TESTS-ASSUME-THREAD-RUNS** [note] `lifecycle/retire_tests.rs`'s 400 ms and 1 s bounds assume the retirement's
+  step thread is scheduled within them; `retire` returns at its deadline whether or not that thread has run, so a loaded
+  host can break them (the same assumption the chat stop test made, CHAT-STOP-STATUS-UNDER-LOAD). Not seen red.
 - **CLAIM-EXIT-OWNER** [note] `Signal::claim_exit` belongs to lifecycle's terminal, not containment.
 - **LEASE-REJECT-NO-DEADLINE** [note] The lease's malformed-line refusals use the undeadlined `reject` in a loop that
   continues (`lifecycle/lease.rs`), so a lease peer that never reads can fill its buffer; wire's `reject`
@@ -602,11 +605,6 @@ owned by `docs/CLAUDE.md`.
   within its caps"), and later runs passed. Pinned to one core beside eight busy loops it fails every run, at the base and the
   head, with "a stalled write held the socket ... never dropped". Both are plain panics, so the pause check does not cover
   them; whether the second is the fixture's or the product's write bound is unknown.
-- **CHAT-STOP-STATUS-UNDER-LOAD** [note] `chat_tests.rs`'s `a_stop_that_does_not_finish_is_reported_incomplete_and_final`
-  failed once at a local gate at peak load 13.5: after the retire reported chat incomplete, `status()` still read `Running`
-  where the test expects `Stopping`. The same code had passed two gates that hour, and nothing in that landing touched chat.
-  Whether the retire can report incomplete before the status moves to `Stopping` (a product order) or the test reads a status
-  set by another task (a test race) is unknown.
 
 ## records
 
@@ -649,6 +647,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-STOP-STATUS-UNDER-LOAD** (chat) closed by the landing that fixes it, 2026-11-07: a test race; `retire` reports at its bound before its thread reaches a late `request_stop`, and the test now reads what the stop sets only after the stop began, forcing that order once per run.
 - **ROW-CLEAR-NO-SESSION-START** (agents) closed by the session-start hook landing: a Claude row leg's `--settings` (for legs started after the update) carries SessionStart on `clear` and `compact`, running the read-only comm session start, whose output names the handle and the handoff. Not covered: `/resume` typed in a live row, Codex rows.
 - **DESTROY-SESSION-LIMBO** (fe-ui) closed by the landing that fixes it, 2026-11-07: destroying the session in view left the window on the default row, or, when another window or the command line destroyed it, on a session that no longer exists, and a session destroyed elsewhere kept its parked view, REPL state and tree slots; the view now moves to the next session in the Sessions list (below, else above, across computers), the pane is empty when none remains, destroying any other session changes nothing, and a row a listing no longer has loses its parked view, REPL state and tree slots.
 - **ROW-ID-MINT** (rows) closed by f7905b1a5: a row id is unique within a process by count, not by the second.
