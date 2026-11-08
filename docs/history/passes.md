@@ -1298,3 +1298,9 @@ A landing's record goes here, with its measured times; the package page holds on
   plan's orderings; the window's share re-sends the current state after a reconnect). About 70 product lines and 86 test
   lines. Where the minutes went: the build (1 minute); one review round (blockers 1: the brief had said replayable, from the
   older plan) and one fix round of 1 minute; two gates of 2 minutes.
+- The session start after a clear, its second review's notes, 2026-11-08: builder launched 16:12, main 16:31 (bbb57f18e,
+  9328fc87d), 19 minutes. A cleared session whose registry file is absent is told to join, which works from that state;
+  one whose registry is present but unreadable (not JSON, no agents, not permitted, a directory or a dangling link at its
+  path) gets no instruction, since a join cannot repair it; the contract and the hook header say so exactly. About 14
+  product lines and 20 test lines. Where the minutes went: the build (1 minute); one review round (blockers 0) and one fix
+  round of 1 minute; two gates of 4 minutes.
