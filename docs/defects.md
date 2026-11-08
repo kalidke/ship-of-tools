@@ -30,11 +30,6 @@ owned by `docs/CLAUDE.md`.
 
 ## platform
 
-- **WIN-SAVE-HELD-OPEN** [note] On Windows `host::write_beneath` (`rust/platform/src/host/beneath_windows.rs`) renames
-  with the classic replace, which fails while any other open of the final name remains, so since `file.write` moved onto
-  it a save of a file another program holds open with delete sharing fails after the retry window; `std::fs::rename`,
-  which the old writer used, falls back to a POSIX-semantics replace and saved it. Seen as a red test on a hosted Windows
-  run (`a_final_name_a_reader_holds_open_is_replaced`). Fix decided: the same fallback by the temporary file's handle.
 - **ENSURE-CONTAINER-TEST-ONLY** [note] `host::durable::ensure_container` (`rust/platform/src/host/durable.rs`) has only
   test callers now that the voyage folder is gone; delete it with its tests.
 - **TEST-ISOLATED-TESTS-PORT** [note] The socket suite deleted with the lane servers held tests of
@@ -686,6 +681,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **WIN-SAVE-HELD-OPEN** (platform) closed by 2658a328d and 4ec7bced6, 2026-11-08: on Windows the write beneath a root renamed with the classic replace alone, so a save of a file another program held open with delete sharing failed where `std::fs::rename` saved it; the rename now falls back to a POSIX-semantics replace by the same handle when the classic one answers access denied, and a link at the final name, to a file or a folder, is replaced on every system.
 - **CHAT-WATCH-STALE-SLOT** (chat) closed by 585800d2f, 2026-11-07: a chat watch dispatch test failed on macOS in 2 of 6 hosted runs ("timed out waiting for the stale slot released by the owner") because the owner's snapshot could check the row before the test removed it; the snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.
 - **BENEATH-SUPERSEDED-WRITER-ERRS** (platform) closed by d79396550, 2026-11-07: the write beneath a root no longer checks the final name after its rename, so two writers of one name each answer Ok; Ok means the entry at the temporary name was renamed into place.
 - **GATE-LEFTOVER-ENDPOINT-STUBS** (messaging) closed by 4ed49a71d and 61874b765, 2026-11-07: the endpoint gate suite's stubs left their `sleep 30` children running, and a gate whose last jobs included that suite failed its census; each stub now starts in its own group and is ended with it.
