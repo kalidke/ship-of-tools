@@ -13,7 +13,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DIRECTORY_FILE,
-    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OVERWRITE_IF, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, UNICODE_STRING};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -72,7 +72,7 @@ pub(super) fn write_beneath_at(
         at(Step::Folder(i))?;
     }
     // Create the temporary file exclusively, held with share-read alone so no other open can rename or delete it.
-    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
+    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_OVERWRITE_IF, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
     let mut renamed = false;
     let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
