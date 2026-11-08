@@ -2,8 +2,9 @@
 # test-selection-hook.sh — sot-selection-hook.sh prints the file $SOT_SELECTION_FILE names when it is a readable regular
 # file, prints nothing in every other case, and always exits 0 with nothing on stderr. It is run from the staged bin, the
 # comm scripts laid out flat as the installer lays them, which also proves it lands there executable. The shell is
-# whichever bash this suite runs under: macOS's /bin/bash 3.2 and Git Bash on the hosted runs
-# (`scripts/tests/under-bash.sh`), bash here.
+# whichever bash this suite runs under: the hosted runs of `scripts/tests/under-bash.sh` give it bash 3.2 on macOS and
+# on Linux, and bash 5 runs it here; no run tests it under Git Bash on Windows (the script is plain `[ -f ]`, `[ -r ]`
+# and `cat`, and is read, not run, there).
 #
 # HERMETIC: its own HOME and comm folder; no daemon, no agent.
 #
@@ -91,6 +92,17 @@ case_unreadable_prints_nothing() {
     silent
 }
 check "an unreadable file prints nothing" case_unreadable_prints_nothing
+
+# The host writes the whole prompt to the hook's stdin: a hook that exits without reading it meets a closed pipe on a long
+# prompt (SIGPIPE here, EPIPE in the host).
+case_a_long_input_on_stdin_is_read_whole() {
+    printf '{"x":1}' > "$WORK/big.json"
+    head -c 1048576 /dev/zero | tr '\0' a | SOT_SELECTION_FILE="$WORK/big.json" bash "$HOOK" > "$WORK/out" 2> "$WORK/err"
+    local st=("${PIPESTATUS[@]}")
+    [ "${st[*]}" = "0 0 0" ] || { echo "  statuses: ${st[*]}"; return 1; }
+    [ "$(cat "$WORK/out")" = '{"x":1}' ] || { echo "  stdout: $(cat "$WORK/out")"; return 1; }
+}
+check "a 1 MiB input on stdin is read whole, the file still printed, no writer meets a closed pipe" case_a_long_input_on_stdin_is_read_whole
 
 echo ""
 echo "$PASS passed, $FAIL failed"

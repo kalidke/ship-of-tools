@@ -58,7 +58,10 @@ pub(super) fn add_dir_arg(layer: &Path) -> String {
 fn hook_command(comm_home: &Path, script: &str) -> String {
     let home = absolute_against_cwd(comm_home).to_string_lossy().replace('\\', "/");
     let path = format!("{}/bin/{script}", home.trim_end_matches('/'));
-    format!("'{}'", path.replace('\'', r"'\''"))
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    // The selection hook is the one script a release can prune from under a live leg (an older release's install removes
+    // names it does not ship), so its command is a no-op when the script is not there.
+    if script == SELECTION_HOOK { format!("[ ! -f {quoted} ] || {quoted}") } else { quoted }
 }
 
 /// Whether `argv` has a `--settings` (either spelling) whose JSON carries the selection hook on `UserPromptSubmit`; a

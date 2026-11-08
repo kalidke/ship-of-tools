@@ -287,7 +287,7 @@ pub(crate) fn spawn_detached_supervisor(
     // A contended launch started nothing: the live supervisor's leg keeps the marker it was started with.
     if matches!(spawn, Spawn::Started(_)) {
         if let Err(e) = crate::agents::selection::write_marker(state_dir, agent_kind, &supervisor_env, agent_argv) {
-            tracing::warn!(workspace_id, error = %e, "the selection marker was not written; a selection is answered held");
+            tracing::warn!(workspace_id, error = %e, "the selection marker was not brought up to date; a selection is answered by the marker of an earlier launch");
         }
     }
     Ok(spawn)

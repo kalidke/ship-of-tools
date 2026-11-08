@@ -3,8 +3,8 @@
 # (`argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`); this proves what those tests cannot: each hook
 # command `sotd agent-exec claude` hands claude, run by the shell claude runs it with, starts its script, with a comm
 # folder whose name holds a space and a quote. A stand-in `claude` records its arguments; the scripts are stand-ins that
-# leave a mark. The shell is whichever bash this suite runs under: macOS's /bin/bash 3.2 and Git Bash on the hosted runs
-# (`scripts/tests/under-bash.sh`), bash here.
+# leave a mark. The shell is whichever bash this suite runs under: the hosted runs of `scripts/tests/under-bash.sh` give it
+# bash 3.2 on macOS and on Linux, and bash 5 runs it here; it is skipped on Windows, so Git Bash is not tested.
 #
 # HERMETIC: its own HOME and comm folder, no daemon, no real claude.
 #
@@ -61,6 +61,20 @@ case_every_hook_command_starts_its_script() {
 }
 check "each hook command in the leg's --settings starts its script from a comm folder with a space and a quote" \
     case_every_hook_command_starts_its_script
+
+# The selection hook's command is a no-op when its script is not installed (an older release's install prunes it from under
+# a live leg): exit 0, nothing on either stream, where the other commands would exit 127.
+case_a_missing_selection_script_is_a_silent_no_op() {
+    local settings cmd
+    settings="$(sed -n '/^--settings$/{n;p;}' "$ARGS")"
+    cmd="$(printf '%s' "$settings" | jq -r '.hooks[][].hooks[].command | select(contains("sot-selection-hook"))')"
+    [ -n "$cmd" ] || { echo "  no selection hook command in: $settings"; return 1; }
+    rm -f "$COMM/bin/sot-selection-hook.sh"
+    bash -c "$cmd" > "$WORK/hook.out" 2>&1 || { echo "  '$cmd' exited $?: $(cat "$WORK/hook.out")"; return 1; }
+    [ ! -s "$WORK/hook.out" ] || { echo "  printed: $(cat "$WORK/hook.out")"; return 1; }
+}
+check "a selection hook command whose script is not installed exits 0 and prints nothing" \
+    case_a_missing_selection_script_is_a_silent_no_op
 
 echo ""
 echo "$PASS passed, $FAIL failed"

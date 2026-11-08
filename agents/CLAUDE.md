@@ -88,7 +88,7 @@ of each.
    them. The layer is ready when it holds `sot-session-start`'s
    `SKILL.md`; then `claude_recipe` adds `--add-dir=<layer>` (one token, so the variadic flag cannot take the next
    argument, and an absolute path, since the leg's working folder is the project's) and a `hooks` key, built from `HOOKS`
-   in `layer.rs` (`comm-status-working.sh`, `sot-selection-hook.sh` (also on UserPromptSubmit: it prints the file `SOT_SELECTION_FILE` names when that is set and names a readable regular file, and otherwise nothing, always exiting 0, under bash 3.2 and Git Bash; it is this folder's script, and the installer lays it flat in the comm folder's `bin/` with the others), `comm-status-blocked.sh`, `comm-status-heartbeat.sh` and, on the SessionStart
+   in `layer.rs` (`comm-status-working.sh`, `sot-selection-hook.sh` (also on UserPromptSubmit: it reads its whole input first, as the host writes the prompt to it and a long prompt would otherwise meet a closed pipe, then prints the file `SOT_SELECTION_FILE` names when that is set and names a readable regular file, and otherwise nothing, always exiting 0; tested under bash 3.2 and bash 5 on Linux and macOS, and by reading, not running, under Git Bash; its command is `[ ! -f '<path>' ] || '<path>'`, so a comm folder an older release's install pruned of the script is a silent no-op, not an error row on every prompt; it is this folder's script, and the installer lays it flat in the comm folder's `bin/` with the others), `comm-status-blocked.sh`, `comm-status-heartbeat.sh` and, on the SessionStart
    sources `clear` and `compact`, the session-start hook script (messaging's), which runs the comm session start read-only
    (`--again`: it joins and writes nothing, so the row's work-state is kept) so a session that lost its context is told
    its handle, its handoff file and its unread mail, and stands down on `SOT_COMM_HOOKS=off`; from the comm folder's
@@ -248,11 +248,15 @@ of each.
   files' `path_to_node_id` less its prefix, so on Unix a file named `a\b.txt` is shown as `a/b.txt`. A file swapped for a
   named pipe between the type check and the open blocks the connection loop, the stall the server contract states.
   The marker is written by `rows::spawn::detach::spawn_detached_supervisor` (both callers: the first start and the
-  watchdog's restart) through `selection::write_marker`, after a launch that started a supervisor (a contended launch
-  started nothing and leaves the live supervisor's marker): it exists exactly when the row's kind is `claude`, the leg's
+  watchdog's restart) through `selection::write_marker`, after a launch that started a supervisor (on Unix a contended launch
+  started nothing and leaves the live supervisor's marker; on Windows the launch always reports a start, and a launch whose
+  supervisor then exits 70 on the held fence has written the marker from its own argv over the live leg's, which is wrong
+  only when the two argvs differ): it exists exactly when the row's kind is `claude`, the leg's
   environment carries `SOT_SELECTION_FILE` and its argv's `--settings` carries the selection hook on UserPromptSubmit
   (`layer::carries_selection_hook`); it is removed otherwise, and Codex legs have none, so a Codex row answers `held`.
-  A supervisor started before the release has no marker. A reset leg in the same supervisor runs with that supervisor's
+  A supervisor started before the release has no marker. The marker describes the last launch: between a leg's exit and
+  its restart, or after a downgrade and an upgrade that adopts the older supervisor, it can describe another leg; and a
+  failed write or removal (logged as not brought up to date) leaves the earlier launch's marker. A reset leg in the same supervisor runs with that supervisor's
   argv and environment, so the marker stays true for it; it survives a daemon restart. Codex is a kind that takes a
   selection until the plan's H2 decides whether Codex hears one; if H2 fails Codex rows will answer `no_agent`. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
   file's JSON escapes. The published text is the file's text at the read; a file that changes
@@ -369,7 +373,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`), `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`);
-`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
+`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them, and a missing selection script a silent no-op); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
 | 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh` |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |

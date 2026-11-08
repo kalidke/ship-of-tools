@@ -45,6 +45,10 @@ fn the_selection_hook_rides_the_recipe() {
     let with = |settings: &str| vec!["claude".to_string(), "--settings".to_string(), settings.to_string()];
     let ours = hooks_settings(comm.path());
     assert!(carries_selection_hook(&with(&ours.to_string())), "a layered leg carries the selection hook: {ours}");
+    // its command is a no-op when the script is missing; the others' are the bare quoted path
+    let commands: Vec<&str> = ours["hooks"]["UserPromptSubmit"].as_array().unwrap().iter().map(|g| g["hooks"][0]["command"].as_str().unwrap()).collect();
+    assert!(commands[1].starts_with("[ ! -f '") && commands[1].contains("/bin/sot-selection-hook.sh' ] || '"), "{commands:?}");
+    assert!(commands[0].starts_with("'/") || commands[0].starts_with("'C:"), "{commands:?}");
     assert_eq!(ours["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 2, "it joins the work-state hook on the same event");
     // the reader is exact: no flag, a settings value that is not JSON, a hook of another name, another event, `--settings=`
     let hook = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'/c/bin/sot-selection-hook.sh'"}]}]}}"#;
