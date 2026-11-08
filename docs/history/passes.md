@@ -1251,3 +1251,11 @@ A landing's record goes here, with its measured times; the package page holds on
   have been two landings), and each review of a path that can stop a working session took over half an hour; the first
   round found a rule nothing tested (a dialog the restart leaves must still read red), whose fix reordered the restart's
   checks and needed a second round.
+- The destroy rules' pins, 2026-11-08: builder launched 12:08, main 12:34 (d8028607a, a88e42cdb), 26 minutes. Three rules
+  the window's contract claimed for destroying a session got their tests: the agent pane is cleared before the view moves
+  to the neighbor, a lost link ends only its own computer's destroy notes, and dropping a row keeps its computer's default
+  view (the fixture's old second assertion could not fail). Tests and one test-only method; no product line. The review
+  found that no landing runs the window's State fixtures, these two among them: the local gate and the per-landing hosted
+  run compile them, and only the hand-dispatched release gate runs them (STATE-FIXTURES-RUN-ONLY-AT-RELEASE); the builder
+  ran them under a virtual display on a build computer. Where the minutes went: the build (2 minutes); one review round
+  (blockers 0) and one fix round of 1 minute; two gates of 2 minutes.

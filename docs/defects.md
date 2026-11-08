@@ -521,6 +521,13 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** [note] The window's State fixtures (`run_state_fixtures`, the
+  `window_minimized` target, 13 of them, the destroy rules' pins among them) are compiled by the local gate and the
+  per-landing hosted run but run by neither: `scripts/tests/shards.py` drops targets with required features, and their
+  only runs are the hand-dispatched release gate's Windows and macOS jobs. A regression they pin reaches main with every
+  landing gate green. Fix: one Linux step in `rust.yml` that runs the built target's fixtures under `xvfb-run` (about 5 s
+  on a build computer); open premise: whether a hosted Linux runner has an adapter the window's renderer accepts. Also:
+  `rust/frontend/Cargo.toml` names `rust.yml` for the redraw mutation leg, which is in `release-gate.yml`.
 - **FE-CONCEPT-SAVE-SILENT** [note] The window shows nothing when `concept.write` is refused: the reply is only logged
   (`rust/frontend/src/ui/preview/replies.rs`) and the editor stays dirty.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent
