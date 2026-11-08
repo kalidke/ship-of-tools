@@ -631,6 +631,14 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-SECOND-ASK-UNPINNED** [note] `chat_tests.rs`'s `a_stop_that_does_not_finish_is_reported_incomplete_and_final` claims
   "a second ask neither stops again nor reads as retired", but it reads the listener's stop count before a stop spawned by
   the second ask would be polled, so a product that stops again passes. Pin it by an order (the hold tool), not a sleep.
+- **CHAT-TRANSIENT-WAITS** [note] Five chat tests wait with `eventually` for a state another task holds only for a bound
+  and then leaves, so a test not polled for that long misses it and fails: `service_tests.rs`'
+  `stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener` and
+  `a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped` (`Stopping`, about 2 s and 1 s), and
+  `socket_tests.rs`' `a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it`,
+  `a_reconciliation_begun_before_a_hello_is_refused_by_it` (the refused reopen, until the connect after a 400 ms pause) and
+  `stop_during_the_reconnect_pause_does_not_wait_for_it` (no socket open, for a 5 s pause). Not seen failing. Pin each by
+  an order (the hold tool), not a window.
 
 ## records
 
