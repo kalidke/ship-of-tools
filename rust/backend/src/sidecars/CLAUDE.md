@@ -285,7 +285,9 @@ R7. **Output reaches the window as `repl.frame`s, and a collected run's text is 
     text and the first `error` message are cut at `EXEC_FIELD_CAP` (64 KiB) with a marker, when the report is made, after
     collection; other fields, streamed frames and images are not capped. Limits: the collector stays installed until the
     run's `done` or response, so it goes on collecting after a timed-out caller has returned (docs/defects.md: COLLECTOR-LIFETIME);
-    the 1 MiB envelope bounds a reply, and a run whose frames exceed it fails there.
+    the 1 MiB envelope bounds a reply, and a run whose frames exceed it fails there. A figure that cannot be written is
+    logged and ends the spill, and the reply carries the figures written before it (none when the first fails); the
+    drawer still shows every image.
 
 Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; the result file says what it would take.
 
@@ -306,9 +308,7 @@ Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; t
 (`HeldDir`, `remove_ended`, `Redial`, `STABLE`, `host_name`, `state_dir_hash`, `resource_dir`, `sot_state_dir`,
 `sot_config_dir`, `SSH_OPTS`), `sot_protocol` (`ChildLines`, the op names and payloads,
 `page_url::loopback_port_from_url`, `reply::HandlerOutput`), rows (`Workspaces::resolve`, `row_or_reply`,
-`capsule_guard`, for the REPL's ops), files (`canonicalize_within_any_workspace`, for `pluto.open`; `FilesMode::write`, which writes each figure of a
-`repl.execute` run to `.sot/runs/<run id>/fig-<i>.<ext>` beneath the project root, following no link, a failed one logged and
-the reply carrying the figures written before it) and the server's
+`capsule_guard`, for the REPL's ops), files (`canonicalize_within_any_workspace`, for `pluto.open`; `FilesMode::write`, for `repl.execute`'s figures) and the server's
 `Session` (the revision a reply carries). The REPL names no module of pages: its port announcements go through `ports::PortGrants`, which pages implements and the
 daemon installs (R6).
 
@@ -386,4 +386,4 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 | R4 | interrupt reaches only the running eval; non-yielding evals by signal | `repl/escalation_tests.rs`: all (`it_signals_only_the_running_eval_the_request_names`, `a_forced_request_for_the_same_eval_replaces_a_plain_escalation`, `a_forced_burst_ends_at_its_span_or_at_the_childs_first_line`, `each_answer_says_what_is_left`); `repl/interrupt_tests.rs`: `one_interrupt_stops_a_loop_with_a_safepoint`, `a_loop_with_no_safepoint_needs_the_force`, `an_interrupt_naming_another_eval_sends_no_signal`; `repl/ops_busy_tests.rs`: `an_interrupt_the_signal_does_not_stop_says_so`, `an_idle_repl_is_never_signalled`, `no_signal_follows_the_evals_done`; `julia/repl/test/interrupt_child.jl` (local gate and release gate) |
 | R5 | checked retirement | `repl/restart_tests.rs`: `restart_timeout_retains_owner_and_starts_no_replacement`, `cleanup_error_prevents_replacement` |
 | R6 | the port channel | `repl/ports_tests.rs`: `an_allow_is_applied_before_its_browser_frame_is_forwarded`, `a_refused_allow_withholds_the_frame_and_says_why`, `an_end_a_receiver_refuses_is_logged_and_changes_nothing`, `an_allow_the_cap_would_evict_at_once_is_refused` (pages), `a_repl_with_no_receiver_refuses_every_allow`, `a_new_repl_handle_starts_above_the_last_generation`; `repl/restart_tests.rs`: `retired_generation_cannot_grant`; pages' side, `src/pages/proxy_tests.rs`: `a_stale_generation_is_refused_by_the_table`, `an_older_childs_end_cannot_erase_its_replacements_grant`, `browser_ports_record_revoke_and_allowlist` |
-| R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`; `repl/numbers_tests.rs`: the window's-numbers tests |
+| R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`; `repl/numbers_tests.rs`: the window's-numbers tests; `a_figure_is_written_beneath_the_root_following_no_link` (which also pins the figures kept when a later one fails) |

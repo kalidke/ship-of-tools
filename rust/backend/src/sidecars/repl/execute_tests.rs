@@ -257,6 +257,11 @@ mod shell_table {
         *case-error*) frame '{"kind":"error","message":"boom"}'; frame '{"kind":"done"}'; res '{}' ;;
         *case-busy*) frame '{"kind":"error","message":"REPL busy"}'; frame '{"kind":"done"}'; res '{}' ;;
         *case-rescode*) res '{"code":"io_error","error":"nope"}' ;;
+        *case-twofig*)
+          frame '{"kind":"image","mime":"image/png","data_base64":"iVBORw0KGgo="}'
+          frame '{"kind":"image","mime":"image/png","data_base64":"!"}'
+          frame '{"kind":"done"}'
+          res '{}' ;;
         *case-ok*)
           frame '{"kind":"stdout","text":"hi"}'
           frame '{"kind":"stderr","text":"warn"}'
@@ -463,8 +468,16 @@ mod shell_table {
             assert_eq!(r.reply["figures"], json!([]), "{label}");
             let found: Vec<_> = walk(&outside);
             assert!(found.is_empty(), "{label}: wrote outside: {found:?}");
-            assert!(log.text().contains("figure spill failed"), "{label}: not logged:\n{}", log.text());
+            let logged = log.text().lines().any(|l| l.contains("figure spill failed") && l.contains(&r.run_id));
+            assert!(logged, "{label}: not logged:\n{}", log.text());
         }
+
+        // A later figure that cannot be written leaves the figures written before it in the reply.
+        let (id, root) = add_row(&workspaces, &dir, "twofig");
+        let r = run_case(&workspaces, &session, &mut bus, "twofig", eval_payload(&id, "case-twofig", None)).await;
+        let fig = root.join(".sot").join("runs").join(&r.run_id).join("fig-0.png");
+        assert_eq!(r.reply["figures"], json!([fig.to_string_lossy()]), "{}", r.reply);
+        assert!(fig.is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

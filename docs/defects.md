@@ -452,6 +452,9 @@ owned by `docs/CLAUDE.md`.
   it; ADR 0050 residual 7 records orphaned Pluto workers), so both go together.
 - **MATHJAX-KEEP** [note] D3's MathJax question: keep the node child only if markdown with math is previewed in use. The
   MathJax code is unchanged until the question is answered.
+- **REPL-FIGURE-SILENT** [note] The reply of `repl.execute` says nothing when a figure is not written; only the daemon log
+  does (`rust/backend/src/sidecars/repl/execute.rs` `spill_exec_figures`), and the julia-repl skill tells the agent it gets
+  the paths.
 
 ## pages
 
