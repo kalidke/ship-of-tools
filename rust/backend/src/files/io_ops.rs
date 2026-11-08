@@ -272,7 +272,7 @@ pub async fn handle_file_delete(
 /// Create a directory from Files-mode nav (FE Ctrl+N, a name ending in `/`).
 /// Non-recursive (`FilesMode::create_dir`, beneath the root and following no
 /// link): a missing parent fails loudly instead of being silently created,
-/// and a link at a folder of the path is refused `bad_node_id`. Any entry at
+/// and a link or a file at a folder of the path is refused `bad_node_id`. Any entry at
 /// the target path is refused with `code: "already_exists"` rather than
 /// silently succeeding. Bumps the session revision like file.write/delete so
 /// the watcher and reconnecting clients refresh.
@@ -309,7 +309,7 @@ pub async fn handle_dir_create(
             )])
         }
         Err(e) => {
-            // A name the rule refuses (a link at a folder of the path included) answers as a node id.
+            // A name the rule refuses (a link or a file at a folder of the path included) answers as a node id.
             let kind = e.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
             let (error, code) = match kind {
                 Some(std::io::ErrorKind::AlreadyExists) => ("already exists".to_string(), "already_exists"),

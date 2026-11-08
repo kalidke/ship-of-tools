@@ -14,8 +14,8 @@
 // READS (tree.children, preview.get, file.read) FOLLOW symlinks — including
 // out-of-root ones like `data/results/` → NAS, this deployment's convention.
 // WRITES (file.write) and dir.create go through `FilesMode::write` and `FilesMode::create_dir`, beneath the root and
-// following no link; file.delete
-// uses `node_id_to_path_confined`, which additionally canonicalizes and refuses paths escaping the root.
+// following no link; file.delete uses `node_id_to_path_confined`, which additionally canonicalizes and refuses paths
+// escaping the root.
 //
 // Directory listings skip hidden entries (leading `.`) UNLESS the per-
 // workspace `show_hidden` flag is set — the frontend flips it with the `.`

@@ -1,6 +1,6 @@
-//! The Windows arm of the write beneath a root: each name is its own `NtCreateFile` relative to the handle before, a
-//! name-surrogate reparse point (symlink, junction, mount point) is refused, and the temporary file is renamed by its
-//! handle.
+//! The Windows arm of the write and the new folder beneath a root (`write_beneath_at`, `create_dir_beneath_at`): each
+//! name is its own `NtCreateFile` relative to the handle before, a name-surrogate reparse point (symlink, junction,
+//! mount point) is refused, and the temporary file is renamed by its handle.
 
 use std::ffi::c_void;
 use std::fs::File;

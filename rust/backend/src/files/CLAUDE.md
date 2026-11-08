@@ -71,7 +71,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: the folder's module list.
-- `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types, the write beneath the root.
+- `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types, the write and the new folder beneath the root.
 - `io.rs`: editor file IO: read, version-checked write and contained trash with a wait budget.
 - `io_trash_tests.rs`: absolute trash fixtures, checked cleanup before fallback, error diagnostics and the command's null streams.
 - `io_ops_tests.rs`: the handler-level reply code of a refused save or folder (`io_ops.rs`).

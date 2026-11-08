@@ -1,4 +1,5 @@
-//! The Unix arm of the write beneath a root: `openat` relative to the folder before, no link followed.
+//! The Unix arm of the write and the new folder beneath a root (`write_beneath_at`, `create_dir_beneath_at`): `openat`
+//! relative to the folder before, no link followed.
 
 use std::ffi::{CStr, CString};
 use std::fs::File;
