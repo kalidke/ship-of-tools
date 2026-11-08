@@ -117,6 +117,9 @@ pub(super) enum PendingKind {
         handle: String,
     },
     QuartoOpen,
+    SelectionSet {
+        workspace_id: String,
+    },
     ChatResolve {
         row: String,
     },
@@ -359,6 +362,7 @@ pub(super) fn handle_response_frame(
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
             PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
+            PendingKind::SelectionSet { workspace_id } => on_selection_set(frame, &emit, workspace_id),
             PendingKind::ChatResolve { row } => on_chat_resolve(frame, &emit, row),
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),

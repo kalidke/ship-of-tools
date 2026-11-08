@@ -10,6 +10,7 @@ mod monitor;
 mod pages;
 mod preview;
 mod repl;
+mod selection;
 mod tree;
 mod workspace;
 
@@ -34,13 +35,14 @@ fn is_unsupported(op: &str, payload: &serde_json::Value) -> bool {
         && payload.get("error").and_then(|v| v.as_str()).is_some_and(|e| e.strip_prefix("unknown op: ") == Some(op))
 }
 
-pub(super) use {chat::*, concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, tree::*, workspace::*};
+pub(super) use {chat::*, concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, selection::*, tree::*, workspace::*};
 pub(crate) use {
     chat::{ChatEvt, ChatReply},
     concept::ConceptWriteResult,
     files::{DirCreateResult, FileDeleteResult, FileWriteResult},
     kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ScanModule, ScanType},
     repl::ReplRunFileInfo,
+    selection::SelectionReply,
     tree::DirEntry,
     workspace::{AccountInfo, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo},
 };

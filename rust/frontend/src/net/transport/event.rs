@@ -559,4 +559,6 @@ pub enum IncomingEvt {
     },
     /// The project chat's replies and pushed events (`ops/chat.rs`): typed, never bytes. No view reads them yet.
     Chat(ChatEvt),
+    /// A `selection.set`'s reply, with the row its request named (`ops/selection.rs`). No view reads it yet.
+    Selection { workspace_id: String, reply: SelectionReply },
 }

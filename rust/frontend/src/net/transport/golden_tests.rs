@@ -127,6 +127,9 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
             }))
             .unwrap(),
         },
+        OutgoingReq::SelectionSet {
+            req: serde_json::from_value(serde_json::json!({ "workspace_id": "sel.ws", "selection": null })).unwrap(),
+        },
     ]
 }
 
