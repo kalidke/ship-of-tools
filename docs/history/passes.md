@@ -1130,3 +1130,21 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes went: the build (3 minutes); one review round (blockers 0) with swap probes on local disk and the network
   home, and one fix round of text and test names (FE-CONCEPT-SAVE-SILENT and FILES-CONCEPT-NAME-RULES noted); one hosted
   run on the branch; two gates of 2 minutes, and one stray gate of the first commit run by mistake.
+- The foreign-peer row test reads the close whichever comes first, 2026-11-08: red seen on main's hosted macOS run at
+  03:43, builder launched 03:44, main 03:57 (d1dc8f8f3, 1bb28a4c0, 01c49d74a), 13 minutes from the builder. Main's
+  hosted run for 3968b8969 failed `a_peer_of_another_uid_is_dropped_at_accept` on macOS: the server dropped the foreign
+  peer before the test set its read timeout, and xnu refuses a socket option on a socket shut in both directions
+  (`sosetoptlock`), so the option call answered EINVAL. The test now takes that answer on macOS as the close having come
+  first and still reads the close; Linux keeps the loud failure. About 8 test lines. Where the minutes went: the build;
+  two one-job macOS probes with a sleep that puts the drop first (red on the old test, green on the new); one review
+  round (blockers 0), which found the kernel rule and a second record of macOS's refusal that disagrees
+  (MACOS-SOCKOPT-RECORDS noted); two gates of 2 minutes.
+- The REPL's figures are written beneath the project root, 2026-11-08: builder launched 03:35, main 04:25 (318531952 and
+  48162048e moved onto main as eb1dec5d9 and a9f4edfa4), 50 minutes. `repl.execute` writes each figure through the
+  workspace's `FilesMode::write` (folders created, a fresh temporary name, no link followed); a figure that cannot be
+  written is logged and ends the spill, and the reply now carries the figures written before it (it carried none on any
+  failure before); the reply's paths keep their form. About 46 product lines added and 23 removed, and 62 test lines.
+  Where the minutes went: the build (14 minutes); one review round (blockers 0) with swap probes (main's spill wrote
+  outside the root under them, the change never), and one fix round (the kept figures tested, a log assertion tied to its
+  run, the records placed with their owners, REPL-FIGURE-SILENT noted); one hosted run on the branch; two gates of 2
+  minutes, the second after the move onto main past the capsule test's landing.
