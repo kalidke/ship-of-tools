@@ -191,3 +191,159 @@ async fn a_refreshed_loaded_row_follows_its_new_supervisor() {
     assert_ne!(phase, "ready", "the refreshed row's phase never followed its stopped supervisor");
     env.kill_daemon_bounded().await;
 }
+
+/// A stand-in `claude` for the trust dialog. Each start appends its argv to `.stub-starts` in its working folder and
+/// runs `loss`, a shell snippet that may write `{}` over `$cfg` (`$CLAUDE_CONFIG_DIR/.claude.json`): the measured lost
+/// update, the daemon's entry gone before the leg reads it. Then it draws the main input box if that file holds an
+/// accepted entry, else Claude Code's folder-trust dialog, and waits (or, when `exit_first`, its first start ends 3 s
+/// after it draws, as an agent that crashes does).
+fn write_trust_claude(dir: &Path, loss: &str, exit_first: bool) -> PathBuf {
+    std::fs::create_dir_all(dir).expect("mkdir stub bin");
+    let script = r#"#!/bin/sh
+rule=''; i=0; while [ $i -lt RULE_CHARS ]; do rule="$rule$(printf '\342\224\200')"; i=$((i+1)); done
+echo "$*" >> .stub-starts
+n=$(wc -l < .stub-starts)
+cfg="$CLAUDE_CONFIG_DIR/.claude.json"
+LOSS
+printf '\033[2J\033[H'
+if grep -q '"hasTrustDialogAccepted": true' "$cfg" 2>/dev/null; then
+  printf '%s\n\342\235\257\302\240\n%s\n' "$rule" "$rule"
+else
+  printf '%s\n Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one you trust?\n\n \342\235\257 No, exit\n   Yes, I trust this folder\n\n Enter to confirm \302\267 Esc to cancel\n' "$rule" "$PWD"
+fi
+EXIT_FIRST
+while :; do sleep 1; done
+"#
+    .replace("RULE_CHARS", &RULE_CHARS.to_string())
+    .replace("LOSS", loss)
+    .replace("EXIT_FIRST", if exit_first { "if [ \"$n\" -eq 1 ]; then sleep 3; exit 1; fi" } else { "" });
+    sot_platform::test_exec::write_executable(&dir.join("claude"), script);
+    dir.to_path_buf()
+}
+
+/// The declaration of the test's temporary folder as the trusted prefix, through the real command, under the daemon's
+/// own configuration folder.
+fn declare_trust_prefix(env: &Env) {
+    let prefix = env._tmp.path().canonicalize().expect("prefix");
+    let declare = sot_platform::test_wait::run_within(
+        std::process::Command::new(sotd_program())
+            .args(["trust", "declare"])
+            .arg(&prefix)
+            .env("HOME", &env.home_root)
+            .env("USERPROFILE", &env.home_root)
+            .env("XDG_CONFIG_HOME", &env.config_root)
+            .env("LOCALAPPDATA", &env.state_root)
+            .env("SOT_COMM_HOME", &env.comm_root),
+        BOUND,
+    );
+    assert!(declare.status.success(), "sotd trust declare: {declare}");
+}
+
+fn stub_starts(root: &Path) -> Vec<String> {
+    std::fs::read_to_string(root.join(".stub-starts")).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+/// A Claude row reauthed to another account, whose replacement leg loses its trust record (the stub's lost update) and
+/// stops at the folder-trust dialog, under the declared prefix: the tick restarts it once with the same argv, its
+/// `--resume` kept, and that restart's own spawn records trust again, so the third start reaches the main box. Three
+/// starts, the last two equal, the target account's file holding the root's accepted entry, and still three later.
+/// Red without the restart: two starts and the row at the dialog.
+#[tokio::test]
+async fn a_reauthed_leg_at_the_trust_dialog_under_the_prefix_restarts_once_with_its_resume_and_is_trusted() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first");
+    let env = Env::new("cwtr");
+    let lost = env._tmp.path().join("lost");
+    let loss = format!("case \" $* \" in *\" --resume \"*) if [ ! -f '{}' ]; then : > '{}'; echo '{{}}' > \"$cfg\"; fi;; esac", lost.display(), lost.display());
+    let stub = write_trust_claude(&env._tmp.path().join("stubbin"), &loss, false);
+    let config_dir = env.home_root.join(".claude-auth");
+    for account in ["src", "dst"] {
+        std::fs::create_dir_all(config_dir.join(account)).expect("mkdir account");
+        std::fs::write(config_dir.join(account).join(".credentials.json"), b"{}").expect("credentials");
+    }
+    let root = env.workspace_project_root.canonicalize().expect("root");
+    let uuid = "0f0e0d0c-aaaa-4bbb-8ccc-000000000001";
+    let transcripts = config_dir.join("dst").join("projects").join("p");
+    std::fs::create_dir_all(&transcripts).expect("mkdir projects");
+    std::fs::write(transcripts.join(format!("{uuid}.jsonl")), format!("{}\n", serde_json::json!({"cwd": root}))).expect("transcript");
+
+    declare_trust_prefix(&env);
+
+    env.spawn_sotd_with_path_and_env(&stub, &[]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let create = serde_json::json!({
+        "label": "cwtr-row",
+        "project_root": root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "claude",
+        "account": "src",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    next_id += 1;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+    let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
+    assert_eq!(stub_starts(&root).len(), 1, "setup: one start on the first account");
+
+    let reauth = call(&mut conn, next_id, op::WORKSPACE_REAUTH, serde_json::json!({"workspace_id": ws, "account": "dst", "resume": uuid})).await;
+    assert_eq!(reauth.payload["code"], "reauth_accepted", "workspace.reauth: {:?}", reauth.payload);
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while stub_starts(&root).len() < 3 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let starts = stub_starts(&root);
+    assert_eq!(starts.len(), 3, "start, the reauthed leg, and its one restart: {starts:?}");
+    assert!(!starts[0].contains("--resume"), "the first start is the recipe: {starts:?}");
+    assert!(starts[1].contains(&format!("--resume {uuid}")), "the reauthed leg resumes the conversation: {starts:?}");
+    assert_eq!(starts[1], starts[2], "the restart reruns the leg's own argv: {starts:?}");
+
+    let file = config_dir.join("dst").join(".claude.json");
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).expect("dst .claude.json")).expect("json");
+    assert!(
+        doc["projects"].as_object().is_some_and(|p| p.values().any(|v| v["hasTrustDialogAccepted"] == true)),
+        "the restart's spawn recorded trust for the root again: {doc}"
+    );
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    assert_eq!(stub_starts(&root).len(), 3, "the row reached its main box and was restarted no more");
+    env.kill_daemon_bounded().await;
+}
+
+/// The watchdog's restart opens a leg too: a Claude row whose agent crashed is restarted by its watchdog, the restarted
+/// leg loses its record and stops at the folder-trust dialog, and the trust restart reruns that leg once: three starts,
+/// the last with the main box, still three later.
+#[tokio::test]
+async fn a_watchdog_restarted_leg_at_the_trust_dialog_under_the_prefix_restarts_once() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first");
+    let env = Env::new("cwtw");
+    let stub = write_trust_claude(&env._tmp.path().join("stubbin"), "if [ \"$n\" -eq 2 ]; then echo '{}' > \"$cfg\"; fi", true);
+    let account = env.home_root.join(".claude-auth").join("src");
+    std::fs::create_dir_all(&account).expect("mkdir account");
+    std::fs::write(account.join(".credentials.json"), b"{}").expect("credentials");
+    let root = env.workspace_project_root.canonicalize().expect("root");
+    declare_trust_prefix(&env);
+
+    env.spawn_sotd_with_path_and_env(&stub, &[SHORT_BACKOFF]);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let create = serde_json::json!({
+        "label": "cwtw-row",
+        "project_root": root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "claude",
+        "account": "src",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while stub_starts(&root).len() < 3 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let starts = stub_starts(&root);
+    assert_eq!(starts.len(), 3, "start, the watchdog's restart, and the trust restart: {starts:?}");
+    assert!(starts.iter().all(|s| !s.contains("--resume")), "no conversation to resume on this row: {starts:?}");
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    assert_eq!(stub_starts(&root).len(), 3, "the third start reached its main box and was restarted no more");
+    env.kill_daemon_bounded().await;
+}

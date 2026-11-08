@@ -122,7 +122,7 @@ fn a_taken_trust_leg_is_spent_until_the_main_box_and_other_answers_close_it() {
     let g2 = ws.begin_spawn();
     ws.open_trust_leg(g2, argv.clone());
     assert_eq!(ws.take_trust_leg(g2, true), TrustTake::Spent);
-    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::Spent, "still spent, with no leg to close");
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::NotOpen, "still spent, with no leg to close or to tell of");
     ws.trust_passed(g2);
     assert_eq!(ws.trust_reading(), None);
     ws.open_trust_leg(g2, argv.clone());

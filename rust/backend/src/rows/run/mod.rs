@@ -22,6 +22,7 @@ pub(crate) mod admission;
 pub(crate) mod end_run;
 pub(crate) mod resume;
 pub(crate) mod start;
+pub(crate) mod trust_restart;
 pub(crate) mod watchdog;
 
 #[cfg(target_os = "linux")]

@@ -78,8 +78,8 @@ of each.
    projects are preserved; this daemon's preparations are serialized and each publishes through a temporary name of its
    own; a file it cannot read or parse is refused, never clobbered. Every preparation is one log line
    naming its outcome: recorded, already trusted and outside at info, each with the trust file; no declaration at warn,
-   with the declaration file; a failure at warn, with its error; the agent starts whatever it says. For the trust
-   restart, which is unbuilt, `folder_trust::under_declared_prefix` answers that same scope test (one private helper both
+   with the declaration file; a failure at warn, with its error; the agent starts whatever it says. For rows'
+   trust restart, `folder_trust::under_declared_prefix` answers that same scope test (one private helper both
    call), and every Claude preparation marks its trust file with an instant, in memory, that `claude_prepared_within`
    reads. Limits: preparation is
    proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
