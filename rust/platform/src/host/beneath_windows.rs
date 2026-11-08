@@ -75,7 +75,8 @@ pub(super) fn write_beneath_at(
     let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
     let mut renamed = false;
-    let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
+    let by_path = (folders.iter().fold(root.to_path_buf(), |p, n| p.join(n)), temp.clone());
+    let result = publish(&dir, &file, last, by_path, bytes, &mut renamed, &mut at);
     if !renamed {
         // The handle names the temporary file alone; a failure here changes nothing.
         let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
@@ -92,6 +93,7 @@ fn publish(
     dir: &File,
     mut file: &File,
     last: &str,
+    by_path: (PathBuf, String),
     bytes: &[u8],
     renamed: &mut bool,
     at: &mut impl FnMut(Step) -> io::Result<()>,
@@ -100,7 +102,8 @@ fn publish(
     file.write_all(bytes)?;
     file.sync_all()?;
     at(Step::Written)?;
-    rename_into(file, dir, last)?;
+    let _ = dir;
+    std::fs::rename(by_path.0.join(&by_path.1), by_path.0.join(last))?;
     *renamed = true;
     at(Step::Renamed)?;
     dir.sync_all()
