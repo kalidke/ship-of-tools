@@ -238,7 +238,7 @@ The environment: comm's identity and commands read variables only from an `Env` 
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
 record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
 (`read_comm_agents`, `try_read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
-call and pass it to their `_in` form. No read of the process remains in comm; the wake's test points (`comm.wake.hold`, `final_ok`, `done`, `looked`) go through platform's hold tool.
+call and pass it to their `_in` form. Nothing else in comm reads the process; the wake's test points (`comm.wake.hold`, `final_ok`, `done`) go through platform's hold tool.
 
 Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) and passes it, so none writes the
 process environment and none needs a lock for one; a test that starts a child sets the child's environment on its

@@ -66,10 +66,10 @@ printf '\r\n'
 /// reads typed input without the tty's echo and prints it where the cursor is that many seconds after its first
 /// byte (`READ_SLOW_ECHO`; with `focus-after` also not before the stub has moved focus), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
 /// and `other` for anything else, so a line typed twice shows.
-fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
+fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path, holds: &Path) -> PathBuf {
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
-    let holds = ctl.parent().expect("ctl folder has a parent").join("holds").display().to_string();
+    let holds = holds.display().to_string();
     let slow = dir.join("read-slow-echo.sh");
     std::fs::write(&slow, READ_SLOW_ECHO).expect("write slow-echo reader");
     let script = format!(
@@ -231,12 +231,12 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 /// env vars on the daemon. The wake's points `comm.wake.hold`, `final_ok` and `done` are armed on the row's holds folder
 /// before the daemon starts, counting only.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
-    start_full(tag, log, in_dialog, ctl, extra, 0).await
+    start_full(tag, log, in_dialog, ctl, extra, 0, 0).await
 }
 
-/// [`start_with`], the first `final_holds` arrivals at `comm.wake.final_ok` held (after the wake's last check, before
-/// its typing) until the test releases them.
-async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)], final_holds: usize) -> Row {
+/// [`start_with`], the first `hold_holds` arrivals at `comm.wake.hold` held (as the wake's hold begins) and the first
+/// `final_holds` at `comm.wake.final_ok` held (after the wake's last check, before its typing) until the test releases them.
+async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)], hold_holds: usize, final_holds: usize) -> Row {
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
@@ -249,11 +249,11 @@ async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
         let (name, content) = entry.split_once('=').unwrap_or((entry, ""));
         std::fs::write(ctl_dir.join(name), content).unwrap();
     }
-    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot, &ctl_dir);
+    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot, &ctl_dir, env.holds.env().1);
     if in_dialog {
         std::fs::write(&dialog, b"").unwrap();
     }
-    let hold = env.holds.arm("comm.wake.hold").hold(0);
+    let hold = env.holds.arm("comm.wake.hold").hold(hold_holds);
     let final_ok = env.holds.arm("comm.wake.final_ok").hold(final_holds);
     let done = env.holds.arm("comm.wake.done").hold(0);
     env.spawn_sotd_with_path_and_env(&stub_dir, extra);
@@ -681,13 +681,16 @@ async fn pass_boot_look(row: &Row) {
 #[tokio::test]
 async fn panel_focus_arriving_during_the_hold_is_refused() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("cwph", None, false, &["panel", "focus-hold"], &[]).await;
+    let mut row = start_full("cwph", None, false, &["panel", "focus-hold"], &[], 1, 0).await;
     wait_for_panel(&mut row).await;
     pass_boot_look(&row).await;
     append_mail(&row.env, 1);
+    // The attempt waits at its hold until the stub has moved focus.
+    row.hold.reached_async(0).await;
+    let moved = row.env._tmp.path().join("ctl/focus-moved");
+    wait_for("the stub to move focus", || moved.exists()).await;
+    row.hold.release(0);
     row.done.reached_async(1).await;
-    assert!(row.env._tmp.path().join("ctl/focus-moved").exists(), "the stub never moved focus");
-    assert!(row.hold.arrivals() > 0, "no attempt reached the hold");
     assert_eq!(row.final_ok.arrivals(), 0, "the final check passed with focus on the panel");
     assert!(!row.screen_has("[sot-comm]").await, "the wake line was typed into the row");
     assert_eq!(pings(&row.log), 0, "typed into a row whose focus had moved to the panel");
@@ -871,12 +874,12 @@ async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
 
 /// An attempt's input belongs to the run whose screen it checked. The attempt is held after its last check (the seam), the
 /// supervisor is killed and the watchdog's restart gives the row a new run that is in a dialog, and the attempt's worker has
-/// reconnected to it by the time the hold ends: nothing is typed into the new run, which is woken only once its dialog has
+/// had a redial cap and a second to reconnect to it by the time the hold ends: nothing is typed into the new run, which is woken only once its dialog has
 /// closed, by its own attempt.
 #[tokio::test]
 async fn an_attempt_never_types_into_a_run_it_did_not_check() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("cwfr", None, false, &[], &[SHORT_BACKOFF], 1).await;
+    let mut row = start_full("cwfr", None, false, &[], &[SHORT_BACKOFF], 0, 1).await;
     append_mail(&row.env, 1);
     row.final_ok.reached_async(0).await;
     // The new run draws the dialog, not the prompt.
@@ -888,7 +891,9 @@ async fn an_attempt_never_types_into_a_run_it_did_not_check() {
         assert!(Instant::now() < deadline, "the new run never drew its dialog");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    // The held attempt goes on only now, with its worker reconnected to the new run.
+    // The attempt's worker redials the new run on the client's schedule, at most `REDIAL_CAP` apart; nothing marks its
+    // reattach, so this half of the order is a bound from the redial cap, not a hold. Only then is the attempt released.
+    tokio::time::sleep(sot_capsule::attach_client::attach::REDIAL_CAP + Duration::from_secs(1)).await;
     // (One attempt per row at a time: the next `done` is this attempt's.)
     let done_before = row.done.arrivals();
     row.final_ok.release(0);
@@ -984,7 +989,7 @@ async fn page_reply_never_types_into_a_dialog_a_draft_or_a_working_row() {
 #[tokio::test]
 async fn a_page_reply_and_a_wake_never_type_at_once() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("pr-wake", None, false, &[], &[], 1).await;
+    let mut row = start_full("pr-wake", None, false, &[], &[], 0, 1).await;
     prepare_page_reply(&row).await;
     append_mail(&row.env, 1);
     row.final_ok.reached_async(0).await;
@@ -1000,7 +1005,7 @@ async fn a_page_reply_and_a_wake_never_type_at_once() {
 #[tokio::test]
 async fn two_page_reply_attempts_share_one_guard_and_the_connection_stays_live() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("pr-two", None, false, &[], &[], 1).await;
+    let mut row = start_full("pr-two", None, false, &[], &[], 0, 1).await;
     prepare_page_reply(&row).await;
     let id = row.next_id;
     row.next_id += 1;

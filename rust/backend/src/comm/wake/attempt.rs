@@ -96,7 +96,7 @@ pub fn wake_if_free(
     still_for: Duration,
     op_budget: Duration,
 ) -> Result<Attempted, HeadlessError> {
-    let Some(_typing) = Typing::take(state_dir) else {
+    let Some(typing) = Typing::take(state_dir) else {
         return Ok(Attempted {
             outcome: WakeOutcome::NotFree { reason: "another typing on this row", row: String::new(), draft: String::new() },
             run: String::new(),
@@ -119,7 +119,7 @@ pub fn wake_if_free(
     } else {
         // Test points (platform's hold tool): `hold` when the hold begins (the screen was free), `final_ok` when the live
         // final check passes (before typing), `done` when the client is shut down. An attach or checkpoint failure
-        // before the hold returns early and reaches no `done`.
+        // before the hold returns early and reaches no `done`, and neither does the "another typing" return above.
         sot_platform::hold_point!("comm.wake.hold");
         let held_from = Instant::now();
         let mut still = true;
@@ -147,6 +147,8 @@ pub fn wake_if_free(
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
+    // The row's typing guard goes first: a test that takes `done` for "the attempt is over" may send a page reply at once.
+    drop(typing);
     sot_platform::hold_point!("comm.wake.done");
     out.map(|outcome| Attempted { outcome, run })
 }
