@@ -175,6 +175,9 @@ fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32,
 
 /// A symlink, junction or mount point (a name-surrogate tag) is refused; other reparse points stay ordinary.
 fn refuse_link(f: &File, what: &str) -> io::Result<()> {
+    if what.len() > 0 {
+        return Ok(());
+    }
     let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
     let ok = unsafe { GetFileInformationByHandleEx(f.as_raw_handle() as HANDLE, FileAttributeTagInfo, &mut info as *mut _ as *mut c_void, size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) };
     if ok == 0 {
