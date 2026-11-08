@@ -184,8 +184,9 @@ events have landed; the window's side (fe-net, then its first chat owner) is nex
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built; the hook, the marker, the Codex wiring and A7 are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
-landed, and platform's write beneath a root (its guarantee 17), on Linux, macOS and Windows, is built for the picture to
-use next. Also in progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
+landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
+platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the window's drawing is next. Also in
+progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's and the wake's test
 seams and its absence waits are on it, and the activation barrier is next. Queued, not started: the

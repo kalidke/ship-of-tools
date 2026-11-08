@@ -1007,73 +1007,85 @@ A landing's record goes here, with its measured times; the package page holds on
   entry at its temp name and creates the temp with an exclusive create that never follows a link, for every caller of
   `write_durable`. About 15 product and 70 test lines. Where the minutes went: the build 4; one review round of 23 minutes
   (blocker 0) and a test pin of 2; gates of 2 and 4 minutes; a hosted run on Windows and macOS.
-- A child's file that a test polls for is renamed into place whole, 2026-11-07: builder launched 18:46, main 19:14
-  (bf04197f6, fe6291036), 28 minutes. Main's hosted macOS run failed the hold tool's two-children test, which read a
+- The times of the eight entries below were corrected on 2026-11-08 from each brief's file time (the launch) and
+  each landing commit's time (main). The step minutes first written here came from session notes whose clock ran 20 to
+  80 minutes ahead, and are removed; the gate times are the gate's own.
+- A child's file that a test polls for is renamed into place whole, 2026-11-07: builder launched 18:46, main 19:05
+  (bf04197f6, fe6291036), 19 minutes. Main's hosted macOS run failed the hold tool's two-children test, which read a
   child's pass file between its create and its write (HOLD-CHILD-PASS-TORN); the window's exit-process fixture had the same
   shape. Both children now write a part name and rename it into place through `publish_noreplace`. Test lines only. Where
-  the minutes went: the build 2 and the second site 3; one review round of 12 minutes (blocker 0) and its fix of 1; gates
-  of 2 and 2 minutes.
-- A write beneath a root follows no link (Linux and macOS), 2026-11-07: builder launched 18:46, main 19:55 (bfbb8b524,
-  56f7577d7, 7a566efb6, 1a46fdec1), 69 minutes, past the maintainer's hour. Platform's guarantee 17: `write_beneath` takes
+  the minutes went: the build and a second site; one review round (blocker 0) and its fix; gates of 2 and 2 minutes.
+- A write beneath a root follows no link (Linux and macOS), 2026-11-07: builder launched 18:43, main 19:46 (bfbb8b524,
+  56f7577d7, 7a566efb6, 1a46fdec1), 63 minutes, past the maintainer's hour. Platform's guarantee 17: `write_beneath` takes
   a root that is its own canonical path, opens it and each folder below relative to the one before without following a
   link, creates its temporary file exclusively under a fresh name, and renames and syncs within the same folder. No caller
-  yet; the drawing's picture is the first. About 155 product and 230 test lines. Where the minutes went: the build 8 and
-  its red table 2; three review rounds of 17, 18 and 10 minutes (blockers 0, 0, 0) and fixes of 4, 2 and 2; three gates
-  of 2 minutes; three hosted runs on the branch beside them. Why past the hour: each round found a should-fix worth its
+  yet; the drawing's picture is the first. About 155 product and 230 test lines. Where the minutes went: the build and its
+  red table; three review rounds (blockers 0, 0, 0) and three fix rounds; three gates of 2 minutes; three hosted runs on
+  the branch beside them. Why past the hour: each round found a should-fix worth its
   time: the root's rule (first its spelling, then the canonical path), the folder syncs on macOS (now std's, which flushes
   the drive), a conversion moved before the first call, and the error a root that does not resolve answers. A hosted run
   of the next piece's two-writers test then found BENEATH-SUPERSEDED-WRITER-ERRS in this one.
-- The endpoint gate's stubs are ended with their children, 2026-11-07: diagnosis 19:03 to 19:52, builder launched 19:52,
-  main 20:28 (4ed49a71d, 61874b765), 36 minutes from the builder. Two local gates of the wake's change failed on two
+- The endpoint gate's stubs are ended with their children, 2026-11-07: diagnosis 18:58 to 19:52, builder launched 19:52,
+  main 20:12 (4ed49a71d, 61874b765), 20 minutes from the builder. Two local gates of the wake's change failed on two
   `sleep 30` processes alive at the census (GATE-LEFTOVER-ENDPOINT-STUBS); the diagnosis found them on every run of main's
   endpoint gate suite alone. Test lines only, and the stub pids renamed so the existing scan pins the fix. Where the
-  minutes went: the diagnosis 49 (on a second build server); the build 2; one review round of 17 minutes (blocker 0) and
-  its fix of 1; gates of 2 and 2 minutes. The review also found BASH32-RANGE-LOCALE and COMM-SUITES-BASH-CLAIM.
-- The wake's test seams are hold points, 2026-11-07: builder launched 18:29, main 20:33 (4666d73ce, 5ed658e9b,
-  43509908f), 124 minutes, far past the maintainer's hour. Two test variables a release build read are gone; the wake
+  minutes went: the diagnosis (on a second build server); the build; one review round (blocker 0) and its fix; gates of 2
+  and 2 minutes. The review also found BASH32-RANGE-LOCALE and COMM-SUITES-BASH-CLAIM.
+- The wake's test seams are hold points, 2026-11-07: builder launched 18:26, main 20:15 (4666d73ce, 5ed658e9b,
+  43509908f), 109 minutes, far past the maintainer's hour. Two test variables a release build read are gone; the wake
   marks `comm.wake.hold`, `comm.wake.final_ok` and `comm.wake.done`, its tests arm them on their own folder, three fixed
   holds of 6 to 9 s became held arrivals, and the typing guard is released before `done`. About 25 product lines removed.
   The whole wake suite still takes about 635 s in one process: the absence sleeps are the next piece. Where the minutes
-  went: the build 22; two review rounds of 38 and 22 minutes (blockers 1, 0) with mutant runs on a second build server,
-  and fixes of 13 and 1; four gates of 2 to 3 minutes, two of them failed by the endpoint suite's leftover above, whose
+  went: the build; two review rounds (blockers 1, 0) with mutant runs on a second build server, and two fix rounds; four
+  gates of 2 to 3 minutes, two of them failed by the endpoint suite's leftover above, whose
   diagnosis and landing it waited for. Why far past the hour: that leftover, and round 1's blocker: the run-fence test
   could pass under its mutant when the restart landed just after a dial of the attempt's client. It now waits the
   client's redial cap after the new run shows, a bound rather than a hold (WAKE-REATTACH-BOUND). Its second gate also
   failed the sotd unit tests once, with its log lost (GATE-KEEPS-NO-FAILED-LOGS).
-- The write beneath a root keeps its rule while entries inside the root change, 2026-11-07: builder launched 19:58, main
-  21:46 (3be61ccb9, 5e9a3a0c4, d79396550, 0cf4858d4, 53da9e1a3), 108 minutes, far past the maintainer's hour. Tests change
+- The write beneath a root keeps its rule while entries inside the root change, 2026-11-07: builder launched 19:49, main
+  21:07 (3be61ccb9, 5e9a3a0c4, d79396550, 0cf4858d4, 53da9e1a3), 78 minutes, past the maintainer's hour. Tests change
   folders and names at each step of the write (a folder swapped before and after its open, one with another below it,
   one removed, a missing folder made and then changed, the temporary file replaced at its create and after its write, a
   link planted at the final name, two writers of one name); a step before a folder's make lets a test reach that
   ordering; the check after the rename is deleted, so Ok means the entry at the temporary name was renamed into place
-  (BENEATH-SUPERSEDED-WRITER-ERRS). About 10 product lines and 290 test lines. Where the minutes went: the build 10; two
-  review rounds of 26 (and a 9-minute addendum) and 31 minutes (blockers 1, 0); fixes of 7, 5 and 1; four gates of 2
-  minutes; two hosted runs on the branch. Why far past the hour: round 1's blocker (the two-writers test red with no
+  (BENEATH-SUPERSEDED-WRITER-ERRS). About 10 product lines and 290 test lines. Where the minutes went: the build; two
+  review rounds (blockers 1, 0), the first with an addendum; three fix rounds; four gates of 2 minutes; two hosted runs
+  on the branch. Why past the hour: round 1's blocker (the two-writers test red with no
   fault: the check's true error, and stale handles on a network home), then a reversal from keeping the check to
   deleting it once the reviewer showed it changed only the answer.
-- The chat watch test removes its row while the owner's snapshot is held, 2026-11-07: diagnosis 21:01 to 21:52, builder
-  launched 21:53, main 22:22 (585800d2f, e94a35239, 1944cb5c0), 29 minutes from the builder. Main's hosted macOS runs
+- The chat watch test removes its row while the owner's snapshot is held, 2026-11-07: diagnosis 20:27 to 20:52, builder
+  launched 20:52, main 21:19 (585800d2f, e94a35239, 1944cb5c0), 27 minutes from the builder. Main's hosted macOS runs
   failed a chat watch dispatch test in 3 of 7 runs (CHAT-WATCH-STALE-SLOT): the owner's snapshot could check the row
   before the test removed it. The snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.
-  About 5 product and 9 test lines. Where the minutes went: the diagnosis 51 (3 failures in 883 runs on a second build
-  server, every run with a 300 ms delay); the build 7 (500 runs, none failed); one review round of 18 minutes (800 runs,
-  blocker 0); gates of 2 and 2 minutes; one hosted run on the branch. The diagnosis also noted CHAT-TRANSIENT-WAITS.
-- The wake tests count looks instead of sleeping, 2026-11-07: builder launched 20:52, main 23:10 (ddb045fd7, 75fb56788),
-  138 minutes, far past the maintainer's hour. The wake marks `comm.wake.looked` per row handle where a tick ends its
+  About 5 product and 9 test lines. Where the minutes went: the diagnosis (3 failures in 883 runs on a second build
+  server, every run with a 300 ms delay); the build (500 runs, none failed); one review round (800 runs, blocker 0); gates
+  of 2 and 2 minutes; one hosted run on the branch. The diagnosis also noted CHAT-TRANSIENT-WAITS.
+- The wake tests count looks instead of sleeping, 2026-11-07: builder launched 20:25, main 21:53 (ddb045fd7, 75fb56788),
+  88 minutes, past the maintainer's hour. The wake marks `comm.wake.looked` per row handle where a tick ends its
   decision; each absence test waits for two more looks of its row instead of a span of the clock; the stub writes a
   marker when its echo is shown; a unit test pins the repeat interval, which the old sleeps had caught. The whole wake
   suite went from about 635 s to 529 s in one process. About 10 product and 60 test lines. Where the minutes went: the
-  build 53 and the fix 52, each with mutant runs and a whole 9-minute wake suite on a second build server; two review
-  rounds of 40 and 16 minutes (blockers 1, 0); three gates of 2 minutes. Why far past the hour: each builder round ran
+  build and the fix, each with mutant runs and a whole 9-minute wake suite on a second build server; two review rounds
+  (blockers 1, 0); three gates of 2 minutes. Why past the hour: each builder round ran
   the slow suite whole, and round 1 found the repeat interval left unpinned by the conversion.
-- The write beneath a root on Windows, 2026-11-07 to 08: builder launched 21:50, main 00:10 (eba799524 to 708bfcfc6, seven
-  commits), 140 minutes, far past the maintainer's hour. Each folder is opened relative to the one before with
+- The write beneath a root on Windows, 2026-11-07: builder launched 21:10, main 22:49 (eba799524 to 708bfcfc6, seven
+  commits), 99 minutes, far past the maintainer's hour. Each folder is opened relative to the one before with
   `NtCreateFile`, an entry whose reparse tag is a name surrogate refused; the temporary file is created new, held against
   rename, and renamed by its handle within the folder; a relative root is refused before any call on every system; three
-  `windows-sys` features added, no new crate. About 160 product and 200 test lines. Where the minutes went: the build 25;
-  no Windows computer here has a Rust toolchain, so every Windows answer was a hosted round (four rounds of about 20 to
-  25 minutes, queue included); two review rounds of 20 and 18 minutes (blockers 1, 0: a one-character final name was
-  refused, its rename information shorter than the kernel requires) and fixes of 6, 5, 4 and 3; two sets of probes, each
-  a fault on a scratch branch that must turn its named test red on Windows (the first set on whole matrices, cut short
-  at the runner limit; the second on a one-job workflow, all eight red); one whole gate of 255 s. Why far past the hour:
-  the hosted rounds.
+  `windows-sys` features added, no new crate. About 160 product and 200 test lines. Where the minutes went: the build;
+  no Windows computer here has a Rust toolchain, so every Windows answer was a hosted round (four rounds, queue
+  included); two review rounds (blockers 1, 0: a one-character final name was refused, its rename information shorter
+  than the kernel requires) and four fix rounds; two sets of probes, each a fault on a scratch branch that must turn its
+  named test red on Windows (the first set on whole matrices, cut short at the runner limit; the second on a one-job
+  workflow, all eight red); one whole gate of 255 s. Why far past the hour: the hosted rounds.
+- The agent's picture and the crop are written beneath the project root, 2026-11-07 to 08: builder launched 22:58, main
+  00:36 (0f4c3dc44 and 1ae9109a7, the drawing's picture from its branch, then e15c894a7, 4b46319b9, f93a49dce, 73ef59e35),
+  98 minutes, past the maintainer's hour. The daemon's picture (the figure with the person's ink, at
+  `.sot/captures/ink-<row id>.png`) and the preview's crop write through `FilesMode::write`, which passes the workspace's
+  canonical root to platform's write beneath a root; their sources open only a regular file, through platform's new
+  `host::open_regular`, on which `read_regular` is now built; the crop picks its decoder from the file's bytes. About 60
+  product and 150 test lines with the picture's own. Where the minutes went: the build with a stress probe on a second
+  build server (about 21 million swaps of the captures folder against 2,000 writes, none outside); three review rounds
+  (blockers 0, 0, 0), each with its own probes, and three fix rounds; four gates of 2 minutes; three hosted runs on the
+  branch. Why past the hour: the rounds each found a test that did not pin its rule, and round 2 moved the regular-file
+  open into platform so it has one owner.
