@@ -111,27 +111,16 @@ pub fn wake_if_free(
     let cursor = client.screen().cursor_position();
     let first = wake_lines(client.screen());
     let seen = free_test_lines(client.screen());
-    // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the attempt
-    // leaves a file at each point, for a stub that moves focus at exactly `hold` and `final-ok`: `hold` when the hold
-    // begins (the screen was free), `final-ok` when the live final check passes (before typing), `done` when
-    // the client is shut down. An attach or checkpoint failure before the hold (above) returns early and
-    // writes no `done`.
-    let marks = std::env::var_os("SOT_TEST_WAKE_MARKS").map(std::path::PathBuf::from);
-    let mark = |name: &str| {
-        if let Some(dir) = &marks {
-            let path = dir.join(name);
-            if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, b"")) {
-                tracing::warn!(path = %path.display(), error = %e, "comm wake: test mark not written");
-            }
-        }
-    };
     let first_prompt = if ends_here { None } else { is_free(&seen, Some(cursor), agent, completes) };
     let out = if ends_here {
         Ok(WakeOutcome::RunChanged)
     } else if first_prompt.is_none() {
         Ok(not_free("prompt not free", &client, agent))
     } else {
-        mark("hold");
+        // Test points (platform's hold tool): `hold` when the hold begins (the screen was free), `final_ok` when the live
+        // final check passes (before typing), `done` when the client is shut down. An attach or checkpoint failure
+        // before the hold returns early and reaches no `done`.
+        sot_platform::hold_point!("comm.wake.hold");
         let held_from = Instant::now();
         let mut still = true;
         while still && held_from.elapsed() < still_for {
@@ -143,12 +132,7 @@ pub fn wake_if_free(
         let live = if still { is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent, completes) } else { None };
         match live {
             Some(prompt) if Some(prompt) == first_prompt => {
-                mark("final-ok");
-                // Test seam: holds the attempt this many milliseconds between its last check and its typing, so a test can
-                // replace the run in between. Inert unless named.
-                if let Some(ms) = std::env::var("SOT_TEST_WAKE_HOLD_AFTER_FINAL_MS").ok().and_then(|s| s.parse::<u64>().ok()) {
-                    std::thread::sleep(Duration::from_millis(ms));
-                }
+                sot_platform::hold_point!("comm.wake.final_ok");
                 let read = typing_read(&client);
                 let (sent, out) = if prompt == Prompt::HoldsLine {
                     tracing::info!("comm wake: Enter for the wake line left in main's input box");
@@ -163,7 +147,7 @@ pub fn wake_if_free(
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
-    mark("done");
+    sot_platform::hold_point!("comm.wake.done");
     out.map(|outcome| Attempted { outcome, run })
 }
 
