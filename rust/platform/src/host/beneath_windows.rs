@@ -16,7 +16,7 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, ERROR_DIRECTORY, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
+    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
     STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -53,12 +53,7 @@ pub(super) fn write_beneath_at(
 
 /// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
 pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
-    let dir = std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)?;
-    // Only a folder is one: a file at its name answers at once.
-    if tag_info(&dir)?.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-        return Err(io::Error::from_raw_os_error(ERROR_DIRECTORY as i32));
-    }
-    Ok(dir)
+    std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)
 }
 
 /// Removes the file `name` in `dir`, a file link as itself; a folder there is an error.
