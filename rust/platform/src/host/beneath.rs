@@ -15,6 +15,8 @@ use libc::c_int;
 enum Step {
     Root,
     Folder(usize),
+    /// A folder's open found nothing; the make follows.
+    Missing(usize),
     Temp,
     Written,
     Renamed,
@@ -59,7 +61,7 @@ fn write_beneath_at(
     let mut dir = File::from(root_fd);
     at(Step::Root)?;
     for (i, name) in names.iter().enumerate() {
-        dir = open_folder(&dir, name)?;
+        dir = open_folder(&dir, name, &mut || at(Step::Missing(i)))?;
         at(Step::Folder(i))?;
     }
     // Create the temporary file, then write, rename and sync.
@@ -110,11 +112,12 @@ fn plain_names(rel: &str) -> io::Result<Vec<CString>> {
 }
 
 /// Opens `name` below `prev`, creating it when missing; a link or a file at the name is refused.
-fn open_folder(prev: &File, name: &CStr) -> io::Result<File> {
+fn open_folder(prev: &File, name: &CStr, missing: &mut impl FnMut() -> io::Result<()>) -> io::Result<File> {
     let open = || own(unsafe { libc::openat(prev.as_raw_fd(), name.as_ptr(), DIR_FLAGS) });
     let shown = name.to_string_lossy();
     match open() {
         Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
+            missing()?;
             // An existing entry (EEXIST) is not success: the open below decides what it is.
             match check(unsafe { libc::mkdirat(prev.as_raw_fd(), name.as_ptr(), 0o777) }) {
                 Err(e) if e.raw_os_error() != Some(libc::EEXIST) => return Err(e),
