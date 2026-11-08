@@ -71,7 +71,8 @@ fn a_chat_reply_carries_its_request_and_its_refusal() {
     assert!(shown[2].contains("limit: 5") && shown[2].contains("Unsupported"), "{}", shown[2]);
 }
 
-/// The pushed events decode into their typed events, not the generic one; one that does not parse is dropped.
+/// The pushed events decode into their typed events, not the generic one; one that does not parse is `Unreadable`, a loss
+/// the chat owner resyncs from, never silence.
 #[test]
 fn chat_events_decode_into_their_typed_events() {
     let changed = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["1700000000.000100"] });
@@ -84,8 +85,9 @@ fn chat_events_decode_into_their_typed_events() {
             Frame::evt(op::CHAT_STATUS, serde_json::json!({ "service": "running" })),
         ],
     );
-    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown.len(), 3, "{shown:?}");
     assert!(shown[0].starts_with("Chat(Changed(") && shown[1].starts_with("Chat(Status("), "{shown:?}");
+    assert_eq!(shown[2], "Chat(Unreadable)", "{shown:?}");
 }
 
 /// A post that got no answer is unknown when its connection ends, once; one still waiting then is ended the same way

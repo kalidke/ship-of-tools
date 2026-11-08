@@ -71,7 +71,7 @@ pub(crate) use self::{
     hello::read_connect_reply,
     event::{IncomingEvt, ResultTreeReply},
     ops::{
-        AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
+        AccountInfo, ChatEvt, ChatReply, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
         FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
         ScanModule, ScanType, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
     },
