@@ -168,7 +168,7 @@ exit 7
     Check 'the caller''s other SOT_ variables were cleared, SOT_SMOKE_ ones kept' ((-not $o.SOT_PROBE_VAR) -and $o.SOT_SMOKE_X -eq 'kept') "SOT_PROBE_VAR=$($o.SOT_PROBE_VAR) SOT_SMOKE_X=$($o.SOT_SMOKE_X)"
     Check 'XDG_* and CLAUDE_CONFIG_DIR of the caller did not reach the child' ((-not $o.XDG_STATE_HOME) -and (-not $o.XDG_CONFIG_HOME) -and (-not $o.CLAUDE_CONFIG_DIR)) "XDG_STATE_HOME=$($o.XDG_STATE_HOME) XDG_CONFIG_HOME=$($o.XDG_CONFIG_HOME) CLAUDE_CONFIG_DIR=$($o.CLAUDE_CONFIG_DIR)"
     Check 'a JULIA_DEPOT_PATH outside the real temp folder was replaced by a depot inside the home' ($o.JULIA_DEPOT_PATH -and (Test-SotInside (Get-SotCanonicalPath $o.JULIA_DEPOT_PATH) $c)) "JULIA_DEPOT_PATH=$($o.JULIA_DEPOT_PATH)"
-    Check 'the home is gone at the end, with what the suite made in it' ($c -and -not (Test-Path -LiteralPath $c)) "$(if ($c) { "path $c exists: $(Test-Path -LiteralPath $c)" } else { no path read })"
+    Check 'the home is gone at the end, with what the suite made in it' ($c -and -not (Test-Path -LiteralPath $c)) "$(if ($c) { "path $c exists: $(Test-Path -LiteralPath $c)" } else { 'no path read' })"
     Check 'a sibling folder the run did not make is still there' (Test-Path -LiteralPath $sibling) 'removed'
     $same = $true
     foreach ($n in $before.Keys) { if ([Environment]::GetEnvironmentVariable($n) -ne $before[$n]) { $same = $false } }
@@ -186,7 +186,7 @@ exit 7
     $shortHome = $(if ($so.TMP) { Split-Path -Parent $so.TMP } else { '' })
     Check 'two concurrent runs have two homes' ($longHome -and $shortHome -and $longHome -ne $shortHome) "long $longHome short $shortHome"
     Check 'the run that ended exited with the probe''s code' ($short.Proc.ExitCode -eq 7) "exit $($short.Proc.ExitCode)"
-    Check 'the one that ended removed its own home' ($shortHome -and -not (Test-Path -LiteralPath $shortHome)) "$(if ($shortHome) { "path $shortHome exists: $(Test-Path -LiteralPath $shortHome)" } else { no path read })"
+    Check 'the one that ended removed its own home' ($shortHome -and -not (Test-Path -LiteralPath $shortHome)) "$(if ($shortHome) { "path $shortHome exists: $(Test-Path -LiteralPath $shortHome)" } else { 'no path read' })"
     Check 'and left the other''s home, and what that run made in it' ($longHome -and (Test-Path -LiteralPath (Join-Path $longHome 'tmp\made-by-probe.txt')) -and -not $long.Proc.HasExited) "long home $longHome; long exited: $($long.Proc.HasExited); exit $(if ($long.Proc.HasExited) { $long.Proc.ExitCode })"
     $long.Proc.WaitForExit()
     Check 'the other removed its own at its end' ($longHome -and $long.Proc.ExitCode -eq 7 -and -not (Test-Path -LiteralPath $longHome)) "exit $($long.Proc.ExitCode); home left: $(if ($longHome) { Test-Path -LiteralPath $longHome }); stderr: $($long.Proc.StandardError.ReadToEnd())"
