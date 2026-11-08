@@ -22,8 +22,8 @@ enum Step {
 
 const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
-/// Writes `bytes` at `rel` beneath `root`, creating missing folders, durably, following no link. `root` is an absolute
-/// path in normal form and `rel` names joined by `/`; the result is `root` joined with `rel`, for replies and not for
+/// Writes `bytes` at `rel` beneath `root`, creating missing folders, durably, following no link. `root` is its own
+/// canonical path and `rel` names joined by `/`; the result is `root` joined with `rel`, for replies and not for
 /// IO. A root, name or folder the rule refuses is `InvalidInput`.
 pub fn write_beneath(root: &Path, rel: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     write_beneath_at(root, rel, bytes, None, |_| Ok(()))
@@ -37,16 +37,14 @@ fn write_beneath_at(
     temp: Option<&str>,
     mut at: impl FnMut(Step) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
-    // Step 1: every refusal and conversion comes before the first call.
-    if !root.is_absolute()
-        || root.file_name().is_none()
-        || root.as_os_str() != root.components().collect::<PathBuf>().as_os_str()
-    {
-        return Err(invalid(format!("{root:?} is not an absolute folder in normal form")));
-    }
+    // Every name is refused and converted before the first call.
     let mut names = plain_names(rel)?;
     let last = names.pop().expect("plain_names returns at least one name");
     let croot = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid(format!("{root:?} holds a NUL")))?;
+    // The root is its own canonical path, so no link above its last name is followed.
+    if !root.is_absolute() || std::fs::canonicalize(root)?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
+        return Err(invalid(format!("{root:?} is not its own canonical path")));
+    }
     let temp = match temp {
         Some(t) => t.to_owned(),
         None => {
@@ -56,7 +54,7 @@ fn write_beneath_at(
         }
     };
     let ctemp = CString::new(temp).map_err(|_| invalid("the temporary name holds a NUL".into()))?;
-    // Step 2.
+    // Open the root, then each folder below it.
     let root_fd = own(unsafe { libc::open(croot.as_ptr(), DIR_FLAGS) }).map_err(|e| folder_error(e, "the root"))?;
     let mut dir = File::from(root_fd);
     at(Step::Root)?;
@@ -64,7 +62,7 @@ fn write_beneath_at(
         dir = open_folder(&dir, name)?;
         at(Step::Folder(i))?;
     }
-    // Steps 4 to 7.
+    // Create the temporary file, then write, rename and sync.
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     let fd = own(unsafe { libc::openat(dir.as_raw_fd(), ctemp.as_ptr(), flags, 0o666 as c_int) })?;
     let result = publish(&dir, File::from(fd), &ctemp, &last, bytes, &mut at);

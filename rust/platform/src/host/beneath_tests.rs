@@ -49,15 +49,31 @@ fn a_link_at_any_folder_takes_no_write() {
 }
 
 #[test]
-fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_in_normal_form() {
+fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical() {
     let (_g, root, outside) = setup();
     let link = root.parent().unwrap().join("link");
     symlink(&outside, &link).unwrap();
     let l = link.to_str().unwrap();
-    for spelled in [l.to_string(), format!("{l}/"), format!("{l}/."), format!("{l}//"), "relative".to_string()] {
+    let base = root.parent().unwrap();
+    let deep = base.join("far").join("deep");
+    std::fs::create_dir_all(&deep).unwrap();
+    symlink(base.join("far").join("deep"), base.join("l2")).unwrap();
+    let l2 = base.join("l2");
+    let l2 = l2.to_str().unwrap();
+    let spellings = [
+        l.to_string(),
+        format!("{l}/"),
+        format!("{l}/."),
+        format!("{l}//"),
+        format!("{l}/.."),
+        format!("{l2}/../deep"),
+        "relative".to_string(),
+    ];
+    for spelled in spellings {
         let got = write_beneath(Path::new(&spelled), "f.txt", b"data");
         assert_eq!(kind(got), io::ErrorKind::InvalidInput, "{spelled}");
         assert!(entries(&outside).is_empty(), "{spelled}");
+        assert!(entries(&deep).is_empty(), "{spelled}");
     }
 }
 
@@ -156,6 +172,15 @@ fn a_temporary_file_replaced_before_the_rename_is_an_error_and_writes_nothing_ou
     });
     assert!(got.unwrap_err().to_string().contains("not the entry at its name"));
     assert_eq!(std::fs::read(&target).unwrap(), b"original");
+    // A link to the moved file at the temporary name is not the file written.
+    let got = write_beneath_at(&root, "g.txt", b"data", Some(temp), |s| {
+        if s == Step::Written {
+            std::fs::rename(root.join(temp), root.join("moved")).unwrap();
+            symlink("moved", root.join(temp)).unwrap();
+        }
+        Ok(())
+    });
+    assert!(got.unwrap_err().to_string().contains("not the entry at its name"));
 }
 
 #[test]
