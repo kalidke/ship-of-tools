@@ -357,7 +357,7 @@ fn a_child_that_arrives() {
         let name = format!("pass.{}.{round}", std::process::id());
         let part = out.join(format!("{name}.part"));
         std::fs::write(&part, if released { "go" } else { "no-go" }).unwrap();
-        std::fs::rename(&part, out.join(name)).unwrap();
+        crate::host::publish_noreplace(&part, &out.join(name)).unwrap();
     }
 }
 

@@ -93,7 +93,7 @@ fn owned_child_body() {
     assert!(root.is_absolute());
     // Whole or absent: written under a name the parent does not poll, then renamed into place.
     std::fs::write(root.join("ready.part"), std::process::id().to_string()).unwrap();
-    std::fs::rename(root.join("ready.part"), root.join("ready")).unwrap();
+    sot_platform::host::publish_noreplace(&root.join("ready.part"), &root.join("ready")).unwrap();
     // A fixture failure cannot leave this child indefinitely alive.
     std::thread::sleep(Duration::from_secs(8));
 }
