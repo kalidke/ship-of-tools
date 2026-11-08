@@ -73,23 +73,20 @@ fn the_picture_is_the_base_with_its_ink() {
     let blended = image::open(&out).unwrap().to_rgb8().pixels().filter(|p| p.0 != FIGURE && p.0 != INK_RGB).count();
     assert!(blended > 0, "an antialiased edge has blended pixels");
 
-    // The write is whole or none: where the temporary file cannot be made the old picture stays as it was.
+    // A folder at the picture's name is refused, and what is there stays.
     let picture = files.node_id_to_path("files:.sot/captures/ink-r3.png").unwrap();
-    std::fs::write(&picture, b"OLD").unwrap();
-    std::fs::create_dir(picture.with_extension("png.tmp")).unwrap();
+    std::fs::create_dir_all(&picture).unwrap();
     assert_eq!(compose(&files, "r3", &stroke(InkBase::Canvas)).unwrap_err().0, PUBLISH_FAILED);
-    assert_eq!(std::fs::read(&picture).unwrap(), b"OLD");
+    assert!(picture.is_dir());
 }
 
 #[cfg(unix)]
 #[test]
 fn a_captures_folder_that_leads_out_of_the_root_takes_no_write() {
-    use super::crop::crop_to_captures;
     let outside = tempfile::tempdir().unwrap();
     for link_at in [".sot", ".sot/captures"] {
         let root = tempfile::tempdir().unwrap();
         let files = FilesMode::new(root.path().to_path_buf()).unwrap();
-        figure_png(root.path(), "fit.png", 40, 20);
         if link_at == ".sot" {
             std::os::unix::fs::symlink(outside.path(), root.path().join(".sot")).unwrap();
         } else {
@@ -98,8 +95,6 @@ fn a_captures_folder_that_leads_out_of_the_root_takes_no_write() {
         }
         let refused = compose(&files, "r1", &stroke(InkBase::Canvas)).unwrap_err();
         assert_eq!(refused.0, PUBLISH_FAILED, "{link_at}");
-        let src = root.path().join("fit.png");
-        assert!(crop_to_captures(&files, &src, "fit", (0, 0, 10, 10)).is_err(), "{link_at}");
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
     }
 }
@@ -119,6 +114,27 @@ fn a_captures_junction_that_leads_out_of_the_root_takes_no_write() {
             make_junction(outside.path(), &root.path().join(".sot").join("captures")).unwrap();
         }
         assert_eq!(compose(&files, "r1", &stroke(InkBase::Canvas)).unwrap_err().0, PUBLISH_FAILED, "{link_at}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_crop_folder_that_leads_out_of_the_root_takes_no_write() {
+    use super::crop::crop_to_captures;
+    let outside = tempfile::tempdir().unwrap();
+    for link_at in [".sot", ".sot/captures"] {
+        let root = tempfile::tempdir().unwrap();
+        let files = FilesMode::new(root.path().to_path_buf()).unwrap();
+        figure_png(root.path(), "fit.png", 40, 20);
+        if link_at == ".sot" {
+            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot")).unwrap();
+        } else {
+            std::fs::create_dir(root.path().join(".sot")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot/captures")).unwrap();
+        }
+        let src = root.path().join("fit.png");
+        assert!(crop_to_captures(&files, &src, "fit", (0, 0, 10, 10)).is_err(), "{link_at}");
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
     }
 }

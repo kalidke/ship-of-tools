@@ -161,6 +161,22 @@ impl FilesMode {
         Ok(p)
     }
 
+    /// Writes `bytes` at the node `node_id` beneath the root, creating missing folders, durably, following no link
+    /// (platform's `write_beneath`). A name the rule refuses is the refusal of a node id. Returns the file's path
+    /// for replies, never for IO.
+    pub fn write(&self, node_id: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let rel = node_id
+            .strip_prefix(ID_PREFIX)
+            .ok_or_else(|| anyhow!("not a files-mode id: {node_id}"))?;
+        sot_platform::host::write_beneath(&self.root, rel, bytes).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                anyhow!("node id cannot be written: {node_id}: {e}")
+            } else {
+                anyhow::Error::new(e).context(format!("write {node_id}"))
+            }
+        })
+    }
+
     /// Shared string-level composition + injection checks for both resolvers.
     ///
     /// Walks the id's relative path with [`std::path::Component`] semantics —

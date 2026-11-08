@@ -1,10 +1,9 @@
 //! The picture the agent reads for a drawing: the base (a figure scaled to the wire's raster, or a white canvas) with
-//! the ink over it, written whole to `<root>/.sot/captures/ink-<row id>.png`. Every write under `.sot/captures/`
-//! (this one and the crop's) names its file through [`captures_file`].
+//! the ink over it, written whole to `<root>/.sot/captures/ink-<row id>.png` through `FilesMode::write`, which
+//! follows no link.
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use image::ImageEncoder;
 use sot_protocol::ink::{self, CANVAS_DIMS, INK_RGB};
 use sot_protocol::ops::selection_code::{BAD_NODE_ID, NOT_AN_IMAGE, PUBLISH_FAILED, TOO_LARGE};
@@ -19,16 +18,6 @@ const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
 
 /// A refusal: a `selection_code` and its message.
 pub(crate) type Refusal = (&'static str, String);
-
-/// The path of `name` in `<root>/.sot/captures/`, resolved by files' write resolver so a `.sot` or `captures` link
-/// that leads out of the root is refused; the folder is created only after that check.
-pub(crate) fn captures_file(files: &FilesMode, name: &str) -> anyhow::Result<PathBuf> {
-    let path = files.node_id_to_path_confined(&format!("files:.sot/captures/{name}"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
-    }
-    Ok(path)
-}
 
 /// Writes the picture of `drawing` for the row `row_id` and returns its path. CPU- and IO-bound: call it on the
 /// blocking pool.
@@ -49,11 +38,9 @@ pub(crate) fn compose(files: &FilesMode, row_id: &str, drawing: &Drawing) -> Res
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(out.as_raw(), rw, rh, image::ExtendedColorType::Rgba8)
         .map_err(|e| (PUBLISH_FAILED, format!("encode the picture: {e}")))?;
-    let path = captures_file(files, &format!("ink-{row_id}.png"))
-        .map_err(|e| (PUBLISH_FAILED, format!("{e:#}")))?;
-    sot_platform::host::write_durable(&path, &png)
-        .map_err(|e| (PUBLISH_FAILED, format!("write {path:?}: {e}")))?;
-    Ok(path)
+    files
+        .write(&format!("files:.sot/captures/ink-{row_id}.png"), &png)
+        .map_err(|e| (PUBLISH_FAILED, format!("{e:#}")))
 }
 
 /// The figure scaled to the wire's raster dimensions.

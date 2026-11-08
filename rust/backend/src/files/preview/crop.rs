@@ -100,10 +100,10 @@ pub async fn handle_image_crop(
 
 type CropOk = (std::path::PathBuf, u32, u32, u32, u32, u32, u32);
 
-/// Decode + clamp + crop + write, on a blocking thread: `image::open` and `save` are synchronous CPU+IO and a large
+/// Decode + clamp + crop + write, on a blocking thread: `image::open` and the PNG encode are synchronous CPU+IO and a large
 /// decode would otherwise stall the tokio executor. Returns the written path, the clamped rect and the source
 /// dimensions, or a (code, message) pair the caller turns into an error frame. The write lands in
-/// `<project_root>/.sot/captures/` (watcher-exempt) through [`super::ink::captures_file`]; the filename carries the
+/// `<project_root>/.sot/captures/` (watcher-exempt) through `FilesMode::write`, which follows no link; the filename carries the
 /// source stem + a microsecond stamp so repeated captures don't clobber.
 pub(super) fn crop_to_captures(
     files: &crate::files::tree::FilesMode,
@@ -125,10 +125,12 @@ pub(super) fn crop_to_captures(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros())
         .unwrap_or(0);
-    let out_path = super::ink::captures_file(files, &format!("{stem}-roi-{micros}.png"))
-        .map_err(|e| ("io_error".into(), format!("{e:#}")))?;
+    let mut png = std::io::Cursor::new(Vec::new());
     cropped
-        .save(&out_path)
-        .map_err(|e| ("io_error".into(), format!("write {out_path:?}: {e}")))?;
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(|e| ("io_error".into(), format!("encode the crop: {e}")))?;
+    let out_path = files
+        .write(&format!("files:.sot/captures/{stem}-roi-{micros}.png"), png.get_ref())
+        .map_err(|e| ("io_error".into(), format!("{e:#}")))?;
     Ok((out_path, x, y, w, h, src_w, src_h))
 }
