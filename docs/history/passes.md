@@ -1291,3 +1291,10 @@ A landing's record goes here, with its measured times; the package page holds on
   first push: a test fixture named a real person; the name was replaced before anything left the machine, and pushes are
   now swept against the guard's own list. Where the minutes went: the build (9 minutes); one review round (blockers 0) and
   one fix round of 1 minute; two gates of 3 minutes.
+- A6, the window's network layer carries the selection, 2026-11-08: builder launched 14:30, main 14:51 (7bfbcb301,
+  2eb1ab913), 21 minutes. fe-net carries `selection.set` as a typed request whose reply is one typed event carrying the
+  request it answers; the request is never replayed, and one cut off by its connection's end yields an ended reply, so a
+  selection that waited through a disconnect is never published after the person replaced or withdrew it (the drawing
+  plan's orderings; the window's share re-sends the current state after a reconnect). About 70 product lines and 86 test
+  lines. Where the minutes went: the build (1 minute); one review round (blockers 1: the brief had said replayable, from the
+  older plan) and one fix round of 1 minute; two gates of 2 minutes.
