@@ -116,6 +116,10 @@ Guarantees, each with the mechanism it rests on:
   proofs (`inst` plus fresh/repair orchestration), the launcher's suites on Windows, the Windows ignored-containment
   and ConPTY runs, and the shell suites under bash 3.2
   (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
+- One exception: the `window_minimized` target's State fixtures also run per landing, on Linux, in the rest-0 build+test
+  job (`child fixtures` under `xvfb-run`, on Mesa's software Vulkan driver, llvmpipe, which the install step's log names);
+  its workload phase and the other native proofs stay in the gate. Read a red: a red install step, or a run step with no
+  `state-fixture` lines, is the runner's; a fixture's red names it in `State fixtures failed:`.
 - rust.yml's MathJax `npm ci` step has its own three-minute bound, so a registry stall fails under that step's name.
 - A release's artifacts are CI's build of its tag. release.yml sets `SOT_BUILD_ORIGIN=ci` exactly when the ref is a tag,
   so only a tag run's binaries carry the bare version (`is_release_build`); a branch dispatch's and a local pack's carry
@@ -163,7 +167,7 @@ and lock release using recording setup tools, with no build or user manager.
 
 Tests: `tests/test-release-cut.sh` (the cut in throwaway repos with a scratch origin, and the workflows' release
 writes), `tests/test-release-before.sh`, `tests/test-rc-gate-*.sh`, the order in `rust/updater/src/semver_tests.rs`, and
-a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites, and its Linux rest-0 build+test job runs the window's State fixtures alone (the `window_minimized` target's `child fixtures`) under `xvfb-run` with Mesa's lavapipe, its log naming the adapter;
+a dispatch of release.yml for the pipeline. rust.yml's checks job runs the gate scripts' own tests and the installer suites;
 release-gate.yml's slow checks job runs the comm and agents suites.
 
 rust.yml's Julia setup step has a five-minute bound. Windows build/test jobs allow 17 minutes, preserving their

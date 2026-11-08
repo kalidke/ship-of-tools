@@ -94,7 +94,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   ambiguous_empty_and_unknown_targets_are_refused}`. The native `pending_result_dies_with_its_canonical_row`
   fixture covers reconciliation effects and disconnect retention; its `kept_default_preserves_its_result_and_view`
   control checks the default row's own pending result, cached tree selection, preview source and REPL input through
-  workspace switches. The native fixture runs on hosted Windows and macOS.
+  workspace switches.
 - `RowPresentation` privately owns labels, canonical-root fallbacks, state/stamp pairs, transition history,
   flashes, strip order and the active host's default. Projections use only `ordered_hosts` and listed host/slug keys;
   inert defaults retain metadata. None selections use hello metadata; unknown nondefaults get no root fallback.
@@ -336,7 +336,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   and a second offer send nothing, an Enter before any frame has presented the bar sends nothing, nor one straight
   after the first frame, a size event or a quit question closing over the bar, the teardown's `unknown` and the host's
   disconnect drained in one frame both show, and an Enter a second after a
-  presented frame puts one `PageReply` with the line on B's connection and none on A's) runs in the release gate with the other State fixtures.
+  presented frame puts one `PageReply` with the line on B's connection and none on A's).
 - `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the

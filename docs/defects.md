@@ -521,13 +521,6 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
-- **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** [note] The window's State fixtures (`run_state_fixtures`, the
-  `window_minimized` target, 13 of them, the destroy rules' pins among them) are compiled by the local gate and the
-  per-landing hosted run but run by neither: `scripts/tests/shards.py` drops targets with required features, and their
-  only runs are the hand-dispatched release gate's Windows and macOS jobs. A regression they pin reaches main with every
-  landing gate green. Fix: one Linux step in `rust.yml` that runs the built target's fixtures under `xvfb-run` (about 5 s
-  on a build computer); open premise: whether a hosted Linux runner has an adapter the window's renderer accepts. Also:
-  `rust/frontend/Cargo.toml` names `rust.yml` for the redraw mutation leg, which is in `release-gate.yml`.
 - **FE-CONCEPT-SAVE-SILENT** [note] The window shows nothing when `concept.write` is refused: the reply is only logged
   (`rust/frontend/src/ui/preview/replies.rs`) and the editor stays dirty.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent
@@ -730,6 +723,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** (fe-ui) closed by the landing that fixes it, 2026-11-08: the window's 13 State fixtures were compiled by the local gate and the per-landing run but run by neither; the per-landing run now executes them alone on Linux (`child fixtures` of the `window_minimized` target, under `xvfb-run` and Mesa's software Vulkan driver), and the redraw mutation leg's comment in `rust/frontend/Cargo.toml` names `release-gate.yml`.
 - **SCRATCH-GUARD-PROBE-SHARE** (distribution) closed by 366a34551, 2026-11-08: in a hosted Windows run on main the scratch guard test's concurrent run ended with exit 1 before its sleep; the run kept no stderr, and the cause is inferred: with the file held open as a poll read holds it, the old probe's `Add-Content` fails ("being used by another process"), which the old test shows under a forced overlap. Each probe now writes its file whole under another name and renames it into place; the daemon probe's later line is appended with `File.AppendAllText`; a failure of the concurrent run now prints that run's stderr.
 - **WIN-SAVE-HELD-OPEN** (platform) closed by 2658a328d and 4ec7bced6, 2026-11-08: on Windows the write beneath a root renamed with the classic replace alone, so a save of a file another program held open with delete sharing failed where `std::fs::rename` saved it; the rename now falls back to a POSIX-semantics replace by the same handle when the classic one answers access denied, and a link at the final name, to a file or a folder, is replaced on every system.
 - **CHAT-WATCH-STALE-SLOT** (chat) closed by 585800d2f, 2026-11-07: a chat watch dispatch test failed on macOS in 2 of 6 hosted runs ("timed out waiting for the stale slot released by the owner") because the owner's snapshot could check the row before the test removed it; the snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.

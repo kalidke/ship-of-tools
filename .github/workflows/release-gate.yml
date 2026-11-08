@@ -1,5 +1,5 @@
 # The release gate's hosted run (scripts/CLAUDE.md, "Release path"): everything the per-landing run (rust.yml) does not
-# run, once per release.
+# run, once per release (rust.yml also runs the window's State fixtures on Linux).
 #
 # Dispatched by hand at the release gate (pass 11, and before each final release): `gh workflow run release-gate.yml
 # --ref <branch>`. Never on a tag, so the release path's thirty minutes from fixes to an installed candidate stand; no
