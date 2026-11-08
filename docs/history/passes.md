@@ -1259,3 +1259,25 @@ A landing's record goes here, with its measured times; the package page holds on
   run compile them, and only the hand-dispatched release gate runs them (STATE-FIXTURES-RUN-ONLY-AT-RELEASE); the builder
   ran them under a virtual display on a build computer. Where the minutes went: the build (2 minutes); one review round
   (blockers 0) and one fix round of 1 minute; two gates of 2 minutes.
+- The session start after a clear, its review's follow-ups, 2026-11-08: builder launched 12:08, main 12:56 (e3b3e28cf,
+  e48b9cc21), 48 minutes, past the half hour. Both forms of the start print their shared lines from one place, so the full
+  start's tests pin the again form; the again form reads no inbox, resolves its context without writing and so creates
+  nothing in any comm folder, and names each failure in its own sentence (an unreadable registry gets no instruction to
+  join, which could not help); a send and the again form share one classification of why a handle is not routable, with
+  one table test over the four causes; the manual and the agents' contract no longer promise unread mail after a clear.
+  About 70 product lines and 180 test lines. Where the minutes went: the build (2 minutes); two review rounds (blockers 0,
+  0; the first found two causes untested, a copied decision, and wording wider than the tests) and one fix round of 2
+  minutes; three gates of 3 to 4 minutes, the last after moving onto main past the destroy pins and their records. Why
+  past the half hour: the second round, for the shared classification and the write-free context, which change product
+  logic.
+- The per-landing run executes the window's State fixtures, 2026-11-08: builder launched 12:40, main 13:46 (f387a2015,
+  41dd99ba3), 66 minutes, past the maintainer's hour: a failure of the standard. The Linux rest-0 job installs a virtual
+  display and Mesa's software Vulkan driver (with mirror retries) and, after the shard-coverage check, builds and runs the
+  minimized target's 13 State fixtures alone; a hosted run names the device (llvmpipe) and each fixture, and a run with one
+  fixture broken failed that job alone, naming it. It adds about a minute to that job, which does not set the run's wall
+  clock. STATE-FIXTURES-RUN-ONLY-AT-RELEASE closed. About 30 workflow lines and record edits. Where the minutes went: the
+  build (2 minutes); three hosted runs on the branch of about 20 minutes each, since the runner's adapter could be tested
+  nowhere else (the first found the adapter but not the X11 keyboard library the window's event loop loads); one review
+  round (blockers 1: the defect was not closed in the landing, which I had deferred to a records commit) and one fix round
+  of 2 minutes; two gates of 4 minutes. Why past the hour: the premise lived only on the hosted runner, and each test of it
+  was a 20-minute run; the library list should have been read from the event loop's sources before the first run.
