@@ -53,12 +53,7 @@ pub(super) fn write_beneath_at(
 
 /// Opens `folder` by its path, following links: the folder of a record the daemon writes in its own place.
 pub(super) fn open_followed(folder: &Path) -> io::Result<File> {
-    let dir = std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)?;
-    // Only a folder is one: a file at its name answers at once.
-    if tag_info(&dir)?.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-        return Err(io::Error::from_raw_os_error(ERROR_DIRECTORY as i32));
-    }
-    Ok(dir)
+    std::fs::OpenOptions::new().read(true).write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(folder)
 }
 
 /// Removes the file `name` in `dir`, a file link as itself; a folder there is an error.
