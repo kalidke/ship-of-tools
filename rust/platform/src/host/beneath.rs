@@ -37,12 +37,12 @@ fn write_beneath_at(
     temp: Option<&str>,
     mut at: impl FnMut(Step) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
-    // Every name is refused and converted before the first call.
+    // Every name is refused and converted before the root is opened.
     let mut names = plain_names(rel)?;
     let last = names.pop().expect("plain_names returns at least one name");
     let croot = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid(format!("{root:?} holds a NUL")))?;
-    // The root is its own canonical path, so no link above its last name is followed.
-    if !root.is_absolute() || std::fs::canonicalize(root)?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
+    // A root that is its own canonical path has no link on its way.
+    if !root.is_absolute() || std::fs::canonicalize(root).map_err(|e| folder_error(e, "the root"))?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
         return Err(invalid(format!("{root:?} is not its own canonical path")));
     }
     let temp = match temp {

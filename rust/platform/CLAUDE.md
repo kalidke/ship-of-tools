@@ -156,13 +156,14 @@ where each lives).
     folder below it relative to the one before, the same way (`O_NOFOLLOW|O_DIRECTORY`; a missing folder is made with
     `mkdirat` and opened the same way). It creates its temporary file exclusively under a fresh `.sot-<16 hex>.tmp`
     name, renames and syncs relative to the same folder, and checks that the entry at the final name is the file it
-    wrote. No path is used after the root, and every name is converted before the first call. A root that is not its
-    own canonical path, a `rel` that is not `/`-joined plain names, and a link or file at a folder's name are
-    `InvalidInput`. Limits: Linux and macOS, no caller yet. A crash between the create and the rename leaves a
-    `.sot-<hex>.tmp` that no later write removes. Folders made before a later error stay. An error after the rename
-    (the check or the folder sync) can leave the new bytes in place. The returned path names the file only while
-    nobody renames its folders. A failed identity check leaves the entry that replaced the temporary file at the final
-    name. A mount inside the root is followed. A folder with write and search but no read permission is refused.
+    wrote. No path is used after the root, and every name is converted before the root is opened. A root that is not
+    its own canonical path (one that does not exist, a link to nothing included, is `NotFound`), a `rel` that is not
+    `/`-joined plain names, and a link or file at a folder's name are `InvalidInput`. Limits: Linux and macOS, no
+    caller yet. A crash between the create and the rename leaves a `.sot-<hex>.tmp` that no later write removes.
+    Folders made before a later error stay. After the rename the old file is gone: an error in the folder sync leaves
+    the new bytes at the name, and a check that finds another entry there leaves that entry. The returned path names
+    the file only while nobody renames its folders. A mount inside the root is followed. A folder with write and
+    search but no read permission is refused.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a
 new Windows process whose Windows parent has exited, so a native parent walk alone stops short of the session (Git
@@ -246,7 +247,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 13 | local connection | `transport/accept_policy_tests.rs`; `tests/connect_own.rs`: `a_socket_this_account_listens_on_is_reached_wherever_it_is`, `a_socket_another_account_listens_on_is_refused`, `a_full_backlog_ends_the_connect_within_its_bound`, `a_missing_socket_is_not_found` (and the Windows pipe cases); the capsule's `rust/capsule/tests/socket_unix/` and `rust/capsule/tests/pipe_win/` (cancel, concurrent submit, the connector's bounds), `rust/capsule/tests/socket_unix/cloexec.rs` |
 | 14 | secret masking | `secret_tests.rs`: `a_slack_token_is_masked_whole_and_a_bare_prefix_is_not`, `a_logged_secret_is_masked_in_the_file`, `only_a_run_of_exactly_32_lowercase_hex_characters_is_masked`, `one_write_call_masks_the_whole_buffer_and_reports_it_all_written` |
 | 16 | hold tool | `hold_tests.rs` (child cases through a rerun of the test binary: `a_child_started_with_the_folder_is_held_at_its_line_and_released`, `two_children_sharing_a_folder_take_distinct_tickets`, `the_arm_drop_releases_a_held_child`; the cases by name: `a_held_arrival_waits_at_its_line_until_released`, `an_arrival_nobody_releases_gives_up_within_its_bound_and_fails_the_arm`, `an_async_point_holds_under_paused_time`, ...); the name rule is `hold.rs`'s `compile_fail` doc test |
-| 17 | write beneath a root | `host/beneath_tests.rs`: `a_link_at_any_folder_takes_no_write`, `the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical`, `a_name_that_is_not_one_plain_entry_is_refused`, `a_planted_temporary_name_is_never_written_through`, `a_link_at_the_final_name_is_replaced_not_followed`, `a_failed_write_leaves_the_old_file_and_no_temporary_file`, `a_temporary_file_replaced_before_the_rename_is_an_error_and_writes_nothing_outside`, `each_write_creates_its_temporary_file_under_a_fresh_name`, `missing_folders_are_created_and_the_path_is_returned` |
+| 17 | write beneath a root | `host/beneath_tests.rs`: `a_link_at_any_folder_takes_no_write`, `the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical`, `a_name_that_is_not_one_plain_entry_is_refused`, `a_planted_temporary_name_is_never_written_through`, `a_link_at_the_final_name_is_replaced_not_followed`, `a_failed_write_leaves_the_old_file_and_no_temporary_file`, `a_temporary_file_replaced_before_the_rename_is_an_error_and_writes_nothing_outside`, `a_root_that_does_not_resolve_answers_by_what_is_wrong`, `each_write_creates_its_temporary_file_under_a_fresh_name`, `missing_folders_are_created_and_the_path_is_returned` |
 
 ## Rules
 - Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter
