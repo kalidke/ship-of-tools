@@ -1356,6 +1356,7 @@ impl State {
 impl State {
     /// Drives the real wheel adapter on the isolated native State, including a sub-row step.
     pub(in crate::ui) fn a_wheel_step_reports_presence(&mut self) -> Result<()> {
+        anyhow::ensure!(false, "red proof: deliberately broken");
         self.presence = PresenceClock::default();
         self.set_focus(PaneFocus::Llm);
         self.pointer.clear_residue();
