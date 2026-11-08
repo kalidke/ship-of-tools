@@ -965,3 +965,24 @@ A landing's record goes here, with its measured times; the package page holds on
   (a new one took the last round). Why past the hour: round 1 found the gap this change existed to close still open (its new
   test passed on the old code too), and round 2 named three more fixes; a multi-thread runtime-drop test was deleted because a
   race in the runtime's shutdown decides it.
+- A test holds a child process at a marked line, 2026-11-07: builder launched 15:21, main 16:35 (6 commits replayed as far as
+  ee0c5b650), 74 minutes, past the maintainer's hour. A child started with `SOT_TEST_HOLDS` is held by the same arm, tickets
+  and bounds as in one process: tickets numbered across every process sharing one folder by an exclusive create; an arm, a
+  release, the arm's drop, a give-up and a lost waiter are files; nothing in the folder is deleted, so Windows never meets a
+  file another process holds open. Every test daemon gets its own folder. About 300 product and 300 test lines. Where the
+  minutes went: the build 16; two review rounds of 23 and 22 minutes (blockers 1, 1); fix rounds of 4 and 2; three gates of
+  about 3 minutes; two hosted runs on the branch for Windows and macOS. Why past the hour: round 1 found a child whose wait
+  was lost could pass its test, the same class the in-process follow-up had fixed; round 2 found that two of round 1's
+  suggested deletions were load-bearing (the 60 s cap on a child's give-up, and the check that keeps arrivals after an arm's
+  drop from writing files). Both are back, each with a fast test.
+- A drawing has one shape, one bound and one raster, 2026-11-07: builder launched 15:56, main 17:01 (516b96652, a3cafa8ee and
+  the contract's two sentences, replayed as far as dbc10f53a), 65 minutes, past the maintainer's hour. The first piece of the
+  approved drawing requirement: `selection.set` carries an optional drawing beside the text selection, refused when both are
+  set, empty or past 16384 points, and a request without it decodes as before; `sot_protocol::ink` rasterizes a drawing at no
+  more than 2000 pixels on the long side, the same mask whatever order its segments are painted in, so the window and the
+  daemon will draw the same ink. About 145 product and 200 test lines. Where the minutes went: the build 13; two review
+  rounds of 25 and 15 minutes (blockers 1, 0); one fix round of 4; three gates of about 4 to 5 minutes. Why past the hour:
+  round 1 found the raster painted each segment's whole bounding box, so a drawing at the wire's bound took 95 s; it now
+  paints each row's span (about 5 s for random strokes, 13 s at worst) and a test counts the pixels visited. The stroke cap
+  was deleted (the point bound holds it), and the contract states that a daemon built before this field reads a drawing with
+  no selection as a clear.
