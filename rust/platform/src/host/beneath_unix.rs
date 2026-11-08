@@ -21,27 +21,10 @@ pub(super) fn write_beneath_at(
     temp: Option<&str>,
     mut at: impl FnMut(Step) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
-    // Every name is refused and converted before the root is opened.
-    let mut names = plain_names(rel)?
-        .into_iter()
-        .map(|n| CString::new(n).map_err(|_| invalid(format!("{n:?} is not one plain name"))))
-        .collect::<io::Result<Vec<_>>>()?;
+    let mut names = names_of(rel)?;
     let last = names.pop().expect("plain_names returns at least one name");
-    absolute_root(root)?;
-    let croot = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid(format!("{root:?} holds a NUL")))?;
-    // A root that is its own canonical path has no link on its way.
-    if std::fs::canonicalize(root).map_err(|e| folder_error(e, "the root"))?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
-        return Err(invalid(format!("{root:?} is not its own canonical path")));
-    }
     let ctemp = CString::new(temp_name(temp)?).map_err(|_| invalid("the temporary name holds a NUL".into()))?;
-    // Open the root, then each folder below it.
-    let root_fd = own(unsafe { libc::open(croot.as_ptr(), DIR_FLAGS) }).map_err(|e| folder_error(e, "the root"))?;
-    let mut dir = File::from(root_fd);
-    at(Step::Root)?;
-    for (i, name) in names.iter().enumerate() {
-        dir = open_folder(&dir, name, &mut || at(Step::Missing(i)))?;
-        at(Step::Folder(i))?;
-    }
+    let dir = walk(root, &names, true, &mut at)?;
     // Create the temporary file, then write, rename and sync.
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     let fd = own(unsafe { libc::openat(dir.as_raw_fd(), ctemp.as_ptr(), flags, 0o666 as c_int) })?;
@@ -52,6 +35,43 @@ pub(super) fn write_beneath_at(
     }
     result?;
     Ok(root.join(rel))
+}
+
+/// The Unix [`super::create_dir_beneath_at`]: the walk makes no folder, and the last name is made relative to the
+/// parent's handle.
+pub(super) fn create_dir_beneath_at(root: &Path, rel: &str, mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<PathBuf> {
+    let mut names = names_of(rel)?;
+    let last = names.pop().expect("plain_names returns at least one name");
+    let dir = walk(root, &names, false, &mut at)?;
+    check(unsafe { libc::mkdirat(dir.as_raw_fd(), last.as_ptr(), 0o777) })?;
+    dir.sync_all()?;
+    Ok(root.join(rel))
+}
+
+/// Every name is refused and converted before the root is opened.
+fn names_of(rel: &str) -> io::Result<Vec<CString>> {
+    plain_names(rel)?
+        .into_iter()
+        .map(|n| CString::new(n).map_err(|_| invalid(format!("{n:?} is not one plain name"))))
+        .collect()
+}
+
+/// Opens the root, then each of `folders` below it, creating the missing ones when `make`; returns the last.
+fn walk(root: &Path, folders: &[CString], make: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<File> {
+    absolute_root(root)?;
+    let croot = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid(format!("{root:?} holds a NUL")))?;
+    // A root that is its own canonical path has no link on its way.
+    if std::fs::canonicalize(root).map_err(|e| folder_error(e, "the root"))?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
+        return Err(invalid(format!("{root:?} is not its own canonical path")));
+    }
+    let root_fd = own(unsafe { libc::open(croot.as_ptr(), DIR_FLAGS) }).map_err(|e| folder_error(e, "the root"))?;
+    let mut dir = File::from(root_fd);
+    at(Step::Root)?;
+    for (i, name) in folders.iter().enumerate() {
+        dir = open_folder(&dir, name, make, &mut || at(Step::Missing(i)))?;
+        at(Step::Folder(i))?;
+    }
+    Ok(dir)
 }
 
 /// Write, sync, rename within the folder, sync the folder.
@@ -72,12 +92,12 @@ fn publish(
     dir.sync_all()
 }
 
-/// Opens `name` below `prev`, creating it when missing; a link or a file at the name is refused.
-fn open_folder(prev: &File, name: &CStr, missing: &mut impl FnMut() -> io::Result<()>) -> io::Result<File> {
+/// Opens `name` below `prev`, creating it when missing and `make`; a link or a file at the name is refused.
+fn open_folder(prev: &File, name: &CStr, make: bool, missing: &mut impl FnMut() -> io::Result<()>) -> io::Result<File> {
     let open = || own(unsafe { libc::openat(prev.as_raw_fd(), name.as_ptr(), DIR_FLAGS) });
     let shown = name.to_string_lossy();
     match open() {
-        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
+        Err(e) if make && e.raw_os_error() == Some(libc::ENOENT) => {
             missing()?;
             // An existing entry (EEXIST) is not success: the open below decides what it is.
             match check(unsafe { libc::mkdirat(prev.as_raw_fd(), name.as_ptr(), 0o777) }) {

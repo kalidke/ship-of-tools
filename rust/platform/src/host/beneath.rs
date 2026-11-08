@@ -12,7 +12,7 @@ mod arm;
 #[path = "beneath_windows.rs"]
 mod arm;
 
-use arm::write_beneath_at;
+use arm::{create_dir_beneath_at, write_beneath_at};
 
 /// The points a test may stop at, each after the step it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,13 @@ enum Step {
 /// IO. A root, name or folder the rule refuses is `InvalidInput`.
 pub fn write_beneath(root: &Path, rel: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     write_beneath_at(root, rel, bytes, None, |_| Ok(()))
+}
+
+/// Creates the folder `rel` beneath `root`, following no link, and syncs its parent. Its parent must exist; an entry of
+/// any kind at its name, a link included, is `AlreadyExists` and left as it is. `root` and `rel` and the result are
+/// as for [`write_beneath`].
+pub fn create_dir_beneath(root: &Path, rel: &str) -> io::Result<PathBuf> {
+    create_dir_beneath_at(root, rel, |_| Ok(()))
 }
 
 /// Names joined by `/`, each non-empty, not `.` or `..`, none holding a NUL; on Windows also none holding `\` or `:`

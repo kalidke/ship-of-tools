@@ -22,10 +22,12 @@ Per workspace row (built in `rows/workspace.rs`):
   stale version at a folder link answers `conflict`; a link at the name itself is refused before any version check, and
   a save is refused when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`). On
   Windows a save replaces a file another program holds open with delete sharing (an open handle; the open keeps the
-  old file) and fails after `write_beneath`'s retry window when it does not (platform guarantee 17's tests). `dir.create` and a delete resolve through `node_id_to_path_confined`, which
+  old file) and fails after `write_beneath`'s retry window when it does not (platform guarantee 17's tests). `dir.create` creates its folder through `FilesMode::create_dir` (platform's `create_dir_beneath`), following no link:
+  its parent must exist, an entry of any kind at the name, a link included, answers `already_exists`, and a link at a
+  folder of its path answers `bad_node_id` and creates nothing. A delete resolves through `node_id_to_path_confined`, which
   canonicalizes and refuses a path outside the root. Tests: `io_tests.rs`: `a_save_through_a_folder_link_takes_no_write`,
   `a_save_at_a_name_that_is_a_link_takes_no_write`, `an_entry_planted_beside_the_file_never_receives_the_save`;
-  `io_ops_tests.rs`: `a_save_through_a_folder_link_answers_bad_node_id`.
+  `io_ops_tests.rs`: `a_save_through_a_folder_link_answers_bad_node_id`, `a_new_folder_through_a_folder_link_answers_bad_node_id`.
 - The crop's PNG and a drawing's picture are written under `.sot/captures/` through `FilesMode::write`, which
   follows no link (platform's `write_beneath`, guarantee 17): the folder is created beneath the root and a `.sot` or
   `captures` link, wherever it leads, takes no write. Tested (a symlink, a junction on Windows) by

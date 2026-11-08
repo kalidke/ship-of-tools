@@ -642,3 +642,98 @@ fn only_a_name_surrogate_tag_is_a_link() {
         assert!(!names_another_place(0x10, tag), "{tag:#x}");
     }
 }
+
+#[test]
+fn a_folder_is_created_at_its_name_and_the_path_is_returned() {
+    let (_g, root, _outside) = setup();
+    std::fs::create_dir(root.join("a")).unwrap();
+    assert_eq!(create_dir_beneath(&root, "a/new").unwrap(), root.join("a/new"));
+    assert!(root.join("a/new").is_dir());
+}
+
+#[test]
+fn a_link_at_any_parent_takes_no_folder() {
+    for depth in [1, 2] {
+        #[cfg_attr(unix, allow(unused_mut))]
+        let mut cases = vec!["outside folder", "dangling", "file"];
+        #[cfg(windows)]
+        cases.push("directory symlink");
+        for case in cases {
+            let (_g, root, outside) = setup();
+            let (parent, rel_prefix) = if depth == 1 {
+                (root.clone(), "d".to_string())
+            } else {
+                std::fs::create_dir(root.join("a")).unwrap();
+                (root.join("a"), "a/d".to_string())
+            };
+            let at = parent.join("d");
+            match case {
+                "outside folder" => link_dir(&outside, &at).unwrap(),
+                "dangling" => link_dangling_dir(&at, &outside.join("nothing")),
+                #[cfg(windows)]
+                "directory symlink" => {
+                    if !made(std::os::windows::fs::symlink_dir(&outside, &at)) {
+                        continue;
+                    }
+                }
+                _ => std::fs::write(&at, b"x").unwrap(),
+            }
+            let before = entries(&parent);
+            let got = create_dir_beneath(&root, &format!("{rel_prefix}/new"));
+            assert_eq!(kind(got), io::ErrorKind::InvalidInput, "depth {depth} {case}");
+            assert!(entries(&outside).is_empty(), "depth {depth} {case}");
+            assert_eq!(entries(&parent), before, "depth {depth} {case}");
+        }
+    }
+}
+
+#[test]
+fn an_entry_at_the_name_is_already_exists() {
+    for case in ["file", "folder", "outside folder", "dangling"] {
+        let (_g, root, outside) = setup();
+        let at = root.join("new");
+        match case {
+            "file" => std::fs::write(&at, b"x").unwrap(),
+            "folder" => std::fs::create_dir(&at).unwrap(),
+            "outside folder" => link_dir(&outside, &at).unwrap(),
+            _ => link_dangling_dir(&at, &outside.join("nothing")),
+        }
+        let before = std::fs::symlink_metadata(&at).unwrap().file_type();
+        assert_eq!(kind(create_dir_beneath(&root, "new")), io::ErrorKind::AlreadyExists, "{case}");
+        assert_eq!(std::fs::symlink_metadata(&at).unwrap().file_type(), before, "{case}");
+        assert!(entries(&outside).is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn a_missing_parent_is_not_found_and_nothing_is_made() {
+    let (_g, root, _outside) = setup();
+    assert_eq!(kind(create_dir_beneath(&root, "a/b/new")), io::ErrorKind::NotFound);
+    assert!(entries(&root).is_empty());
+}
+
+#[test]
+fn a_name_that_is_not_one_plain_entry_takes_no_folder() {
+    let (_g, root, _outside) = setup();
+    for rel in ["", "..", "a/../b", "/x", "a//b", "a/"] {
+        assert_eq!(kind(create_dir_beneath(&root, rel)), io::ErrorKind::InvalidInput, "{rel:?}");
+    }
+}
+
+#[test]
+fn a_parent_swapped_for_a_link_after_its_open_takes_no_folder() {
+    for depth in [1, 2] {
+        let (_g, root, outside) = setup();
+        let (rel, folder) = if depth == 1 { ("d/new", root.join("d")) } else { ("a/d/new", root.join("a/d")) };
+        std::fs::create_dir_all(&folder).unwrap();
+        create_dir_beneath_at(&root, rel, |s| {
+            if s == Step::Folder(depth - 1) {
+                swap_for_link(&folder, &outside);
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(entries(&outside).is_empty(), "depth {depth}");
+        assert_eq!(entries(&folder.with_file_name("d.moved")), ["new"], "depth {depth}");
+    }
+}

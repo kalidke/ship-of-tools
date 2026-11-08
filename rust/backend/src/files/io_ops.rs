@@ -271,10 +271,10 @@ pub async fn handle_file_delete(
 }
 
 /// Create a directory from Files-mode nav (FE Ctrl+N, a name ending in `/`).
-/// Non-recursive (`std::fs::create_dir`, not `create_dir_all`): a missing
-/// parent fails loudly instead of being silently created, mirroring
-/// `file.write`'s new-file contract. An existing file or directory at the
-/// target path is refused with `code: "already_exists"` rather than
+/// Non-recursive (`FilesMode::create_dir`, beneath the root and following no
+/// link): a missing parent fails loudly instead of being silently created,
+/// and a link at a folder of the path is refused `bad_node_id`. Any entry at
+/// the target path is refused with `code: "already_exists"` rather than
 /// silently succeeding. Bumps the session revision like file.write/delete so
 /// the watcher and reconnecting clients refresh.
 pub async fn handle_dir_create(
@@ -290,20 +290,16 @@ pub async fn handle_dir_create(
         "dir.create"
     );
 
-    let path = match resolve_file_node(
-        op::DIR_CREATE,
-        req_id,
-        &req.node_id,
-        req.workspace_id.as_deref(),
-        workspaces,
-        true,
-    ) {
-        Ok(p) => p,
-        Err(out) => return Ok(out),
+    let files_mode = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::DIR_CREATE)
+        .map(|ws| ws.files_mode())
+    {
+        Ok(Ok(fm)) => fm,
+        Ok(Err(e)) => return Err(e),
+        Err(reply) => return Ok(reply),
     };
 
-    match std::fs::create_dir(&path) {
-        Ok(()) => {
+    match files_mode.create_dir(&req.node_id) {
+        Ok(path) => {
             let res = DirCreateRes {
                 node_id: req.node_id.clone(),
                 path: path.to_string_lossy().to_string(),
@@ -316,31 +312,28 @@ pub async fn handle_dir_create(
                 None,
             )])
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(vec![(
-            Frame::res(
-                req_id,
-                op::DIR_CREATE,
-                json!({ "error": "already exists", "code": "already_exists", "node_id": req.node_id }),
-            ),
-            None,
-        )]),
-        Err(e) => Ok(vec![(
-            Frame::res(
-                req_id,
-                op::DIR_CREATE,
-                json!({ "error": format!("{e:#}"), "code": "dir_create_failed", "node_id": req.node_id }),
-            ),
-            None,
-        )]),
+        Err(e) => {
+            // A name the rule refuses (a link at a folder of the path included) answers as a node id.
+            let kind = e.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
+            let (error, code) = match kind {
+                Some(std::io::ErrorKind::AlreadyExists) => ("already exists".to_string(), "already_exists"),
+                Some(std::io::ErrorKind::InvalidInput) => (format!("{e:#}"), "bad_node_id"),
+                _ => (format!("{e:#}"), "dir_create_failed"),
+            };
+            Ok(vec![(
+                Frame::res(req_id, op::DIR_CREATE, json!({ "error": error, "code": code, "node_id": req.node_id })),
+                None,
+            )])
+        }
     }
 }
 
 /// Shared workspace → FilesMode → safe path resolution for the file.read /
-/// file.write / file.delete / dir.create handlers. On any failure returns the
+/// file.write / file.delete handlers. On any failure returns the
 /// error `HandlerOutput` to send back (tagged with `op`); on success returns
 /// the resolved absolute path. Both resolvers reject `..`/absolute ids;
 /// `confined` selects the confined resolver (`node_id_to_path_confined`, the
-/// symlink escape guard, for `dir.create` and `file.delete`) vs the
+/// symlink escape guard, for `file.delete`) vs the
 /// READ resolver (follows user symlinks, e.g. NAS mounts — see
 /// files/tree.rs).
 fn resolve_file_node(

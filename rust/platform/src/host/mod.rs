@@ -102,7 +102,7 @@ pub fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
 #[path = "tests.rs"]
 mod tests;
 
-pub use beneath::write_beneath;
+pub use beneath::{create_dir_beneath, write_beneath};
 pub use durable::*;
 pub use held_dir::*;
 #[cfg(unix)]

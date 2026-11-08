@@ -140,13 +140,13 @@ impl FilesMode {
         self.compose_node_path(node_id)
     }
 
-    /// The confined resolver, for `dir.create` and a delete: same string-level checks, plus the symlink escape
+    /// The confined resolver, for a delete: same string-level checks, plus the symlink escape
     /// guard — the `..`/absolute checks are string-level and can't catch a symlink INSIDE the root pointing
     /// outside it. Canonicalize the longest existing ancestor of the composed path (the target may not exist
     /// yet) and confirm it's still under `self.root`, which is already canonical (`FilesMode::new`). These
     /// mutations therefore can't escape the project root even through a user symlink; reads deliberately can
     /// (see [`node_id_to_path`]). `file.write` reads through the read resolver and writes through
-    /// [`FilesMode::write`].
+    /// [`FilesMode::write`]; `dir.create` goes through [`FilesMode::create_dir`].
     pub fn node_id_to_path_confined(&self, node_id: &str) -> Result<PathBuf> {
         let p = self.compose_node_path(node_id)?;
         if let Some(canon) = crate::files::confine::canonicalize_existing_ancestor(&p) {
@@ -171,6 +171,24 @@ impl FilesMode {
                 anyhow::Error::new(e).context(format!("node id cannot be written: {node_id}"))
             } else {
                 anyhow::Error::new(e).context(format!("write {node_id}"))
+            }
+        })
+    }
+
+    /// Creates the folder at the node `node_id` beneath the root, following no link (platform's
+    /// `create_dir_beneath`): its parent must exist, and an entry of any kind at its name is `AlreadyExists`. A name
+    /// the rule refuses is the refusal of a node id. Returns the folder's path for replies, never for IO.
+    pub fn create_dir(&self, node_id: &str) -> Result<PathBuf> {
+        let rel = node_id
+            .strip_prefix(ID_PREFIX)
+            .ok_or_else(|| {
+                anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("not a files-mode id: {node_id}")))
+            })?;
+        sot_platform::host::create_dir_beneath(&self.root, rel).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::InvalidInput {
+                anyhow::Error::new(e).context(format!("node id cannot be created: {node_id}"))
+            } else {
+                anyhow::Error::new(e).context(format!("create {node_id}"))
             }
         })
     }

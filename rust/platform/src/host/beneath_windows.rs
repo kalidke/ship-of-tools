@@ -46,6 +46,37 @@ pub(super) fn write_beneath_at(
     let names = plain_names(rel)?;
     let (last, folders) = names.split_last().expect("plain_names returns at least one name");
     let temp = temp_name(temp)?;
+    let dir = walk(root, folders, true, &mut at)?;
+    // Create the temporary file exclusively, held with share-read alone so no other open can rename or delete it.
+    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
+        .map_err(status_error)?;
+    let mut renamed = false;
+    let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
+    if !renamed {
+        // The handle names the temporary file alone; a failure here changes nothing.
+        let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+        unsafe {
+            SetFileInformationByHandle(file.as_raw_handle() as HANDLE, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32)
+        };
+    }
+    result?;
+    Ok(root.join(rel))
+}
+
+/// The Windows [`super::create_dir_beneath_at`]: the walk makes no folder, and the last name is created relative to the
+/// parent's handle, so an entry of any kind there is `AlreadyExists`.
+pub(super) fn create_dir_beneath_at(root: &Path, rel: &str, mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<PathBuf> {
+    let names = plain_names(rel)?;
+    let (last, folders) = names.split_last().expect("plain_names returns at least one name");
+    let dir = walk(root, folders, false, &mut at)?;
+    nt_open(&dir, last, FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_CREATE, FILE_DIRECTORY_FILE)
+        .map_err(status_error)?;
+    dir.sync_all()?;
+    Ok(root.join(rel))
+}
+
+/// Opens the root, then each of `folders` below it, creating the missing ones when `make`; returns the last.
+fn walk(root: &Path, folders: &[&str], make: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<File> {
     absolute_root(root)?;
     // A root is its own canonical path when std's canonical form, de-verbatimed, equals it; the drive letter and
     // names compare without ASCII case, as the volume does.
@@ -62,23 +93,10 @@ pub(super) fn write_beneath_at(
     refuse_link(&dir, "the root")?;
     at(Step::Root)?;
     for (i, name) in folders.iter().enumerate() {
-        dir = open_folder(&dir, name, &mut || at(Step::Missing(i)))?;
+        dir = open_folder(&dir, name, make, &mut || at(Step::Missing(i)))?;
         at(Step::Folder(i))?;
     }
-    // Create the temporary file exclusively, held with share-read alone so no other open can rename or delete it.
-    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
-        .map_err(status_error)?;
-    let mut renamed = false;
-    let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
-    if !renamed {
-        // The handle names the temporary file alone; a failure here changes nothing.
-        let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
-        unsafe {
-            SetFileInformationByHandle(file.as_raw_handle() as HANDLE, FileDispositionInfo, &info as *const _ as *const c_void, size_of::<FILE_DISPOSITION_INFO>() as u32)
-        };
-    }
-    result?;
-    Ok(root.join(rel))
+    Ok(dir)
 }
 
 /// Write, sync, rename within the folder, sync the folder.
@@ -137,12 +155,12 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     }
 }
 
-/// Opens `name` below `prev`, creating it when missing; a link or a file at the name is refused.
-fn open_folder(prev: &File, name: &str, missing: &mut impl FnMut() -> io::Result<()>) -> io::Result<File> {
+/// Opens `name` below `prev`, creating it when missing and `make`; a link or a file at the name is refused.
+fn open_folder(prev: &File, name: &str, make: bool, missing: &mut impl FnMut() -> io::Result<()>) -> io::Result<File> {
     let open = |disposition| nt_open(prev, name, FOLDER_ACCESS, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, disposition, FILE_DIRECTORY_FILE);
     let (dir, made) = match open(FILE_OPEN) {
         // Open-or-create: an entry put at the name meanwhile is opened as itself and judged below.
-        Err(s) if s == STATUS_OBJECT_NAME_NOT_FOUND => {
+        Err(s) if make && s == STATUS_OBJECT_NAME_NOT_FOUND => {
             missing()?;
             (open(FILE_OPEN_IF), true)
         }
