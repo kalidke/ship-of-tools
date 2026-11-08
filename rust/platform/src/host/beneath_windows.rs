@@ -15,27 +15,24 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE, FILE_DIRECTORY_FILE,
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
-use windows_sys::Win32::Foundation::{RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, UNICODE_STRING};
+use windows_sys::Win32::Foundation::{
+    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
+    STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileDispositionInfo, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE,
-    FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+    FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_TAG_INFO,
     FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
     FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Kernel::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
-use super::{absolute_root, invalid, plain_names, temp_name, Step};
+use super::{absolute_root, invalid, names_another_place, plain_names, temp_name, Step};
 use crate::host::durable::is_transient_hold;
 use crate::host::paths::simplify_verbatim;
 use crate::host::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
 
-const STATUS_OBJECT_NAME_NOT_FOUND: NTSTATUS = 0xC000_0034_u32 as i32;
-const STATUS_NOT_A_DIRECTORY: NTSTATUS = 0xC000_0103_u32 as i32;
-const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000D_u32 as i32;
-const ERROR_DIRECTORY: i32 = 267;
-/// `IsReparseTagNameSurrogate`: the tag's bit 29 marks a symlink, a junction or a mount point.
-const NAME_SURROGATE: u32 = 0x2000_0000;
 const FOLDER_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
 /// The Windows [`super::write_beneath_at`].
@@ -52,10 +49,7 @@ pub(super) fn write_beneath_at(
     absolute_root(root)?;
     // A root is its own canonical path when std's canonical form, de-verbatimed, equals it; the drive letter and
     // names compare without ASCII case, as the volume does.
-    let canonical = std::fs::canonicalize(root).map_err(|e| match e.raw_os_error() {
-        Some(ERROR_DIRECTORY) => invalid(format!("{root:?} is not a folder")),
-        _ => e,
-    })?;
+    let canonical = std::fs::canonicalize(root)?;
     let same = |a: PathBuf, b: PathBuf| a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy());
     if !same(simplify_verbatim(canonical), simplify_verbatim(root.to_path_buf())) {
         return Err(invalid(format!("{root:?} is not its own canonical path")));
@@ -110,7 +104,8 @@ fn publish(
 fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let head = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let len = head + wide.len() * 2;
+    // The call refuses a length below the whole structure, which a one-unit name does not fill.
+    let len = (head + wide.len() * 2).max(size_of::<FILE_RENAME_INFO>());
     let mut buf = vec![0u64; len.div_ceil(8)];
     let info = buf.as_mut_ptr() as *mut FILE_RENAME_INFO;
     unsafe {
@@ -169,18 +164,19 @@ fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32,
     let mut handle: HANDLE = null_mut();
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     let options = options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
+    #[allow(clippy::disallowed_methods, reason = "one name relative to a folder handle; never a pipe")]
     let s = unsafe { NtCreateFile(&mut handle, access, &attrs, &mut iosb, null(), FILE_ATTRIBUTE_NORMAL, share, disposition, options, null(), 0) };
     if s < 0 { Err(s) } else { Ok(unsafe { File::from_raw_handle(handle) }) }
 }
 
-/// A symlink, junction or mount point (a name-surrogate tag) is refused; other reparse points stay ordinary.
+/// A file, symlink, junction or mount point (a name-surrogate tag) is refused; other reparse points stay ordinary.
 fn refuse_link(f: &File, what: &str) -> io::Result<()> {
     let mut info = FILE_ATTRIBUTE_TAG_INFO { FileAttributes: 0, ReparseTag: 0 };
     let ok = unsafe { GetFileInformationByHandleEx(f.as_raw_handle() as HANDLE, FileAttributeTagInfo, &mut info as *mut _ as *mut c_void, size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32) };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && info.ReparseTag & NAME_SURROGATE != 0 {
+    if info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 || names_another_place(info.FileAttributes, info.ReparseTag) {
         return Err(invalid(format!("{what:?} is not a plain folder")));
     }
     Ok(())
