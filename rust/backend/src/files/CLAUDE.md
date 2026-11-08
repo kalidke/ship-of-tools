@@ -21,8 +21,8 @@ Per workspace row (built in `rows/workspace.rs`):
   leads, is refused `bad_node_id` and writes nothing. Its version check runs first, through the read resolver, so a
   stale version at a folder link answers `conflict`; a link at the name itself is refused before any version check, and
   a save is refused when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`). On
-  Windows a save fails when another program still holds the file open after `write_beneath`'s retry window, whatever
-  sharing that program allows. `dir.create` and a delete resolve through `node_id_to_path_confined`, which
+  Windows a save replaces a file another program holds open with delete sharing (an open handle; the open keeps the
+  old file) and fails after `write_beneath`'s retry window when it does not (platform guarantee 17's tests). `dir.create` and a delete resolve through `node_id_to_path_confined`, which
   canonicalizes and refuses a path outside the root. Tests: `io_tests.rs`: `a_save_through_a_folder_link_takes_no_write`,
   `a_save_at_a_name_that_is_a_link_takes_no_write`, `an_entry_planted_beside_the_file_never_receives_the_save`;
   `io_ops_tests.rs`: `a_save_through_a_folder_link_answers_bad_node_id`.
