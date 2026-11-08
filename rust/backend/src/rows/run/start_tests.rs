@@ -31,9 +31,9 @@ fn a_settle_ends_at_the_first_answer() {
     assert!(!settled(Phase::Unreachable.as_wire_str()), "nothing answered yet");
 }
 
-/// Only a Claude spawn that started opens a trust leg, with the argv it ran (a reauth's `--resume <id>` included), and
-/// the next spawn closes it. A Codex row and a failed spawn open none; the Started arm of both spawners calls
-/// `open_leg_after_start`, and a failed spawn returns before it.
+/// Pins `open_leg_after_start` and a failed spawn: the helper opens a leg only for a Claude row, with the argv it is
+/// handed (a reauth's `--resume <id>` included), and the next spawn closes it; a failed spawn opens none. That the
+/// spawners' `Started` arms call the helper is read, not tested: a unit test cannot start a supervisor.
 #[tokio::test]
 async fn only_a_started_claude_spawn_opens_a_leg_and_the_next_spawn_closes_it() {
     use crate::rows::workspace::TrustTake;
@@ -53,7 +53,7 @@ async fn only_a_started_claude_spawn_opens_a_leg_and_the_next_spawn_closes_it() 
 
     let codex = row("codex", "codex");
     let g = codex.begin_spawn();
-    open_leg_after_start(&workspaces, &codex.workspace_id, g, "codex", &["codex".to_string()]);
+    open_leg_after_start(&workspaces, &codex.workspace_id, g, "codex", vec!["codex".to_string()]);
     assert_eq!(codex.trust_reading(), None, "a Codex row opens no leg");
 
     // A failed spawn: the state folder lies inside the project root, so it returns before anything started.
@@ -66,13 +66,13 @@ async fn only_a_started_claude_spawn_opens_a_leg_and_the_next_spawn_closes_it() 
     assert_eq!(ws.trust_reading(), None, "a failed spawn opens no leg");
 
     let g = ws.begin_spawn();
-    open_leg_after_start(&workspaces, &ws.workspace_id, g, "claude", &reauth);
+    open_leg_after_start(&workspaces, &ws.workspace_id, g, "claude", reauth.clone());
     assert_eq!(ws.trust_reading(), Some(g));
     assert_eq!(ws.take_trust_leg(g, true), TrustTake::Leg(reauth.clone()), "the reauth's argv is the one recorded");
 
     let other = row("other", "claude");
     let g = other.begin_spawn();
-    open_leg_after_start(&workspaces, &other.workspace_id, g, "claude", &reauth);
+    open_leg_after_start(&workspaces, &other.workspace_id, g, "claude", reauth.clone());
     other.begin_spawn();
     assert_eq!(other.trust_reading(), None, "the next spawn closed the leg");
 }
