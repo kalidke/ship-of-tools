@@ -1,0 +1,34 @@
+name: probe
+# A scratch-branch workflow that runs one platform test target on Windows. It lives only on tmp/ branches, which are
+# never merged.
+on:
+  push:
+    branches: ["tmp/**"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 3
+      - name: Line tables only
+        timeout-minutes: 1
+        shell: bash
+        run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 3
+      - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
+        with:
+          workspaces: rust
+          shared-key: test-windows-latest
+          save-if: false
+      - name: The write beneath a root's tests
+        timeout-minutes: 25
+        shell: bash
+        run: cargo test -p sot-platform --locked --lib beneath -- --test-threads=1
