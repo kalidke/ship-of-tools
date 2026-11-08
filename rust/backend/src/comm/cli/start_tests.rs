@@ -73,6 +73,7 @@ fn a_start_again_changes_nothing_and_names_the_handle() {
     assert!(!o.stdout.contains("Joined sot-comm"), "{}", o.stdout);
     assert!(o.stdout.contains("Work-state (nav row colour)"), "{}", o.stdout);
     assert!(!o.stdout.contains("UNREAD"), "{}", o.stdout);
+    assert!(o.stdout.contains(&format!("you are still joined as @{h}, and nothing was re-joined.")), "{}", o.stdout);
 }
 
 /// The question a row kept is told again after a clear: it is what stops a session from stamping it away.
@@ -97,24 +98,48 @@ fn a_start_again_creates_no_file_under_the_comm_folder() {
     assert_eq!(session_start(&t.env, &[]).code, 0);
     let inbox = t.home.join("inbox");
     std::fs::create_dir_all(&inbox).unwrap();
-    std::fs::write(t.home.join("inbox-lock-manager"), format!("{}\n", crate::comm::mail::inbox::lock_identity(&inbox))).unwrap();
-    let files = || {
-        let mut v: Vec<_> = walkdir_files(&t.home);
-        v.sort();
-        v
-    };
-    let before = files();
+    let own = crate::comm::mail::inbox::lock_identity(&inbox);
+    std::fs::write(t.home.join("inbox-lock-manager"), format!("{own}\n")).unwrap();
+    // On a host with no machine id the lock is bare `none`, which this box never takes: the test could not fail.
+    assert!(crate::comm::mail::inbox::appends_here(&t.home, &own), "this host cannot take the inbox lock, so the test cannot test: {own}");
+    let before = files(&t.home);
     assert_eq!(session_start(&t.env, &["--again".into()]).code, 0);
-    assert_eq!(files(), before);
+    assert_eq!(files(&t.home), before);
 }
 
-fn walkdir_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+/// Unlike every other command, the again form does not make a comm folder that is not whole whole: a registry that is
+/// gone reads as unreadable, and nothing is created.
+#[test]
+fn a_start_again_in_a_folder_that_is_not_whole_creates_nothing() {
+    let t = TestHome::new();
+    let h = crate::comm::identity::derive::tier(1, &t.root(), "box1", Default::default()).1;
+    assert_eq!(session_start(&t.env, &[]).code, 0);
+    std::fs::remove_file(t.registry()).unwrap();
+    std::fs::remove_dir_all(t.home.join("inbox")).unwrap();
+    let before = files(&t.home);
+    let o = session_start(&t.env, &["--again".into()]);
+    assert_eq!(files(&t.home), before);
+    assert!(
+        o.stdout.ends_with(&format!("comm-session-start: the registry could not be read, so @{h} is unverified; the next start reads it again\n")),
+        "{}",
+        o.stdout
+    );
+}
+
+/// Every path under `dir`, sorted.
+fn files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut v = walk(dir);
+    v.sort();
+    v
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).unwrap().flatten() {
         let p = e.path();
         out.push(p.clone());
         if p.is_dir() {
-            out.extend(walkdir_files(&p));
+            out.extend(walk(&p));
         }
     }
     out
@@ -141,4 +166,37 @@ fn a_start_again_with_no_entry_fails_and_joins_nothing() {
         )
     );
     assert!(t.agents().as_object().map_or(true, |a| a.is_empty()), "joined: {}", t.agents());
+}
+
+/// A send and the again form refuse the same four identities, each in its own words (`cli::unroutable`).
+#[test]
+fn a_send_and_a_start_again_refuse_the_same_four_causes() {
+    let t = TestHome::new();
+    let h = crate::comm::identity::derive::tier(1, &t.root(), "box1", Default::default()).1;
+    let fail = "BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a\ncomm-session-start: ";
+    let join = "; run /sot-session-start to join\n";
+    let again = || session_start(&t.env, &["--again".into()]).stdout;
+    // (the handle a send is given, the registry after the join, the line the start says)
+    assert!(super::super::routable(&t.env, "", &t.root(), &t.registry()).is_err());
+    assert_eq!(again(), format!("{fail}this session has no sot-comm identity{join}"));
+
+    assert_eq!(session_start(&t.env, &[]).code, 0);
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_ok());
+    assert!(again().starts_with(&format!("BOOTSTRAP-ARM handle={h} identity=ok")));
+
+    let entry = t.agents()[&h].clone();
+    std::fs::write(t.registry(), r#"{"agents":{}}"#).unwrap();
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
+    assert_eq!(again(), format!("{fail}@{h} has no registry entry for this project{join}"));
+
+    std::fs::write(t.registry(), "not json").unwrap();
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
+    assert_eq!(again(), format!("{fail}the registry could not be read, so @{h} is unverified; the next start reads it again\n"));
+
+    let mut other = entry;
+    other["root"] = serde_json::json!("/another/project");
+    std::fs::write(t.registry(), "{\"agents\":{}}").unwrap();
+    t.put(&h, other);
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
+    assert_eq!(again(), format!("{fail}@{h} is registered to a different project{join}"));
 }

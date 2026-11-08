@@ -5,7 +5,7 @@
 //! rewrites the registry entry, never wipes the row's work-state.
 
 use crate::comm::Env;
-use super::{context, gate, join, Out};
+use super::{context_with, gate, join, unroutable, Out, Unroutable};
 
 /// The work-state rule, printed on every start: the row's color is read from it.
 const WORKSTATE_RULE: &str = "Work-state (nav row colour) \u{2014} stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> \"why\":
@@ -50,7 +50,7 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
         return fail(o);
     }
     let mut notes = Vec::new();
-    let ctx = match context(env, false, &mut notes) {
+    let ctx = match context_with(env, false, !again, &mut notes) {
         Ok(c) => c,
         Err(e) => {
             o.errs(&notes);
@@ -116,24 +116,17 @@ fn start_lines(env: &Env, ctx: &crate::comm::identity::context::Context, handle:
 /// `--again`: the start lines for a session whose context was cleared or compacted, from the identity as it resolves;
 /// nothing is joined or written. A handle with no registry entry of this project is a failure that names the way back.
 fn start_again(env: &Env, mut o: Out, ctx: &crate::comm::identity::context::Context) -> Out {
-    use crate::comm::registry::registry::{entry, Entry};
     let handle = ctx.name.as_str();
-    let why = if handle.is_empty() {
-        Some("this session has no sot-comm identity".to_string())
-    } else {
-        match entry(&ctx.registry(), handle) {
-            Entry::Absent => Some(format!("@{handle} has no registry entry for this project")),
-            Entry::Unreadable => Some(format!("the registry could not be read, so @{handle} is unverified")),
-            Entry::Present(e) => {
-                let root = e.get("root").and_then(serde_json::Value::as_str).unwrap_or("");
-                (!root.is_empty() && !crate::comm::identity::paths::same_root(root, &ctx.project_root))
-                    .then(|| format!("@{handle} is registered to a different project"))
-            }
-        }
-    };
+    let why = unroutable(handle, &ctx.project_root, &ctx.registry()).map(|cause| match cause {
+        Unroutable::NoIdentity => "comm-session-start: this session has no sot-comm identity; run /sot-session-start to join".to_string(),
+        Unroutable::Absent => format!("comm-session-start: @{handle} has no registry entry for this project; run /sot-session-start to join"),
+        Unroutable::OtherRoot(_) => format!("comm-session-start: @{handle} is registered to a different project; run /sot-session-start to join"),
+        // A join reads the same file and would rewrite the entry whole; the next start reads it again.
+        Unroutable::Unreadable => format!("comm-session-start: the registry could not be read, so @{handle} is unverified; the next start reads it again"),
+    });
     if let Some(why) = why {
         o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
-        o.out(format!("comm-session-start: {why}; run /sot-session-start to join"));
+        o.out(why);
         return o;
     }
     o.out(format!("BOOTSTRAP-ARM handle={handle} identity=ok WAKE: daemon"));

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # comm-session-start-hook.sh — Claude Code `SessionStart` hook for the `clear` and `compact` sources: run the comm
 # session start in its read-only form (`comm-session-start.sh --again`), so a session that lost its context is told its
-# handle, its handoff file and whether mail waits, and nothing is joined or written: the row stays joined across a clear
+# handle, its handoff file and any question its row kept, and nothing is joined or written: the row stays joined across a clear
 # or a compaction, and a join would rewrite its registry entry and wipe its work-state.
 #
 # Carried by a row's leg (and a `ccb` session) in its own `--settings`, built by the daemon's launch recipe

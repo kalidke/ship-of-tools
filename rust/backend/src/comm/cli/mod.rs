@@ -114,33 +114,58 @@ pub(crate) fn gate(env: &Env) -> Result<(), (i32, String)> {
 
 /// This process's identity, after the gate passed: the comm folder is made whole when it is not.
 pub(crate) fn context(env: &Env, rebind: bool, notes: &mut Vec<String>) -> Result<crate::comm::identity::context::Context, String> {
-    let cwd = std::env::current_dir().map_err(|e| format!("comm-context: no working folder ({e})"))?;
-    crate::comm::identity::context::resolve(env, rebind, &cwd, || true, notes)
+    context_with(env, rebind, true, notes)
 }
 
-/// The identity's own refusal for sending as it (`sotd comm routable`): a handle, an entry for it, and that entry's
-/// root this project's (or none, an entry older than roots). `bin` is where the session's scripts are, for the
-/// recovery line.
-pub(crate) fn routable(env: &Env, name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {
+/// `context`, making a comm folder that is not whole only when `may_write`.
+pub(crate) fn context_with(env: &Env, rebind: bool, may_write: bool, notes: &mut Vec<String>) -> Result<crate::comm::identity::context::Context, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("comm-context: no working folder ({e})"))?;
+    crate::comm::identity::context::resolve(env, rebind, &cwd, || may_write, notes)
+}
+
+/// Why an identity may not be used: the one classification a send and a session start each word for themselves.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Unroutable {
+    /// The identity did not resolve to a handle.
+    NoIdentity,
+    /// The handle has no registry entry.
+    Absent,
+    /// The registry could not be read (missing, malformed).
+    Unreadable,
+    /// The entry is registered to another project's root.
+    OtherRoot(String),
+}
+
+/// `None` when `name` is a handle with an entry whose root is this project's (or none, an entry older than roots).
+pub(crate) fn unroutable(name: &str, project_root: &str, registry: &std::path::Path) -> Option<Unroutable> {
     use crate::comm::registry::registry::{entry, Entry};
-    let bin = bin_dir(env);
-    let q = |s: &str| crate::comm::identity::context::shell_quote(s);
     if name.is_empty() {
-        return Err("your sot-comm identity did not resolve \u{2014} refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh (if you held a handle before, see the sot-session-start skill's recovery recipe).".into());
+        return Some(Unroutable::NoIdentity);
     }
     match entry(registry, name) {
-        Entry::Absent => Err(format!("your identity @{name} has no registry row; join again: {}/comm-join.sh", q(&bin))),
-        Entry::Unreadable => Err(format!("the registry could not be read, so identity @{name} is unverified; nothing was sent")),
+        Entry::Absent => Some(Unroutable::Absent),
+        Entry::Unreadable => Some(Unroutable::Unreadable),
         Entry::Present(e) => {
             let root = e.get("root").and_then(serde_json::Value::as_str).unwrap_or("");
-            if !root.is_empty() && !crate::comm::identity::paths::same_root(root, project_root) {
-                return Err(format!(
-                    "your sot-comm identity '@{name}' is registered to a DIFFERENT project's root ('{root}') \u{2014} refusing to send with a misrouting from-handle. Join again: {}/comm-join.sh",
-                    q(&bin)
-                ));
-            }
-            Ok(())
+            (!root.is_empty() && !crate::comm::identity::paths::same_root(root, project_root)).then(|| Unroutable::OtherRoot(root.to_string()))
         }
+    }
+}
+
+/// The identity's own refusal for sending as it (`sotd comm routable`): see `unroutable`. `bin` is where the
+/// session's scripts are, for the recovery line.
+pub(crate) fn routable(env: &Env, name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {
+    let bin = bin_dir(env);
+    let q = |s: &str| crate::comm::identity::context::shell_quote(s);
+    match unroutable(name, project_root, registry) {
+        None => Ok(()),
+        Some(Unroutable::NoIdentity) => Err("your sot-comm identity did not resolve \u{2014} refusing to send with no verifiable from-handle (a reply would silently misroute). Join first: comm-join.sh (if you held a handle before, see the sot-session-start skill's recovery recipe).".into()),
+        Some(Unroutable::Absent) => Err(format!("your identity @{name} has no registry row; join again: {}/comm-join.sh", q(&bin))),
+        Some(Unroutable::Unreadable) => Err(format!("the registry could not be read, so identity @{name} is unverified; nothing was sent")),
+        Some(Unroutable::OtherRoot(root)) => Err(format!(
+            "your sot-comm identity '@{name}' is registered to a DIFFERENT project's root ('{root}') \u{2014} refusing to send with a misrouting from-handle. Join again: {}/comm-join.sh",
+            q(&bin)
+        )),
     }
 }
 
