@@ -25,7 +25,7 @@ where each lives).
    manager's `XDG_RUNTIME_DIR`; macOS: none; Windows: no runtime base). A boot without logind binds at
    `/tmp/sot-<uid>`.
 2. **A publication is durable and never clobbers.** `publish_noreplace` renames without replacing, flushes the
-   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (tmp, fsync, replace,
+   renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (a fresh tmp: a stale entry at the name is removed, the create refuses an existing name and follows no link; fsync, replace,
    directory sync) and `remove_durable` are the one write and delete for a record a later start acts on; on Windows a
    removal has no parent sync (Win32 has no write-through delete). Rests on
    renameat2/renamex_np/MoveFileEx write-through; only linux, macos and windows build.
