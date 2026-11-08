@@ -304,11 +304,12 @@ fn a_peer_of_another_uid_is_dropped_at_accept() {
     let own = sot_platform::host::state_dir::current_uid();
     let server = RowServer::bind_as_uid_for_test(&path, Arc::clone(&looped.run), own.wrapping_add(1)).expect("bind");
     let mut raw = std::os::unix::net::UnixStream::connect(&path).expect("the socket accepts the connect");
-    // The server may drop the peer before this call; macOS answers EINVAL to a socket option on a connection the peer
-    // has closed. That is the close having come first, and the read below still proves it.
+    // The server may drop the peer before this call. xnu's `sosetoptlock` takes no option on a socket shut in both
+    // directions, and `unp_disconnect` shuts both ends, so macOS answers EINVAL once the close has come first; the read
+    // below then returns at once and still proves it. Linux has no such cause, so there the error stays loud.
     match raw.set_read_timeout(Some(Duration::from_secs(2))) {
         Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(e) if cfg!(target_os = "macos") && e.kind() == std::io::ErrorKind::InvalidInput => {}
         Err(e) => panic!("a read bound on the foreign peer's socket: {e}"),
     }
     let _ = raw.write_all(b"{\"v\":3,\"id\":1,\"kind\":\"req\",\"op\":\"row.hello\",\"payload\":{\"build\":\"t\",\"row\":1}}\n");
