@@ -94,7 +94,7 @@ of each.
    in `layer.rs` (`comm-status-working.sh`, `sot-selection-hook.sh` (also on UserPromptSubmit: it reads its whole input first, as the host writes the prompt to it and a long prompt would otherwise meet a closed pipe, then prints the file `SOT_SELECTION_FILE` names when that is set and names a readable regular file, and otherwise nothing, always exiting 0; tested under bash 3.2 and bash 5 on Linux and macOS, and by reading, not running, under Git Bash; its command is `[ -f '<path>' ] || exec cat > /dev/null 2>&1; '<path>'`, so a comm folder an older release's install pruned of the script is a silent no-op that reads its whole input too, not an error row on every prompt; it is this folder's script, and the installer lays it flat in the comm folder's `bin/` with the others), `comm-status-blocked.sh`, `comm-status-heartbeat.sh` and, on the SessionStart
    sources `clear` and `compact`, the session-start hook script (messaging's), which runs the comm session start read-only
    (`--again`: it joins and writes nothing, so the row's work-state is kept) so a session that lost its context is told
-   its handle, its handoff file and its unread mail, and stands down on `SOT_COMM_HOOKS=off`; from the comm folder's
+   its handle, its handoff file and any question its row kept, and stands down on `SOT_COMM_HOOKS=off`; from the comm folder's
    `bin/`, by quoted absolute path; a leg's first start and a leg started with `--resume <id>` run the start through the
    bootstrap prompt; `/resume` typed in a live row is the `resume` source, which the recipe does not carry the hook for
    and no test covers), into the one `--settings` JSON beside the auto-memory key. A layer folder that is
