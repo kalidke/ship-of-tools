@@ -105,7 +105,7 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let head = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
     // The call refuses a length below the whole structure, which a one-unit name does not fill.
-    let len = (head + wide.len() * 2).max(size_of::<FILE_RENAME_INFO>());
+    let len = head + wide.len() * 2;
     let mut buf = vec![0u64; len.div_ceil(8)];
     let info = buf.as_mut_ptr() as *mut FILE_RENAME_INFO;
     unsafe {
