@@ -986,3 +986,7 @@ A landing's record goes here, with its measured times; the package page holds on
   paints each row's span (about 5 s for random strokes, 13 s at worst) and a test counts the pixels visited. The stroke cap
   was deleted (the point bound holds it), and the contract states that a daemon built before this field reads a drawing with
   no selection as a clear.
+- The conversation that held the nine landings above from the bash 3.2 run on (id 1f0479d4-c997-4b82-9118-7acfff5c4dc3, 12:17
+  to about 17:10, moved to another account at 14:37 on the maintainer's word) ends here. Besides the landings it took the
+  maintainer's answer on drawing (the requirement and its decisions are in), found that the local gate never runs its own
+  suites, and found that a review's list of deletions is a claim to check: two such deletions were load-bearing.
