@@ -257,11 +257,8 @@ pub fn ensure_started(
             // back EndedNoRespawn still retires and resets, never
             // silently "succeeds" on a stale snapshot mid-transition.
             LockedStep::WaitForSettle => {
-                // Test-only: one marker per reprobe cycle, so a test
-                // can wait for (or count) this loop's own progress
-                // instead of guessing a sleep duration. No-op unless
-                // `SOT_TEST_ACTIVATION_BARRIER` is set.
-                crate::rows::ops::pty::record_test_activation_marker("waitforsettle");
+                // A test counts this loop's cycles here instead of guessing a sleep.
+                sot_platform::hold_point!("rows.activation.wait_for_settle", workspace_id);
                 reprobes += 1;
                 if reprobes > ACTIVATION_MAX_REPROBES {
                     // The budget is spent and the row is still unsettled: a failed activation, as at the

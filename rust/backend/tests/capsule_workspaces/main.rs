@@ -293,9 +293,3 @@ fn count_log_occurrences(log_path: &Path, needle: &str) -> usize {
     std::fs::read_to_string(log_path).map(|s| s.matches(needle).count()).unwrap_or(0)
 }
 
-/// Count of marker files under `dir` (R4f arrival/completion count). Missing
-/// dir reads as zero, not an error.
-#[cfg(target_os = "linux")]
-fn count_dir_entries(dir: &Path) -> usize {
-    std::fs::read_dir(dir).map(|entries| entries.filter_map(|e| e.ok()).count()).unwrap_or(0)
-}

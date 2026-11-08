@@ -682,9 +682,9 @@ mod capsule_pty_open_answers_before_activation {
 
         let env = Env::new("swlat-capsule-order");
         env.seed_capsule_toml("ws-preseeded-order", "order", &env.workspace_project_root, "none");
-        // The background activation task blocks until this file exists.
-        let barrier = env._tmp.path().join("activation-barrier");
-        env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+        // The background activation task is held at its start until released.
+        let start = env.holds.arm("rows.activation.start").hold(1);
+        env.spawn_sotd();
         let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
         let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -704,14 +704,14 @@ mod capsule_pty_open_answers_before_activation {
         let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
         assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-        // Barrier still absent — the activation is provably still blocked.
-        assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
+        // The activation is provably held at its start.
+        start.reached_async(0).await;
         assert!(
             own_capsule_pids(&state_dir).is_empty(),
             "the reply must arrive while the activation is still held, before any lane traffic is possible"
         );
 
-        std::fs::write(&barrier, b"go").expect("release the activation barrier");
+        start.release(0);
 
         let deadline = Instant::now() + SUPPORT_BOUND;
         loop {

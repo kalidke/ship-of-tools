@@ -196,10 +196,9 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         &project_root,
         "none",
     );
-    // Real test-only barrier: activation blocks until this file exists,
-    // turning the "reply before state dir exists" race into a certainty.
-    let barrier = env._tmp.path().join("car-activation-barrier");
-    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+    // The activation is held at its start until released, turning the "reply before state dir exists" race into a certainty.
+    let start = env.holds.arm("rows.activation.start").hold(1);
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let list_payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -244,17 +243,14 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
         Some(expected_state_dir.as_str()),
         "pty.open's attach_direct state_dir should be this row's own capsule state dir"
     );
-    assert!(
-        !barrier.exists(),
-        "test bug: the barrier must not have been released yet"
-    );
+    start.reached_async(0).await;
     assert!(
         !state_dir_path.is_dir(),
         "the reply must arrive while the activation is still held, before it has had any chance \
          to create the state dir"
     );
 
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    start.release(0);
 
     // Appears once released -- proof of a real spawn, not a stale path.
     let dir_deadline = Instant::now() + BOUND;
