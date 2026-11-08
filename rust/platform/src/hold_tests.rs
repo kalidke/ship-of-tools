@@ -322,8 +322,8 @@ fn an_async_point_through_a_dropped_runtimes_handle_fails_the_arm_by_name() {
 
 // The folder half: child processes started with the folder's variable. A child is this test binary rerun on
 // `a_child_that_arrives` (a no-op in an ordinary run), which arrives at a point `SOT_HOLD_CHILD_ARRIVALS` times, each
-// after the first when `next` appears, and records every arrival that went on as `pass.<pid>.<n>`: `go` if a release
-// (or the arm's drop) had been written by then, `no-go` if not.
+// after the first when `next` appears, and records every arrival that went on as `pass.<pid>.<n>`, written whole by
+// rename: `go` if a release (or the arm's drop) had been written by then, `no-go` if not.
 
 const CHILD_BODY: &str = "test_hold::tests::a_child_that_arrives";
 
@@ -353,7 +353,11 @@ fn a_child_that_arrives() {
             let name = e.file_name().to_string_lossy().into_owned();
             name.ends_with(".go") || name.ends_with(".all")
         });
-        std::fs::write(out.join(format!("pass.{}.{round}", std::process::id())), if released { "go" } else { "no-go" }).unwrap();
+        // Whole or absent: written under a name no reader looks for, then renamed into place.
+        let name = format!("pass.{}.{round}", std::process::id());
+        let part = out.join(format!("{name}.part"));
+        std::fs::write(&part, if released { "go" } else { "no-go" }).unwrap();
+        std::fs::rename(&part, out.join(name)).unwrap();
     }
 }
 

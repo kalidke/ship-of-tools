@@ -91,7 +91,9 @@ fn owned_child_body() {
     enter(CHILD_BODY);
     let root = std::path::PathBuf::from(root);
     assert!(root.is_absolute());
-    std::fs::write(root.join("ready"), std::process::id().to_string()).unwrap();
+    // Whole or absent: written under a name the parent does not poll, then renamed into place.
+    std::fs::write(root.join("ready.part"), std::process::id().to_string()).unwrap();
+    std::fs::rename(root.join("ready.part"), root.join("ready")).unwrap();
     // A fixture failure cannot leave this child indefinitely alive.
     std::thread::sleep(Duration::from_secs(8));
 }
