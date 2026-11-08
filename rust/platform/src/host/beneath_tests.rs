@@ -231,31 +231,31 @@ fn a_link_at_the_final_name_is_replaced_not_followed() {
     for kind in ["symlink", "hard link", "folder link", "directory symlink"] {
         let (_g, root, outside) = setup();
         let target = outside.join("keep.txt");
-        std::fs::write(&target, b"original").unwrap();
+        std::fs::write(&target, b"original").unwrap_or_else(|e| panic!("{kind}: {e}"));
         match kind {
             "symlink" => {
                 if !link_file(&target, &root.join("f.txt")) {
                     continue;
                 }
             }
-            "hard link" => std::fs::hard_link(&target, root.join("f.txt")).unwrap(),
-            "folder link" => link_dir(&outside, &root.join("f.txt")).unwrap(),
+            "hard link" => std::fs::hard_link(&target, root.join("f.txt")).unwrap_or_else(|e| panic!("{kind}: {e}")),
+            "folder link" => link_dir(&outside, &root.join("f.txt")).unwrap_or_else(|e| panic!("{kind}: {e}")),
             _ => {
                 #[cfg(unix)]
-                symlink(&outside, root.join("f.txt")).unwrap();
+                symlink(&outside, root.join("f.txt")).unwrap_or_else(|e| panic!("{kind}: {e}"));
                 #[cfg(windows)]
                 if !made(std::os::windows::fs::symlink_dir(&outside, root.join("f.txt"))) {
                     continue;
                 }
             }
         }
-        write_beneath(&root, "f.txt", b"data").unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"original", "{kind}");
+        write_beneath(&root, "f.txt", b"data").unwrap_or_else(|e| panic!("{kind}: {e}"));
+        assert_eq!(std::fs::read(&target).unwrap_or_else(|e| panic!("{kind}: {e}")), b"original", "{kind}");
         assert_eq!(entries(&outside), ["keep.txt"], "{kind}");
         assert_eq!(entries(&root), ["f.txt"], "{kind}");
-        let meta = std::fs::symlink_metadata(root.join("f.txt")).unwrap();
+        let meta = std::fs::symlink_metadata(root.join("f.txt")).unwrap_or_else(|e| panic!("{kind}: {e}"));
         assert!(meta.is_file(), "{kind}");
-        assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"data", "{kind}");
+        assert_eq!(std::fs::read(root.join("f.txt")).unwrap_or_else(|e| panic!("{kind}: {e}")), b"data", "{kind}");
     }
 }
 
