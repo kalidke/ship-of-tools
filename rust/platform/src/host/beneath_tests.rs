@@ -18,10 +18,6 @@ fn entries(dir: &Path) -> Vec<String> {
     v
 }
 
-fn kind_of(r: io::Result<PathBuf>) -> io::ErrorKind {
-    r.unwrap_err().kind()
-}
-
 fn kind(r: io::Result<PathBuf>) -> io::ErrorKind {
     r.unwrap_err().kind()
 }
@@ -53,19 +49,25 @@ fn a_link_at_any_folder_takes_no_write() {
 }
 
 #[test]
-fn the_root_is_refused_when_its_entry_is_a_link() {
+fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_in_normal_form() {
     let (_g, root, outside) = setup();
     let link = root.parent().unwrap().join("link");
     symlink(&outside, &link).unwrap();
-    assert_eq!(kind(write_beneath(&link, "f.txt", b"data")), io::ErrorKind::InvalidInput);
-    assert!(entries(&outside).is_empty());
+    let l = link.to_str().unwrap();
+    for spelled in [l.to_string(), format!("{l}/"), format!("{l}/."), format!("{l}//"), "relative".to_string()] {
+        let got = write_beneath(Path::new(&spelled), "f.txt", b"data");
+        assert_eq!(kind(got), io::ErrorKind::InvalidInput, "{spelled}");
+        assert!(entries(&outside).is_empty(), "{spelled}");
+    }
 }
 
 #[test]
 fn a_name_that_is_not_one_plain_entry_is_refused() {
     for rel in ["..", ".", "", "/x", "a//b", "a/", "a/../b", "a\0b"] {
         let (_g, root, outside) = setup();
-        assert_eq!(kind(write_beneath(&root, rel, b"data")), io::ErrorKind::InvalidInput, "{rel:?}");
+        // Under a root that does not exist, only the rule answers InvalidInput; any call would answer NotFound.
+        let missing = root.join("missing");
+        assert_eq!(kind(write_beneath(&missing, rel, b"data")), io::ErrorKind::InvalidInput, "{rel:?}");
         assert!(entries(&root).is_empty(), "{rel:?}");
         assert!(entries(&outside).is_empty(), "{rel:?}");
     }
@@ -77,21 +79,21 @@ fn a_planted_temporary_name_is_never_written_through() {
     let target = outside.join("keep.txt");
     std::fs::write(&target, b"original").unwrap();
     let temp = ".sot-fixed.tmp";
-    let plant = |kind: &str| {
+    let plant = |what: &str| {
         let _ = std::fs::remove_file(root.join(temp));
-        match kind {
+        match what {
             "symlink" => symlink(&target, root.join(temp)).unwrap(),
             "dangling" => symlink(outside.join("made.txt"), root.join(temp)).unwrap(),
             _ => std::fs::hard_link(&target, root.join(temp)).unwrap(),
         }
     };
-    for kind in ["symlink", "dangling", "hard link"] {
-        plant(kind);
+    for what in ["symlink", "dangling", "hard link"] {
+        plant(what);
         let got = write_beneath_at(&root, "f.txt", b"data", Some(temp), |_| Ok(()));
-        assert_eq!(kind_of(got), io::ErrorKind::AlreadyExists, "{kind}");
-        assert_eq!(std::fs::read(&target).unwrap(), b"original", "{kind}");
-        assert!(!outside.join("made.txt").exists(), "{kind}");
-        assert!(!root.join("f.txt").exists(), "{kind}");
+        assert_eq!(kind(got), io::ErrorKind::AlreadyExists, "{what}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"original", "{what}");
+        assert!(!outside.join("made.txt").exists(), "{what}");
+        assert!(!root.join("f.txt").exists(), "{what}");
     }
 }
 
@@ -137,4 +139,42 @@ fn missing_folders_are_created_and_the_path_is_returned() {
     assert_eq!(got, root.join("a/b/f.txt"));
     assert_eq!(std::fs::read(&got).unwrap(), b"data");
     assert_eq!(entries(&root.join("a/b")), ["f.txt"]);
+}
+
+#[test]
+fn a_temporary_file_replaced_before_the_rename_is_an_error_and_writes_nothing_outside() {
+    let (_g, root, outside) = setup();
+    let target = outside.join("keep.txt");
+    std::fs::write(&target, b"original").unwrap();
+    let temp = ".sot-fixed.tmp";
+    let got = write_beneath_at(&root, "f.txt", b"data", Some(temp), |s| {
+        if s == Step::Written {
+            std::fs::remove_file(root.join(temp)).unwrap();
+            symlink(&target, root.join(temp)).unwrap();
+        }
+        Ok(())
+    });
+    assert!(got.unwrap_err().to_string().contains("not the entry at its name"));
+    assert_eq!(std::fs::read(&target).unwrap(), b"original");
+}
+
+#[test]
+fn each_write_creates_its_temporary_file_under_a_fresh_name() {
+    let (_g, root, _outside) = setup();
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        write_beneath_at(&root, "f.txt", b"data", None, |s| {
+            if s == Step::Temp {
+                seen.extend(entries(&root).into_iter().filter(|n| n.starts_with(".sot-")));
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert_eq!(seen.len(), 2);
+    assert_ne!(seen[0], seen[1]);
+    for n in &seen {
+        let hex = n.strip_prefix(".sot-").and_then(|n| n.strip_suffix(".tmp")).unwrap();
+        assert!(hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{n}");
+    }
 }
