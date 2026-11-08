@@ -60,7 +60,14 @@ fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical() {
     symlink(base.join("far").join("deep"), base.join("l2")).unwrap();
     let l2 = base.join("l2");
     let l2 = l2.to_str().unwrap();
+    let lb = base.join("lb");
+    symlink(base, &lb).unwrap();
+    let r = root.to_str().unwrap();
     let spellings = [
+        format!("{r}/"),
+        format!("{r}//"),
+        format!("{r}/."),
+        format!("{}/root", lb.display()),
         l.to_string(),
         format!("{l}/"),
         format!("{l}/."),
@@ -74,6 +81,24 @@ fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical() {
         assert_eq!(kind(got), io::ErrorKind::InvalidInput, "{spelled}");
         assert!(entries(&outside).is_empty(), "{spelled}");
         assert!(entries(&deep).is_empty(), "{spelled}");
+        assert!(entries(&root).is_empty(), "{spelled}");
+    }
+}
+
+#[test]
+fn a_root_that_does_not_resolve_answers_by_what_is_wrong() {
+    let (_g, root, _outside) = setup();
+    let base = root.parent().unwrap();
+    symlink(base.join("nothing"), base.join("dangling")).unwrap();
+    symlink(base.join("selfloop"), base.join("selfloop")).unwrap();
+    std::fs::write(base.join("file"), b"x").unwrap();
+    for (what, want) in [
+        ("missing", io::ErrorKind::NotFound),
+        ("dangling", io::ErrorKind::NotFound),
+        ("selfloop", io::ErrorKind::InvalidInput),
+        ("file/under", io::ErrorKind::InvalidInput),
+    ] {
+        assert_eq!(kind(write_beneath(&base.join(what), "f.txt", b"data")), want, "{what}");
     }
 }
 
