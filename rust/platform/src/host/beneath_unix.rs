@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use libc::c_int;
 
-use super::{invalid, plain_names, temp_name, Step};
+use super::{absolute_root, invalid, plain_names, temp_name, Step};
 
 const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
@@ -27,9 +27,10 @@ pub(super) fn write_beneath_at(
         .map(|n| CString::new(n).map_err(|_| invalid(format!("{n:?} is not one plain name"))))
         .collect::<io::Result<Vec<_>>>()?;
     let last = names.pop().expect("plain_names returns at least one name");
+    absolute_root(root)?;
     let croot = CString::new(root.as_os_str().as_bytes()).map_err(|_| invalid(format!("{root:?} holds a NUL")))?;
     // A root that is its own canonical path has no link on its way.
-    if !root.is_absolute() || std::fs::canonicalize(root).map_err(|e| folder_error(e, "the root"))?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
+    if std::fs::canonicalize(root).map_err(|e| folder_error(e, "the root"))?.as_os_str().as_bytes() != root.as_os_str().as_bytes() {
         return Err(invalid(format!("{root:?} is not its own canonical path")));
     }
     let ctemp = CString::new(temp_name(temp)?).map_err(|_| invalid("the temporary name holds a NUL".into()))?;
