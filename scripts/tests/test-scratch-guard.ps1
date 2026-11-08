@@ -103,19 +103,23 @@ $ErrorActionPreference = 'Stop'
 $sotSuite = $PSCommandPath; $sotSuiteArgs = $PSBoundParameters
 . 'GUARDPATH'
 if ($null -ne $sotScratchExit) { exit $sotScratchExit }
-Add-Content -LiteralPath $OutFile -Value "RAN"
+$out = @('RAN')
 foreach ($n in @('USERNAME', 'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SOT_COMM_HOME', 'SOT_PROBE_VAR', 'SOT_SMOKE_X', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'JULIA_DEPOT_PATH')) {
-    Add-Content -LiteralPath $OutFile -Value ("$n=" + [Environment]::GetEnvironmentVariable($n))
+    $out += ("$n=" + [Environment]::GetEnvironmentVariable($n))
 }
-Add-Content -LiteralPath $OutFile -Value ("RealProfile=" + (Get-SotRealProfile).Profile)
-Add-Content -LiteralPath $OutFile -Value ("FolderPathLocal=" + [Environment]::GetFolderPath('LocalApplicationData'))
-Add-Content -LiteralPath $OutFile -Value ("Cwd=" + (Get-Location -PSProvider FileSystem).ProviderPath)
+$out += ("RealProfile=" + (Get-SotRealProfile).Profile)
+$out += ("FolderPathLocal=" + [Environment]::GetFolderPath('LocalApplicationData'))
+$out += ("Cwd=" + (Get-Location -PSProvider FileSystem).ProviderPath)
 $rel = $false
 if ($Name) { $rel = Test-Path -LiteralPath $Name }   # Test-Path throws on an empty path, which ended the probes that name none
-Add-Content -LiteralPath $OutFile -Value ("RelExists=" + $rel)
-Add-Content -LiteralPath $OutFile -Value "Name=$Name"
-Add-Content -LiteralPath $OutFile -Value "Flag=$($Flag.IsPresent)"
+$out += ("RelExists=" + $rel)
+$out += "Name=$Name"
+$out += "Flag=$($Flag.IsPresent)"
 Set-Content -LiteralPath (Join-Path $env:TEMP 'made-by-probe.txt') -Value 'x'
+# OutFile appears once, whole, by a rename, after the file above, and is never written again: the test reads it while a
+# run sleeps, and an Add-Content beside a read in progress fails (it opens with FileShare.Write), which ended a probe.
+[System.IO.File]::WriteAllLines("$OutFile.part", [string[]]$out, [System.Text.Encoding]::Default)
+[System.IO.File]::Move("$OutFile.part", $OutFile)
 if ($SleepSec -gt 0) { Start-Sleep -Seconds $SleepSec }
 exit 7
 '@
@@ -185,7 +189,7 @@ exit 7
     Check 'the one that ended removed its own home' ($shortHome -and -not (Test-Path -LiteralPath $shortHome)) "still there: $shortHome"
     Check 'and left the other''s home, and what that run made in it' ($longHome -and (Test-Path -LiteralPath (Join-Path $longHome 'tmp\made-by-probe.txt')) -and -not $long.Proc.HasExited) "long home $longHome; long exited: $($long.Proc.HasExited); exit $(if ($long.Proc.HasExited) { $long.Proc.ExitCode })"
     $long.Proc.WaitForExit()
-    Check 'the other removed its own at its end' ($longHome -and $long.Proc.ExitCode -eq 7 -and -not (Test-Path -LiteralPath $longHome)) "exit $($long.Proc.ExitCode); still there: $longHome"
+    Check 'the other removed its own at its end' ($longHome -and $long.Proc.ExitCode -eq 7 -and -not (Test-Path -LiteralPath $longHome)) "exit $($long.Proc.ExitCode); home left: $(if ($longHome) { Test-Path -LiteralPath $longHome }); stderr: $($long.Proc.StandardError.ReadToEnd())"
 
     # A suite run in-process from a scope where $sotScratchLibOnly is $true is still guarded, and the child starts in the
     # caller's location (Set-Location does not move the process's own folder), so a relative argument resolves there.
@@ -219,11 +223,14 @@ $pipe = Get-PipePath (New-TestPipeName)
 $p = Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-Command', ('"Start-Sleep -Seconds 120 # --socket ' + $pipe + '"')) -WindowStyle Hidden -PassThru
 $deadline = (Get-Date).AddSeconds(30)
 while ((Get-Date) -lt $deadline -and @(Get-DaemonProcs $pipe).Count -ne 1) { Start-Sleep -Milliseconds 300 }
-Add-Content -LiteralPath $OutFile -Value "DaemonPid=$($p.Id)"
+# Whole, by a rename, as the probe above writes its file: the test polls for this line.
+[System.IO.File]::WriteAllLines("$OutFile.part", [string[]]@("DaemonPid=$($p.Id)"), [System.Text.Encoding]::Default)
+[System.IO.File]::Move("$OutFile.part", $OutFile)
 if ($SleepSec -gt 0) { Start-Sleep -Seconds $SleepSec }
 Complete-LocalDaemonTest
 Start-Sleep -Milliseconds 1500
-Add-Content -LiteralPath $OutFile -Value ("Alive=" + [bool](Get-Process -Id $p.Id -ErrorAction SilentlyContinue))
+# AppendAllText opens with FileShare.Read, so a read of the test's in progress cannot make this append fail.
+[System.IO.File]::AppendAllText($OutFile, ("Alive=" + [bool](Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) + "`r`n", [System.Text.Encoding]::Default)
 exit 7
 '@
     [System.IO.File]::WriteAllText($dprobe, $dtext.Replace('GUARDPATH', $guard.Replace("'", "''")).Replace('SUPPORTPATH', (Join-Path $PSScriptRoot 'test-local-daemon-support.ps1').Replace("'", "''")))

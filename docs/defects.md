@@ -639,6 +639,10 @@ owned by `docs/CLAUDE.md`.
   gone once the next run starts. Seen 2026-11-07: a run failed the sotd unit tests' first part (`sotd__sotd-c-1`, exit
   101) once, the runs before and after it were clean, and the next run had deleted its log, so the failing test is
   unknown. Fix: keep each run's summary and every failed job's log under a folder named by the commit.
+- **SCRATCH-GUARD-RMDIR-STOP** [note] The scratch guard's run removal (`scripts/tests/scratch-guard.ps1`) is
+  `cmd /c rmdir ... 2>&1 | Out-Null`; under a suite's `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns a native
+  command's stderr into a terminating error (`scripts/tests/test-native-stderr.ps1`), so if rmdir printed anything the
+  parent would end with exit 1. Found reading code in the scratch guard diagnosis; never seen.
 
 ## chat
 
@@ -701,6 +705,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SCRATCH-GUARD-PROBE-SHARE** (distribution) closed by the landing that fixes it, 2026-11-08: in a hosted Windows run on main the scratch guard test's concurrent run ended with exit 1 before its sleep; its probe wrote the file the test polls with one `Add-Content` per line, which opens with `FileShare.Write`, so a poll read in progress fails the append, and nothing else in the probe is shared with another process. Each probe now renames a whole file into place after what the test checks beside it, the daemon probe's later line is appended with sharing for readers, and the failure detail carries the run's stderr.
 - **WIN-SAVE-HELD-OPEN** (platform) closed by 2658a328d and 4ec7bced6, 2026-11-08: on Windows the write beneath a root renamed with the classic replace alone, so a save of a file another program held open with delete sharing failed where `std::fs::rename` saved it; the rename now falls back to a POSIX-semantics replace by the same handle when the classic one answers access denied, and a link at the final name, to a file or a folder, is replaced on every system.
 - **CHAT-WATCH-STALE-SLOT** (chat) closed by 585800d2f, 2026-11-07: a chat watch dispatch test failed on macOS in 2 of 6 hosted runs ("timed out waiting for the stale slot released by the owner") because the owner's snapshot could check the row before the test removed it; the snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.
 - **BENEATH-SUPERSEDED-WRITER-ERRS** (platform) closed by d79396550, 2026-11-07: the write beneath a root no longer checks the final name after its rename, so two writers of one name each answer Ok; Ok means the entry at the temporary name was renamed into place.
