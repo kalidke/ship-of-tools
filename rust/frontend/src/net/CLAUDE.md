@@ -82,6 +82,12 @@ through the channel types below.
   not order posts (the composer sends the next after the last one's reply), does not resync after `bus.lost` or a
   `chat.status`, and does not pace resyncs; a watch, history or resolve in flight when a connection ends gets no event.
   Those belong to the chat's view owner, which does not exist yet; `ui/events.rs` drops `IncomingEvt::Chat`.
+- The row's selection is one typed edge, `OutgoingReq::SelectionSet { req }` (a text selection, a drawing or a clear) and
+  `IncomingEvt::Selection { workspace_id, reply }` (transport/ops/selection.rs). The reply names the row its request named and is
+  `Done(state)`, `Unsupported` (an older daemon's exact unknown-op answer), or `Refused { code, error }` (also an answer that does
+  not parse). It is replayable: a selection is state, so one still waiting when a connection ends is written on the next
+  (`a_selection_set_is_replayed_after_a_reconnect_with_what_it_carried`); fe-net does not re-send one that was answered, which is
+  the window's selection share's. Test `a_selection_reply_is_one_typed_event`; `ui/events.rs` drops the event until that owner exists.
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
   the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`). That is every
@@ -110,7 +116,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
-`page.reply`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
+`page.reply`, `selection.set`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

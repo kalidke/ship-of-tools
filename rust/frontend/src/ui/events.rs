@@ -184,7 +184,7 @@ impl State {
                     tracing::warn!(%bus, skipped, "daemon bus lost events on this connection");
                 }
                 // The chat's first view owner reads these; until then the typed event is dropped.
-                crate::net::transport::IncomingEvt::Chat(_) => {}
+                crate::net::transport::IncomingEvt::Chat(_) | crate::net::transport::IncomingEvt::Selection { .. } => {}
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,

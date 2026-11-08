@@ -347,6 +347,9 @@ pub enum OutgoingReq {
     /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
     /// owner sends the next only after the last one's reply.
     ChatPost { req: sot_protocol::ops::ChatPostReq },
+    /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Replayable: it is state, so one
+    /// still waiting after a connection ends is written on the next. Reply surfaces as `IncomingEvt::Selection`.
+    SelectionSet { req: sot_protocol::ops::SelectionSetReq },
     /// Render a Quarto/markdown doc on the backend and open it in the OS
     /// browser. `execute = false` (`o`) = fast no-execute render; `execute =
     /// true` (`O`) runs code chunks. Response surfaces as
@@ -463,6 +466,7 @@ impl OutgoingReq {
             | OutgoingReq::VideoOpen { .. }
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
+            | OutgoingReq::SelectionSet { .. }
             | OutgoingReq::ChatResolve { .. }
             | OutgoingReq::ChatWatch { .. }
             | OutgoingReq::ChatUnwatch { .. }
@@ -525,6 +529,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::VideoOpen { path } => send_video_open(&mut tx, pending, id, path).await?,
         OutgoingReq::DocsOpen { path, direct } => send_docs_open(&mut tx, pending, id, path, direct).await?,
         OutgoingReq::PageReply { workspace_id, handle, line } => send_page_reply(&mut tx, pending, id, workspace_id, handle, line).await?,
+        OutgoingReq::SelectionSet { req } => send_selection_set(&mut tx, pending, id, req).await?,
         OutgoingReq::ChatResolve { row } => {
             let kind = PendingKind::ChatResolve { row: row.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_RESOLVE, sot_protocol::ops::ChatResolveReq { row }, Some(kind)).await?
