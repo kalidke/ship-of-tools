@@ -283,7 +283,14 @@ pub(crate) fn spawn_detached_supervisor(
     };
     // The environment: the daemon's own, minus the nesting variables, plus the row's.
     let env = || leg_env(std::env::vars_os().collect(), &supervisor_env, &account_env_extra);
-    spawn_detached(line, env, state_dir, cwd, workspace_id)
+    let spawn = spawn_detached(line, env, state_dir, cwd, workspace_id)?;
+    // A contended launch started nothing: the live supervisor's leg keeps the marker it was started with.
+    if matches!(spawn, Spawn::Started(_)) {
+        if let Err(e) = crate::agents::selection::write_marker(state_dir, agent_kind, &supervisor_env, agent_argv) {
+            tracing::warn!(workspace_id, error = %e, "the selection marker was not written; a selection is answered held");
+        }
+    }
+    Ok(spawn)
 }
 
 /// A leg's environment: the daemon's own with the nesting variables removed first, then the row's pairs, then the

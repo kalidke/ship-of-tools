@@ -26,6 +26,22 @@ pub(crate) const FILE_NAME: &str = "selection.json";
 /// The marker's name in the row's state folder: present when the row's current agent was started with the hook.
 const MARKER_NAME: &str = "selection-hook";
 
+/// Records, in the row's state folder, whether the leg just started hears a selection: the marker exists when the row's
+/// agent is Claude, the leg carries `SOT_SELECTION_FILE` in `env`, and its `argv` carries the selection hook; it is
+/// removed otherwise. Codex legs have none until the Codex wiring is built.
+pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, String)], argv: &[String]) -> std::io::Result<()> {
+    let marker = state_dir.join(MARKER_NAME);
+    let hears = agent_kind == "claude"
+        && env.iter().any(|(k, _)| k == "SOT_SELECTION_FILE")
+        && super::layer::carries_selection_hook(argv);
+    if !hears {
+        return sot_platform::host::remove_durable(&marker);
+    }
+    // the supervisor makes the folder too; this is only for a write that wins the race to it
+    std::fs::create_dir_all(state_dir)?;
+    sot_platform::host::write_durable(&marker, b"")
+}
+
 /// The agent kinds that take a selection; every other kind answers `no_agent`. `codex` is here until the plan's H2
 /// decides whether Codex hears one at all.
 const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];

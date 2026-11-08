@@ -427,6 +427,9 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
         assert!(group["hooks"][0]["command"].as_str().unwrap().contains("comm-session-start-hook.sh"), "{json}");
     }
     assert_eq!(argv.last().map(String::as_str), Some("/sot-session-start"));
+    // The selection hook rides the leg, and only a leg with the layer: the marker is written from this reading.
+    assert!(layer::carries_selection_hook(&argv), "{argv:?}");
+    assert!(!layer::carries_selection_hook(&claude_recipe(&[], None, None)), "a plain claude has none");
     // A caller's own `--settings` stays the one, with its own keys, and gains the hooks (the next test); the skills load.
     let caller = claude_recipe(&["--settings".to_string(), "{\"a\":1}".to_string()], None, Some(comm.path()));
     assert_eq!(caller[1], format!("--add-dir={}", layer.display()), "{caller:?}");
@@ -435,6 +438,7 @@ fn the_layer_rides_the_recipe_and_a_plain_claude_has_none() {
     let json: serde_json::Value = serde_json::from_str(&caller[at + 1]).unwrap();
     assert_eq!(json["a"], 1, "{json}");
     assert_eq!(json["hooks"].as_object().unwrap().len(), 4, "{json}");
+    assert!(layer::carries_selection_hook(&caller), "the merge keeps the selection hook: {caller:?}");
 }
 
 /// A caller's own `--settings` JSON keeps its own keys and gains the recipe's hooks beside its own: per event the
@@ -464,9 +468,9 @@ fn a_callers_settings_json_is_merged_with_the_recipes_hooks() {
         assert_eq!(post.len(), 2, "{json}");
         assert_eq!(post[0]["hooks"][0]["command"], "mine", "{json}");
         assert!(post[1]["hooks"][0]["command"].as_str().unwrap().contains("heartbeat"), "{json}");
-        for event in ["UserPromptSubmit", "PreToolUse"] {
-            assert_eq!(json["hooks"][event].as_array().unwrap().len(), 1, "{event}: {json}");
-        }
+        assert_eq!(json["hooks"]["PreToolUse"].as_array().unwrap().len(), 1, "{json}");
+        // the work-state hook and the selection hook
+        assert_eq!(json["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 2, "{json}");
     }
     let path = claude_recipe(&["--settings".to_string(), "/some/file.json".to_string()], None, Some(comm.path()));
     assert!(!path.iter().any(|a| a.contains("\"hooks\"")), "{path:?}");
@@ -491,9 +495,8 @@ fn a_recipe_hook_the_caller_already_has_is_not_added_twice() {
     let at = argv.iter().position(|a| a == "--settings").unwrap();
     let json: serde_json::Value = serde_json::from_str(&argv[at + 1]).unwrap();
     assert_eq!(json["hooks"]["PostToolUse"].as_array().unwrap().len(), 1, "{json}");
-    for event in ["UserPromptSubmit", "PreToolUse"] {
-        assert_eq!(json["hooks"][event].as_array().unwrap().len(), 1, "{event}: {json}");
-    }
+    assert_eq!(json["hooks"]["PreToolUse"].as_array().unwrap().len(), 1, "{json}");
+    assert_eq!(json["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 2, "the work-state hook and the selection hook: {json}");
 }
 
 /// The shape rule: a caller's `--settings` is merged into only when it is a JSON object whose `hooks`, if it has any,

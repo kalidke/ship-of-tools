@@ -32,8 +32,28 @@ fn the_hooks_table_is_the_work_state_hooks_and_not_messagings_protections() {
             ("PostToolUse", "comm-status-heartbeat.sh", None),
             ("SessionStart", "comm-session-start-hook.sh", Some("clear")),
             ("SessionStart", "comm-session-start-hook.sh", Some("compact")),
+            ("UserPromptSubmit", "sot-selection-hook.sh", None),
         ]
     );
+}
+
+#[test]
+fn the_selection_hook_rides_the_recipe() {
+    let comm = tempfile::tempdir().unwrap();
+    skills_folder(comm.path());
+    // the recipe's own `--settings` value is `hooks_settings` (the argv test `the_layer_rides_the_recipe...` pins that)
+    let with = |settings: &str| vec!["claude".to_string(), "--settings".to_string(), settings.to_string()];
+    let ours = hooks_settings(comm.path());
+    assert!(carries_selection_hook(&with(&ours.to_string())), "a layered leg carries the selection hook: {ours}");
+    assert_eq!(ours["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 2, "it joins the work-state hook on the same event");
+    // the reader is exact: no flag, a settings value that is not JSON, a hook of another name, another event, `--settings=`
+    let hook = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'/c/bin/sot-selection-hook.sh'"}]}]}}"#;
+    assert!(carries_selection_hook(&with(hook)));
+    assert!(carries_selection_hook(&[format!("--settings={hook}")]));
+    assert!(!carries_selection_hook(&["claude".to_string()]), "no flag");
+    assert!(!carries_selection_hook(&with("/some/settings.json")), "a file path is not read");
+    assert!(!carries_selection_hook(&with(&hook.replace("sot-selection-hook", "other-hook"))), "another script");
+    assert!(!carries_selection_hook(&with(&hook.replace("UserPromptSubmit", "Stop"))), "another event");
 }
 
 #[test]

@@ -256,6 +256,54 @@ fn the_reply_says_who_will_hear() {
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: marker removed");
 }
 
+/// The marker the launch writes, read by the handler: a leg answers `shared` only when it carries the variable and (Claude)
+/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them.
+#[test]
+fn a_leg_without_the_hook_is_answered_held() {
+    let state = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let workspaces = Workspaces::new();
+    std::fs::write(project.path().join("a.txt"), "alpha\n").unwrap();
+    let folder = |id: &str| state_dir_for(state.path(), id);
+    let mut row = |id: &str, kind: &str| {
+        let mut ws = Workspace::from_label(id, project.path().to_path_buf(), false, kind.into(), String::new(), String::new());
+        ws.workspace_id = id.to_string();
+        workspaces.insert(ws);
+        std::fs::create_dir_all(folder(id)).unwrap();
+    };
+    let answer = |id: &str| {
+        let s = Some(sel("files:a.txt", (0, 0), (0, 5), "alpha"));
+        set_selection(Some(state.path()), &workspaces, true, 9_001_004, &req(id, s))
+    };
+    let var = vec![("SOT_SELECTION_FILE".to_string(), "/state/selection.json".to_string())];
+    let hooked = vec![
+        "claude".to_string(),
+        "--settings".to_string(),
+        r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"'/c/bin/sot-selection-hook.sh'"}]}]}}"#.to_string(),
+    ];
+    let plain = vec!["claude".to_string(), "--permission-mode".to_string(), "auto".to_string()];
+    let launch = |id: &str, kind: &str, env: &[(String, String)], argv: &[String]| write_marker(&folder(id), kind, env, argv).unwrap();
+    row("ws-mk-claude", "claude");
+    row("ws-mk-codex", "codex");
+
+    // 1. a Claude leg with the variable and the hook is answered shared
+    launch("ws-mk-claude", "claude", &var, &hooked);
+    assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Shared), "row 1: both");
+    // 2. a leg that lacks either is answered held, and a marker an earlier leg left is removed
+    launch("ws-mk-claude", "claude", &var, &plain);
+    assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no hook, the earlier marker removed");
+    launch("ws-mk-claude", "claude", &var, &hooked);
+    launch("ws-mk-claude", "claude", &[], &hooked);
+    assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no variable, the earlier marker removed");
+    // 3. a Codex leg has none, whatever its argv, until its wiring is built
+    launch("ws-mk-codex", "codex", &var, &hooked);
+    assert_eq!(answer("ws-mk-codex"), Ok(SelectionState::Held), "row 3: codex");
+    // 4. a folder the supervisor has not made yet is made for the marker
+    let fresh = folder("ws-mk-fresh").join("nested");
+    write_marker(&fresh, "claude", &var, &hooked).unwrap();
+    assert!(fresh.join(MARKER_NAME).is_file(), "row 4");
+}
+
 #[test]
 fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
     let state = tempfile::tempdir().unwrap();

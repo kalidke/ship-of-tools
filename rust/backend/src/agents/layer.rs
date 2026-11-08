@@ -17,7 +17,12 @@ pub(super) const HOOKS: &[(&str, &str, Option<&str>)] = &[
     ("PostToolUse", "comm-status-heartbeat.sh", None),
     ("SessionStart", "comm-session-start-hook.sh", Some("clear")),
     ("SessionStart", "comm-session-start-hook.sh", Some("compact")),
+    ("UserPromptSubmit", SELECTION_HOOK, None),
 ];
+
+/// The hook that prints the row's selection file ([`super::selection`]): on every prompt, the file `SOT_SELECTION_FILE`
+/// names, or nothing.
+pub(super) const SELECTION_HOOK: &str = "sot-selection-hook.sh";
 
 /// The skill the leg's prompt names: a layer without it cannot start the session.
 const BOOTSTRAP_SKILL: &str = "sot-session-start";
@@ -54,6 +59,21 @@ fn hook_command(comm_home: &Path, script: &str) -> String {
     let home = absolute_against_cwd(comm_home).to_string_lossy().replace('\\', "/");
     let path = format!("{}/bin/{script}", home.trim_end_matches('/'));
     format!("'{}'", path.replace('\'', r"'\''"))
+}
+
+/// Whether `argv` has a `--settings` (either spelling) whose JSON carries the selection hook on `UserPromptSubmit`; a
+/// value that is not a JSON object (a file path, say) is not read, so it carries none.
+pub(super) fn carries_selection_hook(argv: &[String]) -> bool {
+    let value = argv.iter().enumerate().find_map(|(i, a)| match a.strip_prefix("--settings") {
+        Some("") => argv.get(i + 1).map(String::as_str),
+        Some(rest) => rest.strip_prefix('='),
+        None => None,
+    });
+    let Some(Ok(settings)) = value.map(serde_json::from_str::<Value>) else {
+        return false;
+    };
+    let groups = settings.pointer("/hooks/UserPromptSubmit").and_then(Value::as_array).into_iter().flatten();
+    groups.flat_map(group_commands).any(|command| command.trim_end_matches('\'').ends_with(&format!("/{SELECTION_HOOK}")))
 }
 
 /// The `{"hooks": ...}` settings object for [`HOOKS`]: one group per entry, grouped by event in table order.
