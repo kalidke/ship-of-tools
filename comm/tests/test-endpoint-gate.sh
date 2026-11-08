@@ -483,7 +483,7 @@ check "no sotd --socket in another process's argv is ever an endpoint" case_an_a
 # a daemon socket (run, as its own binary) only when that binary is named sotd.
 case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     [ "$(uname -s)" = Linux ] && [ -r /proc/self/exe ] || { echo "  needs /proc"; return 2; }
-    local spy="$WORK/spy" fakebin fakehome pida pidb out rc=0 ran
+    local spy="$WORK/spy" fakebin fakehome STUB_SPY_PID STUB_SOTD_PID out rc=0 ran
     mkdir -p "$spy"
     spy="$(cd "$spy" && pwd -P)"
     cp "$(command -v bash)" "$spy/spybash"; cp "$(command -v bash)" "$spy/sotd"
@@ -491,20 +491,20 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     # Each stub's `sleep 30` is its child (`; :` keeps bash from exec'ing it, so the image stays the copy's), and a
     # kill of the stub alone left that sleep running 30 s past the suite: each stub leads a group, which end_group ends.
     set -m
-    "$spy/spybash" -c 'sleep 30; :' & pida=$!
-    "$spy/sotd" -c 'sleep 30; :' & pidb=$!
+    "$spy/spybash" -c 'sleep 30; :' & STUB_SPY_PID=$!
+    "$spy/sotd" -c 'sleep 30; :' & STUB_SOTD_PID=$!
     set +m
-    await exe_is "$pida" "$spy/spybash" && await exe_is "$pidb" "$spy/sotd" \
-        || { end_group "$pida"; end_group "$pidb"; echo "  the two stub children never ran"; return 1; }
+    await exe_is "$STUB_SPY_PID" "$spy/spybash" && await exe_is "$STUB_SOTD_PID" "$spy/sotd" \
+        || { end_group "$STUB_SPY_PID"; end_group "$STUB_SOTD_PID"; echo "  the two stub children never ran"; return 1; }
     fakebin="$(mktemp -d "$WORK/spy-fakebin-XXXXXX")"
     fakehome="$(mktemp -d "$WORK/spy-home-XXXXXX")"
-    printf '#!/bin/sh\necho "%s spybash sotd"\necho "%s sotd"\n' "$pida" "$pidb" > "$fakebin/pgrep"
+    printf '#!/bin/sh\necho "%s spybash sotd"\necho "%s sotd"\n' "$STUB_SPY_PID" "$STUB_SOTD_PID" > "$fakebin/pgrep"
     chmod +x "$fakebin/pgrep"
     out="$(
         cd "$spy" && unset SOT_SOCKET SOTD_BIN
         PATH="$fakebin:$PATH" HOME="$fakehome" sot_daemon_endpoint 2>/dev/null
     )" || rc=$?
-    end_group "$pida"; end_group "$pidb"
+    end_group "$STUB_SPY_PID"; end_group "$STUB_SOTD_PID"
     ran="$(cat "$spy/ran" 2>/dev/null)"
     [ "$rc" -ne 0 ] && [ -z "$out" ] || { echo "  rc $rc, endpoint '$out'"; return 1; }
     contains "$ran" "$spy/sotd" || { echo "  the sotd-named binary was never asked: '$ran'"; return 1; }
