@@ -10,6 +10,7 @@ fn batches() {
     assert_eq!(decide(&mail(3, 3), None, t0), Decision::Wake);
     // One batch, one wake: nothing fresh, not yet ten minutes.
     assert_eq!(decide(&mail(3, 0), Some(&w), t0), Decision::Hold);
+    assert_eq!(decide(&mail(3, 0), Some(&w), t0 + Duration::from_secs(599)), Decision::Hold);
     // A new line after the wake is a new batch.
     assert_eq!(decide(&mail(4, 1), Some(&w), t0), Decision::Wake);
     // Still unread ten minutes on: one repeat.
