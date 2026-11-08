@@ -466,14 +466,27 @@ fn flush_renamed(to: &Path) -> Result<()> {
 
 /// Writes `bytes` to `path` for a record a later start acts on: a temporary file beside it, fsync, the replace, then the
 /// directory's sync (Windows replaces with MoveFileExW write-through, which returns once the move is on disk). An
-/// existing `path` is replaced; `publish_noreplace` is the form that refuses to.
+/// existing `path` is replaced; `publish_noreplace` is the form that refuses to. The temporary file is always a new file
+/// this call creates: whatever sits at its name is removed by name first, and the create refuses a name that exists.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_durable_between(path, bytes, || {})
+}
+
+/// [`write_durable`] with `between` run after the stale temporary name is removed and before it is created (a test seam).
+fn write_durable_between(path: &Path, bytes: &[u8], between: impl FnOnce()) -> std::io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        r => r?,
+    }
+    between();
     {
         use std::io::Write;
-        let mut f = File::create(&tmp)?;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| {
+            std::io::Error::new(e.kind(), format!("create temporary file {}: {e}", tmp.display()))
+        })?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }
