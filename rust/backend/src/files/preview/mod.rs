@@ -108,18 +108,6 @@ fn is_downsampleable_raster(mime: &str) -> bool {
     )
 }
 
-/// The one decode with an allocation ceiling: an image whose decoded form would exceed `max_alloc` errors instead of
-/// allocating. CPU-bound; call via `spawn_blocking`.
-pub(crate) fn decode_limited<R: std::io::BufRead + std::io::Seek>(
-    mut reader: image::ImageReader<R>,
-    max_alloc: u64,
-) -> image::ImageResult<image::DynamicImage> {
-    let mut limits = image::Limits::no_limits();
-    limits.max_alloc = Some(max_alloc);
-    reader.limits(limits);
-    reader.decode()
-}
-
 /// If `bytes` is an oversize raster, decode it and — when its longest side
 /// exceeds [`PREVIEW_DOWNSAMPLE_MAX_DIM`] — scale it down and re-encode as PNG.
 /// Returns `Some((png, scale))` ONLY when it actually shrank the image (`scale`
@@ -143,10 +131,13 @@ fn downsample_oversize_raster(mime: &str, bytes: &[u8]) -> Option<(Vec<u8>, f32)
     if w.max(h) <= PREVIEW_DOWNSAMPLE_MAX_DIM {
         return None;
     }
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
-    let rgba = decode_limited(reader, MAX_PREVIEW_DECODE_ALLOC).ok()?.to_rgba8();
+    let mut limits = image::Limits::no_limits();
+    limits.max_alloc = Some(MAX_PREVIEW_DECODE_ALLOC);
+    reader.limits(limits);
+    let rgba = reader.decode().ok()?.to_rgba8();
     let scale = PREVIEW_DOWNSAMPLE_MAX_DIM as f32 / w.max(h) as f32;
     let nw = ((w as f32 * scale).floor() as u32).max(1);
     let nh = ((h as f32 * scale).floor() as u32).max(1);

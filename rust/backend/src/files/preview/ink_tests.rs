@@ -80,61 +80,97 @@ fn the_picture_is_the_base_with_its_ink() {
     assert!(picture.is_dir());
 }
 
-#[cfg(unix)]
+/// A link (a junction on Windows) at `at` to the folder `target`.
+fn link_folder(target: &Path, at: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at).unwrap();
+    #[cfg(windows)]
+    crate::agents::account_links::make_junction(target, at).unwrap();
+}
+
+/// A root with `.sot` or `.sot/captures` a link to a folder, wherever it leads: out of the root, or to `inner`.
+/// Returns the root and the folder the link leads to, which must stay empty.
+fn root_with_link(link_at: &str, outside: &Path) -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    figure_png(root.path(), "fit.png", 40, 20);
+    std::fs::create_dir(root.path().join("inner")).unwrap();
+    let target = if link_at == "inner" { root.path().join("inner") } else { outside.to_path_buf() };
+    if link_at == ".sot/captures" {
+        std::fs::create_dir(root.path().join(".sot")).unwrap();
+    }
+    link_folder(&target, &root.path().join(if link_at == "inner" { ".sot" } else { link_at }));
+    (root, target)
+}
+
+const LINKS: [&str; 3] = [".sot", ".sot/captures", "inner"];
+
 #[test]
-fn a_captures_folder_that_leads_out_of_the_root_takes_no_write() {
+fn a_captures_folder_that_is_a_link_takes_no_write() {
     let outside = tempfile::tempdir().unwrap();
-    for link_at in [".sot", ".sot/captures"] {
-        let root = tempfile::tempdir().unwrap();
+    for link_at in LINKS {
+        let (root, target) = root_with_link(link_at, outside.path());
         let files = FilesMode::new(root.path().to_path_buf()).unwrap();
-        if link_at == ".sot" {
-            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot")).unwrap();
-        } else {
-            std::fs::create_dir(root.path().join(".sot")).unwrap();
-            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot/captures")).unwrap();
-        }
         let refused = compose(&files, "r1", &stroke(InkBase::Canvas)).unwrap_err();
         assert_eq!(refused.0, PUBLISH_FAILED, "{link_at}");
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0, "{link_at}: wrote through the link");
     }
 }
 
-#[cfg(windows)]
 #[test]
-fn a_captures_junction_that_leads_out_of_the_root_takes_no_write() {
-    use crate::agents::account_links::make_junction;
+fn a_crop_folder_that_is_a_link_takes_no_write() {
+    use super::crop::crop_to_captures;
     let outside = tempfile::tempdir().unwrap();
-    for link_at in [".sot", ".sot/captures"] {
-        let root = tempfile::tempdir().unwrap();
+    for link_at in LINKS {
+        let (root, target) = root_with_link(link_at, outside.path());
         let files = FilesMode::new(root.path().to_path_buf()).unwrap();
-        if link_at == ".sot" {
-            make_junction(outside.path(), &root.path().join(".sot")).unwrap();
-        } else {
-            std::fs::create_dir(root.path().join(".sot")).unwrap();
-            make_junction(outside.path(), &root.path().join(".sot").join("captures")).unwrap();
-        }
-        assert_eq!(compose(&files, "r1", &stroke(InkBase::Canvas)).unwrap_err().0, PUBLISH_FAILED, "{link_at}");
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
+        let src = root.path().join("fit.png");
+        assert!(crop_to_captures(&files, &src, "fit", (0, 0, 10, 10)).is_err(), "{link_at}");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0, "{link_at}: wrote through the link");
     }
+}
+
+#[test]
+fn a_crop_is_a_png_of_the_rect_beneath_the_captures_folder() {
+    use super::crop::crop_to_captures;
+    let root = tempfile::tempdir().unwrap();
+    let files = FilesMode::new(root.path().to_path_buf()).unwrap();
+    figure_png(root.path(), "fit.png", 40, 20);
+    let src = root.path().join("fit.png");
+    let (out, x, y, w, h, sw, sh) = crop_to_captures(&files, &src, "fit", (5, 4, 10, 10)).unwrap();
+    assert_eq!((x, y, w, h, sw, sh), (5, 4, 10, 10, 40, 20));
+    assert_eq!(out.parent().unwrap(), files.node_id_to_path("files:.sot/captures").unwrap());
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Png);
+    assert_eq!(image::load_from_memory(&bytes).unwrap().to_rgb8().dimensions(), (10, 10));
+}
+
+#[test]
+fn a_name_the_write_refuses_answers_as_a_node_id() {
+    let root = tempfile::tempdir().unwrap();
+    let files = FilesMode::new(root.path().to_path_buf()).unwrap();
+    for id in ["files:a/../b", "files:a//b", "files:"] {
+        let e = files.write(id, b"x").unwrap_err();
+        assert!(format!("{e:#}").contains("node id cannot be written"), "{id}: {e:#}");
+    }
+    assert!(files.write("a/b", b"x").unwrap_err().to_string().contains("not a files-mode id"));
 }
 
 #[cfg(unix)]
 #[test]
-fn a_crop_folder_that_leads_out_of_the_root_takes_no_write() {
+fn a_fifo_named_like_an_image_answers_at_once() {
     use super::crop::crop_to_captures;
-    let outside = tempfile::tempdir().unwrap();
-    for link_at in [".sot", ".sot/captures"] {
-        let root = tempfile::tempdir().unwrap();
-        let files = FilesMode::new(root.path().to_path_buf()).unwrap();
-        figure_png(root.path(), "fit.png", 40, 20);
-        if link_at == ".sot" {
-            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot")).unwrap();
-        } else {
-            std::fs::create_dir(root.path().join(".sot")).unwrap();
-            std::os::unix::fs::symlink(outside.path(), root.path().join(".sot/captures")).unwrap();
-        }
-        let src = root.path().join("fit.png");
-        assert!(crop_to_captures(&files, &src, "fit", (0, 0, 10, 10)).is_err(), "{link_at}");
-        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "{link_at}: wrote outside the root");
-    }
+    let root = tempfile::tempdir().unwrap();
+    let files = FilesMode::new(root.path().to_path_buf()).unwrap();
+    let fifo = root.path().join("pipe.png");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let base = InkBase::Figure { node_id: "files:pipe.png".into() };
+        let composed = compose(&files, "r1", &stroke(base)).unwrap_err().0;
+        let cropped = crop_to_captures(&files, &fifo, "pipe", (0, 0, 1, 1)).unwrap_err().0;
+        tx.send((composed, cropped)).ok();
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a FIFO held the call");
+    assert_eq!((got.0, got.1.as_str()), (NOT_AN_IMAGE, "decode_failed"));
 }

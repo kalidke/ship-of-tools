@@ -54,14 +54,6 @@ pub async fn handle_image_crop(
         );
     }
 
-    // Decode + clamp + crop + write happen on a blocking thread: `image::open`
-    // and `save` are synchronous CPU+IO and a large decode would otherwise
-    // stall the tokio executor (reviewed on PR #9). All inputs are owned
-    // into the closure; it returns the clamped rect + source dims, or a
-    // (code, message) pair the caller turns into an error frame. The write
-    // lands in `<project_root>/.sot/captures/` (watcher-exempt, gitignored);
-    // the filename carries the source stem + a microsecond stamp so repeated
-    // captures don't clobber.
     let (req_x, req_y, req_w, req_h) = (req.x, req.y, req.w, req.h);
     let stem = path
         .file_stem()
@@ -100,7 +92,7 @@ pub async fn handle_image_crop(
 
 type CropOk = (std::path::PathBuf, u32, u32, u32, u32, u32, u32);
 
-/// Decode + clamp + crop + write, on a blocking thread: `image::open` and the PNG encode are synchronous CPU+IO and a large
+/// Decode + clamp + crop + write, on a blocking thread: the decode and the PNG encode are synchronous CPU+IO and a large
 /// decode would otherwise stall the tokio executor. Returns the written path, the clamped rect and the source
 /// dimensions, or a (code, message) pair the caller turns into an error frame. The write lands in
 /// `<project_root>/.sot/captures/` (watcher-exempt) through `FilesMode::write`, which follows no link; the filename carries the
@@ -111,7 +103,11 @@ pub(super) fn crop_to_captures(
     stem: &str,
     (req_x, req_y, req_w, req_h): (u32, u32, u32, u32),
 ) -> std::result::Result<CropOk, (String, String)> {
-    let img = image::open(src).map_err(|e| ("decode_failed".into(), format!("decode {src:?}: {e}")))?;
+    let file = super::ink::open_regular(src).map_err(|e| ("decode_failed".into(), format!("open {src:?}: {e}")))?;
+    let img = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()
+        .and_then(|r| r.decode().map_err(std::io::Error::other))
+        .map_err(|e| ("decode_failed".into(), format!("decode {src:?}: {e}")))?;
     let (src_w, src_h) = (img.width(), img.height());
     if src_w == 0 || src_h == 0 {
         return Err(("empty_image".into(), format!("{src:?} has zero dimension")));
