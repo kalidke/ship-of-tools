@@ -1182,3 +1182,15 @@ A landing's record goes here, with its measured times; the package page holds on
   one review round (blockers 0), which ran the suites on old and new trees (30 minutes); one hosted run on the branch; two
   gates of 2 minutes, the second after the move onto main past the scratch guard's landing. Why past the hour: the suite's
   length, run whole by both builder and reviewer.
+- The watchdog-first test arms no point it does not need, 2026-11-08: decided 06:33, main 06:39 (3c3e8f718), 6 minutes.
+  The activation landing's review showed the test's `start` arm forced nothing (the guard and the backoff line order the
+  test); the arm, its wait and its release are deleted, and one comment is re-wrapped. 3 lines added, 5 removed. One gate.
+- The spawn suite's stub daemon answers the host query, 2026-11-08: builder launched 06:34, main 07:06 (af43bea4c moved
+  onto main as 376cca8ff, then 23c7a4522), 32 minutes. Each spawn in `test-spawn-capsule-workspace.sh` asked the stub
+  daemon for its host (`version.query`, the first step of `comm-spawn.sh`), which the stub never answered, so every spawn
+  waited out the send window of 10 seconds and then took the local path. The stub now answers with the host the suite
+  pins (`SOT_SELF_HOST`), and a new case in `test-spawn-remote-no-local-row.sh` pins that a daemon declaring no host stays
+  local, the path the old wait had exercised by accident. The suite went from about 225 seconds to 29 on a second build
+  server, all 17 cases kept; no other suite's stub misses the query. About 25 test lines. Where the minutes went: the
+  trace (9 minutes, through a trace stream that survives the stub's own redirection); one review round (blockers 0) and
+  one fix round; two gates of 2 minutes.
