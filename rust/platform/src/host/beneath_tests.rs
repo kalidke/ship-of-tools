@@ -9,7 +9,9 @@ fn link_dir(target: &Path, at: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "mklink", "/J"]).arg(at).arg(target);
+        // `mklink` reads a `/` in a path as a switch.
+        let back = |p: &Path| p.to_string_lossy().replace('/', "\\");
+        cmd.args(["/C", "mklink", "/J"]).arg(back(at)).arg(back(target));
         let ran = crate::test_wait::run_within(&mut cmd, std::time::Duration::from_secs(30));
         if ran.status.success() { Ok(()) } else { Err(io::Error::other(ran.to_string())) }
     }
@@ -120,7 +122,9 @@ fn the_root_is_refused_when_its_entry_is_a_link_or_it_is_not_canonical() {
     ];
     for spelled in spellings {
         let got = write_beneath(Path::new(&spelled), "f.txt", b"data");
-        assert_eq!(kind(got), io::ErrorKind::InvalidInput, "{spelled}");
+        // Windows reads `..` by its text, so `l2/../deep` is a folder that does not exist.
+        let want = if cfg!(windows) && spelled.ends_with("/../deep") { io::ErrorKind::NotFound } else { io::ErrorKind::InvalidInput };
+        assert_eq!(kind(got), want, "{spelled}");
         assert!(entries(&outside).is_empty(), "{spelled}");
         assert!(entries(&deep).is_empty(), "{spelled}");
         assert!(entries(&root).is_empty(), "{spelled}");
@@ -138,7 +142,8 @@ fn a_root_that_does_not_resolve_answers_by_what_is_wrong() {
     let mut cases = vec![
         ("missing", io::ErrorKind::NotFound),
         ("dangling", io::ErrorKind::NotFound),
-        ("file/under", io::ErrorKind::InvalidInput),
+        // Windows answers a path under a file as a path that is not found.
+        ("file/under", if cfg!(windows) { io::ErrorKind::NotFound } else { io::ErrorKind::InvalidInput }),
     ];
     #[cfg(unix)]
     cases.push(("selfloop", io::ErrorKind::InvalidInput));
@@ -332,7 +337,8 @@ fn a_folder_removed_after_its_open_takes_no_write() {
         }
         Ok(())
     });
-    assert_eq!(kind(got), io::ErrorKind::NotFound);
+    // Windows answers a write into a folder that is being deleted as access denied.
+    assert_eq!(kind(got), if cfg!(windows) { io::ErrorKind::PermissionDenied } else { io::ErrorKind::NotFound });
     assert!(entries(&outside).is_empty());
 }
 
