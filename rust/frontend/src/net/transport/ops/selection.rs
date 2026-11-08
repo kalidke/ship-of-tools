@@ -11,6 +11,9 @@ pub(crate) enum SelectionReply {
     Unsupported,
     /// An error reply (`code` is the wire's refusal code, `None` when it names none), or an answer that does not parse.
     Refused { code: Option<String>, error: String },
+    /// The connection ended before the daemon answered (or before the request was written). The daemon withdraws what a
+    /// connection set at its end, so the window's share, the one sender, sets its state again after a reconnect.
+    Ended,
 }
 
 pub(crate) async fn send_selection_set<W: AsyncWrite + Unpin>(
@@ -21,13 +24,13 @@ pub(crate) async fn send_selection_set<W: AsyncWrite + Unpin>(
 ) -> Result<()> {
     tracing::debug!(id, "→ {}", op::SELECTION_SET);
     // Recorded before the write, as the chat requests are, so a write that fails still ends the request once.
-    pending.insert(id, PendingKind::SelectionSet { workspace_id: req.workspace_id.clone() });
+    pending.insert(id, PendingKind::SelectionSet { req: req.clone() });
     codec::write_frame(&mut tx, &Frame::req(id, op::SELECTION_SET, serde_json::to_value(&req)?), None).await?;
     Ok(())
 }
 
-/// The reply carries the row its request named, never the row the window shows by then.
-pub(crate) fn on_selection_set(frame: Frame, emit: &impl Fn(IncomingEvt), workspace_id: String) {
+/// The reply carries the request it answers, so the reply to a clear and to a set differ.
+pub(crate) fn on_selection_set(frame: Frame, emit: &impl Fn(IncomingEvt), req: SelectionSetReq) {
     let reply = if is_unsupported(&frame.op, &frame.payload) {
         SelectionReply::Unsupported
     } else if let Some(error) = frame.payload.get("error").and_then(|v| v.as_str()) {
@@ -39,7 +42,7 @@ pub(crate) fn on_selection_set(frame: Frame, emit: &impl Fn(IncomingEvt), worksp
             Err(e) => SelectionReply::Refused { code: None, error: format!("unreadable reply: {e}") },
         }
     };
-    emit(IncomingEvt::Selection { workspace_id, reply });
+    emit(IncomingEvt::Selection { req, reply });
 }
 
 #[cfg(test)]

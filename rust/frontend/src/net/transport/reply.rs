@@ -118,7 +118,7 @@ pub(super) enum PendingKind {
     },
     QuartoOpen,
     SelectionSet {
-        workspace_id: String,
+        req: sot_protocol::ops::SelectionSetReq,
     },
     ChatResolve {
         row: String,
@@ -249,6 +249,8 @@ impl Drop for PendingGuard<'_> {
                     req,
                     reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Unknown),
                 }),
+                // Not replayable: the window's share sets its state again after a reconnect.
+                PendingKind::SelectionSet { req } => IncomingEvt::Selection { req, reply: SelectionReply::Ended },
                 _ => continue,
             };
             let _ = self.evt_tx.send((self.host.clone(), event));
@@ -362,7 +364,7 @@ pub(super) fn handle_response_frame(
             PendingKind::DocsOpen => on_docs_open(frame, &emit),
             PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
-            PendingKind::SelectionSet { workspace_id } => on_selection_set(frame, &emit, workspace_id),
+            PendingKind::SelectionSet { req } => on_selection_set(frame, &emit, req),
             PendingKind::ChatResolve { row } => on_chat_resolve(frame, &emit, row),
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),

@@ -57,7 +57,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:
@@ -83,11 +83,13 @@ through the channel types below.
   `chat.status`, and does not pace resyncs; a watch, history or resolve in flight when a connection ends gets no event.
   Those belong to the chat's view owner, which does not exist yet; `ui/events.rs` drops `IncomingEvt::Chat`.
 - The row's selection is one typed edge, `OutgoingReq::SelectionSet { req }` (a text selection, a drawing or a clear) and
-  `IncomingEvt::Selection { workspace_id, reply }` (transport/ops/selection.rs). The reply names the row its request named and is
-  `Done(state)`, `Unsupported` (an older daemon's exact unknown-op answer), or `Refused { code, error }` (also an answer that does
-  not parse). It is replayable: a selection is state, so one still waiting when a connection ends is written on the next
-  (`a_selection_set_is_replayed_after_a_reconnect_with_what_it_carried`); fe-net does not re-send one that was answered, which is
-  the window's selection share's. Test `a_selection_reply_is_one_typed_event`; `ui/events.rs` drops the event until that owner exists.
+  `IncomingEvt::Selection { req, reply }` (transport/ops/selection.rs). A reply carries the request it answers, so a clear's
+  reply differs from a set's, and is `Done(state)`, `Unsupported` (an older daemon's exact unknown-op answer), `Refused { code,
+  error }` (also an answer that does not parse) or `Ended`. It is not replayable: a request waiting, or written and unanswered,
+  when its connection ends yields one `Ended` and is never written on a later connection, because the one owner that knows the
+  current selection, the window's selection share, sets it again after a reconnect (the drawing plan's orderings), and a stale
+  replay could publish a selection the person withdrew. Tests `a_selection_reply_is_one_typed_event`,
+  `a_selection_set_ends_once_when_its_connection_ends_and_is_never_replayed`; `ui/events.rs` drops the event until that owner exists.
 - A result-tree completion carries the canonical workspace id and result/attempt serials saved at issuance through the request-id pending entry; the existing fan-in envelope supplies its dial HostKey. These identities are local and change no daemon payload.
 - A down ssh host costs at most two logins a minute, and a daemon that answers the hello and then drops costs no more:
   the wait starts over only after a session that lasted `STABLE`, or at F5 (`redial_for`, `Redial`). That is every

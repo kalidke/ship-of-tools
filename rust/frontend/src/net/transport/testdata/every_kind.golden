@@ -93,4 +93,4 @@
 < golden Event { op: "chat.unwatch", payload: Object {"code": String("code-chat.unwatch"), "error": String("err-chat.unwatch")} }
 < golden Chat(History { req: ChatHistoryReq { target: ChatTarget { row: "ch.row", workspace: "ch.ws", channel: ChatChannel("Cch") }, thread: None, after: None, upper: None, limit: 7, cursor: None }, reply: Refused(Other) })
 < golden Chat(Posted { req: ChatPostReq { target: ChatTarget { row: "cp.row", workspace: "cp.ws", channel: ChatChannel("Ccp") }, thread: None, kind: Row, name: "cp.name", text: "cp.text" }, reply: Done(Unknown) })
-< golden Selection { workspace_id: "sel.ws", reply: Refused { code: Some("code-selection.set"), error: "err-selection.set" } }
+< golden Selection { req: SelectionSetReq { workspace_id: "sel.ws", selection: None, drawing: None }, reply: Refused { code: Some("code-selection.set"), error: "err-selection.set" } }

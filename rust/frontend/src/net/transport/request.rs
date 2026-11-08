@@ -347,8 +347,9 @@ pub enum OutgoingReq {
     /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
     /// owner sends the next only after the last one's reply.
     ChatPost { req: sot_protocol::ops::ChatPostReq },
-    /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Replayable: it is state, so one
-    /// still waiting after a connection ends is written on the next. Reply surfaces as `IncomingEvt::Selection`.
+    /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Not replayable: a request waiting
+    /// or unanswered when its connection ends yields one `SelectionReply::Ended`, and the window's share, the one
+    /// sender, sets its current state again after a reconnect. Reply surfaces as `IncomingEvt::Selection`.
     SelectionSet { req: sot_protocol::ops::SelectionSetReq },
     /// Render a Quarto/markdown doc on the backend and open it in the OS
     /// browser. `execute = false` (`o`) = fast no-execute render; `execute =
@@ -432,7 +433,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -466,7 +467,6 @@ impl OutgoingReq {
             | OutgoingReq::VideoOpen { .. }
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
-            | OutgoingReq::SelectionSet { .. }
             | OutgoingReq::ChatResolve { .. }
             | OutgoingReq::ChatWatch { .. }
             | OutgoingReq::ChatUnwatch { .. }
