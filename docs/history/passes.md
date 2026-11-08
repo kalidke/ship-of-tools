@@ -1194,3 +1194,14 @@ A landing's record goes here, with its measured times; the package page holds on
   server, all 17 cases kept; no other suite's stub misses the query. About 25 test lines. Where the minutes went: the
   trace (9 minutes, through a trace stream that survives the stub's own redirection); one review round (blockers 0) and
   one fix round; two gates of 2 minutes.
+- A Claude row leg runs the selection hook on every prompt, 2026-11-08: builder launched 07:10, main 08:12 (db973e652,
+  2b56871a3, bba94ae2f), 62 minutes, past the maintainer's hour. The selection plan's A5b, A5c and A5d as one piece:
+  `agents/sot-selection-hook.sh` reads its whole input, then prints the file `SOT_SELECTION_FILE` names when it is a readable
+  regular file, else nothing, and always exits 0; every Claude leg's `--settings` runs it at `UserPromptSubmit`, by a
+  command that drains its input and does nothing when the script is missing; the supervisor's launch writes the row's
+  `selection-hook` marker exactly when the leg carries the variable and the hook, so a row without it answers `held`; and a
+  test drives the path from a connection standing in for the window, through the daemon's file, to the hook's output and
+  its withdrawal. About 62 product lines and 330 test lines. Where the minutes went: the build (15 minutes); two review
+  rounds (blockers 1, 0) and two fix rounds; two hosted runs on the branch; three gates of 3 minutes. Why past the hour: the
+  first round found that the hook never read its input, so a prompt past the pipe's buffer would have drawn an error in
+  every Claude session once installed, and the second found the same in the no-op for a missing script.
