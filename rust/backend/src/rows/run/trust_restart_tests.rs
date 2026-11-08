@@ -171,8 +171,9 @@ fn the_wait_asks_about_the_file_a_real_preparation_marks() {
     std::fs::create_dir_all(&cwd).unwrap();
     let (workspaces, ws, _) = leg_row("real-key");
     assert!(!LiveTrust.recent_start(&ws), "nothing prepared yet");
+    crate::agents::env::account_spawn_env("claude", "", &cwd, &ws.workspace_id).unwrap();
     workspaces.set_account(&ws.workspace_id, "dst").expect("the row");
-    assert!(!LiveTrust.recent_start(&ws), "the other account's file is unmarked");
+    assert!(!LiveTrust.recent_start(&ws), "the default account's preparation does not mark the row's own account");
     crate::agents::env::account_spawn_env("claude", "dst", &cwd, &ws.workspace_id).unwrap();
     assert!(LiveTrust.recent_start(&ws), "the preparation of the row's own account marks the file the restart asks about");
 }

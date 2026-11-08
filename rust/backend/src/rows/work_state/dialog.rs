@@ -6,9 +6,8 @@
 //! while its phase is `ready`.
 //!
 //! No Claude Code hook says when a permission dialog is on screen (its `PermissionRequest` fires when a request is
-//! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once (unread, only
-//! the rows with a leg are read), then each
-//! Ready capsule row whose agent is `claude` and whose bound handle has an entry, but one red by its question ([`due`]:
+//! queued), so the daemon reads the screen. Every [`DIALOG_EVERY`] one blocking task reads the registry once (unread, only the
+//! rows with a leg are read), then each Ready capsule row whose agent is `claude` and whose bound handle has an entry, but one red by its question ([`due`]:
 //! an AskUserQuestion menu, whose PreToolUse hook wrote the question before the menu drew, keeps that summary), one
 //! watcher attach each: it never takes the pen, resizes nothing, writes no record frame and logs nothing. sot-capsule's
 //! `a_sweep_of_watcher_reads_writes_nothing_and_stays_bounded` shows that over twenty capsules and measures a sweep of
@@ -30,7 +29,7 @@ use std::time::{Duration, Instant};
 use crate::comm::wake::screen::{dialog_of, startup_of, wake_lines, Startup};
 use crate::rows::handle::bound_handle;
 use crate::rows::run::headless::{attach, checkpointed, SHUTDOWN_WAIT};
-use crate::rows::run::trust_restart::{restart_at_trust_dialog, LiveTrust};
+use crate::rows::run::trust_restart::{restart_at_trust_dialog, LiveTrust, TrustEffects};
 use crate::rows::workspace::Phase;
 use crate::rows::Workspaces;
 
@@ -73,10 +72,10 @@ fn stamp_for(shown: Option<String>, entry: &serde_json::Value) -> Option<Stamp> 
 
 /// One row of a sweep: the handle its entry is under (empty when it has none), its state folder, and, while a started
 /// leg has not shown its main box, the row's id and generation (`Workspace::trust_reading`).
-pub(crate) struct Row {
-    pub handle: String,
-    pub state_dir: PathBuf,
-    pub trust: Option<(String, u64)>,
+struct Row {
+    handle: String,
+    state_dir: PathBuf,
+    trust: Option<(String, u64)>,
 }
 
 /// The generation to read a row's screen for the folder-trust dialog: only while the row's phase can show a screen (a
@@ -116,7 +115,8 @@ pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Wor
             }
             let _ = tokio::task::spawn_blocking(move || {
                 let mut held = runs.lock().unwrap_or_else(|e| e.into_inner());
-                let trust = |id: &str, generation: u64, startup: Startup| trust_step(&workspaces, &state_root, id, generation, startup);
+                let trust =
+                    |id: &str, generation: u64, startup: Startup| trust_step(&workspaces, &state_root, id, generation, startup, &LiveTrust);
                 check_rows(&home, &rows, &read_screen, &stamp_dialog, &trust, &mut held);
             })
             .await;
@@ -127,7 +127,7 @@ pub(crate) async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Wor
 
 /// What a row's [`Startup`] calls for: the main box closes the leg record (false: the screen was read all the same); the
 /// folder-trust dialog is the restart's, and true says it ran or will be tried again.
-fn trust_step(workspaces: &Workspaces, state_root: &Path, id: &str, generation: u64, startup: Startup) -> bool {
+fn trust_step(workspaces: &Workspaces, state_root: &Path, id: &str, generation: u64, startup: Startup, fx: &dyn TrustEffects) -> bool {
     match startup {
         Startup::MainBox => {
             if let Some(ws) = workspaces.resolve(Some(id)) {
@@ -135,7 +135,7 @@ fn trust_step(workspaces: &Workspaces, state_root: &Path, id: &str, generation: 
             }
             false
         }
-        Startup::TrustDialog => restart_at_trust_dialog(workspaces, state_root, id, generation, &LiveTrust).pending(),
+        Startup::TrustDialog => restart_at_trust_dialog(workspaces, state_root, id, generation, fx).pending(),
         Startup::Neither => false,
     }
 }

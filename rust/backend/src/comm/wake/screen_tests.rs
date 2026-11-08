@@ -1007,5 +1007,10 @@ fn the_trust_dialog_is_told_from_other_dialogs_and_the_main_box() {
             assert_eq!(at(&main), Startup::MainBox);
         }
         assert_eq!(startup_of(&real(plain, true), "codex", windows), Startup::Neither);
+        // A new run starts from the old screen with a restart line below it (capsule guarantee 8): the predecessor's
+        // dialog is not restarted again before the new agent draws.
+        let mut replayed = real(plain, true);
+        replayed.push("[restarted 2026-11-08 17:00:00 UTC]".to_string());
+        assert_eq!(at(&replayed), Startup::Neither, "a replayed dialog with a restart line below it");
     }
 }

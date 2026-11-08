@@ -192,7 +192,8 @@ async fn a_refreshed_loaded_row_follows_its_new_supervisor() {
     env.kill_daemon_bounded().await;
 }
 
-/// A stand-in `claude` for the trust dialog. Each start appends its argv to `.stub-starts` in its working folder and
+/// A stand-in `claude` for the trust dialog. Each start appends its argv to `.stub-starts` and each draw (`main` or
+/// `dialog`) to `.stub-draws`, in its working folder, and
 /// runs `loss`, a shell snippet that may write `{}` over `$cfg` (`$CLAUDE_CONFIG_DIR/.claude.json`): the measured lost
 /// update, the daemon's entry gone before the leg reads it. Then it draws the main input box if that file holds an
 /// accepted entry, else Claude Code's folder-trust dialog, and waits (or, when `exit_first`, its first start ends 3 s
@@ -207,8 +208,10 @@ cfg="$CLAUDE_CONFIG_DIR/.claude.json"
 LOSS
 printf '\033[2J\033[H'
 if grep -q '"hasTrustDialogAccepted": true' "$cfg" 2>/dev/null; then
+  echo main >> .stub-draws
   printf '%s\n\342\235\257\302\240\n%s\n' "$rule" "$rule"
 else
+  echo dialog >> .stub-draws
   printf '%s\n Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one you trust?\n\n \342\235\257 No, exit\n   Yes, I trust this folder\n\n Enter to confirm \302\267 Esc to cancel\n' "$rule" "$PWD"
 fi
 EXIT_FIRST
@@ -239,8 +242,16 @@ fn declare_trust_prefix(env: &Env) {
     assert!(declare.status.success(), "sotd trust declare: {declare}");
 }
 
+fn stub_lines(root: &Path, name: &str) -> Vec<String> {
+    std::fs::read_to_string(root.join(name)).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
 fn stub_starts(root: &Path) -> Vec<String> {
-    std::fs::read_to_string(root.join(".stub-starts")).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default()
+    stub_lines(root, ".stub-starts")
+}
+
+fn stub_draws(root: &Path) -> Vec<String> {
+    stub_lines(root, ".stub-draws")
 }
 
 /// A Claude row reauthed to another account, whose replacement leg loses its trust record (the stub's lost update) and
@@ -301,11 +312,12 @@ async fn a_reauthed_leg_at_the_trust_dialog_under_the_prefix_restarts_once_with_
     let file = config_dir.join("dst").join(".claude.json");
     let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).expect("dst .claude.json")).expect("json");
     assert!(
-        doc["projects"].as_object().is_some_and(|p| p.values().any(|v| v["hasTrustDialogAccepted"] == true)),
+        doc["projects"][root.to_str().unwrap()]["hasTrustDialogAccepted"] == true,
         "the restart's spawn recorded trust for the root again: {doc}"
     );
     tokio::time::sleep(Duration::from_secs(12)).await;
-    assert_eq!(stub_starts(&root).len(), 3, "the row reached its main box and was restarted no more");
+    assert_eq!(stub_starts(&root).len(), 3, "the row was restarted no more");
+    assert_eq!(stub_draws(&root).last().map(String::as_str), Some("main"), "the third leg drew its main box: {:?}", stub_draws(&root));
     env.kill_daemon_bounded().await;
 }
 
@@ -344,6 +356,7 @@ async fn a_watchdog_restarted_leg_at_the_trust_dialog_under_the_prefix_restarts_
     assert_eq!(starts.len(), 3, "start, the watchdog's restart, and the trust restart: {starts:?}");
     assert!(starts.iter().all(|s| !s.contains("--resume")), "no conversation to resume on this row: {starts:?}");
     tokio::time::sleep(Duration::from_secs(12)).await;
-    assert_eq!(stub_starts(&root).len(), 3, "the third start reached its main box and was restarted no more");
+    assert_eq!(stub_starts(&root).len(), 3, "the third start was restarted no more");
+    assert_eq!(stub_draws(&root).last().map(String::as_str), Some("main"), "the third leg drew its main box: {:?}", stub_draws(&root));
     env.kill_daemon_bounded().await;
 }

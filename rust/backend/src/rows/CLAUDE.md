@@ -52,7 +52,8 @@ Supervisor:
   spawned), 76 (it started and ended by itself) and a killed supervisor (no code). The agent dies with a killed
   supervisor within capsule guarantee 2's limits: on macOS an agent that ignores SIGHUP can outlive it. 75 and 76
   are one path for the restart and differ only in the log; the watchdog's restart spawns the row's own recipe, never a
-  reauth's `--resume`, and a trust restart (below) reruns its leg's own argv. The watch record (`Workspace::watched`: the supervisor the row's watch last named and whether it told
+  reauth's `--resume`, and a trust restart (below) reruns its leg's own argv. The watch record (`Workspace::watched`:
+  the supervisor the row's watch last named and whether it told
   `ready`) is written by the observer, kept when a watch reconnects to the same supervisor, and read by the watchdog at
   an exit. Every outcome is bound to the spawn it came from: the row counts the spawns this daemon makes
   (`Workspace::begin_spawn`, under the row's guard just before each spawn, which also clears the record), and an
@@ -74,28 +75,35 @@ Supervisor:
   (a leg was open after a restart already ran: at most one per row per episode, whatever the agent does) or `Outside`
   (the root is not under the trust scope), closing the leg for the last two, or hands the leg out and spends the
   episode; `trust_passed` clears both.
-  The trust restart (`run/trust_restart.rs`, `restart_at_trust_dialog`) is called by the dialog tick when a Ready
-  Claude row's open leg shows Claude Code's folder-trust dialog (messaging's `startup_of`). Under the row's guard,
-  tried and never waited on (busy: tried again at the next tick), at the leg's generation, it asks
-  `agents::folder_trust::under_declared_prefix` for the row's root, declines while a Claude leg on the same trust file
+  The trust restart (`run/trust_restart.rs`, `restart_at_trust_dialog`) is called by the dialog tick when a Ready Claude
+  row's open leg shows Claude Code's folder-trust dialog (messaging's `startup_of`). Under the row's guard, tried and
+  never waited on (busy: tried again at the next tick), at the leg's generation, it first checks that a leg is open
+  (none: nothing more is done or looked up), asks `agents::folder_trust::under_declared_prefix` for the row's root
+  (outside: the leg is closed at once), declines while a Claude leg on the same trust file
   (`agents::env::effective_claude_trust_file`'s answer for the row's account, the key each preparation marks) was
-  prepared less than 2 s ago (tried again at the next tick: its record is the same unlocked write as Claude Code's own
-  start-up save), takes a run permit (a closing gate refuses) and the `sot-capsule` path, then takes the leg, which
-  spends the episode, stops the supervisor (returning after its process ended) and spawns it again through
-  `spawn_and_watch` with `StartMode::Resume` and the leg's own argv, `--resume <id>` of a reauth kept. A stop records no
-  end (capsule guarantee 10), so the replacement starts the agent at once, and its spawn prepares trust again, which
-  records the entry. The steps with no side effect come before the take, so a refusal spends nothing. Never keys. Fences:
-  the old supervisor's watchdog acts only at its own generation and never restarts a stop (exit 0); a boot resume and a
-  reauth hold the same guard; a destroyed row no longer resolves; the permit across the stop and the spawn makes a close
-  wait. The restart logs itself: the restart at info (the resumed id), a second dialog before a main box and a root
-  outside the prefix once each at info, a failed stop or spawn at warn with the argv. Limits: the record is memory
-  only, so a daemon restart forgets it (a leg this daemon adopted is never restarted, and a daemon start allows one
-  restart per episode); a sweep that restarts waits on the stop (30 s) and the settle, delaying the other rows' stamps; a
-  spawn that fails after the stop leaves the row resting until it is opened, whose start is the recipe, losing a reauth's
-  resume; macOS's reading of the dialog is uncaptured (a wrong reading fails closed: no restart); an accepted entry
-  under a key Claude Code spells otherwise spends the one restart and the row reads red. Tests: the unit tests of
-  `run/trust_restart_tests.rs`; `capsule_workspaces::work_state` runs a reauth's restart and a watchdog's, each with a
-  stub that loses the record, and the `Started` arms themselves are covered only by those two cases.
+  prepared by this daemon less than 2 s ago (tried again at the next tick: Claude Code's own start-up save and the
+  restart's record are the same unlocked write), takes a run permit (a closing gate refuses) and the `sot-capsule` path,
+  then takes the leg, which spends the episode, stops the supervisor (returning after its process ended) and spawns it
+  again through `spawn_and_watch` with `StartMode::Resume` and the leg's own argv, `--resume <id>` of a reauth kept. A
+  stop records no end (capsule guarantee 10), so the replacement starts the agent at once, and its spawn prepares trust
+  again, which records the entry. The steps with no side effect come before the take, so a refusal spends nothing. Never
+  keys. Fences: the old supervisor's watchdog acts only at its own generation and never restarts a stop (exit 0); a boot
+  resume and a reauth hold the same guard; a destroyed row no longer resolves; the permit across the stop and the spawn
+  makes a close wait. The restart logs itself: the restart at info (with the argv), a second dialog before a main box
+  and a root outside the prefix once each at info, a failed stop or spawn at warn with the argv. Limits: the record is
+  memory only, so a daemon restart forgets it (a leg this daemon adopted is never restarted, and a daemon start allows
+  one restart per episode); the 2 s check is of this daemon's own starts (another computer's, or a session outside any
+  row, is not seen) and is made before the stop, not before the spawn's write, which can follow the stop by up to 30 s;
+  a sweep that restarts waits on the stop (30 s) and the settle, delaying the other rows' stamps; a stop or spawn that
+  fails leaves the row resting (until it is opened, whose start is the recipe, losing a reauth's resume) or at its
+  dialog; on Windows a contended spawn reports `Started` and exits 70, so the record can hold the argv of a supervisor
+  that never ran while an earlier one runs, and a restart of that one would rerun the recorded argv; macOS's reading of
+  the dialog is uncaptured (a wrong reading fails closed: no restart); an accepted entry under a key Claude Code spells
+  otherwise spends the one restart and the row reads red. Tests: the unit tests of `run/trust_restart_tests.rs` and the
+  four of `work_state/dialog_tests.rs` (a leg's dialog goes to the restart and is not stamped, a leg is read with no
+  handle or red by its question, the main box closes the leg, and a dialog the restart leaves is still stamped red);
+  `capsule_workspaces::work_state` runs a reauth's restart and a watchdog's, each with a stub that loses
+  the record, and the `Started` arms themselves are covered only by those two cases.
 - A supervisor this daemon did not launch (found alive at boot) is watched all the same, and its exit is restarted
   within the same budget with no selection. At a watch's end the observer waits for the supervisor's process to end
   (`Watch::end`, at most 5 s), so a decision is not taken while the exiting supervisor still answers or holds its fence;
@@ -331,7 +339,8 @@ its name:
   has a bound handle and registry entry. Removing the notice clears the fact within one tick.
   The tick reads every Ready Claude row with a bound handle but one already red
   by its question, and every Ready Claude row whose started leg has not yet shown its main input box (whatever its
-  handle, entry or question; the trust restart above), one watcher attach each, which takes no pen, resizes nothing and writes no record
+  handle, entry or question; the trust restart above), one watcher attach each, which takes no pen, resizes nothing
+  and writes no record
   (`work_state::dialog`). Each write it makes is logged at info, and so is the first of each run of reads that found
   nothing on a row (its phase, the attach's refusal or the screen's wait), and an unreadable registry is warned once
   per run, so a row that sat on a dialog and never read red names the reason in the daemon's log. A Codex row's dialog is its own `PermissionRequest` hook's, cleared by the call's return, the
@@ -365,8 +374,10 @@ which a newer script refuses (exit 2): the daemon writes in its own process, and
 scripts during an install logs one refused dialog stamp a row until it restarts.
 
 Calls out: capsule (`sot-capsule supervise`, the supervisor client, the attach client); agents (argv, environment,
-folder trust: `under_declared_prefix`, `claude_prepared_within`, `effective_claude_trust_file`); sidecars (`Kernel`, `Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
-`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`, `startup_of`, `type_if_free`);
+folder trust: `under_declared_prefix`, `claude_prepared_within`, `effective_claude_trust_file`); sidecars (`Kernel`,
+`Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
+`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`,
+`startup_of`, `type_if_free`);
 platform (dirs, the declared host, durable writes, locks); containment (`Signal`); pages (the `PageRow`, `PageOption`
 and `RowRef` data shapes its server-built closures return).
 

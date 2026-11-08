@@ -101,14 +101,22 @@ impl TrustEffects for LiveTrust {
     }
 }
 
-/// The `--resume` id in `argv`, for the log.
-fn resumed(argv: &[String]) -> Option<&str> {
-    argv.windows(2).find(|w| w[0] == "--resume").map(|w| w[1].as_str())
+/// Tells why a leg is left, once: the take closed it (`Spent`, `Outside`).
+fn say_left(id: &str, row: &Workspace, took: TrustTake) {
+    match took {
+        TrustTake::Spent => {
+            tracing::info!(workspace_id = %id, "folder-trust dialog again before a main box: the row's one restart is spent, so its person answers");
+        }
+        TrustTake::Outside => {
+            tracing::info!(workspace_id = %id, root = ?row.project_root, "folder-trust dialog outside the declared prefix: left to its person");
+        }
+        TrustTake::NotOpen | TrustTake::Leg(_) => {}
+    }
 }
 
 /// Restarts row `id`'s leg at generation `generation`, whose screen shows the folder-trust dialog. BLOCKING: the stop
-/// and the settle of the spawn run here. Order: the guard (tried), the steps with no side effect (the scope, a recent
-/// start on the trust file, the run gate, the executable), then the take, which spends the episode, then the stop and
+/// and the settle of the spawn run here. Order: the guard (tried), whether a leg is open, the steps with no side effect
+/// (the scope, a recent start on the trust file, the run gate, the executable), then the take, which spends the episode, then the stop and
 /// the spawn. The permit and the guard are held across both, so a close waits for them.
 pub(crate) fn restart_at_trust_dialog(
     workspaces: &Workspaces,
@@ -123,7 +131,14 @@ pub(crate) fn restart_at_trust_dialog(
     if row.spawn_generation() != generation {
         return TrustRestart::Left;
     }
-    let covered = fx.covered(&row.project_root);
+    // Nothing to do, and nothing to look up, for a row whose leg is closed (spent, outside, or past its main box).
+    if !row.trust_leg_open(generation) {
+        return TrustRestart::Left;
+    }
+    if !fx.covered(&row.project_root) {
+        say_left(id, &row, row.take_trust_leg(generation, false));
+        return TrustRestart::Left;
+    }
     if fx.recent_start(&row) {
         return TrustRestart::Waiting;
     }
@@ -135,19 +150,14 @@ pub(crate) fn restart_at_trust_dialog(
             return TrustRestart::Left;
         }
     };
-    let argv = match row.take_trust_leg(generation, covered) {
+    let argv = match row.take_trust_leg(generation, true) {
         TrustTake::Leg(argv) => argv,
-        TrustTake::NotOpen => return TrustRestart::Left,
-        TrustTake::Spent => {
-            tracing::info!(workspace_id = %id, "folder-trust dialog again before a main box: the row's one restart is spent, so its person answers");
-            return TrustRestart::Left;
-        }
-        TrustTake::Outside => {
-            tracing::info!(workspace_id = %id, root = ?row.project_root, "folder-trust dialog outside the declared prefix: left to its person");
+        left => {
+            say_left(id, &row, left);
             return TrustRestart::Left;
         }
     };
-    tracing::info!(workspace_id = %id, resumed = ?resumed(&argv), "folder-trust dialog on a started leg under the declared prefix: restarting it");
+    tracing::info!(workspace_id = %id, argv = ?argv, "folder-trust dialog on a started leg under the declared prefix: restarting it");
     let state_dir = state_dir_for(state_root, id);
     if let Err(e) = fx.stop(&state_dir) {
         tracing::warn!(workspace_id = %id, argv = ?argv, "folder-trust restart: the leg did not stop, so it was left ({e})");

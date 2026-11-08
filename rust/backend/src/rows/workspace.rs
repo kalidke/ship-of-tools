@@ -251,6 +251,12 @@ impl Workspace {
         (state.trust_leg.is_some() || state.trust_spent).then_some(state.generation)
     }
 
+    /// Whether a leg is open at `generation`; reads only.
+    pub(crate) fn trust_leg_open(&self, generation: u64) -> bool {
+        let state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        state.generation == generation && state.trust_leg.is_some()
+    }
+
     /// The trust restart's one question, at `generation`: `covered` is whether the row's root is under the trust scope.
     /// `Spent` and `Outside` close the leg; `Leg` closes it and spends the episode.
     pub(crate) fn take_trust_leg(&self, generation: u64, covered: bool) -> TrustTake {

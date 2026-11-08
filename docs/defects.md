@@ -222,12 +222,14 @@ owned by `docs/CLAUDE.md`.
   copy over it, and the daemon's write (`agents/folder_trust.rs`) is outside that lock, so a neighbor leg's start-up save
   replaced it. All three losses came 0.58 to 0.81 s after another leg on the same account started (3 of 6 records written
   within 1 s of a start were lost, none of 15 written 1.44 s or more after one). Built (rows, `run/trust_restart.rs`): the
-  dialog tick reads every Claude row whose started leg has not shown its main box, and at the folder-trust dialog with
+  dialog tick reads every Ready Claude row whose started leg has not shown its main box, and at the folder-trust dialog with
   the root under the declared prefix stops the leg and spawns it again with the same argv (a reauth's `--resume <id>`
   kept), under the row's guard, once per row until a main box shows; the new spawn records trust again. A second sight, a
   root outside the prefix and the already-trusted variant (option `No, continue without these permissions`) are left to
-  their person. The restart waits, tried again at the next tick, while a Claude leg on the same trust file started less
-  than 2 s ago, since its own record is the same unlocked write. Never keys. Tests: `capsule_workspaces::work_state`
+  their person. The restart waits, tried again at the next tick, while this daemon started a Claude leg on the same trust file
+  less than 2 s ago, since its own record is the same unlocked write; the check is made before the stop, and starts by
+  another computer's daemon or outside any row are not seen. A stop or spawn that fails leaves the row resting or at its
+  dialog. Never keys. Tests: `capsule_workspaces::work_state`
   (a reauthed leg and a watchdog-restarted leg, each with a stub that loses the record) and the unit tests of
   `rows/run/trust_restart_tests.rs`. Open, not closed: those tests use a stub, never Claude Code, so they do not show the
   recovery against the real lost update, the wait against a live neighbor start, or macOS (its dialog is uncaptured; a

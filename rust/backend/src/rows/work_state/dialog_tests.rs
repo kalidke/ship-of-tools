@@ -357,10 +357,84 @@ fn the_main_box_closes_the_trust_leg() {
     assert_eq!(trust_to_read(&ws), Some((ws.workspace_id.clone(), g)));
 
     let root = Path::new("/unused");
-    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g + 1, Startup::MainBox));
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g + 1, Startup::MainBox, &Fake));
     assert!(trust_to_read(&ws).is_some(), "a main box read at another generation closes nothing");
-    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::Neither));
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::Neither, &Fake));
     assert!(trust_to_read(&ws).is_some(), "a screen that is neither closes nothing");
-    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::MainBox));
+    assert!(!trust_step(&workspaces, root, &ws.workspace_id, g, Startup::MainBox, &Fake));
     assert_eq!(trust_to_read(&ws), None, "the main box closed the leg");
+}
+
+/// Effects that restart at once: the scope covers, nothing is recent, the stop succeeds and the spawn begins a generation
+/// and opens a leg, as the real one does.
+struct Fake;
+
+impl TrustEffects for Fake {
+    fn covered(&self, _: &Path) -> bool {
+        true
+    }
+    fn recent_start(&self, _: &crate::rows::Workspace) -> bool {
+        false
+    }
+    fn stop(&self, _: &Path) -> Result<(), String> {
+        Ok(())
+    }
+    fn spawn(
+        &self,
+        _: &crate::rows::gate::StartPermit,
+        _: &Path,
+        _: &Path,
+        argv: &[String],
+        row: &crate::rows::Workspace,
+        _: &Workspaces,
+    ) -> std::io::Result<&'static str> {
+        let generation = row.begin_spawn();
+        row.open_trust_leg(generation, argv.to_vec());
+        Ok("ready")
+    }
+}
+
+/// Two Claude rows at the folder-trust dialog: one with an open leg is restarted and not stamped; one whose episode is
+/// spent (its restart's leg shows the dialog again) is left to its person and stamped red. Fails if a dialog the restart
+/// left is skipped by the stamp, or one it ran is stamped.
+#[test]
+fn a_trust_dialog_the_restart_leaves_is_still_stamped_red() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = json!({"agents": {"fresh": {"state": "working"}, "spent": {"state": "working"}}});
+    std::fs::write(dir.path().join("registry.json"), registry.to_string()).expect("registry");
+    let workspaces = Workspaces::new();
+    let argv = vec!["claude".to_string()];
+    let mut rows = Vec::new();
+    let mut generations = Vec::new();
+    for handle in ["fresh", "spent"] {
+        let mut ws = crate::rows::Workspace::from_label(
+            handle,
+            PathBuf::from("/tmp").join(handle),
+            false,
+            "claude".to_string(),
+            String::new(),
+            String::new(),
+        );
+        ws.runtime = "capsule".to_string();
+        let ws = workspaces.insert(ws);
+        let mut generation = ws.begin_spawn();
+        ws.open_trust_leg(generation, argv.clone());
+        if handle == "spent" {
+            assert!(matches!(ws.take_trust_leg(generation, true), crate::rows::workspace::TrustTake::Leg(_)));
+            generation = ws.begin_spawn();
+            ws.open_trust_leg(generation, argv.clone());
+        }
+        generations.push((ws.clone(), generation));
+        rows.push(Row { trust: Some((ws.workspace_id.clone(), generation)), ..plain(handle) });
+    }
+    let writes = std::cell::RefCell::new(Vec::new());
+    let write = |h: &str, s: &Stamp| {
+        writes.borrow_mut().push((h.to_string(), s.clone()));
+        Ok(())
+    };
+    let trust = |id: &str, generation: u64, startup: Startup| trust_step(&workspaces, Path::new("/tmp/sot-trust-state"), id, generation, startup, &Fake);
+    check_rows(dir.path(), &rows, &|_: &Path| Seen::Screen(trust_dialog()), &write, &trust, &mut Runs::default());
+    assert_eq!(writes.into_inner(), vec![("spent".to_string(), Stamp::Dialog("claude dialog open".into()))]);
+    assert_eq!(generations[0].0.spawn_generation(), generations[0].1 + 1, "the fresh row was restarted");
+    assert_eq!(generations[1].0.spawn_generation(), generations[1].1, "the spent row was not");
 }
