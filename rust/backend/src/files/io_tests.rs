@@ -117,7 +117,7 @@ fn write_expected_but_file_vanished_is_conflict() {
 /// A save is written beneath the project root, following no link: nothing is ever written at `<file>.sot-tmp`.
 #[cfg(unix)]
 #[test]
-fn a_link_at_the_old_temporary_name_is_never_written() {
+fn an_entry_planted_beside_the_file_never_receives_the_save() {
     let s = Scratch::new("write_old_tmp");
     let outside = Scratch::new("write_old_tmp_outside");
     let target = outside.path("target.txt");
@@ -164,7 +164,7 @@ fn a_save_at_a_name_that_is_a_link_takes_no_write() {
     std::os::unix::fs::symlink(&out_file, s.path("out.txt")).unwrap();
     std::os::unix::fs::symlink(s.path("real.txt"), s.path("in.txt")).unwrap();
     for id in ["files:out.txt", "files:in.txt"] {
-        for expected in [None, Some(content_version(b"old"))] {
+        for expected in [None, Some(content_version(b"old")), Some("stale".to_string())] {
             let e = write_file(&s.files(), id, "x", expected.as_deref()).unwrap_err();
             let kind = e.downcast_ref::<std::io::Error>().map(|e| e.kind());
             assert_eq!(kind, Some(std::io::ErrorKind::InvalidInput), "{id}: {e:#}");

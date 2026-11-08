@@ -339,8 +339,8 @@ pub async fn handle_dir_create(
 /// file.write / file.delete / dir.create handlers. On any failure returns the
 /// error `HandlerOutput` to send back (tagged with `op`); on success returns
 /// the resolved absolute path. Both resolvers reject `..`/absolute ids;
-/// `confined` selects the WRITE resolver (`node_id_to_path_confined`, the
-/// symlink escape guard — mutations can't leave the project root) vs the
+/// `confined` selects the confined resolver (`node_id_to_path_confined`, the
+/// symlink escape guard, for `dir.create` and `file.delete`) vs the
 /// READ resolver (follows user symlinks, e.g. NAS mounts — see
 /// files/tree.rs).
 fn resolve_file_node(

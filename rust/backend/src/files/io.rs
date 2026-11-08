@@ -80,7 +80,6 @@ pub fn write_file(
     content: &str,
     expected: Option<&str>,
 ) -> Result<WriteResult> {
-    // A save at a name that is a link is refused: the link and the file it leads to stay as they were.
     let abs = files.node_id_to_path(node_id)?;
     if std::fs::symlink_metadata(&abs).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(std::io::Error::new(

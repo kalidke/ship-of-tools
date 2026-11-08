@@ -16,15 +16,16 @@ Per workspace row (built in `rows/workspace.rs`):
 ## Promises
 - Node ids are `files:<rel>` with `/` on every OS; an id holding `..` or an absolute path is refused
   (`FilesMode::path_to_node_id`, `compose_node_path`).
-- Reads follow links (`node_id_to_path`). `file.write`, the crop and the drawing's picture write through
-  `FilesMode::write`, beneath the root and following no link: a save through a link at a folder of its path, wherever the
-  link leads, is refused `bad_node_id` and writes nothing. `dir.create` and a delete resolve through
-  `node_id_to_path_confined`, which canonicalizes and refuses a path outside the root.
-- `file.write`'s version check reads through the read resolver. A save at a name that is a link is refused
-  `bad_node_id` and writes nothing. On Windows a save fails when another program still holds the file open after
-  `write_beneath`'s retry window, whatever sharing that program allows. Tests: `io_tests::a_link_at_the_old_temporary_name_is_never_written`,
-  `a_save_through_a_folder_link_takes_no_write`, `a_save_at_a_name_that_is_a_link_takes_no_write`;
-  `io_ops_tests::a_save_through_a_folder_link_answers_bad_node_id` (the reply code).
+- Reads follow links (`node_id_to_path`). `file.write` writes through `FilesMode::write`, beneath the root and
+  following no link: a save at a name that is a link, or through a link at a folder of its path, wherever the link
+  leads, is refused `bad_node_id` and writes nothing. Its version check runs first, through the read resolver, so a
+  stale version at a folder link answers `conflict`; a link at the name itself is refused before any version check, and
+  a save is refused when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`). On
+  Windows a save fails when another program still holds the file open after `write_beneath`'s retry window, whatever
+  sharing that program allows. `dir.create` and a delete resolve through `node_id_to_path_confined`, which
+  canonicalizes and refuses a path outside the root. Tests: `io_tests.rs`: `a_save_through_a_folder_link_takes_no_write`,
+  `a_save_at_a_name_that_is_a_link_takes_no_write`, `an_entry_planted_beside_the_file_never_receives_the_save`;
+  `io_ops_tests.rs`: `a_save_through_a_folder_link_answers_bad_node_id`.
 - The crop's PNG and a drawing's picture are written under `.sot/captures/` through `FilesMode::write`, which
   follows no link (platform's `write_beneath`, guarantee 17): the folder is created beneath the root and a `.sot` or
   `captures` link, wherever it leads, takes no write. Tested (a symlink, a junction on Windows) by
@@ -39,7 +40,6 @@ Per workspace row (built in `rows/workspace.rs`):
   (Unix; `ink_tests::a_fifo_named_like_an_image_answers_at_once`); the crop picks its decoder from the file's bytes, not its name (a file of
   an unsupported format answers `decode_failed`), and is a PNG of the clamped rect
   (`a_crop_is_a_png_of_the_rect_beneath_the_captures_folder`).
-- `write_file` (`file.write`) refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
   budget of 5 s. Only a confirmed zero exit counts as system trash; an unconfirmed one after which the file is already

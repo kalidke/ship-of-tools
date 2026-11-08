@@ -1,10 +1,11 @@
+#![cfg(unix)]
+
 use serde_json::json;
 
 use super::*;
 use crate::rows::Workspace;
 
 /// A save through a link at a folder of its path answers `bad_node_id` and writes nothing.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_save_through_a_folder_link_answers_bad_node_id() {
     let root = tempfile::tempdir().unwrap();

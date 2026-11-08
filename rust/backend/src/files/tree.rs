@@ -140,15 +140,13 @@ impl FilesMode {
         self.compose_node_path(node_id)
     }
 
-    /// The WRITE resolver: same string-level checks, plus the symlink escape
-    /// guard (security review) — the `..`/absolute checks are string-level
-    /// and can't catch a symlink INSIDE the root pointing outside it.
-    /// Canonicalize the longest existing ancestor of the composed path (the
-    /// target may not exist yet — e.g. a `file.write` to a brand-new path)
-    /// and confirm it's still under `self.root`, which is already canonical
-    /// (`FilesMode::new`). Mutations therefore can't escape the project root
-    /// even through a user symlink; reads deliberately can (see
-    /// [`node_id_to_path`]).
+    /// The confined resolver, for `dir.create` and a delete: same string-level checks, plus the symlink escape
+    /// guard — the `..`/absolute checks are string-level and can't catch a symlink INSIDE the root pointing
+    /// outside it. Canonicalize the longest existing ancestor of the composed path (the target may not exist
+    /// yet) and confirm it's still under `self.root`, which is already canonical (`FilesMode::new`). These
+    /// mutations therefore can't escape the project root even through a user symlink; reads deliberately can
+    /// (see [`node_id_to_path`]). `file.write` reads through the read resolver and writes through
+    /// [`FilesMode::write`].
     pub fn node_id_to_path_confined(&self, node_id: &str) -> Result<PathBuf> {
         let p = self.compose_node_path(node_id)?;
         if let Some(canon) = crate::files::confine::canonicalize_existing_ancestor(&p) {
