@@ -423,6 +423,8 @@ pub(super) fn install_watchdog(
                         crate::agents::argv::agent_argv(&agent_kind_for_spawn, Some(cwd_for_spawn.as_path())),
                         &argv,
                     );
+                    let leg_kind = agent_kind_for_spawn.clone();
+                    let leg_argv = argv_for_spawn.clone();
                     // A new generation begins: the supervisor about to start has been watched by no one.
                     generation = workspaces.resolve(Some(&workspace_id)).map_or(generation, |ws| ws.begin_spawn());
                     let spawn_result = tokio::task::spawn_blocking(move || {
@@ -462,6 +464,7 @@ pub(super) fn install_watchdog(
                             // recheck above just closed. The fresh
                             // supervisor is then the observer's to
                             // watch.
+                            super::start::open_leg_after_start(&workspaces, &workspace_id, generation, &leg_kind, &leg_argv);
                             let settle_dir = state_dir.clone();
                             let settle_wsid = workspace_id.clone();
                             let _ = tokio::task::spawn_blocking(move || settle_after_spawn(&settle_dir, &settle_wsid)).await;

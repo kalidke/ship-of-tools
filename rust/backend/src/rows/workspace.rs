@@ -75,10 +75,28 @@ pub(crate) struct Watched {
 /// The watch record and the row's spawn generation, under one lock. The generation counts the spawns this daemon has made
 /// for the row ([`Workspace::begin_spawn`]); everything that outlives a spawn (an observer's round, a watchdog's exit)
 /// carries the generation it began under and acts on its outcome only while the row is still at that generation.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct WatchState {
     generation: u64,
     record: Option<Watched>,
+    /// The argv of the Claude leg started at this generation that has not yet shown its main box: what a trust restart
+    /// would rerun. Memory only.
+    trust_leg: Option<Vec<String>>,
+    /// A trust restart ran and no main box has shown since: at most one per row per episode, whatever the agent does.
+    trust_spent: bool,
+}
+
+/// What [`Workspace::take_trust_leg`] answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TrustTake {
+    /// No leg is open at that generation (a spawn moved it, or the leg never opened).
+    NotOpen,
+    /// A restart already ran this episode; the leg is closed.
+    Spent,
+    /// The row's root is not covered by the trust scope; the leg is closed.
+    Outside,
+    /// The leg to rerun; it is closed and the episode is spent.
+    Leg(Vec<String>),
 }
 
 /// One lock: a rejection check and the write it gates share one critical section.
@@ -212,7 +230,54 @@ impl Workspace {
         let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
         state.generation += 1;
         state.record = None;
+        state.trust_leg = None;
         state.generation
+    }
+
+    /// A Claude leg started at `generation`: its `argv` is what a trust restart reruns. Refused once a spawn has moved
+    /// the generation.
+    pub(crate) fn open_trust_leg(&self, generation: u64, argv: Vec<String>) {
+        let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation == generation {
+            state.trust_leg = Some(argv);
+        }
+    }
+
+    /// The generation to read for a trust dialog: `Some` while a leg is open or the row's restart is spent.
+    pub(crate) fn trust_reading(&self) -> Option<u64> {
+        let state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        (state.trust_leg.is_some() || state.trust_spent).then_some(state.generation)
+    }
+
+    /// The trust restart's one question, at `generation`: `covered` is whether the row's root is under the trust scope.
+    /// `Spent` and `Outside` close the leg (logged once); `Leg` closes it and spends the episode.
+    pub(crate) fn take_trust_leg(&self, generation: u64, covered: bool) -> TrustTake {
+        let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation != generation || (state.trust_leg.is_none() && !state.trust_spent) {
+            return TrustTake::NotOpen;
+        }
+        let was_open = state.trust_leg.take();
+        if state.trust_spent {
+            if was_open.is_some() {
+                tracing::info!(workspace_id = %self.workspace_id, "trust dialog again before a main box: left to its person");
+            }
+            return TrustTake::Spent;
+        }
+        if !covered {
+            tracing::info!(workspace_id = %self.workspace_id, "trust dialog outside the trust scope: left to its person");
+            return TrustTake::Outside;
+        }
+        state.trust_spent = true;
+        was_open.map_or(TrustTake::NotOpen, TrustTake::Leg)
+    }
+
+    /// The main box showed at `generation`: the leg and the spent mark are cleared.
+    pub(crate) fn trust_passed(&self, generation: u64) {
+        let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if state.generation == generation {
+            state.trust_leg = None;
+            state.trust_spent = false;
+        }
     }
 
     /// The watch record (see [`Watched`]), the current generation's.

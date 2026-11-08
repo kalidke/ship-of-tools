@@ -69,6 +69,7 @@ pub fn spawn_and_watch(
         // The row's fence is claimed: nothing was started, and no watchdog is installed for a launch that never was.
         Spawn::Contended => return Err(pending()),
     };
+    open_leg_after_start(&workspaces, &workspace_id, generation, &agent_kind, agent_argv);
     let phase = settle_after_spawn(state_dir, &workspace_id);
     install_watchdog(
         workspace_id.clone(),
@@ -85,6 +86,16 @@ pub fn spawn_and_watch(
     // wakes: the settle itself writes nothing.
     workspaces.wake_observer(&workspace_id);
     Ok(phase)
+}
+
+/// After a supervisor started at `generation`: a Claude leg may stop at the folder-trust dialog, so its argv is kept for
+/// a restart. The two spawners (this module's and the watchdog's) both call it, only on `Spawn::Started`.
+pub(super) fn open_leg_after_start(workspaces: &Workspaces, workspace_id: &str, generation: u64, agent_kind: &str, argv: &[String]) {
+    if agent_kind == "claude" {
+        if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
+            ws.open_trust_leg(generation, argv.to_vec());
+        }
+    }
 }
 
 /// The spawn path shared by `workspace.create` (mode `Start` always — a

@@ -105,3 +105,42 @@ fn a_latch_on_no_run_is_released_by_the_first_run() {
     assert!(ws.apply_phase_observation(observed(Phase::Ready, supervisor, Some(uuid::Uuid::now_v7()))));
     assert_eq!(ws.phase(), Phase::Ready);
 }
+
+#[test]
+fn a_taken_trust_leg_is_spent_until_the_main_box_and_other_answers_close_it() {
+    let row = || Workspace::from_label("t", PathBuf::from("/p/t"), false, "claude".into(), String::new(), String::new());
+    let argv = vec!["claude".to_string(), "--resume".to_string(), "abc".to_string()];
+    let ws = row();
+    let g = ws.begin_spawn();
+    assert_eq!(ws.trust_reading(), None);
+    assert_eq!(ws.take_trust_leg(g, true), TrustTake::NotOpen, "no leg opened");
+    ws.open_trust_leg(g, argv.clone());
+    assert_eq!(ws.trust_reading(), Some(g));
+    assert_eq!(ws.take_trust_leg(g, true), TrustTake::Leg(argv.clone()));
+    assert_eq!(ws.trust_reading(), Some(g), "spent rows are still read");
+    // The restart's own spawn opens a new leg; the episode is spent, so it is left to its person.
+    let g2 = ws.begin_spawn();
+    ws.open_trust_leg(g2, argv.clone());
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::Spent);
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::Spent, "still spent, with no leg to close");
+    ws.trust_passed(g2);
+    assert_eq!(ws.trust_reading(), None);
+    ws.open_trust_leg(g2, argv.clone());
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::Leg(argv.clone()), "a new episode can restart again");
+    // A moved generation is not open; a stale open is refused.
+    let ws = row();
+    let g = ws.begin_spawn();
+    ws.open_trust_leg(g, argv.clone());
+    let g2 = ws.begin_spawn();
+    assert_eq!(ws.take_trust_leg(g, true), TrustTake::NotOpen);
+    ws.open_trust_leg(g, argv.clone());
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::NotOpen, "a spawn closed the leg and a stale open is refused");
+    ws.open_trust_leg(g2, argv.clone());
+    assert_eq!(ws.take_trust_leg(g, true), TrustTake::NotOpen, "a stale generation takes nothing");
+    assert_eq!(ws.trust_reading(), Some(g2), "and leaves the open leg");
+    // An uncovered root closes the leg and spends nothing.
+    ws.open_trust_leg(g2, argv.clone());
+    assert_eq!(ws.take_trust_leg(g2, false), TrustTake::Outside);
+    assert_eq!(ws.trust_reading(), None);
+    assert_eq!(ws.take_trust_leg(g2, true), TrustTake::NotOpen);
+}
