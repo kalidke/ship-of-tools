@@ -73,15 +73,15 @@ through the channel types below.
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
   know). `chat.unwatch` is fire-and-forget. `chat.changed` and `chat.status` are decoded into `ChatEvt::Changed` and
-  `ChatEvt::Status`; one that does not parse is dropped with a warning. A post is written on one connection at most
+  `ChatEvt::Status`; one that does not parse is a warning and a `ChatEvt::Unreadable`, a loss the owner resyncs from. A post is written on one connection at most
   (`ChatPost` is not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
   reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
   ends first are unknown, never refused, so the window never offers to resend (tests
   `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again`,
-  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`). Limits: fe-net does
-  not order posts (the composer sends the next after the last one's reply), does not resync after `bus.lost` or a
-  `chat.status`, and does not pace resyncs; a watch, history or resolve in flight when a connection ends gets no event.
-  Those belong to the chat's view owner, which does not exist yet; `ui/events.rs` drops `IncomingEvt::Chat`.
+  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`). Limits: fe-net does
+  not order posts, does not resync after `bus.lost`, a `chat.status` or an `Unreadable`, and does not pace resyncs; a
+  watch, history or resolve in flight when a connection ends gets no event. Those are the chat owner's (`ui/drawer/chat/`,
+  fe-ui's contract), which `ui/events.rs` routes `IncomingEvt::Chat`, `BusLost` and each link's coming and going to.
 - The row's selection is one typed edge, `OutgoingReq::SelectionSet { req }` (a text selection, a drawing or a clear) and
   `IncomingEvt::Selection { req, reply }` (transport/ops/selection.rs). A reply carries the request it answers, so a clear's
   reply differs from a set's, and is `Done(state)`, `Unsupported` (an older daemon's exact unknown-op answer), `Refused { code,
