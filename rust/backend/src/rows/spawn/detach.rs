@@ -284,10 +284,11 @@ pub(crate) fn spawn_detached_supervisor(
     // The environment: the daemon's own, minus the nesting variables, plus the row's.
     let env = || leg_env(std::env::vars_os().collect(), &supervisor_env, &account_env_extra);
     let spawn = spawn_detached(line, env, state_dir, cwd, workspace_id)?;
-    // A contended launch started nothing: the live supervisor's leg keeps the marker it was started with.
+    // On Unix a contended launch started nothing and the live supervisor's leg keeps its marker; on Windows the launch always
+    // reports a start (see `Spawn::Contended`).
     if matches!(spawn, Spawn::Started(_)) {
         if let Err(e) = crate::agents::selection::write_marker(state_dir, agent_kind, &supervisor_env, agent_argv) {
-            tracing::warn!(workspace_id, error = %e, "the selection marker was not brought up to date; a selection is answered by the marker of an earlier launch");
+            tracing::warn!(workspace_id, error = %e, "the selection marker was not brought up to date");
         }
     }
     Ok(spawn)

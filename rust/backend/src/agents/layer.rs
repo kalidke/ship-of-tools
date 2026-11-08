@@ -60,8 +60,8 @@ fn hook_command(comm_home: &Path, script: &str) -> String {
     let path = format!("{}/bin/{script}", home.trim_end_matches('/'));
     let quoted = format!("'{}'", path.replace('\'', r"'\''"));
     // The selection hook is the one script a release can prune from under a live leg (an older release's install removes
-    // names it does not ship), so its command is a no-op when the script is not there.
-    if script == SELECTION_HOOK { format!("[ ! -f {quoted} ] || {quoted}") } else { quoted }
+    // names it does not ship), so its command, when the script is not there, only reads the host's input (a closed pipe would be an error row).
+    if script == SELECTION_HOOK { format!("[ -f {quoted} ] || exec cat > /dev/null 2>&1; {quoted}") } else { quoted }
 }
 
 /// Whether `argv` has a `--settings` (either spelling) whose JSON carries the selection hook on `UserPromptSubmit`; a

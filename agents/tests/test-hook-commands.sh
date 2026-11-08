@@ -72,6 +72,10 @@ case_a_missing_selection_script_is_a_silent_no_op() {
     rm -f "$COMM/bin/sot-selection-hook.sh"
     bash -c "$cmd" > "$WORK/hook.out" 2>&1 || { echo "  '$cmd' exited $?: $(cat "$WORK/hook.out")"; return 1; }
     [ ! -s "$WORK/hook.out" ] || { echo "  printed: $(cat "$WORK/hook.out")"; return 1; }
+    # and it reads the whole prompt the host writes, so a long one meets no closed pipe
+    head -c 1048576 /dev/zero | tr '\0' a | bash -c "$cmd" > "$WORK/hook.out" 2>&1
+    local st=("${PIPESTATUS[@]}")
+    [ "${st[*]}" = "0 0 0" ] || { echo "  1 MiB on stdin: statuses ${st[*]}"; return 1; }
 }
 check "a selection hook command whose script is not installed exits 0 and prints nothing" \
     case_a_missing_selection_script_is_a_silent_no_op
