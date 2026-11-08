@@ -13,7 +13,8 @@
 // Both resolvers reject `..` segments and absolute paths in the id itself.
 // READS (tree.children, preview.get, file.read) FOLLOW symlinks — including
 // out-of-root ones like `data/results/` → NAS, this deployment's convention.
-// WRITES (file.write) go through `FilesMode::write`, beneath the root and following no link; file.delete
+// WRITES (file.write) and dir.create go through `FilesMode::write` and `FilesMode::create_dir`, beneath the root and
+// following no link; file.delete
 // uses `node_id_to_path_confined`, which additionally canonicalizes and refuses paths escaping the root.
 //
 // Directory listings skip hidden entries (leading `.`) UNLESS the per-
@@ -142,9 +143,9 @@ impl FilesMode {
 
     /// The confined resolver, for a delete: same string-level checks, plus the symlink escape
     /// guard — the `..`/absolute checks are string-level and can't catch a symlink INSIDE the root pointing
-    /// outside it. Canonicalize the longest existing ancestor of the composed path (the target may not exist
-    /// yet) and confirm it's still under `self.root`, which is already canonical (`FilesMode::new`). These
-    /// mutations therefore can't escape the project root even through a user symlink; reads deliberately can
+    /// outside it. Canonicalize the longest existing ancestor of the composed path (the target may be a dangling
+    /// link) and confirm it's still under `self.root`, which is already canonical (`FilesMode::new`). A delete
+    /// therefore can't escape the project root even through a user symlink; reads deliberately can
     /// (see [`node_id_to_path`]). `file.write` reads through the read resolver and writes through
     /// [`FilesMode::write`]; `dir.create` goes through [`FilesMode::create_dir`].
     pub fn node_id_to_path_confined(&self, node_id: &str) -> Result<PathBuf> {
@@ -163,32 +164,32 @@ impl FilesMode {
     /// (platform's `write_beneath`). A name the rule refuses is the refusal of a node id. Returns the file's path
     /// for replies, never for IO.
     pub fn write(&self, node_id: &str, bytes: &[u8]) -> Result<PathBuf> {
-        let rel = node_id
-            .strip_prefix(ID_PREFIX)
-            .ok_or_else(|| anyhow!("not a files-mode id: {node_id}"))?;
-        sot_platform::host::write_beneath(&self.root, rel, bytes).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::InvalidInput {
-                anyhow::Error::new(e).context(format!("node id cannot be written: {node_id}"))
-            } else {
-                anyhow::Error::new(e).context(format!("write {node_id}"))
-            }
-        })
+        self.beneath(node_id, "write", "written", |rel| sot_platform::host::write_beneath(&self.root, rel, bytes))
     }
 
     /// Creates the folder at the node `node_id` beneath the root, following no link (platform's
     /// `create_dir_beneath`): its parent must exist, and an entry of any kind at its name is `AlreadyExists`. A name
     /// the rule refuses is the refusal of a node id. Returns the folder's path for replies, never for IO.
     pub fn create_dir(&self, node_id: &str) -> Result<PathBuf> {
-        let rel = node_id
-            .strip_prefix(ID_PREFIX)
-            .ok_or_else(|| {
-                anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("not a files-mode id: {node_id}")))
-            })?;
-        sot_platform::host::create_dir_beneath(&self.root, rel).map_err(|e| {
+        self.beneath(node_id, "create", "created", |rel| sot_platform::host::create_dir_beneath(&self.root, rel))
+    }
+
+    /// The id's relative name handed to a platform call beneath the root; an id the call refuses (`InvalidInput`),
+    /// or that is not a files-mode id, is an `InvalidInput` error saying so, and any other error says the verb.
+    fn beneath(
+        &self,
+        node_id: &str,
+        verb: &str,
+        done: &str,
+        f: impl FnOnce(&str) -> std::io::Result<PathBuf>,
+    ) -> Result<PathBuf> {
+        let refused = |m: String| anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, m));
+        let rel = node_id.strip_prefix(ID_PREFIX).ok_or_else(|| refused(format!("not a files-mode id: {node_id}")))?;
+        f(rel).map_err(|e| {
             if e.kind() == std::io::ErrorKind::InvalidInput {
-                anyhow::Error::new(e).context(format!("node id cannot be created: {node_id}"))
+                anyhow::Error::new(e).context(format!("node id cannot be {done}: {node_id}"))
             } else {
-                anyhow::Error::new(e).context(format!("create {node_id}"))
+                anyhow::Error::new(e).context(format!("{verb} {node_id}"))
             }
         })
     }

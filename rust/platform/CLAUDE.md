@@ -178,7 +178,7 @@ where each lives).
     folder, then the last name created relative to its parent's handle (Unix `mkdirat`; Windows `NtCreateFile` with
     `FILE_CREATE` and `FILE_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT`), and the parent synced. A missing parent is
     `NotFound` and nothing is made; an entry of any kind at the name, a link included, is `AlreadyExists` and is left as
-    it is; a link or file at a parent is `InvalidInput`; a parent renamed or swapped after its open leaves the new
+    it is; a link or file at a parent is `InvalidInput`; a failed sync of the parent leaves the folder made and answers the error; on Windows a name a Win32 path does not reach as itself (a trailing dot or space, a device name) is made literally, as for the write; a parent renamed or swapped after its open leaves the new
     folder in the parent that was opened. Its caller is `FilesMode::create_dir`.
 
 Platform facts a caller meets and may not fix (item 57 of the 0.6.7 list): an MSYS program that execs another is a

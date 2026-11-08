@@ -1,5 +1,6 @@
-//! A write beneath a root that follows no link: the root is opened once, each folder below it is opened relative to the
-//! one before, and the file is created, renamed and synced relative to the last folder. No path is used after the root.
+//! A write or a new folder beneath a root that follows no link: the root is opened once, each folder below it is opened
+//! relative to the one before, and the file is created, renamed and synced (or the folder made) relative to the last
+//! folder. No path is used after the root.
 //! The arms are `beneath_unix.rs` (`openat`) and `beneath_windows.rs` (relative `NtCreateFile`).
 
 use std::io;

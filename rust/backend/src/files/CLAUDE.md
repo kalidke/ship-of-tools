@@ -23,7 +23,7 @@ Per workspace row (built in `rows/workspace.rs`):
   a save is refused when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`). On
   Windows a save replaces a file another program holds open with delete sharing (an open handle; the open keeps the
   old file) and fails after `write_beneath`'s retry window when it does not (platform guarantee 17's tests). `dir.create` creates its folder through `FilesMode::create_dir` (platform's `create_dir_beneath`), following no link:
-  its parent must exist, an entry of any kind at the name, a link included, answers `already_exists`, and a link at a
+  its parent must exist, an entry of any kind at the name, a link included, answers `already_exists`, and a link or a file at a
   folder of its path answers `bad_node_id` and creates nothing. A delete resolves through `node_id_to_path_confined`, which
   canonicalizes and refuses a path outside the root. Tests: `io_tests.rs`: `a_save_through_a_folder_link_takes_no_write`,
   `a_save_at_a_name_that_is_a_link_takes_no_write`, `an_entry_planted_beside_the_file_never_receives_the_save`;
@@ -62,7 +62,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `directory.list`, `nav.toggle_hidden`, `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`,
 `concept.write`, `concept.list`, `file.read`, `file.write`, `file.delete`, `file.download`, `file.upload`,
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
-`rust/backend/src/rows/registry.rs`. Uses: `sot_platform::host::write_beneath`, `sot_platform::host::open_regular`, `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
+`rust/backend/src/rows/registry.rs`. Uses: `sot_platform::host::write_beneath`, `sot_platform::host::create_dir_beneath`, `sot_platform::host::open_regular`, `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
 `is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `ContainedStd::wait_within`, `sot_containment::process`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale.
 
@@ -74,7 +74,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types, the write beneath the root.
 - `io.rs`: editor file IO: read, version-checked write and contained trash with a wait budget.
 - `io_trash_tests.rs`: absolute trash fixtures, checked cleanup before fallback, error diagnostics and the command's null streams.
-- `io_ops_tests.rs`: the handler-level reply code of a refused save (`io_ops.rs`).
+- `io_ops_tests.rs`: the handler-level reply code of a refused save or folder (`io_ops.rs`).
 - `preview/`: preview.get, preview.set_scale, image.crop, `ink.rs` (a drawing's picture).
 - `concept.rs`: the `.concept/` annotation store.
 - `confine.rs`: workspace confinement: whether a path lies under a root, and the canonical form of a path that may not exist yet.

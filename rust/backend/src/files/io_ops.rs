@@ -1,5 +1,5 @@
-//! Editor file ops: `file.read`, `file.write`, `file.delete`, `dir.create`, each resolving its
-//! node with `resolve_file_node`.
+//! Editor file ops: `file.read`, `file.write`, `file.delete`, `dir.create`, each taking the row's `FilesMode` from
+//! `files_mode_or_reply`; all but `dir.create` resolve the node with `resolve_file_node`.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -16,6 +16,8 @@ use sot_protocol::FileWriteRes;
 use sot_protocol::Frame;
 use crate::files::io;
 use crate::files::io::WriteResult;
+use crate::files::tree::FilesMode;
+use std::sync::Arc;
 use crate::session::Session;
 use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
@@ -117,11 +119,8 @@ pub async fn handle_file_write(
         Err(out) => return Ok(out),
     };
     // resolve_file_node validated the workspace and built its FilesMode; the write goes through the same one.
-    let files_mode = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::FILE_WRITE)
-        .map(|ws| ws.files_mode())
-    {
-        Ok(Ok(fm)) => fm,
-        Ok(Err(e)) => return Err(e),
+    let files_mode = match files_mode_or_reply(op::FILE_WRITE, req_id, req.workspace_id.as_deref(), workspaces) {
+        Ok(fm) => fm,
         Err(reply) => return Ok(reply),
     };
 
@@ -290,11 +289,8 @@ pub async fn handle_dir_create(
         "dir.create"
     );
 
-    let files_mode = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::DIR_CREATE)
-        .map(|ws| ws.files_mode())
-    {
-        Ok(Ok(fm)) => fm,
-        Ok(Err(e)) => return Err(e),
+    let files_mode = match files_mode_or_reply(op::DIR_CREATE, req_id, req.workspace_id.as_deref(), workspaces) {
+        Ok(fm) => fm,
         Err(reply) => return Ok(reply),
     };
 
@@ -328,6 +324,27 @@ pub async fn handle_dir_create(
     }
 }
 
+/// The row's `FilesMode`, or the reply to send: an unknown row's, or `files_mode_init_failed` when its root does not
+/// resolve.
+fn files_mode_or_reply(
+    op_name: &'static str,
+    req_id: u64,
+    workspace_id: Option<&str>,
+    workspaces: &Workspaces,
+) -> std::result::Result<Arc<FilesMode>, HandlerOutput> {
+    let ws = row_or_reply(workspaces, workspace_id, req_id, op_name)?;
+    ws.files_mode().map_err(|e| {
+        vec![(
+            Frame::res(
+                req_id,
+                op_name,
+                json!({ "error": format!("files_mode init failed: {e:#}"), "code": "files_mode_init_failed" }),
+            ),
+            None,
+        )]
+    })
+}
+
 /// Shared workspace → FilesMode → safe path resolution for the file.read /
 /// file.write / file.delete handlers. On any failure returns the
 /// error `HandlerOutput` to send back (tagged with `op`); on success returns
@@ -344,20 +361,7 @@ fn resolve_file_node(
     workspaces: &Workspaces,
     confined: bool,
 ) -> std::result::Result<std::path::PathBuf, HandlerOutput> {
-    let ws = row_or_reply(workspaces, workspace_id, req_id, op_name)?;
-    let files_mode = match ws.files_mode() {
-        Ok(fm) => fm,
-        Err(e) => {
-            return Err(vec![(
-                Frame::res(
-                    req_id,
-                    op_name,
-                    json!({ "error": format!("files_mode init failed: {e:#}"), "code": "files_mode_init_failed" }),
-                ),
-                None,
-            )]);
-        }
-    };
+    let files_mode = files_mode_or_reply(op_name, req_id, workspace_id, workspaces)?;
     let resolved = if confined {
         files_mode.node_id_to_path_confined(node_id)
     } else {

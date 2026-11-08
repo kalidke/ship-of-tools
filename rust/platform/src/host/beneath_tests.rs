@@ -645,10 +645,12 @@ fn only_a_name_surrogate_tag_is_a_link() {
 
 #[test]
 fn a_folder_is_created_at_its_name_and_the_path_is_returned() {
-    let (_g, root, _outside) = setup();
-    std::fs::create_dir(root.join("a")).unwrap();
-    assert_eq!(create_dir_beneath(&root, "a/new").unwrap(), root.join("a/new"));
-    assert!(root.join("a/new").is_dir());
+    for rel in ["new", "a/new"] {
+        let (_g, root, _outside) = setup();
+        std::fs::create_dir(root.join("a")).unwrap();
+        assert_eq!(create_dir_beneath(&root, rel).unwrap(), root.join(rel));
+        assert!(root.join(rel).is_dir(), "{rel}");
+    }
 }
 
 #[test]
