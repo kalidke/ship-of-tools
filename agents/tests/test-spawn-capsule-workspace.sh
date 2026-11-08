@@ -28,7 +28,7 @@ export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 SYSROOT_AT_START="${SYSTEMROOT-<unset>}"
-export SOT_COMM_TEST_HOST="test-host"
+export SOT_COMM_TEST_HOST="test-host" SOT_SELF_HOST="test-host"   # SOT_SELF_HOST is what the stub declares
 unset SOT_WORKSPACE_ID   # never let an ambient row leak into the self-file slot
 mkdir -p "$WORK/repo"
 REPO_PATH="$WORK/repo"
@@ -81,7 +81,7 @@ start_stub_daemon() {
     hello_reply='{"v":1,"id":1,"kind":"res","op":"hello","payload":{"session_id":"s1","revision":0,"snapshot_pending":false}}'
     # A real daemon answers version.query with the host it declares; unanswered, comm-spawn waits its whole 10 s send
     # window on every spawn before it assumes the local box.
-    version_reply="$(jq -nc --arg h "$(hostname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" \
+    version_reply="$(jq -nc --arg h "$SOT_SELF_HOST" \
         '{v:1,id:1,kind:"res",op:"version.query",payload:{daemon:{host:$h}}}')"
     create_reply="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$REPO_PATH" \
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"

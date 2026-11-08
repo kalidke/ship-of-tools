@@ -256,6 +256,20 @@ case_failed_remote_spawn_reports_no_rollback() {
     return 0
 }
 
+# (f) A daemon that declares no host (one that predates the field answers without it): the spawn stays LOCAL, writes
+#     its row, and says it assumed this box.
+case_undeclared_host_stays_local() {
+    local wsid="ws-undecl" slug="undecl1"
+    start_stub_daemon "" "$wsid" "$slug" "$(entry "$wsid" "$slug" ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn --name spawn-undecl
+    stop_stub_daemon
+
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    registry_has_row "spawn-undecl" || { echo "  no registry row for a daemon that declares no host"; return 1; }
+    contains "$SPAWN_ERR" "did not declare a host" || { echo "  the assumption was not said: $SPAWN_ERR"; return 1; }
+    return 0
+}
+
 # --- run -----------------------------------------------------------------
 
 check "daemon declares ANOTHER host: no local registry row, no local inbox" \
@@ -268,6 +282,8 @@ check "FAILED local spawn: provisional row rolled back and reported" \
     case_failed_local_spawn_rolls_back
 check "FAILED remote spawn: no rollback verdict on a row that was never written" \
     case_failed_remote_spawn_reports_no_rollback
+check "daemon declares NO host: the spawn stays local, writes its row and says it assumed this box" \
+    case_undeclared_host_stays_local
 
 echo ""
 echo "$PASS passed, $FAIL failed"
