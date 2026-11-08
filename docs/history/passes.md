@@ -1040,3 +1040,40 @@ A landing's record goes here, with its measured times; the package page holds on
   could pass under its mutant when the restart landed just after a dial of the attempt's client. It now waits the
   client's redial cap after the new run shows, a bound rather than a hold (WAKE-REATTACH-BOUND). Its second gate also
   failed the sotd unit tests once, with its log lost (GATE-KEEPS-NO-FAILED-LOGS).
+- The write beneath a root keeps its rule while entries inside the root change, 2026-11-07: builder launched 19:58, main
+  21:46 (3be61ccb9, 5e9a3a0c4, d79396550, 0cf4858d4, 53da9e1a3), 108 minutes, far past the maintainer's hour. Tests change
+  folders and names at each step of the write (a folder swapped before and after its open, one with another below it,
+  one removed, a missing folder made and then changed, the temporary file replaced at its create and after its write, a
+  link planted at the final name, two writers of one name); a step before a folder's make lets a test reach that
+  ordering; the check after the rename is deleted, so Ok means the entry at the temporary name was renamed into place
+  (BENEATH-SUPERSEDED-WRITER-ERRS). About 10 product lines and 290 test lines. Where the minutes went: the build 10; two
+  review rounds of 26 (and a 9-minute addendum) and 31 minutes (blockers 1, 0); fixes of 7, 5 and 1; four gates of 2
+  minutes; two hosted runs on the branch. Why far past the hour: round 1's blocker (the two-writers test red with no
+  fault: the check's true error, and stale handles on a network home), then a reversal from keeping the check to
+  deleting it once the reviewer showed it changed only the answer.
+- The chat watch test removes its row while the owner's snapshot is held, 2026-11-07: diagnosis 21:01 to 21:52, builder
+  launched 21:53, main 22:22 (585800d2f, e94a35239, 1944cb5c0), 29 minutes from the builder. Main's hosted macOS runs
+  failed a chat watch dispatch test in 3 of 7 runs (CHAT-WATCH-STALE-SLOT): the owner's snapshot could check the row
+  before the test removed it. The snapshot marks `chat.watch.snapshot` and the test removes the row while it is held.
+  About 5 product and 9 test lines. Where the minutes went: the diagnosis 51 (3 failures in 883 runs on a second build
+  server, every run with a 300 ms delay); the build 7 (500 runs, none failed); one review round of 18 minutes (800 runs,
+  blocker 0); gates of 2 and 2 minutes; one hosted run on the branch. The diagnosis also noted CHAT-TRANSIENT-WAITS.
+- The wake tests count looks instead of sleeping, 2026-11-07: builder launched 20:52, main 23:10 (ddb045fd7, 75fb56788),
+  138 minutes, far past the maintainer's hour. The wake marks `comm.wake.looked` per row handle where a tick ends its
+  decision; each absence test waits for two more looks of its row instead of a span of the clock; the stub writes a
+  marker when its echo is shown; a unit test pins the repeat interval, which the old sleeps had caught. The whole wake
+  suite went from about 635 s to 529 s in one process. About 10 product and 60 test lines. Where the minutes went: the
+  build 53 and the fix 52, each with mutant runs and a whole 9-minute wake suite on a second build server; two review
+  rounds of 40 and 16 minutes (blockers 1, 0); three gates of 2 minutes. Why far past the hour: each builder round ran
+  the slow suite whole, and round 1 found the repeat interval left unpinned by the conversion.
+- The write beneath a root on Windows, 2026-11-07 to 08: builder launched 21:50, main 00:10 (eba799524 to 708bfcfc6, seven
+  commits), 140 minutes, far past the maintainer's hour. Each folder is opened relative to the one before with
+  `NtCreateFile`, an entry whose reparse tag is a name surrogate refused; the temporary file is created new, held against
+  rename, and renamed by its handle within the folder; a relative root is refused before any call on every system; three
+  `windows-sys` features added, no new crate. About 160 product and 200 test lines. Where the minutes went: the build 25;
+  no Windows computer here has a Rust toolchain, so every Windows answer was a hosted round (four rounds of about 20 to
+  25 minutes, queue included); two review rounds of 20 and 18 minutes (blockers 1, 0: a one-character final name was
+  refused, its rename information shorter than the kernel requires) and fixes of 6, 5, 4 and 3; two sets of probes, each
+  a fault on a scratch branch that must turn its named test red on Windows (the first set on whole matrices, cut short
+  at the runner limit; the second on a one-job workflow, all eight red); one whole gate of 255 s. Why far past the hour:
+  the hosted rounds.
