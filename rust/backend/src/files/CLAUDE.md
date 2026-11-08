@@ -90,5 +90,5 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tree_ops.rs`: tree.root, tree.children, nav.toggle_hidden, directory.list (any directory on this host)
 
 ## Start here
-`tree.rs` `FilesMode::write` before any change that writes under `.sot/captures/`, `FilesMode::node_id_to_path_confined` before any other; `watcher.rs` `Watcher::spawn` for change
+`tree.rs` `FilesMode::write` before any change that writes a file, `FilesMode::node_id_to_path_confined` before one that deletes; `watcher.rs` `Watcher::spawn` for change
 events.
