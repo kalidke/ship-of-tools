@@ -30,6 +30,11 @@ owned by `docs/CLAUDE.md`.
 
 ## platform
 
+- **WIN-SAVE-HELD-OPEN** [note] On Windows `host::write_beneath` (`rust/platform/src/host/beneath_windows.rs`) renames
+  with the classic replace, which fails while any other open of the final name remains, so since `file.write` moved onto
+  it a save of a file another program holds open with delete sharing fails after the retry window; `std::fs::rename`,
+  which the old writer used, falls back to a POSIX-semantics replace and saved it. Seen as a red test on a hosted Windows
+  run (`a_final_name_a_reader_holds_open_is_replaced`). Fix decided: the same fallback by the temporary file's handle.
 - **ENSURE-CONTAINER-TEST-ONLY** [note] `host::durable::ensure_container` (`rust/platform/src/host/durable.rs`) has only
   test callers now that the voyage folder is gone; delete it with its tests.
 - **TEST-ISOLATED-TESTS-PORT** [note] The socket suite deleted with the lane servers held tests of

@@ -1089,3 +1089,14 @@ A landing's record goes here, with its measured times; the package page holds on
   (blockers 0, 0, 0), each with its own probes, and three fix rounds; four gates of 2 minutes; three hosted runs on the
   branch. Why past the hour: the rounds each found a test that did not pin its rule, and round 2 moved the regular-file
   open into platform so it has one owner.
+- The window's save is written beneath the project root, 2026-11-08: builder launched 00:47, main 01:57 (79a2924e5,
+  5fadddd2b, 3672c3d5c), 70 minutes, past the maintainer's hour. `file.write` checks its version through the read
+  resolver and writes through `FilesMode::write`; the old writer with its fixed temporary name is deleted; a save at a
+  name that is a link, or through a link at a folder of its path, is refused `bad_node_id` and writes nothing, the link at
+  the name before any version check. About 65 product lines added and 78 removed, and 89 test lines. On Windows a save of
+  a file another program holds open now fails where the old writer's rename replaced it (WIN-SAVE-HELD-OPEN). Where the
+  minutes went: the build with a stress probe on a second build server (4,321 swaps of a folder of the path against
+  1,000 saves, none outside); two review rounds (blockers 0, 0) with probes and mutants, and two fix rounds; three gates
+  of 2 minutes; two hosted runs on the branch. Why past the hour: round 1 took 39 minutes (00:54 to 01:33: its probes,
+  its mutants, and a disassembly of the Windows standard library's rename, which found the held-open difference), and
+  round 2 found the contract paragraph wider than the code, which took a second fix round.
