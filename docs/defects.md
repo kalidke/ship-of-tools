@@ -49,6 +49,9 @@ owned by `docs/CLAUDE.md`.
 - **HOST-NAME-SECOND-READERS** [note] Second readers of the raw host name remain for their formats:
   `comm/identity/context.rs` (handles), `updater/src/lock.rs` (lock owner) and the window's resume file name. The
   window's two config-folder rules need a migration (fe-ui persistence).
+- **PER-POINT-ARM-SERIALIZES** [note] The hold tool's in-process arms are exclusive per point even when their keys differ
+  (`hold.rs`), so a test that fails while armed makes the next test arming that point fail with "another arm of it did not
+  end within 30s", naming the wrong cause. Exclusive per point and key would fix the class; only in-process users meet it.
 
 ## wire
 
@@ -120,8 +123,8 @@ owned by `docs/CLAUDE.md`.
   waits add up to 4 s, and the backstop is armed after the listener's teardown (`lifecycle/shutdown.rs`,
   `server/listen.rs`). Charge the tail inside the bound, with a test of the process's exit
   (`rust/backend/tests/daemon_lifetime/outcomes.rs`).
-- **RETIRE-TESTS-ASSUME-THREAD-RUNS** [note] `lifecycle/retire_tests.rs`'s 400 ms and 1 s bounds assume the retirement's
-  step thread is scheduled within them; `retire` returns at its deadline whether or not that thread has run, so a loaded
+- **RETIRE-TESTS-ASSUME-THREAD-RUNS** [note] `lifecycle/retire_tests.rs`'s 400 ms bound and its `RETIRE_WAIT` bound (through
+  `terminal_retiring`) assume the retirement's step thread is scheduled within them; `retire` returns at its deadline whether or not that thread has run, so a loaded
   host can break them (the same assumption the chat stop test made, CHAT-STOP-STATUS-UNDER-LOAD). Not seen red.
 - **CLAIM-EXIT-OWNER** [note] `Signal::claim_exit` belongs to lifecycle's terminal, not containment.
 - **LEASE-REJECT-NO-DEADLINE** [note] The lease's malformed-line refusals use the undeadlined `reject` in a loop that
@@ -605,6 +608,9 @@ owned by `docs/CLAUDE.md`.
   within its caps"), and later runs passed. Pinned to one core beside eight busy loops it fails every run, at the base and the
   head, with "a stalled write held the socket ... never dropped". Both are plain panics, so the pause check does not cover
   them; whether the second is the fixture's or the product's write bound is unknown.
+- **CHAT-SECOND-ASK-UNPINNED** [note] `chat_tests.rs`'s `a_stop_that_does_not_finish_is_reported_incomplete_and_final` claims
+  "a second ask neither stops again nor reads as retired", but it reads the listener's stop count before a stop spawned by
+  the second ask would be polled, so a product that stops again passes. Pin it by an order (the hold tool), not a sleep.
 
 ## records
 

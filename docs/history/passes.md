@@ -986,7 +986,24 @@ A landing's record goes here, with its measured times; the package page holds on
   paints each row's span (about 5 s for random strokes, 13 s at worst) and a test counts the pixels visited. The stroke cap
   was deleted (the point bound holds it), and the contract states that a daemon built before this field reads a drawing with
   no selection as a clear.
-- The conversation that held the nine landings above from the bash 3.2 run on (id 1f0479d4-c997-4b82-9118-7acfff5c4dc3, 12:17
-  to about 17:10, moved to another account at 14:37 on the maintainer's word) ends here. Besides the landings it took the
-  maintainer's answer on drawing (the requirement and its decisions are in), found that the local gate never runs its own
-  suites, and found that a review's list of deletions is a claim to check: two such deletions were load-bearing.
+- The conversation that held the nine landings above from the bash 3.2 run on (id 1f0479d4-c997-4b82-9118-7acfff5c4dc3, from
+  12:17, moved to another account at 14:37 on the maintainer's word) meant to end here at about 17:10; its clear was refused,
+  so it went on and holds the landings below too. By here it had taken the maintainer's answer on drawing (the requirement
+  and its decisions are in), found that the local gate never runs its own suites, and found that a review's list of
+  deletions is a claim to check: two such deletions were load-bearing.
+- The chat watch's ordering hook is a hold point, 2026-11-07: builder launched 17:10, main 18:22 (7ae923a93, 1a84f1f6b), 72
+  minutes, past the maintainer's hour. The chat watch's test-only closure is gone; its two ordering tests arm the shared hold
+  point `chat.watch.between`, keyed by their own hub. About 15 product lines removed. Where the minutes went: the build 5;
+  one review round of 10 minutes (blocker 0) and a comment fix of 1; two gates red on a chat stop test this change does not
+  touch, and the wait for that test's fix (below); one gate of 2 minutes stacked on it. Why past the hour: the unrelated red.
+- The chat stop test waits for the stop it asserts, 2026-11-07: diagnosis 17:19 to 17:58, builder launched 17:59, main 18:22
+  (e08b1e4fc), 23 minutes from the builder. The test failed three gates in a row under load: lifecycle's retire returns at
+  its deadline whether or not its step thread has asked the chat to stop, and the test read a report of incomplete as a stop
+  already asked. Test lines only: a bounded wait for the stop to begin, and a second pass that forces the loaded order.
+  Where the minutes went: the diagnosis 39 (it reproduced the red under load on a second build server); the build 5; one
+  gate of 2 minutes; one review round of 14 minutes (blocker 0) beside the stacked gates.
+- The durable write creates its temp file fresh, 2026-11-07: builder launched 17:37, main 18:23 (a3cc57126 and 7d5cbab5f,
+  replayed as 5c2be032b), 46 minutes. Found while reviewing the drawing's picture: platform's durable write now removes any
+  entry at its temp name and creates the temp with an exclusive create that never follows a link, for every caller of
+  `write_durable`. About 15 product and 70 test lines. Where the minutes went: the build 4; one review round of 23 minutes
+  (blocker 0) and a test pin of 2; gates of 2 and 4 minutes; a hosted run on Windows and macOS.
