@@ -306,7 +306,9 @@ Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; t
 (`HeldDir`, `remove_ended`, `Redial`, `STABLE`, `host_name`, `state_dir_hash`, `resource_dir`, `sot_state_dir`,
 `sot_config_dir`, `SSH_OPTS`), `sot_protocol` (`ChildLines`, the op names and payloads,
 `page_url::loopback_port_from_url`, `reply::HandlerOutput`), rows (`Workspaces::resolve`, `row_or_reply`,
-`capsule_guard`, for the REPL's ops), files (`canonicalize_within_any_workspace`, for `pluto.open`) and the server's
+`capsule_guard`, for the REPL's ops), files (`canonicalize_within_any_workspace`, for `pluto.open`; `FilesMode::write`, which writes each figure of a
+`repl.execute` run to `.sot/runs/<run id>/fig-<i>.<ext>` beneath the project root, following no link, a failed one logged and
+the reply carrying the figures written before it) and the server's
 `Session` (the revision a reply carries). The REPL names no module of pages: its port announcements go through `ports::PortGrants`, which pages implements and the
 daemon installs (R6).
 

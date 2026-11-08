@@ -429,6 +429,55 @@ mod shell_table {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A figure is written beneath the project root, following no link: with `.sot`, or `.sot/runs`, a link to a
+    /// folder outside, nothing lands there, the failure is logged and the run still answers, with no figure.
+    #[tokio::test]
+    async fn a_figure_is_written_beneath_the_root_following_no_link() {
+        let name = "sidecars::repl::execute::tests::shell_table::a_figure_is_written_beneath_the_root_following_no_link";
+        if !isolated(name, Duration::from_secs(60)) {
+            return;
+        }
+        let log = sot_platform::test_log::capture();
+        let dir = scratch_dir();
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
+        let julia = dir.join("julia");
+        sot_platform::test_exec::write_executable(&julia, STUB);
+        let _pin = pin_env(&julia, &resources);
+        let (frame_tx, mut bus) = tokio::sync::broadcast::channel(256);
+        let workspaces = Workspaces::new();
+        workspaces.set_repl_frame_tx(frame_tx);
+        let session = Session::new();
+
+        for (label, linked) in [("dotsot", ".sot"), ("runs", ".sot/runs")] {
+            let (id, root) = add_row(&workspaces, &dir, label);
+            let outside = dir.join(format!("outside-{label}"));
+            std::fs::create_dir_all(&outside).unwrap();
+            if linked == ".sot/runs" {
+                std::fs::create_dir_all(root.join(".sot")).unwrap();
+            }
+            std::os::unix::fs::symlink(&outside, root.join(linked)).unwrap();
+            let r = run_case(&workspaces, &session, &mut bus, label, eval_payload(&id, "case-ok", None)).await;
+            assert_eq!(r.reply["outcome"], "ok", "{label}: {}", r.reply);
+            assert_eq!(r.reply["figures"], json!([]), "{label}");
+            let found: Vec<_> = walk(&outside);
+            assert!(found.is_empty(), "{label}: wrote outside: {found:?}");
+            assert!(log.text().contains("figure spill failed"), "{label}: not logged:\n{}", log.text());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            out.push(e.path());
+            if e.path().is_dir() {
+                out.extend(walk(&e.path()));
+            }
+        }
+        out
+    }
 }
 
 /// A run whose child never answers ends at its `timeout_ms` (here the minimum, 1 s) with the outcome `timeout`, and a
