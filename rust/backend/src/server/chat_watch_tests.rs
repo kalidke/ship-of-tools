@@ -327,12 +327,13 @@ async fn the_watch_reply_precedes_its_first_event() {
     let (fake, lv) = live().await;
     let rig = live_rig(&fake).await;
     let hub = rig.services.chat.hub().clone();
-    // The first snapshot is held at the fake until the hook opens it.
+    // The first snapshot is held at the fake until the test opens it.
     let (open, gate) = std::sync::mpsc::channel();
     *lv.gate.lock().unwrap() = Some(gate);
-    // Between the registration and the reply: wait for the snapshot to be begun, deliver a message while it is pending,
-    // open the snapshot and wait until the event is published to the connections' receivers. The reply is not yet
-    // written, so an event that overtakes it is one the loop wrote first.
+    // The watch is held at its hold point, between the registration and the reply. While it is held: wait for the
+    // snapshot to be begun, deliver a message while it is pending, open the snapshot and wait until the event is
+    // published to the connections' receivers. Then release the watch: the reply is not yet written, so an event that
+    // overtakes it is one the loop wrote first.
     let arm = Holds::here().arm("chat.watch.between").key(Arc::as_ptr(&hub) as usize).hold(1);
     let mut conn = connect(rig.services.clone()).await;
     let mut events = hub.subscribe();
