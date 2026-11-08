@@ -164,7 +164,7 @@ fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32,
     let mut handle: HANDLE = null_mut();
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
     let options = options | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT;
-    #[allow(clippy::disallowed_methods, reason = "one name relative to a folder handle; never a pipe")]
+    #[allow(clippy::disallowed_methods, reason = "one name relative to a file-system folder handle; never a pipe")]
     let s = unsafe { NtCreateFile(&mut handle, access, &attrs, &mut iosb, null(), FILE_ATTRIBUTE_NORMAL, share, disposition, options, null(), 0) };
     if s < 0 { Err(s) } else { Ok(unsafe { File::from_raw_handle(handle) }) }
 }
