@@ -658,10 +658,11 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   says the service is not running, and an `Unreadable` event. It forgets the registration and sends `chat.watch`
   (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_and_capped_watch`,
   `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
-  `chat.history` read; a pending watch is sent again by `tick`. Watches are five seconds apart and three without a completed
+  `chat.history` read; a pending watch is sent again by `tick`. Watches are five seconds apart, the last of three gets its full pace to be answered (`a_slow_last_watch_still_ends_complete`), and three without a completed
   snapshot end in `Gap`, so a link that keeps failing is bounded; a stream of losses whose recoveries succeed is paced, not
   capped. A refused watch is `Gap` (`a_refused_watch_is_a_gap_and_a_duplicate_reply_starts_no_read`). `Gap` is shown and ends
   only when the link returns; the drawer owes a way out.
+- A `chat.changed` that came while the read was in flight is kept over its older snapshot (`a_change_during_the_read_is_kept_over_the_older_snapshot`).
 - A snapshot replaces the held records, and its `next` cursor (older history, the drawer's to page) is not a gap
   (`a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap`). A read's reply is applied only while that read is the
   one in flight (`a_second_reply_to_one_read_is_not_applied`), and the reply of a read a loss outdated replaces nothing
@@ -674,7 +675,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 - A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
   (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-Limits: `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
+Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); `records` is unbounded; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
 
 ## Folders
