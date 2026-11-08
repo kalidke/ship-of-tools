@@ -1,0 +1,20 @@
+name: probe
+# A scratch-branch workflow that runs the scratch guard's PowerShell suite on Windows. It lives only on tmp/ branches,
+# which are never merged.
+on:
+  push:
+    branches: ["tmp/**"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 3
+      - name: Test scratch guard
+        shell: powershell
+        timeout-minutes: 5
+        run: .\scripts\tests\test-scratch-guard.ps1
+        working-directory: .
