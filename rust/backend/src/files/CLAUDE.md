@@ -53,7 +53,10 @@ Per workspace row (built in `rows/workspace.rs`):
 - A concept target never holds `..`, an absolute path or an empty segment, and `.md` is appended, never substituted
   (`ConceptStore::target_to_path`).
 - A concept note is written durably beneath the project root, creating `.concept/` and the folders below it, following no
-  link (`ConceptStore::write` through platform's `write_beneath`, guarantee 17).
+  link (`ConceptStore::write` through platform's `write_beneath`, guarantee 17). A refused write answers
+  `concept_write_failed`. Tests: `concept_tests.rs`: `write_takes_no_part_in_a_folder_that_is_a_link`,
+  `write_never_goes_through_a_symlink_at_the_old_temporary_name`,
+  `write_never_goes_through_a_hard_link_at_the_old_temporary_name`, `write_creates_the_note_and_replies_its_path`.
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
   crosses a filesystem (`device_of`) and never exceeds its budget (`watch_budget`, `SOT_WATCH_BUDGET`).
 - `preview.changed` is live-only and carries no revision.

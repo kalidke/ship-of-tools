@@ -44,7 +44,7 @@ owned by `docs/CLAUDE.md`.
 - **PLATFORM-WINDOWS-GAPS** [note] The Windows `preflight_volume` has no test; `resource_dir` and the native launcher are
   owned APIs with no guarantee test; Windows durable removal has no parent sync.
 - **DURABLE-WRITERS-LEFT** [note] Writers that still do not use platform's durable publish, left to their owners' passes:
-  files `io.rs` and `concept.rs`, topology `store.rs` and `relay_units.rs`, agents `folder_trust.rs` and
+  topology `store.rs` and `relay_units.rs`, agents `folder_trust.rs` and
   `account_links.rs` (which also needs a Windows no-clobber move), messaging `registry.rs` and `identity/self_file.rs`.
 - **HOST-NAME-SECOND-READERS** [note] Second readers of the raw host name remain for their formats:
   `comm/identity/context.rs` (handles), `updater/src/lock.rs` (lock owner) and the window's resume file name. The
@@ -365,6 +365,10 @@ owned by `docs/CLAUDE.md`.
   `no_argument_or_variable_chooses_a_handle` with a blank stdout; the rerun passed all 1,000. A slow runner, with 90 s of
   the 166 explained. Unread: why the join test came back blank when slow. A test that needs a bound should fail naming
   it, so print what `join` said on stderr in the assertion.
+- **FILES-CONCEPT-NAME-RULES** [note] The concept store's target rule and platform's name rule differ. A link at the note's
+  name that resolves inside the root is replaced by the note, while `file.write` refuses every link at its name; the
+  string rule (`target_to_path`) accepts `.` segments and, on Windows, `:`, which the write refuses. Decided: one rule for
+  both, at the concept pass.
 
 ## sidecars
 
@@ -485,6 +489,8 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **FE-CONCEPT-SAVE-SILENT** [note] The window shows nothing when `concept.write` is refused: the reply is only logged
+  (`rust/frontend/src/ui/preview/replies.rs`) and the editor stays dirty.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent
   freezes, keys discarded") during a load average of 110 on 32 cores. The key loss is fixed: keys typed while a row
   connects are held in a visible line on the pane, held per row with an 8 KiB bound, and sent only by a fresh Enter one

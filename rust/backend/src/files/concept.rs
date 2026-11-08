@@ -28,9 +28,11 @@ impl ConceptStore {
         // Canonicalize when possible — the symlink-escape guard in
         // `target_to_path` needs a stable, resolved root to compare against
         // (security review). Falls back to the raw path if canonicalize
-        // fails (e.g. it doesn't exist yet) so construction stays infallible;
-        // in production `project_root` always exists (workspace creation
-        // validates it), so the fallback is dead code there.
+        // fails so construction stays infallible. The store is built at the
+        // row's first concept op, so a root missing then reaches this
+        // fallback and the store keeps that spelling for the row's life:
+        // every op refuses while the root is missing, and after it returns
+        // unless the given path is its own canonical path.
         let canon_root = project_root
             .canonicalize()
             .unwrap_or_else(|_| project_root.to_path_buf());
