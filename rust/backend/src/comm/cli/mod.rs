@@ -124,7 +124,6 @@ pub(crate) fn context_with(env: &Env, rebind: bool, may_write: bool, notes: &mut
 }
 
 /// Why an identity may not be used: the one classification a send and a session start each word for themselves.
-#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Unroutable {
     /// The identity did not resolve to a handle.
     NoIdentity,
@@ -152,8 +151,8 @@ pub(crate) fn unroutable(name: &str, project_root: &str, registry: &std::path::P
     }
 }
 
-/// The identity's own refusal for sending as it (`sotd comm routable`): see `unroutable`. `bin` is where the
-/// session's scripts are, for the recovery line.
+/// The identity's own refusal for sending as it (`sotd comm routable`): see `unroutable`. The recovery line
+/// names the session's scripts folder (`bin_dir`).
 pub(crate) fn routable(env: &Env, name: &str, project_root: &str, registry: &std::path::Path) -> Result<(), String> {
     let bin = bin_dir(env);
     let q = |s: &str| crate::comm::identity::context::shell_quote(s);

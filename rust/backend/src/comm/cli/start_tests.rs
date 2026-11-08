@@ -108,7 +108,7 @@ fn a_start_again_creates_no_file_under_the_comm_folder() {
 }
 
 /// Unlike every other command, the again form does not make a comm folder that is not whole whole: a registry that is
-/// gone reads as unreadable, and nothing is created.
+/// gone reads as missing, and nothing is created.
 #[test]
 fn a_start_again_in_a_folder_that_is_not_whole_creates_nothing() {
     let t = TestHome::new();
@@ -120,7 +120,7 @@ fn a_start_again_in_a_folder_that_is_not_whole_creates_nothing() {
     let o = session_start(&t.env, &["--again".into()]);
     assert_eq!(files(&t.home), before);
     assert!(
-        o.stdout.ends_with(&format!("comm-session-start: the registry could not be read, so @{h} is unverified; the next start reads it again\n")),
+        o.stdout.ends_with(&format!("comm-session-start: the registry is missing, so @{h} is unverified; run /sot-session-start to join\n")),
         "{}",
         o.stdout
     );
@@ -190,8 +190,12 @@ fn a_send_and_a_start_again_refuse_the_same_four_causes() {
     assert_eq!(again(), format!("{fail}@{h} has no registry entry for this project{join}"));
 
     std::fs::write(t.registry(), "not json").unwrap();
-    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).unwrap_err().contains(&format!("so identity @{h} is unverified")));
     assert_eq!(again(), format!("{fail}the registry could not be read, so @{h} is unverified; the next start reads it again\n"));
+
+    std::fs::remove_file(t.registry()).unwrap();
+    assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
+    assert_eq!(again(), format!("{fail}the registry is missing, so @{h} is unverified{join}"));
 
     let mut other = entry;
     other["root"] = serde_json::json!("/another/project");
