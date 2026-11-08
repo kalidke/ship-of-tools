@@ -289,8 +289,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     );
 
     let env = Env::new("wsf");
-    // The watchdog's restart point is not armed, so the watchdog runs completely unheld while Selection stays parked.
-    let start = env.holds.arm("rows.activation.start").hold(1);
+    // Nothing is armed: the watchdog restarts the row unheld, and the Selection after it finds the row already restarted.
     env.spawn_sotd();
 
     let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
@@ -319,8 +318,6 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
-    start.reached_async(0).await;
-    start.release(0);
 
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 

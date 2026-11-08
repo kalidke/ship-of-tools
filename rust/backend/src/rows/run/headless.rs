@@ -234,7 +234,8 @@ fn type_and_pace(
     pacing_budget: Duration,
 ) -> Result<usize, HeadlessError> {
     let n = if text.is_empty() { 0 } else { send_text(client, text, None, op_budget)? };
-    // `SOT_TEST_PACING_HOLD` (test-only): hold pacing to its full bound. Terminal output batches, so a scripted test load cannot keep the screen changing every poll.
+    // `SOT_TEST_PACING_HOLD` (test-only): hold pacing to its full bound. Terminal output batches, so a scripted test
+    // load cannot keep the screen changing every poll.
     let pacing_hold = std::env::var_os("SOT_TEST_PACING_HOLD").is_some();
 
     let pacing_deadline = Instant::now() + pacing_budget;
