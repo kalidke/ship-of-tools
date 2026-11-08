@@ -276,6 +276,17 @@ of each.
   `stat`), so a file an earlier process left goes and a
   share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
+  A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root, the row and the kind
+  (only `claude`, `TAKES_DRAWING`; a Codex row answers `no_agent` for a drawing and still takes text, until the plan's
+  H-D2 decides Codex reads the picture), the handler takes the process-wide compose lock (a `tokio::sync::Mutex`), has
+  files' `compose` write the picture on the blocking pool (off the connection's loop), renders it with
+  `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans the picture's
+  write and the file's publish, so two drawings from two connections go one at a time and the file always names the
+  picture on disk and the digest it states (the digest is `selection_digest` of the drawing's JSON as the wire
+  serializes it). A refusal of the composite (`bad_node_id`, `not_an_image`, `too_large`, `publish_failed`) removes the
+  file and leaves the old picture, named by nothing; a clear removes the file and never the picture; a setter's end and
+  the walk withdraw a drawing as they withdraw text; a text selection and a drawing replace each other, the newest
+  owning the file. Limit: the setter lock is still never held across an `.await`, the compose lock is.
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
   entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
   keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is
@@ -283,7 +294,7 @@ of each.
   window's clear after an error reply (A7). Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
   row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`
-  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `a_leg_without_the_hook_is_answered_held` (the marker: written for a Claude leg with the variable and the hook, removed for a leg that lacks either, none for Codex), `tests/selection.rs::a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path, a real daemon and a stub `claude`: the hook prints the selection, then nothing after a clear, then nothing after the window's end), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`),
+  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `a_leg_without_the_hook_is_answered_held` (the marker: written for a Claude leg with the variable and the hook, removed for a leg that lacks either, none for Codex), `tests/selection.rs::a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path, a real daemon and a stub `claude`: the hook prints the selection, then nothing after a clear, then nothing after the window's end), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`), `a_drawing_is_the_rows_selection_until_it_is_withdrawn` (publish, clear, refusals, kinds, replacement and both withdrawals for a drawing), `two_drawings_at_once_leave_the_file_naming_the_picture_it_holds`, `tests/selection.rs::a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path: the hook names a picture that decodes, the window's end empties it),
   `rows::run::resume::selection_tests::the_walk_clears_each_registered_rows_unowned_selection` (the walk's call); `server::context::tests::only_a_named_frontends_connection_may_share_a_selection` (real connections of each
   role: only a named `fe` is not `not_a_window`).
 - The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
@@ -298,7 +309,11 @@ of each.
   else) with 1-based inclusive lines. Every cap counts UTF-16 code units, Claude Code's own count and never below a
   character count: the range's text is cut at 2000, the path in the context at 4096, the message at 200 (a path cut
   from the left with `...`), and a compile-time assertion keeps the context under 9,000. The cut's suffix names the
-  range's whole size in Unicode scalar values. A control character, U+2028 or U+2029 in a path is shown as `?`. Tests:
+  range's whole size in Unicode scalar values. A control character, U+2028 or U+2029 in a path is shown as `?`.
+  `render_drawing` builds the same two-key object for a drawing: the context names the figure's path (none for the
+  canvas), the picture's path, the drawing's digest as 16 hex digits and asks the agent to read the picture; the message
+  is `Drawing: <path in the project or sketch> (<N> strokes)`; the same caps hold, by a compile-time assertion at two
+  4,096-unit paths. Tests: `a_drawing_renders_as_the_hook_output_within_the_caps`,
   `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
