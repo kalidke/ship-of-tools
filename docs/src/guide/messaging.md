@@ -15,8 +15,8 @@ row's name — and starts listening. From then on the session is addressable as
 
 A Claude Code session that you clear (`/clear`) or that compacts its own
 context stays joined: Ship of Tools runs a read-only form of the same start by
-itself, which tells the session its handle, its handoff file and any unread
-mail, and changes nothing about the row's state. A bare `/clear` is enough.
+itself, which tells the session its handle, its handoff file and any question its
+row kept, and changes nothing about the row's state. A bare `/clear` is enough.
 This applies to sessions started after the update; Codex sessions and a
 `/resume` typed in a live session do not get it.
 
