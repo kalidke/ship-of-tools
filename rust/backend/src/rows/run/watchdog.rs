@@ -260,31 +260,6 @@ impl Drop for WatchdogOwnerGuard {
     }
 }
 
-/// Test-only barrier at the top of the watchdog's own Crash-arm
-/// restart attempt, BEFORE it ever takes the row's guard: when
-/// `SOT_TEST_ACTIVATION_BARRIER` is set, blocks until the test
-/// creates `<that path>.watchdog-restart` -- a file SEPARATE from
-/// the main barrier, so a test can hold the watchdog and
-/// `pty.open`'s own activation independently and so prove either
-/// lock ordering deterministically (Codex review round 6 SHOULD-FIX:
-/// replace an uncontrolled race with exactly this). No-op in
-/// production; gives up past a generous bound rather than hang a
-/// forgotten release forever.
-async fn wait_for_test_watchdog_restart_barrier() {
-    let Ok(barrier_path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
-        return;
-    };
-    let path = std::path::PathBuf::from(format!("{barrier_path}.watchdog-restart"));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !path.is_file() {
-        if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(path = ?path, "watchdog restart test barrier: released by timeout, not by the test");
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
 /// The watchdog itself: waits for the supervisor to exit (or takes the exit the observer's watch carried), classifies it,
 /// and on a crash restarts with `--resume` under ADR 0041's own launcher restart sequence (`RESTART_BACKOFFS`, at most
 /// `MAX_RESTARTS_PER_WINDOW` within `RESTART_WINDOW`), then marks the workspace `Terminal` (latched, `workspace.list` reads
@@ -384,7 +359,7 @@ pub(super) fn install_watchdog(
                         }
                         return;
                     };
-                    wait_for_test_watchdog_restart_barrier().await;
+                    sot_platform::hold_point_async!("rows.watchdog.restart", &workspace_id);
                     let _held = capsule_guard.lock().await;
                     if !still_mine(&workspace_id, generation, &workspaces) {
                         tracing::info!(workspace_id = %workspace_id, "capsule supervisor watchdog: the supervisor that exited was replaced by a later spawn; not restarting");

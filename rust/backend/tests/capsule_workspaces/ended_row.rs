@@ -28,8 +28,9 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     let env = Env::new("caes");
     // Holds every activation until released, guaranteeing both are blocked
     // together for genuine contention, not scheduling luck.
-    let barrier = env._tmp.path().join("caes-activation-barrier");
-    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+    let start = env.holds.arm("rows.activation.start").hold(2);
+    let completed = env.holds.arm("rows.activation.completed").hold(0);
+    env.spawn_sotd();
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
 
     let create_req = serde_json::json!({
@@ -101,43 +102,24 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     assert_eq!(res_a.payload["code"], "attach_direct", "first concurrent pty.open on an ended row: {:?}", res_a.payload);
     assert_eq!(res_b.payload["code"], "attach_direct", "second concurrent pty.open on an ended row: {:?}", res_b.payload);
 
-    // R4f: wait for both activations to arrive at the barrier (one marker each) --
-    // a count, not a sleep, proving contention rather than merely inferring it.
-    let arrivals_dir = std::path::PathBuf::from(format!("{}.arrivals", barrier.to_string_lossy()));
-    poll_until(
-        || {
-            let dir = arrivals_dir.clone();
-            async move { (count_dir_entries(&dir) >= 2).then_some(()) }
-        },
-        BOUND,
-        "both concurrent activations to arrive at the barrier",
-    )
-    .await;
+    // Both activations arrived at their start: a ticket each, not a sleep, proves contention rather than inferring it.
+    start.reached_async(1).await;
 
-    // Both tasks are provably held at the barrier; exactly ONE process exists --
+    // Both tasks are provably held at their start; exactly ONE process exists --
     // the old resting authority, not yet retired (retirement is inside the guard).
-    assert!(!barrier.exists(), "test bug: the barrier must not have been released yet");
     assert_eq!(
         try_own_supervisor_count(&state_root).expect("the capsule process listing"),
         1,
-        "only the old resting authority may exist while both activations are still held at the barrier"
+        "only the old resting authority may exist while both activations are still held at their start"
     );
 
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    start.release(0);
+    start.release(1);
 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
 
-    // R4f: wait for both activations' completion markers before sampling.
-    let completions_dir = std::path::PathBuf::from(format!("{}.completions", barrier.to_string_lossy()));
-    poll_until(
-        || {
-            let dir = completions_dir.clone();
-            async move { (count_dir_entries(&dir) >= 2).then_some(()) }
-        },
-        BOUND,
-        "both concurrent activations to complete",
-    )
-    .await;
+    // Both activations' completions before sampling.
+    completed.reached_async(1).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Err(join_err) = sampler.await {
@@ -228,17 +210,16 @@ async fn assert_ends_in_a_fresh_run(
 /// The four cases below replace one uncontrolled race (round 6
 /// SHOULD-FIX: an unbarriered race can repeatedly exercise only one
 /// ordering) with deterministic control over which side reaches the
-/// row's guard first, using two independent test barriers:
-/// `SOT_TEST_ACTIVATION_BARRIER` (pty.open's own activation, existing)
-/// and `<that path>.watchdog-restart` (the watchdog's own restart
-/// attempt, round 7). Cases 1 and 3 order themselves against a THIRD
-/// signal, `<that path>.waitforsettle/` -- one marker file per reprobe
-/// cycle, written from inside `ensure_started`'s own loop (round 8:
-/// replaces a guessed sleep with a count of the loop's own observable
-/// progress).
+/// row's guard first, using two independent hold points:
+/// `rows.activation.start` (pty.open's own activation) and
+/// `rows.watchdog.restart` (the watchdog's own restart attempt, round 7).
+/// Cases 1 and 3 order themselves against a THIRD point,
+/// `rows.activation.wait_for_settle` -- one arrival per reprobe cycle, from
+/// inside `ensure_started`'s own loop (round 8: replaces a guessed sleep
+/// with a count of the loop's own observable progress).
 ///
 /// Case 1: Selection reaches the guard first. The watchdog is held at
-/// its own barrier the whole time Selection makes its first (transient)
+/// its own hold the whole time Selection makes its first (transient)
 /// check, waits, and is only then allowed through.
 #[tokio::test]
 #[cfg(target_os = "linux")]
@@ -253,41 +234,34 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
     );
 
     let env = Env::new("ssf");
-    let barrier = env._tmp.path().join("ssf-activation-barrier");
-    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
-    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+    let start = env.holds.arm("rows.activation.start").hold(1);
+    let restart = env.holds.arm("rows.watchdog.restart").hold(1);
+    let settle = env.holds.arm("rows.activation.wait_for_settle").hold(0);
+    env.spawn_sotd();
 
     let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "ssf-workspace").await;
 
-    // Neither barrier is released yet: killing the resting authority
-    // lands the watchdog at ITS OWN barrier (never reaching the guard),
-    // while pty.open's own activation is held at the OTHER barrier.
+    // Neither hold is released yet: killing the resting authority
+    // lands the watchdog at ITS OWN hold (never reaching the guard),
+    // while pty.open's own activation is held at the OTHER.
     kill_supervisor(&env.state_root);
     let pty_req = serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target });
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    // Release Selection's OWN barrier first -- with the watchdog still
+    // Release Selection's OWN hold first -- with the watchdog still
     // held at its own, Selection's activation is the only one that can
     // possibly reach the guard right now, proving this ordering rather
     // than merely hoping for it.
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
-    // Wait for a marker proving `ensure_started`'s own loop reached
-    // `LockedStep::WaitForSettle` at least once -- not a guessed sleep --
-    // before letting the watchdog move.
-    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
-    poll_until(
-        || {
-            let dir = waitforsettle_dir.clone();
-            async move { (count_dir_entries(&dir) >= 1).then_some(()) }
-        },
-        BOUND,
-        "Selection's activation to reach its first WaitForSettle cycle",
-    )
-    .await;
-    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
+    start.reached_async(0).await;
+    start.release(0);
+    // Wait for `ensure_started`'s own loop to reach `LockedStep::WaitForSettle` at least once -- not a guessed
+    // sleep -- before letting the watchdog move.
+    settle.reached_async(0).await;
+    restart.reached_async(0).await;
+    restart.release(0);
 
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
@@ -315,15 +289,9 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     );
 
     let env = Env::new("wsf");
-    let barrier = env._tmp.path().join("wsf-activation-barrier");
-    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
-    // The watchdog's own barrier file is never created: `SOT_TEST_
-    // ACTIVATION_BARRIER` is set, so `wait_for_test_watchdog_restart_
-    // barrier` polls for it forever (until its own 30s bound) unless we
-    // write it -- so write it immediately, letting the watchdog run
-    // completely unheld while Selection stays parked.
-    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
-    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier up front");
+    // The watchdog's restart point is not armed, so the watchdog runs completely unheld while Selection stays parked.
+    let start = env.holds.arm("rows.activation.start").hold(1);
+    env.spawn_sotd();
 
     let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "wsf-workspace").await;
@@ -351,7 +319,8 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
     let pty_res = call(&mut conn, next_id, op::PTY_OPEN, pty_req).await;
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
+    start.reached_async(0).await;
+    start.release(0);
 
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
@@ -383,9 +352,10 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     );
 
     let env = Env::new("smr");
-    let barrier = env._tmp.path().join("smr-activation-barrier");
-    let watchdog_barrier = PathBuf::from(format!("{}.watchdog-restart", barrier.to_string_lossy()));
-    env.spawn_sotd_with_env(&[("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy())]);
+    let start = env.holds.arm("rows.activation.start").hold(1);
+    let restart = env.holds.arm("rows.watchdog.restart").hold(1);
+    let settle = env.holds.arm("rows.activation.wait_for_settle").hold(0);
+    env.spawn_sotd();
 
     let (mut conn, mut next_id, workspace_id, target, state_dir_path, original_run) =
         setup_ended_row(&env, "smr-workspace").await;
@@ -396,23 +366,14 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
     next_id += 1;
     assert_eq!(pty_res.payload["code"], "attach_direct", "pty.open payload: {:?}", pty_res.payload);
 
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
-    // A marker is written every time the wait loop re-enters
-    // `LockedStep::WaitForSettle` -- waiting for SEVERAL (not just one)
-    // proves the loop actually cycles, re-checking and finding the row
-    // still unsettled each time, rather than merely surviving one pass,
-    // before the watchdog is finally let through.
-    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
-    poll_until(
-        || {
-            let dir = waitforsettle_dir.clone();
-            async move { (count_dir_entries(&dir) >= 3).then_some(()) }
-        },
-        BOUND,
-        "Selection's activation to cycle through several WaitForSettle reprobes",
-    )
-    .await;
-    std::fs::write(&watchdog_barrier, b"go").expect("release the watchdog restart barrier");
+    start.reached_async(0).await;
+    start.release(0);
+    // Every time the wait loop re-enters `LockedStep::WaitForSettle` it arrives at `settle` -- waiting for SEVERAL
+    // (not just one) proves the loop actually cycles, re-checking and finding the row still unsettled each time,
+    // rather than merely surviving one pass, before the watchdog is finally let through.
+    settle.reached_async(2).await;
+    restart.reached_async(0).await;
+    restart.release(0);
 
     assert_ends_in_a_fresh_run(&mut conn, &mut next_id, &workspace_id, &state_dir_path, &original_run).await;
 
@@ -465,13 +426,9 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // restarts, so ONLY a Selection can act on it again.
     drop(conn);
     env.kill_daemon_bounded().await;
-    // The barrier file exists up front, so nothing waits on it: it only turns on the activation's per-cycle markers.
-    let barrier = env._tmp.path().join("arr-activation-barrier");
-    std::fs::write(&barrier, b"go").expect("release the activation barrier");
-    env.spawn_sotd_with_env(&[
-        ("SOT_TEST_RECOVERY_DELAY_MS", "3000"),
-        ("SOT_TEST_ACTIVATION_BARRIER", &barrier.to_string_lossy()),
-    ]);
+    // Nothing is held: the arm only counts the activation's per-cycle arrivals.
+    let settle = env.holds.arm("rows.activation.wait_for_settle").hold(0);
+    env.spawn_sotd_with_env(&[("SOT_TEST_RECOVERY_DELAY_MS", "3000")]);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND.max(Duration::from_secs(60))).await;
 
@@ -500,9 +457,8 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
     // Prove this test actually hit the transient-settle window it exists to exercise, not merely that the row eventually
     // recovered some other way: the activation's loop waited out `starting` at least once (the settle itself ends at the
     // first answer, so it no longer warns).
-    let waitforsettle_dir = PathBuf::from(format!("{}.waitforsettle", barrier.to_string_lossy()));
     assert!(
-        count_dir_entries(&waitforsettle_dir) >= 1,
+        settle.arrivals() >= 1,
         "expected at least one WaitForSettle cycle in the activation's loop"
     );
 
