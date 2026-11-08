@@ -2,6 +2,8 @@
 //! The glob re-exports below are the module's interface: callers name
 //! `sot_platform::host::wide_null`, `sot_platform::host::daemon_lock_path` and so on.
 
+#[cfg(unix)]
+mod beneath;
 mod durable;
 pub mod env;
 #[cfg(unix)]
@@ -101,6 +103,8 @@ pub fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(unix)]
+pub use beneath::write_beneath;
 pub use durable::*;
 pub use held_dir::*;
 #[cfg(unix)]
