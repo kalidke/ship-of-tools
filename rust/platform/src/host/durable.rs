@@ -425,7 +425,7 @@ fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
 /// are genuinely transient AV/indexer holds on a name this process itself
 /// just created (rust-lang/rust#123985), unrelated to path existence.
 #[cfg(windows)]
-fn is_transient_hold(e: &std::io::Error) -> bool {
+pub(super) fn is_transient_hold(e: &std::io::Error) -> bool {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
     matches!(e.raw_os_error(),
         Some(c) if c == ERROR_SHARING_VIOLATION as i32
