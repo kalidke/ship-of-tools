@@ -69,7 +69,8 @@ pub(super) fn write_beneath_at(
     let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
     let mut renamed = false;
-    let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
+    let full = format!(r"\??\{}", folders.iter().fold(root.to_path_buf(), |p, n| p.join(n)).join(last).display());
+    let result = publish(&dir, &file, &full, bytes, &mut renamed, &mut at);
     if !renamed {
         // The handle names the temporary file alone; a failure here changes nothing.
         let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
@@ -110,7 +111,7 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let info = buf.as_mut_ptr() as *mut FILE_RENAME_INFO;
     unsafe {
         (*info).Anonymous.Flags = 1; // replace if it exists
-        (*info).RootDirectory = dir.as_raw_handle() as HANDLE;
+        (*info).RootDirectory = null_mut();
         (*info).FileNameLength = (wide.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(wide.as_ptr(), std::ptr::addr_of_mut!((*info).FileName) as *mut u16, wide.len());
     }
