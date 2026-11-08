@@ -230,7 +230,9 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                     }
                     _ => {}
                 }
-                settle(&mut woken, &mut streaks, handle, step, Instant::now());
+                settle(&mut woken, &mut streaks, &handle, step, Instant::now());
+                // A test's hold point: the tick's decision for this row is done (counted, to prove an absence).
+                sot_platform::hold_point_async!("comm.wake.looked", handle);
             }
         }
         // A direct page reply a busy row holds gets the same tick, through the same gate and its per-row exclusion.
@@ -272,18 +274,18 @@ struct Streak {
 }
 
 /// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
-fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) {
+fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: &str, step: Step, now: Instant) {
     match step {
         Step::Clear | Step::Looked => {
-            woken.remove(&handle);
-            streaks.remove(&handle);
+            woken.remove(handle);
+            streaks.remove(handle);
         }
         Step::Woke(w) => {
-            streaks.remove(&handle);
-            woken.insert(handle, w);
+            streaks.remove(handle);
+            woken.insert(handle.to_string(), w);
         }
         Step::Refused(r) => {
-            let s = streaks.entry(handle.clone()).or_insert(Streak { since: now, logged: false, warned: false });
+            let s = streaks.entry(handle.to_string()).or_insert(Streak { since: now, logged: false, warned: false });
             if let (Some(detail), false) = (&r.detail, s.warned) {
                 s.warned = true;
                 tracing::warn!(handle = %handle, border = ?r.border, "comm wake: {} ({detail})", r.reason);

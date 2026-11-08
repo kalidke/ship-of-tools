@@ -86,7 +86,7 @@ fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
     let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None, row: "col 2: a".to_string() });
     let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
     let t0 = Instant::now();
-    let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
+    let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h", step, t0 + d);
     // Inside the bound: silent. Fails if the bound is ignored.
     at(Duration::ZERO, refused());
     at(REFUSED_FOR - Duration::from_secs(1), refused());
@@ -162,7 +162,7 @@ fn an_unconfirmed_write_warns_once_per_streak() {
     let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()), row: String::new() });
     let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
     let t0 = Instant::now();
-    let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
+    let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h", step, t0 + Duration::from_secs(secs));
     for secs in [0, 2, 4] {
         at(secs, u());
     }
