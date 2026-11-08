@@ -94,7 +94,7 @@ case_a_refusal_reaches_stdout() {
     out="$(run_hook)"; rc=$?
     printf '%s' "$saved" > "$REGISTRY"
     [ "$rc" -eq 0 ] || { echo "  exit $rc"; return 1; }
-    printf '%s\n' "$out" | grep -q "identity=FAIL" && printf '%s\n' "$out" | grep -q "Run /sot-session-start to join" || { echo "  no reason on stdout: $out"; return 1; }
+    printf '%s\n' "$out" | grep -q "identity=FAIL" && printf '%s\n' "$out" | grep -q "run /sot-session-start to join" || { echo "  no reason on stdout: $out"; return 1; }
 }
 check "a refusal's reason is on stdout and the hook exits 0" case_a_refusal_reaches_stdout
 

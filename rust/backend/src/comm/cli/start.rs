@@ -1,7 +1,7 @@
 //! `sotd comm session-start` (comm-session-start.sh): the receive bootstrap. Resolve the identity, join, print one
 //! `BOOTSTRAP-ARM` line and the start lines, and stop: the daemon wakes the row, so there is nothing to arm. With
 //! `--again` (the SessionStart hook after a clear or a compaction) it joins nothing and writes nothing: the process
-//! lives on and the row stays joined, so the session is told its handle, handoff and unread mail, and the join, which
+//! lives on and the row stays joined, so the session is told its handle and handoff, and the join, which
 //! rewrites the registry entry, never wipes the row's work-state.
 
 use crate::comm::Env;
@@ -93,46 +93,52 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     }
     let identity = if text.contains("still being heartbeated") { "MISMATCH" } else { "ok" };
     o.out(format!("BOOTSTRAP-ARM handle={handle} identity={identity} WAKE: daemon"));
-    if let Some(line) = handoff_line(&handle, &std::env::current_dir().unwrap_or_default()) {
-        o.out(line);
-    }
-    if let Some(line) = open_question_line(&ctx, &handle) {
-        o.out(line);
-    }
-    o.out(WORKSTATE_RULE);
-    o.out(CAPABILITIES);
-    if let Some(line) = row_note(env) {
-        o.out(line);
-    }
+    start_lines(env, &ctx, &handle, &mut o);
     o
 }
 
-/// `--again`: the start lines for a session whose context was cleared or compacted, from the identity as it resolves;
-/// nothing is joined or written. A handle with no registry entry of this project is a failure that names the way back.
-fn start_again(env: &Env, mut o: Out, ctx: &crate::comm::identity::context::Context) -> Out {
-    let handle = ctx.name.as_str();
-    if let Err(why) = super::routable(env, handle, &ctx.project_root, &ctx.registry()) {
-        o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
-        o.out(format!("comm-session-start: {why} Run /sot-session-start to join."));
-        return o;
-    }
-    o.out(format!("BOOTSTRAP-ARM handle={handle} identity=ok WAKE: daemon"));
-    o.out(format!("Your context was cleared or compacted; you are still joined as @{handle}, and nothing was re-joined. Read mail with comm-poll.sh, send with comm-send.sh."));
+/// The lines both forms print after their own header: the handoff, the open question, the work-state rule, the Julia
+/// note and, in a row, the row note.
+fn start_lines(env: &Env, ctx: &crate::comm::identity::context::Context, handle: &str, o: &mut Out) {
     if let Some(line) = handoff_line(handle, &std::env::current_dir().unwrap_or_default()) {
         o.out(line);
     }
     if let Some(line) = open_question_line(ctx, handle) {
         o.out(line);
     }
-    let unread = super::poll::unread(env, &[handle.to_string()]);
-    if let Some(n) = unread.stdout.split_whitespace().nth(1).and_then(|n| n.parse::<u64>().ok()).filter(|n| *n > 0) {
-        o.out(format!("UNREAD: {n} message(s) wait in your inbox; read them with comm-poll.sh."));
-    }
     o.out(WORKSTATE_RULE);
     o.out(CAPABILITIES);
     if let Some(line) = row_note(env) {
         o.out(line);
     }
+}
+
+/// `--again`: the start lines for a session whose context was cleared or compacted, from the identity as it resolves;
+/// nothing is joined or written. A handle with no registry entry of this project is a failure that names the way back.
+fn start_again(env: &Env, mut o: Out, ctx: &crate::comm::identity::context::Context) -> Out {
+    use crate::comm::registry::registry::{entry, Entry};
+    let handle = ctx.name.as_str();
+    let why = if handle.is_empty() {
+        Some("this session has no sot-comm identity".to_string())
+    } else {
+        match entry(&ctx.registry(), handle) {
+            Entry::Absent => Some(format!("@{handle} has no registry entry for this project")),
+            Entry::Unreadable => Some(format!("the registry could not be read, so @{handle} is unverified")),
+            Entry::Present(e) => {
+                let root = e.get("root").and_then(serde_json::Value::as_str).unwrap_or("");
+                (!root.is_empty() && !crate::comm::identity::paths::same_root(root, &ctx.project_root))
+                    .then(|| format!("@{handle} is registered to a different project"))
+            }
+        }
+    };
+    if let Some(why) = why {
+        o.out("BOOTSTRAP-ARM handle=none identity=FAIL WAKE: n/a");
+        o.out(format!("comm-session-start: {why}; run /sot-session-start to join"));
+        return o;
+    }
+    o.out(format!("BOOTSTRAP-ARM handle={handle} identity=ok WAKE: daemon"));
+    o.out(format!("Your context was cleared or compacted; you are still joined as @{handle}, and nothing was re-joined. Read mail with comm-poll.sh, send with comm-send.sh."));
+    start_lines(env, ctx, handle, &mut o);
     o
 }
 
