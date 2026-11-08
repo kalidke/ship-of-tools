@@ -1122,3 +1122,11 @@ A landing's record goes here, with its measured times; the package page holds on
   of a parent against 1,000 creates, none outside); two review rounds (blockers 0, 0), the first with 19,000 swap calls
   of its own, and three fix rounds (the last text only); three Windows probes and one hosted run on the branch; three
   gates of 2 minutes.
+- A concept note is written beneath the project root, 2026-11-08: builder launched 03:05, main 03:31 (68d296149,
+  3968b8969), 26 minutes. `ConceptStore::write` keeps its string rule and reply path and writes through platform's write
+  beneath a root, which creates the `.concept` folders and takes a fresh temporary name; its own temporary-file writer
+  and `create_dir_all` are deleted. A refused note answers `concept_write_failed`, as before. Platform's guarantee 17 no
+  longer lists its callers; the integration table's row is the one list. About 12 product and 58 test lines. Where the
+  minutes went: the build (3 minutes); one review round (blockers 0) with swap probes on local disk and the network
+  home, and one fix round of text and test names (FE-CONCEPT-SAVE-SILENT and FILES-CONCEPT-NAME-RULES noted); one hosted
+  run on the branch; two gates of 2 minutes, and one stray gate of the first commit run by mistake.
