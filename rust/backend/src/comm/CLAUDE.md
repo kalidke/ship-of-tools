@@ -41,12 +41,12 @@ Address:
   prints); it reads no inbox, takes no lock and, unlike the commands that resolve an identity for a send, poll or
   join, does not make a comm folder whole. An identity a send would refuse (no handle, no registry entry, a registry
   that is missing or unreadable, an entry of another project: `cli::unroutable`, which the send words for itself)
-  prints `identity=FAIL` and one sentence; all but the unreadable registry (present, not parsing) end in `run
-  /sot-session-start to join`, and that one says the next start reads it again. Mail is told by the end-of-turn check
-  and the wake. The hook sends the start's stderr to stdout, stands down on `SOT_COMM_HOOKS=off` and always exits 0. A
-  leg's first start and a leg started with `--resume <id>` run the full start through the bootstrap prompt; `/resume`
-  typed in a live row runs none (the hook is not carried for the `resume` source). Tests:
-  `comm/tests/test-session-start-hook.sh`,
+  prints `identity=FAIL` and one sentence; a registry with no file at its path is told to join, and so is every other
+  cause but a registry that is there and refused (not JSON, no `agents` object, not permitted), which says the next
+  start reads it again. Mail is told by the end-of-turn check and the wake. The hook sends the start's stderr to
+  stdout, stands down on `SOT_COMM_HOOKS=off` and always exits 0. A leg's first start and a leg started with `--resume
+  <id>` run the full start through the bootstrap prompt; `/resume` typed in a live row runs none (the hook is not
+  carried for the `resume` source). Tests: `comm/tests/test-session-start-hook.sh`,
   `cli::start::tests::a_start_again_*`.
 - Each handle has one inbox, `inbox/<h>.jsonl` in the comm folder of the box where its session runs (one folder for
   every computer that shares the home).

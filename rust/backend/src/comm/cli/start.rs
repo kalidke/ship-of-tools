@@ -114,16 +114,17 @@ fn start_lines(env: &Env, ctx: &crate::comm::identity::context::Context, handle:
 }
 
 /// `--again`: the start lines for a session whose context was cleared or compacted, from the identity as it resolves;
-/// nothing is joined or written. An identity a send would refuse is a failure with one sentence, naming the way back where a join helps.
+/// nothing is joined or written. An identity a send would refuse is a failure with one sentence, naming the way back
+/// where a join helps.
 fn start_again(env: &Env, mut o: Out, ctx: &crate::comm::identity::context::Context) -> Out {
     let handle = ctx.name.as_str();
     let why = unroutable(handle, &ctx.project_root, &ctx.registry()).map(|cause| match cause {
         Unroutable::NoIdentity => "comm-session-start: this session has no sot-comm identity; run /sot-session-start to join".to_string(),
         Unroutable::Absent => format!("comm-session-start: @{handle} has no registry entry for this project; run /sot-session-start to join"),
         Unroutable::OtherRoot(_) => format!("comm-session-start: @{handle} is registered to a different project; run /sot-session-start to join"),
-        // A registry that is gone is joined afresh by the full start; one that is there and unreadable it refuses too,
+        // A registry with no file at its path (the reader's NotFound) is joined afresh by the full start; one that is there and unreadable it refuses too,
         // and a join would rewrite its entry whole, so that one gets no instruction.
-        Unroutable::Unreadable if !ctx.registry().is_file() => {
+        Unroutable::Unreadable if matches!(std::fs::symlink_metadata(ctx.registry()), Err(e) if e.kind() == std::io::ErrorKind::NotFound) => {
             format!("comm-session-start: the registry is missing, so @{handle} is unverified; run /sot-session-start to join")
         }
         Unroutable::Unreadable => format!("comm-session-start: the registry could not be read, so @{handle} is unverified; the next start reads it again"),

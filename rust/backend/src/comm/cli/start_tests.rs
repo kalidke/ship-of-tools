@@ -107,7 +107,7 @@ fn a_start_again_creates_no_file_under_the_comm_folder() {
     assert_eq!(files(&t.home), before);
 }
 
-/// Unlike every other command, the again form does not make a comm folder that is not whole whole: a registry that is
+/// Unlike send, poll and join, the again form does not make a comm folder that is not whole whole: a registry that is
 /// gone reads as missing, and nothing is created.
 #[test]
 fn a_start_again_in_a_folder_that_is_not_whole_creates_nothing() {
@@ -193,7 +193,14 @@ fn a_send_and_a_start_again_refuse_the_same_four_causes() {
     assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).unwrap_err().contains(&format!("so identity @{h} is unverified")));
     assert_eq!(again(), format!("{fail}the registry could not be read, so @{h} is unverified; the next start reads it again\n"));
 
+    // A registry the reader refuses for another reason than "no file" is unreadable too: no agents object, a folder.
+    std::fs::write(t.registry(), "{}").unwrap();
+    assert_eq!(again(), format!("{fail}the registry could not be read, so @{h} is unverified; the next start reads it again\n"));
     std::fs::remove_file(t.registry()).unwrap();
+    std::fs::create_dir(t.registry()).unwrap();
+    assert_eq!(again(), format!("{fail}the registry could not be read, so @{h} is unverified; the next start reads it again\n"));
+    std::fs::remove_dir(t.registry()).unwrap();
+
     assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
     assert_eq!(again(), format!("{fail}the registry is missing, so @{h} is unverified{join}"));
 
