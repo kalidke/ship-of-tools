@@ -178,7 +178,17 @@ exit 7
     $long = Start-Probe 'long' '-SleepSec 8'
     $deadline = (Get-Date).AddSeconds(60)
     $lo = @{}
-    while ((Get-Date) -lt $deadline -and -not $lo.TMP) { Start-Sleep -Milliseconds 300; $lo = Read-Probe $long.Out }
+    # CHECK ONLY, never landed: the moment the file exists, hold it open as Get-Content opens it (Read, sharing ReadWrite)
+    # for 500 ms, as a poll read in progress does, then poll as before.
+    $held = $false
+    while ((Get-Date) -lt $deadline -and -not $lo.TMP -and -not $long.Proc.HasExited) {
+        if (-not $held -and (Test-Path -LiteralPath $long.Out)) {
+            try { $fh = [System.IO.File]::Open($long.Out, 'Open', 'Read', 'ReadWrite'); Start-Sleep -Milliseconds 500; $fh.Dispose(); $held = $true } catch { }
+        }
+        if ($held) { $lo = Read-Probe $long.Out }
+    }
+    Write-Host "    check: held $held; long exited $($long.Proc.HasExited)"
+    if ($long.Proc.HasExited) { Write-Host "    check: long stderr: $($long.Proc.StandardError.ReadToEnd())" }
     $longHome = $(if ($lo.TMP) { Split-Path -Parent $lo.TMP } else { '' })
     $short = Start-Probe 'short' ''
     $short.Proc.WaitForExit()
