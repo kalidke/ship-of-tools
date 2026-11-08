@@ -191,6 +191,7 @@ fn a_posts_outcome_reads_as_the_reply_proves() {
         o.on_evt(&host(), ChatEvt::Posted { req: post_req("one"), reply }, Instant::now());
         assert_eq!(o.shown, Some(want));
         assert!(o.posting.is_none());
+        assert_eq!(o.unsupported.contains(&host()), matches!(o.shown, Some(PostShown::Refused(ChatCode::Unavailable))));
     }
 }
 
@@ -220,6 +221,10 @@ fn the_late_reply_of_a_stale_read_leaves_the_state_needed() {
     assert_eq!(fill(&o), Fill::Needed);
     assert!(o.watch.as_ref().unwrap().records.is_empty());
     assert!(is_watch(&late), "the next step is a watch, never a second read beside it");
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE * 2));
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&["4.000001"], None) }, t0 + PACE * 2);
+    assert_eq!(fill(&o), Fill::Complete, "the next read is not outdated");
+    assert_eq!(o.watch.as_ref().unwrap().records.len(), 1);
 }
 
 /// A refused watch is a shown gap, and a duplicate `complete` reply starts no second read.
@@ -250,4 +255,150 @@ fn changed_events_put_and_delete_the_watched_channels_records() {
     assert_eq!(o.watch.as_ref().unwrap().records.len(), 2, "C2's event changed nothing");
     o.on_evt(&host(), changed("C1", &[], &["1.000001"]), now);
     assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("2.000001")]);
+}
+
+fn stopped() -> ChatEvt {
+    ChatEvt::Status(serde_json::from_value(serde_json::json!({ "service": "stopped", "gap": false, "resync": [] })).unwrap())
+}
+
+/// The last watch attempt gets its full pace to be answered: a `complete` reply that crosses the link after the cap's tries
+/// still ends complete, and the gap comes one pace after the last send.
+#[test]
+fn a_slow_last_watch_still_ends_complete() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    let mut now = t0 + PACE;
+    assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), now)));
+    for _ in 1..MAX_TRIES {
+        now += PACE;
+        assert!(is_watch(&o.tick(now)));
+    }
+    assert!(o.tick(now + Duration::from_millis(16)).is_empty());
+    assert_eq!(fill(&o), Fill::Needed);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now + Duration::from_millis(100)));
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&[], None) }, now + Duration::from_millis(200));
+    assert_eq!(fill(&o), Fill::Complete);
+}
+
+/// A `chat.changed` that came while the read was in flight is newer than its snapshot and wins over it.
+#[test]
+fn a_change_during_the_read_is_kept_over_the_older_snapshot() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    let changed = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [record("3.000001", "C1")], "deleted": ["1.000001"] });
+    o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(changed).unwrap()), t0 + PACE);
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&["1.000001", "2.000001"], None) }, t0 + PACE);
+    let mut held: Vec<_> = o.watch.as_ref().unwrap().records.keys().cloned().collect();
+    held.sort_by_key(|t| String::from(t.clone()));
+    assert_eq!(held, [ts("2.000001"), ts("3.000001")]);
+    assert!(o.watch.as_ref().unwrap().overlay.is_empty());
+}
+
+/// The link going and returning starts the watch over: nothing is sent while it is down, one watch when it is up, and no
+/// gap, outdated read or old attempt count survives it.
+#[test]
+fn the_link_returning_starts_the_watch_over() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, t0 + PACE);
+    assert_eq!(fill(&o), Fill::Gap);
+    assert!(o.on_evt(&host(), status(false, &["C1"]), t0 + PACE * 2).is_empty(), "a gap ends with the link, not a status");
+    assert_eq!(fill(&o), Fill::Gap);
+    assert!(o.on_connection(&host(), false, t0 + PACE * 2).is_empty());
+    assert!(o.tick(t0 + PACE * 9).is_empty(), "no send while the link is down");
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE * 9)));
+    assert_eq!(fill(&o), Fill::Needed);
+    assert_eq!(o.watch.as_ref().unwrap().tries, 1, "the attempts started over");
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE * 9));
+
+    let mut o = complete(t0);
+    o.on_connection(&host(), false, t0);
+    assert!(is_watch(&o.on_connection(&host(), true, t0)), "a registration does not outlive the link");
+
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    assert!(o.watch.as_ref().unwrap().stale);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)), "the read in flight died with the link");
+    assert!(!o.watch.as_ref().unwrap().stale);
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+}
+
+/// A refused read goes back to the watch on the pace, not to another read at once, and the next read is not outdated.
+#[test]
+fn a_refused_read_goes_back_to_the_watch_on_the_pace() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    let refused = ChatReply::Refused(ChatCode::Busy);
+    assert!(o.on_evt(&host(), ChatEvt::History { req, reply: refused }, t0 + PACE).is_empty());
+    assert_eq!(fill(&o), Fill::Needed);
+    assert!(is_watch(&o.tick(t0 + PACE * 2)));
+}
+
+/// An older daemon's unknown-op answer, to a watch, a read or a post, stops the sends; the state stays needed, not gap.
+#[test]
+fn an_unsupported_answer_stops_the_sends_for_every_op() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Unsupported }, t0 + PACE);
+    assert!(o.tick(t0 + PACE * 20).is_empty());
+    assert_eq!(fill(&o), Fill::Needed);
+
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), ChatEvt::History { req, reply: ChatReply::Unsupported }, t0 + PACE);
+    assert!(o.unsupported.contains(&host()));
+    assert!(o.tick(t0 + PACE * 20).is_empty());
+}
+
+/// A service that is not running sends the watched channel to watch again.
+#[test]
+fn a_stopped_service_watches_again() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    assert!(is_watch(&o.on_evt(&host(), stopped(), t0 + PACE)));
+}
+
+/// An event, reply or status for another link, workspace or channel changes nothing, and the late reply of one channel's
+/// read never fills another's.
+#[test]
+fn what_is_for_another_link_or_channel_changes_nothing() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    let other = "other".to_string();
+    let mut o = complete_with(t0, &["1.000001"]);
+    let put = |ws: &str, ch: &str| {
+        let body = serde_json::json!({ "workspace": ws, "channel": ch, "put": [record("9.000001", ch)], "deleted": ["1.000001"] });
+        ChatEvt::Changed(serde_json::from_value(body).unwrap())
+    };
+    assert!(o.on_evt(&other, put("T1", "C1"), now).is_empty());
+    assert!(o.on_evt(&host(), put("T2", "C1"), now).is_empty());
+    assert!(o.on_evt(&other, status(false, &["C1"]), now).is_empty());
+    assert!(o.on_bus_lost(&other, "chat.changed", now).is_empty());
+    assert!(o.on_connection(&other, false, now).is_empty());
+    assert_eq!(fill(&o), Fill::Complete);
+    assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("1.000001")]);
+    o.on_evt(&host(), status(false, &["C1"]), now);
+    assert!(o.on_evt(&other, watched(ChatWatchState::Complete), now).is_empty(), "another link's watch reply");
+    let c2 = ChatEvt::Watched { target: target("C2"), reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) };
+    assert!(o.on_evt(&host(), c2, now).is_empty(), "another channel's watch reply");
+    let c1_read = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    assert!(o.on_evt(&other, ChatEvt::History { req: c1_read.clone(), reply: page(&[], None) }, now).is_empty());
+    assert_eq!(fill(&o), Fill::Reading, "another link's read reply");
+    let out = o.watch(host(), target("C2"), now + PACE);
+    assert!(matches!(out.as_slice(), [(_, OutgoingReq::ChatUnwatch { .. }), (_, OutgoingReq::ChatWatch { .. })]), "{}", out.len());
+    let c2 = ChatEvt::Watched { target: target("C2"), reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) };
+    history_req(&o.on_evt(&host(), c2, now + PACE));
+    o.on_evt(&host(), ChatEvt::History { req: c1_read, reply: page(&["5.000001"], None) }, now + PACE);
+    assert_eq!(fill(&o), Fill::Reading, "C1's late reply is not C2's read");
+    assert!(o.watch.as_ref().unwrap().records.is_empty());
 }

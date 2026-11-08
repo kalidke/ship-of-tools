@@ -509,8 +509,8 @@ owned by `docs/CLAUDE.md`.
   version skew detection, a new ADR; 8 to 10 files, about 1,500 to 2,500 lines with tests). The login cap per host
   waits on a count of sshd's dropped logins.
 - **BUS-LOST-NO-RECOVERY** [note] A connection that falls behind a bus gets one typed `bus.lost` frame naming the bus and the
-  count; an older window or linked daemon ignores it, and no pane recovers from it yet. The project chat is its first
-  consumer.
+  count; an older window or linked daemon ignores it, and only the project chat recovers from it (its owner watches again after `bus.lost` for `chat.changed`); no other
+  pane does.
 - **HUB-TELLS-OLDER-WINDOW** [feature] At the 0.6.6-to-0.7 crossing a 0.7 hub cannot make an older window install: an
   older window answers a refused hello only with its overlay, and its bits come only from its own updater or a manual
   stage. Unfixable for 0.6.6 boxes. Build it so the next crossing works: the hub's hello refusal names its exact release

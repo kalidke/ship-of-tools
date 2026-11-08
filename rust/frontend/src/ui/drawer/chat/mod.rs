@@ -10,7 +10,7 @@ use crate::net::dial::HostKey;
 use super::super::*;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{
-    ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
+    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
     ChatWatchState,
 };
 use sot_protocol::chat::{ChatRecord, Ts};
@@ -54,6 +54,15 @@ struct Watch {
     last_try: Option<Instant>,
     tries: u8,
     records: HashMap<Ts, ChatRecord>,
+    /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
+    overlay: Vec<ChatChangedEvt>,
+}
+
+impl Watch {
+    fn apply(&mut self, c: &ChatChangedEvt) {
+        self.records.extend(c.put.iter().map(|r| (r.ts.clone(), r.clone())));
+        c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
+    }
 }
 
 #[derive(Default)]
@@ -70,7 +79,7 @@ impl ChatOwner {
     /// Watch `target` on `host`, replacing any earlier watch.
     pub(in crate::ui) fn watch(&mut self, host: HostKey, target: ChatTarget, now: Instant) -> Vec<Out> {
         let mut out: Vec<Out> = self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new(), overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -101,15 +110,16 @@ impl ChatOwner {
                 self.shown = Some(PostShown::Unknown);
             }
         }
-        if let Some(w) = self.watch.as_mut().filter(|w| &w.host == host) {
+        if let Some(w) = self.of(host) {
             (w.registered, w.fill, w.reading, w.stale, w.last_try, w.tries) = (false, Fill::Needed, None, false, None, 0);
+            w.overlay.clear();
         }
         self.drive(now)
     }
 
     /// The event bus dropped events on `host`'s link; `chat.changed` is the chat's bus.
     pub(in crate::ui) fn on_bus_lost(&mut self, host: &HostKey, bus: &str, now: Instant) -> Vec<Out> {
-        if bus == sot_protocol::op::CHAT_CHANGED && self.watch.as_ref().is_some_and(|w| &w.host == host) { self.resync(now) } else { Vec::new() }
+        if bus == sot_protocol::op::CHAT_CHANGED && self.of(host).is_some() { self.resync(now) } else { Vec::new() }
     }
 
     /// The paced retry of what a loss owes.
@@ -118,7 +128,7 @@ impl ChatOwner {
     }
 
     pub(in crate::ui) fn on_evt(&mut self, host: &HostKey, evt: ChatEvt, now: Instant) -> Vec<Out> {
-        let mine = self.watch.as_ref().is_some_and(|w| &w.host == host);
+        let mine = self.of(host).is_some();
         match evt {
             // Rows are resolved by the drawer (B5), which also starts the watch.
             ChatEvt::Resolved { .. } => Vec::new(),
@@ -130,14 +140,27 @@ impl ChatOwner {
             }
             ChatEvt::Changed(c) => {
                 if let Some(w) = self.watch.as_mut().filter(|w| mine && w.target.workspace == c.workspace && w.target.channel == c.channel) {
-                    w.records.extend(c.put.into_iter().map(|r| (r.ts.clone(), r)));
-                    c.deleted.iter().for_each(|ts| drop(w.records.remove(ts)));
+                    w.apply(&c);
+                    if w.reading.is_some() {
+                        w.overlay.push(c);
+                    }
                 }
                 Vec::new()
             }
             ChatEvt::Status(s) if mine && self.status_lost(&s) => self.resync(now),
             ChatEvt::Unreadable if mine => self.resync(now),
             ChatEvt::Status(_) | ChatEvt::Unreadable => Vec::new(),
+        }
+    }
+
+    /// The watch, if it is on `host`'s link.
+    fn of(&mut self, host: &HostKey) -> Option<&mut Watch> {
+        self.watch.as_mut().filter(|w| &w.host == host)
+    }
+
+    fn mark_unsupported<T>(&mut self, host: &HostKey, reply: &ChatReply<T>) {
+        if matches!(reply, ChatReply::Unsupported) {
+            self.unsupported.insert(host.clone());
         }
     }
 
@@ -171,11 +194,14 @@ impl ChatOwner {
             (w.fill, w.reading) = (Fill::Reading, Some(req.clone()));
             return vec![(w.host.clone(), OutgoingReq::ChatHistory { req })];
         }
-        if w.tries >= MAX_TRIES {
-            w.fill = Fill::Gap;
-        } else if w.last_try.is_none_or(|t| now.duration_since(t) >= PACE) {
-            (w.tries, w.last_try) = (w.tries + 1, Some(now));
-            return vec![(w.host.clone(), OutgoingReq::ChatWatch { target: w.target.clone() })];
+        // The last attempt gets its full pace to be answered before the gap is shown.
+        if w.last_try.is_none_or(|t| now.duration_since(t) >= PACE) {
+            if w.tries >= MAX_TRIES {
+                w.fill = Fill::Gap;
+            } else {
+                (w.tries, w.last_try) = (w.tries + 1, Some(now));
+                return vec![(w.host.clone(), OutgoingReq::ChatWatch { target: w.target.clone() })];
+            }
         }
         Vec::new()
     }
@@ -183,10 +209,8 @@ impl ChatOwner {
     /// Only a watch reply that says `complete` starts a read, and only while the state needs one. A watch still pending
     /// is sent again by `tick`; a refused one is a gap.
     fn on_watched(&mut self, host: &HostKey, target: &ChatTarget, reply: ChatReply<ChatWatchRes>, now: Instant) -> Vec<Out> {
-        if matches!(reply, ChatReply::Unsupported) {
-            self.unsupported.insert(host.clone());
-        }
-        let Some(w) = self.watch.as_mut().filter(|w| &w.host == host && &w.target == target && w.fill == Fill::Needed) else { return Vec::new() };
+        self.mark_unsupported(host, &reply);
+        let Some(w) = self.of(host).filter(|w| &w.target == target && w.fill == Fill::Needed) else { return Vec::new() };
         match reply {
             ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) => w.registered = true,
             ChatReply::Refused(_) => w.fill = Fill::Gap,
@@ -198,10 +222,8 @@ impl ChatOwner {
     /// Applies the reply to the read in flight, and no other: a second reply to one read finds none, and the reply of a
     /// read a loss outdated replaces nothing.
     fn on_history(&mut self, host: &HostKey, req: &ChatHistoryReq, reply: ChatReply<ChatHistoryRes>, now: Instant) -> Vec<Out> {
-        if matches!(reply, ChatReply::Unsupported) {
-            self.unsupported.insert(host.clone());
-        }
-        let Some(w) = self.watch.as_mut().filter(|w| &w.host == host && w.reading.as_ref() == Some(req)) else { return Vec::new() };
+        self.mark_unsupported(host, &reply);
+        let Some(w) = self.of(host).filter(|w| w.reading.as_ref() == Some(req)) else { return Vec::new() };
         w.reading = None;
         w.fill = Fill::Needed;
         match reply {
@@ -209,13 +231,14 @@ impl ChatOwner {
                 // The snapshot replaces what was held: a record it no longer holds was deleted during the loss. Its
                 // `next` cursor is the older history, which the drawer pages.
                 w.records = res.records.into_iter().map(|r| (r.ts.clone(), r)).collect();
+                std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 (w.fill, w.tries) = (Fill::Complete, 0);
             }
             ChatReply::Done(_) => {}
             // A refused or unsupported read goes back to the watch, on the pace.
             _ => w.registered = false,
         }
-        w.stale = false;
+        (w.stale, w.overlay) = (false, Vec::new());
         self.drive(now)
     }
 
@@ -223,14 +246,12 @@ impl ChatOwner {
         if self.posting.take_if(|(h, r)| h == host && r == req).is_none() {
             return;
         }
+        self.mark_unsupported(host, &reply);
         self.shown = Some(match reply {
             ChatReply::Done(ChatPostRes::Posted { ts }) => PostShown::Posted(ts),
             ChatReply::Done(ChatPostRes::Refused { code }) => PostShown::Refused(code),
             ChatReply::Done(ChatPostRes::Limited { retry_after_secs, .. }) => PostShown::Limited(retry_after_secs),
-            ChatReply::Unsupported => {
-                self.unsupported.insert(host.clone());
-                PostShown::Refused(ChatCode::Unavailable)
-            }
+            ChatReply::Unsupported => PostShown::Refused(ChatCode::Unavailable),
             ChatReply::Done(ChatPostRes::Unknown) | ChatReply::Refused(_) => PostShown::Unknown,
         });
     }

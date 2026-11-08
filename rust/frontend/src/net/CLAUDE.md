@@ -65,7 +65,7 @@ through the channel types below.
   `an_accepted_reply_with_no_answer_is_unknown_once_and_not_written_again` (the real reconnect loop against a fixture
   daemon that counts the requests it receives) and `a_retirement_ends_the_unreplayable_and_keeps_the_rest_in_order`.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
-  0), never the generic `Event`; the window's one arm only logs it, so no pane recovers from loss yet. Tests
+  0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
   channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
