@@ -587,6 +587,33 @@ fn the_temporary_file_cannot_be_renamed_away_while_it_is_written() {
 
 #[cfg(windows)]
 #[test]
+fn a_final_name_a_reader_holds_open_is_replaced() {
+    let (_g, root, _outside) = setup();
+    std::fs::write(root.join("f.txt"), b"old").unwrap();
+    // std opens with all three sharing modes, delete included.
+    let mut held = std::fs::File::open(root.join("f.txt")).unwrap();
+    write_beneath(&root, "f.txt", b"new").unwrap();
+    assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"new");
+    let mut old = Vec::new();
+    std::io::Read::read_to_end(&mut held, &mut old).unwrap();
+    assert_eq!(old, b"old");
+    assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_final_name_held_without_delete_sharing_fails_the_write() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (_g, root, _outside) = setup();
+    std::fs::write(root.join("f.txt"), b"old").unwrap();
+    let _held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(root.join("f.txt")).unwrap();
+    assert!(write_beneath(&root, "f.txt", b"new").is_err());
+    assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"old");
+    assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[cfg(windows)]
+#[test]
 fn a_junction_at_the_final_name_is_an_error_and_is_kept() {
     let (_g, root, outside) = setup();
     link_dir(&outside, &root.join("f.txt")).unwrap();
