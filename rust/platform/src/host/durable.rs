@@ -477,16 +477,19 @@ fn write_durable_between(path: &Path, bytes: &[u8], between: impl FnOnce()) -> s
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
+    let named = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", tmp.display()));
     match std::fs::remove_file(&tmp) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        r => r?,
+        r => r.map_err(|e| named("remove stale temporary file", e))?,
     }
     between();
     {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| {
-            std::io::Error::new(e.kind(), format!("create temporary file {}: {e}", tmp.display()))
-        })?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| named("create temporary file", e))?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }

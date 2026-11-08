@@ -116,7 +116,6 @@ fn remove_durable_is_idempotent_and_accepts_a_missing_folder() {
 }
 
 /// Runs one durable write over a stale entry at the temporary name and checks the outside file and the target.
-#[cfg(unix)]
 fn durable_over_stale_temp(plant: impl FnOnce(&Path, &Path)) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("root");
@@ -149,19 +148,14 @@ fn write_durable_over_a_dangling_temporary_name_creates_nothing_outside() {
 
 #[test]
 fn write_durable_over_a_hard_linked_temporary_name_leaves_the_linked_file_alone() {
-    let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().join("root");
-    std::fs::create_dir(&folder).unwrap();
-    let outside = dir.path().join("outside.txt");
-    std::fs::write(&outside, b"keep").unwrap();
-    std::fs::hard_link(&outside, folder.join("record.tmp")).unwrap();
-    let target = folder.join("record");
-    write_durable(&target, b"new").unwrap();
+    let (_d, outside, target) = durable_over_stale_temp(|tmp, outside| {
+        std::fs::write(outside, b"keep").unwrap();
+        std::fs::hard_link(outside, tmp).unwrap();
+    });
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     assert_eq!(std::fs::read(&target).unwrap(), b"new");
 }
 
-#[cfg(unix)]
 #[test]
 fn write_durable_refuses_an_entry_that_reappears_at_the_temporary_name() {
     let dir = tempfile::tempdir().unwrap();
@@ -171,7 +165,7 @@ fn write_durable_refuses_an_entry_that_reappears_at_the_temporary_name() {
     std::fs::write(&outside, b"keep").unwrap();
     let target = folder.join("record");
     let tmp = folder.join("record.tmp");
-    let err = write_durable_between(&target, b"new", || std::os::unix::fs::symlink(&outside, &tmp).unwrap()).unwrap_err();
+    let err = write_durable_between(&target, b"new", || std::fs::hard_link(&outside, &tmp).unwrap()).unwrap_err();
     assert!(err.to_string().contains("record.tmp"), "{err}");
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     assert!(!target.exists());
