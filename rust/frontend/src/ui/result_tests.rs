@@ -1436,7 +1436,7 @@ impl State {
 impl State {
     /// The window's own calls around a destroy, on a real State: the request notes its row (two destroys in flight
     /// never move the view onto each other), a refusal and a lost link end the notes (the rows are alive), and a row
-    /// a listing drops loses its parked view under its own computer's key, never another computer's default.
+    /// a listing drops loses its parked view under its own computer's key, never another computer's default nor its own computer's.
     pub(in crate::ui) fn a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window(&mut self) -> Result<()> {
         let hosts: Vec<HostKey> = ["<host-q-a>", "<host-q-b>", "<host-q-c>"].map(String::from).into();
         let mut receivers = Vec::new();
@@ -1497,11 +1497,11 @@ impl State {
             ((b.clone(), "base-a".to_string()), (a.clone(), "<default>".to_string()), (b.clone(), "<default>".to_string()));
         anyhow::ensure!(self.parked_views.view(&twin).is_some(), "the twin row's view was not parked");
         anyhow::ensure!(self.parked_views.view(&b_default).is_some(), "computer b's default view was not parked");
-        let a_default_parked = self.parked_views.view(&a_default).is_some();
+        anyhow::ensure!(self.parked_views.view(&a_default).is_some(), "computer a's default view was not parked");
         self.on_workspaces(b.clone(), list("base-b", &[]));
         anyhow::ensure!(self.parked_views.view(&twin).is_none(), "a row a listing dropped kept its parked view");
         anyhow::ensure!(self.parked_views.view(&b_default).is_some(), "dropping a row purged its computer's default view");
-        anyhow::ensure!(self.parked_views.view(&a_default).is_some() == a_default_parked,
+        anyhow::ensure!(self.parked_views.view(&a_default).is_some(),
             "dropping another computer's row purged a default row's parked view");
         drop(receivers);
         Ok(())

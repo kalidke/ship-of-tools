@@ -364,7 +364,6 @@ fn a_note_ends_when_its_row_is_known_to_be_alive() {
     assert_eq!(shown(&directory), to("h", "base"));
     // A lost link ends the notes of its computer only.
     directory.note_destroyed("h", "base");
-    directory.note_destroyed("g", "b1");
     directory.clear_destroyed("h");
     assert_eq!(shown(&directory), to("h", "base"));
     // g's note stands: from g's shown b1, the b2 being destroyed is still skipped after h's link is lost.

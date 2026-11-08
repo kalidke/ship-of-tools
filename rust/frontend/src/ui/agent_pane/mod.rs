@@ -142,7 +142,7 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     /// Test only: leave a held screen in the pane, as a session's last screen is left when its row goes.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-window-progress"))]
     pub(in crate::ui) fn plant_held_screen(&mut self) {
         self.pane_hold = Some(screen::HeldPaneScreen(vt100::Parser::new(24, 80, 0).screen().clone()));
     }

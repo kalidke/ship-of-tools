@@ -458,10 +458,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   window was closed stays selected until the person moves); the neighbor may be a row of a computer that is down; and
   a neighbor or default row whose `resolve` refuses leaves the view where it was (the refusal is shown). Pins: the
   `leave`, `destroy_answered` and `clear_destroyed` tables and the pane tests in the unit suite; the calls into them
-  (`request_destroy`, `note_connection`, the reply, the sweep, `apply_leave`'s move and the key of the sweep) by
+  (`request_destroy`, `note_connection`, the reply, the sweep, `apply_leave`'s clear and move and the key of the sweep) by
   `a_destroyed_session_moves_the_view_to_a_neighbor` and
   `a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window` in the native State fixtures (the
-  `window_minimized` target, run by the hosted release gate and on a host with a display).
+  `window_minimized` target, run by the hand-dispatched release gate on Windows and macOS and on a host with a display;
+  the local gate and the per-landing run compile these fixtures but do not run them).
 - Edits reset scroll to the tail without resetting a history walk; first Up saves the original draft and Down
   beyond newest restores it. Only in-flight entries are excluded: completed session-originated runs participate.
   Entry prompts keep their submission mode. Interrupt prepares every ordered live in-flight id, forces only the
