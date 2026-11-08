@@ -40,8 +40,8 @@
 //! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
 //! while the NBSP is not required there, an agents-view task box with an empty
 //! placeholder (a voice state) reads free. Known test gap: no test covers
-//! `check_row`'s registry-then-clock order; deleting it passes every test, and a test that does not flake needs a
-//! seam.
+//! `check_row`'s registry-then-clock order; reversing it passes every test, and a test that does not flake needs a
+//! hold point between the registry read and the clock read.
 //!
 //! Nothing but spaces may follow the NBSP, and the free test reads the cursor's row with dim cells blank
 //! (`screen::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
