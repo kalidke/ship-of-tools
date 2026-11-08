@@ -445,7 +445,7 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
     assert_eq!(std::fs::canonicalize(&named).unwrap(), std::fs::canonicalize(&picture).unwrap(), "row 1: the picture");
     assert_eq!(digest, digest_of(&d), "row 1: the digest");
     let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(doc["systemMessage"], "Drawing: fig.png (1 strokes)", "row 1: the message");
+    assert_eq!(doc["systemMessage"], "Drawing: fig.png (1 stroke)", "row 1: the message");
     std::fs::write(folder.join(MARKER_NAME), "").unwrap();
     assert_eq!(draw(9_003_001, "ws-dr-1", d.clone()).await, Ok(SelectionState::Shared), "row 1: marker");
     let canvas = drawing(InkBase::Canvas, 10_000);
@@ -504,32 +504,34 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_drawings_at_once_leave_the_file_naming_the_picture_it_holds() {
+    use sot_platform::test_hold::Holds;
     let (state, project, workspaces, folder) = drawing_row("claude", "ws-dr-2");
     let file = folder.join(FILE_NAME);
     let picture = project.path().join(".sot/captures/ink-ws-dr-2.png");
-    // the bytes each drawing's picture has, composed apart from the row
+    let (a, b) = (drawing(InkBase::Canvas, 8_000), drawing(InkBase::Canvas, 50_000));
+    let draw = |serial: u64, d: Drawing| {
+        let (workspaces, root) = (workspaces.clone(), state.path().to_path_buf());
+        tokio::spawn(async move { set_drawing(Some(&root), &workspaces, true, serial, "ws-dr-2", &d).await })
+    };
+
+    // The first drawing is held after its composite, before its publish: the compose lock is still its own, so the
+    // second drawing cannot write the picture the first one is about to name.
+    let arm = Holds::here().arm("agents.selection.publish").key("ws-dr-2").hold(1);
+    let first = draw(9_004_001, a.clone());
+    arm.reached_async(0).await;
+    assert!(COMPOSE.try_lock().is_err(), "the compose lock spans the publish");
+    let second = draw(9_004_002, b.clone());
+    arm.release(0);
+    assert!(first.await.unwrap().is_ok() && second.await.unwrap().is_ok());
+
+    // The second drawing's picture is the one on disk, and the file names it.
     let apart = tempfile::tempdir().unwrap();
     let files = crate::files::tree::FilesMode::new(apart.path().to_path_buf()).unwrap();
-    for round in 0..20u16 {
-        let (a, b) = (drawing(InkBase::Canvas, 8_000 + round), drawing(InkBase::Canvas, 50_000 - round));
-        let (ra, rb) = (
-            set_drawing(Some(state.path()), &workspaces, true, 9_004_001, "ws-dr-2", &a),
-            set_drawing(Some(state.path()), &workspaces, true, 9_004_002, "ws-dr-2", &b),
-        );
-        let (ra, rb) = tokio::join!(ra, rb);
-        assert!(ra.is_ok() && rb.is_ok());
-        let held = std::fs::read(&picture).unwrap();
-        let mut holds = None;
-        for d in [&a, &b] {
-            let alone = crate::files::preview::ink::compose(&files, "alone", d).unwrap();
-            if std::fs::read(alone).unwrap() == held {
-                holds = Some(digest_of(d));
-            }
-        }
-        assert_eq!(Some(named_by(&file).1), holds, "round {round}: the file names the drawing the picture holds");
-    }
+    let alone = crate::files::preview::ink::compose(&files, "alone", &b).unwrap();
+    assert_eq!(std::fs::read(&picture).unwrap(), std::fs::read(alone).unwrap(), "the picture holds the second drawing");
+    assert_eq!(named_by(&file).1, digest_of(&b), "the file names the picture it holds");
     forget(9_004_001);
     forget(9_004_002);
 }

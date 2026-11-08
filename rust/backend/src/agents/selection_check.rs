@@ -190,7 +190,7 @@ pub(crate) fn render_drawing(figure: Option<(&str, &str)>, picture: &str, stroke
             format!("{a}{pic}{b}{digest:016x}{c}{TAIL}")
         }
     };
-    let (pre, post) = ("Drawing: ", format!(" ({strokes} strokes)"));
+    let (pre, post) = ("Drawing: ", format!(" ({strokes} {})", if strokes == 1 { "stroke" } else { "strokes" }));
     let name = figure.map_or_else(|| "sketch".to_string(), |(_, rel)| plain(rel));
     let message = format!("{pre}{}{post}", left_cut(&name, MESSAGE_CAP.saturating_sub(units(pre) + units(&post))));
     serde_json::json!({

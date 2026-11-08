@@ -276,17 +276,22 @@ of each.
   `stat`), so a file an earlier process left goes and a
   share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
-  A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root, the row and the kind
-  (only `claude`, `TAKES_DRAWING`; a Codex row answers `no_agent` for a drawing and still takes text, until the plan's
-  H-D2 decides Codex reads the picture), the handler takes the process-wide compose lock (a `tokio::sync::Mutex`), has
-  files' `compose` write the picture on the blocking pool (off the connection's loop), renders it with
-  `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans the picture's
-  write and the file's publish, so two drawings from two connections go one at a time and the file always names the
-  picture on disk and the digest it states (the digest is `selection_digest` of the drawing's JSON as the wire
-  serializes it). A refusal of the composite (`bad_node_id`, `not_an_image`, `too_large`, `publish_failed`) removes the
-  file and leaves the old picture, named by nothing; a clear removes the file and never the picture; a setter's end and
+  A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root and the row, the handler
+  takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, reads the agent kind (only `claude`,
+  `TAKES_DRAWING`; a Codex row answers `no_agent` for a drawing and still takes text, until the plan's H-D2 decides
+  Codex reads the picture), has files' `compose` write the picture on the blocking pool (off the connection's loop),
+  renders it with `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans
+  the picture's write and the file's publish, so two drawings from two connections go one at a time and, after each
+  drawing's publish, the file names the picture on disk and the digest it holds (the digest is `selection_digest` of
+  the drawing's JSON as the wire serializes it). A refusal after the picture's write (`bad_node_id` on the figure's
+  second resolve, `publish_failed`) removes the file and leaves the picture on disk, named by nothing; a refusal of the
+  composite leaves the old picture the same way; a clear removes the file and never the picture; a setter's end and
   the walk withdraw a drawing as they withdraw text; a text selection and a drawing replace each other, the newest
-  owning the file. Limit: the setter lock is still never held across an `.await`, the compose lock is.
+  owning the file. Limits: the picture is one file per row, overwritten, so between a later drawing's picture write and
+  its publish, and between a prompt and the model's read, the picture can hold a newer drawing than the digest the
+  agent was given (also when a publish and its removal both fail); the next prompt carries the new digest. A drawing
+  waits for the compose lock behind every other connection's composite, for any row, and its connection's loop waits
+  with it; a text selection never waits on it.
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
   entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
   keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is

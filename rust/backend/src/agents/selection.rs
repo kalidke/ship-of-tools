@@ -138,11 +138,11 @@ fn set_selection(
     let checked = req.selection.as_ref().map(|sel| {
         if takes_selection(&ws.agent()) { render(&ws, sel) } else { Err(selection_code::NO_AGENT) }
     });
-    publish(&ws.workspace_id, &folder, serial, checked, req.selection.is_some())
+    publish(&ws.workspace_id, &folder, serial, checked)
 }
 
 /// Applies a drawing to its row's file. After the row's checks and its agent's, the composite and the publish run
-/// under `COMPOSE`, so the file always names the picture it describes. The composite runs on the blocking pool, off
+/// under `COMPOSE`, so after each publish the file names the picture on disk and the digest it holds. The composite runs on the blocking pool, off
 /// the connection's loop; the setter lock is taken only inside `publish`, after the await.
 async fn set_drawing(
     state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, workspace: &str, drawing: &Drawing,
@@ -150,14 +150,16 @@ async fn set_drawing(
     let (ws, folder) = row_of(state_root, workspaces, window, workspace)?;
     let _one_at_a_time = COMPOSE.lock().await;
     let checked = if takes_drawing(&ws.agent()) { render_picture(&ws, drawing).await } else { Err(selection_code::NO_AGENT) };
-    publish(&ws.workspace_id, &folder, serial, Some(checked), true)
+    sot_platform::hold_point_async!("agents.selection.publish", &ws.workspace_id);
+    publish(&ws.workspace_id, &folder, serial, Some(checked))
 }
 
 /// The file after `checked` (`None` for a clear): applied under the setter lock, which then records the setter for a
-/// request that `sets` and drops it otherwise.
+/// request that sets something (`checked` is `Some`) and drops it otherwise.
 fn publish(
-    row: &str, folder: &Path, serial: u64, checked: Option<Result<String, &'static str>>, sets: bool,
+    row: &str, folder: &Path, serial: u64, checked: Option<Result<String, &'static str>>,
 ) -> Result<SelectionState, &'static str> {
+    let sets = checked.is_some();
     let file = folder.join(FILE_NAME);
     let hooked = folder.join(MARKER_NAME).exists();
     let mut map = setters();
@@ -217,7 +219,7 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
 
 /// The hook's output for `drawing`: its picture composed on the blocking pool, then named with the figure's paths and
 /// the digest of the drawing as the wire serializes it.
-async fn render_picture(ws: &Arc<Workspace>, drawing: &Drawing) -> Result<String, &'static str> {
+async fn render_picture(ws: &Workspace, drawing: &Drawing) -> Result<String, &'static str> {
     let files = ws.files_mode().map_err(|_| selection_code::BAD_NODE_ID)?;
     let (row, owned) = (ws.workspace_id.clone(), drawing.clone());
     let composed = {

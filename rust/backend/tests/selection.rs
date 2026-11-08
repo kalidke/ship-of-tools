@@ -134,7 +134,7 @@ async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it(
     let reply = call(&mut window, window_id, op::SELECTION_SET, serde_json::to_value(req).unwrap()).await.payload;
     assert_eq!(reply["state"], "shared", "{reply}");
     let printed: serde_json::Value = serde_json::from_str(&run_hook(&recorded)).expect("the hook prints one JSON object");
-    assert_eq!(printed["systemMessage"], "Drawing: fig.png (1 strokes)");
+    assert_eq!(printed["systemMessage"], "Drawing: fig.png (1 stroke)");
     let context = printed["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     let picture = context.split(" is ").nth(1).and_then(|t| t.split(" (drawing ").next()).expect("the picture's path");
     assert!(picture.ends_with(&format!(".sot/captures/ink-{ws}.png")), "{picture}");

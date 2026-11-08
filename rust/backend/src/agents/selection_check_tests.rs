@@ -148,7 +148,7 @@ fn a_drawing_renders_as_the_hook_output_within_the_caps() {
 
     // the canvas has no figure: its wording and its message say sketch
     let v = parse(&render_drawing(None, "/p/.sot/captures/ink-r1.png", 1, u64::MAX));
-    assert_eq!(v["systemMessage"], "Drawing: sketch (1 strokes)");
+    assert_eq!(v["systemMessage"], "Drawing: sketch (1 stroke)");
     assert_eq!(
         v["hookSpecificOutput"]["additionalContext"],
         "The user drew a sketch in the Ship of Tools window. The sketch is the image /p/.sot/captures/ink-r1.png \

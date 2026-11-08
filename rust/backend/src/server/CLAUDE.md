@@ -104,11 +104,11 @@ of each.
    while an inline op holds the loop (guarantee 10); a `handoff` connection has no loop and no ping.
 10. **An op runs off the connection's loop unless `INLINE` names it.** `place` puts every op in `INLINE` (each with its
     reason), in `POOLED` or, by default, a job with no permit. An inline op waits only on memory, the local disk, a
-    capsule, registry, REPL or kernel step with its own bound (5 s, 1 s, 5 s, 10 s), `workspace.reauth` (its caller is a row's own client by convention: dispatch gives the handler no caller identity) on the row's start lock, or on its own writes (`file.download`'s chunks, each within guarantee
+    capsule, registry, REPL or kernel step with its own bound (5 s, 1 s, 5 s, 10 s), the agents' compose lock (`selection.set` for a drawing, behind the composite in progress), `workspace.reauth` (its caller is a row's own client by convention: dispatch gives the handler no caller identity) on the row's start lock, or on its own writes (`file.download`'s chunks, each within guarantee
     8); the loop answers other requests after it. `selection.set` is inline because a later selection replaces an earlier
-    one, so they apply in the order sent; it reads up to 2 MiB of the project file or, for a drawing, decodes one image of at most 40 megapixels on the blocking pool while the loop waits (about half a second at that bound, measured), one drawing at a time in the daemon. Limit: a local disk that stalls (a
+    one, so they apply in the order sent; it reads up to 2 MiB of the project file or, for a drawing, decodes one image of at most 40 megapixels on the blocking pool while the loop waits (about half a second at that bound for a PNG, measured), one drawing at a time in the daemon. Limit: a local disk that stalls (a
     network filesystem) or a download to a slow peer holds the loop for that long, and with it the ping and the reaper;
-    a `selection.set` whose project folder stalls holds the window's connection as `file.write` does. The three `POOLED` ops hold one
+    a `selection.set` whose project folder stalls holds the window's connection as `file.write` does, and for a drawing every connection's drawing queued behind it. The three `POOLED` ops hold one
     of 4 permits per connection; a job that waits 10 s for one is answered with a timeout and never runs
     (`spawn_job`); a pooled job's workspace hint is resolved to the canonical id before it queues, or answered
     `unknown_workspace` with no job run (`canonicalize_workspace_id`). Job replies come back in the order the jobs
