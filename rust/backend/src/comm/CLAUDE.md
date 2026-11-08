@@ -37,8 +37,8 @@ Address:
   compaction through a SessionStart hook (`registry/comm-session-start-hook.sh`, carried by the leg's settings:
   agents' guarantee 7) in its read-only form, `comm-session-start.sh --again`: it resolves the identity, joins and writes
   nothing (a join rewrites the registry entry whole, which would end a compacting turn gray and drop a stamped wait),
-  and prints the handle, the handoff line, the open question, the unread count and the start's teaching; a handle with
-  no registry entry of this project prints `identity=FAIL` and says to run `/sot-session-start`. The hook sends the
+  and prints the handle, the handoff line, the open question and the start's teaching (the lines the full start prints, from one function); it reads no inbox and creates no file. A handle with
+  no registry entry of this project (or none at all) prints `identity=FAIL` and one sentence ending in `run /sot-session-start to join`; mail is told by the end-of-turn check and the wake. The hook sends the
   start's stderr to stdout, stands down on `SOT_COMM_HOOKS=off` and always exits 0. A leg's first start and a leg
   started with `--resume <id>` run the full start through the bootstrap prompt; `/resume` typed in a live row runs none
   (the hook is not carried for the `resume` source). Tests: `comm/tests/test-session-start-hook.sh`,
