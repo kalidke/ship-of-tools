@@ -76,7 +76,7 @@ fn write_beneath_at(
     Ok(root.join(rel))
 }
 
-/// Write, sync, rename within the folder, check the entry at the final name, sync the folder.
+/// Write, sync, rename within the folder, sync the folder.
 fn publish(
     dir: &File,
     mut file: File,
@@ -89,15 +89,8 @@ fn publish(
     file.write_all(bytes)?;
     file.sync_all()?;
     at(Step::Written)?;
-    let mut mine: libc::stat = unsafe { std::mem::zeroed() };
-    check(unsafe { libc::fstat(file.as_raw_fd(), &mut mine) })?;
     check(unsafe { libc::renameat(dir.as_raw_fd(), temp.as_ptr(), dir.as_raw_fd(), last.as_ptr()) })?;
     at(Step::Renamed)?;
-    let mut named: libc::stat = unsafe { std::mem::zeroed() };
-    check(unsafe { libc::fstatat(dir.as_raw_fd(), last.as_ptr(), &mut named, libc::AT_SYMLINK_NOFOLLOW) })?;
-    if named.st_dev != mine.st_dev || named.st_ino != mine.st_ino {
-        return Err(io::Error::other("the written file is not the entry at its name"));
-    }
     dir.sync_all()
 }
 

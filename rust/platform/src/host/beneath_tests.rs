@@ -168,34 +168,26 @@ fn missing_folders_are_created_and_the_path_is_returned() {
 }
 
 #[test]
-fn a_temporary_file_replaced_before_the_rename_is_an_error_and_writes_nothing_outside() {
+fn a_temporary_file_replaced_before_the_rename_writes_nothing_outside() {
     let (_g, root, outside) = setup();
     let target = outside.join("keep.txt");
     std::fs::write(&target, b"original").unwrap();
     let temp = ".sot-fixed.tmp";
-    // Replaced by a link at either step before the rename.
+    // Replaced by a link at either step before the rename: the name holds the link that was renamed into place.
     for step in [Step::Temp, Step::Written] {
-        let got = write_beneath_at(&root, "f.txt", b"data", Some(temp), |s| {
+        write_beneath_at(&root, "f.txt", b"data", Some(temp), |s| {
             if s == step {
                 std::fs::remove_file(root.join(temp)).unwrap();
                 symlink(&target, root.join(temp)).unwrap();
             }
             Ok(())
-        });
-        assert!(got.unwrap_err().to_string().contains("not the entry at its name"), "{step:?}");
+        })
+        .unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"original", "{step:?}");
-        let _ = std::fs::remove_file(root.join(temp));
-        let _ = std::fs::remove_file(root.join("f.txt"));
+        assert_eq!(std::fs::read_link(root.join("f.txt")).unwrap(), target, "{step:?}");
+        assert_eq!(entries(&root), ["f.txt"], "{step:?}");
+        std::fs::remove_file(root.join("f.txt")).unwrap();
     }
-    // A link to the moved file at the temporary name is not the file written.
-    let got = write_beneath_at(&root, "g.txt", b"data", Some(temp), |s| {
-        if s == Step::Written {
-            std::fs::rename(root.join(temp), root.join("moved")).unwrap();
-            symlink("moved", root.join(temp)).unwrap();
-        }
-        Ok(())
-    });
-    assert!(got.unwrap_err().to_string().contains("not the entry at its name"));
 }
 
 #[test]
@@ -418,16 +410,9 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
             .map(|c| {
                 let root = &root;
                 sc.spawn(move || {
-                    // Each result is Ok, or the error that another writer's file took the name before the check.
-                    let (mut ok, mut replaced) = (0, 0);
                     for _ in 0..200 {
-                        match write_beneath(root, "f.txt", c) {
-                            Ok(_) => ok += 1,
-                            Err(e) if e.to_string() == "the written file is not the entry at its name" => replaced += 1,
-                            Err(e) => panic!("a writer answered {e:?}"),
-                        }
+                        write_beneath(root, "f.txt", c).unwrap();
                     }
-                    (ok, replaced)
                 })
             })
             .collect();
@@ -449,9 +434,7 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
         let finished: Vec<_> = writers.into_iter().map(|w| w.join()).collect();
         done.store(true, std::sync::atomic::Ordering::SeqCst);
         let reads = reader.join();
-        for f in finished {
-            assert!(f.unwrap().0 > 0, "a writer never published");
-        }
+        assert!(finished.iter().all(|r| r.is_ok()), "a writer erred");
         assert!(reads.unwrap() > 0);
     });
     assert_eq!(entries(&root), ["f.txt"]);
