@@ -66,13 +66,16 @@ Supervisor:
   start whose supervisor has not taken its fence). Limit: a spawn refused as contended also begins a generation, so the
   live supervisor it found loses its record and its exit is left to the redial.
   Beside the watch record, under the same lock, the row keeps in memory only the leg record a folder-trust restart would
-  read: the argv of the Claude leg started at the current generation that has not yet shown its main box
-  (`open_trust_leg`, called after `Spawn::Started` by the start path and by the watchdog's restart, never for a Codex row
-  or a failed spawn; a reauth's `--resume <id>` is in it), and whether such a restart ran with no main box since. The next
-  `begin_spawn` closes the leg; `take_trust_leg` answers `NotOpen` (no leg at that generation), `Spent` (a restart already
-  ran: at most one per row per episode, whatever the agent does) or `Outside` (the root is not under the trust scope),
-  closing the leg for the last two, or hands the leg out and spends the episode; `trust_passed` clears both. The restart
-  and the tick that reads this record are unbuilt, so nothing in the product reads it yet.
+  read: the argv of the Claude supervisor spawned at the current generation whose agent has not yet shown its main box
+  (a resume over an ended run starts no agent and leaves it open until the next spawn), and whether such a restart ran
+  with no main box since; an episode ends when a main box shows. `open_trust_leg` is called after `Spawn::Started` by
+  the start path and by the watchdog's restart, never for a Codex row or a failed spawn; a reauth's `--resume <id>` is
+  in it. The next `begin_spawn` closes the leg. `take_trust_leg` answers `NotOpen` (no leg at that generation), `Spent`
+  (a restart already ran: at most one per row per episode, whatever the agent does) or `Outside` (the root is not under
+  the trust scope), closing the leg for the last two, or hands the leg out and spends the episode; `trust_passed`
+  clears both. Limit: the two call sites are read, not tested (a unit test cannot start a supervisor; the restart's
+  end-to-end test will run the start path's, and the watchdog's has no test yet). The restart and the tick that reads
+  this record are unbuilt, so nothing in the product reads it yet.
 - A supervisor this daemon did not launch (found alive at boot) is watched all the same, and its exit is restarted
   within the same budget with no selection. At a watch's end the observer waits for the supervisor's process to end
   (`Watch::end`, at most 5 s), so a decision is not taken while the exiting supervisor still answers or holds its fence;

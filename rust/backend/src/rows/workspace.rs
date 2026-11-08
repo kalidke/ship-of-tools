@@ -72,17 +72,19 @@ pub(crate) struct Watched {
     pub ready: bool,
 }
 
-/// The watch record and the row's spawn generation, under one lock. The generation counts the spawns this daemon has made
+/// The watch record, the row's spawn generation and the trust leg record, under one lock. The generation counts the spawns this daemon has made
 /// for the row ([`Workspace::begin_spawn`]); everything that outlives a spawn (an observer's round, a watchdog's exit)
 /// carries the generation it began under and acts on its outcome only while the row is still at that generation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub(super) struct WatchState {
     generation: u64,
     record: Option<Watched>,
-    /// The argv of the Claude leg started at this generation that has not yet shown its main box: what a trust restart
-    /// would rerun. Memory only.
+    /// The argv of the Claude supervisor spawned at this generation whose agent has not yet shown its main box: what a
+    /// trust restart would rerun. A resume over an ended run starts no agent and leaves it open until the next spawn.
+    /// Memory only.
     trust_leg: Option<Vec<String>>,
-    /// A trust restart ran and no main box has shown since: at most one per row per episode, whatever the agent does.
+    /// A trust restart ran and no main box has shown since: at most one per row per episode (an episode ends when a main
+    /// box shows), whatever the agent does.
     trust_spent: bool,
 }
 
@@ -250,25 +252,22 @@ impl Workspace {
     }
 
     /// The trust restart's one question, at `generation`: `covered` is whether the row's root is under the trust scope.
-    /// `Spent` and `Outside` close the leg (logged once); `Leg` closes it and spends the episode.
+    /// `Spent` and `Outside` close the leg; `Leg` closes it and spends the episode.
     pub(crate) fn take_trust_leg(&self, generation: u64, covered: bool) -> TrustTake {
         let mut state = self.watched.lock().unwrap_or_else(|e| e.into_inner());
-        if state.generation != generation || (state.trust_leg.is_none() && !state.trust_spent) {
+        if state.generation != generation {
             return TrustTake::NotOpen;
         }
-        let was_open = state.trust_leg.take();
+        let open = state.trust_leg.take();
         if state.trust_spent {
-            if was_open.is_some() {
-                tracing::info!(workspace_id = %self.workspace_id, "trust dialog again before a main box: left to its person");
-            }
             return TrustTake::Spent;
         }
+        let Some(argv) = open else { return TrustTake::NotOpen };
         if !covered {
-            tracing::info!(workspace_id = %self.workspace_id, "trust dialog outside the trust scope: left to its person");
             return TrustTake::Outside;
         }
         state.trust_spent = true;
-        was_open.map_or(TrustTake::NotOpen, TrustTake::Leg)
+        TrustTake::Leg(argv)
     }
 
     /// The main box showed at `generation`: the leg and the spent mark are cleared.

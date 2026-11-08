@@ -138,6 +138,8 @@ fn a_taken_trust_leg_is_spent_until_the_main_box_and_other_answers_close_it() {
     ws.open_trust_leg(g2, argv.clone());
     assert_eq!(ws.take_trust_leg(g, true), TrustTake::NotOpen, "a stale generation takes nothing");
     assert_eq!(ws.trust_reading(), Some(g2), "and leaves the open leg");
+    ws.trust_passed(g);
+    assert_eq!(ws.trust_reading(), Some(g2), "a main box read at an earlier generation clears nothing of this leg");
     // An uncovered root closes the leg and spends nothing.
     ws.open_trust_leg(g2, argv.clone());
     assert_eq!(ws.take_trust_leg(g2, false), TrustTake::Outside);
