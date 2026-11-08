@@ -167,7 +167,11 @@ fn a_root_that_does_not_resolve_answers_by_what_is_wrong() {
     #[cfg(unix)]
     cases.push(("selfloop", io::ErrorKind::InvalidInput));
     for (what, want) in cases {
-        assert_eq!(kind(write_beneath(&base.join(what), "f.txt", b"data")), want, "{what}");
+        let err = write_beneath(&base.join(what), "f.txt", b"data").unwrap_err();
+        assert_eq!(err.kind(), want, "{what}");
+        if what == "file" {
+            assert!(err.to_string().contains("is not a plain folder"), "{err}");
+        }
         assert_eq!(std::fs::read(base.join("file")).unwrap(), b"x", "{what}");
     }
 }
@@ -595,6 +599,7 @@ fn only_a_name_surrogate_tag_is_a_link() {
         (0xA000_0003, true), // mount point
         (0xA000_000C, true), // symlink
         (0xA000_001D, true), // another name surrogate
+        (0x2000_0001, true), // a surrogate without the Microsoft bit
         (0x9000_601A, false), // cloud placeholder
         (0x8000_0013, false), // deduplicated
         (0x8000_001B, false), // app execution link
