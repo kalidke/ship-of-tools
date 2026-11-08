@@ -228,6 +228,11 @@ owned by `docs/CLAUDE.md`.
 
 ## capsule
 
+- **MACOS-SOCKOPT-RECORDS** [note] Two records of when macOS refuses a socket option disagree. The foreign-peer row test
+  (`rust/capsule/tests/row.rs`) rests on xnu's `sosetoptlock`, which refuses an option on a socket shut in both directions;
+  `rust/capsule/tests/macos_kernel_facts/peertoken.rs` and `rust/backend/tests/shell_dial.rs` say Darwin refuses
+  `SO_RCVTIMEO` on an accepted AF_UNIX socket and honors it on a connected one, while the row server sets it on accepted
+  sockets and passes on macOS. Settle the peertoken observation with a macOS run and make the records one rule.
 - **CAPSULE-ATTACH-DURING-SPAWN** [note] A driver's attach resizes the terminal through the run's loop
   (`RowRun::resize_terminal`, bounded at `INPUT_BOUND`, 2 s), and the loop answers only once it runs, after
   `spawn_producer`; the supervisor sets the run on the row before the spawn. A window that attaches as driver while the
