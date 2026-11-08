@@ -66,7 +66,7 @@ pub(super) fn write_beneath_at(
         at(Step::Folder(i))?;
     }
     // Create the temporary file exclusively, held with share-read alone so no other open can rename or delete it.
-    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
+    let file = nt_open(&dir, &temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
     let mut renamed = false;
     let result = publish(&dir, &file, last, bytes, &mut renamed, &mut at);
