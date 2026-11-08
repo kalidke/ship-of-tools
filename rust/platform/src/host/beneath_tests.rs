@@ -8,8 +8,10 @@ fn link_dir(target: &Path, at: &Path) -> io::Result<()> {
     return symlink(target, at);
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(at).arg(target).output()?;
-        if out.status.success() { Ok(()) } else { Err(io::Error::other(String::from_utf8_lossy(&out.stdout).into_owned())) }
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "mklink", "/J"]).arg(at).arg(target);
+        let ran = crate::test_wait::run_within(&mut cmd, std::time::Duration::from_secs(30));
+        if ran.status.success() { Ok(()) } else { Err(io::Error::other(ran.to_string())) }
     }
 }
 
