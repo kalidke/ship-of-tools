@@ -128,6 +128,13 @@ annotation (a note about it, written by you or the agent and kept under
 `.concept/`), `e` edits the annotation instead; see
 [The concept layer](guide/concept-layer.md).
 
+A save is written inside the project and never through a link: a file whose
+own name is a link, or one reached through a linked folder, is refused, and
+your edits stay in the editor. When the link leads to a place inside the
+project, open the file there to save it; a file that a link leads to outside
+the project cannot be saved from the window. A new folder follows the same
+rule.
+
 There is no diff view of its own: you review the agent's edits in the preview
 pane, which follows a file as it changes on disk, in the REPL drawer, which
 shows every run the agent made, and with `git` in a shell session.

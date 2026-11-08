@@ -1148,3 +1148,17 @@ A landing's record goes here, with its measured times; the package page holds on
   outside the root under them, the change never), and one fix round (the kept figures tested, a log assertion tied to its
   run, the records placed with their owners, REPL-FIGURE-SILENT noted); one hosted run on the branch; two gates of 2
   minutes, the second after the move onto main past the capsule test's landing.
+- A record is written relative to its folder, opened once, 2026-11-08: builder launched 04:28, main 05:20 (2d00dba1c,
+  e568e0521, 8f0315c28), 52 minutes. `write_durable` opens the record's folder once, by path, following a link, and
+  only as a folder (a file, pipe or device there answers at once); the stale `<name>.tmp`'s removal, the exclusive
+  create, the write and sync, the rename and the folder's sync all run relative to it, through the steps the write
+  beneath a root already had, factored into one `write_in_folder` (the temporary name fresh for the write beneath a
+  root, fixed for a record). On Windows the by-handle rename with its held-open fallback and the folder's flush replace
+  the path rename, and the stale name is deleted with POSIX semantics. About 137 product lines added and 76 removed, and
+  83 test lines. Where the minutes went: the build (4 minutes); two review rounds (blockers 1, 0: the folder opened
+  without `O_DIRECTORY`, so a pipe at its path would hold the write) and two fix rounds; three hosted runs on the branch
+  and four one-job Windows probes (the stale name held open red on the first commit; one probe showed a Windows check
+  pinned nothing); three gates of 2 minutes. NOREPLACE-NFS-EINVAL noted.
+- On Windows the relative open refuses a file at a record's folder by itself, 2026-11-08: decided 05:20, main 05:25
+  (f06e68542), 5 minutes. The check P8's second round added pinned nothing (its test passed on Windows without it), so
+  it, its import and its comment are deleted. About 6 product lines removed. One Windows probe, one gate of 2 minutes.
