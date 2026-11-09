@@ -9,9 +9,11 @@ fn one_raster_for_a_drawing_whatever_order_its_segments_are_painted() {
     assert_eq!(raster_dims(300, 200), (300, 200));
     assert_eq!(raster_dims(100000, 10), (2000, 1));
 
-    // the radius: 1.5 up to 600 pixels, then 1/400 of the long side
+    // the radius: 1.5 up to 900 pixels, then half of 1/300 of the long side
     assert_eq!(ink_radius((600, 300)), 1.5);
-    assert_eq!(ink_radius((2000, 1500)), 5.0);
+    assert_eq!(ink_radius((900, 300)), 1.5);
+    assert_eq!(ink_radius((1200, 800)), 2.0);
+    assert_eq!(ink_radius((2000, 1500)), 2000.0 / 300.0 / 2.0);
 
     // a wire point maps x to the width and y to the height, 65535 to the far edge
     assert_eq!(to_raster([65535, 0], (100, 50)), (100.0, 0.0));

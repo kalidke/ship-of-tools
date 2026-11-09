@@ -275,7 +275,7 @@ fn no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_hi
 #[test]
 fn the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image() {
     let (b, mut l) = (fig("a.png"), on());
-    // a stroke of two points on a raster five times finer than the screen: the ink is 5 raster px, the reach 6, 1.2 screen px
+    // a stroke of two points on a raster five times finer than the screen: the ink is 3.33 raster px, the reach 4.33, 0.87 screen px
     let fine = (2000, 1000);
     let line = |l: &mut InkLayer| {
         *l = on();
@@ -283,7 +283,7 @@ fn the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image()
         l.drag((350.0, 100.0), &R);
         l.release();
     };
-    for (dy, gone) in [(1.1, true), (1.3, false), (-1.1, true), (-1.3, false)] {
+    for (dy, gone) in [(0.8, true), (0.95, false), (-0.8, true), (-0.95, false)] {
         line(&mut l);
         l.erase(Some(&b), (250.0, 100.0 + dy), &R, &R);
         assert_eq!(l.strokes().is_empty(), gone, "{dy} screen px off the line");
@@ -292,7 +292,7 @@ fn the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image()
     line(&mut l);
     l.erase(Some(&b), (360.0, 100.0), &R, &R);
     assert_eq!(l.strokes().len(), 1);
-    l.erase(Some(&b), (351.0, 100.0), &R, &R);
+    l.erase(Some(&b), (350.5, 100.0), &R, &R);
     assert!(l.strokes().is_empty());
     // two motion samples either side of a stroke: the path between them crosses it
     let mut v = on();
@@ -425,7 +425,7 @@ fn erase_end_ends_the_step_and_the_path() {
 #[test]
 fn the_reach_is_the_ink_and_one_pixel_on_both_sides() {
     let b = fig("a.png");
-    for (dy, gone) in [(1.1, true), (1.25, false)] {
+    for (dy, gone) in [(0.8, true), (0.95, false)] {
         let mut l = on();
         l.press(Some(&b), (150.0, 100.0), &R, &R, (2000, 1000));
         l.drag((350.0, 100.0), &R);

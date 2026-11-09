@@ -14,9 +14,9 @@ pub fn raster_dims(w: u32, h: u32) -> (u32, u32) {
     (((w as f32 * s).round() as u32).max(1), ((h as f32 * s).round() as u32).max(1))
 }
 
-/// The ink's radius in raster pixels: a line 3 pixels wide, or 1/200 of the long side if more.
+/// The ink's radius in raster pixels: a line 3 pixels wide, or 1/300 of the long side if more.
 pub fn ink_radius((rw, rh): (u32, u32)) -> f32 {
-    (3.0f32).max(rw.max(rh) as f32 / 200.0) / 2.0
+    (3.0f32).max(rw.max(rh) as f32 / 300.0) / 2.0
 }
 
 /// A wire point as a position in the raster, in pixels.

@@ -160,7 +160,7 @@ name is in this crate's one op table.
     `a_wrong_type_is_refused_and_an_added_field_is_ignored`, `the_refusal_codes_are_fixed`.
 
 14. **A drawing has one raster.** `ink.rs`: `raster_dims` keeps the base's aspect with the long side at most 2000
-    (`INK_RASTER_MAX`); `ink_radius` is `max(3, long side / 200) / 2` raster pixels; `paint_segment` gives each pixel the
+    (`INK_RASTER_MAX`); `ink_radius` is `max(3, long side / 300) / 2` raster pixels; `paint_segment` gives each pixel the
     larger of what it holds and `r + 0.5` minus its center's distance to the segment, clamped to 0..1, as 0..255, visiting
     per row only the pixels within reach of the segment, so its cost follows the segment's own area (pinned by pixels
     visited, not time); `segments` yields every consecutive pair of every stroke, a one-point stroke as a dot, and `mask`
