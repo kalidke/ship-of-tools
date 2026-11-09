@@ -31,11 +31,10 @@ impl Want {
     }
 }
 
-/// The one request waiting for its reply, and the state to restore if it was never written.
+/// The one request waiting for its reply.
 struct Flight {
     host: HostKey,
     req: SelectionSetReq,
-    before: Option<Want>,
 }
 
 #[derive(Default)]
@@ -48,34 +47,31 @@ pub(in crate::ui) struct SelectionShare {
 }
 
 impl SelectionShare {
-    /// The next request toward `desired`, or `None` when the daemon already holds it, a request waits for its reply or the
-    /// host that must be told is down. A row switch is a clear to the row that held the share, then the new row's share.
-    pub(in crate::ui) fn reconcile(&mut self, desired: Option<Want>) -> Option<(HostKey, OutgoingReq)> {
+    /// Hands `send` the next request toward `desired`; nothing when the daemon already holds it, a request waits for its
+    /// reply or the host that must be told is down. A row switch is a clear to the row that held the share, then the new
+    /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten.
+    pub(in crate::ui) fn reconcile<E>(
+        &mut self, desired: Option<Want>, send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
+    ) {
         if self.flight.is_some() || self.sent == desired {
-            return None;
+            return;
         }
         let same_row = |a: &Want, b: &Want| a.host == b.host && a.workspace_id == b.workspace_id;
         // The row to tell: the one that holds a share we will not replace in place, else the desired row.
         let (host, workspace_id, selection, next) = match (&self.sent, desired) {
             (Some(held), want) if want.as_ref().is_none_or(|w| !same_row(held, w)) => (held.host.clone(), held.workspace_id.clone(), None, None),
             (_, Some(w)) => (w.host.clone(), w.workspace_id.clone(), Some(w.selection.clone()), Some(w)),
-            (_, None) => return None,
+            (_, None) => return,
         };
         if !self.up.contains(&host) {
-            return None;
+            return;
         }
         let req = SelectionSetReq { workspace_id, selection, drawing: None };
-        let before = std::mem::replace(&mut self.sent, next);
-        self.flight = Some(Flight { host: host.clone(), req: req.clone(), before });
-        Some((host, OutgoingReq::SelectionSet { req }))
-    }
-
-    /// The request could not be queued: it is as if never sent, and the host reads as down until it connects again.
-    pub(in crate::ui) fn send_failed(&mut self, host: &HostKey) {
-        if let Some(f) = self.flight.take() {
-            self.sent = f.before;
+        self.sent = next;
+        self.flight = Some(Flight { host: host.clone(), req: req.clone() });
+        if send(&host, OutgoingReq::SelectionSet { req }).is_err() {
+            self.on_connection(&host, false);
         }
-        self.up.remove(host);
     }
 
     /// A link came or went. A going link forgets what the daemon held for that host (it withdraws a connection's
@@ -119,35 +115,41 @@ impl SelectionShare {
             SelectionReply::Refused { code, error } => share.then(|| match code.as_deref() {
                 Some(selection_code::NOT_FILE_TEXT) => "selection not shared: this view is not the file's text".into(),
                 Some(selection_code::NO_AGENT) => "selection not shared: this row's agent takes none".into(),
-                _ => format!("selection not shared: {error}"),
+                _ => format!("selection not shared: {}", code.as_deref().unwrap_or(&error)),
             }),
         }
     }
 }
 
+/// What the view wants the daemon to hold: the released text selection (its range and text) over the preview's node,
+/// for the selected row. None when the text preview is not shown, the row has no workspace id (the daemon's default), the
+/// preview has no node, or no released range (mid-drag or none).
+fn wanted(
+    shown: bool, host: &HostKey, row: Option<String>, node: Option<&str>, released: Option<(((usize, usize), (usize, usize)), String)>,
+) -> Option<Want> {
+    if !shown {
+        return None;
+    }
+    let (range, text) = released?;
+    Want::new(host.clone(), row?, node?.to_string(), range, &text)
+}
+
 impl super::super::State {
-    /// What the view shows selected now: the selected row's released, non-empty text selection over its installed
-    /// preview. The refused-hello overlay and edit mode show no preview text, and a row with no workspace id (the
-    /// daemon's default) is never shared.
+    /// What the view shows selected now, gated on the predicate the paint and the press use (`preview_shows`): the
+    /// selected row's released, non-empty text selection over its installed preview.
     fn desired_selection(&self) -> Option<Want> {
-        if self.editor.is_editing() || self.shaped.fatal().is_some() {
-            return None;
-        }
-        let (range, text) = self.shaped.released_selection()?;
-        Want::new(
-            self.selected.host().clone(), self.selected.workspace_id().clone()?, self.preview_source.node_id()?.to_string(), range, &text,
-        )
+        let shown = self.preview_shows().4;
+        wanted(shown, self.selected.host(), self.selected.workspace_id().clone(), self.preview_source.node_id(), self.shaped.released_selection())
     }
 
     /// Run in the frame's upkeep after `drain_events`: sends the one request that moves the daemon toward the view.
     pub(in crate::ui) fn reconcile_selection_share(&mut self) {
         let desired = self.desired_selection();
-        if let Some((host, req)) = self.selection_share.reconcile(desired) {
-            if let Err(e) = self.send_to(&host, req) {
-                tracing::warn!(error = %e, %host, "drop selection.set — channel closed");
-                self.selection_share.send_failed(&host);
-            }
-        }
+        let mut share = std::mem::take(&mut self.selection_share);
+        share.reconcile(desired, |host, req| {
+            self.send_to(host, req).inspect_err(|e| tracing::warn!(error = %e, %host, "drop selection.set — channel closed"))
+        });
+        self.selection_share = share;
     }
 
     pub(in crate::ui) fn on_selection_reply(&mut self, host: &HostKey, req: &SelectionSetReq, reply: SelectionReply) {
