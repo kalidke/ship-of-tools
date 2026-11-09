@@ -1347,3 +1347,15 @@ A landing's record goes here, with its measured times; the package page holds on
   120 stop, and the builder neither counted nor stopped; the right-button erase, added to the plan from the
   maintainer's note, had no orderings with the keys pressed during a drag (the first round's panic) and a reach of one
   raster pixel, under one screen pixel at fit (the plan now says the painted ink's reach).
+- D4b, the window's drawing, its raster and overlay, 2026-11-09: builder launched 22:33 (the 8th), main 00:05
+  (63ced6673, one commit squashed from three), 92 minutes, past the maintainer's hour: a failure of the standard. The
+  owner keeps the drawing's raster at the wire's dimensions for the base's source size and paints it with the wire's own
+  functions, a segment per drag and a whole repaint per undo, clear, restore, erase hit, dropped stroke or new base, with
+  a dirty rectangle inside the raster; the raster view records the node its quad came from, and one decider names the
+  shown base, so the overlay is drawn only over its own figure, at its rectangle and scissor. The wire's contract now
+  says only the daemon paints off the UI thread; the window's repaint runs on it (measured 36 to 243 ms at the point
+  bound for hand-drawn strokes). About 143 product lines and 300 test lines. Where the minutes went: the build (7
+  minutes); two review rounds (blockers 1, 0; 22 and 38 minutes) and two fix rounds (11 and 7 minutes); three gates of 2
+  minutes. Why past the hour: the brief named the plan's decider of the shown base (3.4) only by section, and the build
+  gated the overlay on the file last requested, which the first round found drawing one figure's ink over another;
+  the first round's tests let 13 of 20 faults through, and the second round's longest was its 56-second test (now 6).

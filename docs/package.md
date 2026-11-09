@@ -190,7 +190,8 @@ maintainer's word after the first stage is measured; SlackClaw's pause switch (i
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
-strokes, undo, clear and the right-button erase); its overlay and its wiring to the mouse and keys are next. Also in
+strokes, undo, clear and the right-button erase) and its raster, drawn over the figure it belongs to and no other; its
+wiring to the mouse and keys is next. Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
