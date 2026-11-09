@@ -1502,3 +1502,8 @@ A landing's record goes here, with its measured times; the package page holds on
   cause of the overrun: the plan's red test covered the maps but not the handlers that read them, so the first review
   found the guarantee untested and a rework and second round followed. The handlers' arms are still driven by no test
   (B5A-ARMS-UNDRIVEN).
+- The project chat's B5b, the owner moves to a leaf module, 2026-11-09: builder launched 16:02, main 16:14 (5673fc010),
+  12 minutes. `ChatOwner` is in `drawer/chat/owner.rs` with its tests, and the window's `impl State` stays in `mod.rs`,
+  so the owner's fields are reachable only through its methods (a read from `mod.rs` no longer compiles). A move: one
+  visibility line. Where the minutes went: the build (3 minutes); one scoped gate of 2 minutes; one review round of 8
+  minutes, bounded (blockers 0; 310 of 340 lines byte-identical).
