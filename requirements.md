@@ -65,7 +65,7 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 
 - Text the user selects in a view of a project file is known to the agent of that project's session: the file, the lines and the text, without copying, pasting or typing a reference. Clearing the selection, selecting in another file or session, or closing the window withdraws it. The agent is told only what the file holds at those lines.
 - An agent with no such channel is told nothing, and the window says the selection was not shared.
-  *Status: built for Claude rows in the preview's text only (the wire op, the daemon's check, the prompt hook and the window's share of a released text selection); proved by unit and integration tests with a stub agent, not yet through a window and a real Claude Code. Codex rows: not built (the window says `held`, not "not shared", which does not meet the second bullet).*
+  *Status: built for Claude rows in the preview's text only (the wire op, the daemon's check, the prompt hook and the window's share of a released text selection); proved by unit tests and by integration tests with a stub agent on Linux only, not yet through a window and a real Claude Code, nor on Windows. Codex rows: not built (the window says `held`, not "not shared", which does not meet the second bullet). The default row shares nothing and says nothing.*
 
 #### The agent sees what the user draws
 
