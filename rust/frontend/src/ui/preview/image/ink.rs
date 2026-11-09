@@ -100,8 +100,6 @@ impl InkLayer {
     pub(in crate::ui) fn base(&self) -> Option<&InkBase> {
         self.drawing.base.as_ref()
     }
-    /// Read by the share (D6); the tests read it now.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::ui) fn strokes(&self) -> &[Stroke] {
         &self.drawing.strokes
     }

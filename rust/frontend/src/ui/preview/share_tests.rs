@@ -25,7 +25,7 @@ fn req(out: Option<(HostKey, OutgoingReq)>) -> SelectionSetReq {
 /// Runs `reconcile` with a send that succeeds and returns what it was handed.
 fn go(s: &mut SelectionShare, desired: Option<Want>) -> Option<(HostKey, OutgoingReq)> {
     let mut out = None;
-    s.reconcile(desired, |h, r| {
+    s.reconcile(desired, &[], |h, r| {
         out = Some((h.clone(), r));
         Ok::<(), ()>(())
     });
@@ -109,7 +109,7 @@ fn a_refusal_is_shown_and_not_retried() {
 fn a_lost_connection_is_answered_after_it_returns() {
     // 8: a send that fails leaves nothing in flight and waits for the reconnect.
     let mut s = up();
-    s.reconcile(want("abc"), |_, _| Err::<(), ()>(()));
+    s.reconcile(want("abc"), &[], |_, _| Err::<(), ()>(()));
     assert!(go(&mut s, want("abc")).is_none());
     s.on_connection(&host(), true);
     let r = req(go(&mut s, want("abc")));
@@ -145,7 +145,7 @@ fn text_the_wire_cannot_describe_is_not_wanted() {
 /// What the daemon checks: the range, `len` and the digest of the text.
 #[test]
 fn the_want_carries_what_the_daemon_checks() {
-    let w = Want::new("h".into(), "r1".into(), "files:a.txt".into(), ((1, 2), (3, 4)), "hello").unwrap().selection;
+    let Share::Text(w) = Want::new("h".into(), "r1".into(), "files:a.txt".into(), ((1, 2), (3, 4)), "hello").unwrap().share else { panic!() };
     assert_eq!((w.start.line, w.start.byte, w.end.line, w.end.byte), (1, 2, 3, 4));
     assert_eq!(w.len, 5);
     assert_eq!(w.digest, selection_digest("hello"));
@@ -177,7 +177,7 @@ fn hosts_are_kept_apart() {
     s.on_connection(&"g".to_string(), true);
     let r = req(go(&mut s, want("abc")));
     s.on_reply(&host(), &r, done());
-    s.reconcile(want("abcd"), |_, _| Err::<(), ()>(()));
+    s.reconcile(want("abcd"), &[], |_, _| Err::<(), ()>(()));
     assert_eq!(go(&mut s, want_in("g", "r2", "files:b.txt", "q")).unwrap().0, "g");
 }
 
@@ -191,4 +191,103 @@ fn wanted_needs_every_piece() {
     assert!(wanted(true, &h, None, Some("n"), rel()).is_none(), "no row id");
     assert!(wanted(true, &h, Some("r".into()), None, rel()).is_none(), "no node");
     assert!(wanted(true, &h, Some("r".into()), Some("n"), None).is_none(), "mid-drag or none");
+}
+
+fn ink_want(row: &str, node: &str, revision: u64) -> Option<Want> {
+    let base = InkBase::Figure { node_id: node.to_string() };
+    wanted_ink(Some(base.clone()), Some(&base), true, revision, &host(), Some(row.to_string()))
+}
+
+fn strokes(n: usize) -> Vec<Vec<[u16; 2]>> { vec![vec![[1, 2], [3, 4]]; n] }
+
+/// Runs `reconcile` with the drawing's strokes.
+fn go_ink(s: &mut SelectionShare, desired: Option<Want>, n: usize) -> Option<(HostKey, OutgoingReq)> {
+    let mut out = None;
+    s.reconcile(desired, &strokes(n), |h, r| {
+        out = Some((h.clone(), r));
+        Ok::<(), ()>(())
+    });
+    out
+}
+
+/// R-D17. The orderings of the share plan for a drawing: 1 (a new revision sends), 2 (no strokes or no shown base sends
+/// a clear), 4 (the base shown again sends again), 5 (a row switch clears, then shares the new row's), 6 (only the latest
+/// at the reply), 7 (the status lines, no retry), 8 to 10 (a failed send, a connection's end, a stale reply). Orderings 3, 11
+/// and 12 are the decider (`wanted_ink`, tried first in `desired_selection`): the shown base and the committed strokes only.
+#[test]
+fn the_window_shares_its_drawing_and_withdraws_it() {
+    let mut s = up();
+    // 1: a drawing sends with its strokes and no selection; the same revision sends nothing.
+    let first = req(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2));
+    assert!(first.selection.is_none() && first.drawing.as_ref().unwrap().strokes.len() == 2);
+    assert_eq!(first.drawing.as_ref().unwrap().base, InkBase::Figure { node_id: "files:a.png".into() });
+    assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2).is_none(), "one request in flight");
+    assert_eq!(s.on_reply(&host(), &first, done()).as_deref(), Some("drawing shared: the agent sees it at its next prompt"));
+    assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2).is_none());
+
+    // 1: an undo that leaves strokes is a new revision; 6: changes in flight send only the latest at the reply.
+    let second = req(go_ink(&mut s, ink_want("r1", "files:a.png", 2), 1));
+    assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 3), 3).is_none());
+    assert!(go_ink(&mut s, None, 0).is_none());
+    assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 4), 4).is_none());
+    s.on_reply(&host(), &second, done());
+    assert_eq!(req(go_ink(&mut s, ink_want("r1", "files:a.png", 4), 4)).drawing.unwrap().strokes.len(), 4);
+    let last = s.flight.as_ref().unwrap().req.clone();
+    s.on_reply(&host(), &last, done());
+
+    // 2 and 3: no strokes, or the base hidden, is one clear with no status line; 4: shown again sends again.
+    let clear = req(go_ink(&mut s, None, 0));
+    assert!(clear.selection.is_none() && clear.drawing.is_none() && clear.workspace_id == "r1");
+    assert!(s.on_reply(&host(), &clear, done()).is_none());
+    assert!(go_ink(&mut s, None, 0).is_none());
+    let again = req(go_ink(&mut s, ink_want("r1", "files:a.png", 4), 4));
+    s.on_reply(&host(), &again, SelectionReply::Done(SelectionState::Held));
+
+    // 5: a row switch clears the row that held the drawing, then shares the new row's.
+    let clear = req(go_ink(&mut s, ink_want("r2", "files:b.png", 5), 1));
+    assert!(clear.drawing.is_none() && clear.workspace_id == "r1");
+    s.on_reply(&host(), &clear, done());
+    assert_eq!(req(go_ink(&mut s, ink_want("r2", "files:b.png", 5), 1)).workspace_id, "r2");
+    let last = s.flight.as_ref().unwrap().req.clone();
+
+    // 7: each reply kind has its line, and a refusal is not retried until the revision changes.
+    let line = |r: SelectionReply| { let mut s = up(); let q = req(go_ink(&mut s, ink_want("r1", "n", 1), 1)); s.on_reply(&host(), &q, r) };
+    let refused = |c: &str| SelectionReply::Refused { code: Some(c.into()), error: "x".into() };
+    assert!(line(SelectionReply::Done(SelectionState::Held)).unwrap().starts_with("drawing held:"));
+    assert_eq!(line(refused("too_large")).as_deref(), Some("drawing not shared: the image is over 40 megapixels"));
+    assert_eq!(line(refused("not_an_image")).as_deref(), Some("drawing not shared: the daemon cannot read this image"));
+    assert_eq!(line(refused("no_agent")).as_deref(), Some("drawing not shared: this row's agent takes none"));
+    assert_eq!(line(refused("boom")).as_deref(), Some("drawing not shared: boom"));
+    assert_eq!(line(SelectionReply::Unsupported).as_deref(), Some("drawing not shared: this daemon cannot take a drawing; update it"));
+    s.on_reply(&host(), &last, refused("no_agent"));
+    assert!(go_ink(&mut s, ink_want("r2", "files:b.png", 5), 1).is_none());
+    assert!(go_ink(&mut s, ink_want("r2", "files:b.png", 6), 1).is_some());
+
+    // 8: a failed send leaves nothing in flight; the reconnect sends. 9 and 10: the link's end forgets, a late reply is dropped.
+    let mut s = up();
+    s.reconcile(ink_want("r1", "n", 1), &strokes(1), |_, _| Err::<(), ()>(()));
+    assert!(go_ink(&mut s, ink_want("r1", "n", 1), 1).is_none());
+    s.on_connection(&host(), true);
+    let r = req(go_ink(&mut s, ink_want("r1", "n", 1), 1));
+    s.on_connection(&host(), false);
+    assert!(s.on_reply(&host(), &r, done()).is_none());
+    assert!(go_ink(&mut s, None, 0).is_none(), "nothing is held after the end, so no clear");
+    s.on_connection(&host(), true);
+    assert!(go_ink(&mut s, ink_want("r1", "n", 1), 1).is_some());
+    // The ended reply shows nothing; the drawing is sent again after `Connected`.
+    let mut s = up();
+    let r = req(go_ink(&mut s, ink_want("r1", "n", 1), 1));
+    assert!(s.on_reply(&host(), &r, SelectionReply::Ended).is_none());
+    s.on_connection(&host(), true);
+    assert!(go_ink(&mut s, ink_want("r1", "n", 1), 1).is_some());
+
+    // The decider: the shown base must be the drawn one and have strokes; the canvas is a base; a drawing beats text.
+    let (fig, canvas) = (InkBase::Figure { node_id: "n".into() }, InkBase::Canvas);
+    let w = |shown: Option<InkBase>, drawn: Option<&InkBase>, has: bool, row: Option<&str>| wanted_ink(shown, drawn, has, 1, &host(), row.map(String::from));
+    assert!(w(Some(fig.clone()), Some(&fig), true, Some("r")).is_some());
+    assert!(w(Some(canvas.clone()), Some(&canvas), true, Some("r")).is_some());
+    assert!(w(None, Some(&fig), true, Some("r")).is_none(), "base hidden");
+    assert!(w(Some(canvas.clone()), Some(&fig), true, Some("r")).is_none(), "another base shown");
+    assert!(w(Some(fig.clone()), Some(&fig), false, Some("r")).is_none(), "no committed stroke");
+    assert!(w(Some(fig.clone()), Some(&fig), true, None).is_none(), "no row id");
 }
