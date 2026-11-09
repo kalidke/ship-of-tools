@@ -117,9 +117,14 @@ impl ChatOwner {
         out
     }
 
-    /// End the watch at once, with one unwatch.
+    /// End the watch at once, with one unwatch; its read in flight is given up (the drawer reads `reading` first).
     pub(super) fn stop(&mut self) -> Vec<Out> {
         self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect()
+    }
+
+    /// The one snapshot read in flight, with its host.
+    pub(super) fn reading(&self) -> Option<(HostKey, ChatHistoryReq)> {
+        self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
     }
 
     pub(super) fn fill(&self) -> Option<Fill> {
