@@ -257,7 +257,7 @@ fn the_reply_says_who_will_hear() {
 /// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them. A Codex leg writes no
 /// marker, and its row is answered `no_agent`.
 #[test]
-fn a_leg_without_the_hook_is_answered_held() {
+fn the_marker_follows_the_leg_that_wrote_it() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let workspaces = Workspaces::new();
