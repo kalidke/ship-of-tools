@@ -10,8 +10,8 @@ rebindable; see [Keybindings](../ref/keybindings.md).
 <DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open." />
 ```
 
-`Ctrl+J`, `Ctrl+T`, `Ctrl+M` and `F1` swap the REPL, Terminal, Monitor and
-Help into the drawer. Column order, widths and the drawer height come from the
+`Ctrl+J`, `Ctrl+T`, `Ctrl+M`, `Ctrl+Shift+K` and `F1` swap the REPL, Terminal,
+Monitor, Chat and Help into the drawer. Column order, widths and the drawer height come from the
 [layout preset](../ref/config.md#layout); the portrait preset drops the agent
 column.
 
@@ -34,7 +34,7 @@ walkthrough, see [Your first session](../start/tour.md).
 
 ## The bottom drawer
 
-The bottom drawer is shared by the REPL, the Terminal, the Monitor and Help, each with
+The bottom drawer is shared by the REPL, the Terminal, the Monitor, Chat and Help, each with
 its own global toggle. Pressing a second toggle swaps the content in place rather
 than stacking:
 
@@ -44,6 +44,7 @@ than stacking:
 | [Terminal](#The-Terminal-Drawer) | `Ctrl+T` | a local OS shell on the *frontend* machine — canonical use is SSHing out to backend hosts |
 | [Monitor](#The-Monitor-Drawer) | `Ctrl+M` | CPU / GPU / RAM history across your configured hosts |
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
+| Chat | `Ctrl+Shift+K` | the project chat; the drawer shows nothing yet, and no key typed there reaches the REPL |
 
 Drawer toggles are **global** — they fire even when another pane holds focus.
 

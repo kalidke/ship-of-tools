@@ -2,10 +2,33 @@
 
 use crate::ui::*;
 use std::ops::ControlFlow::{self, Break, Continue};
-use crate::ui::input::keypress::KeyPress;
+use crate::ui::input::{help, keypress::KeyPress};
 
 pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
+    // One decision for the whole drawer (`DrawerInput::of`): a tenant other than the REPL and the Terminal takes
+    // nothing here but `ReturnNav` (Chat admits it; Monitor and Help resolve none), so no key of theirs can reach
+    // the REPL's draft or scrollback. The Terminal's keys go to its pty, paste first.
+    match help::DrawerInput::of(state.layout_help.drawer()) {
+        help::DrawerInput::Inert => {
+            if action == Some(Action::ReturnNav) && !event.repeat {
+                state.set_focus(PaneFocus::NavTree);
+                return Break(());
+            }
+            return Continue(());
+        }
+        help::DrawerInput::Terminal => {
+            if !event.repeat && action == Some(Action::Paste) {
+                forward_clipboard_paste_to_local_term(state);
+                state.last_key = Some(label);
+                state.window.request_redraw();
+                return Break(());
+            }
+            terminal_key(state, key, label)?;
+            return Continue(());
+        }
+        help::DrawerInput::Repl => {}
+    }
     // Ctrl+L — clear the REPL drawer scrollback (the
     // universal REPL-clear; decided 2026-07-03). Clears the log, its decoded
     // inline figures, and the scroll offset; the julia
@@ -19,19 +42,12 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
         state.apply_repl_effects(effects);
         return Break(());
     }
-    // Paste shortcut (Ctrl+V / Cmd+V / Shift+Insert):
-    // read the OS clipboard. The Terminal drawer gets it
-    // as a bracketed-paste blob on its pty (like the LLM
-    // pane); the Julia REPL drawer gets it appended to
-    // its input buffer. Intercepted before the
-    // terminal/REPL split below, where Ctrl+V would
-    // otherwise send a bare 0x16 to the pty or type a
-    // literal "v" into the buffer.
+    // Paste shortcut (Ctrl+V / Cmd+V / Shift+Insert): the Julia REPL drawer gets the OS clipboard appended to
+    // its input buffer (the Terminal's paste is above). Intercepted before the input arms below, where Ctrl+V
+    // would otherwise type a literal "v" into the buffer.
     let is_paste_shortcut = !event.repeat && action == Some(Action::Paste);
     if is_paste_shortcut {
-        if state.layout_help.drawer() == DrawerContent::Terminal {
-            forward_clipboard_paste_to_local_term(state);
-        } else if let Some(text) = read_clipboard_text() {
+        if let Some(text) = read_clipboard_text() {
             // REPL input is an editable buffer, not a pty
             // — no bracketed-paste envelope. Normalize to
             // `\n`; embedded newlines stay in the buffer
@@ -43,7 +59,6 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
         state.window.request_redraw();
         return Break(());
     }
-    terminal_key(state, key, label)?;
     repl_scroll_key(state, key)?;
     repl_input_key(state, key);
     Continue(())

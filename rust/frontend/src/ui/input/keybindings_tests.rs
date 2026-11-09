@@ -56,7 +56,7 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear"] {
+    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
@@ -593,7 +593,7 @@ fn ctrl_q_quits_from_every_pane_but_the_programs() {
     let resolves = |c: &Context| {
         b.resolve(&q, None, primary(), c.consumes_text(), |a| c.allows(a)) == Some(Action::Quit)
     };
-    for (pane, want) in [(Pane::Nav, true), (Pane::Preview, true), (Pane::Repl, true), (Pane::Monitor, true),
+    for (pane, want) in [(Pane::Nav, true), (Pane::Preview, true), (Pane::Repl, true), (Pane::Monitor, true), (Pane::Chat, true),
         (Pane::Help, true), (Pane::Agent, false), (Pane::Terminal, false)] {
         let c = Context { pane, ..Context::default() };
         assert_eq!(resolves(&c), want, "Ctrl+Q in the {pane:?} pane");

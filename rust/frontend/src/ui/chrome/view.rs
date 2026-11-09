@@ -355,8 +355,9 @@ impl ChromeView<'_> {
                 }
             }
             (DrawerContent::Help, _) => " help ".to_string(),
-            (_, true) => " repl · julia · [FOCUS] ".to_string(),
-            (_, false) => " repl · julia ".to_string(),
+            (DrawerContent::Chat, _) => " chat ".to_string(),
+            (DrawerContent::Closed | DrawerContent::Repl, true) => " repl · julia · [FOCUS] ".to_string(),
+            (DrawerContent::Closed | DrawerContent::Repl, false) => " repl · julia ".to_string(),
         };
         repl_title
     }

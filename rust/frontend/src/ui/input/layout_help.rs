@@ -119,7 +119,7 @@ impl LayoutHelp {
     pub(in crate::ui) fn peek(&self) -> Option<&Peek> { self.help.peek.as_ref() }
 
     pub(in crate::ui) fn toggle_drawer(&mut self, tenant: DrawerContent, focus: PaneFocus) -> LayoutEffect {
-        assert!(matches!(tenant, DrawerContent::Repl | DrawerContent::Terminal | DrawerContent::Monitor));
+        assert!(matches!(tenant, DrawerContent::Repl | DrawerContent::Terminal | DrawerContent::Monitor | DrawerContent::Chat));
         self.help_origin = None;
         self.drawer = self.drawer.toggle(tenant);
         LayoutEffect { focus: if self.drawer.is_open() { Some(PaneFocus::Repl) }

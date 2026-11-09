@@ -341,6 +341,8 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         Some(DrawerContent::Terminal)
     } else if action == Some(Action::ToggleMonitorDrawer) {
         Some(DrawerContent::Monitor)
+    } else if action == Some(Action::ToggleChatDrawer) {
+        Some(DrawerContent::Chat)
     } else {
         None
     };
@@ -352,6 +354,18 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
     Continue(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum LineScroll { Repl, Preview, Nowhere }
+
+/// Where Alt+Up / Alt+Down scroll: the REPL only when the drawer's input is the REPL's, never a tenant's.
+pub(in crate::ui) fn line_scroll_target(focus: PaneFocus, input: help::DrawerInput) -> LineScroll {
+    match (focus, input) {
+        (PaneFocus::Repl, help::DrawerInput::Repl) => LineScroll::Repl,
+        (PaneFocus::Preview, _) => LineScroll::Preview,
+        _ => LineScroll::Nowhere,
+    }
+}
+
 pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
     // Alt+Up / Alt+Down: fine-grained one-row scroll in the
@@ -361,23 +375,24 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
     // through to the pty so tmux/shell keep alt-keybinds.
     if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
         let row_step: i32 = 1;
-        match (state.focus_prompts.focus(), action) {
-            (PaneFocus::Repl, Some(Action::ScrollLineUp)) => {
+        let target = line_scroll_target(state.focus_prompts.focus(), help::DrawerInput::of(state.layout_help.drawer()));
+        match (target, action) {
+            (LineScroll::Repl, Some(Action::ScrollLineUp)) => {
                 state.repl_model.scroll_line(true);
                 state.window.request_redraw();
                 return Break(());
             }
-            (PaneFocus::Repl, Some(Action::ScrollLineDown)) => {
+            (LineScroll::Repl, Some(Action::ScrollLineDown)) => {
                 state.repl_model.scroll_line(false);
                 state.window.request_redraw();
                 return Break(());
             }
-            (PaneFocus::Preview, Some(Action::ScrollLineUp)) => {
+            (LineScroll::Preview, Some(Action::ScrollLineUp)) => {
                 state.shaped.scroll_up(row_step as u16);
                 state.window.request_redraw();
                 return Break(());
             }
-            (PaneFocus::Preview, Some(Action::ScrollLineDown)) => {
+            (LineScroll::Preview, Some(Action::ScrollLineDown)) => {
                 state.shaped.scroll_down(row_step as u16);
                 state.window.request_redraw();
                 return Break(());

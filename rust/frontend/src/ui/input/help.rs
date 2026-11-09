@@ -19,6 +19,7 @@ pub enum Pane {
     Repl,
     Terminal,
     Monitor,
+    Chat,
     Agent,
     Help,
 }
@@ -51,6 +52,32 @@ pub struct Context {
     pub session: bool,
     pub alternate_screen: bool,
 }
+/// Who the drawer's keys, paste, wheel and line scroll reach: the one decision every handler matches, with no
+/// wildcard. Only `Repl` reaches the REPL's draft and scrollback; an `Inert` tenant takes nothing but Escape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerInput { Repl, Terminal, Inert }
+impl DrawerInput {
+    pub fn of(drawer: crate::ui::DrawerContent) -> Self {
+        use crate::ui::DrawerContent as D;
+        match drawer {
+            D::Closed | D::Repl => Self::Repl,
+            D::Terminal => Self::Terminal,
+            D::Monitor | D::Help | D::Chat => Self::Inert,
+        }
+    }
+}
+impl Pane {
+    pub fn of_drawer(drawer: crate::ui::DrawerContent) -> Pane {
+        use crate::ui::DrawerContent as D;
+        match drawer {
+            D::Closed | D::Repl => Pane::Repl,
+            D::Terminal => Pane::Terminal,
+            D::Monitor => Pane::Monitor,
+            D::Help => Pane::Help,
+            D::Chat => Pane::Chat,
+        }
+    }
+}
 impl Context {
     pub fn allows(&self, action: Action) -> bool {
         use Scope::*;
@@ -74,7 +101,7 @@ impl Context {
             Global => true,
             Workspace => !self.editing && !self.workspace_locked,
             Restore => self.restore && !self.modal,
-            Scroll => !self.editing && (text || repl),
+            Scroll => !self.editing && (text || repl || self.pane == Pane::Chat),
             Text => text,
             HalfScroll => text || repl,
             Picker => self.pane == Pane::Nav && self.picker,
@@ -89,17 +116,18 @@ impl Context {
             Quarto => (nav || preview) && self.file.as_ref().is_some_and(|p| p.ends_with(".qmd")),
             Julia => nav && self.file.as_ref().is_some_and(|p| p.ends_with(".jl")),
             Repl => repl,
-            Pty => repl || matches!(self.pane, Pane::Terminal | Pane::Agent),
+            Pty => repl || matches!(self.pane, Pane::Terminal | Pane::Agent | Pane::Chat),
             Llm => self.pane == Pane::Agent,
             Pages => preview && self.pages && !self.canvas,
             Image => preview && self.image && !self.canvas,
             Drawing => preview && self.drawing,
             Preview => preview,
-            Reading => preview || repl,
+            Reading => preview || repl || self.pane == Pane::Chat,
             PreviewFile => preview && self.editable && !self.canvas,
             PageScroll => {
                 (text && !self.pages)
                     || repl
+                    || self.pane == Pane::Chat
                     || matches!(self.pane, Pane::Agent | Pane::Terminal) && !self.alternate_screen
             }
             Edit => self.editing,
@@ -116,7 +144,7 @@ impl Context {
     pub fn consumes_text(&self) -> bool {
         self.editing
             || self.prompt
-            || matches!(self.pane, Pane::Agent | Pane::Terminal | Pane::Repl | Pane::Help)
+            || matches!(self.pane, Pane::Agent | Pane::Terminal | Pane::Repl | Pane::Help | Pane::Chat)
     }
     pub fn title(&self) -> String {
         let pane = match self.pane {
@@ -133,6 +161,7 @@ impl Context {
             Pane::Repl => "Julia",
             Pane::Terminal => "Terminal",
             Pane::Monitor => "Monitor",
+            Pane::Chat => "Chat",
             Pane::Agent => "Agent",
             Pane::Help => "Help",
         };

@@ -198,13 +198,15 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
     // pane's apply step so a single positive `rows_above`
     // feels like "show content above" everywhere.
     match state.focus_prompts.focus() {
-        PaneFocus::Repl if state.layout_help.drawer() == DrawerContent::Terminal => {
-            wheel_terminal(state, rows_above);
-        }
-        PaneFocus::Repl => {
-            state.repl_model.scroll_rows(rows_above);
-            state.window.request_redraw();
-        }
+        PaneFocus::Repl => match help::DrawerInput::of(state.layout_help.drawer()) {
+            help::DrawerInput::Terminal => wheel_terminal(state, rows_above),
+            help::DrawerInput::Repl => {
+                state.repl_model.scroll_rows(rows_above);
+                state.window.request_redraw();
+            }
+            // Chat, Monitor and Help scroll nothing the wheel can reach yet, and never the REPL.
+            help::DrawerInput::Inert => {}
+        },
         PaneFocus::Preview => {
             state.shaped.scroll_by(-rows_above);
             state.window.request_redraw();

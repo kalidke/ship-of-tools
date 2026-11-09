@@ -9,9 +9,9 @@ Help and keyboard dispatch use the same action catalog and context checks.
 - **Escape** dismisses the temporary overlay. Any ordinary command dismisses it and still performs its normal action.
 - If the action list cannot fit legibly inside the pane, Help opens in the drawer directly.
 
-Help is a fourth view of the existing drawer, alongside Julia, Terminal and
-Monitor. Switching to Help leaves Julia running. Escape returns to the previous
-drawer and focus; choosing Julia, Terminal or Monitor switches to that view.
+Help is a view of the existing drawer, alongside Julia, Terminal, Monitor and
+Chat. Switching to Help leaves Julia running. Escape returns to the previous
+drawer and focus; choosing Julia, Terminal, Monitor or Chat switches to that view.
 Help remembers which pane you asked about while you browse or search it.
 
 In the Help drawer, type to search action names, descriptions or shortcuts;
@@ -125,6 +125,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
 | `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
 | `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |
+| `drawer.chat` | `Primary+Shift+k` | Show or hide the project chat. |
 | `view.scroll_line_up` | `Alt+ArrowUp` | Scroll without moving the input cursor. |
 | `view.scroll_line_down` | `Alt+ArrowDown` | Scroll without moving the input cursor. |
 | `preview.table_left` | `h` / `ArrowLeft` | Move horizontally through a wide text table. |

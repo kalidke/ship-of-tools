@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 const PLAIN: Modifiers = Modifiers { ctrl: false, super_: false, alt: false, shift: false };
 const FOCI: [PaneFocus; 4] = [PaneFocus::NavTree, PaneFocus::Preview, PaneFocus::Llm, PaneFocus::Repl];
-const DRAWERS: [DrawerContent; 5] = [DrawerContent::Closed, DrawerContent::Repl,
-    DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Help];
-const TENANTS: [DrawerContent; 3] = [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor];
+const DRAWERS: [DrawerContent; 6] = [DrawerContent::Closed, DrawerContent::Repl,
+    DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Help, DrawerContent::Chat];
+const TENANTS: [DrawerContent; 4] = [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Chat];
 
 struct Harness {
     layout: LayoutHelp, focus: FocusPrompts, bindings: KeyBindings, context: help::Context,
