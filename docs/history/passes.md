@@ -1392,3 +1392,13 @@ A landing's record goes here, with its measured times; the package page holds on
   the shown base, so drawing on it replaces a figure's drawing. About 121 product lines added and 45 removed, and 140
   test lines. Where the minutes went: the build (6 minutes); one review round (blockers 0; 19 minutes) and one fix round
   of 5 minutes; two gates of 2 minutes.
+- D6a, a daemon says it takes a drawing, 2026-11-09: builder launched 02:42, main 03:11 (6ca7e3efc, one commit squashed
+  from two), 29 minutes. A daemon built before the selection op's drawing field reads a drawing as a clear and answers
+  shared, and the wire keeps policy off the version string (its guarantee 5), so the plan's gate on the daemon's
+  version became a declaration: the hello reply gains a defaulted `takes_drawing`, written only when true, which this
+  daemon sets and the last release's reply reads as false (the protocol integer is unchanged). Each fe-net connection
+  keeps its own hello's answer, and a drawing on a connection whose hello did not take one is answered unsupported and
+  never written; a clear and a text selection still go. The review's fix moved the check from a per-host copy, which a
+  key handler could read stale before the next frame, to the send on the connection itself. About 13 product lines and
+  80 test lines across the wire, the daemon's hello and fe-net. Where the minutes went: the build (4 minutes); one review
+  round (blockers 0; 16 minutes) and one fix round of 4 minutes; two gates of 2 minutes.
