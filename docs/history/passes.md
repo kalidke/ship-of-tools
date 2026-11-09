@@ -1493,3 +1493,12 @@ A landing's record goes here, with its measured times; the package page holds on
   gates of 2 to 3 minutes (the first failed the suites' rule that every shell suite loads the home guard first); one
   review round of 11 minutes (blockers 0; a decoy uid that prefixes the real one, missing from the test, was added);
   two fix rounds of a minute.
+- The project chat's B5a, the Chat tenant, 2026-11-09: builder launched 15:13, main 16:01 (41b9ae031), 48 minutes, past
+  the half hour, a failure by this page's standard. The drawer has a fourth tenant, Chat (`Primary+Shift+k`), which
+  shows nothing yet, and one exhaustive decision of who a tenant's input reaches, so the Monitor no longer types into
+  or scrolls the hidden REPL (MONITOR-TENANT-REACHES-REPL closed). About 95 product lines and 50 test lines. Where the
+  minutes went: the build (6 minutes); two review rounds (blockers 1, 0; 16 and 15 minutes: the first found the
+  guarantee unpinned, a deleted check passing every test); one rework of 3 minutes; two scoped gates of 2 minutes. The
+  cause of the overrun: the plan's red test covered the maps but not the handlers that read them, so the first review
+  found the guarantee untested and a rework and second round followed. The handlers' arms are still driven by no test
+  (B5A-ARMS-UNDRIVEN).

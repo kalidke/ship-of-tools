@@ -608,7 +608,15 @@ owned by `docs/CLAUDE.md`.
 - **CLOSED-DRAWER-KEEPS-FOCUS** [note] After a Terminal spawn failure the drawer is closed but focus stays in the drawer
   slot (`terminal_spawn_failed`, pinned by `terminal_spawn_failure_closes_only_the_drawer`), and `DrawerInput::of(Closed)`
   is the REPL's, so letters go into the REPL's draft and Enter evaluates it. Fix: `terminal_spawn_failed` returns the
-  toggle's focus effect (the nav when focus was in the drawer). Found reading code; never seen.
+  toggle's focus effect (the nav when focus was in the drawer). Found reading code; never seen. The function is in
+  `rust/frontend/src/ui/input/layout_help.rs`.
+- **B5A-ARMS-UNDRIVEN** [note] The drawer's input decision (`help::DrawerInput::of`) is tested for every tenant, but no
+  test drives the handlers that match it: in `rust/frontend/src/ui/drawer/keys.rs` the REPL's handling runs after the
+  match, so an `Inert` arm that loses its `return` falls through to the REPL and still compiles, and the wheel's
+  `Inert` arm (`input/mouse.rs`) or a call site handed a constant could send a non-REPL tenant's input to the REPL with
+  every test passing. Fix: make each arm an expression of type `ControlFlow<()>` (inert, terminal, REPL), so a lost
+  `return` is a compile error, and delete the dead tenant check in `terminal_key`; the module doc there still gives the
+  old order, and `line_scroll_target`'s doc should say "never another tenant's". Found by B5a's second review.
 - **HELP-SEARCH-DROPS-ALTGR** [note] Help's search drops AltGr characters on Windows: its query admits a key only with
   neither Ctrl nor Super (`input/layout_help.rs`, the `Key::Character` arm), and AltGr is Ctrl with Alt there, so the
   editor's `chord_types_text` (`preview/editor/keys.rs`), which admits it, is not used. Found reading code; never seen.
