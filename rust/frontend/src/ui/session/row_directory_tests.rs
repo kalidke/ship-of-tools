@@ -382,3 +382,15 @@ fn a_note_ends_when_its_row_is_known_to_be_alive() {
 fn hosts_gh() -> Vec<HostKey> {
     vec!["g".to_string(), "h".to_string()]
 }
+
+/// The chat's row is the listing's canonical id, never the slug the selection holds (the daemon refuses a slug), and it is
+/// read only while the chat is shown.
+#[test]
+fn the_chat_follows_the_canonical_id_of_the_selected_slug() {
+    use crate::ui::drawer::chat::wanted_row;
+    let directory = listing(&[("h", &["a1", "a2"])]);
+    let selected = || directory.resolve(&"h".to_string(), "a2").ok();
+    let row = wanted_row(true, selected).unwrap();
+    assert_eq!((row.host.as_str(), row.workspace_id.as_str()), ("h", "id-a2"));
+    assert!(wanted_row(false, || panic!("the selected row is not read while the chat is hidden")).is_none());
+}

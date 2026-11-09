@@ -712,7 +712,23 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 - A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
   (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
+`ChatDrawer` (`drawer/chat/drawer.rs`, State's `chat` field) privately holds the owner and a `RowChannel`; the owner's
+methods are `pub(super)`, so no other ui code can drop the requests they return. Rules:
+- The window watches exactly the channel of the row the drawer shows, on that row's computer, while the chat is shown and
+  nothing otherwise. The chat is shown when the drawer is Chat, or Help whose saved origin is Chat
+  (`LayoutHelp::chat_shown`, `chat_is_shown_in_chat_and_in_help_opened_from_chat_only`); once the REPL opens over that Help the
+  chat is not shown and the watch ends, though Help's saved origin survives, so a Help opened again over that REPL is watched
+  while it shows. Each frame `tick_chat` asks `wanted_row` for the selected row's host and canonical id, never the slug, and
+  does not resolve the selected row while the chat is hidden (`the_chat_follows_the_canonical_id_of_the_selected_slug`).
+  The rest is pinned by `drawer::chat::row_channel_tests::the_watch_follows_the_shown_rows_channel_and_ends_with_it`.
+- `RowChannel` resolves a wanted row once, with `chat.resolve`, after it has stayed the same for `NAV_FIRE_DEBOUNCE` on a connected
+  host (until then the frame pacer is marked dirty); no answer is cached, so showing Chat again resolves again. The answer for the row
+  still wanted decides its watch: `mapped` watches it (a second one is nothing, the owner takes the same target twice as
+  nothing); anything else (`unmapped`, `invalid`, a refusal, an old daemon) ends the watch, so a channel the daemon no longer
+  maps is not asked for again. An answer for a row no longer wanted is nothing. A row that changed or went ends the old watch at once, with the owner's `stop` and one `chat.unwatch`. A link coming
+  up or going resolves the row again.
+
+Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
 
 ## Selection share
@@ -777,9 +793,10 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
-- `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `mod.rs` holds State's side only. State holds it and
-  forwards chat events, `bus.lost` and each link's change to its methods, which return the requests to send. No drawer or key
-  reads it yet.
+- `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `row_channel.rs` holds `RowChannel`, which
+  resolves the wanted row; `drawer.rs` holds `ChatDrawer`, which owns both and is what State holds; `mod.rs` holds State's side
+  only. State forwards chat events, `bus.lost` and each link's change to `ChatDrawer`, whose methods return the requests to
+  send. No drawer view or key reads it yet.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,

@@ -425,3 +425,25 @@ fn help_diagnostics_keep_targets_fields_and_order() {
         ("recorder html", "help cheat sheet:"), ("help cheat sheet:", "recorder status")] { assert!(at(a) < at(b)); }
     assert!(text[at("recorder status")..].contains("recorder redraw")); assert!(!text.contains("key pressed"));
 }
+
+/// The chat is shown in Chat and in Help opened from Chat, and nowhere else: not once the REPL opens over that Help, not
+/// in Help opened from the REPL.
+#[test]
+fn chat_is_shown_in_chat_and_in_help_opened_from_chat_only() {
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    assert!(!h.layout.chat_shown());
+    h.toggle(DrawerContent::Chat);
+    assert!(h.layout.chat_shown());
+    h.open();
+    assert!(h.layout.chat_shown(), "Help opened from Chat");
+    h.layout.show_repl_automatically(true, true);
+    assert!(!h.layout.chat_shown(), "the REPL over that Help");
+    h.close();
+    assert_eq!(h.layout.drawer(), DrawerContent::Chat);
+    assert!(h.layout.chat_shown());
+    h.toggle(DrawerContent::Chat);
+    assert!(!h.layout.chat_shown(), "closed");
+    let mut h = Harness::new(DrawerContent::Repl, PaneFocus::NavTree, false);
+    h.open();
+    assert!(!h.layout.chat_shown(), "Help opened from the REPL");
+}

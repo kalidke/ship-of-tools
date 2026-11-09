@@ -113,6 +113,12 @@ impl LayoutHelp {
             help_start_pending: start_help, help_peek_start_pending: start_peek }
     }
     pub(in crate::ui) fn drawer(&self) -> DrawerContent { self.drawer }
+    /// Whether the chat is shown: the drawer is Chat, or Help whose saved origin is Chat. The origin survives the REPL
+    /// opening over Help, but then the drawer is the REPL and the chat is not shown.
+    pub(in crate::ui) fn chat_shown(&self) -> bool {
+        self.drawer == DrawerContent::Chat
+            || self.drawer == DrawerContent::Help && self.help_origin.is_some_and(|o| o.drawer == DrawerContent::Chat)
+    }
     pub(in crate::ui) fn maximized(&self) -> bool { self.maximized }
     pub(in crate::ui) fn wide_preview(&self) -> bool { self.wide_preview }
     pub(in crate::ui) fn help(&self) -> &Help { &self.help }

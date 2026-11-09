@@ -26,7 +26,7 @@ pub(super) type Out = (HostKey, OutgoingReq);
 
 /// How whole the watched state is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui) enum Fill {
+pub(super) enum Fill {
     /// A recovery is owed: the watch to send again, or the snapshot read not yet sent.
     Needed,
     Reading,
@@ -38,7 +38,7 @@ pub(in crate::ui) enum Fill {
 
 /// What the last post came to. `Unknown` means the post may exist: a post the owner never wrote is `Refused`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::ui) enum PostShown {
+pub(super) enum PostShown {
     Posted(Ts),
     Refused(ChatCode),
     Limited(u64),
@@ -94,7 +94,7 @@ impl Watch {
 }
 
 #[derive(Default)]
-pub(in crate::ui) struct ChatOwner {
+pub(super) struct ChatOwner {
     connected: HashSet<HostKey>,
     /// Hosts whose daemon answered a chat op as unknown; cleared per host when its connection comes back.
     unsupported: HashSet<HostKey>,
@@ -105,7 +105,7 @@ pub(in crate::ui) struct ChatOwner {
 
 impl ChatOwner {
     /// Watch `target` on `host`, replacing any earlier watch; the same host and target again is nothing.
-    pub(in crate::ui) fn watch(&mut self, host: HostKey, target: ChatTarget, now: Instant) -> Vec<Out> {
+    pub(super) fn watch(&mut self, host: HostKey, target: ChatTarget, now: Instant) -> Vec<Out> {
         if self.watch.as_ref().is_some_and(|w| w.host == host && w.target == target) {
             return Vec::new();
         }
@@ -117,9 +117,18 @@ impl ChatOwner {
         out
     }
 
+    /// End the watch at once, with one unwatch.
+    pub(super) fn stop(&mut self) -> Vec<Out> {
+        self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect()
+    }
+
+    pub(super) fn fill(&self) -> Option<Fill> {
+        self.watch.as_ref().map(|w| w.fill)
+    }
+
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
-    pub(in crate::ui) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
+    pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
         if self.posting.is_some() {
             return None;
         }
@@ -133,7 +142,7 @@ impl ChatOwner {
 
     /// A link came or went. Either way the watch starts over: a coming link clears the unsupported mark and the attempts,
     /// a going link leaves the post unknown.
-    pub(in crate::ui) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
+    pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         if up {
             self.connected.insert(host.clone());
             self.unsupported.remove(host);
@@ -151,19 +160,19 @@ impl ChatOwner {
     }
 
     /// The event bus dropped events on `host`'s link; `chat.changed` is the chat's bus.
-    pub(in crate::ui) fn on_bus_lost(&mut self, host: &HostKey, bus: &str, now: Instant) -> Vec<Out> {
+    pub(super) fn on_bus_lost(&mut self, host: &HostKey, bus: &str, now: Instant) -> Vec<Out> {
         if bus == sot_protocol::op::CHAT_CHANGED && self.of(host).is_some() { self.resync(now) } else { Vec::new() }
     }
 
     /// The paced retry of what a loss owes.
-    pub(in crate::ui) fn tick(&mut self, now: Instant) -> Vec<Out> {
+    pub(super) fn tick(&mut self, now: Instant) -> Vec<Out> {
         self.drive(now)
     }
 
-    pub(in crate::ui) fn on_evt(&mut self, host: &HostKey, evt: ChatEvt, now: Instant) -> Vec<Out> {
+    pub(super) fn on_evt(&mut self, host: &HostKey, evt: ChatEvt, now: Instant) -> Vec<Out> {
         let mine = self.of(host).is_some();
         match evt {
-            // Rows are resolved by the drawer (B5), which also starts the watch.
+            // The drawer (`ChatDrawer`) answers a resolve before the owner sees it.
             ChatEvt::Resolved { .. } => Vec::new(),
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),

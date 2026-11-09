@@ -98,7 +98,7 @@ impl State {
             row_presentation: RowPresentation::default(),
             active_link: crate::ui::host_view::ActiveLink::new(),
             repl_model: ReplModel::default(),
-            chat: drawer::chat::ChatOwner::default(),
+            chat: drawer::chat::ChatDrawer::default(),
             selection_share: preview::share::SelectionShare::default(),
             result_ledger: ResultLedger::default(),
             contrast_dim: cli.contrast_mode == "dim",
