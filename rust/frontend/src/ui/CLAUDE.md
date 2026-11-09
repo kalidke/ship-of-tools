@@ -546,7 +546,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   They drive production continuations. Native window-close retains its scenarios and hosted gate requirement.
 - `LayoutHelp` privately owns drawer/maximize/wide flags, Help browsing, the first return origin and startup
   requests, including private nested storage. It returns owned effects, never takes State and lends only immutable
-  observations. Ordinary toggles alone abandon the origin and request Monitor sync, after focus and before binding
+  observations. The drawer has four tenants (Repl, Terminal, Monitor, Chat) besides Help; Chat shows nothing yet and
+  its keys reach no REPL handler (`input/CLAUDE.md`). Ordinary toggles alone abandon the origin and request Monitor sync, after focus and before binding
   feedback/redraw. Automatic REPL opening keeps setting/base-preset gates; demo opening ignores them; Terminal
   failure closes only selection. These paths preserve other layout/Help state and keep held subscriptions.
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.

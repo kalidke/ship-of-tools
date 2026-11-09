@@ -206,3 +206,22 @@ fn the_canvas_key_is_the_previews_and_the_canvas_takes_the_images_and_the_texts_
     // the page and edit keys do not reach the hidden preview
     assert!(!canvas.allows(Action::PageNext) && !canvas.allows(Action::EditFile));
 }
+#[test]
+fn the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler() {
+    use crate::ui::{DrawerContent, PaneFocus};
+    use crate::ui::input::global_keys::{line_scroll_target, LineScroll};
+    assert_eq!(Pane::of_drawer(DrawerContent::Chat), Pane::Chat);
+    assert_eq!(Pane::of_drawer(DrawerContent::Monitor), Pane::Monitor);
+    let chat = Context { pane: Pane::Chat, ..Context::default() };
+    for a in [Action::ReplSubmit, Action::ReplClear, Action::ReplInterrupt, Action::ReplHistoryPrev, Action::ReplNewline] {
+        assert!(!chat.allows(a), "{a:?} reached the REPL from the chat drawer");
+    }
+    for a in [Action::Paste, Action::ScrollPageUp, Action::ScrollLineUp, Action::ReturnNav, Action::Quit, Action::ToggleChatDrawer] {
+        assert!(chat.allows(a), "{a:?} is refused in the chat drawer");
+    }
+    assert!(chat.consumes_text());
+    for pane in [Pane::Chat, Pane::Monitor, Pane::Help] {
+        assert!(!matches!(line_scroll_target(PaneFocus::Repl, pane), LineScroll::Repl), "{pane:?} line scroll reaches the REPL");
+    }
+    assert!(matches!(line_scroll_target(PaneFocus::Repl, Pane::Repl), LineScroll::Repl));
+}

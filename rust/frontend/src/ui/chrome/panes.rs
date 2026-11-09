@@ -97,6 +97,7 @@ pub(in crate::ui) enum DrawerContent {
     Terminal,
     Monitor,
     Help,
+    Chat,
 }
 
 impl DrawerContent {

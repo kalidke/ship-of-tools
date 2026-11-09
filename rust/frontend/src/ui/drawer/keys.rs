@@ -6,6 +6,16 @@ use crate::ui::input::keypress::KeyPress;
 
 pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
+    // A tenant other than the REPL and the Terminal takes no text, no paste and no scroll: only Escape,
+    // back to the nav. Matched first, so nothing below can reach the REPL's draft or scrollback.
+    if !matches!(crate::ui::input::help::Pane::of_drawer(state.layout_help.drawer()),
+        crate::ui::input::help::Pane::Repl | crate::ui::input::help::Pane::Terminal) {
+        if action == Some(Action::ReturnNav) && !event.repeat {
+            state.set_focus(PaneFocus::NavTree);
+            return Break(());
+        }
+        return Continue(());
+    }
     // Ctrl+L — clear the REPL drawer scrollback (the
     // universal REPL-clear; decided 2026-07-03). Clears the log, its decoded
     // inline figures, and the scroll offset; the julia

@@ -593,7 +593,7 @@ fn ctrl_q_quits_from_every_pane_but_the_programs() {
     let resolves = |c: &Context| {
         b.resolve(&q, None, primary(), c.consumes_text(), |a| c.allows(a)) == Some(Action::Quit)
     };
-    for (pane, want) in [(Pane::Nav, true), (Pane::Preview, true), (Pane::Repl, true), (Pane::Monitor, true),
+    for (pane, want) in [(Pane::Nav, true), (Pane::Preview, true), (Pane::Repl, true), (Pane::Monitor, true), (Pane::Chat, true),
         (Pane::Help, true), (Pane::Agent, false), (Pane::Terminal, false)] {
         let c = Context { pane, ..Context::default() };
         assert_eq!(resolves(&c), want, "Ctrl+Q in the {pane:?} pane");

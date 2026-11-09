@@ -35,12 +35,16 @@ fn drawer_toggle_is_symmetric() {
     // Open from closed.
     assert_eq!(Closed.toggle(Repl), Repl);
     assert_eq!(Closed.toggle(Terminal), Terminal);
+    assert_eq!(Closed.toggle(Chat), Chat);
     // Same key closes.
     assert_eq!(Repl.toggle(Repl), Closed);
     assert_eq!(Terminal.toggle(Terminal), Closed);
+    assert_eq!(Chat.toggle(Chat), Closed);
     // Other key swaps content without closing.
     assert_eq!(Repl.toggle(Terminal), Terminal);
     assert_eq!(Terminal.toggle(Repl), Repl);
+    assert_eq!(Repl.toggle(Chat), Chat);
+    assert_eq!(Chat.toggle(Monitor), Monitor);
 }
 
 #[test]
@@ -48,4 +52,5 @@ fn drawer_is_open_only_when_not_closed() {
     assert!(!DrawerContent::Closed.is_open());
     assert!(DrawerContent::Repl.is_open());
     assert!(DrawerContent::Terminal.is_open());
+    assert!(DrawerContent::Chat.is_open());
 }

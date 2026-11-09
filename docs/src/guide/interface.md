@@ -44,6 +44,7 @@ than stacking:
 | [Terminal](#The-Terminal-Drawer) | `Ctrl+T` | a local OS shell on the *frontend* machine — canonical use is SSHing out to backend hosts |
 | [Monitor](#The-Monitor-Drawer) | `Ctrl+M` | CPU / GPU / RAM history across your configured hosts |
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
+| Chat | `Ctrl+Shift+K` | the project chat; the drawer shows nothing yet, and no key typed there reaches the REPL |
 
 Drawer toggles are **global** — they fire even when another pane holds focus.
 

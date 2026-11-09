@@ -605,11 +605,6 @@ owned by `docs/CLAUDE.md`.
 - **PANE-CONNECT** [feature] Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
   text preparation (the first glyph-atlas fill) and its first dial has no parked spare; hosted macOS first panes were
   1.26 to 1.45 s against 0.13 to 0.93 s later. An improvement, not a defect.
-- **MONITOR-TENANT-REACHES-REPL** [note] In the drawer's Monitor tenant, typing edits the hidden REPL's draft, Enter
-  evaluates it in the row's REPL, and the wheel scrolls the hidden REPL: `drawer_pane_key`
-  (`rust/frontend/src/ui/drawer/keys.rs`) falls through to `repl_input_key` for any tenant but the Terminal, and
-  `route_wheel_rows` (`input/mouse.rs`) scrolls the REPL for focus `Repl` unless the tenant is the Terminal. Fix: B5a's
-  one map from tenant to pane. Found reading code; never seen.
 - **HELP-SEARCH-DROPS-ALTGR** [note] Help's search drops AltGr characters on Windows: its query admits a key only with
   neither Ctrl nor Super (`input/layout_help.rs`, the `Key::Character` arm), and AltGr is Ctrl with Alt there, so the
   editor's `chord_types_text` (`preview/editor/keys.rs`), which admits it, is not used. Found reading code; never seen.
@@ -786,6 +781,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **MONITOR-TENANT-REACHES-REPL** (fe-ui) closed by the landing that fixes it, 2026-11-09: `help::Pane::of_drawer` is the one exhaustive map from tenant to pane, and typing, paste, the line-scroll chords and the wheel reach the REPL only when the drawer shows it.
 - **GATE-LEFTOVER-ESCAPED-HOLDER** (containment) closed by the landing that fixes it, 2026-11-09: `output_does_not_wait_for_an_escaped_pipe_holder` (`rust/containment/src/signal_output_bound_tests.rs`) passed and left its escaped `sleep 30` running, so a whole local gate whose `sot_containment` job started within 30 s of the end failed its census (`leftover <pid> sleep 30`); the escapee now holds the pipe only while the test's `keep` file exists, and the test removes the file and sees the escapee gone.
 - **SELECT-MARKDOWN** (fe-ui) closed by the landing that fixes it, 2026-11-09, before its window test: a selection in a rendered markdown preview is shared as the whole file lines its text was rendered from, with the file's text there; a rendered buffer with no map shares nothing.
 - **SELECTION-CODEX-HELD** (agents) closed by the landing that fixes it, 2026-11-09: `TAKES_SELECTION` leaves `codex` out, so a Codex row answers a selection `no_agent`, not `held`, until the Codex wiring is built.

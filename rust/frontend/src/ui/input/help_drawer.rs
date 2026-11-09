@@ -8,12 +8,7 @@ impl State {
             PaneFocus::NavTree => help::Pane::Nav,
             PaneFocus::Preview => help::Pane::Preview,
             PaneFocus::Llm => help::Pane::Agent,
-            PaneFocus::Repl => match self.layout_help.drawer() {
-                DrawerContent::Terminal => help::Pane::Terminal,
-                DrawerContent::Monitor => help::Pane::Monitor,
-                DrawerContent::Help => help::Pane::Help,
-                _ => help::Pane::Repl,
-            },
+            PaneFocus::Repl => help::Pane::of_drawer(self.layout_help.drawer()),
         };
         let editing = self.focus_prompts.focus() == PaneFocus::Preview && self.editor.is_editing();
         let prompt = self.focus_prompts.focus() == PaneFocus::NavTree && self.focus_prompts.prompt().is_some();
