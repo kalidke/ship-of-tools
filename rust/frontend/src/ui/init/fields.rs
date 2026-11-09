@@ -43,6 +43,7 @@ impl State {
         let SolidQuads {
             quad_pipeline, selection_bg_quad, overlay_back_quad, code_bg_quad, code_border_quad,
             strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad,
+            canvas_quad,
         } = solid;
         let LogoQuads { logo_quad, wordmark_quad } = logos;
         let PreviewContent {
@@ -55,7 +56,7 @@ impl State {
             canvas: crate::ui::render::canvas::Canvas::new(text, terminal, scale, cell_w, cell_h, chrome_origin_x, chrome_origin_y),
             brushes: crate::ui::render::brushes::Brushes::new(
                 quad_pipeline, selection_bg_quad, overlay_back_quad, code_bg_quad, code_border_quad,
-                strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad, logo_quad, wordmark_quad,
+                strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad, canvas_quad, logo_quad, wordmark_quad,
             ),
             raster: RasterView::new(preview_png),
             ink: Default::default(),

@@ -2,9 +2,19 @@
 //! every committed change raises. It maps a screen point through the canvas and image rectangles each call hands it, so
 //! zoom, pan and a resize need no state here. It keeps the drawing's raster (the wire's own functions paint it) and the
 //! overlay texture made from it. It never takes `State`.
+use crate::ui::preview::image::overlay::PhysicalScale;
+use crate::ui::preview::source::InstalledPreviewSource;
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
-use sot_protocol::ink::{ink_radius, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
+use sot_protocol::ink::{ink_radius, CANVAS_DIMS, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
+
+/// The shown base's source size: the canvas has its own, a figure's is the raster's served size.
+pub(in crate::ui) fn source_dims(shown: Option<&InkBase>, served: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    match shown {
+        Some(InkBase::Canvas) => Some(CANVAS_DIMS),
+        _ => served,
+    }
+}
 
 type Stroke = Vec<[u16; 2]>;
 
@@ -24,6 +34,8 @@ pub(in crate::ui) struct Drawing {
     cleared: Vec<Stroke>,
     history: Vec<Edit>,
     on: bool,
+    /// The row's canvas is shown: it is the base on show, over the installed preview.
+    canvas: bool,
 }
 
 #[derive(Default)]
@@ -105,6 +117,22 @@ impl InkLayer {
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
         self.drawing.on = on;
     }
+    pub(in crate::ui) fn canvas(&self) -> bool {
+        self.drawing.canvas
+    }
+    pub(in crate::ui) fn set_canvas(&mut self, canvas: bool) {
+        self.drawing.canvas = canvas;
+    }
+    /// A preview reply is installed: another node's hides the canvas (the person navigated), the same node's does not.
+    pub(in crate::ui) fn install_preview(
+        &mut self, source: &mut InstalledPreviewSource, mime: String, bytes: Vec<u8>, node_id: Option<String>,
+        scale: Option<PhysicalScale>, workspace_id: Option<String>,
+    ) {
+        if source.node_id() != node_id.as_deref() {
+            self.drawing.canvas = false;
+        }
+        source.install(mime, bytes, node_id, scale, workspace_id);
+    }
     pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
         self.frame = Some((canvas, image));
     }
@@ -175,9 +203,13 @@ impl InkLayer {
         out
     }
 
-    /// The base on show: the figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF
-    /// page or a plugin preview is no base), edit mode is on or the refused-hello overlay is on. The canvas base is D5's.
-    pub(in crate::ui) fn shown_base(raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+    /// The base on show: none in edit mode or under the refused-hello overlay; else the canvas when it is shown; else the
+    /// figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF page or a plugin
+    /// preview is no base).
+    pub(in crate::ui) fn shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+        if self.drawing.canvas && !editing && !refused {
+            return Some(InkBase::Canvas);
+        }
         let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
         Some(InkBase::Figure { node_id: node_id.to_string() })
     }

@@ -104,6 +104,8 @@ struct WheelGeometry {
     cell_h: f32,
     focus: PaneFocus,
     residue: f32,
+    /// The pane shows neither the text nor the editor (the canvas, an image, the overlay): the wheel has nothing to scroll.
+    preview_hidden: bool,
 }
 trait WheelContext {
     fn report_wheel_presence(&mut self);
@@ -141,7 +143,7 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
     // up shifts the table left (reveal more right-side
     // content). Clamp happens in redraw.
     let shift = modifiers.shift_key();
-    if geometry.focus == PaneFocus::Preview {
+    if geometry.focus == PaneFocus::Preview && !geometry.preview_hidden {
         let h_px = if shift && raw_px_y.abs() > 0.0 {
             -raw_px_y
         } else if raw_px_x.abs() > 0.0 {
@@ -165,7 +167,7 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
         ?geometry.focus,
         "wheel"
     );
-    if rows_above == 0 {
+    if rows_above == 0 || geometry.focus == PaneFocus::Preview && geometry.preview_hidden {
         return;
     }
     context.route_wheel_rows(rows_above);
@@ -174,7 +176,8 @@ fn dispatch_wheel(context: &mut impl WheelContext, modifiers: ModifiersState, de
 impl WheelContext for State {
     fn report_wheel_presence(&mut self) { self.report_presence(true); }
     fn wheel_geometry(&mut self) -> WheelGeometry {
-        WheelGeometry { cell_w: self.canvas.cell_w(), cell_h: self.canvas.cell_h(), focus: self.focus_prompts.focus(), residue: self.pointer.residue() }
+        let shows = self.preview_shows();
+        WheelGeometry { cell_w: self.canvas.cell_w(), cell_h: self.canvas.cell_h(), focus: self.focus_prompts.focus(), residue: self.pointer.residue(), preview_hidden: !(shows.3 || shows.4) }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
         self.md_media.scroll_tables(pixels);
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn a_wheel_step_reports_presence_before_fractional_routing() {
         let mut context = WheelProbe {
-            geometry: WheelGeometry { cell_w: 2.0, cell_h: 4.0, focus: PaneFocus::Llm, residue: 0.0 },
+            geometry: WheelGeometry { cell_w: 2.0, cell_h: 4.0, focus: PaneFocus::Llm, residue: 0.0, preview_hidden: false },
             events: Vec::new(),
         };
         dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 0.05));
@@ -377,5 +380,20 @@ mod tests {
         dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(1.0, 0.0));
         assert_eq!(context.events, vec![Event::Presence, Event::Geometry, Event::Horizontal(6.0)]);
         assert!((context.geometry.residue - 0.25).abs() < 0.00001);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_only_what_the_preview_pane_shows() {
+        let mut context = WheelProbe {
+            geometry: WheelGeometry { cell_w: 2.0, cell_h: 4.0, focus: PaneFocus::Preview, residue: 0.0, preview_hidden: true },
+            events: Vec::new(),
+        };
+        for delta in [MouseScrollDelta::LineDelta(0.0, 1.0), MouseScrollDelta::LineDelta(1.0, 0.0)] {
+            dispatch_wheel(&mut context, ModifiersState::empty(), delta);
+        }
+        assert!(!context.events.iter().any(|e| matches!(e, Event::Rows(_) | Event::Horizontal(_))), "{:?}", context.events);
+        context.geometry.preview_hidden = false;
+        dispatch_wheel(&mut context, ModifiersState::empty(), MouseScrollDelta::LineDelta(0.0, 1.0));
+        assert!(context.events.contains(&Event::Rows(3)));
     }
 }

@@ -3,20 +3,23 @@
 
 use crate::ui::*;
 
+/// What the pane shows, as `(fatal, png, svg, edit, md, canvas)`. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
+/// hard block: it takes the pane over everything until a clean reconnect clears it. Edit mode owns the pane after it, so
+/// the editable annotation body has the whole rect. `canvas` arrives decided (`InkLayer::shown_base`, which yields it
+/// only outside both); it takes the pane from the image and the text, and the installed preview stays installed under it.
+pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> (bool, bool, bool, bool, bool, bool) {
+    let show_edit = !refused && edit;
+    let show_png = raster && !refused && !canvas;
+    let show_md = !refused && !show_png && !show_edit && !canvas;
+    (refused, show_png, false, show_edit, show_md, canvas)
+}
+
 impl State {
-    pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool) {
-        // ADR 0030 §2, ADR 0049: the refused-hello overlay is a hard block — it takes
-        // the preview pane over EVERYTHING (help included) until a clean
-        // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
+    pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool, bool) {
         let show_fatal = self.hello_refused.refused(self.selected.host());
-        let show_png = self.raster.is_shown() && !show_fatal;
-        let show_svg = false;
-        // Edit mode owns the preview pane: the file viewer hides so
-        // the editable annotation body has the whole rect.
-        let show_edit =
-            !show_fatal && self.editor.is_editing() && self.editor.shaped().is_some();
-        let show_md = !show_fatal && !show_png && !show_edit;
-        (show_fatal, show_png, show_svg, show_edit, show_md)
+        let edit = self.editor.is_editing() && self.editor.shaped().is_some();
+        let canvas = self.shown_ink_base() == Some(sot_protocol::ops::InkBase::Canvas);
+        shows(show_fatal, self.raster.is_shown(), edit, canvas)
     }
 
     pub(in crate::ui) fn layout_figure(
@@ -131,3 +134,7 @@ impl State {
         preview_scroll_px
     }
 }
+
+#[cfg(test)]
+#[path = "layout_tests.rs"]
+mod layout_tests;

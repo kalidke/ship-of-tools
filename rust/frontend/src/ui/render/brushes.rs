@@ -80,6 +80,7 @@ pub(in crate::ui) enum Solid {
     ScalebarBar,
     ScalebarBack,
     CaptionBack,
+    Canvas,
 }
 
 /// The render resources' quad stage. A brush's vertex buffer is rewritten by each paint, so every colour drawn in
@@ -138,6 +139,8 @@ pub(in crate::ui) struct Brushes {
     /// reuse of `scalebar_back`: two draws in one pass need two quads, since
     /// `render_many` rewrites its quad's vertex buffer.
     caption_back: Quad,
+    /// The row's canvas: opaque white.
+    canvas: Quad,
     /// Miniature dark logo (from `LOGO_DARK_PNG`) flanking each session badge
     /// in the bottom strip, plus its native `(w, h)` for aspect-ratio sizing.
     /// `None` when the embedded PNG fails to decode — purely cosmetic, the
@@ -157,12 +160,12 @@ impl Brushes {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::ui) fn new(
         pipeline: QuadPipeline, selection_bg: Quad, overlay_back: Quad, code_bg: Quad, code_border: Quad,
-        strike_line: Quad, scalebar_bar: Quad, scalebar_back: Quad, caption_back: Quad,
+        strike_line: Quad, scalebar_bar: Quad, scalebar_back: Quad, caption_back: Quad, canvas: Quad,
         logo: Option<(Quad, u32, u32)>, wordmark: Option<(Quad, u32, u32)>,
     ) -> Self {
         Self {
             pipeline, selection_bg, overlay_back, code_bg, code_border, strike_line, borders: HashMap::new(),
-            scalebar_bar, scalebar_back, caption_back, logo, wordmark, help_back: None, backs: None,
+            scalebar_bar, scalebar_back, caption_back, canvas, logo, wordmark, help_back: None, backs: None,
         }
     }
 
@@ -182,6 +185,7 @@ impl Brushes {
             Solid::ScalebarBar => &mut self.scalebar_bar,
             Solid::ScalebarBack => &mut self.scalebar_back,
             Solid::CaptionBack => &mut self.caption_back,
+            Solid::Canvas => &mut self.canvas,
         };
         quad.render_many(gpu.device(), gpu.queue(), &self.pipeline, rpass, rects,
             (gpu.config().width, gpu.config().height))

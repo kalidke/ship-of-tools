@@ -263,6 +263,7 @@ pub(in crate::ui) fn build_text_grid(
 
 /// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct SolidQuads {
+    pub(in crate::ui) canvas_quad: Quad,
     pub(in crate::ui) caption_back_quad: Quad,
     pub(in crate::ui) scalebar_back_quad: Quad,
     pub(in crate::ui) scalebar_bar_quad: Quad,
@@ -339,6 +340,8 @@ pub(in crate::ui) fn build_solid_quads(
     let caption_back_quad =
         Quad::from_rgba8(&device, &queue, &quad_pipeline, &[0, 0, 0, 200], 1, 1)
             .context("failed to build caption_back_quad")?;
+    let canvas_quad = Quad::from_rgba8(&device, &queue, &quad_pipeline, &[255, 255, 255, 255], 1, 1)
+        .context("failed to build canvas_quad")?;
     Ok(SolidQuads {
         quad_pipeline,
         selection_bg_quad,
@@ -349,6 +352,7 @@ pub(in crate::ui) fn build_solid_quads(
         scalebar_bar_quad,
         scalebar_back_quad,
         caption_back_quad,
+        canvas_quad,
     })
 }
 
