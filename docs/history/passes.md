@@ -1422,3 +1422,11 @@ A landing's record goes here, with its measured times; the package page holds on
   than the code) and two rewrites of 1 minute each, then two sentences the session corrected against the plan's
   drawing rule; one gate of 2 minutes. The first reviewer checked out the branch in the shared checkout for a moment,
   which its brief had not forbidden; the briefs since say it.
+- A Codex row answers a selection no_agent, 2026-11-09: builder launched 04:12, main 04:34 (f2b056852, one commit
+  squashed from three), 22 minutes. The daemon took a selection for a Codex row, but only Claude legs carry the prompt
+  hook and its marker, so a Codex row answered held and the window advised a restart that could not help. Until the
+  Codex wiring is built, only Claude rows take a selection, as only they take a drawing; the agents contract states the
+  wiring's untested premises once, a test pins that a Codex leg writes no marker, and SELECTION-CODEX-HELD is closed.
+  One product line and about 15 test lines. Where the minutes went: the build (2 minutes); two review rounds (blockers
+  1, 0; 7 and 5 minutes: the first found the contract still saying a Codex row answers held) and two fix rounds of a
+  minute each; two gates of 2 minutes.
