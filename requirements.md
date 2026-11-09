@@ -72,7 +72,7 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 - The user can draw in the preview pane: on a blank canvas, or over an image the pane shows (a figure, a plot, a photograph of an optical setup) to explain it. The ink stays where it was drawn on the image when the user zooms or pans.
 - The agent of that project's session sees the drawing without copying, pasting or typing a reference: over an image, as one picture of the image with the ink on it. Erasing the drawing, showing another file, switching session or closing the window stops it being shared with the agent's later messages; showing the image or the canvas again shares it again.
 - Drawing is done with the mouse: holding the left button down draws, and holding the right button down erases; turning drawing on and off, undo and clearing all the ink have keys. An agent that cannot take a drawing is told nothing, and the window says the drawing was not shared.
-  *Status: not built.*
+  *Status: built in the window, the daemon and the wire for Claude Code rows (a Codex row takes none yet); proved by the unit tests of each side, not yet through a real window and a real agent.*
 
 ### Window and layout management
 

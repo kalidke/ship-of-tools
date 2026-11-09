@@ -191,6 +191,20 @@ framing.
 <DemoLoop name="zoom" caption="With the preview focused, = zooms an image and the arrow keys pan; the next same-size image opens at the same zoom and pan." />
 ```
 
+## Drawing on a preview
+
+With the preview focused, `d` turns drawing on over a raster image. Holding the left button draws and holding the
+right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`, `Cmd+z` on macOS) undoes the last step, and `Delete` clears all the
+ink (`u` brings it back). The ink stays where you drew it as you zoom and pan. `Shift+d` shows a blank canvas to draw
+on, and shows the preview again; the canvas is always in drawing mode. Each session keeps one drawing, and a stroke on
+another image or the canvas replaces it, with a note on the status line.
+
+The session's agent sees what you draw: when you release a stroke, the window tells the daemon, which writes one
+picture of the image with the ink on it inside the project and names it to the agent at its next prompt. Erasing all the
+ink, showing another file, or switching session withdraws it; showing the image or the canvas again shares it again.
+The status line says when the drawing was shared, held (the agent started before it could take one; restart the session),
+or not shared. Claude Code sessions take a drawing; Codex sessions take none yet. A closed window loses its drawings.
+
 ## Capturing a preview region for the LLM
 
 For raster image previews you can zoom in, then, with the preview focused

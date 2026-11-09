@@ -79,3 +79,31 @@ fn a_reply_to_a_set_differs_from_the_reply_to_a_clear() {
     assert_ne!(set, clear);
     assert!(set[0].contains("a.txt") && !clear[0].contains("a.txt"), "{set:?} {clear:?}");
 }
+
+fn drawing_req() -> SelectionSetReq {
+    serde_json::from_value(serde_json::json!({
+        "workspace_id": "repo__box",
+        "selection": null,
+        "drawing": { "base": { "figure": { "node_id": "a.png" } }, "strokes": [[[1, 2], [3, 4]]] }
+    }))
+    .unwrap()
+}
+
+/// R-D18. The drawing rides the request on the wire (no `selection` value but null), its reply event carries it, and a
+/// connection's end retires it once with the end outcome and the drawing intact.
+#[tokio::test]
+async fn a_drawing_rides_the_selection_request_and_a_connections_end_retires_it() {
+    let mut pending = HashMap::new();
+    let mut wire = Vec::new();
+    send_selection_set(&mut wire, &mut pending, 5, drawing_req()).await.unwrap();
+    let text = String::from_utf8_lossy(&wire);
+    assert!(text.contains("\"drawing\"") && text.contains("a.png") && text.contains("[[1,2],[3,4]]"), "{text}");
+
+    let reply = answer_to(drawing_req(), serde_json::json!({ "state": "shared" }));
+    assert!(reply[0].contains("a.png") && reply[0].contains("Done(Shared)"), "{reply:?}");
+
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    drop(PendingGuard { map: pending, evt_tx: &evt_tx, host: "h".into() });
+    let ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
+    assert!(matches!(ended.as_slice(), [e] if e.contains("a.png") && e.ends_with("reply: Ended }")), "{ended:?}");
+}

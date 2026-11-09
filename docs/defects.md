@@ -571,13 +571,6 @@ owned by `docs/CLAUDE.md`.
 - **PANE-CONNECT** [feature] Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
   text preparation (the first glyph-atlas fill) and its first dial has no parked spare; hosted macOS first panes were
   1.26 to 1.45 s against 0.13 to 0.93 s later. An improvement, not a defect.
-- **SCRATCH-PAD** [feature] A drawable preview pane: the requirement "The agent sees what the user draws" in
-  `requirements.md`, approved by the maintainer 2026-11-07. Decided then: a drawing travels the selection's road (the row
-  has one slot, text or a drawing); the window draws the ink and the daemon composites the picture the agent reads with
-  one small rasterizer both use, in wire; drawings are not kept as files (the window keeps each row's drawing; the picture
-  is written inside the project for the agent); the left button draws and the right erases whole strokes. Owners: wire
-  (the shape and the raster), files (the picture), agents (the slot), fe-ui and fe-net (input, ink, sharing). Not built;
-  the window's pieces follow the selection's window side.
 
 ## distribution
 
@@ -747,6 +740,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SCRATCH-PAD** (fe-ui) closed by the landing that fixes it, 2026-11-09: a drawable preview pane whose drawing the row's agent sees; the window draws and shares it, the daemon writes its picture.
 - **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** (fe-ui) closed by the landing that fixes it, 2026-11-08: the window's 13 State fixtures were compiled by the local gate and the per-landing run but run by neither; the per-landing run now executes them alone on Linux (`child fixtures` of the `window_minimized` target, under `xvfb-run` and Mesa's software Vulkan driver), and the redraw mutation leg's comment in `rust/frontend/Cargo.toml` names `release-gate.yml`.
 - **SCRATCH-GUARD-PROBE-SHARE** (distribution) closed by 366a34551, 2026-11-08: in a hosted Windows run on main the scratch guard test's concurrent run ended with exit 1 before its sleep; the run kept no stderr, and the cause is inferred: with the file held open as a poll read holds it, the old probe's `Add-Content` fails ("being used by another process"), which the old test shows under a forced overlap. Each probe now writes its file whole under another name and renames it into place; the daemon probe's later line is appended with `File.AppendAllText`; a failure of the concurrent run now prints that run's stderr.
 - **WIN-SAVE-HELD-OPEN** (platform) closed by 2658a328d and 4ec7bced6, 2026-11-08: on Windows the write beneath a root renamed with the classic replace alone, so a save of a file another program held open with delete sharing failed where `std::fs::rename` saved it; the rename now falls back to a POSIX-semantics replace by the same handle when the classic one answers access denied, and a link at the final name, to a file or a folder, is replaced on every system.
