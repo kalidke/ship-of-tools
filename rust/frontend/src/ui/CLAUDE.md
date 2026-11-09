@@ -27,6 +27,12 @@ anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::i
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
+`preview::image::ink::InkLayer` (D4a, not yet wired: D4c is its first reader, D4b adds the mask and overlay) privately owns the row's drawing
+(base, committed strokes, the `cleared` copy, the undo history), the live stroke, drawing mode and a `revision` every committed change raises; it
+takes the canvas and image rectangles and the raster size as arguments each call and never `State`; a point is kept only inside the image rectangle
+(drag points clamped) and one raster pixel from the last, the drawing holds at most `MAX_INK_POINTS` points, a right-button erase drag is one undo
+step, and a hidden base drops the live stroke (`a_point_lands_on_the_base_where_it_was_drawn_at_any_zoom_and_pan`,
+`a_stroke_ends_at_its_release_a_new_press_or_a_lost_focus_and_is_dropped_with_its_base`);
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
