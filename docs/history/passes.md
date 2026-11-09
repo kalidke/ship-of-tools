@@ -1333,3 +1333,17 @@ A landing's record goes here, with its measured times; the package page holds on
   in the owner plus 24 of accessors and glue, and 214 test lines. The builder stopped once, as its brief said, on a
   needed one-line export in fe-net, which the session allowed. Where the minutes went: the build (9 minutes, with the
   stop); one review round (blockers 0; 23 minutes) and one fix round of 12 minutes; two gates of 2 minutes.
+- D4a, the window's drawing, its pure owner, 2026-11-08: builder launched 21:07, main 22:30 (74eb2a339, one commit
+  squashed from three), 83 minutes, past the maintainer's hour: a failure of the standard. The first of D4's three
+  landings (the plan's 280 product lines split before launch): `InkLayer` holds a row's drawing, its cleared copy, the
+  live stroke, drawing mode and a revision every committed change raises. A press inside the image rectangle maps to
+  the base's fraction at any zoom and pan; drag points are clamped to the base and kept one raster pixel apart; a
+  release, a new press or a lost focus commits, a base no longer shown drops the live stroke, and a press on a full
+  drawing starts none. Undo and clear act only on a shown drawing; a right-button drag inside the image erases each
+  stroke its path passes within the painted ink's reach of, as one undo step recorded from its first hit. Not yet
+  wired. About 190 product lines and 460 test lines. Where the minutes went: the build (6 minutes); two review rounds
+  (blockers 2, 0; 20 and 27 minutes) and two fix rounds (15 and 6 minutes); the move of this session to another account
+  (2 minutes); three gates of 2 minutes. Why past the hour: the owner came out at 172 product lines against the brief's
+  120 stop, and the builder neither counted nor stopped; the right-button erase, added to the plan from the
+  maintainer's note, had no orderings with the keys pressed during a drag (the first round's panic) and a reach of one
+  raster pixel, under one screen pixel at fit (the plan now says the painted ink's reach).
