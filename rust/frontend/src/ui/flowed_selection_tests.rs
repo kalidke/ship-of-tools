@@ -158,3 +158,23 @@ fn a_range_past_the_clip_is_tinted_only_to_the_last_whole_line() {
     assert!(short.clip_bottom < short.rect.y + short.rect.h - 1.0);
     assert!((low - short.clip_bottom).abs() < 0.01, "{low} vs {}", short.clip_bottom);
 }
+
+/// The share reads the ordered range only once the drag is released, whichever way it was dragged.
+#[test]
+fn the_released_range_is_ordered_and_absent_during_a_drag() {
+    let mut fs = FontSystem::new();
+    let md = MarkdownPreview::new_plain(&mut fs, TEXT, RECT.w, 1.0);
+    let metrics = md.buffer.metrics();
+    let mut preview = ShapedPreview::new(md, HighlightService::new().unwrap(), RECT);
+    let text = Fixture::new(&mut fs, metrics, TEXT, None);
+    let text = text.lent();
+    let from = glyph_point(&text, 1, 7);
+    preview.press(preview.hit(from, true));
+    preview.extend_drag(glyph_point(&text, 0, 6));
+    assert!(preview.released_selection().is_none(), "nothing during a drag");
+    preview.release();
+    let (range, shown) = preview.released_selection().unwrap();
+    assert_eq!(range.0, (0, 6));
+    assert_eq!(range.1.0, 1);
+    assert_eq!(Some(shown), preview.selected_text());
+}

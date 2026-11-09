@@ -185,8 +185,9 @@ impl State {
                     self.on_chat_bus_lost(&event_host, &bus);
                 }
                 crate::net::transport::IncomingEvt::Chat(evt) => self.on_chat(&event_host, evt),
-                // The selection share's view owner reads these; until then the typed event is dropped.
-                crate::net::transport::IncomingEvt::Selection { .. } => {}
+                crate::net::transport::IncomingEvt::Selection { req, reply } => {
+                    self.on_selection_reply(&event_host, &req, reply)
+                }
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,
@@ -350,10 +351,12 @@ impl State {
             crate::net::transport::IncomingEvt::Connected { .. } => {
                 self.note_connection(&event_host, true);
                 self.on_chat_connection(&event_host, true);
+                self.selection_share.on_connection(&event_host, true);
             }
             crate::net::transport::IncomingEvt::Disconnected { .. } => {
                 self.note_connection(&event_host, false);
                 self.on_chat_connection(&event_host, false);
+                self.selection_share.on_connection(&event_host, false);
             }
             _ => {}
         }
