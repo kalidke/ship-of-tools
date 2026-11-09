@@ -538,6 +538,11 @@ owned by `docs/CLAUDE.md`.
   not line up unshared, that an inline equation's placeholder holds its paragraph's lines (`source_lines.rs`), and that
   `build` skips a mark out of order silently. Deletable: the backend test's copy of the frontend fixture (one
   `include_str!`), the public re-export of `SourceLines`, and a second borrow of the node in `walk.rs`.
+- **SELECT-MARKDOWN-FIXTURE-CRLF** [note] The rendered markdown selection's tests read their fixture with
+  `include_str!` and depend on `.gitattributes` keeping it LF; a Windows checkout made before that rule keeps a CRLF
+  copy (git does not rewrite it on pull) and fails four tests there until
+  `rust/frontend/src/ui/preview/markdown/testdata/selection_probe.md` is checked out again. Making the tests strip CR
+  where they read the fixture would end the dependence. Found by the line-ending fix's review.
 - **INK-REACH-ONE-SIZE** [note] The eraser's reach tests (`rust/frontend/src/ui/preview/image/ink_tests.rs`) run at
   one raster size, so a reach computed from a fixed raster at every size survives them, and
   `the_reach_is_the_ink_and_one_pixel_on_both_sides` repeats the first reach test's positive side. Fix: derive the

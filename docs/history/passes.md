@@ -1471,3 +1471,10 @@ A landing's record goes here, with its measured times; the package page holds on
   build (2 minutes, the leftover shown at the base and gone after); one whole gate of 3 minutes, unscoped and clean;
   one review round of 6 minutes, bounded (blockers 0). The class, a census that runs once at the end, is
   GATE-LEFTOVER-PER-JOB.
+- The markdown selection's fixture stays LF on every checkout, 2026-11-09: builder launched 13:39, main 13:47
+  (18398727c), 8 minutes, a fix forward of the hosted Windows run that the rendered markdown selection's landing turned
+  red. A Windows checkout gave the test fixture CRLF, and the tests' own CRLF form of it then held `\r\r\n`, which comrak
+  counts as two line ends; `.gitattributes` now keeps that folder's markdown LF. Four lines. Where the minutes went:
+  the build (3 minutes, the four failures shown in a clone that checks out CRLF as Windows does, and gone after); one
+  whole gate of 3 minutes; one review round of 4 minutes, bounded (blockers 0). A Windows checkout made before this
+  commit keeps its CRLF copy until the fixture is checked out again (SELECT-MARKDOWN-FIXTURE-CRLF).
