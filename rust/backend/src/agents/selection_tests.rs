@@ -254,7 +254,8 @@ fn the_reply_says_who_will_hear() {
 }
 
 /// The marker the launch writes, read by the handler: a leg answers `shared` only when it carries the variable and (Claude)
-/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them.
+/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them. A Codex leg writes no
+/// marker, and its row is answered `no_agent`.
 #[test]
 fn a_leg_without_the_hook_is_answered_held() {
     let state = tempfile::tempdir().unwrap();
@@ -294,6 +295,7 @@ fn a_leg_without_the_hook_is_answered_held() {
     assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no variable, the earlier marker removed");
     // 3. a Codex leg has none, whatever its argv, until its wiring is built
     launch("ws-mk-codex", "codex", &var, &hooked);
+    assert!(!folder("ws-mk-codex").join(MARKER_NAME).exists(), "row 3: a codex leg writes no marker");
     assert_eq!(answer("ws-mk-codex"), Err(selection_code::NO_AGENT), "row 3: codex");
     // 4. a folder the supervisor has not made yet is made for the marker
     let fresh = folder("ws-mk-fresh").join("nested");
@@ -490,7 +492,7 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
     std::fs::write(&file, "from an earlier process").unwrap();
     assert!(clear_unowned(state.path(), "ws-dr-1") && !file.exists(), "row 4: the walk removes an unowned file");
 
-    // 5. only a Claude row takes a drawing; a Codex row still takes text
+    // 5. only a Claude row takes a drawing
     for kind in ["codex", "none", ""] {
         let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-k");
         std::fs::write(folder.join(FILE_NAME), "old").unwrap();

@@ -240,8 +240,8 @@ of each.
   directory, a pipe or device, a missing or unreadable file is `not_file_text`), then `check_selection` and
   `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
   answers `shared` when the marker `<row state folder>/selection-hook` exists (the row's current agent was started with
-  the hook) and `held` when it does not; only `claude` rows (`TAKES_SELECTION`) take a selection (a Codex row waits on the plan's H2), any other
-  kind answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
+  the hook) and `held` when it does not; only `claude` rows (`TAKES_SELECTION`) take a selection; any other
+  kind, a Codex row among them until the Codex wiring is built, answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
   (`not_file_text`, `bad_node_id`, `no_agent`) and a failed publish (`publish_failed`) removes it first. A removal that fails
   answers `publish_failed` in place of the refusal's own code, and the old file stays. A request the wire refuses at
   decode (a start not before the end, a `len` outside 1 to 2 MiB, an over-long id) is answered `handler_error` and
@@ -256,12 +256,11 @@ of each.
   supervisor then exits 70 on the held fence has written the marker from its own argv over the live leg's, which is wrong
   only when the two argvs differ): it exists exactly when the row's kind is `claude`, the leg's
   environment carries `SOT_SELECTION_FILE` and its argv's `--settings` carries the selection hook on UserPromptSubmit
-  (`layer::carries_selection_hook`); it is removed otherwise, and Codex legs have none, so a Codex row answers `held`.
+  (`layer::carries_selection_hook`); it is removed otherwise, and Codex legs have none (a Codex row answers `no_agent` before the marker is read).
   A supervisor started before the release has no marker. The marker describes the last launch: between a leg's exit and
   its restart, or after a downgrade and an upgrade that adopts the older supervisor, it can describe another leg; and a
   failed write or removal (logged as not brought up to date) leaves the earlier launch's marker. A reset leg in the same supervisor runs with that supervisor's
-  argv and environment, so the marker stays true for it; it survives a daemon restart. Codex is a kind that takes a
-  selection until the plan's H2 decides whether Codex hears one; if H2 fails Codex rows will answer `no_agent`. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
+  argv and environment, so the marker stays true for it; it survives a daemon restart. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
   file's JSON escapes. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Withdrawal: one process-wide map behind one lock holds per
   row the roster serial of the connection that set the file and the file's path; the serial comes from one counter for
@@ -281,8 +280,8 @@ of each.
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
   A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root and the row, the handler
   takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, reads the agent kind (only `claude`,
-  `TAKES_DRAWING`; a Codex row answers `no_agent` for a drawing and still takes text, until the plan's H-D2 decides
-  Codex reads the picture), has files' `compose` write the picture on the blocking pool (off the connection's loop),
+  `TAKES_DRAWING`; a Codex row answers `no_agent` for a drawing, as for text, until the Codex wiring is built; its premise,
+  untested, is that Codex shows the hook's message and passes its context to the model), has files' `compose` write the picture on the blocking pool (off the connection's loop),
   renders it with `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans
   the picture's write and the file's publish, so two drawings from two connections go one at a time and, after each
   drawing's publish, the file names the picture on disk and the digest it holds (the digest is `selection_digest` of

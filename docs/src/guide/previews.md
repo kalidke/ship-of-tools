@@ -246,8 +246,7 @@ was given. A new conversation forgets it.
 - `selection not shared: this host's daemon does not take selections`
 - `selection not shared: <reason>` for any other refusal, such as `unknown_workspace` (the daemon no longer knows this session), `bad_node_id` (the preview is not a
   project file) or `publish_failed` (select again).
-- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing (a Codex row answers `drawing not
-  shared: this row's agent takes none`, not `held`); its reasons include `the image
+- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing; its reasons include `the image
   is over 40 megapixels` and `the daemon cannot read this image`.
 
 Withdrawing is not announced.
