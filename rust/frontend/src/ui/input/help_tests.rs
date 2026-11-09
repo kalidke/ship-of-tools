@@ -185,3 +185,22 @@ fn the_drawing_keys_resolve_only_where_drawing_is() {
     assert_eq!(press(&nav, &chars("u"), plain), Some(Action::Upload));
     assert!(!nav.allows(Action::PreviewInkUndo) && !nav.allows(Action::PreviewInkClear) && !nav.allows(Action::PreviewDraw));
 }
+
+#[test]
+fn the_canvas_key_is_the_previews_and_the_canvas_takes_the_images_and_the_texts_keys() {
+    use winit::keyboard::Key;
+    let b = KeyBindings::defaults();
+    let shift_d = Key::Character("D".into());
+    let shift = crate::ui::Modifiers { ctrl: false, alt: false, shift: true, super_: false };
+    let press = |c: &Context| b.resolve(&shift_d, Some(&shift_d), shift, c.consumes_text(), |a| c.allows(a));
+    let preview = Context { pane: Pane::Preview, ..Context::default() };
+    // over text, over an image and over the canvas alike; not in the editor, nor in the tree (where Shift+d destroys)
+    for c in [preview.clone(), Context { image: true, ..preview.clone() }, Context { canvas: true, drawing: true, ..preview.clone() }] {
+        assert_eq!(press(&c), Some(Action::PreviewCanvas));
+    }
+    assert_ne!(press(&Context { editing: true, ..preview.clone() }), Some(Action::PreviewCanvas));
+    assert_ne!(press(&Context { pane: Pane::Nav, mode: Mode::Sessions, session: true, ..Context::default() }), Some(Action::PreviewCanvas));
+    // the canvas is neither text nor image, and its drawing keys are live
+    let canvas = Context { canvas: true, drawing: true, ..preview };
+    assert!(!canvas.allows(Action::PreviewUp) && !canvas.allows(Action::PreviewPngZoomIn) && canvas.allows(Action::PreviewInkUndo));
+}

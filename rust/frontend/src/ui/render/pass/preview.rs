@@ -92,24 +92,42 @@ impl State {
             }
             // The drawing's overlay, over the raster at the same rectangle and under the same scissor, while its base is
             // the raster shown. A failed upload skips the overlay until it succeeds.
-            let shown = self.shown_ink_base();
-            if shown.is_some() && shown.as_ref() == self.ink.base() {
-                if self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline()).is_ok() {
-                    if let Some(quad) = self.ink.overlay() {
-                        quad.render(
-                            self.gpu.queue(),
-                            self.brushes.pipeline(),
-                            &mut rpass,
-                            canvas_rect,
-                            (self.gpu.config().width, self.gpu.config().height),
-                        )?;
-                    }
-                }
-            }
+            self.paint_ink_overlay(&mut rpass, canvas_rect)?;
             // Reset scissor so subsequent draws (SVG, media paint,
             // chrome text) aren't clipped to the preview pane.
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
+        Ok(())
+    }
+
+    /// The drawing's overlay at `canvas_rect`, while its base is the one on show. A failed upload skips the overlay.
+    fn paint_ink_overlay(&mut self, rpass: &mut wgpu::RenderPass<'_>, canvas_rect: ScreenRect) -> Result<()> {
+        let shown = self.shown_ink_base();
+        if shown.is_some() && shown.as_ref() == self.ink.base()
+            && self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline()).is_ok()
+        {
+            if let Some(quad) = self.ink.overlay() {
+                quad.render(self.gpu.queue(), self.brushes.pipeline(), rpass, canvas_rect,
+                    (self.gpu.config().width, self.gpu.config().height))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The row's canvas: a white rectangle letterboxed to `CANVAS_DIMS` in the image area, the ink over it.
+    pub(in crate::ui) fn paint_canvas(
+        &mut self, rpass: &mut wgpu::RenderPass<'_>, show_canvas: bool, image_rect: ScreenRect,
+    ) -> Result<()> {
+        if !show_canvas {
+            return Ok(());
+        }
+        let rect = letterbox(image_rect, sot_protocol::ink::CANVAS_DIMS);
+        self.ink.set_frame(rect, image_rect);
+        rpass.set_scissor_rect(image_rect.x.max(0.0) as u32, image_rect.y.max(0.0) as u32,
+            image_rect.w.max(0.0) as u32, image_rect.h.max(0.0) as u32);
+        self.brushes.paint(Solid::Canvas, &self.gpu, rpass, &[rect])?;
+        self.paint_ink_overlay(rpass, rect)?;
+        rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         Ok(())
     }
 

@@ -20,13 +20,15 @@ impl State {
         let picker = self.focus_prompts.focus() == PaneFocus::NavTree && self.workspace_picker.is_some();
         let file = if pane == help::Pane::Preview { self.previewed_files_path() }
             else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
+        let shown = self.shown_ink_base();
+        let canvas = shown == Some(sot_protocol::ops::InkBase::Canvas);
         help::Context {
             pane, mode: self.nav.mode(),
-            file, image: self.raster.is_shown(),
-            drawing: self.ink.is_on() && self.shown_ink_base().is_some(),
+            file, image: self.raster.is_shown() && !canvas, canvas,
+            drawing: shown.is_some() && (self.ink.is_on() || canvas),
             pages: self.pages.page().is_some_and(|(_, count)| count > 1),
-            editable: !self.raster.is_shown() && self.previewed_files_path().is_some()
-                || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target())),
+            editable: !canvas && (!self.raster.is_shown() && self.previewed_files_path().is_some()
+                || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target()))),
             confirmation: if matches!(self.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) && prompt {
                 help::Confirmation::Delete
             } else if editing && self.editor.confirming_discard() {

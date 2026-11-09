@@ -38,6 +38,7 @@ pub struct Context {
     pub file: Option<String>,
     pub image: bool,
     pub drawing: bool,
+    pub canvas: bool,
     pub pages: bool,
     pub picker: bool,
     pub prompt: bool,
@@ -66,7 +67,7 @@ impl Context {
         }
         let nav = self.pane == Pane::Nav && !self.picker && !self.prompt;
         let preview = self.pane == Pane::Preview && !self.editing;
-        let text = preview && !self.image;
+        let text = preview && !self.image && !self.canvas;
         let repl = self.pane == Pane::Repl;
         let file = self.file.is_some();
         match action.spec().scope {
@@ -93,6 +94,7 @@ impl Context {
             Pages => preview && self.pages,
             Image => preview && self.image,
             Drawing => preview && self.drawing,
+            Preview => preview,
             Reading => preview || repl,
             PreviewFile => preview && self.editable,
             PageScroll => {

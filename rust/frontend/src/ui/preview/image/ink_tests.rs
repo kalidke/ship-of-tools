@@ -568,7 +568,7 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
 
 #[test]
 fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refused_overlay() {
-    let shown = |node, editing, refused| InkLayer::shown_base(node, editing, refused);
+    let shown = |node, editing, refused| InkLayer::default().shown_base(node, editing, refused);
     assert_eq!(shown(Some("files:a.png"), false, false), Some(fig("a.png")));
     // a hidden raster has no node; PDF pages and plugin previews are no base
     assert_eq!(shown(None, false, false), None);
@@ -734,4 +734,41 @@ fn a_restored_drawing_keeps_its_own_mode() {
     assert!(!l.is_on());
     l.restore(drawn);
     assert!(l.is_on());
+}
+
+#[test]
+fn the_canvas_is_a_base_like_a_figure_and_replaces_a_figures_drawing() {
+    let canvas = |l: &InkLayer, node, editing, refused| l.shown_base(node, editing, refused);
+    let mut l = on();
+    l.set_canvas(true);
+    // shown over a raster, with none, and not under edit mode or the refused-hello overlay
+    assert_eq!(canvas(&l, Some("files:a.png"), false, false), Some(InkBase::Canvas));
+    assert_eq!(canvas(&l, None, false, false), Some(InkBase::Canvas));
+    assert_eq!(canvas(&l, None, true, false), None);
+    assert_eq!(canvas(&l, None, false, true), None);
+    // drawing is always on over it, and a stroke on it replaces a figure's drawing with its status line
+    let (fig, c) = (fig("a.png"), InkBase::Canvas);
+    l.set_frame(R, R);
+    pt(&mut l, &fig, (150.0, 100.0));
+    l.set_on(false);
+    assert_eq!(l.left_press(Some(&c), (200.0, 100.0), Some(DIMS)), Some(Some("the drawing on a.png was replaced".to_string())));
+    l.release();
+    assert_eq!((l.base(), l.strokes().len()), (Some(&c), 1));
+    // hidden, the figure shows again and the canvas stroke stays with the drawing until a figure press replaces it
+    l.set_canvas(false);
+    assert_eq!(canvas(&l, Some("files:a.png"), false, false), Some(fig));
+}
+
+#[test]
+fn the_canvas_flag_rides_the_parked_drawing_and_another_nodes_install_hides_it() {
+    let mut l = InkLayer::default();
+    l.set_canvas(true);
+    let parked = switch_rows(&mut l, Drawing::default());
+    assert!(!l.canvas(), "a row with no drawing shows no canvas");
+    l.restore(parked);
+    assert!(l.canvas());
+    l.installed(Some("files:a.png"), Some("files:a.png"));
+    assert!(l.canvas(), "the same node installed again keeps it");
+    l.installed(Some("files:a.png"), Some("files:b.png"));
+    assert!(!l.canvas(), "another node hides it");
 }

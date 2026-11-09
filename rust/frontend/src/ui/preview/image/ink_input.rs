@@ -4,25 +4,34 @@
 use crate::ui::input::keypress::KeyPress;
 use crate::ui::preview::image::ink::InkLayer;
 use crate::ui::*;
+use sot_protocol::ink::CANVAS_DIMS;
 use sot_protocol::ops::InkBase;
 use std::ops::ControlFlow::{self, Break, Continue};
 
 impl State {
     pub(in crate::ui) fn shown_ink_base(&self) -> Option<InkBase> {
-        InkLayer::shown_base(self.raster.node(), self.editor.is_editing(), self.hello_refused.refused(self.selected.host()))
+        self.ink.shown_base(self.raster.node(), self.editor.is_editing(), self.hello_refused.refused(self.selected.host()))
+    }
+
+    /// The shown base's source size: the canvas has its own, a figure's is the raster's served size.
+    fn ink_src(&self, shown: Option<&InkBase>) -> Option<(u32, u32)> {
+        match shown {
+            Some(InkBase::Canvas) => Some(CANVAS_DIMS),
+            _ => self.raster.served_dims(),
+        }
     }
 
     /// Before a frame and each pointer event: the layer drops what the shown base no longer carries.
     pub(in crate::ui) fn ink_sync(&mut self) {
         let shown = self.shown_ink_base();
-        self.ink.sync(shown.as_ref(), self.raster.served_dims());
+        self.ink.sync(shown.as_ref(), self.ink_src(shown.as_ref()));
     }
 
     /// A left press that drawing takes (it starts no text selection): focus moves to the preview, then the stroke begins.
     pub(in crate::ui) fn press_ink(&mut self) -> bool {
         self.ink_sync();
         let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
-        let Some(note) = self.ink.left_press(shown.as_ref(), p, self.raster.served_dims()) else { return false };
+        let Some(note) = self.ink.left_press(shown.as_ref(), p, self.ink_src(shown.as_ref())) else { return false };
         self.set_focus(PaneFocus::Preview);
         if let Some(text) = note {
             self.status.set(text);
@@ -84,6 +93,15 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
                 "drawing on: press and drag on the image; u undo, Delete clear, d off".to_string()
             } else {
                 "drawing off".to_string()
+            });
+        }
+        Some(Action::PreviewCanvas) => {
+            let canvas = !state.ink.canvas();
+            state.ink.set_canvas(canvas);
+            state.status.set(if canvas {
+                "canvas: draw with the pointer; u undo, Delete clear, Shift+D back".to_string()
+            } else {
+                "canvas hidden".to_string()
             });
         }
         Some(Action::PreviewInkUndo) => state.ink.undo(shown.as_ref()),

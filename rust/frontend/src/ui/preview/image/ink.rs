@@ -24,6 +24,8 @@ pub(in crate::ui) struct Drawing {
     cleared: Vec<Stroke>,
     history: Vec<Edit>,
     on: bool,
+    /// The row's canvas is shown: it is the base on show, over the installed preview.
+    canvas: bool,
 }
 
 #[derive(Default)]
@@ -105,6 +107,18 @@ impl InkLayer {
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
         self.drawing.on = on;
     }
+    pub(in crate::ui) fn canvas(&self) -> bool {
+        self.drawing.canvas
+    }
+    pub(in crate::ui) fn set_canvas(&mut self, canvas: bool) {
+        self.drawing.canvas = canvas;
+    }
+    /// A preview was installed: another node's hides the canvas (the person navigated), the same node's does not.
+    pub(in crate::ui) fn installed(&mut self, previous: Option<&str>, node: Option<&str>) {
+        if previous != node {
+            self.drawing.canvas = false;
+        }
+    }
     pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
         self.frame = Some((canvas, image));
     }
@@ -175,9 +189,13 @@ impl InkLayer {
         out
     }
 
-    /// The base on show: the figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF
-    /// page or a plugin preview is no base), edit mode is on or the refused-hello overlay is on. The canvas base is D5's.
-    pub(in crate::ui) fn shown_base(raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+    /// The base on show: none in edit mode or under the refused-hello overlay; else the canvas when it is shown; else the
+    /// figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF page or a plugin
+    /// preview is no base).
+    pub(in crate::ui) fn shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+        if self.drawing.canvas && !editing && !refused {
+            return Some(InkBase::Canvas);
+        }
         let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
         Some(InkBase::Figure { node_id: node_id.to_string() })
     }
