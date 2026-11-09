@@ -577,3 +577,33 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refu
     assert_eq!(shown(Some("files:a.png"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), false, true), None);
 }
+
+#[test]
+fn a_base_no_longer_shown_drops_the_live_stroke_and_the_same_base_stays() {
+    let (mut l, b) = (on(), fig("a.png"));
+    pt(&mut l, &b, (150.0, 100.0));
+    l.press(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+    l.sync(Some(&b), Some(DIMS));
+    assert!(l.live().is_some(), "the same base shown keeps the live stroke");
+    for other in [None, Some(fig("b.png"))] {
+        l.press(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+        assert!(l.live().is_some());
+        let committed = l.strokes().len();
+        l.sync(other.as_ref(), Some(DIMS));
+        assert!(l.live().is_none(), "the base stopped being shown: the stroke is dropped, not committed");
+        assert_eq!(l.strokes().len(), committed);
+    }
+}
+
+#[test]
+fn the_same_node_at_another_size_rebuilds_the_raster_at_once() {
+    let (mut l, b) = (on(), fig("a.png"));
+    pt(&mut l, &b, (150.0, 100.0));
+    let _ = l.dirty.take();
+    l.sync(Some(&b), Some(DIMS));
+    assert!(l.dirty.is_none(), "the same size repaints nothing");
+    l.sync(Some(&b), Some((800, 400)));
+    assert_eq!(l.dims, raster_dims(800, 400));
+    assert_eq!(l.dirty(), Some((0, 0, l.dims.0, l.dims.1)));
+    assert_eq!(l.mask.len(), (l.dims.0 * l.dims.1) as usize);
+}

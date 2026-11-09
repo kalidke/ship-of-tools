@@ -2,9 +2,6 @@
 //! every committed change raises. It maps a screen point through the canvas and image rectangles each call hands it, so
 //! zoom, pan and a resize need no state here. It keeps the drawing's raster (the wire's own functions paint it) and the
 //! overlay texture made from it. It never takes `State`.
-// D4c is the first reader of the edits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
 use sot_protocol::ink::{ink_radius, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
@@ -37,6 +34,10 @@ pub(in crate::ui) struct InkLayer {
     overlay: Option<Quad>,
     /// The last upload failed and was logged: a repeat is not logged again.
     upload_failed: bool,
+    /// The last frame's canvas and image rectangles, which the pointer maps through.
+    frame: Option<(ScreenRect, ScreenRect)>,
+    /// The right button is down: every motion of the drag goes to the eraser.
+    right_down: bool,
 }
 
 fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
@@ -79,6 +80,8 @@ impl InkLayer {
     pub(in crate::ui) fn base(&self) -> Option<&InkBase> {
         self.base.as_ref()
     }
+    /// Read by the share (D6) and the per-row parking (D4c2); the tests read it now.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::ui) fn strokes(&self) -> &[Stroke] {
         &self.strokes
     }
@@ -93,6 +96,32 @@ impl InkLayer {
     }
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
         self.on = on;
+    }
+    pub(in crate::ui) fn frame(&self) -> Option<(ScreenRect, ScreenRect)> {
+        self.frame
+    }
+    pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
+        self.frame = Some((canvas, image));
+    }
+    pub(in crate::ui) fn right_down(&self) -> bool {
+        self.right_down
+    }
+    pub(in crate::ui) fn set_right_down(&mut self, down: bool) {
+        self.right_down = down;
+    }
+
+    /// Run before each frame and pointer event: a base no longer shown drops a live stroke, and a shown base whose source
+    /// size changed (the same node installed again) rebuilds the raster at once.
+    pub(in crate::ui) fn sync(&mut self, shown: Option<&InkBase>, src: Option<(u32, u32)>) {
+        if shown != self.base.as_ref() {
+            self.base_hidden();
+        } else if let (Some(_), Some((w, h))) = (shown, src) {
+            if self.dims != raster_dims(w, h) {
+                self.live = None;
+                self.dims = raster_dims(w, h);
+                self.repaint();
+            }
+        }
     }
 
     /// The raster is painted again from the committed strokes, and all of it is dirty.
@@ -172,7 +201,7 @@ impl InkLayer {
 
     /// Whether a press at `p` reaches `shown`, the base on show (`None`: none): drawing is on, or `shown` is the canvas,
     /// and `p` is inside the image rectangle and the canvas rectangle.
-    fn reaches(&self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect) -> bool {
+    pub(in crate::ui) fn reaches(&self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect) -> bool {
         shown.is_some_and(|b| (self.on || *b == InkBase::Canvas) && inside(image, p) && inside(canvas, p))
     }
 

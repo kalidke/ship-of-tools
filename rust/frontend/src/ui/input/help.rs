@@ -37,6 +37,7 @@ pub struct Context {
     pub mode: Mode,
     pub file: Option<String>,
     pub image: bool,
+    pub drawing: bool,
     pub pages: bool,
     pub picker: bool,
     pub prompt: bool,
@@ -91,6 +92,8 @@ impl Context {
             Llm => self.pane == Pane::Agent,
             Pages => preview && self.pages,
             Image => preview && self.image,
+            Preview => preview,
+            Drawing => preview && self.drawing,
             Reading => preview || repl,
             PreviewFile => preview && self.editable,
             PageScroll => {

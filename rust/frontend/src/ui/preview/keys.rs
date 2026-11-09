@@ -18,6 +18,7 @@ pub(in crate::ui) fn preview_key(state: &mut State, key: KeyPress<'_>, label: St
     // with the mouse-wheel row math, and it keeps
     // all four panes on the same rule.
     let h = state.pane_rects.preview.height as i32;
+    crate::ui::preview::image::ink_input::ink_key(state, key, label.clone())?;
     png_key(state, key, label)?;
     preview_action_key(state, key, h);
     Continue(())

@@ -16,6 +16,7 @@ impl State {
         // Preview-layer goes under chrome text so borders and labels stay
         // legible above whatever the preview is.
         self.raster.clear_roi();
+        self.ink_sync();
         let row_key = self.active_result_row_key();
         if let (true, Some(letterbox_rect)) = (self.raster.is_shown(), png_rect) {
             let aim = self.preview_requests.take_ready_roi_aim(row_key.as_ref());
@@ -24,6 +25,7 @@ impl State {
                 return Ok(());
             };
             let canvas_rect = frame.rect;
+            self.ink.set_frame(canvas_rect, image_rect);
             // ADR 0022: stash the visible ROI in source-image px so the
             // `C` hotkey / `capture_roi` fe-command and fe-state.json know
             // what's on screen. Image files only — a PDF page's source is
@@ -90,8 +92,7 @@ impl State {
             }
             // The drawing's overlay, over the raster at the same rectangle and under the same scissor, while its base is
             // the raster shown. A failed upload skips the overlay until it succeeds.
-            let (editing, refused) = (self.editor.is_editing(), self.hello_refused.refused(self.selected.host()));
-            let shown = crate::ui::preview::image::ink::InkLayer::shown_base(self.raster.node(), editing, refused);
+            let shown = self.shown_ink_base();
             if shown.is_some() && shown.as_ref() == self.ink.base() {
                 if self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline()).is_ok() {
                     if let Some(quad) = self.ink.overlay() {
