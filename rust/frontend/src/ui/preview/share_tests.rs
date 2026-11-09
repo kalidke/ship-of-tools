@@ -195,7 +195,7 @@ fn wanted_needs_every_piece() {
 
 fn ink_want(row: &str, node: &str, revision: u64) -> Option<Want> {
     let base = InkBase::Figure { node_id: node.to_string() };
-    wanted_ink(Some(base.clone()), Some(&base), true, revision, &host(), Some(row.to_string()))
+    Some(Want { host: host(), workspace_id: row.to_string(), share: Share::Ink { base, revision } })
 }
 
 fn strokes(n: usize) -> Vec<Vec<[u16; 2]>> { vec![vec![[1, 2], [3, 4]]; n] }
@@ -213,7 +213,7 @@ fn go_ink(s: &mut SelectionShare, desired: Option<Want>, n: usize) -> Option<(Ho
 /// R-D17. The orderings of the share plan for a drawing: 1 (a new revision sends), 2 (no strokes or no shown base sends
 /// a clear), 4 (the base shown again sends again), 5 (a row switch clears, then shares the new row's), 6 (only the latest
 /// at the reply), 7 (the status lines, no retry), 8 to 10 (a failed send, a connection's end, a stale reply). Orderings 3, 11
-/// and 12 are the decider (`wanted_ink`, tried first in `desired_selection`): the shown base and the committed strokes only.
+/// and 12 are the next test's, on a real owner.
 #[test]
 fn the_window_shares_its_drawing_and_withdraws_it() {
     let mut s = up();
@@ -281,13 +281,82 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
     s.on_connection(&host(), true);
     assert!(go_ink(&mut s, ink_want("r1", "n", 1), 1).is_some());
 
-    // The decider: the shown base must be the drawn one and have strokes; the canvas is a base; a drawing beats text.
-    let (fig, canvas) = (InkBase::Figure { node_id: "n".into() }, InkBase::Canvas);
-    let w = |shown: Option<InkBase>, drawn: Option<&InkBase>, has: bool, row: Option<&str>| wanted_ink(shown, drawn, has, 1, &host(), row.map(String::from));
-    assert!(w(Some(fig.clone()), Some(&fig), true, Some("r")).is_some());
-    assert!(w(Some(canvas.clone()), Some(&canvas), true, Some("r")).is_some());
-    assert!(w(None, Some(&fig), true, Some("r")).is_none(), "base hidden");
-    assert!(w(Some(canvas.clone()), Some(&fig), true, Some("r")).is_none(), "another base shown");
-    assert!(w(Some(fig.clone()), Some(&fig), false, Some("r")).is_none(), "no committed stroke");
-    assert!(w(Some(fig.clone()), Some(&fig), true, None).is_none(), "no row id");
+    // The status lines the table above did not reach: an unknown answer, and a refusal with no code.
+    assert_eq!(line(SelectionReply::Done(SelectionState::Other)).as_deref(), Some("drawing not shared: unknown answer"));
+    assert_eq!(
+        line(SelectionReply::Refused { code: None, error: "bad".into() }).as_deref(),
+        Some("drawing not shared: bad")
+    );
+}
+
+/// R-D17, orderings 3, 11 and 12, on a real owner: the shown base and the committed strokes decide, a drag sends nothing
+/// until it ends, a clear or an undo to no strokes withdraws and never sends an empty drawing, and a drawing beats text.
+#[test]
+fn the_drawing_is_wanted_from_the_owner_and_held_during_a_drag() {
+    use crate::ui::preview::image::ink::InkLayer;
+    use crate::ui::ScreenRect;
+    const R: ScreenRect = ScreenRect { x: 100.0, y: 50.0, w: 400.0, h: 200.0 };
+    let (fig, canvas) = (InkBase::Figure { node_id: "files:a.png".into() }, InkBase::Canvas);
+    let mut ink = InkLayer::default();
+    ink.set_on(true);
+    ink.set_frame(R, R);
+    let mut s = up();
+    let text = || want("abc");
+    // One frame: the decision and the send, with an immediate reply; what went out.
+    let frame = |s: &mut SelectionShare, ink: &InkLayer, shown: Option<&InkBase>, row: Option<&str>, text: Option<Want>| {
+        let mut out = None;
+        step(s, ink, shown.cloned(), &host(), row.map(String::from), text, |h, r| {
+            out = Some((h.clone(), r));
+            Ok::<(), ()>(())
+        });
+        let sent = out.map(|o| req(Some(o)));
+        if let Some(q) = &sent {
+            s.on_reply(&host(), q, done());
+        }
+        sent
+    };
+    let stroke = |ink: &mut InkLayer, x: f32| {
+        ink.press(Some(&fig), (x, 100.0), &R, &R, (400, 200));
+        ink.release();
+    };
+
+    // No strokes: the text is wanted, so the text goes. 12: once a stroke is committed the drawing beats it.
+    let q = frame(&mut s, &ink, Some(&fig), Some("r1"), text()).unwrap();
+    assert!(q.selection.is_some() && q.drawing.is_none());
+    stroke(&mut ink, 150.0);
+    let q = frame(&mut s, &ink, Some(&fig), Some("r1"), text()).unwrap();
+    assert!(q.selection.is_none() && q.drawing.as_ref().unwrap().strokes == ink.strokes());
+    assert!(frame(&mut s, &ink, Some(&fig), Some("r1"), text()).is_none(), "the same revision sends nothing");
+
+    // 11: a live stroke and a right drag send nothing; the end of a drag sends the final strokes once.
+    stroke(&mut ink, 250.0);
+    stroke(&mut ink, 350.0);
+    frame(&mut s, &ink, Some(&fig), Some("r1"), None);
+    ink.right(true, Some(&fig), (150.0, 100.0));
+    assert!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).is_none(), "an erase drag is held");
+    ink.moved(Some(&fig), (250.0, 100.0));
+    assert!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).is_none(), "still held");
+    ink.right(false, Some(&fig), (250.0, 100.0));
+    assert_eq!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap().drawing.unwrap().strokes.len(), 1);
+    ink.press(Some(&fig), (200.0, 100.0), &R, &R, (400, 200));
+    assert!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).is_none(), "a live stroke is held");
+    ink.release();
+    assert_eq!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap().drawing.unwrap().strokes.len(), 2);
+
+    // 3: another base shown, or none, is a clear; a canvas drawing is a drawing.
+    assert!(frame(&mut s, &ink, Some(&canvas), Some("r1"), None).unwrap().drawing.is_none());
+    assert!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap().drawing.is_some());
+    assert!(frame(&mut s, &ink, Some(&fig), None, None).is_some(), "no row id: the held share is cleared");
+
+    // A clear and an undo to no strokes withdraw with no drawing in the request.
+    ink.clear(Some(&fig));
+    let q = frame(&mut s, &ink, Some(&fig), Some("r1"), None);
+    assert!(q.is_none() || q.unwrap().drawing.is_none());
+    ink.undo(Some(&fig));
+    assert_eq!(frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap().drawing.unwrap().strokes.len(), 2);
+    ink.undo(Some(&fig));
+    ink.undo(Some(&fig));
+    assert!(ink.strokes().is_empty());
+    let q = frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap();
+    assert!(q.drawing.is_none() && q.selection.is_none(), "an empty drawing is never sent");
 }

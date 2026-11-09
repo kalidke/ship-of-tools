@@ -194,7 +194,7 @@ framing.
 ## Drawing on a preview
 
 With the preview focused, `d` turns drawing on over a raster image. Holding the left button draws and holding the
-right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`) undoes the last step, and `Delete` clears all the
+right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`, `Cmd+z` on macOS) undoes the last step, and `Delete` clears all the
 ink (`u` brings it back). The ink stays where you drew it as you zoom and pan. `Shift+d` shows a blank canvas to draw
 on, and shows the preview again; the canvas is always in drawing mode. Each session keeps one drawing, and a stroke on
 another image or the canvas replaces it, with a note on the status line.

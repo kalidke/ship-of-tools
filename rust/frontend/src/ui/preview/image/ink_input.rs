@@ -66,6 +66,7 @@ impl State {
     pub(in crate::ui) fn ink_focus_lost(&mut self) {
         self.ink_sync();
         self.ink.focus_lost();
+        self.window.request_redraw();
     }
 }
 

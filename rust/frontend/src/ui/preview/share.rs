@@ -1,5 +1,5 @@
-//! The window's text selection share: a reconcile that keeps the daemon's published selection for a row equal to what the
-//! preview shows selected. It holds privately the state it last asked for and the one request in flight, and returns the
+//! The window's selection share: a reconcile that keeps the daemon's published selection for a row equal to what the
+//! view shows selected, the preview's released text or the drawing over the shown base. It holds privately the state it last asked for and the one request in flight, and returns the
 //! request to send; it sends nothing itself. The request is never replayed (fe-net), so a lost connection is answered by
 //! sending the state again after `Connected`.
 
@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{OutgoingReq, SelectionReply};
+use crate::ui::preview::image::ink::InkLayer;
 use sot_protocol::ops::{selection_code, Drawing, InkBase, SelectedText, SelectionSetReq, SelectionState, TextPos};
 use sot_protocol::ops::{selection_digest, MAX_SELECTION_LEN};
 
@@ -111,7 +112,7 @@ impl SelectionShare {
         }
         self.flight = None;
         // A clear is not announced, and a refused one leaves nothing to retry.
-        let share = req.selection.is_some() || req.drawing.is_some();
+        let share = req.selection.is_some();
         match reply {
             SelectionReply::Ended => {
                 // The daemon withdrew it at the connection's end; the host reads as down until `Connected`.
@@ -165,31 +166,41 @@ fn wanted(
     Want::new(host.clone(), row?, node?.to_string(), range, &text)
 }
 
-/// The drawing the view wants shared: the row's committed strokes, while the base they are on is the one shown. It wins
-/// over a text selection (an image or the canvas shows no flowed text).
-fn wanted_ink(shown: Option<InkBase>, drawn: Option<&InkBase>, has_strokes: bool, revision: u64, host: &HostKey, row: Option<String>) -> Option<Want> {
-    let base = shown.filter(|b| has_strokes && drawn == Some(b))?;
-    Some(Want { host: host.clone(), workspace_id: row?, share: Share::Ink { base, revision } })
+/// The drawing the view wants shared: the row's committed strokes, while the base they are on is the one shown. Read from
+/// the owner in one call, so the base, the strokes and the revision are one drawing.
+fn wanted_ink(shown: Option<InkBase>, ink: &InkLayer, host: &HostKey, row: Option<String>) -> Option<Want> {
+    let base = shown.filter(|b| !ink.strokes().is_empty() && ink.base() == Some(b))?;
+    Some(Want { host: host.clone(), workspace_id: row?, share: Share::Ink { base, revision: ink.revision() } })
+}
+
+/// One frame's step of the share: nothing while a stroke or an erase drag is live (the drag sends once, at its end), else
+/// the request that moves the daemon toward the view. A drawing wins over a text selection (an image or the canvas shows
+/// no flowed text).
+fn step<E>(
+    share: &mut SelectionShare, ink: &InkLayer, shown: Option<InkBase>, host: &HostKey, row: Option<String>, text: Option<Want>,
+    send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
+) {
+    if ink.busy() {
+        return;
+    }
+    let desired = wanted_ink(shown, ink, host, row).or(text);
+    share.reconcile(desired, ink.strokes(), send);
 }
 
 impl super::super::State {
-    /// What the view shows selected now, gated on the predicate the paint and the press use (`preview_shows`): the
-    /// selected row's released, non-empty text selection over its installed preview.
-    fn desired_selection(&self) -> Option<Want> {
-        let (host, row) = (self.selected.host(), self.selected.workspace_id().clone());
-        let (shown, ink) = (self.shown_ink_base(), &self.ink);
-        if let Some(w) = wanted_ink(shown, ink.base(), !ink.strokes().is_empty(), ink.revision(), host, row.clone()) {
-            return Some(w);
-        }
+    /// The released text selection over the installed preview, gated on the predicate the paint and the press use
+    /// (`preview_shows`), for the selected row; the drawing wins over it in `step`.
+    fn desired_text(&self) -> Option<Want> {
         let shown = self.preview_shows().4;
         wanted(shown, self.selected.host(), self.selected.workspace_id().clone(), self.preview_source.node_id(), self.shaped.released_selection())
     }
 
     /// Run in the frame's upkeep after `drain_events`: sends the one request that moves the daemon toward the view.
     pub(in crate::ui) fn reconcile_selection_share(&mut self) {
-        let desired = self.desired_selection();
+        let (text, shown) = (self.desired_text(), self.shown_ink_base());
         let mut share = std::mem::take(&mut self.selection_share);
-        share.reconcile(desired, self.ink.strokes(), |host, req| {
+        let host = self.selected.host().clone();
+        step(&mut share, &self.ink, shown, &host, self.selected.workspace_id().clone(), text, |host, req| {
             self.send_to(host, req).inspect_err(|e| tracing::warn!(error = %e, %host, "drop selection.set — channel closed"))
         });
         self.selection_share = share;
