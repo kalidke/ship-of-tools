@@ -63,6 +63,16 @@ Merge into `~/.claude/settings.json` with `jq`, preserving other keys:
 Use the **absolute path**. The forward-slash gotcha is Windows-only —
 POSIX paths are native here, no `bash -c` mangling.
 
+`statusline.sh` also warns on the lab's file server limit: it reads
+`/home/.home-usage.tsv` (line 1 `home/shared-home<TAB><free bytes>`, then
+`<uid><TAB><used bytes><TAB><limit bytes>`, a limit of 0 meaning none) and adds
+`home N%` to the second line when the running uid uses 90% or more of its
+limit, in red at 95% or more. The path is this lab's server's, so
+`$SOT_HOME_USAGE_FILE` overrides it (the test points it at a fixture). A missing
+file, a missing row, a zero limit or a bad number shows nothing. The Windows
+script has no such file and does not carry the item; the two need not match in
+items.
+
 ## 6. Verify
 Pipe sample JSON through the exact command now in `settings.json` and
 confirm it prints three colored lines and exits 0:
