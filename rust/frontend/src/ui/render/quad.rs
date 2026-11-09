@@ -162,6 +162,7 @@ pub struct ScreenRect {
 
 /// One uploaded RGBA8 texture, ready to draw into any rect.
 pub struct Quad {
+    texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     /// Vertex buffer holding the current rect's 6 verts. We rewrite it each
     /// frame (cheap, 96 bytes) so callers can move the rect freely.
@@ -282,10 +283,30 @@ impl Quad {
         });
 
         Ok(Self {
+            texture,
             bind_group,
             vbuf,
             size_px: (width, height),
         })
+    }
+
+    /// Overwrite the `w` by `h` rectangle at `(x, y)` of the texture with `rgba` (`w * h * 4` bytes, rows packed).
+    pub fn write_region(&self, queue: &wgpu::Queue, rgba: &[u8], x: u32, y: u32, w: u32, h: u32) -> Result<()> {
+        let Some(copy) = region_copy(self.size_px, rgba.len(), x, y, w, h) else {
+            anyhow::bail!("region {w}x{h} at ({x}, {y}) does not fit a {:?} texture and {} bytes", self.size_px, rgba.len());
+        };
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: copy.origin.0, y: copy.origin.1, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(copy.bytes_per_row), rows_per_image: Some(copy.extent.1) },
+            wgpu::Extent3d { width: copy.extent.0, height: copy.extent.1, depth_or_array_layers: 1 },
+        );
+        Ok(())
     }
 
     pub fn render(
@@ -475,6 +496,23 @@ where
 {
 }
 
+/// The layout of one region write: where it lands, its size and the byte length of a row of `rgba`.
+#[derive(Debug, PartialEq, Eq)]
+struct RegionCopy {
+    origin: (u32, u32),
+    extent: (u32, u32),
+    bytes_per_row: u32,
+}
+
+/// The copy of the `w` by `h` rectangle at `(x, y)` into a texture of `size` from `len` bytes, or `None` when the
+/// rectangle is empty, leaves the texture or has more bytes than `len`.
+fn region_copy(size: (u32, u32), len: usize, x: u32, y: u32, w: u32, h: u32) -> Option<RegionCopy> {
+    let inside = |o: u32, e: u32, s: u32| e > 0 && o.checked_add(e).is_some_and(|end| end <= s);
+    let bytes = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    (inside(x, w, size.0) && inside(y, h, size.1) && len >= bytes)
+        .then_some(RegionCopy { origin: (x, y), extent: (w, h), bytes_per_row: 4 * w })
+}
+
 /// Why a texture of this size cannot be made, or `None` when it can: a zero side or one past the GPU's
 /// `max_texture_dimension_2d` is a validation error that panics the window if it reaches wgpu.
 fn texture_extent_error(width: u32, height: u32, max: u32) -> Option<String> {
@@ -486,6 +524,10 @@ fn texture_extent_error(width: u32, height: u32, max: u32) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "quad_tests.rs"]
+mod quad_tests;
 
 #[cfg(test)]
 mod tests {

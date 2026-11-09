@@ -356,6 +356,8 @@ struct State {
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
     /// The raster view: the shown raster, its zoom and pan, the visible ROI and the same-directory view carry.
     raster: RasterView,
+    /// The row's drawing: its strokes, its raster and the overlay texture made from it.
+    ink: preview::image::ink::InkLayer,
     /// Pagination of the shown preview: page and count, the page bitmap's raster zoom and a re-raster's keep-view.
     pages: PageView,
     /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.

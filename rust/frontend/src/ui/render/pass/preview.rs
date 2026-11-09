@@ -88,6 +88,20 @@ impl State {
                     (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
+            // The drawing's overlay, over the raster at the same rectangle and under the same scissor, while its base is
+            // the one shown.
+            if self.ink.is_base(self.preview_requests.fired_target()) {
+                self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline())?;
+                if let Some(quad) = self.ink.overlay() {
+                    quad.render(
+                        self.gpu.queue(),
+                        self.brushes.pipeline(),
+                        &mut rpass,
+                        canvas_rect,
+                        (self.gpu.config().width, self.gpu.config().height),
+                    )?;
+                }
+            }
             // Reset scissor so subsequent draws (SVG, media paint,
             // chrome text) aren't clipped to the preview pane.
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);

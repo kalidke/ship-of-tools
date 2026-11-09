@@ -27,9 +27,9 @@ anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::i
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
-`preview::image::ink::InkLayer` (D4a, not yet wired: D4c is its first reader, D4b adds the mask and overlay) privately owns the row's drawing
-(base, committed strokes, the `cleared` copy, the undo history), the live stroke, drawing mode and a `revision` every committed change raises; it
-takes the canvas and image rectangles and the raster size as arguments each call and never `State`; a stroke begins only at a press inside the image and
+`preview::image::ink::InkLayer` (D4a and D4b; D4c wires its edits to the mouse and keys, so only its overlay is read yet) privately owns the row's drawing
+(base, committed strokes, the `cleared` copy, the undo history), the live stroke, drawing mode, a `revision` every committed change raises, the raster (`raster_dims` of the base's source size, which a press hands it, so a new base or size repaints it; painted with the wire's `paint_segment` and `mask`: a drag paints only its new segment, an undo, clear, erase, restore or new base paints all of it, and a hidden base's live stroke is painted out), the rectangle changed since the last upload and the overlay `Quad` (RGBA in the ink color, alpha from the raster; `upload` writes the dirty rectangle, or a new texture when the size changed); it
+takes the canvas and image rectangles as arguments each call and never `State` (the window holds one, `State::ink`); a stroke begins only at a press inside the image and
 canvas rectangles, and its drag points are clamped to the base and kept one raster pixel from the last; the drawing holds at most `MAX_INK_POINTS` points (a press
 on a full drawing starts no stroke); a right-button erase drag is one undo step, recorded at its first hit, whose path from the drag's last point removes
 each stroke within the painted ink's reach (`ink_radius` and one raster pixel), at points inside the image only (a point it ignores breaks the path, so the drag never joins the points either side of it, and the caller hands it every right motion of the drag); undo and clear act only while the drawing's base is the one shown; no event splits the strokes from the history;
@@ -41,7 +41,9 @@ the `cleared` copy goes at a stroke's commit and at a base change; a hidden base
 `the_right_button_erases_in_one_undo_step_and_never_a_live_stroke`,
 `no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_history`,
 `the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image`, `a_drag_that_leaves_the_image_and_comes_back_joins_nothing_across_the_stretch_outside`,
-`undo_and_clear_change_nothing_while_the_drawings_base_is_not_shown`, `the_drawing_is_bounded_in_points`);
+`undo_and_clear_change_nothing_while_the_drawings_base_is_not_shown`, `the_drawing_is_bounded_in_points`, `the_overlay_is_the_drawings_raster_after_every_edit`);
+the preview pass draws the overlay quad right after the raster's, at the same canvas rectangle and under the same scissor, only while the fired preview target is the drawing's base, and `Quad::write_region` copies exactly its rectangle (`a_region_write_covers_exactly_its_rectangle`);
+limits: the draw order, the scissor and the base test are in the render pass and no pure test reaches them; the canvas base is not drawn (D5)
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
