@@ -526,6 +526,11 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **SELECT-MARKDOWN** [person] Text selected in a markdown file's preview never reaches the agent: the preview shows the
+  rendered document, whose buffer positions and text are not the file's, so the daemon's check
+  (`rust/backend/src/agents/selection.rs`) refuses it as not the file's text, and the window has no view of a markdown
+  file's source outside edit mode, which shares nothing. The maintainer needs it there most. Decided fix: a selection in
+  rendered markdown is mapped to the source lines it was rendered from, and the agent is told those lines of the file.
 - **SELECTION-WITHDRAWN-ON-REFRESH** [note] A change to the shown file, or to the text size, refreshes its preview and
   clears the flowed selection, so the window's share (`rust/frontend/src/ui/preview/share.rs`) withdraws the text
   selection with no status line: an agent that edits the file the person selected loses the selection at its next
