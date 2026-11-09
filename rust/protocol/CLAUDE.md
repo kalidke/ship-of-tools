@@ -165,9 +165,9 @@ name is in this crate's one op table.
     per row only the pixels within reach of the segment, so its cost follows the segment's own area (pinned by pixels
     visited, not time); `segments` yields every consecutive pair of every stroke, a one-point stroke as a dot, and `mask`
     paints them. Taking the maximum makes painting
-    order-free, so the window painting segment by segment and the daemon painting the whole drawing get the same bytes.
+    order-free, so the window painting segment by segment and the daemon painting the whole drawing get the same bytes within one release (a window and a daemon of different releases may draw the ink at different widths; the wire carries points only).
     `CANVAS_DIMS` (1600 x 1000) and `INK_RGB` are the canvas raster and the one ink color. Test `ink_tests.rs`:
-    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 13 s at worst, one 16,384-point stroke of full-diagonal segments, so the daemon paints it off the connection's loop.
+    `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 13 s at worst, one 16,384-point stroke of full-diagonal segments, so the daemon paints it off the connection's loop. These were measured at the earlier 1/200 ink width; the 1/300 width visits about a quarter fewer pixels, so they are upper bounds.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op

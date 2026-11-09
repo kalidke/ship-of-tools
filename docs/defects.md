@@ -531,6 +531,10 @@ owned by `docs/CLAUDE.md`.
   (`rust/backend/src/agents/selection.rs`) refuses it as not the file's text, and the window has no view of a markdown
   file's source outside edit mode, which shares nothing. The maintainer needs it there most. Decided fix: a selection in
   rendered markdown is mapped to the source lines it was rendered from, and the agent is told those lines of the file.
+- **INK-REACH-ONE-SIZE** [note] The eraser's reach tests (`rust/frontend/src/ui/preview/image/ink_tests.rs`) run at
+  one raster size, so a reach computed from a fixed raster at every size survives them, and
+  `the_reach_is_the_ink_and_one_pixel_on_both_sides` repeats the first reach test's positive side. Fix: derive the
+  offsets from `ink_radius`, test two raster sizes, and delete the repeat. Found by the thinner pen's review.
 - **SELECTION-WITHDRAWN-ON-REFRESH** [note] A change to the shown file, or to the text size, refreshes its preview and
   clears the flowed selection, so the window's share (`rust/frontend/src/ui/preview/share.rs`) withdraws the text
   selection with no status line: an agent that edits the file the person selected loses the selection at its next

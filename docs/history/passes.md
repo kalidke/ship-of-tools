@@ -1430,3 +1430,10 @@ A landing's record goes here, with its measured times; the package page holds on
   One product line and about 15 test lines. Where the minutes went: the build (2 minutes); two review rounds (blockers
   1, 0; 7 and 5 minutes: the first found the contract still saying a Codex row answers held) and two fix rounds of a
   minute each; two gates of 2 minutes.
+- A thinner pen, 2026-11-09: builder launched 10:29, main 10:47 (9359b3ef2), 18 minutes. The maintainer, drawing on
+  the first candidate with selection and drawing: "could we make the pen a bit smaller?" The ink's width is 1/300 of
+  the raster's long side instead of 1/200, the 3-pixel floor kept; the window's raster, the daemon's picture and the
+  eraser's reach share the one rule. One product line and about ten test lines. Where the minutes went: the build (4
+  minutes, the red at the base shown); one gate of 4 minutes, scoped; one review round of 13 minutes (blockers 0; its
+  eight mutants of the rule were all killed); its wording findings went into the records after, and its two test
+  findings into INK-REACH-ONE-SIZE.
