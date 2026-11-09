@@ -205,6 +205,43 @@ ink, showing another file, or switching session withdraws it; showing the image 
 The status line says when the drawing was shared, held (the agent started before it could take one; restart the session),
 or not shared. Claude Code sessions take a drawing; Codex sessions take none yet. A closed window loses its drawings.
 
+## Sharing a selection with the agent
+
+Select text in a preview of a project file with the mouse and release the button: the window tells the daemon, which
+reads the file itself and keeps the lines you selected for the session's agent. The agent is told at its next prompt,
+including a prompt a mail wake types and a message queued while a turn runs; the line `Selection: <file> lines a-b`
+shows in its pane, and the agent is given the file's own text at those lines (the first 2000 characters of a longer
+range, with its size), labeled as your selection. Nothing is sent while you drag, and every later prompt carries the
+selection until it is withdrawn.
+
+Only the preview's text of a file in the project is shared. The agent pane, an image, the concept pane and a
+rendered table are not. A selection is shared only if the preview still shows the file's own text: a preview older than
+the file, rendered markdown whose text differs from the file's, and files with lone CR, U+2028, U+2029 or U+0085 line
+breaks are refused. Drawing over an image in the same session replaces the selection with the drawing.
+
+A selection is withdrawn when you click outside the text, press `Esc` in the preview, show another file or open the
+editor, switch to another session (the session you left is cleared), or close the window. A connection that ends (a
+lost link, a closed window) withdraws its selection in the daemon, and a window that reconnects shares its current
+selection again. A selection the agent was already given stays in that conversation's history: asked again, it still
+names it. Only a new conversation forgets it.
+
+The status line says what happened:
+
+- `selection shared: the agent sees it at its next prompt`
+- `selection held: this row's agent started before it could take one; restart the row to share`: the agent was started
+  without the hook (before the release that brings it, or with its own `--settings`), so it sees the selection after
+  the session is restarted.
+- `selection not shared: this view is not the file's text`
+- `selection not shared: this row's agent takes none`
+- `selection not shared: this host's daemon does not take selections`
+- `selection not shared: <reason>` for any other refusal, such as `unknown_workspace` or `publish_failed` (select
+  again).
+
+Withdrawing is not announced. Claude Code sessions take a selection; Codex sessions take none yet, and a Codex session
+answers `held` (the file is kept, but no hook tells its agent). A Claude Code session that runs `claude -p` or
+`codex exec` through its shell tool gives that child the same selection in its own prompts. A closed daemon leaves the
+selection in place until a daemon starts again. A selection set from two windows is the newest one.
+
 ## Capturing a preview region for the LLM
 
 For raster image previews you can zoom in, then, with the preview focused
