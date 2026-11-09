@@ -234,11 +234,9 @@ fn the_reply_says_who_will_hear() {
     assert_eq!(set_selection(None, &workspaces, false, 9_001_003, &req("ws-claude", good())), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the state root");
 
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
-    for kind in ["claude", "codex"] {
-        insert(&format!("ws-{kind}-k"), kind);
-        assert!(ask(true, &format!("ws-{kind}-k"), good()).is_ok(), "row 2: {kind} takes one");
-    }
-    for kind in ["none", "gemini", ""] {
+    insert("ws-claude-k", "claude");
+    assert!(ask(true, "ws-claude-k", good()).is_ok(), "row 2: claude takes one");
+    for kind in ["codex", "none", "gemini", ""] {
         let id = format!("ws-{kind}-k");
         insert(&id, kind);
         std::fs::write(file(&id), "old").unwrap();
@@ -249,7 +247,6 @@ fn the_reply_says_who_will_hear() {
 
     // 3. an accepted selection is shared when the marker exists and held when it does not
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: no marker");
-    assert_eq!(ask(true, "ws-codex-k", good()), Ok(SelectionState::Held), "row 3: codex with no marker");
     std::fs::write(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME), "").unwrap();
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Shared), "row 3: marker");
     std::fs::remove_file(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME)).unwrap();
@@ -257,9 +254,10 @@ fn the_reply_says_who_will_hear() {
 }
 
 /// The marker the launch writes, read by the handler: a leg answers `shared` only when it carries the variable and (Claude)
-/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them.
+/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them. A Codex leg writes no
+/// marker, and its row is answered `no_agent`.
 #[test]
-fn a_leg_without_the_hook_is_answered_held() {
+fn the_marker_follows_the_leg_that_wrote_it() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let workspaces = Workspaces::new();
@@ -297,7 +295,8 @@ fn a_leg_without_the_hook_is_answered_held() {
     assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no variable, the earlier marker removed");
     // 3. a Codex leg has none, whatever its argv, until its wiring is built
     launch("ws-mk-codex", "codex", &var, &hooked);
-    assert_eq!(answer("ws-mk-codex"), Ok(SelectionState::Held), "row 3: codex");
+    assert!(!folder("ws-mk-codex").join(MARKER_NAME).exists(), "row 3: a codex leg writes no marker");
+    assert_eq!(answer("ws-mk-codex"), Err(selection_code::NO_AGENT), "row 3: codex");
     // 4. a folder the supervisor has not made yet is made for the marker
     let fresh = folder("ws-mk-fresh").join("nested");
     write_marker(&fresh, "claude", &var, &hooked).unwrap();
@@ -493,7 +492,7 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
     std::fs::write(&file, "from an earlier process").unwrap();
     assert!(clear_unowned(state.path(), "ws-dr-1") && !file.exists(), "row 4: the walk removes an unowned file");
 
-    // 5. only a Claude row takes a drawing; a Codex row still takes text
+    // 5. only a Claude row takes a drawing
     for kind in ["codex", "none", ""] {
         let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-k");
         std::fs::write(folder.join(FILE_NAME), "old").unwrap();

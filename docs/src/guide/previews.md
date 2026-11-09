@@ -204,7 +204,7 @@ the agent".
 
 The session's agent can be shown one thing at a time: text you selected or a drawing. The newest replaces the other, and
 a selection or drawing set from two windows is the newest one; clearing it in either window removes it for both. Claude
-Code sessions take either; a Codex session takes neither yet (its status line says `held` for a selection, `not shared` for a drawing).
+Code sessions take either; a Codex session takes neither yet (its status line says `not shared: this row's agent takes none` for both).
 
 **Text.** Select text in a preview of a project file with the mouse and release the button: the window tells the daemon,
 which reads the file itself and keeps the text you selected. At the agent's next prompt Claude Code shows a one-line
@@ -246,8 +246,7 @@ was given. A new conversation forgets it.
 - `selection not shared: this host's daemon does not take selections`
 - `selection not shared: <reason>` for any other refusal, such as `unknown_workspace` (the daemon no longer knows this session), `bad_node_id` (the preview is not a
   project file) or `publish_failed` (select again).
-- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing (a Codex row answers `drawing not
-  shared: this row's agent takes none`, not `held`); its reasons include `the image
+- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing; its reasons include `the image
   is over 40 megapixels` and `the daemon cannot read this image`.
 
 Withdrawing is not announced.

@@ -356,11 +356,6 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
-- **SELECTION-CODEX-HELD** [note] A Codex row answers a text selection `held`: the daemon's `TAKES_SELECTION` names
-  `codex` (`rust/backend/src/agents/selection.rs`), but the marker that says a leg carries the prompt hook is written for
-  Claude legs only, and Codex carries no hook. The window then says "restart the row to share", which cannot help. Until
-  the Codex wiring is built (its premise H2 is untested), `TAKES_SELECTION` should leave `codex` out, so the row answers
-  `no_agent`. Found reading code for the manual; never seen.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's
@@ -751,6 +746,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SELECTION-CODEX-HELD** (agents) closed by the landing that fixes it, 2026-11-09: `TAKES_SELECTION` leaves `codex` out, so a Codex row answers a selection `no_agent`, not `held`, until the Codex wiring is built.
 - **SCRATCH-PAD** (fe-ui) closed by the landing that fixes it, 2026-11-09: a drawable preview pane whose drawing the row's agent sees; the window draws and shares it, the daemon writes its picture.
 - **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** (fe-ui) closed by the landing that fixes it, 2026-11-08: the window's 13 State fixtures were compiled by the local gate and the per-landing run but run by neither; the per-landing run now executes them alone on Linux (`child fixtures` of the `window_minimized` target, under `xvfb-run` and Mesa's software Vulkan driver), and the redraw mutation leg's comment in `rust/frontend/Cargo.toml` names `release-gate.yml`.
 - **SCRATCH-GUARD-PROBE-SHARE** (distribution) closed by 366a34551, 2026-11-08: in a hosted Windows run on main the scratch guard test's concurrent run ended with exit 1 before its sleep; the run kept no stderr, and the cause is inferred: with the file held open as a poll read holds it, the old probe's `Add-Content` fails ("being used by another process"), which the old test shows under a forced overlap. Each probe now writes its file whole under another name and renames it into place; the daemon probe's later line is appended with `File.AppendAllText`; a failure of the concurrent run now prints that run's stderr.
