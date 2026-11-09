@@ -114,8 +114,7 @@ impl State {
         // (otherwise active_workspace_id drift sends the
         // request to a project that doesn't have the file).
         let scale = extras.as_ref().and_then(parse_physical_scale);
-        self.ink.installed(self.preview_source.node_id(), node_id.as_deref());
-        self.preview_source.install(mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
+        self.ink.install_preview(&mut self.preview_source, mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
         // Pagination state (ADR 0021): present only when the
         // serving plugin reported page extras; anything else
         // (including a later unpaginated reply for a new

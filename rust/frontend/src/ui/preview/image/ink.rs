@@ -2,9 +2,19 @@
 //! every committed change raises. It maps a screen point through the canvas and image rectangles each call hands it, so
 //! zoom, pan and a resize need no state here. It keeps the drawing's raster (the wire's own functions paint it) and the
 //! overlay texture made from it. It never takes `State`.
+use crate::ui::preview::image::overlay::PhysicalScale;
+use crate::ui::preview::source::InstalledPreviewSource;
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
-use sot_protocol::ink::{ink_radius, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
+use sot_protocol::ink::{ink_radius, CANVAS_DIMS, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
+
+/// The shown base's source size: the canvas has its own, a figure's is the raster's served size.
+pub(in crate::ui) fn source_dims(shown: Option<&InkBase>, served: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    match shown {
+        Some(InkBase::Canvas) => Some(CANVAS_DIMS),
+        _ => served,
+    }
+}
 
 type Stroke = Vec<[u16; 2]>;
 
@@ -113,11 +123,15 @@ impl InkLayer {
     pub(in crate::ui) fn set_canvas(&mut self, canvas: bool) {
         self.drawing.canvas = canvas;
     }
-    /// A preview was installed: another node's hides the canvas (the person navigated), the same node's does not.
-    pub(in crate::ui) fn installed(&mut self, previous: Option<&str>, node: Option<&str>) {
-        if previous != node {
+    /// A preview reply is installed: another node's hides the canvas (the person navigated), the same node's does not.
+    pub(in crate::ui) fn install_preview(
+        &mut self, source: &mut InstalledPreviewSource, mime: String, bytes: Vec<u8>, node_id: Option<String>,
+        scale: Option<PhysicalScale>, workspace_id: Option<String>,
+    ) {
+        if source.node_id() != node_id.as_deref() {
             self.drawing.canvas = false;
         }
+        source.install(mime, bytes, node_id, scale, workspace_id);
     }
     pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
         self.frame = Some((canvas, image));

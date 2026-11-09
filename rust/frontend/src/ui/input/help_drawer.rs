@@ -24,11 +24,11 @@ impl State {
         let canvas = shown == Some(sot_protocol::ops::InkBase::Canvas);
         help::Context {
             pane, mode: self.nav.mode(),
-            file, image: self.raster.is_shown() && !canvas, canvas,
+            file, image: self.raster.is_shown(), canvas,
             drawing: shown.is_some() && (self.ink.is_on() || canvas),
             pages: self.pages.page().is_some_and(|(_, count)| count > 1),
-            editable: !canvas && (!self.raster.is_shown() && self.previewed_files_path().is_some()
-                || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target()))),
+            editable: !self.raster.is_shown() && self.previewed_files_path().is_some()
+                || self.concept.info().is_some_and(|c| c.exists() && self.preview_requests.concept_target() == Some(c.target())),
             confirmation: if matches!(self.focus_prompts.prompt(), Some(NavPrompt::ConfirmDelete { .. })) && prompt {
                 help::Confirmation::Delete
             } else if editing && self.editor.confirming_discard() {

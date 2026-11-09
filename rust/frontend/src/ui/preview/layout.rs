@@ -5,14 +5,13 @@ use crate::ui::*;
 
 /// What the pane shows, as `(fatal, png, svg, edit, md, canvas)`. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
 /// hard block: it takes the pane over everything until a clean reconnect clears it. Edit mode owns the pane after it, so
-/// the editable annotation body has the whole rect. The canvas takes the pane from the image and the text and loses to
-/// both; the installed preview stays installed under it.
+/// the editable annotation body has the whole rect. `canvas` arrives decided (`InkLayer::shown_base`, which yields it
+/// only outside both); it takes the pane from the image and the text, and the installed preview stays installed under it.
 pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> (bool, bool, bool, bool, bool, bool) {
     let show_edit = !refused && edit;
-    let show_canvas = canvas && !refused && !show_edit;
-    let show_png = raster && !refused && !show_canvas;
-    let show_md = !refused && !show_png && !show_edit && !show_canvas;
-    (refused, show_png, false, show_edit, show_md, show_canvas)
+    let show_png = raster && !refused && !canvas;
+    let show_md = !refused && !show_png && !show_edit && !canvas;
+    (refused, show_png, false, show_edit, show_md, canvas)
 }
 
 impl State {

@@ -2,9 +2,7 @@
 //! only through here, and every question of whether the base is shown goes to `InkLayer::shown_base`.
 
 use crate::ui::input::keypress::KeyPress;
-use crate::ui::preview::image::ink::InkLayer;
 use crate::ui::*;
-use sot_protocol::ink::CANVAS_DIMS;
 use sot_protocol::ops::InkBase;
 use std::ops::ControlFlow::{self, Break, Continue};
 
@@ -13,12 +11,8 @@ impl State {
         self.ink.shown_base(self.raster.node(), self.editor.is_editing(), self.hello_refused.refused(self.selected.host()))
     }
 
-    /// The shown base's source size: the canvas has its own, a figure's is the raster's served size.
     fn ink_src(&self, shown: Option<&InkBase>) -> Option<(u32, u32)> {
-        match shown {
-            Some(InkBase::Canvas) => Some(CANVAS_DIMS),
-            _ => self.raster.served_dims(),
-        }
+        crate::ui::preview::image::ink::source_dims(shown, self.raster.served_dims())
     }
 
     /// Before a frame and each pointer event: the layer drops what the shown base no longer carries.
@@ -95,6 +89,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
                 "drawing off".to_string()
             });
         }
+        Some(Action::PreviewCanvas) if state.hello_refused.refused(state.selected.host()) => {}
         Some(Action::PreviewCanvas) => {
             let canvas = !state.ink.canvas();
             state.ink.set_canvas(canvas);

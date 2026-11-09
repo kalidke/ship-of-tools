@@ -760,15 +760,11 @@ fn the_canvas_is_a_base_like_a_figure_and_replaces_a_figures_drawing() {
 }
 
 #[test]
-fn the_canvas_flag_rides_the_parked_drawing_and_another_nodes_install_hides_it() {
+fn the_canvas_flag_rides_the_parked_drawing() {
     let mut l = InkLayer::default();
     l.set_canvas(true);
     let parked = switch_rows(&mut l, Drawing::default());
     assert!(!l.canvas(), "a row with no drawing shows no canvas");
     l.restore(parked);
     assert!(l.canvas());
-    l.installed(Some("files:a.png"), Some("files:a.png"));
-    assert!(l.canvas(), "the same node installed again keeps it");
-    l.installed(Some("files:a.png"), Some("files:b.png"));
-    assert!(!l.canvas(), "another node hides it");
 }

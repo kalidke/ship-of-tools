@@ -91,12 +91,12 @@ impl Context {
             Repl => repl,
             Pty => repl || matches!(self.pane, Pane::Terminal | Pane::Agent),
             Llm => self.pane == Pane::Agent,
-            Pages => preview && self.pages,
-            Image => preview && self.image,
+            Pages => preview && self.pages && !self.canvas,
+            Image => preview && self.image && !self.canvas,
             Drawing => preview && self.drawing,
             Preview => preview,
             Reading => preview || repl,
-            PreviewFile => preview && self.editable,
+            PreviewFile => preview && self.editable && !self.canvas,
             PageScroll => {
                 (text && !self.pages)
                     || repl

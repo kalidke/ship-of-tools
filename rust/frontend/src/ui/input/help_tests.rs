@@ -201,6 +201,8 @@ fn the_canvas_key_is_the_previews_and_the_canvas_takes_the_images_and_the_texts_
     assert_ne!(press(&Context { editing: true, ..preview.clone() }), Some(Action::PreviewCanvas));
     assert_ne!(press(&Context { pane: Pane::Nav, mode: Mode::Sessions, session: true, ..Context::default() }), Some(Action::PreviewCanvas));
     // the canvas is neither text nor image, and its drawing keys are live
-    let canvas = Context { canvas: true, drawing: true, ..preview };
+    let canvas = Context { canvas: true, drawing: true, image: true, pages: true, editable: true, ..preview };
     assert!(!canvas.allows(Action::PreviewUp) && !canvas.allows(Action::PreviewPngZoomIn) && canvas.allows(Action::PreviewInkUndo));
+    // the page and edit keys do not reach the hidden preview
+    assert!(!canvas.allows(Action::PageNext) && !canvas.allows(Action::EditFile));
 }
