@@ -134,7 +134,6 @@ impl State {
             resolved: crate::net::transport::ResolvedDial::Local,
             backend_version: "test".into(),
             repl_running: vec![active_id, parked_id, other_id, 99],
-            takes_drawing: false,
         })?;
         self.drain_events();
         let pane = |state: &State, row: &WsKey| {

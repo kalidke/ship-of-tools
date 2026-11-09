@@ -31,7 +31,7 @@ name is in this crate's one op table.
    (held to it by a test that runs it), and refused on mismatch by the daemon's hello, the server's check of this
    integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, where `hello_refuses_protocol_3` pins the last release's integer as refused, and `rust/backend/tests/admission.rs`). serde does not
    enforce the defaulted-field rule: it is a maintenance obligation, held by review and by previous-shape tests only for
-   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and an older `HelloRes` parses with `repl_running` and `takes_drawing` absent), the lease
+   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and the last release's whole `HelloRes` parses with `takes_drawing` absent), the lease
    (`ops/lease_wire_tests.rs`) and docs opens (`ops/pages_tests.rs`). `DocsOpenReq.direct` is an additive field defaulting
    to `ReplyScope::None`; an older frontend's payload without it grants no direct scope. Adding authority must never
    change that default; incompatible scope vocabulary changes follow this same protocol-number rule. The families

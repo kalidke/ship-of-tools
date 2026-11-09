@@ -22,6 +22,11 @@ struct Rig {
 }
 
 fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
+    rig_taking(capacity, ping_every, first_id, false)
+}
+
+/// `rig` whose connection's hello said whether the daemon reads a drawing.
+fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, takes_drawing: bool) -> Rig {
     let env = crate::net::state::test_env::set_test_env();
     let (near, far) = tokio::io::duplex(capacity);
     let (events_tx, events) = std::sync::mpsc::channel();
@@ -33,6 +38,7 @@ fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
             host: host.clone(),
             memory: crate::net::state::SessionMemory::fresh(),
             gate: StateSaveGate::new(),
+            takes_drawing,
         };
         let (rx, tx) = tokio::io::split(near);
         steady::steady_loop(
@@ -390,6 +396,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
                 host: host.clone(),
                 memory: crate::net::state::SessionMemory::fresh(),
                 gate: StateSaveGate::new(),
+                takes_drawing: false,
             };
             steady::steady_loop(
                 codec::buffered(reader),
@@ -464,4 +471,29 @@ async fn a_silent_daemon_ends_the_drain_after_the_outgoing_side_closed() {
     let at = closed.elapsed();
     assert!(at >= PING * 3 && at < PING * 3 + Duration::from_secs(1), "drain: ended after {at:?}");
     println!("steady-silence: silent daemon after the outgoing side closed -> ended after {at:?}");
+}
+
+/// A drawing goes only to a connection whose hello said the daemon reads one; on any other it is answered unsupported
+/// and never written, while a clear and a text selection still go. The daemon would read a drawing as a clear.
+#[tokio::test]
+async fn a_drawing_is_written_only_on_a_connection_whose_hello_took_one() {
+    let sel = |v: serde_json::Value| -> OutgoingReq { OutgoingReq::SelectionSet { req: serde_json::from_value(v).unwrap() } };
+    let drawing = || sel(serde_json::json!({ "workspace_id": "w", "selection": null, "drawing": { "base": "canvas", "strokes": [[[1, 2]]] } }));
+    let clear = || sel(serde_json::json!({ "workspace_id": "w", "selection": null }));
+    for takes in [false, true] {
+        let mut rig = rig_taking(1 << 16, NEVER, 1, takes);
+        rig.out_tx.as_ref().unwrap().send(drawing()).unwrap();
+        rig.out_tx.as_ref().unwrap().send(clear()).unwrap();
+        let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
+        assert_eq!(req.payload.get("drawing").is_some(), takes, "takes={takes}: the first frame written is {}", req.payload);
+        let mut unsupported = false;
+        for _ in 0..if takes { 1 } else { 1000 } {
+            unsupported = rig.events.try_iter().any(|(_, e)| matches!(e, IncomingEvt::Selection { reply: SelectionReply::Unsupported, .. }));
+            if unsupported {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(unsupported, !takes, "takes={takes}: the unsupported answer");
+    }
 }

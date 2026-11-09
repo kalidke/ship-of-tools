@@ -281,6 +281,8 @@ pub(super) struct SessionState {
     pub(super) host: HostKey,
     pub(super) memory: crate::net::state::SessionMemory,
     pub(super) gate: StateSaveGate,
+    /// This connection's hello said the daemon reads a drawing (`HelloRes::takes_drawing`); false until it is accepted.
+    pub(super) takes_drawing: bool,
 }
 
 impl Drop for SessionState {

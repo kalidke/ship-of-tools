@@ -243,19 +243,6 @@ async fn a_directed_agent_send_is_refused_and_reaches_nobody() {
     env.kill_daemon_bounded().await;
 }
 
-/// The daemon's hello reply says it reads a drawing (`takes_drawing`), which a window needs before it sends one.
-#[tokio::test]
-async fn the_hello_reply_says_the_daemon_takes_a_drawing() {
-    let env = Env::new("takesdraw");
-    env.spawn_sotd();
-    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a connection").await;
-    let mut conn = tokio::io::BufReader::new(stream);
-    let hello = HelloReq::this_process("takes-drawing", "", Some("host-a".to_string())).expect("this process's account");
-    let reply = strict(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
-    assert_eq!(reply.payload["takes_drawing"], json!(true), "{:?}", reply.payload);
-    env.kill_daemon_bounded().await;
-}
-
 /// `agent.filed`, the retired receipt route's claim, is no op.
 #[tokio::test]
 async fn agent_filed_is_an_unknown_op() {

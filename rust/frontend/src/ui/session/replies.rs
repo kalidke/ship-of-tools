@@ -254,7 +254,6 @@ impl State {
     }
 
     pub(crate) fn on_disconnected(&mut self, event_host: HostKey, reason: String, refused: bool) {
-        self.hosts.set_takes_drawing(&event_host, false);
         // A refusal says "daemon out of date" only while the daemon answers: a drop or a failed dial after it means
         // nothing answers now, so the host reads unreachable again.
         if !refused {

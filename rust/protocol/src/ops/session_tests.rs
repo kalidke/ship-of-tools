@@ -53,7 +53,8 @@ mod hello_version_tests {
     /// reply reads as false, and false is not written.
     #[test]
     fn a_hello_reply_says_whether_the_daemon_takes_a_drawing_and_stays_additive() {
-        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false}"#;
+        // The last release's whole reply (a v0.7.0 daemon's), as it writes one.
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.0","proxy":true,"repl_running":[2]}"#;
         let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
         assert!(!res.takes_drawing, "an older daemon reads as not taking one");
         assert_eq!(serde_json::to_value(&res).unwrap().get("takes_drawing"), None, "false is not written");

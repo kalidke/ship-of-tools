@@ -311,16 +311,18 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
-/// The `Connected` event says what the daemon's hello said about taking a drawing; a hello without the field, an
-/// older daemon's, says false.
-#[tokio::test]
-async fn the_connection_reports_whether_the_hello_takes_a_drawing() {
+/// The accepted hello sets the connection's `takes_drawing` from what the daemon said; a hello without the field, an
+/// older daemon's, leaves it false.
+#[test]
+fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing() {
     let _env = crate::net::state::test_env::set_test_env();
     let mut says = hello_ok();
     says["takes_drawing"] = serde_json::json!(true);
-    for (host, reply, want) in [("takes-drawing", says, "takes_drawing: true"), ("old-daemon", hello_ok(), "takes_drawing: false")] {
-        let events = events_until_the_daemon_closes(host, reply, Vec::new()).await;
-        assert!(events.iter().any(|e| e.starts_with("Connected") && e.contains(want)), "{host}: {events:?}");
+    for (reply, want) in [(says, true), (hello_ok(), false)] {
+        let host: HostKey = "takes-drawing".to_string();
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want };
+        accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
+        assert_eq!(session.takes_drawing, want);
     }
 }
 

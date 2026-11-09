@@ -29,6 +29,8 @@ async fn connect_as_window(env: &Env) -> (Conn, u64) {
     hello.name = Some("selection-window".to_string());
     let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
+    // The reply declares what this file's tests show: the daemon reads a drawing in `selection.set`.
+    assert_eq!(reply.payload["takes_drawing"], serde_json::json!(true), "{:?}", reply.payload);
     (conn, 2)
 }
 

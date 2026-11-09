@@ -186,6 +186,10 @@ where
             _ = ping_interval.tick() => ping_due = true,
             req = out_rx.recv(), if slot.is_idle() && !closed => match req {
                 None => closed = true,
+                Some(OutgoingReq::SelectionSet { req }) if req.drawing.is_some() && !session.takes_drawing => {
+                    // This daemon's hello did not say it reads a drawing; it would read the request as a clear.
+                    emit_selection_unsupported(evt_tx, &host, req);
+                }
                 Some(req) => {
                     let id = take_id(&mut next_id);
                     // Registered before the first network byte, and also when encoding fails part way, so a
@@ -213,6 +217,11 @@ where
             }
         }
     }
+}
+
+/// A drawing this connection's daemon does not read, ended as an older daemon's unknown-op answer would end it.
+fn emit_selection_unsupported(evt_tx: &StdSender<(HostKey, IncomingEvt)>, host: &HostKey, req: sot_protocol::ops::SelectionSetReq) {
+    let _ = evt_tx.send((host.clone(), IncomingEvt::Selection { req, reply: SelectionReply::Unsupported }));
 }
 
 /// The disconnect for a daemon that has sent no byte for `silence`.

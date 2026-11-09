@@ -50,7 +50,7 @@
 > {"v":4,"id":51,"kind":"req","op":"chat.history","payload":{"after":null,"cursor":null,"limit":7,"target":{"channel":"Cch","row":"ch.row","workspace":"ch.ws"},"thread":null,"upper":null}}
 > {"v":4,"id":52,"kind":"req","op":"chat.post","payload":{"kind":"row","name":"cp.name","target":{"channel":"Ccp","row":"cp.row","workspace":"cp.ws"},"text":"cp.text","thread":null}}
 > {"v":4,"id":53,"kind":"req","op":"selection.set","payload":{"selection":null,"workspace_id":"sel.ws"}}
-< golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [], takes_drawing: false }
+< golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [] }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
 < golden Event { op: "workspace.activate", payload: Object {"code": String("code-workspace.activate"), "error": String("err-workspace.activate")} }

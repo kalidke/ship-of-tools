@@ -50,9 +50,7 @@ impl State {
                     resolved,
                     backend_version,
                     repl_running,
-                    takes_drawing,
                 } => {
-                    self.hosts.set_takes_drawing(&event_host, takes_drawing);
                     self.on_repl_running(&event_host, repl_running);
                     self.on_connected(event_host, session_id, revision, project_root, proxy, resolved, backend_version)
                 }

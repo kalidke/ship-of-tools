@@ -1,7 +1,7 @@
 //! Per-host connection helpers: the default and monitor host, a not-yet-spawned
 //! transport, the lane dial a row's attach uses.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::net::dial::HostKey;
@@ -123,30 +123,12 @@ pub(crate) struct HostTable {
     /// — the only thing that gates `fe.sessions`. Absent for a host that
     /// hasn't completed hello yet.
     pub(crate) declared_host: HashMap<crate::net::dial::HostKey, String>,
-    /// The hosts whose connected daemon said in its hello that it reads a drawing (`HelloRes::takes_drawing`); a host
-    /// that has not connected, has dropped, or is an older daemon is absent, so no drawing is sent to it.
-    pub(crate) takes_drawing: HashSet<crate::net::dial::HostKey>,
     /// F5 fires this to collapse the transport's exponential-backoff
     /// sleep and attempt an immediate reconnect — useful when wifi
     /// flickers and the user knows it's back before the current
     /// backoff cycle would have noticed. Held on State (not App) so
     /// the keyboard handler reaches it via &mut state.
     pub(crate) reconnect_now: Arc<tokio::sync::Notify>,
-}
-
-impl HostTable {
-    pub(crate) fn set_takes_drawing(&mut self, host: &HostKey, takes: bool) {
-        if takes {
-            self.takes_drawing.insert(host.clone());
-        } else {
-            self.takes_drawing.remove(host);
-        }
-    }
-
-    /// Whether `host`'s daemon, as its last hello said, reads a drawing.
-    pub(crate) fn takes_drawing(&self, host: &HostKey) -> bool {
-        self.takes_drawing.contains(host)
-    }
 }
 
 /// Starts one transport task per host once the window exists (ADR 0042 L2a):
