@@ -20,6 +20,8 @@ const PACE: Duration = Duration::from_secs(5);
 const MAX_TRIES: u8 = 3;
 /// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot.
 const GAP_PACE: Duration = Duration::from_secs(60);
+/// The daemon's model keeps its newest 100 messages per channel (sot-chat's `watch::MAX_KEPT`).
+const KEPT: usize = 100;
 
 type Out = (HostKey, OutgoingReq);
 
@@ -56,6 +58,8 @@ struct Watch {
     last_try: Option<Instant>,
     tries: u8,
     records: HashMap<Ts, ChatRecord>,
+    /// The oldest timestamp the daemon still tracks: the snapshot's oldest when older history exists, raised by the trim.
+    floor: Option<Ts>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
     overlay: Vec<ChatChangedEvt>,
 }
@@ -68,16 +72,25 @@ fn ts_order(t: &Ts) -> (usize, &str, &str) {
 }
 
 impl Watch {
-    /// A put of a record not held and older than every held one is not added: it is an edit below the page (the daemon's
-    /// model refuses it the same way), and adding it would leave a hole.
+    fn oldest(&self) -> Option<Ts> {
+        self.records.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
+    }
+
+    /// A put of a record not held and older than the floor is not added: it is an edit below what the daemon tracks (its
+    /// model refuses it the same way), and adding it would leave a hole. Past `KEPT` records the oldest go, as the
+    /// daemon's do, and the floor rises.
     fn apply(&mut self, c: &ChatChangedEvt) {
         for r in &c.put {
-            let below = !self.records.contains_key(&r.ts) && self.records.keys().all(|k| ts_order(&r.ts) < ts_order(k));
-            if !(below && !self.records.is_empty()) {
+            let below = !self.records.contains_key(&r.ts) && self.floor.as_ref().is_some_and(|f| ts_order(&r.ts) < ts_order(f));
+            if !below {
                 self.records.insert(r.ts.clone(), r.clone());
             }
         }
         c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
+        while self.records.len() > KEPT {
+            self.oldest().iter().for_each(|k| drop(self.records.remove(k)));
+            self.floor = self.oldest();
+        }
     }
 }
 
@@ -100,7 +113,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new(), overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new(), floor: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -213,7 +226,7 @@ impl ChatOwner {
         match w.fill {
             Fill::Reading | Fill::Complete => return Vec::new(),
             Fill::Gap => {
-                if w.last_try.is_none_or(|t| now.duration_since(t) < GAP_PACE) {
+                if w.last_try.is_some_and(|t| now.duration_since(t) < GAP_PACE) {
                     return Vec::new();
                 }
                 w.last_try = Some(now);
@@ -242,6 +255,10 @@ impl ChatOwner {
     /// still pending is sent again by `tick`; a refused one is a gap.
     fn on_watched(&mut self, host: &HostKey, target: &ChatTarget, reply: ChatReply<ChatWatchRes>, now: Instant) -> Vec<Out> {
         self.mark_unsupported(host, &reply);
+        // A reply that is not `complete`, arriving during a read, outdates it: the daemon began a snapshot the read may not hold.
+        if !matches!(reply, ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete })) && self.of(host).is_some_and(|w| &w.target == target && w.fill == Fill::Reading) {
+            return self.resync(now);
+        }
         let Some(w) = self.of(host).filter(|w| &w.target == target && matches!(w.fill, Fill::Needed | Fill::Gap)) else { return Vec::new() };
         match reply {
             ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) => (w.registered, w.fill) = (true, Fill::Needed),
@@ -264,6 +281,7 @@ impl ChatOwner {
                 // `next` cursor is the older history, which the drawer pages.
                 // Only the channel's top-level messages: the daemon tracks no thread reply, so it would never send its edit or delete.
                 w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), r)).collect();
+                w.floor = if res.next.is_some() { w.oldest() } else { None };
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 (w.fill, w.tries) = (Fill::Complete, 0);
             }

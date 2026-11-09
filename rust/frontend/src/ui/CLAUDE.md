@@ -669,12 +669,17 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   The read asks for the wire's page (`MAX_PAGE`).
 - A snapshot replaces the held records, and its `next` cursor (older history, the drawer's to page) is not a gap
   (`a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap`). The snapshot keeps the channel's top-level messages, as the
-  daemon's model does (it sends no edit or delete for a thread reply sent to the channel), and a `put` of a record not held and
-  older than every held one is not added, the daemon's own rule for an edit below its page
-  (`the_owner_holds_only_what_the_daemon_tracks`). A read's reply is applied only while a read equal to it is in flight
+  daemon's model does (it sends no edit or delete for a thread reply sent to the channel). The owner holds at most the daemon
+  model's newest 100 records (`KEPT`), dropping the oldest as it does (`the_owner_keeps_at_most_the_daemons_newest_records`). A
+  `floor` (set by a snapshot that is not the whole channel, raised by the trim) bounds what is added: a `put` of a record not held
+  and older than it is not added, the daemon's own rule for an edit below its set (`the_owner_holds_only_what_the_daemon_tracks`,
+  `deletes_emptying_the_page_do_not_lower_the_floor`); a whole channel has no floor, so its first message is held
+  (`the_first_message_of_an_empty_channel_is_held`). A watch reply that is not `complete`, arriving during a read, outdates it
+  (`a_pending_watch_reply_during_a_read_outdates_it`); a gap with no last try asks at once (`a_gap_with_no_last_try_asks_at_once`). A read's reply is applied only while a read equal to it is in flight
   (`a_second_reply_to_one_read_is_not_applied`), and the reply of a read a loss outdated replaces nothing
   (`the_late_reply_of_a_stale_read_leaves_the_state_needed`); fe-net drops a queued watch or read when its connection ends, so
-  none is written on a later connection ahead of the owner's new watch. `watch` with the host and target already watched is
+  none is written on a later connection ahead of the owner's new watch, except one queued during the next connection's hello
+  (`net/CLAUDE.md`). `watch` with the host and target already watched is
   nothing, and with the same host and channel it sends the watch alone (the daemon's watch replaces the connection's earlier
   one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts and deletes records
   (`changed_events_put_and_delete_the_watched_channels_records`).
@@ -685,7 +690,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 - A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
   (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); `records` is unbounded; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
+Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
 
 ## Folders

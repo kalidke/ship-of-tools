@@ -57,7 +57,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot). Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:

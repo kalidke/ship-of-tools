@@ -414,6 +414,11 @@ fn snapshot(records: Vec<serde_json::Value>) -> ChatReply<ChatHistoryRes> {
     ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records, "next": null })).unwrap())
 }
 
+/// A snapshot that is not the whole channel: older history follows.
+fn snapshot_with_next(records: Vec<serde_json::Value>) -> ChatReply<ChatHistoryRes> {
+    ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records, "next": "older" })).unwrap())
+}
+
 fn changed(put: Vec<serde_json::Value>) -> ChatEvt {
     ChatEvt::Changed(serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "put": put, "deleted": [] })).unwrap())
 }
@@ -479,7 +484,7 @@ fn the_owner_holds_only_what_the_daemon_tracks() {
     let mut o = complete(t0);
     o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
     let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
-    let reply = snapshot(vec![
+    let reply = snapshot_with_next(vec![
         record_with("10.000001", "10.000001", "C1", "top"),
         record_with("11.000001", "9.000001", "C1", "a thread reply sent to the channel"),
         record_with("12.000001", "12.000001", "C2", "another channel"),
@@ -565,4 +570,74 @@ fn a_post_reply_from_another_host_answers_nothing() {
     let reply = ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") });
     o.on_evt(&"other".to_string(), ChatEvt::Posted { req: post_req("one"), reply }, now);
     assert!(o.posting.is_some() && o.shown.is_none());
+}
+
+fn held(o: &ChatOwner) -> usize {
+    o.watch.as_ref().unwrap().records.len()
+}
+
+/// The owner keeps the daemon model's newest 100 records, as the daemon does: past them the oldest go, and an edit of one
+/// of them is never sent, so it must not stay shown.
+#[test]
+fn the_owner_keeps_at_most_the_daemons_newest_records() {
+    let t0 = Instant::now();
+    let old: Vec<String> = (0..20).map(|i| format!("{}.000001", 10 + i)).collect();
+    let mut o = complete_with(t0, &old.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(held(&o), 20);
+    for i in 0..KEPT {
+        o.on_evt(&host(), changed(vec![record_with(&format!("{}.000001", 100 + i), &format!("{}.000001", 100 + i), "C1", "new")]), t0);
+    }
+    assert_eq!(held(&o), KEPT);
+    assert!(!o.watch.as_ref().unwrap().records.contains_key(&ts("10.000001")), "the oldest are gone");
+    assert!(o.watch.as_ref().unwrap().records.contains_key(&ts("199.000001")));
+}
+
+/// Deletes that empty the page leave the floor of the snapshot: an older record the daemon holds is not added alone.
+#[test]
+fn deletes_emptying_the_page_do_not_lower_the_floor() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    let reply = snapshot_with_next(vec![record_with("20.000001", "20.000001", "C1", "a"), record_with("30.000001", "30.000001", "C1", "b")]);
+    o.on_evt(&host(), ChatEvt::History { req, reply }, t0 + PACE);
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["20.000001", "30.000001"] });
+    o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), t0 + PACE);
+    assert_eq!(held(&o), 0);
+    o.on_evt(&host(), changed(vec![record_with("10.000001", "10.000001", "C1", "older")]), t0 + PACE);
+    assert_eq!(held(&o), 0, "below the floor");
+}
+
+/// A whole, empty channel has no floor: its first message is held.
+#[test]
+fn the_first_message_of_an_empty_channel_is_held() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), changed(vec![record_with("5.000001", "5.000001", "C1", "first")]), t0);
+    assert_eq!(held(&o), 1);
+}
+
+/// A watch reply that is not `complete`, arriving during a read, means the daemon began a snapshot the read may not hold:
+/// the read is outdated.
+#[test]
+fn a_pending_watch_reply_during_a_read_outdates_it() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    assert!(!o.watch.as_ref().unwrap().stale);
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + PACE);
+    assert!(o.watch.as_ref().unwrap().stale, "the read in flight is not the snapshot");
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&["5.000001"], None) }, t0 + PACE);
+    assert_ne!(fill(&o), Fill::Complete);
+}
+
+/// A gap with no attempt on record asks at once.
+#[test]
+fn a_gap_with_no_last_try_asks_at_once() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    let w = o.watch.as_mut().unwrap();
+    (w.fill, w.last_try) = (Fill::Gap, None);
+    assert!(is_watch(&o.tick(t0)));
 }
