@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code statusLine (Linux/macOS) - mirrors the Windows statusline.ps1.
+# Claude Code statusLine (Linux/macOS) - mirrors the Windows statusline.ps1 except the home quota item, which only this script has.
 j="$(cat)"; e=$'\033'
 col(){ printf '%s[%sm%s%s[0m' "$e" "$1" "$2" "$e"; }
 get(){ printf '%s' "$j" | jq -r "$1 // empty" 2>/dev/null; }
@@ -30,7 +30,16 @@ l1="$(col 34 "$model") $(col 90 "[$sess]")"
 l1="$l1 | $(col "$tc" "think:$think")"
 [ -n "$ver" ] && l1="$l1 | $(col 33 "v$ver")"
 l1="$l1 | $(col '38;5;208' "$repo")"
+# The lab server limits each user's use of /home and writes its figures to a file; warn from 90% of the limit, red from
+# 95%. Silent when the file, the uid's row or a number is missing or bad (one small read, never a failure).
+hm=""; hf="${SOT_HOME_USAGE_FILE:-/home/.home-usage.tsv}"
+if [ -r "$hf" ]; then
+  hp="$(awk -F'\t' -v u="$(id -u)" 'NR>1 && $1==u && NF==3 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $3+0>0 { printf "%d", $2*100/$3; exit }' "$hf" 2>/dev/null)"
+  case "$hp" in ""|*[!0-9]*) ;; *)
+    if [ "$hp" -ge 95 ]; then hm=" | $(col 31 "home $hp%")"; elif [ "$hp" -ge 90 ]; then hm=" | home $hp%"; fi ;;
+  esac
+fi
 # The count sits on its own line so a narrow window never cuts it off the end of line 1.
-printf '%s\n%s\n%s | %s\n' "$l1" "$(col "$uc" "$unc uncommitted")" \
+printf '%s\n%s%s\n%s | %s\n' "$l1" "$(col "$uc" "$unc uncommitted")" "$hm" \
   "$(col 36 "Session: $(fmt $(( ${inT:-0} + ${outT:-0} ))) (in:$(fmt ${inT:-0}) out:$(fmt ${outT:-0}))")" \
   "$(col "$cc" "$(printf '$%.2f' "$cost")")"
