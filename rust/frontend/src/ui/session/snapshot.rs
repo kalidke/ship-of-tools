@@ -76,7 +76,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// the edit on restore.
     edit_state: Option<EditState>,
     /// The row's drawing and drawing mode (the raster and the overlay are rebuilt on restore).
-    ink: crate::ui::preview::image::ink::ParkedInk,
+    ink: crate::ui::preview::image::ink::Drawing,
 }
 
 impl WorkspaceUiSnapshot {
@@ -152,7 +152,7 @@ impl State {
         // banners — and re-shape its preview from the buffer.
         self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
-        self.ink.restore(Some(snap.ink));
+        self.ink.restore(snap.ink);
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; if the leaving workspace had nothing rendered

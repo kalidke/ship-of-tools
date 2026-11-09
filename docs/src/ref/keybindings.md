@@ -170,7 +170,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.png.pan_up` | `ArrowUp` | Move across the zoomed image. |
 | `preview.png.pan_down` | `ArrowDown` | Move across the zoomed image. |
 | `preview.scalebar.toggle` | `Primary+s` | Toggle the physical scalebar, or enter the pixel size when scale is unknown. |
-| `preview.draw` | `d` | Turn drawing on or off over the displayed image (preview focused, an image shown). Each row keeps its own drawing and drawing mode while you are in another row. |
+| `preview.draw` | `d` | Turn drawing on or off over the shown image. Each row keeps its own drawing and drawing mode while you are in another row; closing the window loses every row's drawing. |
 | `preview.ink_undo` | `u` / `Primary+z` | While drawing is on over the shown image: remove the last stroke; right after a clear, bring the cleared strokes back. |
 | `preview.ink_clear` | `Delete` | While drawing is on over the shown image: clear the drawing. |
 | `view.return_nav` | `Escape` | Move focus back to the navigation tree. |

@@ -82,16 +82,17 @@ fn a_rows_drawing_comes_back_with_its_view() {
     let mut layer = InkLayer::default();
     drawn(&mut layer, &base, 100.0);
     parked.park(a.clone(), WorkspaceUiSnapshot { ink: layer.park(), ..parked_view(None) });
-    layer.restore(None);
+    layer.restore(Default::default());
     assert!(layer.strokes().is_empty() && !layer.is_on(), "a row entered with no parked view starts clean");
     drawn(&mut layer, &base, 50.0);
     drawn(&mut layer, &base, 300.0);
+    layer.set_on(false);
     parked.park(b.clone(), WorkspaceUiSnapshot { ink: layer.park(), ..parked_view(None) });
-    layer.restore(parked.view(&a).map(|v| v.ink.clone()));
+    layer.restore(parked.view(&a).map(|v| v.ink.clone()).unwrap_or_default());
     assert_eq!((layer.strokes().len(), layer.is_on(), layer.base()), (1, true, Some(&base)));
-    layer.restore(parked.view(&b).map(|v| v.ink.clone()));
-    assert_eq!((layer.strokes().len(), layer.is_on()), (2, true));
+    layer.restore(parked.view(&b).map(|v| v.ink.clone()).unwrap_or_default());
+    assert_eq!((layer.strokes().len(), layer.is_on()), (2, false));
     parked.forget(&a);
-    layer.restore(parked.view(&a).map(|v| v.ink.clone()));
+    layer.restore(parked.view(&a).map(|v| v.ink.clone()).unwrap_or_default());
     assert!(layer.strokes().is_empty() && !layer.is_on() && layer.base().is_none(), "a destroyed row's drawing is gone");
 }

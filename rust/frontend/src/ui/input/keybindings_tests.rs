@@ -54,12 +54,14 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
 }
 
 #[test]
-fn preview_copy_selection_reference_matches_catalog() {
-    let spec = ACTIONS.iter().find(|s| s.name == "preview.copy_selection").expect("preview copy action");
+fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    let row = manual.lines().find(|line| line.starts_with("| `preview.copy_selection` |")).expect("manual row");
-    let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
-    assert_eq!(row, format!("| `{}` | {shortcuts} | {} |", spec.name, spec.detail));
+    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear"] {
+        let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
+        let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
+        let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
+        assert_eq!(row, format!("| `{}` | {shortcuts} | {} |", spec.name, spec.detail));
+    }
 }
 
 #[test]
