@@ -470,56 +470,104 @@ fn covered(before: &[u8], after: &[u8], w: u32, dirty: Option<(u32, u32, u32, u3
 
 #[test]
 fn the_overlay_is_the_drawings_raster_after_every_edit() {
-    let b = fig("a.png");
-    let src = (4000, 2000);
-    let dims = raster_dims(src.0, src.1);
-    assert_eq!(dims, (2000, 1000));
+    let mut cur = fig("a.png");
+    let mut src = (4000, 2000);
     let mut l = on();
     let mut seed = 7u32;
     let mut next = move |n: u32| {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         (seed >> 8) % n
     };
-    l.press(Some(&b), (300.0, 100.0), &R, &R, src);
+    l.press(Some(&cur), (300.0, 100.0), &R, &R, src);
     l.release();
-    let mut before = vec![0u8; 0];
-    for step in 0..60 {
+    let (mut hits, mut live_drops, mut base_changes, mut size_changes) = (0, 0, 0, 0);
+    for step in 0..120 {
         let (x, y) = (100.0 + next(400) as f32, 50.0 + next(200) as f32);
-        let was = l.mask.clone();
+        let (was, was_dims, was_strokes) = (l.mask.clone(), l.dims, l.strokes().len());
         l.dirty = None;
-        match next(6) {
-            0 | 1 | 2 => {
-                l.press(Some(&b), (x, y), &R, &R, src);
-                for _ in 0..next(5) {
-                    l.drag((100.0 + next(400) as f32, 50.0 + next(200) as f32), &R);
-                }
+        let stroke = |l: &mut InkLayer, cur: &InkBase, src, next: &mut dyn FnMut(u32) -> u32| {
+            l.press(Some(cur), (x, y), &R, &R, src);
+            for _ in 0..next(5) {
+                l.drag((100.0 + next(400) as f32, 50.0 + next(200) as f32), &R);
+            }
+        };
+        match next(9) {
+            0..=2 => {
+                stroke(&mut l, &cur, src, &mut next);
                 // a live stroke is in the mask already: the wire's mask of the strokes and the live one
                 let live = l.live().map(|s| s.to_vec()).into_iter();
                 let all: Vec<_> = l.strokes().iter().cloned().chain(live).collect();
-                assert_eq!(l.mask, sot_protocol::ink::mask(&all, dims), "live, step {step}");
+                assert_eq!(l.mask, sot_protocol::ink::mask(&all, raster_dims(src.0, src.1)), "live, step {step}");
                 l.release();
             }
-            3 => l.undo(Some(&b)),
-            4 => {
+            3 | 4 => l.undo(Some(&cur)),
+            5 => {
                 if next(2) == 0 {
-                    l.clear(Some(&b));
-                } else {
-                    l.erase(Some(&b), (x, y), &R, &R);
+                    l.clear(Some(&cur));
+                } else if let Some(p) = l.strokes().first().and_then(|s| s.first().copied()) {
+                    // right on a committed stroke's own point
+                    l.erase(Some(&cur), (R.x + p[0] as f32 / 65535.0 * R.w, R.y + p[1] as f32 / 65535.0 * R.h), &R, &R);
                     l.erase_end();
+                    hits += (l.strokes().len() < was_strokes) as u32;
                 }
             }
-            _ => l.undo(Some(&b)),
+            6 => {
+                stroke(&mut l, &cur, src, &mut next);
+                assert!(l.live().is_some());
+                match next(3) {
+                    0 => l.base_hidden(),
+                    1 => l.undo(Some(&cur)),
+                    _ => l.clear(Some(&cur)),
+                }
+                live_drops += 1;
+            }
+            7 => {
+                // another base at the same raster size
+                cur = fig(if next(2) == 0 { "b.png" } else { "a.png" });
+                l.press(Some(&cur), (x, y), &R, &R, src);
+                l.release();
+                base_changes += 1;
+            }
+            _ => {
+                // the same base at another size
+                src = if src == (4000, 2000) { (3000, 1800) } else { (4000, 2000) };
+                l.press(Some(&cur), (x, y), &R, &R, src);
+                l.release();
+                size_changes += 1;
+            }
         }
+        let dims = raster_dims(src.0, src.1);
         assert_eq!(l.dims, dims);
         assert_eq!(l.mask, sot_protocol::ink::mask(l.strokes(), dims), "step {step}");
-        if !before.is_empty() {
+        if was_dims == dims && !was.is_empty() {
             assert!(covered(&was, &l.mask, dims.0, l.dirty()), "dirty rectangle, step {step}");
         }
-        before = was;
+        if let Some((dx, dy, dw, dh)) = l.dirty() {
+            // the bytes the texture gets: the mask's rectangle in the ink color
+            let want: Vec<u8> = (dy..dy + dh)
+                .flat_map(|r| (dx..dx + dw).map(move |c| (r * dims.0 + c) as usize))
+                .flat_map(|i| [INK_RGB[0], INK_RGB[1], INK_RGB[2], l.mask[i]])
+                .collect();
+            assert_eq!(l.rgba((dx, dy, dw, dh)), want, "uploaded bytes, step {step}");
+            if was_dims != dims {
+                assert_eq!((dx, dy, dw, dh), (0, 0, dims.0, dims.1), "a new size is all dirty, step {step}");
+            }
+        }
     }
-    // a new base paints the whole raster again, at its own size
-    l.press(Some(&fig("b.png")), (200.0, 100.0), &R, &R, (1000, 500));
-    l.release();
-    assert_eq!((l.dims, l.dirty()), ((1000, 500), Some((0, 0, 1000, 500))));
-    assert_eq!(l.mask, sot_protocol::ink::mask(l.strokes(), (1000, 500)));
+    assert!(hits > 0 && live_drops > 0 && base_changes > 0 && size_changes > 0, "{hits} {live_drops} {base_changes} {size_changes}");
+}
+
+#[test]
+fn the_overlay_shows_only_over_the_raster_its_base_came_from() {
+    let mut l = on();
+    l.press(Some(&fig("a.png")), (200.0, 100.0), &R, &R, DIMS);
+    let shown = |node, editing, refused| l.is_shown_base(node, editing, refused);
+    assert!(shown(Some("files:a.png"), false, false));
+    // a slow reply, a failed reply or a failed decode leave the old raster shown, whose node is not the base's
+    // (the other figure's), and a hidden raster has none
+    assert!(!shown(Some("files:b.png"), false, false));
+    assert!(!shown(None, false, false));
+    assert!(!shown(Some("files:a.png"), true, false));
+    assert!(!shown(Some("files:a.png"), false, true));
+    assert!(!InkLayer::default().is_shown_base(Some("files:a.png"), false, false));
 }

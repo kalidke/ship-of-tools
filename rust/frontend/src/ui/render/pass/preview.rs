@@ -89,17 +89,22 @@ impl State {
                 )?;
             }
             // The drawing's overlay, over the raster at the same rectangle and under the same scissor, while its base is
-            // the one shown.
-            if self.ink.is_base(self.preview_requests.fired_target()) {
-                self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline())?;
-                if let Some(quad) = self.ink.overlay() {
-                    quad.render(
-                        self.gpu.queue(),
-                        self.brushes.pipeline(),
-                        &mut rpass,
-                        canvas_rect,
-                        (self.gpu.config().width, self.gpu.config().height),
-                    )?;
+            // the raster shown. A failed upload skips the overlay for this frame.
+            let (editing, refused) = (self.editor.is_editing(), self.hello_refused.refused(self.selected.host()));
+            if self.ink.is_shown_base(self.raster.node(), editing, refused) {
+                match self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline()) {
+                    Ok(()) => {
+                        if let Some(quad) = self.ink.overlay() {
+                            quad.render(
+                                self.gpu.queue(),
+                                self.brushes.pipeline(),
+                                &mut rpass,
+                                canvas_rect,
+                                (self.gpu.config().width, self.gpu.config().height),
+                            )?;
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "the drawing's overlay was not uploaded; skipped this frame"),
                 }
             }
             // Reset scissor so subsequent draws (SVG, media paint,

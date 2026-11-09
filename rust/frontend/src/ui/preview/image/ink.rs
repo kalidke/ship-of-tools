@@ -111,22 +111,27 @@ impl InkLayer {
     }
 
     /// The changed rectangle `(x, y, w, h)` since the last upload.
-    pub(in crate::ui) fn dirty(&self) -> Option<(u32, u32, u32, u32)> {
+    fn dirty(&self) -> Option<(u32, u32, u32, u32)> {
         self.dirty.map(|[x0, y0, x1, y1]| (x0, y0, x1 - x0, y1 - y0))
     }
 
     /// The mask's `w` by `h` rectangle at `(x, y)` as straight-alpha RGBA in the ink color.
     fn rgba(&self, (x, y, w, h): (u32, u32, u32, u32)) -> Vec<u8> {
-        let rows = (y..y + h).flat_map(|row| {
+        let mut out = vec![0; (w * h * 4) as usize];
+        for (row, dst) in (y..y + h).zip(out.chunks_exact_mut(w as usize * 4)) {
             let start = (row * self.dims.0 + x) as usize;
-            self.mask[start..start + w as usize].iter()
-        });
-        rows.flat_map(|&a| [INK_RGB[0], INK_RGB[1], INK_RGB[2], a]).collect()
+            for (px, &a) in dst.chunks_exact_mut(4).zip(&self.mask[start..start + w as usize]) {
+                px.copy_from_slice(&[INK_RGB[0], INK_RGB[1], INK_RGB[2], a]);
+            }
+        }
+        out
     }
 
-    /// Whether `node_id`, the node the preview shows, is the drawing's base.
-    pub(in crate::ui) fn is_base(&self, node_id: Option<&str>) -> bool {
-        matches!((&self.base, node_id), (Some(InkBase::Figure { node_id: b }), Some(n)) if b == n)
+    /// Whether the drawing's overlay shows: its base is the node the shown raster came from (`raster_node`), edit mode
+    /// is off and the refused-hello overlay is off. The canvas base is D5's, hidden until then.
+    pub(in crate::ui) fn is_shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> bool {
+        let figure = matches!((&self.base, raster_node), (Some(InkBase::Figure { node_id: b }), Some(n)) if b == n);
+        figure && !editing && !refused
     }
 
     pub(in crate::ui) fn overlay(&self) -> Option<&Quad> {
