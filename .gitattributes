@@ -33,3 +33,7 @@ scripts/tests/*publish-guard*.sh text eol=lf
 scripts/tests/test-pre-push.sh text eol=lf
 scripts/release.sh text eol=lf
 scripts/pack-build.sh text eol=lf
+
+# The markdown selection tests read their fixture with include_str! and build the
+# CRLF form themselves, so a CRLF checkout would hand them `\r\r\n`.
+rust/frontend/src/ui/preview/markdown/testdata/*.md text eol=lf
