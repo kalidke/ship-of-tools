@@ -125,6 +125,11 @@ owned by `docs/CLAUDE.md`.
   deadline and an undeliverable kill (`rust/containment/src/guard.rs`); Windows console-group isolation of `interrupt`;
   macOS signal delivery to a real daemon; real folder removal off Linux. The Windows `Watched` is duplicated
   (`contain_tests.rs`).
+- **GATE-LEFTOVER-PER-JOB** [note] The gate's leftover census runs once, after every job, so a test that leaves a
+  process fails a whole gate only when its job ends within the process's life of the census: the escaped holder ran
+  green for nineteen days (GATE-LEFTOVER-ESCAPED-HOLDER). Running each test binary under a child subreaper that lists
+  what it leaves would fail that job every time. Also unchecked: the REPL respawn test's grandchild `sleep 30` stays in
+  its launcher's group and is ended with it, but no assertion says it is. Found by that fix's diagnosis and review.
 
 ## lifecycle
 

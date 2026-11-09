@@ -1463,3 +1463,11 @@ A landing's record goes here, with its measured times; the package page holds on
   command. The causes: a review brief that asked for an open-ended audit and mutant builds with no time bound, and the
   account move. A review brief names a bound for its audit and mutants, as the probes-first note says. The review's
   record findings went into the records after; its test findings into SELECT-MARKDOWN-PINS.
+- The containment test ends the pipe holder it starts, 2026-11-09: diagnosis launched 13:15, main 13:41 (e8e9a7764), 26
+  minutes. The whole local gate on main failed with every suite passing and one `sleep 30` left behind; a containment
+  test's escaped pipe holder was never ended and was caught only when that short job ran within 30 seconds of the
+  gate's end. The holder now holds the pipe only while the test's keep file exists, and the test sees it gone. About 20
+  test lines. Where the minutes went: the diagnosis (17 minutes, the leftover's process id placed among the jobs'); the
+  build (2 minutes, the leftover shown at the base and gone after); one whole gate of 3 minutes, unscoped and clean;
+  one review round of 6 minutes, bounded (blockers 0). The class, a census that runs once at the end, is
+  GATE-LEFTOVER-PER-JOB.
