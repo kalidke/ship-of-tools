@@ -1437,3 +1437,15 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes, the red at the base shown); one gate of 4 minutes, scoped; one review round of 13 minutes (blockers 0; its
   eight mutants of the rule were all killed); its wording findings went into the records after, and its two test
   findings into INK-REACH-ONE-SIZE.
+- One definition of a whole-line range (SELECT-MARKDOWN, landing 1 of 2), 2026-11-09: builder launched 11:12, main 11:43
+  (2a564496f), 32 minutes: past the half hour, a failure by this page's standard. `sot_protocol::ops::whole_lines`
+  builds the range and text of whole file lines as a selection names a file's text, and a backend test proves the
+  daemon's unchanged check accepts exactly that over every line pair of a fixture in LF, CRLF and without its final
+  newline; no product code calls it yet. About 30 product lines and 90 test lines. Where the minutes went: the build (4
+  minutes); two review rounds (blockers 0, 0; 12 and 10 minutes) with one fix round of 3 minutes between; two gates of 2
+  minutes, scoped. The cause of the overrun: the plan wrote this landing's records as if the next landing's caller
+  existed, and its backend test asserted only that one pair was accepted, so a version answering nothing for most pairs
+  passed; the first review found both, and the second round was the cost. A plan's landing states its records true at
+  that landing alone, and a test over many cases asserts the exact count. The second round's one finding, a test of a
+  line ending in a carriage return at the end of the text, goes into landing 2. The amended commit's push over its own
+  branch was refused by the session's command check as destructive and not retried; it went up under a new branch name.
