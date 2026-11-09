@@ -1402,3 +1402,14 @@ A landing's record goes here, with its measured times; the package page holds on
   key handler could read stale before the next frame, to the send on the connection itself. About 13 product lines and
   80 test lines across the wire, the daemon's hello and fe-net. Where the minutes went: the build (4 minutes); one review
   round (blockers 0; 16 minutes) and one fix round of 4 minutes; two gates of 2 minutes.
+- D6b, the window shares its drawing, 2026-11-09: builder launched 03:15, main 03:45 (f93141cfe, one commit squashed
+  from two), 30 minutes. The selection share's desired state gains the selected row's drawing while its base is shown
+  and it has a committed stroke, identified by the drawing's revision and read from the drawing's owner; it is sent as
+  the request's drawing, a drawing beats a text selection, and a clear never carries an empty drawing. The share holds
+  while a stroke or an erase drag is live, so one drag sends once, at its end; the rest of the share's orderings hold
+  for the drawing as for text. Each reply kind has its status line, a daemon that cannot take a drawing included. The
+  manual's drawing section is written, the requirement's status says it is built for Claude rows and proved by unit
+  tests, and SCRATCH-PAD is closed. About 54 product lines added and 11 removed, and 170 test lines. Where the minutes
+  went: the build (4 minutes); one review round (blockers 0; 17 minutes) and one fix round of 4 minutes; two gates of 2
+  minutes. With it, the drawing plan's pieces through D6 are on main, in nine landings since D3; D7 (Codex) waits on
+  its premise.
