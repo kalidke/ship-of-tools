@@ -58,6 +58,7 @@ impl State {
                 strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad, logo_quad, wordmark_quad,
             ),
             raster: RasterView::new(preview_png),
+            ink: Default::default(),
             shaped: ShapedPreview::new(preview_md, highlight_service, md_rect_px),
             monitor: crate::ui::drawer::monitor::MonitorPane::new(monitor_hub),
             repl_presentation: ReplPresentation::default(),

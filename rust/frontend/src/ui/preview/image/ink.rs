@@ -1,11 +1,12 @@
 //! The row's drawing in the window: its base and committed strokes, the live stroke, drawing mode and the `revision`
 //! every committed change raises. It maps a screen point through the canvas and image rectangles each call hands it, so
-//! zoom, pan and a resize need no state here. It never takes `State`. The mask and the GPU overlay are D4b's.
-// D4c is the first reader.
+//! zoom, pan and a resize need no state here. It keeps the drawing's raster (the wire's own functions paint it) and the
+//! overlay texture made from it. It never takes `State`.
+// D4c is the first reader of the edits.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::ui::render::quad::ScreenRect;
-use sot_protocol::ink::{ink_radius, segments, to_raster};
+use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
+use sot_protocol::ink::{ink_radius, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
 
 type Stroke = Vec<[u16; 2]>;
@@ -28,6 +29,14 @@ pub(in crate::ui) struct InkLayer {
     erasing: Option<(bool, Option<[u16; 2]>)>,
     on: bool,
     revision: u64,
+    /// The raster's size (`raster_dims` of the base's source size, taken at a press), its coverage bytes, and the
+    /// rectangle `[x0, y0, x1, y1)` changed since the last upload.
+    dims: (u32, u32),
+    mask: Vec<u8>,
+    dirty: Option<[u32; 4]>,
+    overlay: Option<Quad>,
+    /// The last upload failed and was logged: a repeat is not logged again.
+    upload_failed: bool,
 }
 
 fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
@@ -86,6 +95,77 @@ impl InkLayer {
         self.on = on;
     }
 
+    /// The raster is painted again from the committed strokes, and all of it is dirty.
+    fn repaint(&mut self) {
+        self.mask = mask(&self.strokes, self.dims);
+        self.dirty = Some([0, 0, self.dims.0, self.dims.1]);
+    }
+
+    /// One segment (raster positions) is painted over the mask, and its box joins the dirty rectangle.
+    fn paint(&mut self, a: (f32, f32), b: (f32, f32)) {
+        let r = ink_radius(self.dims);
+        paint_segment(&mut self.mask, self.dims, a, b, r);
+        let lo = |v: f32, max: u32| ((v - r - 2.0).floor().max(0.0) as u32).min(max);
+        let hi = |v: f32, max: u32| ((v + r + 2.0).ceil().max(0.0) as u32).min(max);
+        let (x0, y0) = (lo(a.0.min(b.0), self.dims.0), lo(a.1.min(b.1), self.dims.1));
+        let (x1, y1) = (hi(a.0.max(b.0), self.dims.0), hi(a.1.max(b.1), self.dims.1));
+        self.dirty = Some(self.dirty.map_or([x0, y0, x1, y1], |d| [d[0].min(x0), d[1].min(y0), d[2].max(x1), d[3].max(y1)]));
+    }
+
+    /// The changed rectangle `(x, y, w, h)` since the last upload.
+    fn dirty(&self) -> Option<(u32, u32, u32, u32)> {
+        self.dirty.map(|[x0, y0, x1, y1]| (x0, y0, x1 - x0, y1 - y0))
+    }
+
+    /// The mask's `w` by `h` rectangle at `(x, y)` as straight-alpha RGBA in the ink color.
+    fn rgba(&self, (x, y, w, h): (u32, u32, u32, u32)) -> Vec<u8> {
+        let mut out = vec![0; (w * h * 4) as usize];
+        for (row, dst) in (y..y + h).zip(out.chunks_exact_mut(w as usize * 4)) {
+            let start = (row * self.dims.0 + x) as usize;
+            for (px, &a) in dst.chunks_exact_mut(4).zip(&self.mask[start..start + w as usize]) {
+                px.copy_from_slice(&[INK_RGB[0], INK_RGB[1], INK_RGB[2], a]);
+            }
+        }
+        out
+    }
+
+    /// The base on show: the figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF
+    /// page or a plugin preview is no base), edit mode is on or the refused-hello overlay is on. The canvas base is D5's.
+    pub(in crate::ui) fn shown_base(raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+        let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
+        Some(InkBase::Figure { node_id: node_id.to_string() })
+    }
+
+    pub(in crate::ui) fn overlay(&self) -> Option<&Quad> {
+        self.overlay.as_ref()
+    }
+
+    /// The dirty rectangle (all of it for a new raster size) goes to the overlay texture. A failure keeps the rectangle,
+    /// so it repeats every frame: it is logged once until an upload succeeds.
+    pub(in crate::ui) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &QuadPipeline) -> anyhow::Result<()> {
+        let sent = self.send(device, queue, pipeline);
+        if let Err(e) = &sent {
+            if !self.upload_failed {
+                tracing::warn!(error = %e, "the drawing's overlay was not uploaded; skipped until it is");
+            }
+        }
+        self.upload_failed = sent.is_err();
+        sent
+    }
+
+    fn send(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &QuadPipeline) -> anyhow::Result<()> {
+        let Some((x, y, w, h)) = self.dirty() else { return Ok(()) };
+        match self.overlay.as_ref().filter(|q| q.size_px == self.dims) {
+            Some(q) => q.write_region(queue, &self.rgba((x, y, w, h)), x, y, w, h)?,
+            None => {
+                let rgba = self.rgba((0, 0, self.dims.0, self.dims.1));
+                self.overlay = Some(Quad::from_rgba8(device, queue, pipeline, &rgba, self.dims.0, self.dims.1)?);
+            }
+        }
+        self.dirty = None;
+        Ok(())
+    }
+
     fn points(&self) -> usize {
         self.strokes.iter().chain(self.live.iter()).map(Vec::len).sum()
     }
@@ -97,9 +177,10 @@ impl InkLayer {
     }
 
     /// A left press: ends a stroke whose release was lost, then begins one. Another base replaces the row's drawing, and
-    /// the text for the status line comes back.
+    /// the text for the status line comes back. `src` is the base's source size: the raster takes its dims from it, and
+    /// is painted again when the base or those dims change.
     pub(in crate::ui) fn press(
-        &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect,
+        &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect, src: (u32, u32),
     ) -> Option<String> {
         if !self.reaches(shown, p, canvas, image) {
             return None;
@@ -116,17 +197,25 @@ impl InkLayer {
             self.history.clear();
             self.cleared.clear();
             self.base = Some(shown.clone());
+            self.dims = (0, 0);
+        }
+        if self.dims != raster_dims(src.0, src.1) {
+            self.dims = raster_dims(src.0, src.1);
+            self.repaint();
         }
         if self.points() >= MAX_INK_POINTS {
             return Some("the drawing is full: undo or clear".to_string());
         }
         self.live = Some(vec![q]);
+        let a = to_raster(q, self.dims);
+        self.paint(a, a);
         note
     }
 
     /// Motion with a left stroke live: a point is kept one raster pixel from the last, and dropped past the bound (the
     /// status text comes back).
-    pub(in crate::ui) fn drag(&mut self, p: (f32, f32), canvas: &ScreenRect, dims: (u32, u32)) -> Option<&'static str> {
+    pub(in crate::ui) fn drag(&mut self, p: (f32, f32), canvas: &ScreenRect) -> Option<&'static str> {
+        let dims = self.dims;
         let (Some(q), Some(last)) = (map(p, canvas), self.live.as_ref().and_then(|s| s.last().copied())) else {
             return None;
         };
@@ -138,6 +227,7 @@ impl InkLayer {
             return Some("the drawing is full: undo or clear");
         }
         self.live.as_mut()?.push(q);
+        self.paint(a, b);
         None
     }
 
@@ -154,7 +244,9 @@ impl InkLayer {
 
     /// The base stops being shown: a live stroke is dropped, not committed.
     pub(in crate::ui) fn base_hidden(&mut self) {
-        self.live = None;
+        if self.live.take().is_some() {
+            self.repaint();
+        }
         self.erasing = None;
     }
 
@@ -166,6 +258,7 @@ impl InkLayer {
         }
         self.erasing = None;
         if self.live.take().is_some() {
+            self.repaint();
             return;
         }
         match self.history.pop() {
@@ -177,17 +270,26 @@ impl InkLayer {
             }
             None => return,
         }
+        self.repaint();
         self.revision += 1;
     }
 
     /// Clear acts only while `shown` is the drawing's base. It drops a live stroke and nothing else; otherwise the
     /// strokes move to the `cleared` copy.
     pub(in crate::ui) fn clear(&mut self, shown: Option<&InkBase>) {
-        if shown != self.base.as_ref() || self.live.take().is_some() || self.strokes.is_empty() {
+        if shown != self.base.as_ref() {
+            return;
+        }
+        if self.live.take().is_some() {
+            self.repaint();
+            return;
+        }
+        if self.strokes.is_empty() {
             return;
         }
         self.cleared = std::mem::take(&mut self.strokes);
         self.history.clear();
+        self.repaint();
         self.revision += 1;
     }
 
@@ -195,8 +297,9 @@ impl InkLayer {
     /// comes within the painted ink's reach of (`ink_radius` and one raster pixel). Ignored while a left stroke is live,
     /// and for a point outside the image. The strokes one drag removes are one undo step, recorded at its first hit.
     pub(in crate::ui) fn erase(
-        &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect, dims: (u32, u32),
+        &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect,
     ) {
+        let dims = self.dims;
         let ok = self.live.is_none() && shown == self.base.as_ref() && self.reaches(shown, p, canvas, image);
         let Some(q) = map(p, canvas).filter(|_| ok) else {
             self.erasing = self.erasing.map(|(recorded, _)| (recorded, None));
@@ -220,6 +323,7 @@ impl InkLayer {
                 Some(Edit::Erased(g)) if recorded => g.extend(gone),
                 _ => self.history.push(Edit::Erased(gone)),
             }
+            self.repaint();
             self.revision += 1;
         }
         self.erasing = Some((recorded || hit, Some(q)));

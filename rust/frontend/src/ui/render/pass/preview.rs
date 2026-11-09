@@ -88,6 +88,23 @@ impl State {
                     (self.gpu.config().width, self.gpu.config().height),
                 )?;
             }
+            // The drawing's overlay, over the raster at the same rectangle and under the same scissor, while its base is
+            // the raster shown. A failed upload skips the overlay until it succeeds.
+            let (editing, refused) = (self.editor.is_editing(), self.hello_refused.refused(self.selected.host()));
+            let shown = crate::ui::preview::image::ink::InkLayer::shown_base(self.raster.node(), editing, refused);
+            if shown.is_some() && shown.as_ref() == self.ink.base() {
+                if self.ink.upload(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline()).is_ok() {
+                    if let Some(quad) = self.ink.overlay() {
+                        quad.render(
+                            self.gpu.queue(),
+                            self.brushes.pipeline(),
+                            &mut rpass,
+                            canvas_rect,
+                            (self.gpu.config().width, self.gpu.config().height),
+                        )?;
+                    }
+                }
+            }
             // Reset scissor so subsequent draws (SVG, media paint,
             // chrome text) aren't clipped to the preview pane.
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);

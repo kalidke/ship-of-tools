@@ -162,6 +162,7 @@ pub struct ScreenRect {
 
 /// One uploaded RGBA8 texture, ready to draw into any rect.
 pub struct Quad {
+    texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     /// Vertex buffer holding the current rect's 6 verts. We rewrite it each
     /// frame (cheap, 96 bytes) so callers can move the rect freely.
@@ -282,10 +283,30 @@ impl Quad {
         });
 
         Ok(Self {
+            texture,
             bind_group,
             vbuf,
             size_px: (width, height),
         })
+    }
+
+    /// Overwrite the `w` by `h` rectangle at `(x, y)` of the texture with `rgba` (`w * h * 4` bytes, rows packed).
+    pub fn write_region(&self, queue: &wgpu::Queue, rgba: &[u8], x: u32, y: u32, w: u32, h: u32) -> Result<()> {
+        if !region_fits(self.size_px, rgba.len(), x, y, w, h) {
+            anyhow::bail!("region {w}x{h} at ({x}, {y}) does not fit a {:?} texture and {} bytes", self.size_px, rgba.len());
+        }
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        Ok(())
     }
 
     pub fn render(
@@ -475,6 +496,14 @@ where
 {
 }
 
+/// Whether the `w` by `h` rectangle at `(x, y)` fits a texture of `size` and `len` bytes cover it: it is not empty and
+/// does not leave the texture.
+fn region_fits(size: (u32, u32), len: usize, x: u32, y: u32, w: u32, h: u32) -> bool {
+    let inside = |o: u32, e: u32, s: u32| e > 0 && o.checked_add(e).is_some_and(|end| end <= s);
+    let bytes = (w as usize).checked_mul(h as usize).and_then(|n| n.checked_mul(4));
+    inside(x, w, size.0) && inside(y, h, size.1) && bytes.is_some_and(|b| len >= b)
+}
+
 /// Why a texture of this size cannot be made, or `None` when it can: a zero side or one past the GPU's
 /// `max_texture_dimension_2d` is a validation error that panics the window if it reaches wgpu.
 fn texture_extent_error(width: u32, height: u32, max: u32) -> Option<String> {
@@ -486,6 +515,10 @@ fn texture_extent_error(width: u32, height: u32, max: u32) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "quad_tests.rs"]
+mod quad_tests;
 
 #[cfg(test)]
 mod tests {

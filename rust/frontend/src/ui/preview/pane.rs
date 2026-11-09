@@ -276,7 +276,7 @@ impl State {
                 Ok((q, src_w, src_h)) => {
                     // Pre-downsample size for the ADR-0034 scalebar (see field
                     // docs). Same as the texture's unless the GPU-fit shrank it.
-                    self.raster.install(q, (src_w, src_h));
+                    self.raster.install(q, (src_w, src_h), self.preview_source.node_id());
                     if self.pages.take_keep_view() {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
