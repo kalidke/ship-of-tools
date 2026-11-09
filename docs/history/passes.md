@@ -1413,3 +1413,12 @@ A landing's record goes here, with its measured times; the package page holds on
   went: the build (4 minutes); one review round (blockers 0; 17 minutes) and one fix round of 4 minutes; two gates of 2
   minutes. With it, the drawing plan's pieces through D6 are on main, in nine landings since D3; D7 (Codex) waits on
   its premise.
+- A7b, the manual says how a selection or a drawing reaches the agent, 2026-11-09: builder launched 03:49, main 04:12
+  (records only, one commit squashed from four), 23 minutes. One section of the previews guide, "Sharing with the
+  agent", says what a session's agent is shown, what it is told and when, what withdraws a share, and each status line
+  with its causes; the two requirements' statuses say what is built. Two notes found writing it:
+  SELECTION-CODEX-HELD and SELECTION-WITHDRAWN-ON-REFRESH. Where the minutes went: the first draft (1 minute); two
+  review rounds (blockers 1, 0; 5 and 7 minutes: the first found a false claim about child sessions and eight wider
+  than the code) and two rewrites of 1 minute each, then two sentences the session corrected against the plan's
+  drawing rule; one gate of 2 minutes. The first reviewer checked out the branch in the shared checkout for a moment,
+  which its brief had not forbidden; the briefs since say it.

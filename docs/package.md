@@ -184,8 +184,8 @@ events have landed, and so have the window's network side of the family (fe-net'
 events) and the window's first chat owner (one watched channel kept matched to the daemon, each loss recovered by a watch
 and one read), which closes B2; B5, the drawer, is next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (sent when it changes,
-cleared when it goes, sent again after a reconnect, each reply on the status line); the manual's section, the done test
-through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
+cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
+or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the
 maintainer's word after the first stage is measured; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

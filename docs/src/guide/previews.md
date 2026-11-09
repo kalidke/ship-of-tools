@@ -197,13 +197,60 @@ With the preview focused, `d` turns drawing on over a raster image. Holding the 
 right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`, `Cmd+z` on macOS) undoes the last step, and `Delete` clears all the
 ink (`u` brings it back). The ink stays where you drew it as you zoom and pan. `Shift+d` shows a blank canvas to draw
 on, and shows the preview again; the canvas is always in drawing mode. Each session keeps one drawing, and a stroke on
-another image or the canvas replaces it, with a note on the status line.
+another image or the canvas replaces it, with a note on the status line, and a closed window loses its drawings. What the agent is told is under "Sharing with
+the agent".
 
-The session's agent sees what you draw: when you release a stroke, the window tells the daemon, which writes one
-picture of the image with the ink on it inside the project and names it to the agent at its next prompt. Erasing all the
-ink, showing another file, or switching session withdraws it; showing the image or the canvas again shares it again.
-The status line says when the drawing was shared, held (the agent started before it could take one; restart the session),
-or not shared. Claude Code sessions take a drawing; Codex sessions take none yet. A closed window loses its drawings.
+## Sharing with the agent
+
+The session's agent can be shown one thing at a time: text you selected or a drawing. The newest replaces the other, and
+a selection or drawing set from two windows is the newest one; clearing it in either window removes it for both. Claude
+Code sessions take either; a Codex session takes neither yet (its status line says `held` for a selection, `not shared` for a drawing).
+
+**Text.** Select text in a preview of a project file with the mouse and release the button: the window tells the daemon,
+which reads the file itself and keeps the text you selected. At the agent's next prompt Claude Code shows a one-line
+label, `UserPromptSubmit says: Selection: <file> lines a-b`, and the agent is given that text from the file, labeled
+with the file and its line numbers as your selection. A longer selection is cut after 2000 characters and the agent is
+told how long it was. Nothing is sent while you drag, and every later prompt carries the selection until it is
+withdrawn. A change to the file refreshes its preview, which withdraws the selection; select again to share the new
+text.
+
+Only the preview's text of a file in the project is shared. The agent pane, an image, the concept pane and a rendered
+table are not. A selection is refused if the preview does not show the file's own text: a preview older than the file,
+and files with unusual line breaks. Rendered markdown is almost never shared, because its text and line numbers are not
+the file's, and its preview has no source view yet.
+
+**Drawing.** When you release a stroke, the window tells the daemon, which writes one picture of the image with the ink
+on it to `.sot/captures/ink-<row id>.png` in the project and names it to the agent at its next prompt. An image over 40
+megapixels is refused.
+
+**Withdrawing.** A selection is withdrawn when you click or press `Esc` in the preview; a drawing when you erase all its
+ink (turning drawing off with `d` does not). A selection is also withdrawn when the file changes or the text size
+changes (a drawing stays on its figure). Either is withdrawn when you show another file or the canvas, open the editor,
+switch to another session (the session you left is cleared), or close the window. Showing the image or the canvas again shares the drawing again, and hiding the canvas shares the selection
+again. A connection that ends (a lost link, a closed window) withdraws its share in the daemon, and a window that
+reconnects shares its current one again. A selection or drawing that the row's agent side refuses also withdraws the one before it; a refusal before the row is
+found (`unknown_workspace`, no state folder) withdraws nothing. What
+the agent was already given stays in that conversation's history: if you ask the agent later, it can still say what it
+was given. A new conversation forgets it.
+
+**Status line.** It says what happened, `selection` or `drawing` first:
+
+- `selection shared: the agent sees it at its next prompt`
+- `selection held: this row's agent started before it could take one; restart the row to share`: the agent started
+  without the hook. Causes: the session started before this release was installed (end it, start a new one and select
+  again; a new session has a new id, so nothing is shared until you select), the Claude Code integration under
+  `~/.sot-comm/claude-layer` is not installed (install it first), or you pass your own `--settings` that the launch
+  cannot merge.
+- `selection not shared: this view is not the file's text`
+- `selection not shared: this row's agent takes none`
+- `selection not shared: this host's daemon does not take selections`
+- `selection not shared: <reason>` for any other refusal, such as `unknown_workspace` (the daemon no longer knows this session), `bad_node_id` (the preview is not a
+  project file) or `publish_failed` (select again).
+- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing (a Codex row answers `drawing not
+  shared: this row's agent takes none`, not `held`); its reasons include `the image
+  is over 40 megapixels` and `the daemon cannot read this image`.
+
+Withdrawing is not announced.
 
 ## Capturing a preview region for the LLM
 

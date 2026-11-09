@@ -356,6 +356,11 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **SELECTION-CODEX-HELD** [note] A Codex row answers a text selection `held`: the daemon's `TAKES_SELECTION` names
+  `codex` (`rust/backend/src/agents/selection.rs`), but the marker that says a leg carries the prompt hook is written for
+  Claude legs only, and Codex carries no hook. The window then says "restart the row to share", which cannot help. Until
+  the Codex wiring is built (its premise H2 is untested), `TAKES_SELECTION` should leave `codex` out, so the row answers
+  `no_agent`. Found reading code for the manual; never seen.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's
@@ -521,6 +526,12 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **SELECTION-WITHDRAWN-ON-REFRESH** [note] A change to the shown file, or to the text size, refreshes its preview and
+  clears the flowed selection, so the window's share (`rust/frontend/src/ui/preview/share.rs`) withdraws the text
+  selection with no status line: an agent that edits the file the person selected loses the selection at its next
+  prompt, and the person learns it only by asking. The manual says so. Whether a refresh should keep the selection where
+  its lines still hold, or say on the status line that it was withdrawn, is open. Found reading code for the manual;
+  never seen.
 - **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/mod.rs`)
   watches again once a minute whatever the last refusal was, so a target the daemon refuses for good (`stale_row`,
   `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
