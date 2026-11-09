@@ -234,11 +234,9 @@ fn the_reply_says_who_will_hear() {
     assert_eq!(set_selection(None, &workspaces, false, 9_001_003, &req("ws-claude", good())), Err(selection_code::NOT_A_WINDOW), "row 1: checked before the state root");
 
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
-    for kind in ["claude", "codex"] {
-        insert(&format!("ws-{kind}-k"), kind);
-        assert!(ask(true, &format!("ws-{kind}-k"), good()).is_ok(), "row 2: {kind} takes one");
-    }
-    for kind in ["none", "gemini", ""] {
+    insert("ws-claude-k", "claude");
+    assert!(ask(true, "ws-claude-k", good()).is_ok(), "row 2: claude takes one");
+    for kind in ["codex", "none", "gemini", ""] {
         let id = format!("ws-{kind}-k");
         insert(&id, kind);
         std::fs::write(file(&id), "old").unwrap();
@@ -249,7 +247,6 @@ fn the_reply_says_who_will_hear() {
 
     // 3. an accepted selection is shared when the marker exists and held when it does not
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: no marker");
-    assert_eq!(ask(true, "ws-codex-k", good()), Ok(SelectionState::Held), "row 3: codex with no marker");
     std::fs::write(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME), "").unwrap();
     assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Shared), "row 3: marker");
     std::fs::remove_file(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME)).unwrap();
@@ -297,7 +294,7 @@ fn a_leg_without_the_hook_is_answered_held() {
     assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no variable, the earlier marker removed");
     // 3. a Codex leg has none, whatever its argv, until its wiring is built
     launch("ws-mk-codex", "codex", &var, &hooked);
-    assert_eq!(answer("ws-mk-codex"), Ok(SelectionState::Held), "row 3: codex");
+    assert_eq!(answer("ws-mk-codex"), Err(selection_code::NO_AGENT), "row 3: codex");
     // 4. a folder the supervisor has not made yet is made for the marker
     let fresh = folder("ws-mk-fresh").join("nested");
     write_marker(&fresh, "claude", &var, &hooked).unwrap();

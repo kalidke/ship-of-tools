@@ -43,9 +43,9 @@ pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, S
     sot_platform::host::write_durable(&marker, b"")
 }
 
-/// The agent kinds that take a selection; every other kind answers `no_agent`. `codex` is here until the plan's H2
-/// decides whether Codex hears one at all.
-const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
+/// The agent kinds that take a selection; every other kind answers `no_agent`. A Codex row answers `no_agent` until the
+/// plan's H2 decides whether Codex hears one at all.
+const TAKES_SELECTION: [&str; 1] = ["claude"];
 
 /// The agent kinds that take a drawing; a Codex row answers `no_agent` for one until the plan's H-D2 decides it reads
 /// the picture.

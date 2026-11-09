@@ -240,7 +240,7 @@ of each.
   directory, a pipe or device, a missing or unreadable file is `not_file_text`), then `check_selection` and
   `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
   answers `shared` when the marker `<row state folder>/selection-hook` exists (the row's current agent was started with
-  the hook) and `held` when it does not; only `claude` and `codex` rows (`TAKES_SELECTION`) take a selection, any other
+  the hook) and `held` when it does not; only `claude` rows (`TAKES_SELECTION`) take a selection (a Codex row waits on the plan's H2), any other
   kind answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
   (`not_file_text`, `bad_node_id`, `no_agent`) and a failed publish (`publish_failed`) removes it first. A removal that fails
   answers `publish_failed` in place of the refusal's own code, and the old file stays. A request the wire refuses at
