@@ -9,22 +9,30 @@ use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
 type Stroke = Vec<[u16; 2]>;
 
 /// A step undo takes back: a committed stroke, or the strokes one erase drag removed (with the index each had).
+#[derive(Clone)]
 enum Edit {
     Added,
     Erased(Vec<(usize, Stroke)>),
 }
 
-#[derive(Default)]
-pub(in crate::ui) struct InkLayer {
+/// What a row's parked view keeps of its drawing: the committed strokes and what undo needs, and drawing mode. The
+/// raster, the overlay and a live stroke are rebuilt or dropped, never parked.
+#[derive(Clone, Default)]
+pub(in crate::ui) struct Drawing {
     base: Option<InkBase>,
     strokes: Vec<Stroke>,
     cleared: Vec<Stroke>,
     history: Vec<Edit>,
+    on: bool,
+}
+
+#[derive(Default)]
+pub(in crate::ui) struct InkLayer {
+    drawing: Drawing,
     live: Option<Stroke>,
     /// An erase drag: whether its step is in `history` yet (it is at the first hit), and its last point inside the image
     /// (none after an ignored point, so the path never joins two points across a stretch it was not tested on).
     erasing: Option<(bool, Option<[u16; 2]>)>,
-    on: bool,
     revision: u64,
     /// The raster's size (`raster_dims` of the base's source size, taken at a press), its coverage bytes, and the
     /// rectangle `[x0, y0, x1, y1)` changed since the last upload.
@@ -78,12 +86,12 @@ fn name(base: &InkBase) -> &str {
 
 impl InkLayer {
     pub(in crate::ui) fn base(&self) -> Option<&InkBase> {
-        self.base.as_ref()
+        self.drawing.base.as_ref()
     }
-    /// Read by the share (D6) and the per-row parking (D4c2); the tests read it now.
+    /// Read by the share (D6); the tests read it now.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::ui) fn strokes(&self) -> &[Stroke] {
-        &self.strokes
+        &self.drawing.strokes
     }
     pub(in crate::ui) fn live(&self) -> Option<&[[u16; 2]]> {
         self.live.as_deref()
@@ -92,10 +100,10 @@ impl InkLayer {
         self.revision
     }
     pub(in crate::ui) fn is_on(&self) -> bool {
-        self.on
+        self.drawing.on
     }
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
-        self.on = on;
+        self.drawing.on = on;
     }
     pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
         self.frame = Some((canvas, image));
@@ -105,10 +113,22 @@ impl InkLayer {
         self.live.is_some() || self.right_down
     }
 
+    /// The drawing a row leaving the window keeps.
+    pub(in crate::ui) fn park(&self) -> Drawing {
+        self.drawing.clone()
+    }
+
+    /// The row entered takes its own drawing (the default: it has none) and no live stroke, raster or held button of
+    /// the row left, nor its frame. The revision rises, so a share sees the change; the raster is painted again at the
+    /// next `sync`.
+    pub(in crate::ui) fn restore(&mut self, drawing: Drawing) {
+        *self = InkLayer { drawing, revision: self.revision + 1, ..Default::default() };
+    }
+
     /// Run before each frame and pointer event: a base no longer shown drops a live stroke, and a shown base whose source
     /// size changed (the same node installed again) rebuilds the raster at once.
     pub(in crate::ui) fn sync(&mut self, shown: Option<&InkBase>, src: Option<(u32, u32)>) {
-        if shown != self.base.as_ref() {
+        if shown != self.drawing.base.as_ref() {
             self.base_hidden();
         } else if let (Some(_), Some((w, h))) = (shown, src) {
             if self.dims != raster_dims(w, h) {
@@ -121,8 +141,8 @@ impl InkLayer {
     /// The raster is painted again from the committed strokes and the live one, and all of it is dirty.
     fn repaint(&mut self) {
         self.mask = match &self.live {
-            Some(l) => mask(&[self.strokes.as_slice(), std::slice::from_ref(l)].concat(), self.dims),
-            None => mask(&self.strokes, self.dims),
+            Some(l) => mask(&[self.drawing.strokes.as_slice(), std::slice::from_ref(l)].concat(), self.dims),
+            None => mask(&self.drawing.strokes, self.dims),
         };
         self.dirty = Some([0, 0, self.dims.0, self.dims.1]);
     }
@@ -193,13 +213,13 @@ impl InkLayer {
     }
 
     fn points(&self) -> usize {
-        self.strokes.iter().chain(self.live.iter()).map(Vec::len).sum()
+        self.drawing.strokes.iter().chain(self.live.iter()).map(Vec::len).sum()
     }
 
     /// Whether a press at `p` reaches `shown`, the base on show (`None`: none): drawing is on, or `shown` is the canvas,
     /// and `p` is inside the image rectangle and the canvas rectangle.
     fn reaches(&self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect) -> bool {
-        shown.is_some_and(|b| (self.on || *b == InkBase::Canvas) && inside(image, p) && inside(canvas, p))
+        shown.is_some_and(|b| (self.drawing.on || *b == InkBase::Canvas) && inside(image, p) && inside(canvas, p))
     }
 
     /// The window's left press: `Some` (with the status text `press` returns) when the drawing takes it, `None` when it
@@ -248,15 +268,15 @@ impl InkLayer {
         let (shown, q) = (shown?, map(p, canvas)?);
         self.release();
         let mut note = None;
-        if self.base.as_ref() != Some(shown) {
-            if !self.strokes.is_empty() {
-                note = self.base.as_ref().map(|b| format!("the drawing on {} was replaced", name(b)));
+        if self.drawing.base.as_ref() != Some(shown) {
+            if !self.drawing.strokes.is_empty() {
+                note = self.drawing.base.as_ref().map(|b| format!("the drawing on {} was replaced", name(b)));
                 self.revision += 1;
             }
-            self.strokes.clear();
-            self.history.clear();
-            self.cleared.clear();
-            self.base = Some(shown.clone());
+            self.drawing.strokes.clear();
+            self.drawing.history.clear();
+            self.drawing.cleared.clear();
+            self.drawing.base = Some(shown.clone());
             self.dims = (0, 0);
         }
         if self.dims != raster_dims(src.0, src.1) {
@@ -295,9 +315,9 @@ impl InkLayer {
     pub(in crate::ui) fn release(&mut self) {
         self.erasing = None;
         if let Some(s) = self.live.take() {
-            self.strokes.push(s);
-            self.history.push(Edit::Added);
-            self.cleared.clear();
+            self.drawing.strokes.push(s);
+            self.drawing.history.push(Edit::Added);
+            self.drawing.cleared.clear();
             self.revision += 1;
         }
     }
@@ -313,7 +333,7 @@ impl InkLayer {
     /// Undo acts only while `shown` is the drawing's base. It drops a live stroke and nothing else; otherwise it takes back
     /// the last step, or brings back what a clear moved.
     pub(in crate::ui) fn undo(&mut self, shown: Option<&InkBase>) {
-        if shown != self.base.as_ref() {
+        if shown != self.drawing.base.as_ref() {
             return;
         }
         self.erasing = None;
@@ -321,12 +341,12 @@ impl InkLayer {
             self.repaint();
             return;
         }
-        match self.history.pop() {
-            Some(Edit::Added) => drop(self.strokes.pop()),
-            Some(Edit::Erased(gone)) => gone.into_iter().rev().for_each(|(i, s)| self.strokes.insert(i, s)),
-            None if !self.cleared.is_empty() => {
-                self.strokes = std::mem::take(&mut self.cleared);
-                self.history = self.strokes.iter().map(|_| Edit::Added).collect();
+        match self.drawing.history.pop() {
+            Some(Edit::Added) => drop(self.drawing.strokes.pop()),
+            Some(Edit::Erased(gone)) => gone.into_iter().rev().for_each(|(i, s)| self.drawing.strokes.insert(i, s)),
+            None if !self.drawing.cleared.is_empty() => {
+                self.drawing.strokes = std::mem::take(&mut self.drawing.cleared);
+                self.drawing.history = self.drawing.strokes.iter().map(|_| Edit::Added).collect();
             }
             None => return,
         }
@@ -337,18 +357,18 @@ impl InkLayer {
     /// Clear acts only while `shown` is the drawing's base. It drops a live stroke and nothing else; otherwise the
     /// strokes move to the `cleared` copy.
     pub(in crate::ui) fn clear(&mut self, shown: Option<&InkBase>) {
-        if shown != self.base.as_ref() {
+        if shown != self.drawing.base.as_ref() {
             return;
         }
         if self.live.take().is_some() {
             self.repaint();
             return;
         }
-        if self.strokes.is_empty() {
+        if self.drawing.strokes.is_empty() {
             return;
         }
-        self.cleared = std::mem::take(&mut self.strokes);
-        self.history.clear();
+        self.drawing.cleared = std::mem::take(&mut self.drawing.strokes);
+        self.drawing.history.clear();
         self.repaint();
         self.revision += 1;
     }
@@ -360,7 +380,7 @@ impl InkLayer {
         &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect,
     ) {
         let dims = self.dims;
-        let ok = self.live.is_none() && shown == self.base.as_ref() && self.reaches(shown, p, canvas, image);
+        let ok = self.live.is_none() && shown == self.drawing.base.as_ref() && self.reaches(shown, p, canvas, image);
         let Some(q) = map(p, canvas).filter(|_| ok) else {
             self.erasing = self.erasing.map(|(recorded, _)| (recorded, None));
             return;
@@ -370,18 +390,18 @@ impl InkLayer {
         let near = |s: &Stroke| segments(std::slice::from_ref(s), dims).any(|(c, d)| segs_dist(a, b, c, d) <= reach);
         let mut gone = Vec::new();
         let mut i = 0;
-        while i < self.strokes.len() {
-            if near(&self.strokes[i]) {
-                gone.push((i, self.strokes.remove(i)));
+        while i < self.drawing.strokes.len() {
+            if near(&self.drawing.strokes[i]) {
+                gone.push((i, self.drawing.strokes.remove(i)));
             } else {
                 i += 1;
             }
         }
         let hit = !gone.is_empty();
         if hit {
-            match self.history.last_mut() {
+            match self.drawing.history.last_mut() {
                 Some(Edit::Erased(g)) if recorded => g.extend(gone),
-                _ => self.history.push(Edit::Erased(gone)),
+                _ => self.drawing.history.push(Edit::Erased(gone)),
             }
             self.repaint();
             self.revision += 1;

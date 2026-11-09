@@ -1507,3 +1507,50 @@ impl State {
         Ok(())
     }
 }
+
+impl State {
+    /// A row's drawing stays with its row through a first visit, a return and the window's destroy of the shown row.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_rows_drawing_stays_with_its_row(&mut self) -> Result<()> {
+        let a = "<host-ink>".to_string();
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx)];
+        let list = |rows: &[(&str, &str)]| {
+            let mut default = ws_info("default", "attach-default");
+            default.is_default = true;
+            default.agent = "none".into();
+            std::iter::once(default).chain(rows.iter().map(|(s, id)| probe_row(s, id, false))).collect::<Vec<_>>()
+        };
+        let base = sot_protocol::ops::InkBase::Figure { node_id: "files:plots/fit.png".into() };
+        let r = crate::ui::render::quad::ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
+        let draw = |state: &mut Self, x: f32| {
+            state.ink.press(Some(&base), (x, 100.0), &r, &r, (400, 200));
+            state.ink.release();
+        };
+        self.on_workspaces(a.clone(), list(&[("s1", "id-s1"), ("s2", "id-s2")]));
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        self.ink.set_on(true);
+        draw(self, 100.0);
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        anyhow::ensure!(self.ink.strokes().is_empty() && !self.ink.is_on(), "a first visit showed the row just left's drawing");
+        self.ink.set_on(true);
+        draw(self, 300.0);
+        draw(self, 350.0);
+        self.ink.set_on(false);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        anyhow::ensure!(self.ink.strokes().len() == 1 && self.ink.is_on(), "a return did not bring the row's own drawing");
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        anyhow::ensure!(self.ink.strokes().len() == 2 && !self.ink.is_on(), "the other return did not bring its own");
+        let destroyed = crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: "id-s1".into(), slug: "s1".into(), label: "s1".into(), tmux_killed: true, toml_removed: true, kept: None,
+        };
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed));
+        anyhow::ensure!(self.selected.workspace_id().as_deref() == Some("s2") && self.ink.strokes().len() == 2,
+            "the destroy did not move the view to s2 with its drawing");
+        self.on_workspaces(a.clone(), list(&[("s1", "id-s1-next"), ("s2", "id-s2")]));
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        anyhow::ensure!(self.ink.strokes().is_empty() && !self.ink.is_on(), "a destroyed row's drawing came back to its same-slug successor");
+        Ok(())
+    }
+}

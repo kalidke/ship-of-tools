@@ -298,6 +298,7 @@ impl State {
             self.preview_requests.reset_concept_follow();
             self.drift.clear();
             self.editor.close();
+            self.ink.restore(Default::default());
         }
         restored
     }

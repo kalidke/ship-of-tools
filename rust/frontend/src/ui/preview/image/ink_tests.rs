@@ -668,3 +668,70 @@ fn the_window_routes_a_left_press_motion_and_the_right_button_through_the_layer(
     l.focus_lost();
     assert!(!l.busy() && l.strokes().len() == 2);
 }
+
+/// The row left parks its drawing and the row entered restores `entering`; returns what was parked.
+fn switch_rows(l: &mut InkLayer, entering: Drawing) -> Drawing {
+    let left = l.park();
+    l.restore(entering);
+    left
+}
+
+#[test]
+fn a_parked_drawing_keeps_the_cleared_copy_and_the_undo_history() {
+    let b = fig("a.png");
+    let mut l = on();
+    l.set_frame(R, R);
+    pt(&mut l, &b, (150.0, 100.0));
+    pt(&mut l, &b, (300.0, 100.0));
+    hit(&mut l, &b, 150.0);
+    l.erase_end();
+    let erased = switch_rows(&mut l, Drawing::default());
+    l.restore(erased.clone());
+    l.sync(Some(&b), Some(DIMS));
+    l.clear(Some(&b));
+    assert!(l.strokes().is_empty());
+    let cleared = switch_rows(&mut l, erased);
+    l.sync(Some(&b), Some(DIMS));
+    l.undo(Some(&b));
+    assert_eq!(l.strokes().len(), 2, "the erase step is undone after the return");
+    switch_rows(&mut l, cleared);
+    l.sync(Some(&b), Some(DIMS));
+    l.undo(Some(&b));
+    assert_eq!(l.strokes().len(), 1, "a cleared drawing's strokes come back");
+}
+
+#[test]
+fn a_switch_drops_the_live_stroke_the_held_button_and_the_raster_and_raises_the_revision() {
+    let b = fig("a.png");
+    let mut l = on();
+    l.set_frame(R, R);
+    pt(&mut l, &b, (150.0, 100.0));
+    let row_mask = l.mask.clone();
+    l.press(Some(&b), (300.0, 100.0), &R, &R, DIMS);
+    l.right(true, Some(&b), (110.0, 60.0));
+    let before = l.revision();
+    let a = switch_rows(&mut l, Drawing::default());
+    assert!(l.revision() > before && !l.busy() && l.live().is_none());
+    assert!(l.mask.is_empty() && l.dims == (0, 0) && l.dirty.is_none() && l.overlay.is_none(), "the raster is not carried");
+    assert!(l.frame.is_none(), "the row left's frame is not carried");
+    l.release();
+    assert!(l.strokes().is_empty(), "no stroke lands on the entering row");
+    let revision = l.revision();
+    l.restore(a);
+    assert!(l.revision() > revision);
+    l.sync(Some(&b), Some(DIMS));
+    assert_eq!(l.strokes().len(), 1, "the row left kept only its committed stroke");
+    assert_eq!(l.mask, row_mask, "the raster is rebuilt from the row's own strokes");
+    assert_eq!(l.dirty, Some([0, 0, l.dims.0, l.dims.1]));
+}
+
+#[test]
+fn a_restored_drawing_keeps_its_own_mode() {
+    let b = fig("a.png");
+    let mut l = on();
+    pt(&mut l, &b, (150.0, 100.0));
+    let drawn = switch_rows(&mut l, Drawing::default());
+    assert!(!l.is_on());
+    l.restore(drawn);
+    assert!(l.is_on());
+}
