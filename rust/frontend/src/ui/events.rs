@@ -1,6 +1,6 @@
 //! `drain_events`: applies each daemon event queued for the window (`IncomingEvt`), by variant.
 //! Routes only: each variant goes to `on_<variant>` in its owner's `replies.rs` (a `Connected`'s REPL runs still
-//! running to the REPL drawer's `on_repl_running`); `note_host_connection` runs first.
+//! running to the REPL drawer's `on_repl_running`); `note_host_connection` runs first and `tick_chat` last.
 
 use super::*;
 
@@ -179,12 +179,14 @@ impl State {
                     self.on_monitor_history(hosts)
                 }
                 crate::net::transport::IncomingEvt::MonitorTick { hosts } => self.on_monitor_tick(hosts),
-                // No pane recovers from a lost bus yet; the typed event is for the first consumer.
+                // Only the chat recovers from a lost bus; no other pane does yet.
                 crate::net::transport::IncomingEvt::BusLost { bus, skipped } => {
                     tracing::warn!(%bus, skipped, "daemon bus lost events on this connection");
+                    self.on_chat_bus_lost(&event_host, &bus);
                 }
-                // The chat's and the selection share's view owners read these; until then the typed event is dropped.
-                crate::net::transport::IncomingEvt::Chat(_) | crate::net::transport::IncomingEvt::Selection { .. } => {}
+                crate::net::transport::IncomingEvt::Chat(evt) => self.on_chat(&event_host, evt),
+                // The selection share's view owner reads these; until then the typed event is dropped.
+                crate::net::transport::IncomingEvt::Selection { .. } => {}
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,
@@ -312,6 +314,7 @@ impl State {
                 }
             }
         }
+        self.tick_chat();
     }
 
     fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::net::transport::IncomingEvt) {
@@ -344,8 +347,14 @@ impl State {
         // per-host connection status is exactly this — no new wire
         // signal, just watching the two evts that already exist.
         match &evt {
-            crate::net::transport::IncomingEvt::Connected { .. } => self.note_connection(&event_host, true),
-            crate::net::transport::IncomingEvt::Disconnected { .. } => self.note_connection(&event_host, false),
+            crate::net::transport::IncomingEvt::Connected { .. } => {
+                self.note_connection(&event_host, true);
+                self.on_chat_connection(&event_host, true);
+            }
+            crate::net::transport::IncomingEvt::Disconnected { .. } => {
+                self.note_connection(&event_host, false);
+                self.on_chat_connection(&event_host, false);
+            }
             _ => {}
         }
         // ADR 0042 L2a codex review, item L: live host status in the

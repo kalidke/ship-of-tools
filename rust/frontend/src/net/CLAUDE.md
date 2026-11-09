@@ -57,7 +57,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:
@@ -65,7 +65,7 @@ through the channel types below.
   `an_accepted_reply_with_no_answer_is_unknown_once_and_not_written_again` (the real reconnect loop against a fixture
   daemon that counts the requests it receives) and `a_retirement_ends_the_unreplayable_and_keeps_the_rest_in_order`.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
-  0), never the generic `Event`; the window's one arm only logs it, so no pane recovers from loss yet. Tests
+  0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
   channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
@@ -73,15 +73,15 @@ through the channel types below.
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
   know). `chat.unwatch` is fire-and-forget. `chat.changed` and `chat.status` are decoded into `ChatEvt::Changed` and
-  `ChatEvt::Status`; one that does not parse is dropped with a warning. A post is written on one connection at most
+  `ChatEvt::Status`; one that does not parse is a warning and a `ChatEvt::Unreadable`, a loss the owner resyncs from. A post is written on one connection at most
   (`ChatPost` is not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
   reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
   ends first are unknown, never refused, so the window never offers to resend (tests
-  `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again`,
-  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`). Limits: fe-net does
-  not order posts (the composer sends the next after the last one's reply), does not resync after `bus.lost` or a
-  `chat.status`, and does not pace resyncs; a watch, history or resolve in flight when a connection ends gets no event.
-  Those belong to the chat's view owner, which does not exist yet; `ui/events.rs` drops `IncomingEvt::Chat`.
+  `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
+  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`). Limits: fe-net does
+  not order posts, does not resync after `bus.lost`, a `chat.status` or an `Unreadable`, and does not pace resyncs; a
+  watch, history or resolve in flight when a connection ends gets no event. Those are the chat owner's (`ui/drawer/chat/`,
+  fe-ui's contract), which `ui/events.rs` routes `IncomingEvt::Chat`, `BusLost` and each link's coming and going to.
 - The row's selection is one typed edge, `OutgoingReq::SelectionSet { req }` (a text selection, a drawing or a clear) and
   `IncomingEvt::Selection { req, reply }` (transport/ops/selection.rs). A reply carries the request it answers, so a clear's
   reply differs from a set's, and is `Done(state)`, `Unsupported` (an older daemon's exact unknown-op answer), `Refused { code,

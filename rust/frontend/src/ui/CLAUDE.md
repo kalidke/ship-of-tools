@@ -53,7 +53,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   pass: `render/`, `render/pass/`.
 - Chrome, key bindings, help and paste: `chrome/` (panes, status line, nav spill, strip), `input/`.
 - The navigation trees: `nav/`. The session view and its switch: `session/`. The agent pane: `agent_pane/`.
-- The REPL, Terminal and Monitor drawers: `drawer/`. The preview pane, images, markdown and the editor: `preview/`.
+- The REPL, Terminal and Monitor drawers: `drawer/`. The project chat's owner: `drawer/chat/`. The preview pane, images, markdown and the editor: `preview/`.
 - The agent control surface (`fe.command`, the command directory, `fe-state.json`, the `sot_ui` envelope): `control/`.
 - UI persistence (settings.toml, keybindings.toml discovery, the per-host resume file): `persist/`. Downloads to disk:
   `nav/files/`.
@@ -650,6 +650,49 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 `OutgoingReq`, `IncomingEvt`, `HostTable`, `lane_dial`, `LinkHandle`, `ResolvedDial`, `--socket`, `--dial`, `--relaunched`,
 `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, sot_protocol::annotation::split_frontmatter, sot_protocol::annotation::synced_against, sot_protocol::physical_scale::PhysicalScale, sot_protocol::physical_scale::parse_physical_scale, sot_protocol::video_path::video_mime, lease_notice, handle_fe_command_send relay diagnostics.
 
+## Chat owner
+`ChatOwner` (`drawer/chat/`) holds one watched channel (its host, target, fill: `Needed`, `Reading`, `Complete` or `Gap`, and
+its records), the one post in flight and the last post's outcome. It sends nothing itself and replays no mutation: each method
+returns the requests for State to send. Rules, each with its test in `drawer/chat/tests.rs`:
+- One recovery serves every loss: the link returning, `bus.lost` for `chat.changed`, a `chat.status` that lists the channel or
+  says the service is not running, and an `Unreadable` event. It forgets the registration and sends `chat.watch`
+  (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_and_capped_watch`,
+  `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
+  `chat.history` read; a pending watch is sent again by `tick`. Watches are five seconds apart, the last of three gets its full pace to be answered (`a_slow_last_watch_still_ends_complete`), and three without a completed
+  snapshot end in `Gap`; a stream of losses whose recoveries succeed is paced, not capped. A refused watch is `Gap`
+  (`a_refused_watch_is_a_gap_and_a_duplicate_reply_starts_no_read`). `Gap` is shown and asked again: a watch goes out every
+  minute with no cap, because the daemon answers a watch from its state at that moment and says nothing later, and each
+  watch also starts its retry of a failed snapshot; a `complete` reply reads as from `Needed`, a refused one stays `Gap`
+  (`a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it`). The state is not whole while the link is down.
+- A `chat.changed` that came while the read was in flight is kept over its older snapshot (`a_change_during_the_read_is_kept_over_the_older_snapshot`);
+  an event from before a refused read, a link loss or with no read in flight is not (`only_the_events_of_the_read_in_flight_cover_a_snapshot`).
+  The read asks for the wire's page (`MAX_PAGE`).
+- A snapshot replaces the held records, and its `next` cursor (older history, the drawer's to page) is not a gap
+  (`a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap`). The snapshot keeps the channel's top-level messages, as the
+  daemon's model does (it sends no edit or delete for a thread reply sent to the channel). The owner holds at most the daemon
+  model's newest 100 records (`KEPT`), dropping the oldest as it does (`the_owner_keeps_at_most_the_daemons_newest_records`). A
+  `floor` (set by a snapshot that is not the whole channel, raised by the trim) bounds what is added: a `put` of a record not held
+  and older than it is not added, the daemon's own rule for an edit below its set (`the_owner_holds_only_what_the_daemon_tracks`,
+  `deletes_emptying_the_page_do_not_lower_the_floor`); a whole channel has no floor, so its first message is held
+  (`the_first_message_of_an_empty_channel_is_held`). A watch reply that is not `complete`, arriving during a read, outdates it
+  (`a_pending_watch_reply_during_a_read_outdates_it`); a gap with no last try asks at once (`a_gap_with_no_last_try_asks_at_once`). A read's reply is applied only while a read equal to it is in flight
+  (`a_second_reply_to_one_read_is_not_applied`), and the reply of a read a loss outdated replaces nothing
+  (`the_late_reply_of_a_stale_read_leaves_the_state_needed`); fe-net drops a queued watch or read when its connection ends, so
+  none is written on a later connection ahead of the owner's new watch, except one queued during the next connection's hello
+  (`net/CLAUDE.md`). `watch` with the host and target already watched is
+  nothing, and with the same host and channel it sends the watch alone (the daemon's watch replaces the connection's earlier
+  one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts and deletes records
+  (`changed_events_put_and_delete_the_watched_channels_records`).
+- A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`). One waiting when its link
+  ends is `Unknown` (it may exist); one to a host that is not connected is never written and is `Refused(Unavailable)`
+  (`a_post_is_unknown_only_when_it_may_exist`); a reply from another host answers nothing (`a_post_reply_from_another_host_answers_nothing`); each reply reads as it proves (`a_posts_outcome_reads_as_the_reply_proves`). The
+  owner sets the post in flight before State sends it, and `post` returns `None` both for a second post and a refused one.
+- A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
+  (`a_status_entry_for_an_unwatched_channel_is_ignored`).
+- The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
+Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
+owner has no view.
+
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
 - `render/`: glyph text, the ratatui cell backend, textured quads, the surface and the capture readback.
@@ -667,6 +710,9 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
+- `drawer/chat/`: `ChatOwner`, the project chat's private owner (fields private, no open mutation); State holds it and
+  forwards chat events, `bus.lost` and each link's change to its methods, which return the requests to send. No drawer or key
+  reads it yet.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
