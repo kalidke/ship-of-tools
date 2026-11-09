@@ -1,5 +1,5 @@
 use super::*;
-use sot_protocol::ops::TextPos;
+use sot_protocol::ops::{whole_lines, TextPos};
 
 fn sel(start: (u32, u32), end: (u32, u32), shown: &str) -> SelectedText {
     SelectedText {
@@ -170,5 +170,74 @@ fn a_drawing_renders_as_the_hook_output_within_the_caps() {
         let msg = v["systemMessage"].as_str().unwrap();
         assert!(msg.encode_utf16().count() <= 200, "{}", msg.encode_utf16().count());
         assert!(msg.starts_with("Drawing: ...") && msg.ends_with(" (16384 strokes)"), "{msg}");
+    }
+}
+
+const MARKDOWN_FIXTURE: &str = r"---
+title: plan
+---
+
+# Selection probe
+
+First line of a paragraph
+with `a code
+span` and https://bare.example/url
+last line of it.
+
+- item one
+  continued
+- item two
+
+> quoted line one
+> quoted line two
+
+| a | b |
+|---|---|
+| 1 | 2 |
+
+$$
+x = 1
+$$
+
+```julia
+alpha = 1
+
+beta = 2
+```
+
+    indented one
+    indented two
+
+***
+
+Tail with a hard break\
+after it.[^n]
+
+[^n]: The note.
+";
+
+#[test]
+fn a_whole_lines_range_is_the_files_own_lines() {
+    let lf = MARKDOWN_FIXTURE.to_string();
+    let crlf = lf.replace('\n', "\r\n");
+    let no_final = lf.trim_end_matches('\n').to_string();
+    for text in [lf, crlf, no_final] {
+        let count = text.split('\n').count();
+        let mut accepted = 0;
+        for first in 1..=count {
+            for last in first..=count {
+                let Some(((start, end), shown)) = whole_lines(&text, first, last) else { continue };
+                let s = sel((start.0 as u32, start.1 as u32), (end.0 as u32, end.1 as u32), &shown);
+                // the daemon reports the line before an end at byte 0 (`selection_check.rs`)
+                let last_line = if end.1 == 0 { last - 1 } else { last };
+                assert_eq!(
+                    check_selection(text.as_bytes(), &s),
+                    Some(file_text(&shown, first, last_line)),
+                    "lines {first}..={last}"
+                );
+                accepted += 1;
+            }
+        }
+        assert!(accepted > 0);
     }
 }

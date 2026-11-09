@@ -311,7 +311,7 @@ of each.
   (`sot_protocol::selection_digest`) that differs from the file's text; the wire refuses a `len` outside 1 to 2 MiB and a start
   not before the end, but checks neither `len` against the text nor any position, so this is the only place a position near
   `u32::MAX` or a wrong `len` is refused. The bytes may be a prefix ending mid-character after
-  the range. `render_selection` builds the hook's one JSON object (`hookSpecificOutput` and `systemMessage`, nothing
+  the range. A whole-line range (`sot_protocol::ops::whole_lines`) is read as any other. `render_selection` builds the hook's one JSON object (`hookSpecificOutput` and `systemMessage`, nothing
   else) with 1-based inclusive lines. Every cap counts UTF-16 code units, Claude Code's own count and never below a
   character count: the range's text is cut at 2000, the path in the context at 4096, the message at 200 (a path cut
   from the left with `...`), and a compile-time assertion keeps the context under 9,000. The cut's suffix names the
@@ -321,6 +321,7 @@ of each.
   is `Drawing: <path in the project or sketch> (<N> strokes)`; the same caps hold, by a compile-time assertion at two
   4,096-unit paths. Tests: `a_drawing_renders_as_the_hook_output_within_the_caps`,
   `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
+  `selection_check::tests::a_whole_lines_range_is_the_files_own_lines`,
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.

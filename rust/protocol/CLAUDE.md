@@ -136,8 +136,9 @@ name is in this crate's one op table.
 13. **`selection.set` is one op in the table, its request bounded at decode, its digest defined once.** `ops/selection.rs`:
     `SelectionSetReq { workspace_id, selection, drawing }` -> `SelectionSetRes { state }` (`shared`, `held`; a later state reads as
     `other`, not shared), with `selection` a `SelectedText { node_id, start, end, len, digest }` or `null` to clear; the field
-    is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a preview-buffer line
-    and a UTF-8 byte offset, `end` exclusive. The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
+    is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a position in the shown file's text: a line
+    and a UTF-8 byte offset, `end` exclusive; `whole_lines` is the one definition of a whole-line range, the window's form for
+    rendered markdown (test `whole_lines_names_a_files_lines_as_the_daemon_reads_them`). The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
     FNV-1a 64 over the UTF-8 bytes, lines joined by LF, the one definition the window and the daemon both call. The six
     refusal codes are the `selection_code` constants (`unknown_workspace`, `bad_node_id`, `not_file_text`, `no_agent`,
     `not_a_window`, `publish_failed`). Bounds a decoder enforces, `SelectedText` through `try_from` so no call shape skips

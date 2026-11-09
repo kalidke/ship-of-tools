@@ -30,7 +30,26 @@ pub fn selection_digest(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-/// A position in the preview buffer: a line, and a UTF-8 byte offset in it.
+/// The range and text of the 1-based lines `first..=last` of `text`, as `selection.set` names a file's text and the
+/// daemon's check reads it: a line ends at LF, a CR before the LF is dropped, the range runs from the start of `first`
+/// to the end of `last` (`end` exclusive, positions `(line, byte)` from 0), and the text is those lines joined by LF.
+/// `None` when `first` is 0 or after `last`, `last` is past the text, or the lines hold no byte.
+pub fn whole_lines(text: &str, first: usize, last: usize) -> Option<(((usize, usize), (usize, usize)), String)> {
+    if first == 0 || first > last {
+        return None;
+    }
+    let lines: Vec<&str> =
+        text.split('\n').skip(first - 1).take(last - first + 1).map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    if lines.len() != last - first + 1 {
+        return None;
+    }
+    let end = (last - 1, lines.last()?.len());
+    let joined = lines.join("\n");
+    (!joined.is_empty()).then_some((((first - 1, 0), end), joined))
+}
+
+/// A position in the shown file's text: a 0-based line and a UTF-8 byte offset in it (the preview buffer's own for a
+/// plain or token preview, a source line for rendered markdown, `whole_lines`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextPos {
     pub line: u32,

@@ -166,3 +166,16 @@ fn a_drawing_rides_selection_set_within_its_bounds() {
     assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES / 2, "{bytes}");
     assert!(serde_json::from_slice::<SelectionSetReq>(&serde_json::to_vec(&widest).unwrap()).is_ok());
 }
+
+#[test]
+fn whole_lines_names_a_files_lines_as_the_daemon_reads_them() {
+    assert_eq!(whole_lines("a\nb\nc\n", 2, 3), Some((((1, 0), (2, 1)), "b\nc".to_string())));
+    assert_eq!(whole_lines("a\r\nb\r\nc", 2, 3), Some((((1, 0), (2, 1)), "b\nc".to_string())));
+    assert_eq!(whole_lines("a\nb", 2, 2), Some((((1, 0), (1, 1)), "b".to_string())));
+    assert_eq!(whole_lines("a\n\nb", 1, 2), Some((((0, 0), (1, 0)), "a\n".to_string())));
+    assert_eq!(whole_lines("é\nx", 1, 1), Some((((0, 0), (0, 2)), "é".to_string())));
+    assert_eq!(whole_lines("a\nb", 0, 1), None, "first is 0");
+    assert_eq!(whole_lines("a\nb", 2, 1), None, "first after last");
+    assert_eq!(whole_lines("a\nb", 2, 4), None, "last past the text");
+    assert_eq!(whole_lines("a\n\nb", 2, 2), None, "the lines hold no byte");
+}
