@@ -1304,3 +1304,20 @@ A landing's record goes here, with its measured times; the package page holds on
   path) gets no instruction, since a join cannot repair it; the contract and the hook header say so exactly. About 14
   product lines and 20 test lines. Where the minutes went: the build (1 minute); one review round (blockers 0) and one fix
   round of 1 minute; two gates of 4 minutes.
+- B2h, the window's first chat owner, 2026-11-08: builder launched 14:31, main 20:07 (b14e92443, one commit squashed from
+  five), 336 minutes, past the maintainer's hour: a failure of the standard. The owner keeps one watched channel matched to
+  the daemon: each loss (a lost event bus, a status that says events were lost, an unreadable event, the link returning)
+  is recovered by one path, a watch again until the daemon answers complete, then one read whose snapshot replaces the
+  held records with the changes that arrived during it kept; watches are paced and capped before a gap, and a gap asks
+  again once a minute. It holds only the top-level records the daemon tracks, at most the daemon model's newest 100,
+  takes no reply to an abandoned request, posts one at a time, and reads a post of unknown outcome as unknown; fe-net no
+  longer replays a queued chat watch or read after its connection ends. BUS-LOST-NO-RECOVERY now says only the chat
+  recovers. About 262 product lines without comments (340 with them and blank lines) and 643 test lines. Where the minutes
+  went: the build (8 minutes); four review rounds (blockers 3, 0, 1, 0; 19, 32, 23 and 22 minutes) and four fix rounds
+  (8, 9, 9 and 3 minutes); the third round's first reviewer was refused by its API's safety filter at its first step,
+  and its rerun on another model waited 174 minutes for the maintainer's word; seven gates of 2 to 4 minutes. Why past
+  the hour: the change was about twice the size past which a change is split, and its rule is that the window's state
+  match the daemon's after every order of replies and events, which each review built from the daemon's code and found
+  broken in a new place; one of the first round's blockers was the brief's own rule (a status answered by a read, where
+  the wire says a watch). The window's own second Slack read is the source of two of the classes found; a complete
+  watch reply that carries the daemon's page would delete it (CHAT-TWO-READS-DISAGREE).

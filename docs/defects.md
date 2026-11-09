@@ -521,6 +521,11 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/mod.rs`)
+  watches again once a minute whatever the last refusal was, so a target the daemon refuses for good (`stale_row`,
+  `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
+  per window per minute for as long as the window watches it, and the refusal code is dropped, so the drawer cannot say
+  why it shows a gap. Keep the last refusal in the watch when the drawer needs it. Found reading code; never seen.
 - **FE-CONCEPT-SAVE-SILENT** [note] The window shows nothing when `concept.write` is refused: the reply is only logged
   (`rust/frontend/src/ui/preview/replies.rs`) and the editor stays dirty.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent
@@ -664,6 +669,19 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-PUBLISH-SKIPS-A-RESTART** [note] The daemon's chat owner task (`Own::sync`, `rust/backend/src/chat/watch.rs`)
+  can take a new socket gap inside one channel's begin and then begin a later channel that has just left complete, in
+  the same pass; `publish` then sees that channel pending, not needed, and sends no `chat.status`, so a window holding it
+  complete is never told, and the daemon's new snapshot absorbs the gap's changes as its base. It needs two watched
+  channels and a kick at the gap. Fix: `publish` also tells every channel that left complete since the last publish.
+  Found reading code; never seen.
+- **CHAT-TWO-READS-DISAGREE** [note] After a `complete` watch reply the window reads its own snapshot from Slack
+  (`chat.history`), apart from the daemon's snapshot, so deletions between the two reads leave records in the window's
+  page below the daemon's own set, held and never updated (the window owner's Limits, `rust/frontend/src/ui/CLAUDE.md`),
+  and a read queued during the next connection's hello can answer an equal read on it. The shape that removes the class:
+  the `complete` reply carries the daemon's latest page from its model, which deletes the window's overlay, stale flag,
+  read and its matching, and the second Slack read per recovery. A wire and daemon change, for the maintainer's word.
+  Found reading code; never seen.
 - **CHAT-FLOOD-CAP-UNDER-LOAD** [note] `socket_tests.rs`'s
   `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` fails on a Linux host under CPU load, in two ways.
   Under 64 busy loops its flood reached its frame and byte caps without one write stalling ("the flood never stalled a write
