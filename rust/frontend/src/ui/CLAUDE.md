@@ -27,6 +27,21 @@ anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::i
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
+`preview::image::ink::InkLayer` (D4a, not yet wired: D4c is its first reader, D4b adds the mask and overlay) privately owns the row's drawing
+(base, committed strokes, the `cleared` copy, the undo history), the live stroke, drawing mode and a `revision` every committed change raises; it
+takes the canvas and image rectangles and the raster size as arguments each call and never `State`; a stroke begins only at a press inside the image and
+canvas rectangles, and its drag points are clamped to the base and kept one raster pixel from the last; the drawing holds at most `MAX_INK_POINTS` points (a press
+on a full drawing starts no stroke); a right-button erase drag is one undo step, recorded at its first hit, whose path from the drag's last point removes
+each stroke within the painted ink's reach (`ink_radius` and one raster pixel), at points inside the image only (a point it ignores breaks the path, so the drag never joins the points either side of it, and the caller hands it every right motion of the drag); undo and clear act only while the drawing's base is the one shown; no event splits the strokes from the history;
+the `cleared` copy goes at a stroke's commit and at a base change; a hidden base drops the live stroke
+(`a_point_lands_on_the_base_where_it_was_drawn_at_any_zoom_and_pan`,
+`a_stroke_ends_at_its_release_a_new_press_or_a_lost_focus_and_is_dropped_with_its_base`,
+`undo_clear_and_restore_keep_their_order_and_a_new_stroke_drops_the_cleared_copy`,
+`the_cleared_copy_goes_with_a_commit_or_a_base_change_not_a_press`,
+`the_right_button_erases_in_one_undo_step_and_never_a_live_stroke`,
+`no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_history`,
+`the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image`, `a_drag_that_leaves_the_image_and_comes_back_joins_nothing_across_the_stretch_outside`,
+`undo_and_clear_change_nothing_while_the_drawings_base_is_not_shown`, `the_drawing_is_bounded_in_points`);
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
