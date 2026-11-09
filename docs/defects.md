@@ -764,6 +764,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **GATE-LEFTOVER-ESCAPED-HOLDER** (containment) closed by the landing that fixes it, 2026-11-09: `output_does_not_wait_for_an_escaped_pipe_holder` (`rust/containment/src/signal_output_bound_tests.rs`) passed and left its escaped `sleep 30` running, so a whole local gate whose `sot_containment` job started within 30 s of the end failed its census (`leftover <pid> sleep 30`); the escapee now holds the pipe only while the test's `keep` file exists, and the test removes the file and sees the escapee gone.
 - **SELECT-MARKDOWN** (fe-ui) closed by the landing that fixes it, 2026-11-09, before its window test: a selection in a rendered markdown preview is shared as the whole file lines its text was rendered from, with the file's text there; a rendered buffer with no map shares nothing.
 - **SELECTION-CODEX-HELD** (agents) closed by the landing that fixes it, 2026-11-09: `TAKES_SELECTION` leaves `codex` out, so a Codex row answers a selection `no_agent`, not `held`, until the Codex wiring is built.
 - **SCRATCH-PAD** (fe-ui) closed by the landing that fixes it, 2026-11-09: a drawable preview pane whose drawing the row's agent sees; the window draws and shares it, the daemon writes its picture.
