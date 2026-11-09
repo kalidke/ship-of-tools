@@ -427,13 +427,13 @@ impl OutgoingReq {
     /// it is written on the connection current when it is dequeued, or on none (`Outbox::retire`), and a write that
     /// got no answer ends as the unknown outcome its kind already has (`PendingGuard`). One arm per variant, so a new
     /// kind decides. The marked arms (the `false` ones) each already have an outcome for a connection that
-    /// ended. The other writes stay replayable
+    /// ended, or (`ChatWatch`, `ChatHistory`) are asked again by their owner on the next connection. The other writes stay replayable
     /// because a connection's end gives their callers no outcome yet, so ending one unsent would leave its caller
     /// waiting; they are queued with their owners (`ConceptWrite`, `FileWrite`, `FileDelete`, `DirCreate`,
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -468,9 +468,7 @@ impl OutgoingReq {
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
             | OutgoingReq::ChatResolve { .. }
-            | OutgoingReq::ChatWatch { .. }
             | OutgoingReq::ChatUnwatch { .. }
-            | OutgoingReq::ChatHistory { .. }
             | OutgoingReq::FileDownload { .. }
             | OutgoingReq::FileUpload { .. }
             | OutgoingReq::MonitorSubscribe

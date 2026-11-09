@@ -402,3 +402,167 @@ fn what_is_for_another_link_or_channel_changes_nothing() {
     assert_eq!(fill(&o), Fill::Reading, "C1's late reply is not C2's read");
     assert!(o.watch.as_ref().unwrap().records.is_empty());
 }
+
+fn record_with(ts: &str, thread_ts: &str, channel: &str, text: &str) -> serde_json::Value {
+    let mut r = record(ts, channel);
+    r["thread_ts"] = thread_ts.into();
+    r["text"] = text.into();
+    r
+}
+
+fn snapshot(records: Vec<serde_json::Value>) -> ChatReply<ChatHistoryRes> {
+    ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records, "next": null })).unwrap())
+}
+
+fn changed(put: Vec<serde_json::Value>) -> ChatEvt {
+    ChatEvt::Changed(serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "put": put, "deleted": [] })).unwrap())
+}
+
+fn text_of(o: &ChatOwner, t: &str) -> String {
+    o.watch.as_ref().unwrap().records[&ts(t)].text.clone()
+}
+
+/// The daemon answers a watch from its published state when the watch arrives and never says later that a snapshot
+/// completed, so a `Gap` is asked again every minute, with no cap, and a `complete` reply ends it. The ticks inside the
+/// minute send nothing.
+#[test]
+fn a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it() {
+    let t0 = Instant::now();
+    let pending = || watched(ChatWatchState::Pending);
+    // Two failed snapshots, each told by a status; the third attempt succeeds after its reply.
+    let mut o = complete(t0);
+    let mut now = t0 + PACE;
+    for _ in 0..MAX_TRIES {
+        assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
+        assert!(o.on_evt(&host(), pending(), now).is_empty());
+        now += PACE;
+    }
+    assert!(o.tick(now).is_empty());
+    assert_eq!(fill(&o), Fill::Gap);
+    assert!(o.tick(now + GAP_PACE - PACE * 2).is_empty(), "inside the minute");
+    let late = now + GAP_PACE;
+    assert!(is_watch(&o.tick(late)));
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), late));
+    assert_eq!(req.limit, MAX_PAGE, "the daemon's snapshot size");
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&[], None) }, late);
+    assert_eq!(fill(&o), Fill::Complete);
+
+    // One snapshot slower than three paces: only ticks, every reply pending, a refusal stays a gap, and no cap.
+    let mut o = complete(t0);
+    let mut now = t0 + PACE;
+    assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
+    for _ in 1..MAX_TRIES {
+        now += PACE;
+        assert!(is_watch(&o.tick(now)));
+    }
+    o.tick(now + PACE);
+    assert_eq!(fill(&o), Fill::Gap);
+    let mut at = now;
+    for _ in 0..5 {
+        at += GAP_PACE;
+        assert!(is_watch(&o.tick(at)), "no cap in a gap");
+        assert!(o.tick(at + PACE).is_empty());
+        o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, at);
+        assert_eq!(fill(&o), Fill::Gap, "a refusal stays a gap");
+    }
+    at += GAP_PACE;
+    assert!(is_watch(&o.tick(at)));
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), at));
+    assert_eq!(fill(&o), Fill::Reading);
+}
+
+/// The snapshot keeps the channel's top-level messages, as the daemon's model does (it never sends an edit or delete for a
+/// thread reply sent to the channel); an edit of a record older than every held one is not added, a hole otherwise.
+#[test]
+fn the_owner_holds_only_what_the_daemon_tracks() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    let reply = snapshot(vec![
+        record_with("10.000001", "10.000001", "C1", "top"),
+        record_with("11.000001", "9.000001", "C1", "a thread reply sent to the channel"),
+        record_with("12.000001", "12.000001", "C2", "another channel"),
+    ]);
+    o.on_evt(&host(), ChatEvt::History { req, reply }, t0 + PACE);
+    assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("10.000001")]);
+
+    o.on_evt(&host(), changed(vec![record_with("2.000001", "2.000001", "C1", "edited below the page")]), t0 + PACE);
+    assert_eq!(o.watch.as_ref().unwrap().records.len(), 1, "older than every held one");
+    o.on_evt(&host(), changed(vec![record_with("10.000001", "10.000001", "C1", "edited")]), t0 + PACE);
+    o.on_evt(&host(), changed(vec![record_with("9.000001", "9.000001", "C1", "new, older than 10 by a digit")]), t0 + PACE);
+    assert_eq!(text_of(&o, "10.000001"), "edited", "an edit of a held record replaces it");
+    assert_eq!(o.watch.as_ref().unwrap().records.len(), 1, "9 is below 10 whatever its length");
+    o.on_evt(&host(), changed(vec![record_with("100.000001", "100.000001", "C1", "newest")]), t0 + PACE);
+    assert_eq!(o.watch.as_ref().unwrap().records.len(), 2, "a newer record is added");
+}
+
+/// The same host and target watched again is nothing; the same channel on the same host is a watch alone, since the
+/// daemon's watch replaces the connection's earlier one and an unwatch would let it drop the channel.
+#[test]
+fn watching_again_sends_only_what_changes() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    assert!(o.watch(host(), target("C1"), t0).is_empty(), "unchanged");
+    assert_eq!(fill(&o), Fill::Complete, "and the state is kept");
+    let mut other_row = target("C1");
+    other_row.row = "other__box".into();
+    assert!(is_watch(&o.watch(host(), other_row, t0)), "same channel: the watch alone");
+    let out = o.watch("other".to_string(), target("C1"), t0);
+    assert!(matches!(out.as_slice(), [(_, OutgoingReq::ChatUnwatch { .. })]), "another host: the old host is released (the new one is not connected)");
+}
+
+/// The events kept over a snapshot are those of the read in flight: one from before a refused read, a link loss or with no
+/// read at all never covers a newer snapshot. While the link is down the state is not whole.
+#[test]
+fn only_the_events_of_the_read_in_flight_cover_a_snapshot() {
+    let t0 = Instant::now();
+    let event = || changed(vec![record_with("5.000001", "5.000001", "C1", "event")]);
+    let newer = || snapshot(vec![record_with("5.000001", "5.000001", "C1", "snapshot")]);
+
+    // A change during a read, then the read is refused; the next snapshot wins.
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), event(), t0 + PACE);
+    o.on_evt(&host(), ChatEvt::History { req, reply: ChatReply::Refused(ChatCode::Busy) }, t0 + PACE);
+    assert!(is_watch(&o.tick(t0 + PACE * 2)));
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE * 2));
+    o.on_evt(&host(), ChatEvt::History { req, reply: newer() }, t0 + PACE * 2);
+    assert_eq!(text_of(&o, "5.000001"), "snapshot");
+
+    let mut down = complete(t0);
+    down.on_connection(&host(), false, t0);
+    assert_ne!(fill(&down), Fill::Complete, "a whole state does not stay whole over a dead link");
+
+    // A change during a read, then the link flaps; the newer snapshot wins, and the state is not whole while it is down.
+    let mut o = complete(t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), event(), t0 + PACE);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert_ne!(fill(&o), Fill::Complete, "the link is down");
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), ChatEvt::History { req, reply: newer() }, t0 + PACE);
+    assert_eq!(text_of(&o, "5.000001"), "snapshot");
+
+    // A change with no read in flight is not kept for the next one.
+    let mut o = complete(t0);
+    o.on_evt(&host(), event(), t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), ChatEvt::History { req, reply: newer() }, t0 + PACE);
+    assert_eq!(text_of(&o, "5.000001"), "snapshot");
+}
+
+/// A post reply from another host, equal in value, answers nothing.
+#[test]
+fn a_post_reply_from_another_host_answers_nothing() {
+    let now = Instant::now();
+    let mut o = complete(now);
+    assert!(o.post(host(), post_req("one")).is_some());
+    let reply = ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") });
+    o.on_evt(&"other".to_string(), ChatEvt::Posted { req: post_req("one"), reply }, now);
+    assert!(o.posting.is_some() && o.shown.is_none());
+}

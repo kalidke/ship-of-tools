@@ -91,7 +91,8 @@ fn chat_events_decode_into_their_typed_events() {
 }
 
 /// A post that got no answer is unknown when its connection ends, once; one still waiting then is ended the same way
-/// and never written, while a read waiting beside it is kept.
+/// and never written. A watch or a snapshot read waiting beside it is dropped too, with no event, so a later connection
+/// never writes it ahead of the owner's new watch; a resolve is kept.
 #[tokio::test]
 async fn a_chat_post_without_its_answer_is_unknown_and_never_written_again() {
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
@@ -103,11 +104,14 @@ async fn a_chat_post_without_its_answer_is_unknown_and_never_written_again() {
     let mut outbox = Outbox::new(out_rx);
     out_tx.send(OutgoingReq::ChatPost { req: post_req() }).unwrap();
     out_tx.send(OutgoingReq::ChatWatch { target: target() }).unwrap();
+    let read = sot_protocol::ops::ChatHistoryReq { target: target(), thread: None, after: None, upper: None, limit: 20, cursor: None };
+    out_tx.send(OutgoingReq::ChatHistory { req: read }).unwrap();
+    out_tx.send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
     outbox.retire(&evt_tx, &"h".to_string()).await;
     drop(out_tx);
     let ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
     assert!(ended.len() == 2 && ended.iter().all(|e| e.contains("Posted") && e.contains("Done(Unknown)")), "{ended:?}");
-    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatWatch { .. })), "the watch is replayable and kept");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatResolve { .. })), "only the resolve is kept");
     assert!(outbox.recv().await.is_none());
 }
 

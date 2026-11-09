@@ -11,13 +11,15 @@ use super::super::*;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{
     ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
-    ChatWatchState,
+    ChatWatchState, MAX_PAGE,
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
 /// Between two watch attempts, and the attempts without a completed snapshot before the gap is shown instead.
 const PACE: Duration = Duration::from_secs(5);
 const MAX_TRIES: u8 = 3;
+/// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot.
+const GAP_PACE: Duration = Duration::from_secs(60);
 
 type Out = (HostKey, OutgoingReq);
 
@@ -28,8 +30,8 @@ pub(in crate::ui) enum Fill {
     Needed,
     Reading,
     Complete,
-    /// Recovery cannot complete (the daemon refused the watch, or the attempts ran out): shown, not hidden. It ends when the
-    /// link returns; the drawer owes a way out before that.
+    /// Recovery has not completed (the daemon refused the watch, or the attempts ran out): shown, not hidden. A watch goes
+    /// out every `GAP_PACE`, and a `complete` reply to one reads as from `Needed`.
     Gap,
 }
 
@@ -58,9 +60,23 @@ struct Watch {
     overlay: Vec<ChatChangedEvt>,
 }
 
+/// A timestamp's order: seconds by length then digits, then the fraction.
+fn ts_order(t: &Ts) -> (usize, &str, &str) {
+    let (secs, frac) = t.as_str().split_once('.').unwrap_or((t.as_str(), ""));
+    let secs = secs.trim_start_matches('0');
+    (secs.len(), secs, frac)
+}
+
 impl Watch {
+    /// A put of a record not held and older than every held one is not added: it is an edit below the page (the daemon's
+    /// model refuses it the same way), and adding it would leave a hole.
     fn apply(&mut self, c: &ChatChangedEvt) {
-        self.records.extend(c.put.iter().map(|r| (r.ts.clone(), r.clone())));
+        for r in &c.put {
+            let below = !self.records.contains_key(&r.ts) && self.records.keys().all(|k| ts_order(&r.ts) < ts_order(k));
+            if !(below && !self.records.is_empty()) {
+                self.records.insert(r.ts.clone(), r.clone());
+            }
+        }
         c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
     }
 }
@@ -76,9 +92,14 @@ pub(in crate::ui) struct ChatOwner {
 }
 
 impl ChatOwner {
-    /// Watch `target` on `host`, replacing any earlier watch.
+    /// Watch `target` on `host`, replacing any earlier watch; the same host and target again is nothing.
     pub(in crate::ui) fn watch(&mut self, host: HostKey, target: ChatTarget, now: Instant) -> Vec<Out> {
-        let mut out: Vec<Out> = self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
+        if self.watch.as_ref().is_some_and(|w| w.host == host && w.target == target) {
+            return Vec::new();
+        }
+        // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
+        let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
+        let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
         self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new(), overlay: Vec::new() });
         out.extend(self.drive(now));
         out
@@ -186,11 +207,22 @@ impl ChatOwner {
     /// which is paced and counted against the cap. Nothing while a read is in flight or the state is whole.
     fn drive(&mut self, now: Instant) -> Vec<Out> {
         let Some(w) = self.watch.as_mut() else { return Vec::new() };
-        if w.fill != Fill::Needed || w.reading.is_some() || !self.connected.contains(&w.host) || self.unsupported.contains(&w.host) {
+        if w.reading.is_some() || !self.connected.contains(&w.host) || self.unsupported.contains(&w.host) {
             return Vec::new();
         }
+        match w.fill {
+            Fill::Reading | Fill::Complete => return Vec::new(),
+            Fill::Gap => {
+                if w.last_try.is_none_or(|t| now.duration_since(t) < GAP_PACE) {
+                    return Vec::new();
+                }
+                w.last_try = Some(now);
+                return vec![(w.host.clone(), OutgoingReq::ChatWatch { target: w.target.clone() })];
+            }
+            Fill::Needed => {}
+        }
         if w.registered {
-            let req = ChatHistoryReq { target: w.target.clone(), thread: None, after: None, upper: None, limit: 20, cursor: None };
+            let req = ChatHistoryReq { target: w.target.clone(), thread: None, after: None, upper: None, limit: MAX_PAGE, cursor: None };
             (w.fill, w.reading) = (Fill::Reading, Some(req.clone()));
             return vec![(w.host.clone(), OutgoingReq::ChatHistory { req })];
         }
@@ -206,13 +238,13 @@ impl ChatOwner {
         Vec::new()
     }
 
-    /// Only a watch reply that says `complete` starts a read, and only while the state needs one. A watch still pending
-    /// is sent again by `tick`; a refused one is a gap.
+    /// Only a watch reply that says `complete` starts a read, and only while the state needs one or is a gap. A watch
+    /// still pending is sent again by `tick`; a refused one is a gap.
     fn on_watched(&mut self, host: &HostKey, target: &ChatTarget, reply: ChatReply<ChatWatchRes>, now: Instant) -> Vec<Out> {
         self.mark_unsupported(host, &reply);
-        let Some(w) = self.of(host).filter(|w| &w.target == target && w.fill == Fill::Needed) else { return Vec::new() };
+        let Some(w) = self.of(host).filter(|w| &w.target == target && matches!(w.fill, Fill::Needed | Fill::Gap)) else { return Vec::new() };
         match reply {
-            ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) => w.registered = true,
+            ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) => (w.registered, w.fill) = (true, Fill::Needed),
             ChatReply::Refused(_) => w.fill = Fill::Gap,
             ChatReply::Done(_) | ChatReply::Unsupported => {}
         }
@@ -230,7 +262,8 @@ impl ChatOwner {
             ChatReply::Done(res) if !w.stale => {
                 // The snapshot replaces what was held: a record it no longer holds was deleted during the loss. Its
                 // `next` cursor is the older history, which the drawer pages.
-                w.records = res.records.into_iter().map(|r| (r.ts.clone(), r)).collect();
+                // Only the channel's top-level messages: the daemon tracks no thread reply, so it would never send its edit or delete.
+                w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), r)).collect();
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 (w.fill, w.tries) = (Fill::Complete, 0);
             }
