@@ -526,6 +526,12 @@ owned by `docs/CLAUDE.md`.
   `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
   per window per minute for as long as the window watches it, and the refusal code is dropped, so the drawer cannot say
   why it shows a gap. Keep the last refusal in the watch when the drawer needs it. Found reading code; never seen.
+- **INK-RASTER-SERVED-SIZE** [note] The window keeps a drawing's raster at the wire's `raster_dims` of the figure's
+  served size (`rust/frontend/src/ui/preview/image/ink.rs`); a figure over 20 MB and 6000 pixels is served downsampled,
+  and the preview reply carries the factor only into the physical scale (`rust/backend/src/files/preview/mod.rs`), so
+  for some sizes the window's raster is a row or a column off the daemon's, which composites at the source's size. The
+  ink rides as fractions, so the agent's picture is right; only the window's display differs by a pixel. Fix: the
+  preview reply carries the source size and the window takes it. Found reading code; never seen.
 - **FE-CONCEPT-SAVE-SILENT** [note] The window shows nothing when `concept.write` is refused: the reply is only logged
   (`rust/frontend/src/ui/preview/replies.rs`) and the editor stays dirty.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent

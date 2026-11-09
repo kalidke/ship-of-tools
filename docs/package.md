@@ -191,7 +191,8 @@ first channel moves. Also in progress: the agent sees what the user draws (`requ
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
 strokes, undo, clear and the right-button erase), its raster, drawn over the figure it belongs to and no other, and its
-mouse, keys and status lines; keeping a row's drawing across a row switch is next. Also in
+mouse, keys and status lines, and each row keeps its own drawing across a row switch; the canvas and the share of the
+drawing to the daemon are next. Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the

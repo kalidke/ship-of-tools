@@ -1371,3 +1371,14 @@ A landing's record goes here, with its measured times; the package page holds on
   stopped) and 150 test lines. Where the minutes went: the build (9 minutes); one review round (blockers 0; 25 minutes)
   and one fix round of 12 minutes; two gates of 2 minutes. Of D4's four builders, all ran past the line stop their
   brief stated; the split before launch is what bounded each landing.
+- D4c2, a row's drawing stays with its row, 2026-11-09: builder launched 01:01, main 01:59 (32aabd5b3, one commit
+  squashed from two), 58 minutes. The drawing (base, strokes, cleared copy, undo history, mode) is one value the owner
+  holds and the row's parked view carries, so each row gets back its own drawing after a switch, a new row starts
+  clean, a destroyed row's view drops it, and a restore raises the revision, rebuilds the raster and keeps nothing of
+  the row left; two rows whose figures share a relative path keep two drawings. A window State fixture pins the three
+  park and restore calls; it runs only under a display, so it was run on the hosted runner before the landing (passed).
+  The keybindings page lists the three drawing keys with what each does today. The brief's other item, the source size
+  for a figure served downsampled, was not built: its premise (the preview reply carries the scale) was false, and it
+  is INK-RASTER-SERVED-SIZE. About 59 product lines and 180 test lines. Where the minutes went: the build (4 minutes);
+  one review round (blockers 0; 25 minutes) and one fix round of 13 minutes, with one item the session's brief worded
+  ambiguously (the catalog's text); two gates of 2 minutes and one hosted run on the branch of 11 minutes.
