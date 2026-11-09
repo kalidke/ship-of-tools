@@ -1,7 +1,7 @@
 //! The project chat's private owner: one watched channel's state, the one post in flight, and the reads that keep the
 //! watched state whole. It consumes fe-net's chat events and replies and returns the requests to send; it sends nothing
-//! itself and replays no mutation. No drawer reads it yet (the drawer is B5's), so only its tests call most of it.
-#![cfg_attr(not(test), allow(dead_code, reason = "the chat drawer, its first caller, is a later landing"))]
+//! itself and replays no mutation. Only `ChatDrawer` calls it; no drawer view reads it yet (the view is B5's).
+#![cfg_attr(not(test), allow(dead_code, reason = "the drawer's view, which reads the records and the post outcome, is a later landing"))]
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -117,9 +117,14 @@ impl ChatOwner {
         out
     }
 
-    /// End the watch at once, with one unwatch.
+    /// End the watch at once, with one unwatch; its read in flight is given up (the drawer reads `reading` first).
     pub(super) fn stop(&mut self) -> Vec<Out> {
         self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect()
+    }
+
+    /// The one snapshot read in flight, with its host.
+    pub(super) fn reading(&self) -> Option<(HostKey, ChatHistoryReq)> {
+        self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
     }
 
     pub(super) fn fill(&self) -> Option<Fill> {

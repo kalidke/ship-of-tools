@@ -712,7 +712,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 - A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
   (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-`ChatDrawer` (`drawer/chat/drawer.rs`, State's `chat` field) privately holds the owner and a `RowChannel`; the owner's
+`ChatDrawer` (`drawer/chat/drawer.rs`, State's `chat` field) privately holds the owner, a `RowChannel` and the reads in flight; the owner's
 methods are `pub(super)`, so no other ui code can drop the requests they return. Rules:
 - The window watches exactly the channel of the row the drawer shows, on that row's computer, while the chat is shown and
   nothing otherwise. The chat is shown when the drawer is Chat, or Help whose saved origin is Chat
@@ -728,6 +728,18 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   maps is not asked for again. An answer for a row no longer wanted is nothing. A row that changed or went ends the old watch at once, with the owner's `stop` and one `chat.unwatch`. A link coming
   up resolves the row again; a link going down resolves nothing (the row's state is reset then, which no test
   observes).
+- Every `chat.history` goes through the set of reads in flight, per host. A read equal to one in flight waits, and goes when that
+  one is answered (`a_read_from_before_a_rewatch_never_fills_the_new_watch`). A read whose reader gave it up stays as an
+  orphan and its reply is dropped; a read still held when its reader gives it up is cancelled, never sent
+  (`a_held_read_given_up_is_cancelled_and_never_sent`). The give-up is decided in one place, `owner_outs`, which compares the
+  owner's read before and after each call it makes, so a watch stopped by hiding the chat (the first test), ended by a
+  non-`mapped` answer or replaced by a `mapped` answer for another channel
+  (`an_answer_that_ends_or_replaces_the_watch_orphans_its_read`) all give their read up the same way. A link change clears the
+  host's set, since no reply comes for what its end dropped (`a_link_change_clears_the_reads_in_flight`). A read the owner still holds
+  is kept when a frame passes (`a_frame_during_the_read_keeps_it`). Limit: fe-net's
+  exception (a request sent before the window has drained a link change can be written on the next connection) lets the
+  clear admit an equal read beside it, and the earlier reply can then fill the new watch; the fix belongs to fe-net. A read held behind an orphan whose reply never comes waits until a link change; the daemon answers
+  every history request but an admission hung on the shared home, which would hang a fresh read too.
 
 Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatDrawer` and its parts and a `State` needs a window; `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
@@ -797,7 +809,7 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
 - `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `row_channel.rs` holds `RowChannel`, which
-  resolves the wanted row; `drawer.rs` holds `ChatDrawer`, which owns both and is what State holds; `mod.rs` holds State's side
+  resolves the wanted row; `drawer.rs` holds `ChatDrawer`, which owns both and the set of reads in flight, and is what State holds; `mod.rs` holds State's side
   only. State forwards chat events, `bus.lost` and each link's change to `ChatDrawer`, whose methods return the requests to
   send. No drawer view or key reads it yet.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
