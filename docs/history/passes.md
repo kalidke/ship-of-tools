@@ -1321,3 +1321,15 @@ A landing's record goes here, with its measured times; the package page holds on
   broken in a new place; one of the first round's blockers was the brief's own rule (a status answered by a read, where
   the wire says a watch). The window's own second Slack read is the source of two of the classes found; a complete
   watch reply that carries the daemon's page would delete it (CHAT-TWO-READS-DISAGREE).
+- A7a, the window shares its text selection, 2026-11-08: builder launched 20:12, main 21:03 (12c823e0f, one commit
+  squashed from two), 51 minutes. The window's selection share is a per-frame reconcile (the drawing plan's share, which
+  wins over the selection plan's list of gestures): the desired state is the selected row's released, non-empty flowed
+  selection over a shown text preview, with the range, length and digest the daemon checks; it sends one
+  `selection.set` when that differs from the state last sent and nothing is in flight, clears the row that held the
+  share at a row switch, sends the latest change at the reply, shows a refusal once and does not retry it, forgets a
+  host's share at its connection's end or a failed send and sends again after the connection returns, drops a reply
+  from an ended connection, and keeps hosts apart; each reply kind has its status line. The plan's 150 product lines
+  were split before launch; the manual's section and the done test through a window are A7b. About 124 product lines
+  in the owner plus 24 of accessors and glue, and 214 test lines. The builder stopped once, as its brief said, on a
+  needed one-line export in fe-net, which the session allowed. Where the minutes went: the build (9 minutes, with the
+  stop); one review round (blockers 0; 23 minutes) and one fix round of 12 minutes; two gates of 2 minutes.
