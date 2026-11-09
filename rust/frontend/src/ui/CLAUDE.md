@@ -675,7 +675,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 ## Chat owner
 `ChatOwner` (`drawer/chat/`) holds one watched channel (its host, target, fill: `Needed`, `Reading`, `Complete` or `Gap`, and
 its records), the one post in flight and the last post's outcome. It sends nothing itself and replays no mutation: each method
-returns the requests for State to send. Rules, each with its test in `drawer/chat/tests.rs`:
+returns the requests for State to send. Rules, each with its test in `drawer/chat/owner_tests.rs`:
 - One recovery serves every loss: the link returning, `bus.lost` for `chat.changed`, a `chat.status` that lists the channel or
   says the service is not running, and an `Unreadable` event. It forgets the registration and sends `chat.watch`
   (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_and_capped_watch`,
@@ -777,7 +777,7 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `drawer/`: the bottom drawer and its tenants.
 - `drawer/repl/`: ReplModel owns row behavior; ReplPresentation owns image refresh, projection, layout, anchoring
   and painting; thin State adapters apply transport and presentation effects.
-- `drawer/chat/`: `ChatOwner`, the project chat's private owner (fields private, no open mutation); State holds it and
+- `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `mod.rs` holds State's side only. State holds it and
   forwards chat events, `bus.lost` and each link's change to its methods, which return the requests to send. No drawer or key
   reads it yet.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).

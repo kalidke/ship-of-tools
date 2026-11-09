@@ -555,7 +555,7 @@ owned by `docs/CLAUDE.md`.
   never seen. A math, figure or `markdown.tokenize` reply also reflows a markdown preview (`reflow_markdown_preview`,
   `rust/frontend/src/ui/app/frame.rs`) and clears its selection a frame after the share was sent, with no status line,
   which since the markdown selection can withdraw a rendered selection on a document's first view.
-- **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/mod.rs`)
+- **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/owner.rs`)
   watches again once a minute whatever the last refusal was, so a target the daemon refuses for good (`stale_row`,
   `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
   per window per minute for as long as the window watches it, and the refusal code is dropped, so the drawer cannot say
