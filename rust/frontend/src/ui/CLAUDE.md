@@ -693,6 +693,27 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `chat.resolve` replies are not read (the drawer starts at a resolve), `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
 
+## Selection share
+`SelectionShare` (`preview/share.rs`) keeps the daemon's published selection for a row equal to the preview's text selection.
+It privately holds the hosts that are up, the `Want` it last asked the daemon to hold (host, row, node, range, `len` and
+`digest`) and the one `selection.set` in flight. It sends nothing itself: `reconcile` returns the request and State sends
+it, from the frame's upkeep after `drain_events`. The desired state is read from the view each frame (`State::desired_selection`):
+the selected row's released, non-empty `FlowedSelection` range over its installed preview, none in edit mode or under the
+refused-hello overlay. Rules, each with its test in `preview/share_tests.rs` unless named:
+- A released range sends one request; an unchanged state, or a state while a request is in flight, sends nothing, and the
+  latest desired state is sent at the reply, so changes in between are not sent (`the_window_shares_its_selection_and_withdraws_it`).
+  There is no pending flag: the next frame's read of the view is the pending change.
+- The range gone sends one clear to the row that held it, without a status line; a row switch is that clear, then the new
+  row's share at its reply (same test).
+- Nothing during a drag (`flowed_selection_tests.rs::the_released_range_is_ordered_and_absent_during_a_drag`).
+- A reply earns one status line per kind (`shared`, `held`, `not_file_text`, `no_agent`, any other refusal, an old daemon).
+  The state sent is what was asked, so a refusal is not retried until the state changes (`a_refusal_is_shown_and_not_retried`).
+- fe-net does not replay the request. A failed send, an ended reply or a lost link marks the host down and forgets what it
+  held (the daemon withdrew it at the connection's end); the state is sent again after `Connected`. A reply that does not
+  answer the request in flight on that host is dropped (`a_lost_connection_is_answered_after_it_returns`).
+- Limits: only the preview's flowed text is shared (not the agent pane, chat, concept pane or a drawing); a row with no
+  workspace id (the daemon's default row) is never shared; the daemon's own check decides whether the text is the file's.
+
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
 - `render/`: glyph text, the ratatui cell backend, textured quads, the surface and the capture readback.

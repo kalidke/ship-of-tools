@@ -73,7 +73,7 @@ pub(crate) use self::{
     ops::{
         AccountInfo, ChatEvt, ChatReply, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
         FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
-        ScanModule, ScanType, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
+        ScanModule, ScanType, SelectionReply, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
     },
     request::{OutgoingReq, ResultAttemptId, ResultTreeRequest},
 };

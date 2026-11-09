@@ -313,6 +313,8 @@ struct State {
     repl_model: ReplModel,
     /// The project chat's private owner: the watched channel, the post in flight, the snapshot reads.
     chat: drawer::chat::ChatOwner,
+    /// The preview selection share: what the daemon was last asked to hold and the request in flight.
+    selection_share: preview::share::SelectionShare,
     /// The last `fe.sessions` projection this frontend sent out
     /// (session-listing brief decision 2) — `None` until the local
     /// daemon's first `workspace.list` reply. Compared against the next

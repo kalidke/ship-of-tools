@@ -101,6 +101,12 @@ impl ShapedPreview {
 
     pub(in crate::ui) fn selected_text(&self) -> Option<String> { self.selection.text(&self.flowed()) }
 
+    /// The released, non-empty selection: its ordered `(line, byte)` range and the text it covers. Nothing during a drag.
+    pub(in crate::ui) fn released_selection(&self) -> Option<(((usize, usize), (usize, usize)), String)> {
+        if self.selection.dragging() { return None; }
+        Some((self.selection.range()?, self.selected_text()?))
+    }
+
     pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
         if self.selection.is_empty() { return Vec::new(); }
         self.selection.rects(&self.flowed())

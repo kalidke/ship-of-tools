@@ -17,5 +17,6 @@ mod open;
 mod replies;
 pub(in crate::ui) mod requests;
 pub(in crate::ui) mod shaped;
+pub(in crate::ui) mod share;
 pub(in crate::ui) mod source;
 

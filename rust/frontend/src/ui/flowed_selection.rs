@@ -73,6 +73,12 @@ impl FlowedSelection {
         if a_pos == b_pos { None } else if a_pos < b_pos { Some((a, b)) } else { Some((b, a)) }
     }
 
+    /// The ordered range as `(line, byte)` pairs, `end` exclusive; `None` when nothing, or an empty range, is held.
+    pub(in crate::ui) fn range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (a, b) = self.ordered()?;
+        Some(((a.line, a.index), (b.line, b.index)))
+    }
+
     /// The buffer's bytes, joining real buffer lines, never inserting a newline at a soft wrap.
     pub(in crate::ui) fn text(&self, text: &FlowedText) -> Option<String> {
         let (start, end) = self.ordered()?;

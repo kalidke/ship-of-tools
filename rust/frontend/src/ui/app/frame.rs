@@ -112,6 +112,7 @@ impl State {
         layout_help::start_pending(requests, self);
 
         self.drain_events();
+        self.reconcile_selection_share();
         // Prune finished status-change flashes; while any is still fading,
         // mark dirty so the frame loop keeps animating it (the fast-repaint
         // cadence is armed in `about_to_wait`).
