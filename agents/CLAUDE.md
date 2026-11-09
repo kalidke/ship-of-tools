@@ -321,6 +321,7 @@ of each.
   is `Drawing: <path in the project or sketch> (<N> strokes)`; the same caps hold, by a compile-time assertion at two
   4,096-unit paths. Tests: `a_drawing_renders_as_the_hook_output_within_the_caps`,
   `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
+  `selection_check::tests::a_whole_lines_range_is_the_files_own_lines`,
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.

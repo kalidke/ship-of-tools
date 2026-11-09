@@ -24,13 +24,37 @@ pub mod selection_code {
     pub const TOO_LARGE: &str = "too_large";
 }
 
-/// FNV-1a 64 of the selected text's UTF-8 bytes, lines joined by LF: what the window computes over what it shows and
-/// the daemon over the file's text at the range. The one definition.
+/// FNV-1a 64 of the UTF-8 bytes of the file's text at the range (see `TextPos`), lines joined by LF: what the window
+/// and the daemon both compute. The one definition.
 pub fn selection_digest(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
-/// A position in the preview buffer: a line, and a UTF-8 byte offset in it.
+/// The range and text of the 1-based lines `first..=last` of `text`, in the form `selection.set` names the file's text:
+/// a line ends at LF, one CR before the LF (or at the end of the text) is dropped, the range runs from the start of
+/// `first` to the end of `last` (`end` exclusive, positions `(line, byte)` from 0), and the text is those lines joined
+/// by LF. A range whose `last` line is empty ends at byte 0, and the daemon reports its last line as `last - 1`.
+/// `None` when `first` is 0 or after `last`, `last` is past the text, or the range is a single empty line. `Some` is
+/// not an acceptance: the daemon still refuses a text with a CR not before an LF, U+0085, U+2028 or U+2029 before the
+/// range's end.
+pub fn whole_lines(text: &str, first: usize, last: usize) -> Option<(((usize, usize), (usize, usize)), String)> {
+    if first == 0 || first > last {
+        return None;
+    }
+    let lines: Vec<&str> =
+        text.split('\n').skip(first - 1).take(last - first + 1).map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    if lines.len() != last - first + 1 {
+        return None;
+    }
+    let end = (last - 1, lines[lines.len() - 1].len());
+    let joined = lines.join("\n");
+    (!joined.is_empty()).then_some((((first - 1, 0), end), joined))
+}
+
+/// A position in the file's own text: a 0-based line and a UTF-8 byte offset in it, LF-ended lines with a CR before
+/// the LF dropped. "The file's text at the range" is the text from `start` to `end`, lines joined by LF. A plain or
+/// token preview's buffer is that text; a rendered markdown preview's is not, and `whole_lines` is the form for it
+/// (unbuilt: no caller yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextPos {
     pub line: u32,
@@ -48,7 +72,7 @@ struct RawSelectedText {
     digest: u64,
 }
 
-/// The selected range of one node: `end` exclusive, `start` before `end`, `len` the bytes of the text the window shows
+/// The selected range of one node: `end` exclusive, `start` before `end`, `len` the bytes of the file's text at the range
 /// (1 to `MAX_SELECTION_LEN`). The text itself never travels. Decoding refuses a range that breaks these.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawSelectedText")]

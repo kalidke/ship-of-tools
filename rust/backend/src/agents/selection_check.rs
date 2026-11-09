@@ -43,7 +43,7 @@ pub(crate) struct FileText {
 
 /// The file's own text at the window's range, or `None` (`not_file_text`). `bytes` is a prefix of the file that may
 /// end mid-character after the range; a range reaching past it is refused. Lines are LF-ended with a CR before the LF
-/// dropped, as the preview shows them; a lone CR, U+2028, U+2029 or U+0085 before the range's end is refused (the
+/// dropped (see `TextPos`); a lone CR, U+2028, U+2029 or U+0085 before the range's end is refused (the
 /// preview breaks a line there, the file does not), and anything after it, or bytes that are not UTF-8 after it, are
 /// not read. A start not before the end (the wire's decode refuses it too; this function does not depend on the
 /// decode), a position outside its line or inside a character, and a `len` or `digest` that differs from the file's

@@ -136,8 +136,11 @@ name is in this crate's one op table.
 13. **`selection.set` is one op in the table, its request bounded at decode, its digest defined once.** `ops/selection.rs`:
     `SelectionSetReq { workspace_id, selection, drawing }` -> `SelectionSetRes { state }` (`shared`, `held`; a later state reads as
     `other`, not shared), with `selection` a `SelectedText { node_id, start, end, len, digest }` or `null` to clear; the field
-    is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a preview-buffer line
-    and a UTF-8 byte offset, `end` exclusive. The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
+    is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a position in the file's own text: a
+    line and a UTF-8 byte offset, `end` exclusive. `whole_lines` is the one definition of a whole-line range, the form a
+    rendered markdown preview will use; defined and tested, no caller yet. `Some` is not an acceptance: the daemon still
+    refuses a CR not before an LF, U+0085, U+2028 and U+2029 before the end, and reports a range ending on an empty line as
+    `last - 1`. The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
     FNV-1a 64 over the UTF-8 bytes, lines joined by LF, the one definition the window and the daemon both call. The six
     refusal codes are the `selection_code` constants (`unknown_workspace`, `bad_node_id`, `not_file_text`, `no_agent`,
     `not_a_window`, `publish_failed`). Bounds a decoder enforces, `SelectedText` through `try_from` so no call shape skips
@@ -157,6 +160,7 @@ name is in this crate's one op table.
     largest drawing is far under the envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:
     `selection_set_round_trips_and_the_digest_is_fnv1a_64`, `a_missing_selection_is_refused_not_read_as_a_clear`,
     `a_drawing_rides_selection_set_within_its_bounds`, `ids_are_bounded_at_decode`, `a_range_starts_before_it_ends`, `len_is_one_to_two_mib`,
+    `whole_lines_names_a_files_lines_as_the_daemon_reads_them`,
     `a_wrong_type_is_refused_and_an_added_field_is_ignored`, `the_refusal_codes_are_fixed`.
 
 14. **A drawing has one raster.** `ink.rs`: `raster_dims` keeps the base's aspect with the long side at most 2000
@@ -172,7 +176,7 @@ name is in this crate's one op table.
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too) and `selection_digest` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too) `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
