@@ -219,7 +219,7 @@ table are not. A selection is refused if the preview does not show the file's ow
 and files with unusual line breaks.
 
 In a rendered markdown preview the agent is given the file's own lines that your selected text was rendered from, whole:
-each paragraph, heading or list item you touch and each code line, with any table, equation or figure between them. A
+each paragraph (in a list item, the item's paragraph) or heading you touch and each code line, with any table, equation or figure between them. A
 table, equation, figure or rule alone is not shared. A paragraph that follows link reference definitions shares their
 lines too, and a paragraph written on one long line is cut at 2000 characters, which may fall before the words you
 selected. It is refused when the file no longer holds what the preview showed, or when a lone carriage return, U+0085,

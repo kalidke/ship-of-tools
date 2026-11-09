@@ -754,7 +754,10 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   that waits for its ping deadline); a reply is matched to the request in flight by content, not id, which is sound only
   because fe-net emits every `Ended` of a session before its `Disconnected` and the next `Connected`; the selected text
   and its digest are rebuilt each frame, and a release with no later event waits for the next frame; only the preview's flowed text and the row's drawing are shared (not the agent pane, chat or concept pane); a re-rendered figure on the same node does not raise the drawing's revision, so it reaches the agent's picture at the next share; a text selection replaced in place by a drawing stays shared on a daemon that takes no drawing (fe-net answers the drawing unsupported and writes nothing); a row with no
-  workspace id (the daemon's default row) is never shared; the daemon's own check decides whether the text is the file's.
+  workspace id (the daemon's default row) is never shared; the daemon's own check decides whether the text is the file's;
+  the preview pane's call that turns the source-line map on for rendered markdown (`maps_source` true in
+  `preview/pane.rs`) is pinned by no test, nor is the arm that leaves a map that does not line up unshared
+  (docs/defects.md: SELECT-MARKDOWN-PINS).
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.

@@ -1454,5 +1454,12 @@ A landing's record goes here, with its measured times; the package page holds on
   `SourceLines` maps each rendered buffer line's bytes to them, and `released_selection` shares the whole file lines
   the selected text was rendered from, through `whole_lines`; a rendered buffer with no map shares nothing, and the
   walk's golden is unchanged. SELECT-MARKDOWN is closed before its window test; SELECTION-WITHDRAWN-ON-REFRESH names
-  the reflow that withdraws a rendered selection. About 125 product lines and 190 test lines. The session adds its
-  measured minutes at the landing.
+  the reflow that withdraws a rendered selection. About 110 product lines and 190 test lines. Builder launched 11:45,
+  main 13:10 (d7456b9af), 85 minutes: far past the half hour, a failure by this page's standard. Where the minutes
+  went: the first builder (8 minutes) was stopped when the session's account reached its five-hour limit and the
+  session moved to another account; a second builder checked and kept the first one's work whole and committed it (4
+  minutes); one gate of 2 minutes, scoped; one review round of 70 minutes (blockers 0; an audit of 41 documents not in
+  the tests at two widths in both line endings, all lined up, and ten mutants), of which about 30 went to one long
+  command. The causes: a review brief that asked for an open-ended audit and mutant builds with no time bound, and the
+  account move. A review brief names a bound for its audit and mutants, as the probes-first note says. The review's
+  record findings went into the records after; its test findings into SELECT-MARKDOWN-PINS.

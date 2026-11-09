@@ -526,6 +526,13 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
+  mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line
+  above a paragraph to the one below shares the paragraph), the preview pane's `maps_source` true in
+  `preview/pane.rs` (the one line that turns the map on), the arm in `markdown/buffer.rs` that leaves a map that does
+  not line up unshared, that an inline equation's placeholder holds its paragraph's lines (`source_lines.rs`), and that
+  `build` skips a mark out of order silently. Deletable: the backend test's copy of the frontend fixture (one
+  `include_str!`), the public re-export of `SourceLines`, and a second borrow of the node in `walk.rs`.
 - **INK-REACH-ONE-SIZE** [note] The eraser's reach tests (`rust/frontend/src/ui/preview/image/ink_tests.rs`) run at
   one raster size, so a reach computed from a fixed raster at every size survives them, and
   `the_reach_is_the_ink_and_one_pixel_on_both_sides` repeats the first reach test's positive side. Fix: derive the

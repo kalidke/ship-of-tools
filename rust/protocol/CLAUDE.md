@@ -138,8 +138,9 @@ name is in this crate's one op table.
     `other`, not shared), with `selection` a `SelectedText { node_id, start, end, len, digest }` or `null` to clear; the field
     is required, so a request that lost it is refused, never read as a clear. `TextPos { line, byte }` is a position in the shown file's text: a
     line and a UTF-8 byte offset, `end` exclusive. `whole_lines` is the one definition of a whole-line range, the form a
-    rendered markdown preview shares (the window's source-line map calls it); a lone-CR file answers `Some` and the daemon
-    refuses it as `not_file_text`. `Some` is not an acceptance: the daemon still
+    rendered markdown preview shares (the window's source-line map calls it); in a file holding a lone CR, a range
+    `whole_lines` can name answers `Some` and the daemon refuses it as `not_file_text`, while one the window's map
+    numbers past the file's lines answers `None` and the share is cleared with no status line. `Some` is not an acceptance: the daemon still
     refuses a CR not before an LF, U+0085, U+2028 and U+2029 before the end, and reports a range ending on an empty line as
     `last - 1`. The text never travels. `selection_digest` (`sot_protocol::selection_digest`) is
     FNV-1a 64 over the UTF-8 bytes, lines joined by LF, the one definition the window and the daemon both call. The six
