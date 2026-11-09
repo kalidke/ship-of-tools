@@ -1382,3 +1382,13 @@ A landing's record goes here, with its measured times; the package page holds on
   is INK-RASTER-SERVED-SIZE. About 59 product lines and 180 test lines. Where the minutes went: the build (4 minutes);
   one review round (blockers 0; 25 minutes) and one fix round of 13 minutes, with one item the session's brief worded
   ambiguously (the catalog's text); two gates of 2 minutes and one hosted run on the branch of 11 minutes.
+- D5, the canvas, 2026-11-09: builder launched 02:03, main 02:39 (2ecd72a51, one commit squashed from two), 36
+  minutes. `Shift+D`, live while the preview pane is focused and not editing, shows or hides the row's canvas, and the
+  flag rides the row's parked drawing; under the refused-hello overlay it does nothing. While shown, the pane draws a
+  white rectangle letterboxed to the wire's canvas size with the ink over it, drawing is always on, zoom and pan do not
+  apply, and the page, image and edit keys and the wheel do not reach the hidden preview, which stays installed and
+  untouched; another node's install hides the canvas, the same node's re-install does not. The pane's one decider gives
+  the canvas its place (over the image and text, under the overlay and edit mode), and the owner's decider names it as
+  the shown base, so drawing on it replaces a figure's drawing. About 121 product lines added and 45 removed, and 140
+  test lines. Where the minutes went: the build (6 minutes); one review round (blockers 0; 19 minutes) and one fix round
+  of 5 minutes; two gates of 2 minutes.
