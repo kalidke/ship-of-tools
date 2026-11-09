@@ -526,11 +526,6 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
-- **SELECT-MARKDOWN** [person] Text selected in a markdown file's preview never reaches the agent: the preview shows the
-  rendered document, whose buffer positions and text are not the file's, so the daemon's check
-  (`rust/backend/src/agents/selection.rs`) refuses it as not the file's text, and the window has no view of a markdown
-  file's source outside edit mode, which shares nothing. The maintainer needs it there most. Decided fix: a selection in
-  rendered markdown is mapped to the source lines it was rendered from, and the agent is told those lines of the file.
 - **INK-REACH-ONE-SIZE** [note] The eraser's reach tests (`rust/frontend/src/ui/preview/image/ink_tests.rs`) run at
   one raster size, so a reach computed from a fixed raster at every size survives them, and
   `the_reach_is_the_ink_and_one_pixel_on_both_sides` repeats the first reach test's positive side. Fix: derive the
@@ -540,7 +535,9 @@ owned by `docs/CLAUDE.md`.
   selection with no status line: an agent that edits the file the person selected loses the selection at its next
   prompt, and the person learns it only by asking. The manual says so. Whether a refresh should keep the selection where
   its lines still hold, or say on the status line that it was withdrawn, is open. Found reading code for the manual;
-  never seen.
+  never seen. A math, figure or `markdown.tokenize` reply also reflows a markdown preview (`reflow_markdown_preview`,
+  `rust/frontend/src/ui/app/frame.rs`) and clears its selection a frame after the share was sent, with no status line,
+  which since the markdown selection can withdraw a rendered selection on a document's first view.
 - **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/mod.rs`)
   watches again once a minute whatever the last refusal was, so a target the daemon refuses for good (`stale_row`,
   `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
@@ -760,6 +757,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SELECT-MARKDOWN** (fe-ui) closed by the landing that fixes it, 2026-11-09, before its window test: a selection in a rendered markdown preview is shared as the whole file lines its text was rendered from, with the file's text there; a rendered buffer with no map shares nothing.
 - **SELECTION-CODEX-HELD** (agents) closed by the landing that fixes it, 2026-11-09: `TAKES_SELECTION` leaves `codex` out, so a Codex row answers a selection `no_agent`, not `held`, until the Codex wiring is built.
 - **SCRATCH-PAD** (fe-ui) closed by the landing that fixes it, 2026-11-09: a drawable preview pane whose drawing the row's agent sees; the window draws and shares it, the daemon writes its picture.
 - **STATE-FIXTURES-RUN-ONLY-AT-RELEASE** (fe-ui) closed by the landing that fixes it, 2026-11-08: the window's 13 State fixtures were compiled by the local gate and the per-landing run but run by neither; the per-landing run now executes them alone on Linux (`child fixtures` of the `window_minimized` target, under `xvfb-run` and Mesa's software Vulkan driver), and the redraw mutation leg's comment in `rust/frontend/Cargo.toml` names `release-gate.yml`.

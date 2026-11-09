@@ -51,10 +51,10 @@ pub fn whole_lines(text: &str, first: usize, last: usize) -> Option<(((usize, us
     (!joined.is_empty()).then_some((((first - 1, 0), end), joined))
 }
 
-/// A position in the file's own text: a 0-based line and a UTF-8 byte offset in it, LF-ended lines with a CR before
+/// A position in the shown file's text: a 0-based line and a UTF-8 byte offset in it, LF-ended lines with a CR before
 /// the LF dropped. "The file's text at the range" is the text from `start` to `end`, lines joined by LF. A plain or
-/// token preview's buffer is that text; a rendered markdown preview's is not, and `whole_lines` is the form for it
-/// (unbuilt: no caller yet).
+/// token preview's buffer is that text; a rendered markdown preview's is not, so the window names the source lines it
+/// was rendered from, whole (`whole_lines`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextPos {
     pub line: u32,

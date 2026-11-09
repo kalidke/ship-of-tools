@@ -1,19 +1,19 @@
 use super::*;
 use sot_protocol::ops::{whole_lines, TextPos};
 
-fn sel(start: (u32, u32), end: (u32, u32), shown: &str) -> SelectedText {
+fn sel(start: (u32, u32), end: (u32, u32), text: &str) -> SelectedText {
     SelectedText {
         node_id: String::new(),
         start: TextPos { line: start.0, byte: start.1 },
         end: TextPos { line: end.0, byte: end.1 },
-        len: shown.len() as u32,
-        digest: selection_digest(shown),
+        len: text.len() as u32,
+        digest: selection_digest(text),
     }
 }
 
 #[test]
 fn only_the_files_own_text_at_the_range_is_shared() {
-    // (name, file bytes, start, end, the text the window shows)
+    // (name, file bytes, start, end, the text of the range)
     let refused: Vec<(&str, &[u8], (u32, u32), (u32, u32), &str)> = vec![
         ("not UTF-8 inside the range", b"ab\xffcd", (0, 0), (0, 5), "ab\u{fffd}cd"),
         ("not UTF-8 before the range", b"\xffab\ncd", (1, 0), (1, 2), "cd"),
@@ -32,8 +32,8 @@ fn only_the_files_own_text_at_the_range_is_shared() {
         ("start after end", b"abc", (0, 3), (0, 1), "ab"),
         ("an empty range", b"abc", (0, 1), (0, 1), ""),
     ];
-    for (name, bytes, s, e, shown) in refused {
-        assert_eq!(check_selection(bytes, &sel(s, e, shown)), None, "{name}");
+    for (name, bytes, s, e, text) in refused {
+        assert_eq!(check_selection(bytes, &sel(s, e, text)), None, "{name}");
     }
     let mut wrong_len = sel((0, 0), (0, 2), "ab");
     wrong_len.len = 3;
@@ -221,9 +221,10 @@ fn a_whole_lines_range_is_the_files_own_lines() {
     let lf = MARKDOWN_FIXTURE.to_string();
     let crlf = lf.replace('\n', "\r\n");
     let no_final = lf.trim_end_matches('\n').to_string();
+    let crlf_no_final = crlf.trim_end_matches('\n').to_string();
     // a non-ASCII line and two blank lines in a row, which the fixture lacks
     let extra = "a\n\n\né日\nb\n".to_string();
-    for text in [lf, crlf, no_final, extra] {
+    for text in [lf, crlf, no_final, crlf_no_final, extra] {
         let count = text.split('\n').count();
         // every pair is built but a single empty line, counted from the text and not from `whole_lines`
         let empty = text.split('\n').filter(|l| l.strip_suffix('\r').unwrap_or(l).is_empty()).count();

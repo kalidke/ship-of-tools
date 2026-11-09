@@ -1449,3 +1449,10 @@ A landing's record goes here, with its measured times; the package page holds on
   that landing alone, and a test over many cases asserts the exact count. The second round's one finding, a test of a
   line ending in a carriage return at the end of the text, goes into landing 2. The amended commit's push over its own
   branch was refused by the session's command check as destructive and not retried; it went up under a new branch name.
+- A rendered markdown selection is shared as the file's lines (SELECT-MARKDOWN, landing 2 of 2), 2026-11-09: the walk
+  marks each paragraph's, heading's and code block's spans with their file lines (a front matter's lines added), a new
+  `SourceLines` maps each rendered buffer line's bytes to them, and `released_selection` shares the whole file lines
+  the selected text was rendered from, through `whole_lines`; a rendered buffer with no map shares nothing, and the
+  walk's golden is unchanged. SELECT-MARKDOWN is closed before its window test; SELECTION-WITHDRAWN-ON-REFRESH names
+  the reflow that withdraws a rendered selection. About 125 product lines and 190 test lines. The session adds its
+  measured minutes at the landing.

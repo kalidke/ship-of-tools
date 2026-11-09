@@ -267,7 +267,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
   selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
   Installing a buffer clears selection, drops the SVG and scrolls to the top. A row switch, Escape in the preview
-  and opening edit mode also clear selection. The text scope's `preview.copy_selection` copies rendered text on
+  and opening edit mode also clear selection. `released_selection` answers the file's text: a plain or token buffer's
+  own range and text, rendered markdown's source lines whole (`TextOrigin::Rendered`), and nothing for a rendered buffer
+  with no map (`TextOrigin::Unshared`). The text scope's `preview.copy_selection` copies rendered text on
   Primary+C or Primary+Shift+C; `y` still copies fenced code sources. Selection does not cover MarkdownMedia's wide
   table buffers, math images, image previews, the concept pane or double-click word selection. A
   sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
@@ -734,6 +736,20 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   held (the daemon withdrew it at the connection's end); the state is sent again after `Connected`. A reply that does not
   answer the request in flight on that host is dropped (`a_lost_connection_is_answered_after_it_returns`). Hosts are kept
   apart: one's end or failed send leaves another's share and flight (`hosts_are_kept_apart`).
+- A rendered markdown preview shares the whole file lines its selected text was rendered from, with the file's text
+  there: the walk marks each paragraph's, heading's and code block's spans with their file lines (the front matter's
+  lines added), `SourceLines` (`preview/markdown/source_lines.rs`) maps each buffer line's bytes to those lines, and
+  `released_selection` names the least to the greatest line of every text run the selection covers a byte of, through
+  `sot_protocol::ops::whole_lines`. A paragraph shares its block's lines (comrak's inline positions are not reliable), a
+  code line its own, a bullet, gutter, rule, table, equation or figure none; a paragraph after link reference
+  definitions shares theirs too. A map is built only for the preview pane's shape of a project file (`maps_source`) and
+  kept only when it lines up with the buffer byte for byte; a rendered buffer without one shares nothing, and never its
+  buffer positions. Tests `markdown/source_lines_tests.rs`: `a_block_of_prose_maps_to_its_file_lines`,
+  `each_code_line_maps_to_its_own_file_line`, `decorations_and_media_hold_no_line_and_a_range_across_them_covers_them`,
+  `the_map_is_kept_only_when_it_lines_up_with_the_buffer`; `shaped_tests.rs`:
+  `a_rendered_markdown_selection_is_shared_as_the_files_own_lines`, `a_rendered_buffer_with_no_map_shares_nothing`. A
+  math, figure or `markdown.tokenize` reply reflows a markdown preview and clears its selection a frame after the share
+  was sent (SELECTION-WITHDRAWN-ON-REFRESH).
 - Limits: a clear made while disconnected relies on the daemon's withdrawal at the connection's end (for a half-open peer
   that waits for its ping deadline); a reply is matched to the request in flight by content, not id, which is sound only
   because fe-net emits every `Ended` of a session before its `Disconnected` and the next `Connected`; the selected text
@@ -765,7 +781,7 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
   shaping and transport (fetch, replies, layout, concept, open).
 - `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
-- `preview/markdown/`: markdown and source text shaped into cosmic-text buffers.
+- `preview/markdown/`: markdown and source text shaped into cosmic-text buffers; `source_lines.rs` maps a rendered buffer's text to the file lines it came from.
 - `preview/editor/`: the in-pane edit buffer.
 - `control/`: the fe.command route, its dispatch, the reply bar (`reply_bar.rs`, with State's side in `reply_dispatch.rs`),
   the nav envelope and the file channel.

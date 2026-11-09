@@ -79,6 +79,7 @@ impl MarkdownPreview {
             (String, u64),
             Vec<crate::net::transport::MarkdownToken>,
         >,
+        maps_source: bool,
     ) -> Self {
         let mut buffer = Buffer::new(
             font_system,
@@ -122,6 +123,8 @@ impl MarkdownPreview {
             highlight,
             token_cache,
             pending_token_fences: Vec::new(),
+            line_offset: 0,
+            marks: Vec::new(),
         };
         let mut root_ctx = Ctx::default();
         root_ctx.scale = scale;
@@ -142,8 +145,18 @@ impl MarkdownPreview {
         set_buffer_rich_text(&mut buffer, font_system, span_iter, default_attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
 
+        // Only the preview pane's shape of a project file is ever shared, so only it builds a map.
+        let origin = match maps_source.then(|| SourceLines::build(source, &spans, &walk_state.marks, &buffer)) {
+            Some(Some(map)) => TextOrigin::Rendered(map),
+            Some(None) => {
+                tracing::warn!("markdown source lines did not line up with the shaped buffer; a selection here is not shared");
+                TextOrigin::Unshared
+            }
+            None => TextOrigin::Unshared,
+        };
         Self {
             buffer,
+            origin,
             _spans: spans,
             scale,
             body_line_h: BODY_LINE_H,
@@ -170,6 +183,7 @@ impl MarkdownPreview {
         buffer.shape_until_scroll(font_system, false);
         Self {
             buffer,
+            origin: TextOrigin::File,
             _spans: Vec::new(),
             scale,
             body_line_h: CODE_LINE_H,
@@ -212,6 +226,7 @@ impl MarkdownPreview {
         buffer.shape_until_scroll(font_system, false);
         Self {
             buffer,
+            origin: TextOrigin::File,
             _spans: Vec::new(),
             scale,
             body_line_h: CODE_LINE_H,
@@ -255,6 +270,7 @@ impl MarkdownPreview {
 
         Self {
             buffer,
+            origin: TextOrigin::File,
             _spans: owned,
             scale,
             body_line_h: CODE_LINE_H,
@@ -262,6 +278,11 @@ impl MarkdownPreview {
             code_block_sources: Vec::new(),
             pending_token_fences: Vec::new(),
         }
+    }
+
+    /// What a range of the buffer names in the previewed file.
+    pub(in crate::ui) fn origin(&self) -> &TextOrigin {
+        &self.origin
     }
 
     pub fn resize(&mut self, font_system: &mut FontSystem, width: f32, height: f32) {

@@ -362,6 +362,7 @@ fn build_preview_content(
         &FigureMetricsMap::new(),
         &highlight_service,
         &_bootstrap_token_cache,
+        false,
     );
     let md_rect_px = ScreenRect {
         x: 0.0,

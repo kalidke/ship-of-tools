@@ -73,6 +73,7 @@ impl State {
                 &FigureMetricsMap::new(),
                 self.shaped.highlighter(),
                 self.md_media.token_cache(),
+                false,
             )))
         } else {
             None

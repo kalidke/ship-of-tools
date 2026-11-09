@@ -21,8 +21,14 @@ pub(super) fn walk<'a, 'b>(
     figures: &FigureMetricsMap,
     state: &mut WalkState<'b>,
 ) {
-    let nv = node.data.borrow().value.clone();
+    let (nv, sourcepos) = {
+        let data = node.data.borrow();
+        (data.value.clone(), data.sourcepos)
+    };
+    let lines = (sourcepos.start.line + state.line_offset, sourcepos.end.line + state.line_offset);
+    let from = out.len();
     match nv {
+        NodeValue::FrontMatter(fm) => state.line_offset = fm.matches('\n').count(),
         NodeValue::Document => {
             for ch in node.children() {
                 walk(ch, ctx, out, media, metrics, figures, state);
@@ -75,7 +81,7 @@ pub(super) fn walk<'a, 'b>(
             c.code = true;
             out.push((code.literal, attrs_for(c)));
         }
-        NodeValue::CodeBlock(cb) => walk_code_block(ctx, cb, out, state),
+        NodeValue::CodeBlock(cb) => walk_code_block(ctx, cb, lines.0, out, state),
         NodeValue::List(nl) => walk_list(node, ctx, nl, out, media, metrics, figures, state),
         NodeValue::Item(_) => walk_item(node, ctx, out, media, metrics, figures, state),
         NodeValue::TaskItem(checked) => walk_task_item(node, ctx, checked, out, media, metrics, figures, state),
@@ -102,6 +108,9 @@ pub(super) fn walk<'a, 'b>(
                 walk(ch, ctx, out, media, metrics, figures, state);
             }
         }
+    }
+    if matches!(node.data.borrow().value, NodeValue::Paragraph | NodeValue::Heading(_)) {
+        state.marks.push((from..out.len(), Lines::Block(lines.0, lines.1)));
     }
 }
 

@@ -4,7 +4,7 @@ use super::*;
 
 use comrak::nodes::NodeCodeBlock;
 
-pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, out: &mut Vec<(String, Attrs<'static>)>, state: &mut WalkState<'b>) {
+pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, first_line: usize, out: &mut Vec<(String, Attrs<'static>)>, state: &mut WalkState<'b>) {
     // Fenced code block — full-width panel via CODE_BLOCK_FLAG
     // on every glyph; chrome expands the rect to the pane
     // width before rendering the slate bg quad. Per-line
@@ -71,6 +71,7 @@ pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, out: &mut Vec<(St
         } else {
             &[]
         };
+    let from = out.len();
     let merged = merge_highlight_spans(&base_spans, overlay_spans);
     if merged.is_empty() {
         out.push((padded, attrs_for(c)));
@@ -93,6 +94,7 @@ pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, out: &mut Vec<(St
             out.push((padded[cursor..].to_string(), attrs_for(c)));
         }
     }
+    state.marks.push((from..out.len(), Lines::Code(first_line + usize::from(cb.fenced))));
     push_block_margin(out, ctx.scale);
     push_break(out, "\n", ctx.scale);
 }

@@ -23,6 +23,7 @@ mod prepare;
 pub(in crate::ui) mod media;
 pub(in crate::ui) mod media_store;
 mod replies;
+mod source_lines;
 mod spans;
 mod table;
 mod walk;
@@ -31,6 +32,7 @@ mod tests;
 
 #[cfg(test)]
 use buffer::{item_anchor_line, normalize_newlines};
+pub(in crate::ui) use source_lines::SourceLines;
 use spans::{attrs_for, hash_source, merge_highlight_spans, push_block_margin, push_break};
 use table::{build_table_block, TABLE_FONT_SCALE};
 use walk::walk;
@@ -193,8 +195,28 @@ pub enum MediaBlock {
     },
 }
 
+/// The file lines a run of the walk's spans was rendered from (1-based, the front matter counted).
+enum Lines {
+    /// Every text of the run came from lines `first..=last`: a paragraph or a heading.
+    Block(usize, usize),
+    /// A code block: the run's `k`-th line (after `k` line breaks in its spans) is the file's line `first + k`.
+    Code(usize),
+}
+
+/// What a released range of the buffer names in the file it previews, for the share with the agent.
+pub(in crate::ui) enum TextOrigin {
+    /// The buffer's lines are the file's (a plain or token buffer): a range names itself.
+    File,
+    /// Rendered markdown: a range names the source lines its text was rendered from.
+    Rendered(SourceLines),
+    /// Rendered markdown with no map (not the preview pane's shape, or a map that did not line up): nothing.
+    Unshared,
+}
+
 pub struct MarkdownPreview {
     pub buffer: Buffer,
+    /// What a range of `buffer` names in the previewed file; read by the share only.
+    origin: TextOrigin,
     /// Owned span storage — the Buffer borrows nothing from this Vec after
     /// `set_rich_text`, but holding it keeps the fields next to the buffer
     /// for any future re-shape.
@@ -303,4 +325,8 @@ struct WalkState<'a> {
     /// `OutgoingReq::MarkdownTokenize` for any fence that missed the
     /// cache. Each entry is `(lang, source_hash, padded_source)`.
     pending_token_fences: Vec<(String, u64, String)>,
+    /// The lines a front matter took: comrak numbers the document after it from 1 again.
+    line_offset: usize,
+    /// Each paragraph's, heading's and code block's span indices and file lines, in order and disjoint.
+    marks: Vec<(std::ops::Range<usize>, Lines)>,
 }

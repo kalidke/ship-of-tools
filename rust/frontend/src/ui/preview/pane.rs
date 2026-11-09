@@ -375,6 +375,7 @@ impl State {
                     &figure_metrics,
                     self.shaped.highlighter(),
                     self.md_media.token_cache(),
+                    true,
                 ));
                 self.shaped.install(md);
                 self.raster.hide();

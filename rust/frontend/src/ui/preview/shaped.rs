@@ -5,6 +5,7 @@ use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::render::quad::Quad;
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;
 use crate::ui::*;
+use crate::ui::preview::markdown::TextOrigin;
 use cosmic_text::Cursor;
 
 /// What the preview pane's flowed text is: one buffer, shaped for the rect the last layout pass gave it. A new
@@ -101,10 +102,17 @@ impl ShapedPreview {
 
     pub(in crate::ui) fn selected_text(&self) -> Option<String> { self.selection.text(&self.flowed()) }
 
-    /// The released, non-empty selection: its ordered `(line, byte)` range and the text it covers. Nothing during a drag.
+    /// The released, non-empty selection as the file's text: a plain or token buffer's own `(line, byte)` range and the
+    /// text it covers, rendered markdown's source lines whole with the file's text there, nothing for a rendered
+    /// buffer with no map. Nothing during a drag.
     pub(in crate::ui) fn released_selection(&self) -> Option<(((usize, usize), (usize, usize)), String)> {
         if self.selection.dragging() { return None; }
-        Some((self.selection.range()?, self.selected_text()?))
+        let range = self.selection.range()?;
+        match self.md.origin() {
+            TextOrigin::File => Some((range, self.selected_text()?)),
+            TextOrigin::Rendered(map) => map.file_selection(range),
+            TextOrigin::Unshared => None,
+        }
     }
 
     pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {

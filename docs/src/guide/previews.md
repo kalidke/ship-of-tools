@@ -216,8 +216,14 @@ text.
 
 Only the preview's text of a file in the project is shared. The agent pane, an image, the concept pane and a rendered
 table are not. A selection is refused if the preview does not show the file's own text: a preview older than the file,
-and files with unusual line breaks. Rendered markdown is almost never shared, because its text and line numbers are not
-the file's, and its preview has no source view yet.
+and files with unusual line breaks.
+
+In a rendered markdown preview the agent is given the file's own lines that your selected text was rendered from, whole:
+each paragraph, heading or list item you touch and each code line, with any table, equation or figure between them. A
+table, equation, figure or rule alone is not shared. A paragraph that follows link reference definitions shares their
+lines too, and a paragraph written on one long line is cut at 2000 characters, which may fall before the words you
+selected. It is refused when the file no longer holds what the preview showed, or when a lone carriage return, U+0085,
+U+2028 or U+2029 comes before the end of the selection.
 
 **Drawing.** When you release a stroke, the window tells the daemon, which writes one picture of the image with the ink
 on it to `.sot/captures/ink-<row id>.png` in the project and names it to the agent at its next prompt. An image over 40
@@ -225,7 +231,8 @@ megapixels is refused.
 
 **Withdrawing.** A selection is withdrawn when you click or press `Esc` in the preview; a drawing when you erase all its
 ink (turning drawing off with `d` does not). A selection is also withdrawn when the file changes or the text size
-changes (a drawing stays on its figure). Either is withdrawn when you show another file or the canvas, open the editor,
+changes (a drawing stays on its figure); in a markdown preview the arrival of an equation, a figure or a code block's
+colors lays the document out again and withdraws it too. Either is withdrawn when you show another file or the canvas, open the editor,
 switch to another session (the session you left is cleared), or close the window. Showing the image or the canvas again shares the drawing again, and hiding the canvas shares the selection
 again. A connection that ends (a lost link, a closed window) withdraws its share in the daemon, and a window that
 reconnects shares its current one again. A selection or drawing that the row's agent side refuses also withdraws the one before it; a refusal before the row is

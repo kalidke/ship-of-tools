@@ -177,9 +177,10 @@ fn whole_lines_names_a_files_lines_as_the_daemon_reads_them() {
     assert_eq!(whole_lines("a\n", 1, 2), Some((((0, 0), (1, 0)), "a\n".to_string())), "an empty last piece is a line");
     assert_eq!(whole_lines("a\n\n\nb", 2, 3), Some((((1, 0), (2, 0)), "\n".to_string())), "two empty lines hold a byte");
     assert_eq!(whole_lines("a\r\r\nb", 1, 1), Some((((0, 0), (0, 2)), "a\r".to_string())), "one CR strips");
+    assert_eq!(whole_lines("a\r", 1, 1), Some((((0, 0), (0, 1)), "a".to_string())), "a CR ending the text strips");
     assert_eq!(whole_lines("\n\n", 1, 2), Some((((0, 0), (1, 0)), "\n".to_string())));
     assert_eq!(whole_lines("a\nb", 0, 1), None, "first is 0");
     assert_eq!(whole_lines("a\nb", 2, 1), None, "first after last");
     assert_eq!(whole_lines("a\nb", 2, 4), None, "last past the text");
-    assert_eq!(whole_lines("a\n\nb", 2, 2), None, "the lines hold no byte");
+    assert_eq!(whole_lines("a\n\nb", 2, 2), None, "a single empty line");
 }

@@ -27,7 +27,7 @@ fn make_preview_with_figures(source: &str, figures: FigureMetricsMap) -> Markdow
     let tokens = HashMap::new();
     let highlight = crate::ui::preview::markdown::highlight::HighlightService::new()
         .expect("highlight service init");
-    MarkdownPreview::new(&mut fs, source, 800.0, 600.0, 1.0, &math, &figures, &highlight, &tokens)
+    MarkdownPreview::new(&mut fs, source, 800.0, 600.0, 1.0, &math, &figures, &highlight, &tokens, false)
 }
 
 fn figure_blocks(p: &MarkdownPreview) -> usize {
@@ -415,11 +415,11 @@ fn walk_output_for_every_arm_matches_the_golden() {
     let highlight = crate::ui::preview::markdown::highlight::HighlightService::new().expect("highlight service init");
     // The first julia fence gets a cached overlay: its key is the one a
     // walk with an empty cache asks for first.
-    let first = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &HashMap::new());
+    let first = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &HashMap::new(), false);
     let (lang, hash, _) = first.pending_token_fences[0].clone();
     let mut tokens = HashMap::new();
     tokens.insert((lang, hash), vec![crate::net::transport::MarkdownToken { start: 1, end: 2, kind: "variable".to_string() }]);
-    let p = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &tokens);
+    let p = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &tokens, false);
     let mut lines: Vec<String> = p._spans.iter().map(|s| format!("span {s:?}")).collect();
     lines.extend(p.media_blocks.iter().map(|m| format!("media {m:?}")));
     lines.extend(p.code_block_sources.iter().map(|c| format!("source {c:?}")));
