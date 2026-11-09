@@ -59,6 +59,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<config>/settings.toml`: the file and every section but `[trust]` | disk, setting | fe-ui | `rust/frontend/src/ui/persist/settings.rs` `Settings`, `load_layered`, `merge_text`, `strip_comment`; `rust/frontend/src/ui/persist/discover.rs` `find_config_file` |
 | `[trust] root_prefix` in settings.toml | setting | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`, `read_trust_declaration` |
 | `<config>/keybindings.toml` | disk, setting | fe-ui | `rust/frontend/src/ui/input/keybindings.rs` `KeyBindings`, `load_layered` |
+| `<config>/chat.toml`, `<config>/chat-secrets.toml` | disk, setting | chat | `rust/chat/src/config.rs` `Config::load`, `Credentials::read`, `resolve` |
 | `<config>/hosts.toml`, `SOT_HOSTS` | disk, setting | topology | `rust/topology/src/lib.rs` `locate`, `load`, `parse` |
 | `[monitor]` roster in hosts.toml (the grammar is topology's; the sidecars read it) | setting | topology | `rust/topology/src/lib.rs` `monitor_targets`; `rust/backend/src/sidecars/monitor.rs` `load_hosts`, `sampling_roster` |
 | the folders a page's tracked link may reach | rule | pages | `rust/backend/src/pages/site/links.rs` `MOUNT_FOLDERS`, `Bounds` |

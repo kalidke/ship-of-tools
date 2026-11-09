@@ -605,6 +605,14 @@ owned by `docs/CLAUDE.md`.
 - **PANE-CONNECT** [feature] Warm the pane path at window start: a new window's first pane spends 0.5 to 0.65 s in
   text preparation (the first glyph-atlas fill) and its first dial has no parked spare; hosted macOS first panes were
   1.26 to 1.45 s against 0.13 to 0.93 s later. An improvement, not a defect.
+- **MONITOR-TENANT-REACHES-REPL** [note] In the drawer's Monitor tenant, typing edits the hidden REPL's draft, Enter
+  evaluates it in the row's REPL, and the wheel scrolls the hidden REPL: `drawer_pane_key`
+  (`rust/frontend/src/ui/drawer/keys.rs`) falls through to `repl_input_key` for any tenant but the Terminal, and
+  `route_wheel_rows` (`input/mouse.rs`) scrolls the REPL for focus `Repl` unless the tenant is the Terminal. Fix: B5a's
+  one map from tenant to pane. Found reading code; never seen.
+- **HELP-SEARCH-DROPS-ALTGR** [note] Help's search drops AltGr characters on Windows: its query admits a key only with
+  neither Ctrl nor Super (`input/layout_help.rs`, the `Key::Character` arm), and AltGr is Ctrl with Alt there, so the
+  editor's `chord_types_text` (`preview/editor/keys.rs`), which admits it, is not used. Found reading code; never seen.
 
 ## distribution
 
@@ -732,6 +740,10 @@ owned by `docs/CLAUDE.md`.
   `a_reconciliation_begun_before_a_hello_is_refused_by_it` (the refused reopen, until the connect after a 400 ms pause) and
   `stop_during_the_reconnect_pause_does_not_wait_for_it` (no socket open, for a 5 s pause). Not seen failing. Pin each by
   an order (the hold tool), not a window.
+- **CHAT-GAP-CLOSING-UNTOLD** [note] The daemon tells a window of a socket gap only in a `chat.status` that lists channels
+  owing a snapshot (`publish`, `rust/backend/src/chat/watch.rs`, which sends nothing when that set is unchanged or
+  empty), and sends nothing when the gap closes, so no window can show the Slack link's state. Found reading code; never
+  seen.
 
 ## records
 

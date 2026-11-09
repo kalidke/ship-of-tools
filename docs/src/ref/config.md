@@ -1,14 +1,14 @@
 # Configuration Files
 
-Three TOML files, each read by a different piece and none of them by more than
+Five TOML files, each with one reader and none read by more than
 one parser: `settings.toml` (layout + terminal, read by the frontend,
 first file found wins), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
 `sot_topology`/`sotd topology`; the frontend reads no config
-file for hosts at all, see below), and `keybindings.toml` (chords, read by
-the frontend, same discovery). Keybindings have their own page —
-[Keybindings](keybindings.md) — so this page covers `settings.toml` and
-`hosts.toml`.
+file for hosts at all, see below), `keybindings.toml` (chords, read by
+the frontend, same discovery), and the project chat's `chat.toml` and
+`chat-secrets.toml` (read by the hub's daemon). Keybindings have their own
+page — [Keybindings](keybindings.md) — so this page covers the other four.
 
 `settings.toml` and `keybindings.toml` share one discovery pattern: the
 frontend reads the first file it finds among an env-var path, a `.sot/` file
@@ -253,6 +253,39 @@ the frontend: one ssh login into the hub per host, no argument for the hub's own
 daemon and `--host otherbox` to reach the hub's relay socket for the
 other one. No port, no forward — read the actual endpoints from
 `sotd topology plan`, never hardcode one.
+
+## `chat.toml` and `chat-secrets.toml`
+
+The project chat's configuration, two TOML files in the config folder (`~/.config/sot` on Linux and macOS,
+`%LOCALAPPDATA%\sot\config` on Windows).
+
+*Status: the daemon reads both files and connects to Slack with the two tokens. No window shows a chat yet and no mail is
+delivered.*
+
+Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
+`SOT_SELF_HOST` or its host name, as its `hub`. A computer with no `hosts.toml`, or another computer, runs no chat and
+opens neither file. Both files are read once, when the daemon starts, and a mapped folder must have a row by then. After
+editing either file, or adding a row for a mapped folder, restart the daemon (on Linux `systemctl --user restart sotd`;
+rows keep running). A missing or refused `chat.toml`, or a missing or refused `chat-secrets.toml`, leaves the chat off.
+One refused mapping, such as a folder with no row at start, turns the chat off for every project. The reason is in the
+daemon's log, on the "project chat" line, as a fixed explanation with the mapping's number or the line, never a key's
+value; `sotd log-path` prints the log's path. A start that Slack refuses or cannot reach (a rejected token, no network)
+is logged as "project chat did not start" and stays failed until the daemon restarts.
+
+Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
+
+`chat.toml`:
+
+| Key | Form | Required | Meaning |
+|-----|------|----------|---------|
+| `workspace` | Slack id (a capital letter, then capitals and digits, 32 at most), not a name | yes | The one Slack workspace; it must equal `chat-secrets.toml`'s. A list or table naming a second one is refused. |
+| `channels` | list of Slack ids | yes | The channels the chat may use. A repeated channel is refused. |
+| `[[mapping]]` | table | one per project | `folder`, an absolute path of a folder a row had when the daemon started (not the window's default row, which runs no agent), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may also repeat `workspace`, which must match. Two entries for one folder, or one channel for two folders, are refused. |
+| `mail_after` | Slack timestamp (`<seconds>.<six digits>`), a quoted string | no | Read and checked; nothing uses it yet. *Mail delivery is unbuilt.* |
+
+`chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`) and `app_token` (it starts `xapp-`), each token
+letters, digits and hyphens up to 512 bytes. Keep the file private to your account; the
+daemon never prints a token and masks one in its log, but it does not check the file's permissions.
 
 ## See also
 

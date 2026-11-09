@@ -74,6 +74,10 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 - Drawing is done with the mouse: holding the left button down draws, and holding the right button down erases; turning drawing on and off, undo and clearing all the ink have keys. An agent that cannot take a drawing is told nothing, and the window says the drawing was not shared.
   *Status: built in the window, the daemon and the wire for Claude Code rows (a Codex row takes none yet); proved by the unit tests of each side, not yet through a real window and a real agent.*
 
+#### The project chat
+
+A session on the hub whose project folder is mapped to a channel of the lab's Slack workspace has a chat in the window: the person reads the channel (newest at the bottom, older pages on request, one thread at a time) and posts to it or to a thread under their own name, marked as sent from Ship of Tools. A post is sent once; when its outcome is unknown the window says so and never sends it again by itself. The channel's other members use Slack; the environment stays single-user. *Status: not built.*
+
 ### Window and layout management
 
 - The layout system must accommodate both ultrawide displays and small laptop displays (16:10) without per-device reconfiguration by the user.
@@ -109,7 +113,7 @@ The system must avoid the following assumptions, all of which are expected to be
 
 - Manual coding as the primary workflow. The LLM writes code; the user may intervene.
 - IDE features whose purpose is to support manual authoring of code: language servers, completion, linting, formatting, refactoring tooling, and graphical debuggers.
-- Mouse-driven interaction, except drawing in the preview pane.
+- Mouse-driven interaction, except drawing in the preview pane and selecting text to copy.
 - Multi-user or collaborative use of the environment.
 - First-class environment surfaces for runtime value inspection, dataflow visualization, and execution tracing. The user accesses runtime values through the REPL itself.
 - A configuration surface specified at the requirements level. Configuration will be opinionated by design and is treated as an implementation concern.
