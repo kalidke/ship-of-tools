@@ -92,6 +92,7 @@ impl State {
                 host_resolved_dial: HashMap::new(),
                 links: HashMap::new(),
                 declared_host: HashMap::new(),
+                takes_drawing: Default::default(),
                 reconnect_now: Arc::new(tokio::sync::Notify::new()),
             },
             row_directory: RowDirectory::default(),

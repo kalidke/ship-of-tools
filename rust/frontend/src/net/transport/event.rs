@@ -69,6 +69,8 @@ pub enum IncomingEvt {
         /// the drawer reopens each entry the link's end closed (`State::on_repl_running`). Empty from a daemon that
         /// predates the field.
         repl_running: Vec<u64>,
+        /// The daemon reads `selection.set`'s `drawing` (`HelloRes::takes_drawing`); false from a daemon that predates it.
+        takes_drawing: bool,
     },
     Disconnected {
         reason: String,

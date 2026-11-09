@@ -196,6 +196,8 @@ pub async fn handle_hello(
         // through the one control tunnel, no per-port ssh forward.
         proxy: true,
         repl_running,
+        // This daemon's `selection.set` reads a drawing (wire guarantee 13).
+        takes_drawing: true,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

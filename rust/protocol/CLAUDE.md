@@ -31,7 +31,7 @@ name is in this crate's one op table.
    (held to it by a test that runs it), and refused on mismatch by the daemon's hello, the server's check of this
    integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, where `hello_refuses_protocol_3` pins the last release's integer as refused, and `rust/backend/tests/admission.rs`). serde does not
    enforce the defaulted-field rule: it is a maintenance obligation, held by review and by previous-shape tests only for
-   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen), the lease
+   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and an older `HelloRes` parses with `repl_running` and `takes_drawing` absent), the lease
    (`ops/lease_wire_tests.rs`) and docs opens (`ops/pages_tests.rs`). `DocsOpenReq.direct` is an additive field defaulting
    to `ReplyScope::None`; an older frontend's payload without it grants no direct scope. Adding authority must never
    change that default; incompatible scope vocabulary changes follow this same protocol-number rule. The families
@@ -146,8 +146,9 @@ name is in this crate's one op table.
     (growth, as the chat family). Mechanism: one new op and new payloads, so `PROTOCOL_VERSION` stays 4; an older daemon
     answers it as any unknown op. Limits: a daemon built before the `drawing` field (one that has `selection.set`) ignores
     `drawing`, so it reads a drawing with `selection: null` as a clear and answers `shared`; the window must not send a
-    drawing to a daemon that cannot take one, and the window's drawing share, when it is built, gates on the daemon's version
-    (unbuilt). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
+    drawing to a daemon that cannot take one. A daemon says it can in its hello reply: `HelloRes.takes_drawing`, defaulted and
+    left out when false, so an older daemon reads as false (not the version string, guarantee 5; test
+    `a_hello_reply_says_whether_the_daemon_takes_a_drawing_and_stays_additive`). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
     key is not refused (the codec reads a `Value`, the last wins). The `drawing` field is defaulted (absent reads as none and
     is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
     `{"figure": {"node_id"}}` (4096 bytes), each point `[x, y]` as `u16` fractions of the base's width and height

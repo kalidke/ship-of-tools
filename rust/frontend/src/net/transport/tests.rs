@@ -311,6 +311,19 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
+/// The `Connected` event says what the daemon's hello said about taking a drawing; a hello without the field, an
+/// older daemon's, says false.
+#[tokio::test]
+async fn the_connection_reports_whether_the_hello_takes_a_drawing() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut says = hello_ok();
+    says["takes_drawing"] = serde_json::json!(true);
+    for (host, reply, want) in [("takes-drawing", says, "takes_drawing: true"), ("old-daemon", hello_ok(), "takes_drawing: false")] {
+        let events = events_until_the_daemon_closes(host, reply, Vec::new()).await;
+        assert!(events.iter().any(|e| e.starts_with("Connected") && e.contains(want)), "{host}: {events:?}");
+    }
+}
+
 /// Every frame the daemon writes while the window waits on either step of its connect preamble reaches its handler, as
 /// in the steady loop: an event replayed after the hello and a REPL run's output, written before the tree.root reply
 /// (step 0) or before the preview.get reply (step 1), arrive, and each preamble reply is still read as its own
