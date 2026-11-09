@@ -1478,3 +1478,18 @@ A landing's record goes here, with its measured times; the package page holds on
   the build (3 minutes, the four failures shown in a clone that checks out CRLF as Windows does, and gone after); one
   whole gate of 3 minutes; one review round of 4 minutes, bounded (blockers 0). A Windows checkout made before this
   commit keeps its CRLF copy until the fixture is checked out again (SELECT-MARKDOWN-FIXTURE-CRLF).
+- The project chat's step R0 (records only), 2026-11-09: builder launched 14:06, main 15:13 (7a10fb5b7), 67 minutes,
+  of which about 45 the session held it ready off main while a release question named main's commit, a hold the
+  maintainer asked about and that is not repeated. The manual's configuration page gains the chat's two files as the
+  code reads them today, the defect list three notes, and the requirements the project chat's paragraph the maintainer
+  approved. Where the minutes went: the build (6 minutes); two review rounds (blockers 1, 0; 10 and 6 minutes: the
+  first found the manual describing mail delivery and a chat drawer that do not exist) and three fix rounds of 1 to 2
+  minutes; the hold.
+- The status line warns when the home folder nears its quota, 2026-11-09: builder launched 15:14, main 15:33
+  (9d4aa8b4a), 19 minutes, at the admiral's request after per-user limits on the shared home were set. A `home N%`
+  item on the Claude Code status line's second line at 90% or more of the user's limit, red at 95% or more, read
+  from the file server's usage file for the running uid, and nothing when the file, the row or the limit is missing
+  or malformed. About 12 product lines and 66 test lines. Where the minutes went: the build (2 minutes); three scoped
+  gates of 2 to 3 minutes (the first failed the suites' rule that every shell suite loads the home guard first); one
+  review round of 11 minutes (blockers 0; a decoy uid that prefixes the real one, missing from the test, was added);
+  two fix rounds of a minute.
