@@ -353,6 +353,11 @@ owned by `docs/CLAUDE.md`.
   the attach client's redial cap plus 1 s after the new run shows, so that the attempt's own client is on the new run
   before the test releases its hold: one order kept by a bound from a product constant, not a hold. A hold point where the
   capsule's attach worker completes an attach would force it.
+- **MATRIX-PREFLIGHT-SIGPIPE** [session] The comm matrix (`comm/tests/comm-matrix.sh`, `matrix_preflight`) stopped at
+  its preflight with "no frontend attached" for a box whose window line its own output printed: it finds the line with
+  `printf | grep -m1` under `set -o pipefail`, and when grep exits at its first match the writer can take SIGPIPE (141),
+  so the substitution fails and the line reads empty. Replayed on the same output it failed once in five; a second run
+  passed. Fix: a match that reads the whole input (`awk` printing the first match, or no `-m1`).
 
 ## agents
 
