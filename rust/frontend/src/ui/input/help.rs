@@ -92,7 +92,6 @@ impl Context {
             Llm => self.pane == Pane::Agent,
             Pages => preview && self.pages,
             Image => preview && self.image,
-            Preview => preview,
             Drawing => preview && self.drawing,
             Reading => preview || repl,
             PreviewFile => preview && self.editable,

@@ -22,12 +22,9 @@ impl State {
     pub(in crate::ui) fn press_ink(&mut self) -> bool {
         self.ink_sync();
         let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
-        let (Some((canvas, image)), Some(src)) = (self.ink.frame(), self.raster.served_dims()) else { return false };
-        if !self.ink.reaches(shown.as_ref(), p, &canvas, &image) {
-            return false;
-        }
+        let Some(note) = self.ink.left_press(shown.as_ref(), p, self.raster.served_dims()) else { return false };
         self.set_focus(PaneFocus::Preview);
-        if let Some(text) = self.ink.press(shown.as_ref(), p, &canvas, &image, src) {
+        if let Some(text) = note {
             self.status.set(text);
         }
         self.window.request_redraw();
@@ -36,19 +33,13 @@ impl State {
 
     /// Motion: a live left stroke grows, and a right drag erases.
     pub(in crate::ui) fn ink_moved(&mut self) {
-        let Some((canvas, image)) = self.ink.frame() else { return };
-        if self.ink.live().is_none() && !self.ink.right_down() {
+        if !self.ink.busy() {
             return;
         }
         self.ink_sync();
-        let p = self.pointer.at_px();
-        if self.ink.live().is_some() {
-            if let Some(text) = self.ink.drag(p, &canvas) {
-                self.status.set(text);
-            }
-        } else if self.ink.right_down() {
-            let shown = self.shown_ink_base();
-            self.ink.erase(shown.as_ref(), p, &canvas, &image);
+        let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
+        if let Some(text) = self.ink.moved(shown.as_ref(), p) {
+            self.status.set(text.to_string());
         }
         self.window.request_redraw();
     }
@@ -63,21 +54,15 @@ impl State {
     /// The right button went down or up: a drag erases from its press.
     pub(in crate::ui) fn ink_right(&mut self, down: bool) {
         self.ink_sync();
-        self.ink.set_right_down(down);
-        match (down, self.ink.frame()) {
-            (true, Some((canvas, image))) => {
-                let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
-                self.ink.erase(shown.as_ref(), p, &canvas, &image);
-            }
-            _ => self.ink.erase_end(),
-        }
+        let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
+        self.ink.right(down, shown.as_ref(), p);
         self.window.request_redraw();
     }
 
     /// The window lost focus: a live stroke is committed, and a held erase ends.
     pub(in crate::ui) fn ink_focus_lost(&mut self) {
-        self.ink.release();
-        self.ink.set_right_down(false);
+        self.ink_sync();
+        self.ink.focus_lost();
     }
 }
 

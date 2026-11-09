@@ -293,8 +293,13 @@ fn quit_never_overwrites_another_prompt() {
 }
 
 fn pointer(p: &mut FocusPrompts, pressed: bool, left: bool, inside: bool, at: Option<(u16, u16)>) -> Vec<String> {
+    pointer_button(p, pressed, if left { MouseButton::Left } else { MouseButton::Right }, inside, at)
+}
+
+fn pointer_button(p: &mut FocusPrompts, pressed: bool, button: MouseButton, inside: bool, at: Option<(u16, u16)>) -> Vec<String> {
+    let left = button == MouseButton::Left;
     let mut s = (p, Vec::new());
-    pointer_continuation(&mut s, pressed, left, |s, pressed| s.1.push(format!("presence:{pressed}")),
+    pointer_continuation(&mut s, pressed, button, |s, pressed| s.1.push(format!("presence:{pressed}")),
         |s| s.0.quit_choice().map(|keep| {
             let d = close_dialog(ratatui::layout::Rect::new(0, 0, 120, 36), CloseDialogText::Ask { keep, notice: None });
             quit_prompt_click(d.answers, if left { at } else { None })
@@ -304,8 +309,21 @@ fn pointer(p: &mut FocusPrompts, pressed: bool, left: bool, inside: bool, at: Op
         |s| agent_press_continuation(s, inside.then_some(()), |s| {
             s.0.set_focus(PaneFocus::Llm); s.1.push("focus".into());
         }, |s, cell| s.1.push(format!("press:{}", cell.is_some()))),
-        |s| s.1.push("release".into()));
+        |s| s.1.push("release".into()), |s, down| s.1.push(format!("right:{down}")));
     s.1
+}
+
+#[test]
+fn a_right_press_answers_a_question_or_a_notice_and_a_right_release_always_reaches_the_eraser() {
+    let mut p = owner(PaneFocus::Preview); p.ask_quit(true);
+    assert_eq!(pointer_button(&mut p, true, MouseButton::Right, true, None), ["presence:true", "answer:Cancel"]);
+    assert_eq!(p.quit_choice(), None);
+    let mut p = owner(PaneFocus::Preview); p.record_stay(LeaveIntent::Handover);
+    assert_eq!(pointer_button(&mut p, true, MouseButton::Right, true, None), ["presence:true", "redraw"]);
+    assert_eq!(pointer_button(&mut p, true, MouseButton::Right, true, None), ["presence:true", "right:true"]);
+    p.ask_quit(false);
+    assert_eq!(pointer_button(&mut p, false, MouseButton::Right, true, None), ["presence:false", "right:false"]);
+    assert_eq!(p.quit_choice(), Some(false));
 }
 
 #[test]

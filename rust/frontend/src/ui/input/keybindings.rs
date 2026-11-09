@@ -32,9 +32,6 @@ pub enum Scope {
     Llm,
     Pages,
     Image,
-    /// The focused preview, not editing. No action has it yet: D5's canvas key will.
-    #[allow(dead_code)]
-    Preview,
     /// Drawing is on over a shown base, in the focused preview.
     Drawing,
     Reading,

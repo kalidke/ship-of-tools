@@ -97,17 +97,12 @@ impl InkLayer {
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
         self.on = on;
     }
-    pub(in crate::ui) fn frame(&self) -> Option<(ScreenRect, ScreenRect)> {
-        self.frame
-    }
     pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
         self.frame = Some((canvas, image));
     }
-    pub(in crate::ui) fn right_down(&self) -> bool {
-        self.right_down
-    }
-    pub(in crate::ui) fn set_right_down(&mut self, down: bool) {
-        self.right_down = down;
+    /// A left stroke is live or the right button is down: a motion is the layer's.
+    pub(in crate::ui) fn busy(&self) -> bool {
+        self.live.is_some() || self.right_down
     }
 
     /// Run before each frame and pointer event: a base no longer shown drops a live stroke, and a shown base whose source
@@ -117,16 +112,18 @@ impl InkLayer {
             self.base_hidden();
         } else if let (Some(_), Some((w, h))) = (shown, src) {
             if self.dims != raster_dims(w, h) {
-                self.live = None;
                 self.dims = raster_dims(w, h);
                 self.repaint();
             }
         }
     }
 
-    /// The raster is painted again from the committed strokes, and all of it is dirty.
+    /// The raster is painted again from the committed strokes and the live one, and all of it is dirty.
     fn repaint(&mut self) {
-        self.mask = mask(&self.strokes, self.dims);
+        self.mask = match &self.live {
+            Some(l) => mask(&[self.strokes.as_slice(), std::slice::from_ref(l)].concat(), self.dims),
+            None => mask(&self.strokes, self.dims),
+        };
         self.dirty = Some([0, 0, self.dims.0, self.dims.1]);
     }
 
@@ -201,8 +198,42 @@ impl InkLayer {
 
     /// Whether a press at `p` reaches `shown`, the base on show (`None`: none): drawing is on, or `shown` is the canvas,
     /// and `p` is inside the image rectangle and the canvas rectangle.
-    pub(in crate::ui) fn reaches(&self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect) -> bool {
+    fn reaches(&self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect) -> bool {
         shown.is_some_and(|b| (self.on || *b == InkBase::Canvas) && inside(image, p) && inside(canvas, p))
+    }
+
+    /// The window's left press: `Some` (with the status text `press` returns) when the drawing takes it, `None` when it
+    /// reaches nothing or no frame or source size is known.
+    pub(in crate::ui) fn left_press(&mut self, shown: Option<&InkBase>, p: (f32, f32), src: Option<(u32, u32)>) -> Option<Option<String>> {
+        let ((canvas, image), src) = (self.frame?, src?);
+        self.reaches(shown, p, &canvas, &image).then(|| self.press(shown, p, &canvas, &image, src))
+    }
+
+    /// Motion: a live left stroke grows (the status text comes back), else a right drag erases.
+    pub(in crate::ui) fn moved(&mut self, shown: Option<&InkBase>, p: (f32, f32)) -> Option<&'static str> {
+        let (canvas, image) = self.frame?;
+        if self.live.is_some() {
+            return self.drag(p, &canvas);
+        }
+        if self.right_down {
+            self.erase(shown, p, &canvas, &image);
+        }
+        None
+    }
+
+    /// The right button went down or up: a drag erases from its press.
+    pub(in crate::ui) fn right(&mut self, down: bool, shown: Option<&InkBase>, p: (f32, f32)) {
+        self.right_down = down;
+        match (down, self.frame) {
+            (true, Some((canvas, image))) => self.erase(shown, p, &canvas, &image),
+            _ => self.erase_end(),
+        }
+    }
+
+    /// The window lost focus: a live stroke is committed, and a held erase ends.
+    pub(in crate::ui) fn focus_lost(&mut self) {
+        self.release();
+        self.right_down = false;
     }
 
     /// A left press: ends a stroke whose release was lost, then begins one. Another base replaces the row's drawing, and
@@ -272,7 +303,7 @@ impl InkLayer {
     }
 
     /// The base stops being shown: a live stroke is dropped, not committed.
-    pub(in crate::ui) fn base_hidden(&mut self) {
+    fn base_hidden(&mut self) {
         if self.live.take().is_some() {
             self.repaint();
         }
