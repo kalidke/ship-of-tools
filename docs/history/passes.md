@@ -1359,3 +1359,15 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes. Why past the hour: the brief named the plan's decider of the shown base (3.4) only by section, and the build
   gated the overlay on the file last requested, which the first round found drawing one figure's ink over another;
   the first round's tests let 13 of 20 faults through, and the second round's longest was its 56-second test (now 6).
+- D4c1, the window's drawing takes the mouse and its keys, 2026-11-09: builder launched 00:08, main 00:58 (f0c0f6768,
+  one commit squashed from two), 50 minutes. With drawing on over the shown base, a left press inside the image
+  rectangle focuses the preview, clears the agent pane's selection and begins a stroke with no text selection; motion
+  extends it, release commits it, a right-button drag erases; every button passes the quit question and the stayed
+  notice first and a release is never blocked, so a click that answers either draws nothing. `d` turns drawing on and
+  off over an image; `u` or `Primary+z` undoes and `Delete` clears, live only while drawing is on over a shown base. A
+  lost focus commits a live stroke, a base no longer shown drops it, and the same figure at another size rebuilds the
+  raster at once with a live stroke kept. The routing lives in the drawing's owner, and every gate asks its one decider
+  of the shown base. About 161 product lines (the brief's stop was 120, and the fix round's 155; neither builder
+  stopped) and 150 test lines. Where the minutes went: the build (9 minutes); one review round (blockers 0; 25 minutes)
+  and one fix round of 12 minutes; two gates of 2 minutes. Of D4's four builders, all ran past the line stop their
+  brief stated; the split before launch is what bounded each landing.
