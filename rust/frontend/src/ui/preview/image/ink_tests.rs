@@ -577,3 +577,94 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refu
     assert_eq!(shown(Some("files:a.png"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), false, true), None);
 }
+
+#[test]
+fn a_base_no_longer_shown_drops_the_live_stroke_and_the_same_base_stays() {
+    let (mut l, b) = (on(), fig("a.png"));
+    pt(&mut l, &b, (150.0, 100.0));
+    l.press(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+    l.sync(Some(&b), Some(DIMS));
+    assert!(l.live().is_some(), "the same base shown keeps the live stroke");
+    for other in [None, Some(fig("b.png"))] {
+        l.press(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+        assert!(l.live().is_some());
+        let committed = l.strokes().len();
+        l.sync(other.as_ref(), Some(DIMS));
+        assert!(l.live().is_none(), "the base stopped being shown: the stroke is dropped, not committed");
+        assert_eq!(l.strokes().len(), committed);
+    }
+}
+
+#[test]
+fn the_same_node_at_another_size_rebuilds_the_raster_at_once() {
+    let (mut l, b) = (on(), fig("a.png"));
+    pt(&mut l, &b, (150.0, 100.0));
+    let _ = l.dirty.take();
+    l.sync(Some(&b), Some(DIMS));
+    assert!(l.dirty.is_none(), "the same size repaints nothing");
+    l.sync(Some(&b), Some((800, 400)));
+    assert_eq!(l.dims, raster_dims(800, 400));
+    assert_eq!(l.dirty(), Some((0, 0, l.dims.0, l.dims.1)));
+    assert_eq!(l.mask.len(), (l.dims.0 * l.dims.1) as usize);
+    assert_eq!(l.mask, mask(l.strokes(), l.dims));
+}
+
+#[test]
+fn a_size_change_keeps_the_live_stroke_and_paints_it() {
+    let (mut l, b) = (on(), fig("a.png"));
+    pt(&mut l, &b, (150.0, 100.0));
+    l.press(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+    l.drag((400.0, 150.0), &R);
+    let live = l.live().unwrap().to_vec();
+    assert!(live.len() > 1);
+    l.sync(Some(&b), Some((800, 400)));
+    assert_eq!(l.live(), Some(&live[..]));
+    let all = [l.strokes().to_vec(), vec![live]].concat();
+    assert_eq!(l.mask, mask(&all, l.dims));
+}
+
+#[test]
+fn the_window_routes_a_left_press_motion_and_the_right_button_through_the_layer() {
+    let (mut l, b) = (on(), fig("a.png"));
+    let inside = (200.0, 100.0);
+    // no frame, no source size, drawing off or a point outside: the press is not taken
+    assert_eq!(l.left_press(Some(&b), inside, Some(DIMS)), None);
+    l.set_frame(R, R);
+    assert_eq!(l.left_press(Some(&b), inside, None), None);
+    assert_eq!(l.left_press(Some(&b), (10.0, 10.0), Some(DIMS)), None);
+    assert!(l.live().is_none() && !l.busy());
+    l.set_on(false);
+    assert_eq!(l.left_press(Some(&b), inside, Some(DIMS)), None);
+    l.set_on(true);
+    assert_eq!(l.left_press(None, inside, Some(DIMS)), None);
+    // taken: a stroke begins, and a replaced drawing's note comes back
+    assert_eq!(l.left_press(Some(&b), inside, Some(DIMS)), Some(None));
+    assert!(l.busy());
+    // motion extends the live stroke, and the eraser is not touched
+    l.right(true, Some(&b), (10.0, 10.0));
+    l.moved(Some(&b), (300.0, 100.0));
+    assert_eq!(l.live().unwrap().len(), 2);
+    l.release();
+    l.right(false, Some(&b), (10.0, 10.0));
+    assert!(!l.busy());
+    assert_eq!(l.left_press(Some(&fig("b.png")), inside, Some(DIMS)), Some(Some("the drawing on a.png was replaced".to_string())));
+    l.release();
+    // a right press erases at once, its drag erases, its release ends the drag and motion then erases nothing
+    let (mut l, b) = (on(), fig("a.png"));
+    l.set_frame(R, R);
+    pt(&mut l, &b, (150.0, 100.0));
+    pt(&mut l, &b, (250.0, 100.0));
+    pt(&mut l, &b, (450.0, 100.0));
+    l.right(true, Some(&b), (150.0, 100.0));
+    assert!(l.busy() && l.strokes().len() == 2);
+    l.moved(Some(&b), (250.0, 100.0));
+    assert_eq!(l.strokes().len(), 1);
+    l.right(false, Some(&b), (250.0, 100.0));
+    l.moved(Some(&b), (450.0, 100.0));
+    assert_eq!(l.strokes().len(), 1, "no button held: motion erases nothing");
+    // a lost focus commits a live stroke and ends a held erase
+    l.right(true, Some(&b), (10.0, 10.0));
+    l.left_press(Some(&b), (300.0, 150.0), Some(DIMS));
+    l.focus_lost();
+    assert!(!l.busy() && l.strokes().len() == 2);
+}

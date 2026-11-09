@@ -4,6 +4,7 @@ pub(crate) mod figures;
 mod replies;
 pub(in crate::ui) mod keys;
 pub(in crate::ui) mod ink;
+pub(in crate::ui) mod ink_input;
 mod roi;
 pub(crate) mod overlay;
 pub(crate) mod png;

@@ -154,6 +154,7 @@ impl ApplicationHandler for App {
                 // ModifiersChanged event.
                 if !focused {
                     self.modifiers = winit::keyboard::ModifiersState::empty();
+                    state.ink_focus_lost();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

@@ -2,9 +2,6 @@
 //! every committed change raises. It maps a screen point through the canvas and image rectangles each call hands it, so
 //! zoom, pan and a resize need no state here. It keeps the drawing's raster (the wire's own functions paint it) and the
 //! overlay texture made from it. It never takes `State`.
-// D4c is the first reader of the edits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
 use sot_protocol::ink::{ink_radius, mask, paint_segment, raster_dims, segments, to_raster, INK_RGB};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
@@ -37,6 +34,10 @@ pub(in crate::ui) struct InkLayer {
     overlay: Option<Quad>,
     /// The last upload failed and was logged: a repeat is not logged again.
     upload_failed: bool,
+    /// The last frame's canvas and image rectangles, which the pointer maps through.
+    frame: Option<(ScreenRect, ScreenRect)>,
+    /// The right button is down: every motion of the drag goes to the eraser.
+    right_down: bool,
 }
 
 fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
@@ -79,6 +80,8 @@ impl InkLayer {
     pub(in crate::ui) fn base(&self) -> Option<&InkBase> {
         self.base.as_ref()
     }
+    /// Read by the share (D6) and the per-row parking (D4c2); the tests read it now.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::ui) fn strokes(&self) -> &[Stroke] {
         &self.strokes
     }
@@ -94,10 +97,33 @@ impl InkLayer {
     pub(in crate::ui) fn set_on(&mut self, on: bool) {
         self.on = on;
     }
+    pub(in crate::ui) fn set_frame(&mut self, canvas: ScreenRect, image: ScreenRect) {
+        self.frame = Some((canvas, image));
+    }
+    /// A left stroke is live or the right button is down: a motion is the layer's.
+    pub(in crate::ui) fn busy(&self) -> bool {
+        self.live.is_some() || self.right_down
+    }
 
-    /// The raster is painted again from the committed strokes, and all of it is dirty.
+    /// Run before each frame and pointer event: a base no longer shown drops a live stroke, and a shown base whose source
+    /// size changed (the same node installed again) rebuilds the raster at once.
+    pub(in crate::ui) fn sync(&mut self, shown: Option<&InkBase>, src: Option<(u32, u32)>) {
+        if shown != self.base.as_ref() {
+            self.base_hidden();
+        } else if let (Some(_), Some((w, h))) = (shown, src) {
+            if self.dims != raster_dims(w, h) {
+                self.dims = raster_dims(w, h);
+                self.repaint();
+            }
+        }
+    }
+
+    /// The raster is painted again from the committed strokes and the live one, and all of it is dirty.
     fn repaint(&mut self) {
-        self.mask = mask(&self.strokes, self.dims);
+        self.mask = match &self.live {
+            Some(l) => mask(&[self.strokes.as_slice(), std::slice::from_ref(l)].concat(), self.dims),
+            None => mask(&self.strokes, self.dims),
+        };
         self.dirty = Some([0, 0, self.dims.0, self.dims.1]);
     }
 
@@ -176,6 +202,40 @@ impl InkLayer {
         shown.is_some_and(|b| (self.on || *b == InkBase::Canvas) && inside(image, p) && inside(canvas, p))
     }
 
+    /// The window's left press: `Some` (with the status text `press` returns) when the drawing takes it, `None` when it
+    /// reaches nothing or no frame or source size is known.
+    pub(in crate::ui) fn left_press(&mut self, shown: Option<&InkBase>, p: (f32, f32), src: Option<(u32, u32)>) -> Option<Option<String>> {
+        let ((canvas, image), src) = (self.frame?, src?);
+        self.reaches(shown, p, &canvas, &image).then(|| self.press(shown, p, &canvas, &image, src))
+    }
+
+    /// Motion: a live left stroke grows (the status text comes back), else a right drag erases.
+    pub(in crate::ui) fn moved(&mut self, shown: Option<&InkBase>, p: (f32, f32)) -> Option<&'static str> {
+        let (canvas, image) = self.frame?;
+        if self.live.is_some() {
+            return self.drag(p, &canvas);
+        }
+        if self.right_down {
+            self.erase(shown, p, &canvas, &image);
+        }
+        None
+    }
+
+    /// The right button went down or up: a drag erases from its press.
+    pub(in crate::ui) fn right(&mut self, down: bool, shown: Option<&InkBase>, p: (f32, f32)) {
+        self.right_down = down;
+        match (down, self.frame) {
+            (true, Some((canvas, image))) => self.erase(shown, p, &canvas, &image),
+            _ => self.erase_end(),
+        }
+    }
+
+    /// The window lost focus: a live stroke is committed, and a held erase ends.
+    pub(in crate::ui) fn focus_lost(&mut self) {
+        self.release();
+        self.right_down = false;
+    }
+
     /// A left press: ends a stroke whose release was lost, then begins one. Another base replaces the row's drawing, and
     /// the text for the status line comes back. `src` is the base's source size: the raster takes its dims from it, and
     /// is painted again when the base or those dims change.
@@ -243,7 +303,7 @@ impl InkLayer {
     }
 
     /// The base stops being shown: a live stroke is dropped, not committed.
-    pub(in crate::ui) fn base_hidden(&mut self) {
+    fn base_hidden(&mut self) {
         if self.live.take().is_some() {
             self.repaint();
         }

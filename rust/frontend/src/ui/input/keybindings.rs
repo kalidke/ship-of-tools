@@ -32,6 +32,8 @@ pub enum Scope {
     Llm,
     Pages,
     Image,
+    /// Drawing is on over a shown base, in the focused preview.
+    Drawing,
     Reading,
     PreviewFile,
     PageScroll,
@@ -142,6 +144,9 @@ actions! {
     PreviewPngPanUp, "preview.png.pan_up", ["ArrowUp"], "Pan up", "Move across the zoomed image.", "Image", Image;
     PreviewPngPanDown, "preview.png.pan_down", ["ArrowDown"], "Pan down", "Move across the zoomed image.", "Image", Image;
     PreviewScalebarToggle, "preview.scalebar.toggle", ["Primary+s"], "Scalebar", "Toggle the physical scalebar, or enter the pixel size when scale is unknown.", "Image", Image;
+    PreviewDraw, "preview.draw", ["d"], "Draw", "Turn drawing on or off over the displayed image; the agent sees the drawing.", "Image", Image;
+    PreviewInkUndo, "preview.ink_undo", ["u", "Primary+z"], "Undo stroke", "Remove the last stroke; right after a clear, bring the cleared strokes back.", "Image", Drawing;
+    PreviewInkClear, "preview.ink_clear", ["Delete"], "Clear drawing", "Clear the drawing.", "Image", Drawing;
     ReturnNav, "view.return_nav", ["Escape"], "Return to navigation", "Move focus back to the navigation tree.", "View", Reading;
     CaptureRegion, "preview.capture", ["c", "Primary+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
     CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;

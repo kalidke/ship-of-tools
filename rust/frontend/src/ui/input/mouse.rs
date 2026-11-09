@@ -12,10 +12,11 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
     let agent_changed = state.agent_pane.extend_drag(end);
     let preview_changed = state.shaped.extend_drag(state.pointer.at_px());
     if agent_changed || preview_changed { state.window.request_redraw(); }
+    state.ink_moved();
 }
 
 pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop, btn_state: ElementState, button: MouseButton) {
-    pointer_continuation(state, btn_state == ElementState::Pressed, button == MouseButton::Left,
+    pointer_continuation(state, btn_state == ElementState::Pressed, button,
         |state, pressed| state.report_presence(pressed),
         |state| {
             if state.focus_prompts.quit_choice().is_none() { return None; }
@@ -31,19 +32,23 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
             dismissed
         },
         press_selections,
-        |state| { state.agent_pane.release(); state.shaped.release(); });
+        |state| { state.agent_pane.release(); state.shaped.release(); state.ink_released(); },
+        |state, down| state.ink_right(down));
 }
 
 /// Only the geometry and effects needed to route a press into the two selectable text panes.
 trait SelectionContext {
     fn agent_cell(&self) -> Option<(u16, u16)>;
     fn preview_cursor(&self) -> Option<cosmic_text::Cursor>;
+    /// A left press the drawing takes: it focuses the preview itself and starts no selection.
+    fn draw_press(&mut self) -> bool;
     fn focus_selection_pane(&mut self, pane: PaneFocus);
     fn press_agent(&mut self, cell: Option<(u16, u16)>);
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>);
 }
 
 fn press_selections(context: &mut impl SelectionContext) {
+    if context.draw_press() { context.press_agent(None); return; }
     let cell = context.agent_cell();
     let cursor = context.preview_cursor();
     agent_press_continuation(context, cell, |c| c.focus_selection_pane(PaneFocus::Llm), |c, cell| c.press_agent(cell));
@@ -57,6 +62,7 @@ impl SelectionContext for State {
         if pane.width == 0 || pane.height == 0 || self.editor.is_editing() || !self.preview_shows().4 { return None; }
         self.shaped.hit(self.pointer.at_px(), true)
     }
+    fn draw_press(&mut self) -> bool { self.press_ink() }
     fn focus_selection_pane(&mut self, pane: PaneFocus) { self.set_focus(pane); }
     fn press_agent(&mut self, cell: Option<(u16, u16)>) {
         if self.agent_pane.press(cell) { self.window.request_redraw(); }
@@ -66,18 +72,21 @@ impl SelectionContext for State {
     }
 }
 
-/// Presence precedes modal interception; a release ends drag even when a dialog is showing.
-pub(in crate::ui) fn pointer_continuation<S>(state: &mut S, pressed: bool, left: bool,
+/// Presence precedes modal interception; a release ends a drag, of either button, even when a dialog is showing.
+pub(in crate::ui) fn pointer_continuation<S>(state: &mut S, pressed: bool, button: MouseButton,
     presence: impl FnOnce(&mut S, bool), question: impl FnOnce(&mut S) -> Option<QuitPromptStep>,
     answer: impl FnOnce(&mut S, QuitPromptStep), dismiss: impl FnOnce(&mut S) -> bool,
-    press: impl FnOnce(&mut S), release: impl FnOnce(&mut S)) {
+    press: impl FnOnce(&mut S), release: impl FnOnce(&mut S), right: impl FnOnce(&mut S, bool)) {
     presence(state, pressed);
     if pressed {
         if let Some(step) = question(state) { answer(state, step); return; }
         if dismiss(state) { return; }
     }
-    if left {
-        if pressed { press(state); } else { release(state); }
+    match button {
+        MouseButton::Left if pressed => press(state),
+        MouseButton::Left => release(state),
+        MouseButton::Right => right(state, pressed),
+        _ => {}
     }
 }
 
@@ -246,14 +255,20 @@ mod tests {
         focus: PaneFocus,
         text_shown: bool,
         focused_before_press: bool,
+        drawing: bool,
+        pressed_agent: Vec<Option<(u16, u16)>>,
     }
     impl SelectionContext for SelectionProbe {
         fn agent_cell(&self) -> Option<(u16, u16)> { self.agent }
         fn preview_cursor(&self) -> Option<cosmic_text::Cursor> {
             self.text_shown.then(|| self.shaped.hit(self.at, true)).flatten()
         }
+        fn draw_press(&mut self) -> bool {
+            if self.drawing { self.focus = PaneFocus::Preview; }
+            self.drawing
+        }
         fn focus_selection_pane(&mut self, pane: PaneFocus) { self.focus = pane; }
-        fn press_agent(&mut self, _: Option<(u16, u16)>) {}
+        fn press_agent(&mut self, cell: Option<(u16, u16)>) { self.pressed_agent.push(cell); }
         fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>) {
             self.focused_before_press = cursor.is_some() && self.focus == PaneFocus::Preview;
             self.shaped.press(cursor);
@@ -269,16 +284,16 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: None, focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false,
+            text_shown: true, focused_before_press: false, drawing: false, pressed_agent: Vec::new(),
         };
-        pointer_continuation(&mut probe, true, true, |_, _| {}, |_| None, |_, _| {}, |_| false,
-            press_selections, |p| p.shaped.release());
+        pointer_continuation(&mut probe, true, MouseButton::Left, |_, _| {}, |_| None, |_, _| {}, |_| false,
+            press_selections, |p| p.shaped.release(), |_, _| {});
         assert_eq!(probe.focus, PaneFocus::Preview);
         assert!(probe.focused_before_press);
         let end = (rect.x + rect.w - 1.0, rect.y + EXTRA_TOP_PAD_PX + 25.0);
         assert!(probe.shaped.extend_drag(end));
-        pointer_continuation(&mut probe, false, true, |_, _| {}, |_| None, |_, _| {}, |_| false,
-            press_selections, |p| p.shaped.release());
+        pointer_continuation(&mut probe, false, MouseButton::Left, |_, _| {}, |_| None, |_, _| {}, |_| false,
+            press_selections, |p| p.shaped.release(), |_, _| {});
         assert_eq!(probe.shaped.selected_text().as_deref(), Some("alpha\nbravo"));
         assert!(!probe.shaped.extend_drag(probe.at));
 
@@ -294,6 +309,27 @@ mod tests {
         press_selections(&mut probe);
         assert_eq!(probe.focus, PaneFocus::Llm, "an image or editor does not start preview selection");
         assert!(!probe.shaped.extend_drag(end));
+    }
+
+    #[test]
+    fn a_press_the_drawing_takes_focuses_the_preview_and_starts_no_selection() {
+        use crate::ui::preview::{markdown::{MarkdownPreview, highlight::HighlightService}, shaped::ShapedPreview};
+        use crate::ui::render::{quad::ScreenRect, text::EXTRA_TOP_PAD_PX};
+        let md = MarkdownPreview::new_plain(&mut glyphon::FontSystem::new(), "alpha\nbravo", 200.0, 1.0);
+        let rect = ScreenRect { x: 20.0, y: 30.0, w: 200.0, h: 80.0 };
+        let mut probe = SelectionProbe {
+            shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
+            at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
+            text_shown: true, focused_before_press: false, drawing: true, pressed_agent: Vec::new(),
+        };
+        press_selections(&mut probe);
+        assert_eq!(probe.focus, PaneFocus::Preview);
+        assert_eq!(probe.pressed_agent, [None], "a drawing press clears the agent pane's selection");
+        assert!(!probe.focused_before_press && !probe.shaped.extend_drag((rect.x + 100.0, rect.y + 60.0)),
+            "a drawing press begins no text selection");
+        probe.drawing = false;
+        press_selections(&mut probe);
+        assert_eq!(probe.pressed_agent, [None, Some((0, 0))], "any other press routes as before");
     }
 
     #[derive(Debug, PartialEq)]

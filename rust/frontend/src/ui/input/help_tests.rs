@@ -153,3 +153,35 @@ fn html_escape_covers_the_five_special_characters() {
     );
     assert_eq!(html_escape("plain text"), "plain text");
 }
+
+#[test]
+fn the_drawing_keys_resolve_only_where_drawing_is() {
+    use winit::keyboard::Key;
+    let b = KeyBindings::defaults();
+    let chars = |k: &str| Key::Character(k.into());
+    let plain = crate::ui::Modifiers { ctrl: false, alt: false, shift: false, super_: false };
+    let press = |c: &Context, key: &Key, m: crate::ui::Modifiers| b.resolve(key, Some(key), m, c.consumes_text(), |a| c.allows(a));
+    let drawing = Context { pane: Pane::Preview, image: true, drawing: true, ..Context::default() };
+    let image = Context { drawing: false, ..drawing.clone() };
+    let text = Context { image: false, drawing: false, ..drawing.clone() };
+    let editing = Context { editing: true, ..drawing.clone() };
+    let nav = Context { pane: Pane::Nav, mode: Mode::Files, file: Some("a.png".into()), ..Context::default() };
+    let primary = crate::ui::Modifiers { ctrl: !cfg!(target_os = "macos"), super_: cfg!(target_os = "macos"), ..plain };
+    // `d` turns drawing on over an image only; Delete and the undo keys need drawing on as well.
+    assert_eq!(press(&image, &chars("d"), plain), Some(Action::PreviewDraw));
+    assert_eq!(press(&drawing, &chars("d"), plain), Some(Action::PreviewDraw));
+    assert_ne!(press(&text, &chars("d"), plain), Some(Action::PreviewDraw));
+    assert_ne!(press(&image, &chars("u"), plain), Some(Action::PreviewInkUndo));
+    assert_eq!(press(&drawing, &chars("u"), plain), Some(Action::PreviewInkUndo));
+    assert_eq!(press(&drawing, &chars("z"), primary), Some(Action::PreviewInkUndo));
+    assert_eq!(press(&drawing, &Key::Named(winit::keyboard::NamedKey::Delete), plain), Some(Action::PreviewInkClear));
+    assert_ne!(press(&image, &Key::Named(winit::keyboard::NamedKey::Delete), plain), Some(Action::PreviewInkClear));
+    // Editing keeps its own Undo and Delete; the navigation pane keeps upload, download and delete.
+    for (key, m) in [("u", plain), ("z", primary)] {
+        assert_ne!(press(&editing, &chars(key), m), Some(Action::PreviewInkUndo));
+    }
+    assert_ne!(press(&editing, &Key::Named(winit::keyboard::NamedKey::Delete), plain), Some(Action::PreviewInkClear));
+    assert_eq!(press(&nav, &chars("d"), plain), Some(Action::Download));
+    assert_eq!(press(&nav, &chars("u"), plain), Some(Action::Upload));
+    assert!(!nav.allows(Action::PreviewInkUndo) && !nav.allows(Action::PreviewInkClear) && !nav.allows(Action::PreviewDraw));
+}
