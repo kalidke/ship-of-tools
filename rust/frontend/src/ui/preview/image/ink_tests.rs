@@ -111,10 +111,10 @@ fn a_stroke_ends_at_its_release_a_new_press_or_a_lost_focus_and_is_dropped_with_
     assert!(l.live().is_none() && l.strokes().len() == 3);
     // 9: undo or clear during a stroke drops it and does nothing else
     l.press(Some(&b), (200.0, 100.0), &R, &R);
-    l.undo();
+    l.undo(Some(&b));
     assert!(l.live().is_none() && l.strokes().len() == 3);
     l.press(Some(&b), (200.0, 100.0), &R, &R);
-    l.clear();
+    l.clear(Some(&b));
     assert!(l.live().is_none() && l.strokes().len() == 3);
     // 10: a press on another base replaces the drawing and says so; the name is the node id's last part
     let mut note = None;
@@ -132,8 +132,8 @@ fn a_stroke_ends_at_its_release_a_new_press_or_a_lost_focus_and_is_dropped_with_
     assert_eq!(l.press(Some(&fig("b.png")), (200.0, 100.0), &R, &R).as_deref(), Some("the drawing on c.png was replaced"));
     // the replaced drawing's history goes with it: undo takes back the new stroke and nothing more
     l.release();
-    l.undo();
-    assert_eq!(rev(&mut l, |l| l.undo()), 0);
+    l.undo(Some(&fig("b.png")));
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&fig("b.png")))), 0);
 }
 
 #[test]
@@ -142,22 +142,22 @@ fn undo_clear_and_restore_keep_their_order_and_a_new_stroke_drops_the_cleared_co
     for x in [150.0, 250.0, 350.0] {
         pt(&mut l, &b, (x, 100.0));
     }
-    assert_eq!(rev(&mut l, |l| l.undo()), 1);
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&b))), 1);
     assert_eq!(l.strokes().len(), 2);
-    assert_eq!(rev(&mut l, |l| l.clear()), 1);
+    assert_eq!(rev(&mut l, |l| l.clear(Some(&b))), 1);
     assert!(l.strokes().is_empty());
-    assert_eq!(rev(&mut l, |l| l.undo()), 1);
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&b))), 1);
     assert_eq!(l.strokes().len(), 2);
-    assert_eq!(rev(&mut l, |l| l.undo()), 1);
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&b))), 1);
     assert_eq!(l.strokes().len(), 1);
-    l.clear();
+    l.clear(Some(&b));
     pt(&mut l, &b, (400.0, 100.0));
-    l.undo();
-    l.undo();
+    l.undo(Some(&b));
+    l.undo(Some(&b));
     assert!(l.strokes().is_empty(), "the new stroke dropped the cleared copy");
     let r = l.revision();
-    l.undo();
-    l.clear();
+    l.undo(Some(&b));
+    l.clear(Some(&b));
     assert_eq!(l.revision(), r, "nothing to change");
 }
 
@@ -165,20 +165,20 @@ fn undo_clear_and_restore_keep_their_order_and_a_new_stroke_drops_the_cleared_co
 fn the_cleared_copy_goes_with_a_commit_or_a_base_change_not_a_press() {
     let (b, mut l) = (fig("a.png"), on());
     pt(&mut l, &b, (150.0, 100.0));
-    l.clear();
+    l.clear(Some(&b));
     l.press(Some(&b), (200.0, 100.0), &R, &R);
     l.base_hidden();
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(xs(&l).len(), 1, "a stroke dropped before its commit leaves the cleared copy");
-    l.clear();
+    l.clear(Some(&b));
     l.press(Some(&b), (200.0, 100.0), &R, &R);
-    l.undo();
-    l.undo();
+    l.undo(Some(&b));
+    l.undo(Some(&b));
     assert_eq!(xs(&l).len(), 1);
-    l.clear();
+    l.clear(Some(&b));
     l.press(Some(&fig("b.png")), (200.0, 100.0), &R, &R);
     l.base_hidden();
-    assert_eq!(rev(&mut l, |l| l.undo()), 0);
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&fig("b.png")))), 0);
     assert!(l.strokes().is_empty(), "the old base's strokes never come back on the new one");
 }
 
@@ -191,7 +191,7 @@ fn the_right_button_erases_in_one_undo_step_and_never_a_live_stroke() {
     assert_eq!(rev(&mut l, |l| l.erase(Some(&b), (150.0, 160.0), &R, &R, DIMS)), 0);
     l.erase_end();
     assert_eq!(l.strokes().len(), 3, "a press with no stroke under it changes nothing");
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(l.strokes().len(), 2, "an erase that removed nothing is no undo step");
     pt(&mut l, &b, (350.0, 100.0));
     let r = l.revision();
@@ -203,9 +203,9 @@ fn the_right_button_erases_in_one_undo_step_and_never_a_live_stroke() {
     l.erase_end();
     // erase, a new stroke, undo: the new stroke goes first
     pt(&mut l, &b, (300.0, 200.0));
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(l.strokes().len(), 1);
-    assert_eq!(rev(&mut l, |l| l.undo()), 1);
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&b))), 1);
     assert_eq!(l.strokes().len(), 3, "one undo put the erase drag's strokes back");
     // a right press during a left drag is ignored, as is one on another base
     l.press(Some(&b), (200.0, 200.0), &R, &R);
@@ -221,7 +221,7 @@ fn the_right_button_erases_in_one_undo_step_and_never_a_live_stroke() {
     }
     l.erase_end();
     assert!(l.strokes().is_empty());
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(l.strokes().len(), 4);
 }
 
@@ -236,18 +236,18 @@ fn no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_hi
     };
     // undo takes the erase back; the drag goes on and hits again as a step of its own
     two(&mut l);
-    l.undo();
+    l.undo(Some(&b));
     hit(&mut l, &b, 350.0);
     l.erase_end();
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(xs(&l), [8192, 40959]);
     // clear, then undo brings the clear back; the drag goes on and hits again
     two(&mut l);
-    l.clear();
-    l.undo();
+    l.clear(Some(&b));
+    l.undo(Some(&b));
     hit(&mut l, &b, 150.0);
     l.erase_end();
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(xs(&l), [8192]);
     // release or a hidden base ends the step: a later hit is another step
     for end in [InkLayer::release, InkLayer::base_hidden] {
@@ -255,7 +255,7 @@ fn no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_hi
         end(&mut l);
         hit(&mut l, &b, 150.0);
         l.erase_end();
-        l.undo();
+        l.undo(Some(&b));
         assert_eq!(xs(&l), [8192], "the undo took back the second step only");
     }
     // a press (a new stroke between two hits of one right drag) ends it too
@@ -264,10 +264,10 @@ fn no_event_between_an_erase_hit_and_the_drag_end_splits_the_strokes_from_the_hi
     l.release();
     hit(&mut l, &b, 150.0);
     l.erase_end();
-    l.undo();
+    l.undo(Some(&b));
     assert_eq!(xs(&l), [8192, 32768]);
-    l.undo();
-    l.undo();
+    l.undo(Some(&b));
+    l.undo(Some(&b));
     assert_eq!(xs(&l), [8192, 40959]);
 }
 
@@ -312,12 +312,6 @@ fn the_eraser_reaches_the_painted_ink_along_the_path_and_only_inside_the_image()
     w.release();
     w.erase(Some(&b), (350.0, 100.0), &R, &small, DIMS);
     assert_eq!(w.strokes().len(), 1, "a lost release ended the drag");
-    let mut m = on();
-    pt(&mut m, &b, (350.0, 100.0));
-    m.erase(Some(&b), (150.0, 100.0), &R, &small, DIMS);
-    m.release();
-    m.erase(Some(&b), (350.0, 100.0), &R, &small, DIMS);
-    assert_eq!(m.strokes().len(), 1);
 }
 
 #[test]
@@ -336,4 +330,131 @@ fn the_drawing_is_bounded_in_points() {
     assert!(l.live().is_none(), "a press on a full drawing starts no stroke");
     assert_eq!(note.as_deref(), Some("the drawing is full: undo or clear"));
     assert_eq!(l.strokes().iter().map(Vec::len).sum::<usize>(), MAX_INK_POINTS);
+}
+
+fn vertical(l: &mut InkLayer, b: &InkBase) {
+    l.press(Some(b), (300.0, 100.0), &R, &R);
+    l.drag((300.0, 200.0), &R, DIMS);
+    l.release();
+    assert_eq!(l.strokes().len(), 1);
+}
+
+#[test]
+fn a_drag_that_leaves_the_image_and_comes_back_joins_nothing_across_the_stretch_outside() {
+    let (b, mut l) = (fig("a.png"), on());
+    vertical(&mut l, &b);
+    for p in [(150.0, 60.0), (150.0, 40.0), (90.0, 40.0), (90.0, 260.0), (450.0, 260.0), (450.0, 240.0)] {
+        l.erase(Some(&b), p, &R, &R, DIMS);
+    }
+    l.erase_end();
+    assert_eq!(l.strokes().len(), 1, "the chord from the exit to the re-entry erased the stroke");
+    // drawing turned off and on during the drag breaks the path the same way
+    l.erase(Some(&b), (150.0, 60.0), &R, &R, DIMS);
+    l.set_on(false);
+    l.erase(Some(&b), (150.0, 240.0), &R, &R, DIMS);
+    l.set_on(true);
+    l.erase(Some(&b), (450.0, 240.0), &R, &R, DIMS);
+    l.erase_end();
+    assert_eq!(l.strokes().len(), 1, "the chord across the stretch drawing was off erased the stroke");
+}
+
+#[test]
+fn a_later_segment_of_a_stroke_erases_it() {
+    let (b, mut l) = (fig("a.png"), on());
+    l.press(Some(&b), (150.0, 100.0), &R, &R);
+    l.drag((250.0, 100.0), &R, DIMS);
+    l.drag((250.0, 200.0), &R, DIMS);
+    l.release();
+    l.erase(Some(&b), (251.0, 180.0), &R, &R, DIMS);
+    assert!(l.strokes().is_empty());
+}
+
+#[test]
+fn a_sweep_beside_a_dot_erases_it() {
+    let (b, mut l) = (fig("a.png"), on());
+    l.press(Some(&b), (250.0, 101.0), &R, &R);
+    l.release();
+    l.erase(Some(&b), (150.0, 100.0), &R, &R, DIMS);
+    l.erase(Some(&b), (350.0, 100.0), &R, &R, DIMS);
+    assert!(l.strokes().is_empty());
+}
+
+#[test]
+fn the_path_follows_each_sample_not_the_drags_first_point() {
+    let (b, mut l) = (fig("a.png"), on());
+    vertical(&mut l, &b);
+    for p in [(150.0, 60.0), (450.0, 60.0), (450.0, 240.0)] {
+        l.erase(Some(&b), p, &R, &R, DIMS);
+    }
+    assert_eq!(l.strokes().len(), 1);
+}
+
+#[test]
+fn a_miss_between_two_hits_keeps_one_undo_step() {
+    let (b, mut l) = (fig("a.png"), on());
+    for x in [150.0, 450.0] {
+        pt(&mut l, &b, (x, 100.0));
+    }
+    for p in [(150.0, 100.0), (150.0, 200.0), (450.0, 200.0), (450.0, 100.0)] {
+        l.erase(Some(&b), p, &R, &R, DIMS);
+    }
+    l.erase_end();
+    assert!(l.strokes().is_empty());
+    l.undo(Some(&b));
+    assert_eq!(l.strokes().len(), 2);
+}
+
+#[test]
+fn erase_end_ends_the_step_and_the_path() {
+    let (b, mut l) = (fig("a.png"), on());
+    vertical(&mut l, &b);
+    pt(&mut l, &b, (150.0, 220.0));
+    l.erase(Some(&b), (150.0, 220.0), &R, &R, DIMS);
+    l.erase_end();
+    l.erase(Some(&b), (450.0, 80.0), &R, &R, DIMS);
+    l.erase_end();
+    assert_eq!(l.strokes().len(), 1, "the second drag's press joined the first drag's last point");
+    pt(&mut l, &b, (200.0, 100.0));
+    l.erase(Some(&b), (200.0, 100.0), &R, &R, DIMS);
+    l.erase_end();
+    l.undo(Some(&b));
+    assert_eq!(l.strokes().len(), 2, "one undo took back the last drag only");
+}
+
+#[test]
+fn the_reach_is_the_ink_and_one_pixel_on_both_sides() {
+    let b = fig("a.png");
+    for (dy, gone) in [(1.1, true), (1.25, false)] {
+        let mut l = on();
+        l.press(Some(&b), (150.0, 100.0), &R, &R);
+        l.drag((350.0, 100.0), &R, DIMS);
+        l.release();
+        l.erase(Some(&b), (250.0, 100.0 + dy), &R, &R, (2000, 1000));
+        assert_eq!(l.strokes().is_empty(), gone, "{dy}");
+    }
+}
+
+#[test]
+fn a_point_one_and_a_half_raster_pixels_on_is_kept() {
+    let (b, mut l) = (fig("a.png"), on());
+    l.press(Some(&b), (200.0, 100.0), &R, &R);
+    l.drag((201.5, 100.0), &R, DIMS);
+    assert_eq!(l.live().unwrap().len(), 2);
+}
+
+#[test]
+fn undo_and_clear_change_nothing_while_the_drawings_base_is_not_shown() {
+    let (b, mut l) = (fig("a.png"), on());
+    for x in [150.0, 250.0] {
+        pt(&mut l, &b, (x, 100.0));
+    }
+    l.base_hidden();
+    let other = fig("b.png");
+    for shown in [Some(&other), None] {
+        assert_eq!(rev(&mut l, |l| l.undo(shown)), 0);
+        assert_eq!(rev(&mut l, |l| l.clear(shown)), 0);
+        assert_eq!(l.strokes().len(), 2);
+    }
+    assert_eq!(rev(&mut l, |l| l.undo(Some(&b))), 1);
+    assert_eq!(l.strokes().len(), 1);
 }

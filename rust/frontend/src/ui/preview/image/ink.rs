@@ -5,7 +5,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::ui::render::quad::ScreenRect;
-use sot_protocol::ink::{ink_radius, to_raster};
+use sot_protocol::ink::{ink_radius, segments, to_raster};
 use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
 
 type Stroke = Vec<[u16; 2]>;
@@ -23,8 +23,9 @@ pub(in crate::ui) struct InkLayer {
     cleared: Vec<Stroke>,
     history: Vec<Edit>,
     live: Option<Stroke>,
-    /// An erase drag's last point, and whether its step is in `history` yet (it is at the first hit).
-    erasing: Option<([u16; 2], bool)>,
+    /// An erase drag: whether its step is in `history` yet (it is at the first hit), and its last point inside the image
+    /// (none after an ignored point, so the path never joins two points across a stretch it was not tested on).
+    erasing: Option<(bool, Option<[u16; 2]>)>,
     on: bool,
     revision: u64,
 }
@@ -117,7 +118,7 @@ impl InkLayer {
             self.base = Some(shown.clone());
         }
         if self.points() >= MAX_INK_POINTS {
-            return note.or(Some("the drawing is full: undo or clear".to_string()));
+            return Some("the drawing is full: undo or clear".to_string());
         }
         self.live = Some(vec![q]);
         note
@@ -157,8 +158,12 @@ impl InkLayer {
         self.erasing = None;
     }
 
-    /// Undo drops a live stroke and nothing else; otherwise it takes back the last step, or brings back what a clear moved.
-    pub(in crate::ui) fn undo(&mut self) {
+    /// Undo acts only while `shown` is the drawing's base. It drops a live stroke and nothing else; otherwise it takes back
+    /// the last step, or brings back what a clear moved.
+    pub(in crate::ui) fn undo(&mut self, shown: Option<&InkBase>) {
+        if shown != self.base.as_ref() {
+            return;
+        }
         self.erasing = None;
         if self.live.take().is_some() {
             return;
@@ -175,9 +180,10 @@ impl InkLayer {
         self.revision += 1;
     }
 
-    /// Clear drops a live stroke and nothing else; otherwise the strokes move to the `cleared` copy.
-    pub(in crate::ui) fn clear(&mut self) {
-        if self.live.take().is_some() || self.strokes.is_empty() {
+    /// Clear acts only while `shown` is the drawing's base. It drops a live stroke and nothing else; otherwise the
+    /// strokes move to the `cleared` copy.
+    pub(in crate::ui) fn clear(&mut self, shown: Option<&InkBase>) {
+        if shown != self.base.as_ref() || self.live.take().is_some() || self.strokes.is_empty() {
             return;
         }
         self.cleared = std::mem::take(&mut self.strokes);
@@ -191,16 +197,14 @@ impl InkLayer {
     pub(in crate::ui) fn erase(
         &mut self, shown: Option<&InkBase>, p: (f32, f32), canvas: &ScreenRect, image: &ScreenRect, dims: (u32, u32),
     ) {
-        if self.live.is_some() || shown != self.base.as_ref() || !self.reaches(shown, p, canvas, image) {
+        let ok = self.live.is_none() && shown == self.base.as_ref() && self.reaches(shown, p, canvas, image);
+        let Some(q) = map(p, canvas).filter(|_| ok) else {
+            self.erasing = self.erasing.map(|(recorded, _)| (recorded, None));
             return;
-        }
-        let Some(q) = map(p, canvas) else { return };
-        let (last, recorded) = self.erasing.unwrap_or((q, false));
-        let (a, b, reach) = (to_raster(last, dims), to_raster(q, dims), ink_radius(dims) + 1.0);
-        let near = |s: &Stroke| {
-            let mut ends = s.iter().zip(s.iter().skip(1).chain(s.first().filter(|_| s.len() == 1)));
-            ends.any(|(&c, &d)| segs_dist(a, b, to_raster(c, dims), to_raster(d, dims)) <= reach)
         };
+        let (recorded, last) = self.erasing.unwrap_or((false, None));
+        let (a, b, reach) = (to_raster(last.unwrap_or(q), dims), to_raster(q, dims), ink_radius(dims) + 1.0);
+        let near = |s: &Stroke| segments(std::slice::from_ref(s), dims).any(|(c, d)| segs_dist(a, b, c, d) <= reach);
         let mut gone = Vec::new();
         let mut i = 0;
         while i < self.strokes.len() {
@@ -212,15 +216,13 @@ impl InkLayer {
         }
         let hit = !gone.is_empty();
         if hit {
-            if !recorded {
-                self.history.push(Edit::Erased(Vec::new()));
-            }
-            if let Some(Edit::Erased(g)) = self.history.last_mut() {
-                g.extend(gone);
+            match self.history.last_mut() {
+                Some(Edit::Erased(g)) if recorded => g.extend(gone),
+                _ => self.history.push(Edit::Erased(gone)),
             }
             self.revision += 1;
         }
-        self.erasing = Some((q, recorded || hit));
+        self.erasing = Some((recorded || hit, Some(q)));
     }
 
     /// The right button is up: the next erase starts a new step.
