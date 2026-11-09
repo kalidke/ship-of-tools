@@ -311,8 +311,8 @@ struct State {
     parked_views: ParkedViews,
     /// REPL row records, drafts, history, eval routing and lifecycle.
     repl_model: ReplModel,
-    /// The project chat's private owner: the watched channel, the post in flight, the snapshot reads.
-    chat: drawer::chat::ChatOwner,
+    /// The project chat: the owner of the watched channel, the row it follows and the reads in flight, all private to it.
+    chat: drawer::chat::ChatDrawer,
     /// The preview selection share: what the daemon was last asked to hold and the request in flight.
     selection_share: preview::share::SelectionShare,
     /// The last `fe.sessions` projection this frontend sent out
