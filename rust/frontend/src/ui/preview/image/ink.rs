@@ -9,9 +9,21 @@ use sot_protocol::ops::{InkBase, MAX_INK_POINTS};
 type Stroke = Vec<[u16; 2]>;
 
 /// A step undo takes back: a committed stroke, or the strokes one erase drag removed (with the index each had).
+#[derive(Clone)]
 enum Edit {
     Added,
     Erased(Vec<(usize, Stroke)>),
+}
+
+/// What a row's parked view keeps of its drawing: the committed strokes and what undo needs, and drawing mode. The
+/// raster, the overlay and a live stroke are rebuilt or dropped, never parked.
+#[derive(Clone, Default)]
+pub(in crate::ui) struct ParkedInk {
+    base: Option<InkBase>,
+    strokes: Vec<Stroke>,
+    cleared: Vec<Stroke>,
+    history: Vec<Edit>,
+    on: bool,
 }
 
 #[derive(Default)]
@@ -80,7 +92,7 @@ impl InkLayer {
     pub(in crate::ui) fn base(&self) -> Option<&InkBase> {
         self.base.as_ref()
     }
-    /// Read by the share (D6) and the per-row parking (D4c2); the tests read it now.
+    /// Read by the share (D6); the tests read it now.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(in crate::ui) fn strokes(&self) -> &[Stroke] {
         &self.strokes
@@ -103,6 +115,24 @@ impl InkLayer {
     /// A left stroke is live or the right button is down: a motion is the layer's.
     pub(in crate::ui) fn busy(&self) -> bool {
         self.live.is_some() || self.right_down
+    }
+
+    /// The drawing a row leaving the window keeps.
+    pub(in crate::ui) fn park(&self) -> ParkedInk {
+        ParkedInk {
+            base: self.base.clone(),
+            strokes: self.strokes.clone(),
+            cleared: self.cleared.clone(),
+            history: self.history.clone(),
+            on: self.on,
+        }
+    }
+
+    /// The row entered takes its own drawing (`None`: it has none). The revision rises, so a share sees the change; the
+    /// raster is painted again at the next `sync`.
+    pub(in crate::ui) fn restore(&mut self, parked: Option<ParkedInk>) {
+        let ParkedInk { base, strokes, cleared, history, on } = parked.unwrap_or_default();
+        *self = InkLayer { base, strokes, cleared, history, on, revision: self.revision + 1, frame: self.frame, ..Default::default() };
     }
 
     /// Run before each frame and pointer event: a base no longer shown drops a live stroke, and a shown base whose source

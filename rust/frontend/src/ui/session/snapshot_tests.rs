@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::preview::image::ink::InkLayer;
+use sot_protocol::ops::InkBase;
 
 #[test]
 fn same_slug_across_hosts_produces_distinct_ws_keys_and_snapshot_slots() {
@@ -37,6 +39,7 @@ fn parked_view(page: Option<(u32, u32)>) -> WorkspaceUiSnapshot {
         figure_failed: Default::default(),
         concept: None,
         edit_state: None,
+        ink: Default::default(),
         page,
     }
 }
@@ -60,4 +63,35 @@ fn a_restored_row_keeps_its_pdf_page_and_a_row_without_pages_gets_none() {
     assert!(pages.page().is_some_and(|(_, count)| count > 1), "the help context admits preview.page_next");
     pages.set_page(parked.view(&plain).unwrap().page);
     assert_eq!(pages.page(), None);
+}
+
+fn drawn(layer: &mut InkLayer, base: &InkBase, x: f32) {
+    let r = crate::ui::render::quad::ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
+    layer.set_on(true);
+    layer.press(Some(base), (x, 100.0), &r, &r, (400, 200));
+    layer.release();
+}
+
+#[test]
+fn a_rows_drawing_comes_back_with_its_view() {
+    // Two rows show the same relative path and each draws: each comes back with its own strokes and mode, and a row
+    // destroyed while parked leaves nothing for a same-slug successor.
+    let base = InkBase::Figure { node_id: "files:plots/fit.png".into() };
+    let (a, b): (WsKey, WsKey) = (("h".into(), "a".into()), ("h".into(), "b".into()));
+    let mut parked = ParkedViews::default();
+    let mut layer = InkLayer::default();
+    drawn(&mut layer, &base, 100.0);
+    parked.park(a.clone(), WorkspaceUiSnapshot { ink: layer.park(), ..parked_view(None) });
+    layer.restore(None);
+    assert!(layer.strokes().is_empty() && !layer.is_on(), "a row entered with no parked view starts clean");
+    drawn(&mut layer, &base, 50.0);
+    drawn(&mut layer, &base, 300.0);
+    parked.park(b.clone(), WorkspaceUiSnapshot { ink: layer.park(), ..parked_view(None) });
+    layer.restore(parked.view(&a).map(|v| v.ink.clone()));
+    assert_eq!((layer.strokes().len(), layer.is_on(), layer.base()), (1, true, Some(&base)));
+    layer.restore(parked.view(&b).map(|v| v.ink.clone()));
+    assert_eq!((layer.strokes().len(), layer.is_on()), (2, true));
+    parked.forget(&a);
+    layer.restore(parked.view(&a).map(|v| v.ink.clone()));
+    assert!(layer.strokes().is_empty() && !layer.is_on() && layer.base().is_none(), "a destroyed row's drawing is gone");
 }
