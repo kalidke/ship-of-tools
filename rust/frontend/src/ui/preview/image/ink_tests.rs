@@ -471,7 +471,7 @@ fn covered(before: &[u8], after: &[u8], w: u32, dirty: Option<(u32, u32, u32, u3
 #[test]
 fn the_overlay_is_the_drawings_raster_after_every_edit() {
     let mut cur = fig("a.png");
-    let mut src = (4000, 2000);
+    let mut src = (800, 300);
     let mut l = on();
     let mut seed = 7u32;
     let mut next = move |n: u32| {
@@ -482,13 +482,13 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
     l.release();
     let (mut hits, mut live_drops, mut base_changes, mut size_changes) = (0, 0, 0, 0);
     for step in 0..120 {
-        let (x, y) = (100.0 + next(400) as f32, 50.0 + next(200) as f32);
+        let (x, y) = (100.0 + next(401) as f32, 50.0 + next(201) as f32);
         let (was, was_dims, was_strokes) = (l.mask.clone(), l.dims, l.strokes().len());
         l.dirty = None;
         let stroke = |l: &mut InkLayer, cur: &InkBase, src, next: &mut dyn FnMut(u32) -> u32| {
             l.press(Some(cur), (x, y), &R, &R, src);
             for _ in 0..next(5) {
-                l.drag((100.0 + next(400) as f32, 50.0 + next(200) as f32), &R);
+                l.drag((80.0 + next(441) as f32, 30.0 + next(241) as f32), &R);
             }
         };
         match next(9) {
@@ -530,7 +530,7 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
             }
             _ => {
                 // the same base at another size
-                src = if src == (4000, 2000) { (3000, 1800) } else { (4000, 2000) };
+                src = if src == (800, 300) { (600, 360) } else { (800, 300) };
                 l.press(Some(&cur), (x, y), &R, &R, src);
                 l.release();
                 size_changes += 1;
@@ -538,6 +538,9 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
         }
         let dims = raster_dims(src.0, src.1);
         assert_eq!(l.dims, dims);
+        if let Some((dx, dy, dw, dh)) = l.dirty() {
+            assert!(dw > 0 && dh > 0 && dx + dw <= dims.0 && dy + dh <= dims.1, "dirty inside the raster, step {step}");
+        }
         assert_eq!(l.mask, sot_protocol::ink::mask(l.strokes(), dims), "step {step}");
         if was_dims == dims && !was.is_empty() {
             assert!(covered(&was, &l.mask, dims.0, l.dirty()), "dirty rectangle, step {step}");
@@ -555,19 +558,22 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
         }
     }
     assert!(hits > 0 && live_drops > 0 && base_changes > 0 && size_changes > 0, "{hits} {live_drops} {base_changes} {size_changes}");
+    // a large source: the raster is the served size, all of it dirty, and the mask is the wire's
+    l.press(Some(&cur), (300.0, 100.0), &R, &R, (4000, 2000));
+    l.release();
+    assert_eq!(l.dims, raster_dims(4000, 2000));
+    assert_eq!(l.dirty(), Some((0, 0, l.dims.0, l.dims.1)));
+    assert_eq!(l.mask, sot_protocol::ink::mask(l.strokes(), l.dims));
 }
 
 #[test]
-fn the_overlay_shows_only_over_the_raster_its_base_came_from() {
-    let mut l = on();
-    l.press(Some(&fig("a.png")), (200.0, 100.0), &R, &R, DIMS);
-    let shown = |node, editing, refused| l.is_shown_base(node, editing, refused);
-    assert!(shown(Some("files:a.png"), false, false));
-    // a slow reply, a failed reply or a failed decode leave the old raster shown, whose node is not the base's
-    // (the other figure's), and a hidden raster has none
-    assert!(!shown(Some("files:b.png"), false, false));
-    assert!(!shown(None, false, false));
-    assert!(!shown(Some("files:a.png"), true, false));
-    assert!(!shown(Some("files:a.png"), false, true));
-    assert!(!InkLayer::default().is_shown_base(Some("files:a.png"), false, false));
+fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refused_overlay() {
+    let shown = |node, editing, refused| InkLayer::shown_base(node, editing, refused);
+    assert_eq!(shown(Some("files:a.png"), false, false), Some(fig("a.png")));
+    // a hidden raster has no node; PDF pages and plugin previews are no base
+    assert_eq!(shown(None, false, false), None);
+    assert_eq!(shown(Some("files:doc.pdf"), false, false), None);
+    assert_eq!(shown(Some("files:src/lib.jl"), false, false), None);
+    assert_eq!(shown(Some("files:a.png"), true, false), None);
+    assert_eq!(shown(Some("files:a.png"), false, true), None);
 }

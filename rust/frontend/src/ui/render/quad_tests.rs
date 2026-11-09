@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn a_region_write_covers_exactly_its_rectangle() {
+fn a_region_write_refuses_what_leaves_the_texture() {
     assert!(region_fits((100, 80), 5 * 3 * 4, 10, 20, 5, 3));
     // a rectangle touching the far edges fits; one pixel past either, an empty one or a short buffer does not
     assert!(region_fits((100, 80), 4 * 4, 96, 79, 4, 1));

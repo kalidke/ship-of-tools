@@ -35,6 +35,8 @@ pub(in crate::ui) struct InkLayer {
     mask: Vec<u8>,
     dirty: Option<[u32; 4]>,
     overlay: Option<Quad>,
+    /// The last upload failed and was logged: a repeat is not logged again.
+    upload_failed: bool,
 }
 
 fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
@@ -127,19 +129,31 @@ impl InkLayer {
         out
     }
 
-    /// Whether the drawing's overlay shows: its base is the node the shown raster came from (`raster_node`), edit mode
-    /// is off and the refused-hello overlay is off. The canvas base is D5's, hidden until then.
-    pub(in crate::ui) fn is_shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> bool {
-        let figure = matches!((&self.base, raster_node), (Some(InkBase::Figure { node_id: b }), Some(n)) if b == n);
-        figure && !editing && !refused
+    /// The base on show: the figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF
+    /// page or a plugin preview is no base), edit mode is on or the refused-hello overlay is on. The canvas base is D5's.
+    pub(in crate::ui) fn shown_base(raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+        let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
+        Some(InkBase::Figure { node_id: node_id.to_string() })
     }
 
     pub(in crate::ui) fn overlay(&self) -> Option<&Quad> {
         self.overlay.as_ref()
     }
 
-    /// The dirty rectangle (all of it for a new raster size) goes to the overlay texture.
+    /// The dirty rectangle (all of it for a new raster size) goes to the overlay texture. A failure keeps the rectangle,
+    /// so it repeats every frame: it is logged once until an upload succeeds.
     pub(in crate::ui) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &QuadPipeline) -> anyhow::Result<()> {
+        let sent = self.send(device, queue, pipeline);
+        if let Err(e) = &sent {
+            if !self.upload_failed {
+                tracing::warn!(error = %e, "the drawing's overlay was not uploaded; skipped until it is");
+            }
+        }
+        self.upload_failed = sent.is_err();
+        sent
+    }
+
+    fn send(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &QuadPipeline) -> anyhow::Result<()> {
         let Some((x, y, w, h)) = self.dirty() else { return Ok(()) };
         match self.overlay.as_ref().filter(|q| q.size_px == self.dims) {
             Some(q) => q.write_region(queue, &self.rgba((x, y, w, h)), x, y, w, h)?,
