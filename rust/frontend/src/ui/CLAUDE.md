@@ -712,7 +712,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
 - A status entry for another channel, a bare gap flag, or any status with nothing watched starts nothing
   (`a_status_entry_for_an_unwatched_channel_is_ignored`).
 - The unsupported state is per host and clears when its link comes back (`the_unsupported_state_clears_when_the_connection_comes_back`).
-`ChatDrawer` (`drawer/chat/drawer.rs`, State's `chat` field) privately holds the owner and a `RowChannel`; the owner's
+`ChatDrawer` (`drawer/chat/drawer.rs`, State's `chat` field) privately holds the owner, a `RowChannel` and the reads in flight; the owner's
 methods are `pub(super)`, so no other ui code can drop the requests they return. Rules, each pinned by
 `drawer::chat::row_channel_tests::the_watch_follows_the_shown_rows_channel_and_ends_with_it`:
 - The window watches exactly the channel of the row the drawer shows, on that row's computer, while the drawer shows Chat or Help
@@ -723,6 +723,10 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   for the row still wanted is watched through the owner; a second one is nothing (the owner takes the same target twice as
   nothing). A row that changed or went ends the old watch at once, with the owner's `stop` and one `chat.unwatch`. A link coming
   up or going resolves the row again.
+- Every `chat.history` goes through the set of reads in flight, per host. A read equal to one in flight waits, and goes when that
+  one is answered. A read whose reader gave it up (the watch stopped or replaced) stays as an orphan: its reply is dropped. A
+  link change clears the host's set, since no reply comes for what its end dropped. Pinned by
+  `a_read_from_before_a_rewatch_never_fills_the_new_watch` (the clearing is pinned by no test).
 
 Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `Limited`'s `assumed` flag is not kept, and the
 owner has no view.

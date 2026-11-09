@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 
-use sot_protocol::ops::ChatResolveRes;
+use sot_protocol::ops::{ChatHistoryReq, ChatResolveRes, ChatWatchRes, ChatWatchState};
 
 use super::drawer::ChatDrawer;
-use super::owner::Out;
+use super::owner::{Fill, Out};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 
@@ -20,6 +20,11 @@ fn mapped(row: &str) -> ChatEvt {
     ChatEvt::Resolved { row: row.to_string(), reply: ChatReply::Done(res) }
 }
 
+fn complete(row: &str) -> ChatEvt {
+    let target = serde_json::from_value(serde_json::json!({ "row": row, "workspace": "T1", "channel": "C1" })).unwrap();
+    ChatEvt::Watched { target, reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) }
+}
+
 fn count(outs: &[Out], f: fn(&OutgoingReq) -> bool) -> usize {
     outs.iter().filter(|(_, r)| f(r)).count()
 }
@@ -34,6 +39,17 @@ fn watches(outs: &[Out]) -> usize {
 
 fn unwatches(outs: &[Out]) -> usize {
     count(outs, |r| matches!(r, OutgoingReq::ChatUnwatch { .. }))
+}
+
+fn history(outs: &[Out]) -> ChatHistoryReq {
+    match outs {
+        [(_, OutgoingReq::ChatHistory { req })] => req.clone(),
+        other => panic!("one history read expected, got {} requests", other.len()),
+    }
+}
+
+fn page() -> ChatReply<sot_protocol::ops::ChatHistoryRes> {
+    ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": [], "next": null })).unwrap())
 }
 
 /// The window watches the channel of the row the drawer shows, and only while it shows.
@@ -82,4 +98,27 @@ fn the_watch_follows_the_shown_rows_channel_and_ends_with_it() {
     assert!(d.tick(wanted("R"), at(1540)).0.is_empty());
     assert!(d.on_evt(&host(), mapped("R"), at(1550)).is_empty());
     assert!(d.on_evt(&host(), mapped("R"), at(1560)).is_empty());
+}
+
+/// A read from before a re-watch installs nothing in the new watch: the new watch's equal read waits for the old reply.
+#[test]
+fn a_read_from_before_a_rewatch_never_fills_the_new_watch() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.tick(wanted("R"), t0);
+    assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
+    d.on_evt(&host(), mapped("R"), at(160));
+    let old = history(&d.on_evt(&host(), complete("R"), at(170)));
+    assert_eq!(unwatches(&d.tick(None, at(200)).0), 1);
+    d.tick(wanted("R"), at(300));
+    assert_eq!(resolves(&d.tick(wanted("R"), at(450)).0), 1);
+    assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(460))), 1);
+    assert!(d.on_evt(&host(), complete("R"), at(470)).is_empty(), "an equal read waits for the old reply");
+    let sent = d.on_evt(&host(), ChatEvt::History { req: old.clone(), reply: page() }, at(480));
+    assert_eq!(history(&sent), old, "then one read goes out");
+    assert_eq!(d.fill(), Some(Fill::Reading), "the old reply installed nothing");
+    assert!(d.on_evt(&host(), ChatEvt::History { req: old, reply: page() }, at(490)).is_empty());
+    assert_eq!(d.fill(), Some(Fill::Complete));
 }
