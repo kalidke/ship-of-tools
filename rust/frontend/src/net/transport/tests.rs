@@ -311,6 +311,21 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
+/// The accepted hello sets the connection's `takes_drawing` from what the daemon said; a hello without the field, an
+/// older daemon's, leaves it false.
+#[test]
+fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut says = hello_ok();
+    says["takes_drawing"] = serde_json::json!(true);
+    for (reply, want) in [(says, true), (hello_ok(), false)] {
+        let host: HostKey = "takes-drawing".to_string();
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want };
+        accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
+        assert_eq!(session.takes_drawing, want);
+    }
+}
+
 /// Every frame the daemon writes while the window waits on either step of its connect preamble reaches its handler, as
 /// in the steady loop: an event replayed after the hello and a REPL run's output, written before the tree.root reply
 /// (step 0) or before the preview.get reply (step 1), arrive, and each preamble reply is still read as its own

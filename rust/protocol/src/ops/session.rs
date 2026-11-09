@@ -160,6 +160,11 @@ pub struct HelloRes {
     /// and absent from a daemon that predates it, read as naming none; a window that predates it ignores it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repl_running: Vec<u64>,
+    /// True when this daemon reads `selection.set`'s `drawing` (wire guarantee 13). A daemon built before the field
+    /// leaves it out, read as false, and answers a drawing as a clear: the window sends no drawing to it. Left out
+    /// when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub takes_drawing: bool,
 }
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the

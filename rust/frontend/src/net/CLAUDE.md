@@ -15,6 +15,11 @@ through the channel types below.
   (`sot_topology::link::Link`, started in `connect_and_run`, dropped when its session ends).
 - Request ids and reply matching (`PendingKind`); the typed edges `OutgoingReq` (UI to daemon) and `IncomingEvt`
   (daemon to UI).
+- A drawing sent only to a daemon that reads one: each connection keeps its own hello's `HelloRes::takes_drawing`
+  (`SessionState`), and a `selection.set` that carries a drawing, on a connection whose hello did not say it, is answered
+  `SelectionReply::Unsupported` and never written (an older daemon would read it as a clear); a clear and a text selection
+  still go. Tests: `a_drawing_is_written_only_on_a_connection_whose_hello_took_one`,
+  `the_accepted_hello_sets_whether_the_connection_takes_a_drawing`.
 - The reconnect memory, `session-<host>.json` (`state::state_path`, `load`, `save`), and the throttle that writes it
   (`StateSaveGate`, `SessionState`).
 - The only writes of each remote host's `sot_topology::link::LinkHandle`: up at an accepted hello (`run_session`), down

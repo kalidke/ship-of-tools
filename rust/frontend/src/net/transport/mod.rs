@@ -495,6 +495,7 @@ where
         host: host.clone(),
         memory: crate::net::state::load(&host),
         gate: StateSaveGate::new(),
+        takes_drawing: false,
     };
     tracing::info!(
         %host,
@@ -578,6 +579,7 @@ where
         host: host.clone(),
         memory: crate::net::state::SessionMemory::fresh(),
         gate: StateSaveGate::new(),
+        takes_drawing: false,
     };
     steady::steady_loop(
         rx,

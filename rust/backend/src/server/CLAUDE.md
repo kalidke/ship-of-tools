@@ -61,7 +61,7 @@ of each.
    admitted. The first OS account a host says hello as holds it: a hello for that host as any other account is
    refused until the daemon restarts, the first account is still served, and a refusal changes no record, so one
    stray hello never locks a computer out (`Clients::admit_account`); connections already open are left alone. The accepted hello's reply (`handle_hello`)
-   carries the session id and revision, `snapshot_pending` and any replay: a client with no session id gets no replay;
+   carries the session id and revision, `snapshot_pending`, `takes_drawing: true` (this daemon reads a drawing in `selection.set`; `tests/selection.rs`, which asserts the flag where it connects as a window and shows a drawing read) and any replay: a client with no session id gets no replay;
    one whose session id matches gets every ring entry newer than its `last_seen_revision`; a mismatched session id (a
    daemon restart) or a revision older than the ring's low watermark gets `snapshot_pending`, and refetches. Limits:
    the declared host and account are not authenticated (guarantee 3); after a restart the first hello holds its host,

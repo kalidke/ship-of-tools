@@ -173,6 +173,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         // assigned id so the next reconnect is on the live session.
         session.memory.session_id = Some(hello_res.session_id.clone());
     }
+    session.takes_drawing = hello_res.takes_drawing;
     crate::net::state::save(host, &session.memory).ok();
     // ADR 0046 decision 1: the daemon's declared host travels on this
     // event for display only (see `State::record_declared_host` and

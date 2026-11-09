@@ -49,6 +49,20 @@ mod hello_version_tests {
         assert_eq!(serde_json::to_value(&res).unwrap()["repl_running"], serde_json::json!([1, 3]), "the runs it names");
     }
 
+    /// A hello reply says whether the daemon reads a drawing (`takes_drawing`), additive both ways: an older daemon's
+    /// reply reads as false, and false is not written.
+    #[test]
+    fn a_hello_reply_says_whether_the_daemon_takes_a_drawing_and_stays_additive() {
+        // The last release's whole reply (a v0.7.0 daemon's), as it writes one.
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.0","proxy":true,"repl_running":[2]}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert!(!res.takes_drawing, "an older daemon reads as not taking one");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("takes_drawing"), None, "false is not written");
+        let says = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"takes_drawing":true}"#;
+        let res: HelloRes = serde_json::from_str(says).expect("a reply with the field");
+        assert_eq!(serde_json::to_value(&res).unwrap()["takes_drawing"], serde_json::json!(true));
+    }
+
     #[test]
     fn proxy_connect_req_round_trips_and_token_is_optional() {
         // ADR 0035 handshake shapes. `token` absent on the wire must parse
