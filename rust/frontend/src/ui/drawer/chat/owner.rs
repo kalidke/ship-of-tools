@@ -14,9 +14,12 @@ use sot_protocol::ops::{
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
-/// Between two watch attempts, and the attempts without a completed snapshot before the gap is shown instead.
+/// Between two watch attempts: the first waits `FIRST_PACE`, the rest `PACE`.
+const FIRST_PACE: Duration = Duration::from_secs(1);
 const PACE: Duration = Duration::from_secs(5);
-const MAX_TRIES: u8 = 3;
+/// What the daemon is given before a gap is shown: for its chat service to start (it refuses `unavailable` meanwhile), and,
+/// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes at 21 s).
+const WINDOW: Duration = Duration::from_secs(20);
 /// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot.
 const GAP_PACE: Duration = Duration::from_secs(60);
 /// The daemon's model keeps its newest 100 messages per channel (sot-chat's `watch::MAX_KEPT`).
@@ -31,9 +34,10 @@ pub(super) enum Fill {
     Needed,
     Reading,
     Complete,
-    /// Recovery has not completed (the daemon refused the watch, or the attempts ran out): shown, not hidden. A watch goes
-    /// out every `GAP_PACE`, and a `complete` reply to one reads as from `Needed`.
-    Gap,
+    /// Recovery has not completed: shown, with the daemon's refusal when it gave one (`None`: the snapshot never completed).
+    /// A watch goes out every `GAP_PACE`, and a `complete` reply to one reads as from `Needed`; a target refused for good
+    /// (`dead`) is not asked again until a row or link change.
+    Gap(Option<ChatCode>),
 }
 
 /// What the last post came to. `Unknown` means the post may exist: a post the owner never wrote is `Refused`.
@@ -55,12 +59,22 @@ struct Watch {
     reading: Option<ChatHistoryReq>,
     stale: bool,
     last_try: Option<Instant>,
-    tries: u8,
+    /// When the recovery began, and the watch the daemon first admitted (anything but `unavailable`) in it; with none, the
+    /// window runs from the start.
+    began: Instant,
+    admitted: Option<Instant>,
+    /// Why the last snapshot read was refused: the reason of a gap that the daemon's watch did not give.
+    read_refused: Option<ChatCode>,
     records: HashMap<Ts, ChatRecord>,
     /// The oldest timestamp the daemon still tracks: the snapshot's oldest when older history exists, raised by the trim.
     floor: Option<Ts>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
     overlay: Vec<ChatChangedEvt>,
+}
+
+/// Refusals that a later ask cannot clear: the mapping is read at daemon start, and a listing change follows a stale row.
+fn dead(code: ChatCode) -> bool {
+    matches!(code, ChatCode::StaleRow | ChatCode::StaleMapping | ChatCode::Unmapped)
 }
 
 /// A timestamp's order: seconds by length then digits, then the fraction.
@@ -71,6 +85,11 @@ fn ts_order(t: &Ts) -> (usize, &str, &str) {
 }
 
 impl Watch {
+    /// A recovery begins: its start, its admission and the last read's refusal are forgotten.
+    fn begin(&mut self, now: Instant) {
+        (self.last_try, self.began, self.admitted, self.read_refused) = (None, now, None, None);
+    }
+
     fn oldest(&self) -> Option<Ts> {
         self.records.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
     }
@@ -112,7 +131,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, tries: 0, records: HashMap::new(), floor: None, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -145,7 +164,7 @@ impl ChatOwner {
         Some((host, OutgoingReq::ChatPost { req }))
     }
 
-    /// A link came or went. Either way the watch starts over: a coming link clears the unsupported mark and the attempts,
+    /// A link came or went. Either way the watch starts over: a coming link clears the unsupported mark and begins a recovery,
     /// a going link leaves the post unknown.
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         if up {
@@ -158,7 +177,8 @@ impl ChatOwner {
             }
         }
         if let Some(w) = self.of(host) {
-            (w.registered, w.fill, w.reading, w.stale, w.last_try, w.tries) = (false, Fill::Needed, None, false, None, 0);
+            (w.registered, w.fill, w.reading, w.stale) = (false, Fill::Needed, None, false);
+            w.begin(now);
             w.overlay.clear();
         }
         self.drive(now)
@@ -222,7 +242,11 @@ impl ChatOwner {
         if let Some(w) = self.watch.as_mut() {
             w.registered = false;
             w.stale = w.reading.is_some();
-            if w.fill != Fill::Gap {
+            // A loss during a recovery keeps its start and pace; one from `Complete` begins it.
+            if w.fill == Fill::Complete {
+                w.begin(now);
+            }
+            if !matches!(w.fill, Fill::Gap(_)) {
                 w.fill = Fill::Needed;
             }
         }
@@ -230,7 +254,7 @@ impl ChatOwner {
     }
 
     /// Send what the watched state is owed: its snapshot read once the daemon's watch is complete, else the watch itself,
-    /// which is paced and counted against the cap. Nothing while a read is in flight or the state is whole.
+    /// which is paced and, past the daemon's slowest snapshot, a gap. Nothing while a read is in flight or the state is whole.
     fn drive(&mut self, now: Instant) -> Vec<Out> {
         let Some(w) = self.watch.as_mut() else { return Vec::new() };
         if w.reading.is_some() || !self.connected.contains(&w.host) || self.unsupported.contains(&w.host) {
@@ -238,7 +262,8 @@ impl ChatOwner {
         }
         match w.fill {
             Fill::Reading | Fill::Complete => return Vec::new(),
-            Fill::Gap => {
+            Fill::Gap(Some(code)) if dead(code) => return Vec::new(),
+            Fill::Gap(_) => {
                 if w.last_try.is_some_and(|t| now.duration_since(t) < GAP_PACE) {
                     return Vec::new();
                 }
@@ -252,12 +277,13 @@ impl ChatOwner {
             (w.fill, w.reading) = (Fill::Reading, Some(req.clone()));
             return vec![(w.host.clone(), OutgoingReq::ChatHistory { req })];
         }
-        // The last attempt gets its full pace to be answered before the gap is shown.
-        if w.last_try.is_none_or(|t| now.duration_since(t) >= PACE) {
-            if w.tries >= MAX_TRIES {
-                w.fill = Fill::Gap;
+        // A watch sent a window after the admitted one gets its full pace to be answered before the gap is shown.
+        let pace = if w.last_try == Some(w.began) { FIRST_PACE } else { PACE };
+        if w.last_try.is_none_or(|t| now.duration_since(t) >= pace) {
+            if w.last_try.is_some_and(|t| t.duration_since(w.admitted.unwrap_or(w.began)) >= WINDOW) {
+                w.fill = Fill::Gap(w.read_refused);
             } else {
-                (w.tries, w.last_try) = (w.tries + 1, Some(now));
+                w.last_try = Some(now);
                 return vec![(w.host.clone(), OutgoingReq::ChatWatch { target: w.target.clone() })];
             }
         }
@@ -272,11 +298,19 @@ impl ChatOwner {
         if !matches!(reply, ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete })) && self.of(host).is_some_and(|w| &w.target == target && w.fill == Fill::Reading) {
             return self.resync(now);
         }
-        let Some(w) = self.of(host).filter(|w| &w.target == target && matches!(w.fill, Fill::Needed | Fill::Gap)) else { return Vec::new() };
+        let Some(w) = self.of(host).filter(|w| &w.target == target && matches!(w.fill, Fill::Needed | Fill::Gap(_))) else { return Vec::new() };
+        // Any answer but a starting service's means the daemon admitted the watch.
+        if !matches!(reply, ChatReply::Refused(ChatCode::Unavailable)) {
+            w.admitted = w.admitted.or(w.last_try);
+        }
         match reply {
             ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) => (w.registered, w.fill) = (true, Fill::Needed),
-            ChatReply::Refused(_) => w.fill = Fill::Gap,
-            ChatReply::Done(_) | ChatReply::Unsupported => {}
+            // A starting service refuses `unavailable`; it is asked on the pace until the window is spent.
+            ChatReply::Refused(ChatCode::Unavailable) if now.duration_since(w.began) < WINDOW => {}
+            ChatReply::Refused(code) => w.fill = Fill::Gap(Some(code)),
+            // A pending snapshot is no longer the refusal the gap gave, nor the last read's.
+            ChatReply::Done(_) => (w.fill, w.read_refused) = (if matches!(w.fill, Fill::Gap(_)) { Fill::Gap(None) } else { w.fill }, None),
+            ChatReply::Unsupported => {}
         }
         self.drive(now)
     }
@@ -296,11 +330,12 @@ impl ChatOwner {
                 w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), r)).collect();
                 w.floor = if res.next.is_some() { w.oldest() } else { None };
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
-                (w.fill, w.tries) = (Fill::Complete, 0);
+                w.fill = Fill::Complete;
             }
             ChatReply::Done(_) => {}
             // A refused or unsupported read goes back to the watch, on the pace.
-            _ => w.registered = false,
+            ChatReply::Refused(code) => (w.registered, w.read_refused) = (false, Some(code)),
+            ChatReply::Unsupported => w.registered = false,
         }
         (w.stale, w.overlay) = (false, Vec::new());
         self.drive(now)
