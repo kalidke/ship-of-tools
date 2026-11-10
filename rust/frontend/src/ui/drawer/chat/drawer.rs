@@ -13,7 +13,7 @@ use crate::ui::render::quad::ScreenRect;
 use super::owner::{dead, ChatOwner, Fill, Out};
 use super::row_channel::{RowChannel, Stand};
 use sot_protocol::ops::ChatCode;
-use super::view::ChatView;
+use super::view::{ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -148,6 +148,16 @@ impl ChatDrawer {
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
         let now = chrono::Local::now();
         self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
+    }
+
+    /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
+    pub(in crate::ui) fn scroll(&mut self, up: bool, step: Step) {
+        self.view.scroll(up, step);
+    }
+
+    /// The reader asks for the newest.
+    pub(in crate::ui) fn latest(&mut self) {
+        self.view.latest();
     }
 
     /// The chat is not shown: no record is prepared.

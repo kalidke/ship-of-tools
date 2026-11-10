@@ -375,6 +375,10 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
     // through to the pty so tmux/shell keep alt-keybinds.
     if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
         let row_step: i32 = 1;
+        let chat = drawer::chat::chat_move(state.layout_help.drawer(), action);
+        if state.focus_prompts.focus() == PaneFocus::Repl && drawer::chat::chat_apply(state, chat) {
+            return Break(());
+        }
         let target = line_scroll_target(state.focus_prompts.focus(), help::DrawerInput::of(state.layout_help.drawer()));
         match (target, action) {
             (LineScroll::Repl, Some(Action::ScrollLineUp)) => {

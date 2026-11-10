@@ -78,7 +78,7 @@ pub(super) fn dead(code: ChatCode) -> bool {
 }
 
 /// A timestamp's order: seconds by length then digits, then the fraction.
-fn ts_order(t: &Ts) -> (usize, &str, &str) {
+pub(super) fn ts_order(t: &Ts) -> (usize, &str, &str) {
     let (secs, frac) = t.as_str().split_once('.').unwrap_or((t.as_str(), ""));
     let secs = secs.trim_start_matches('0');
     (secs.len(), secs, frac)

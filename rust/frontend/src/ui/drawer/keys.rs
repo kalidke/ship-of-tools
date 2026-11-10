@@ -11,6 +11,9 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
     // the REPL's draft or scrollback. The Terminal's keys go to its pty, paste first.
     match help::DrawerInput::of(state.layout_help.drawer()) {
         help::DrawerInput::Inert => {
+            if drawer::chat::chat_apply(state, drawer::chat::chat_move(state.layout_help.drawer(), action)) {
+                return Break(());
+            }
             if action == Some(Action::ReturnNav) && !event.repeat {
                 state.set_focus(PaneFocus::NavTree);
                 return Break(());
