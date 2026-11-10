@@ -193,6 +193,10 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **ROWS-ROLLBACK-TEST-RACE** [note] `rows::ops::create::tests::rollback_tests::a_destroy_during_a_failing_create_stays_destroyed`
+  panicked `no row with task new task` (`create_tests.rs`, its registry lookup) once in a whole local gate run on
+  2026-11-10 whose change touched only the window, and passed in the day's other whole runs: a state the test does not
+  own, not yet found.
 - **STATE-ROOT-CHECK-NEW-FOLDER** [note] `state_root_inside_project` (`rows/spawn/state_root.rs`), the refusal of a row
   whose state folder lies inside its project root, canonicalizes both paths and keeps the raw spelling of one that does
   not exist. A row's state folder does not exist at its first launch, so where the canonical spelling differs from the raw
@@ -386,6 +390,9 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **INSTALL-PARTS-TESTED-TWICE** [note] `test/install_tests.jl` holds two count-free tests that an installed tool runs
+  the parts it sources (the one the parts landing added and an earlier one near the agents testset's start), found by
+  the mail plan's design review; delete one.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's

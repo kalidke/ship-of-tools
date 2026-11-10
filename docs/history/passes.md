@@ -1769,3 +1769,33 @@ A landing's record goes here, with its measured times; the package page holds on
   test rounds the session asked for before review (the wiring and the live refresh pinned through the native State
   harness, run on a second computer under a virtual display); review round 1 (blocker: a row switch restored the
   stale view unmarked); review round 2 (no blockers; three small fixes); four scoped gates of 2 to 3 minutes.
+- P14, a filing may name its expected row, 2026-11-10: builder launched about 13:34, main 15:10 (be8ebb740), about 96
+  minutes, a miss. About 100 product lines (the filer and the inbox) and 230 test lines. Where the minutes went: the
+  build (29 minutes); review round 1 (blocker: daemons from 0.7.0 on ignore the new field, so a forwarded or offered
+  request would be filed as an ordinary one; should-fix: two 2 s lock waits in series against a 3 s forward bound, and
+  a stuck inbox holding the whole registry lock); the architect's two departures from the plan of record (a request
+  naming its row is admitted only by a daemon that appends to the folder itself, never forwarded or offered, the
+  forwarding code deleted; the inbox lock first, then the registry lock, within one deadline), with the plan amended;
+  review round 2 (no blockers; a test's turn lock and a doc comment); three scoped gates.
+- The Chat drawer asks for the posting name once and saves it (CHAT-NAME-ASKED-ONCE), 2026-11-10, three landings:
+  the settings write (5e9083a56, 15:44), the prompt's state and foot (245e1cb2b, 15:45) and its keys and save
+  (b682e8940, 15:47). Builder launched 14:15, the last on main 15:47, 92 minutes, a miss. About 146, 77 and 90 product
+  lines; the first is over the 120-line rule with its strict check, kept whole because it has no caller. Where the
+  minutes went: the first build came to 217 product lines in one commit and was split; review round 1 of each part
+  (no blockers; the write could leave a file the daemon's strict reader refuses, which would stop folder trust, now
+  checked with the `toml` crate before writing; the prompt outlived a row switch, a hide and a reconnect); review
+  round 2 of both (no blockers; three small fixes; the prompt split again at the reviewer's seam); the third part's
+  whole-scope gate went red in a rows test the window cannot reach (ROWS-ROLLBACK-TEST-RACE), and it was gated again on
+  its own change, green.
+- P13, an installed tool runs every part it sources, whatever their number, 2026-11-10: builder launched about 15:37,
+  main 15:49 (cf9d0f596), 12 minutes, inside the half hour. 20 test and record lines, no product code; read by the
+  session, no review (test only); one scoped gate.
+- The Chat drawer follows a row switch at once (CHAT-ROW-SWITCH-LAGS), 2026-11-10: reported by the maintainer about
+  13:40; diagnosis to 14:14 (the window dropped a channel's watch at a row change and asked again only after its own
+  one-second pace and the next idle frame); builder launched 14:15, main 16:03 (333e9430b), 108 minutes from the
+  builder, a miss. About 80 product lines (the last two channels' records kept across a switch, the short asks, the
+  chat's next ask joined to the window's idle deadlines) and about 600 test lines, including a fixed-seed walk of
+  12,000 orders over three channels (about 4 s). Where the minutes went: four review rounds, the first three each with
+  a blocker (a change event between the take-up and the snapshot; a recovery restarted before its snapshot; records
+  held before a channel's first whole state counted as history, found by the strongest reviewer), the walk added to
+  close the class; the fourth round no blockers, its model fix taken; five scoped gates.
