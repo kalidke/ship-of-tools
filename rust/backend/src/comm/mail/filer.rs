@@ -28,12 +28,29 @@ pub async fn handle_comm_file(
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
     let (from, to) = (req.from.clone(), req.to.clone());
     // The daemon's entry for this request: everything below reads this value, not the process.
-    let env = crate::comm::Env::process();
+    let verdict = file_request(crate::comm::Env::process(), &req, links).await?;
+    let payload = match verdict {
+        Ok(()) => {
+            tracing::info!(%from, %to, "comm.file filed");
+            serde_json::to_value(CommFileRes { ok: true })?
+        }
+        Err((code, error)) => {
+            tracing::info!(%from, %to, code, %error, "comm.file refused");
+            json!({ "error": error, "code": code })
+        }
+    };
+    Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
+}
+
+/// The verdict for one request: filed here, else offered to the linked daemons. A request that names its expected row is
+/// admitted by a daemon that appends to the folder itself, never by a forward or an offer: it is never offered, so no other daemon, of any version,
+/// reads or drops the expectation.
+async fn file_request(env: Env, req: &CommFileReq, links: &crate::comm::mail::links::Links) -> Result<std::result::Result<(), (String, String)>> {
     let mut verdict = file_comm(env.clone(), req.clone()).await?;
     // A forwarded request has had its one hop; a link's own request is one.
-    if !req.forwarded && matches!(&verdict, Err((code, _)) if code == "not_here") {
+    if !req.forwarded && req.expected_row.is_none() && matches!(&verdict, Err((code, _)) if code == "not_here") {
         let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
-        if let Some(offered) = links.offer(&req, within).await {
+        if let Some(offered) = links.offer(req, within).await {
             verdict = offered;
         }
         // A box that should hold a link and holds none may hold the handle: the refusal names it, and so does a verdict
@@ -54,17 +71,7 @@ pub async fn handle_comm_file(
             }
         }
     }
-    let payload = match verdict {
-        Ok(()) => {
-            tracing::info!(%from, %to, "comm.file filed");
-            serde_json::to_value(CommFileRes { ok: true })?
-        }
-        Err((code, error)) => {
-            tracing::info!(%from, %to, code, %error, "comm.file refused");
-            json!({ "error": error, "code": code })
-        }
-    };
-    Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
+    Ok(verdict)
 }
 
 /// A linked daemon's answer to the hub's offer (`hub_link.rs`): `not_here` unless this box's own folder lists `to`
@@ -117,6 +124,7 @@ pub(crate) async fn file_comm(env: Env, req: CommFileReq) -> Result<std::result:
             own,
             machine_id: crate::comm::mail::inbox::machine_id(),
             self_host: self_host.clone(),
+            env: env.clone(),
         };
         let forward = |fwd: &CommFileReq| {
             let within = crate::comm::mail::inbox::inbox_lock_wait(&env) + COMM_FORWARD_SLACK;
@@ -182,6 +190,8 @@ struct Filer {
     /// This machine's id, which a record's line 2 names when it wrote it.
     machine_id: Option<String>,
     self_host: String,
+    /// The environment a guarded filing takes the registry lock through.
+    env: Env,
 }
 
 /// `comm.file`'s verdict against the comm folder it is handed. In order: `to`
@@ -206,6 +216,9 @@ fn comm_file_verdict(
     if !valid_name(to) {
         return Err(("bad_handle".into(), format!("not a handle: {to:?}")));
     }
+    if req.expected_row.as_deref() == Some("") {
+        return Err(("file_failed".into(), "an expected row cannot be empty".into()));
+    }
     let Some(home) = comm_home else {
         return Err(not_here(to));
     };
@@ -215,6 +228,7 @@ fn comm_file_verdict(
     let (own, mid) = (filer.own.as_str(), filer.machine_id.as_deref());
     match crate::comm::mail::inbox::route(filer.role, own, mid, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
         Route::Local => {}
+        Route::Forward if req.expected_row.is_some() => return Err(not_bound_here(to)),
         Route::Forward => {
             let answer = forward(&CommFileReq { forwarded: true, ..req.clone() }).map_err(|e| ("file_failed".to_string(), e))?;
             if answer.get("ok").and_then(|v| v.as_bool()) == Some(true) {
@@ -231,7 +245,45 @@ fn comm_file_verdict(
             return Err(("file_failed".into(), text));
         }
     }
-    file_here(home, &req.from, "daemon", to, req.broadcast, &req.text, now_secs, wait, own)
+    match req.expected_row.as_deref() {
+        None => file_here(home, &req.from, "daemon", to, req.broadcast, &req.text, now_secs, wait, own),
+        Some(row) => file_guarded(&filer.env, home, &req.from, to, req.broadcast, &req.text, now_secs, wait, own, row, std::fs::File::sync_data),
+    }
+}
+
+/// The refusal for a request that names its expected row where this daemon cannot append for it: such a request is
+/// admitted only by a daemon that appends to the folder itself, never forwarded or offered.
+fn not_bound_here(to: &str) -> (String, String) {
+    ("not_here".into(), format!("@{to} is not bound here: a filing that names its row is admitted only by a daemon that appends to the folder itself, never forwarded; nothing was filed"))
+}
+
+/// A guarded filing: the inbox lock first, then, within what is left of the one `wait`, the registry lock, held through
+/// the fresh read, the checks and the append, so no registry writer can move the binding between the check and the line.
+/// A stuck inbox never holds the registry lock. `row` is the expected row.
+#[allow(clippy::too_many_arguments)]
+fn file_guarded(
+    env: &Env,
+    home: &std::path::Path,
+    from: &str,
+    to: &str,
+    broadcast: bool,
+    text: &str,
+    now_secs: u64,
+    wait: std::time::Duration,
+    own: &str,
+    row: &str,
+    sync: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> std::result::Result<(), (String, String)> {
+    // An unlocked look first, so a handle this folder does not list leaves no inbox lock file behind; the check that
+    // decides is the one under both locks.
+    admit_entry(home, to, Some(row), now_secs)?;
+    let ts = iso8601_utc_from_secs(now_secs);
+    crate::comm::mail::inbox::file_frame_admitting(&home.join("inbox"), from, "daemon", to, broadcast, text, &ts, wait, own, sync, |left| {
+        let held = crate::comm::registry::lock::acquire_in(env, &home.join(".registry.lock"), left)
+            .map_err(|e| ("file_failed".to_string(), format!("{e}; @{to} is unverified, nothing was filed")))?;
+        admit_entry(home, to, Some(row), now_secs)?;
+        Ok(held)
+    })
 }
 
 /// The append for a handle this folder lists, once a route has chosen this process (the daemon's `comm.file`, or `sotd
@@ -250,10 +302,21 @@ pub(crate) fn file_here(
     wait: std::time::Duration,
     own: &str,
 ) -> std::result::Result<(), (String, String)> {
+    admit_entry(home, to, None, now_secs)?;
+    let ts = iso8601_utc_from_secs(now_secs);
+    crate::comm::mail::inbox::file_frame_from(&home.join("inbox"), from, repo, to, broadcast, text, &ts, wait, own)
+        .map_err(|e| ("file_failed".into(), e))
+}
+
+/// The registry read fresh answers for `to`: listed with a host, bound to the row `expected` names when it names one, and
+/// held by a session whose `last_seen` is fresh, in that order. `Err` is `(code, sentence)`; with `expected`, an entry
+/// that is not listed is "not bound here" and one bound to another row is `not_here` naming the move.
+fn admit_entry(home: &std::path::Path, to: &str, expected: Option<&str>, now_secs: u64) -> std::result::Result<(), (String, String)> {
+    let unlisted = || if expected.is_some() { not_bound_here(to) } else { not_here(to) };
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
     let agents = match read_registry_fresh(&home.join("registry.json")) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_here(to)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(unlisted()),
         Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
             .and_then(|root| root.get("agents").filter(|a| a.is_object()).cloned()),
@@ -265,14 +328,18 @@ pub(crate) fn file_here(
     let entry = agents.get(to);
     let field = |k: &str| entry.and_then(|e| e.get(k)).and_then(|v| v.as_str());
     if field("host").map_or(true, str::is_empty) {
-        return Err(not_here(to));
+        return Err(unlisted());
+    }
+    if let Some(row) = expected {
+        let bound = entry.and_then(crate::comm::registry::registry::entry_row);
+        if bound != Some(row) {
+            return Err(("not_here".into(), format!("@{to} is no longer bound to row {row}: it is bound to {} now; nothing was filed", bound.unwrap_or("no row"))));
+        }
     }
     if !heartbeat_fresh(field("last_seen"), now_secs) {
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
-    let ts = iso8601_utc_from_secs(now_secs);
-    crate::comm::mail::inbox::file_frame_from(&home.join("inbox"), from, repo, to, broadcast, text, &ts, wait, own)
-        .map_err(|e| ("file_failed".into(), e))
+    Ok(())
 }
 
 /// `comm.file`'s liveness: `last_seen` within `LIVE_SECS` of now.

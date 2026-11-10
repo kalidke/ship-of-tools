@@ -241,10 +241,12 @@ pub mod op {
     /// A handle the hub's folder does not list, the hub offers to each daemon
     /// linked to it (a `LINK_ROLE` connection) as this same request, sent
     /// daemon→client with `forwarded` set, and answers with theirs.
-    /// Payload `CommFileReq { from, to, text, broadcast, forwarded }`;
+    /// Payload `CommFileReq { from, to, text, broadcast, forwarded, expected_row }`
+    /// (`expected_row` optional: the row `to` must still be bound to, else `not_here` naming the move; such a request
+    /// is admitted only by the daemon it is sent to, never forwarded or offered);
     /// response `CommFileRes { ok: true }` only when the line is in the file,
     /// else the standard `{error, code}` with `code` one of `bad_handle`,
-    /// `not_here` (this folder does not list `to`), `no_live_session`,
+    /// `not_here` (this folder does not list `to`, or `expected_row` no longer holds it), `no_live_session`,
     /// `file_failed` — and nothing was appended.
     /// This is the only mail verb: `AGENT_SEND` carries UI notifications.
     pub const COMM_FILE: &str = "comm.file";

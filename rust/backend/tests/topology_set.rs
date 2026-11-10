@@ -236,6 +236,7 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
         text: "forwarded hi".into(),
         broadcast: false,
         forwarded: false,
+        expected_row: None,
     };
     let answer = call(&mut conn, id, op::COMM_FILE, serde_json::to_value(&req).unwrap()).await;
     assert_eq!(answer, serde_json::json!({"ok": true}));
@@ -250,6 +251,42 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
         let mode = std::fs::metadata(&path).expect("the hub's comm path").permissions().mode() & 0o7777;
         assert_eq!(mode & 0o077, 0, "{} is {mode:o}: group or other can reach it", path.display());
     }
+}
+
+// P14: a request naming its expected row is admitted by a daemon that appends to the folder itself. The hub checks it under its
+// registry lock: a moved binding is `not_here` naming the move with nothing appended, and the bound row files. A guest
+// refuses it rather than forward it, so no other daemon sees the expectation.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_request_naming_its_row_is_admitted_only_where_the_row_is() {
+    let hub = Env::spawn("fwd-row", "hub-a", GUEST_TOML);
+    drop(connect_and_hello(&hub.socket_path, "probe", "hub-a").await);
+    lock_record(&hub).await;
+    let now = sot_platform::test_wait::run_within(Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]), BOUND).ok().stdout;
+    let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "workspace_id": "ws-1", "last_seen": now.trim()}}});
+    support::write_registry(&hub.comm_root, |doc| *doc = registry);
+
+    let guest = Env::spawn_guest("fwd-row-guest", "guest-b", GUEST_TOML, &hub);
+    let (mut conn, id) = connect_and_hello(&hub.socket_path, "hub-sender", "hub-a").await;
+    let ask = |row: &str| sot_protocol::CommFileReq {
+        from: "guest-sender".into(),
+        to: "peer".into(),
+        text: "guarded hi".into(),
+        broadcast: false,
+        forwarded: false,
+        expected_row: Some(row.into()),
+    };
+    let moved = call(&mut conn, id, op::COMM_FILE, serde_json::to_value(ask("ws-2")).unwrap()).await;
+    assert_eq!(moved["code"], "not_here", "{moved}");
+    assert!(moved["error"].as_str().unwrap_or_default().contains("ws-1"), "{moved}");
+    assert!(!hub.comm_root.join("inbox/peer.jsonl").exists(), "a moved binding appends nothing");
+    let filed = call(&mut conn, id, op::COMM_FILE, serde_json::to_value(ask("ws-1")).unwrap()).await;
+    assert_eq!(filed, serde_json::json!({"ok": true}));
+    assert!(std::fs::read_to_string(hub.comm_root.join("inbox/peer.jsonl")).expect("the hub's inbox").contains("guarded hi"));
+    let (mut gconn, gid) = connect_and_hello(&guest.socket_path, "guest-sender", "guest-b").await;
+    let refused = call(&mut gconn, gid, op::COMM_FILE, serde_json::to_value(ask("ws-1")).unwrap()).await;
+    assert_eq!(refused["code"], "not_here", "{refused}");
+    assert_eq!(std::fs::read_to_string(hub.comm_root.join("inbox/peer.jsonl")).unwrap().lines().count(), 1, "a guest forwarded it");
 }
 
 #[tokio::test]

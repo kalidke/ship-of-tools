@@ -163,7 +163,11 @@ never the task: a worktree's handle is derived from its folder like any other (t
 
 Every request opens with the `hello` every client sends, and a refused hello is the answer.
 
-- **`comm.file`** `{from, to, text, broadcast, forwarded}`: file one line. The daemon appends it under the rules above,
+- **`comm.file`** `{from, to, text, broadcast, forwarded, expected_row}`: file one line. `expected_row` is optional: when present, only a daemon that appends to the folder itself admits the request, and it is never forwarded or
+  offered (a guest, or a folder that does not list `to`, answers `not_here`, not bound here). The appending daemon takes
+  the handle's inbox lock, then the registry lock within the same wait, reads the entry fresh, files only if its
+  `workspace_id` still is that row (else `not_here` naming the move), and keeps both locks until the append returns; an
+  empty row, a lock that cannot be taken or an unreadable registry is `file_failed`. The daemon appends it under the rules above,
   forwards it to the hub (a guest), or, as the hub, offers a handle its folder does not list to every daemon linked to
   it (a `link`-role connection), each given the lock wait plus 1 s; the first `ok` wins, else the listing box's own
   refusal, else a box that did not answer, else `no box knows that handle: <h>` (naming the boxes that should hold a

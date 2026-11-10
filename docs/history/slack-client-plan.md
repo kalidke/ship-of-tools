@@ -339,6 +339,8 @@ P3 establishes the native mechanism. It does not strengthen every legacy pathnam
 
 The optional wire field is defaulted so an ordinary request without an expectation retains existing behavior. B3 supplies the canonical row from rows’ current facts to the updated in-process filer. Forwarding and offers preserve the expectation; it is never silently downgraded to ordinary filing.
 
+Amended 2026-11-10, at P14: an expectation is admitted only by a daemon that appends to the folder itself and is never forwarded or offered, so no peer of any version can drop it; the guarded append takes the inbox lock first, then the registry lock within the one wait.
+
 For a guarded local append, messaging acquires its existing registry lock, freshly reads the entry, checks that `workspace_id` still matches the expected canonical row, applies existing presence/liveness rules and keeps the guard until the existing appender returns. Lock acquisition/read failure is an explicit refusal. A mismatch is `not_here` with the move named and no append.
 
 The lock is newly acquired by this path; it is not currently held there. Checking under the lock and releasing it before append would retain the race. The implementation must use bounded acquisition and release on success, failure and unwind, without holding the registry lock across network forwarding.

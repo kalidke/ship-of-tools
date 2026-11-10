@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 fn req(to: &str) -> CommFileReq {
-    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false }
+    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false, expected_row: None }
 }
 
 /// A link that answers each offer with `answer(to)`, or never when it gives `None`.

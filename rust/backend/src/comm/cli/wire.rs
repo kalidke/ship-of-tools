@@ -39,7 +39,7 @@ pub(crate) const FILE_WINDOW: Duration = Duration::from_secs(5);
 /// One `comm.file` for `to` at `endpoint`. `Ok` only on the daemon's `ok`; `Err` is the sentence after `FAILED ->
 /// @to: `: the daemon's own refusal, a refused hello, or that nothing answered.
 pub(crate) fn comm_file(env: &crate::comm::Env, endpoint: &str, from: &str, to: &str, text: &str, broadcast: bool) -> Result<(), String> {
-    let req = sot_protocol::CommFileReq { from: from.into(), to: to.into(), text: text.into(), broadcast, forwarded: false };
+    let req = sot_protocol::CommFileReq { from: from.into(), to: to.into(), text: text.into(), broadcast, forwarded: false, expected_row: None };
     let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
     let answer = call(env, endpoint, sot_protocol::op::COMM_FILE, payload, FILE_WINDOW)?;
     if answer.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
