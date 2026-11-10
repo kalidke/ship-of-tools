@@ -120,6 +120,11 @@ impl ChatDrawer {
         (outs, step.settling)
     }
 
+    /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`): the instant to wake the window for.
+    pub(in crate::ui) fn next_ask(&self) -> Option<Instant> {
+        self.owner.next_ask()
+    }
+
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
         self.flight.clear(host);
