@@ -142,6 +142,16 @@
     }
 
     #[test]
+    fn chat_name_is_unset_until_a_non_blank_name_is_given() {
+        let mut s = Settings::default();
+        assert_eq!(s.chat_name, None);
+        s.merge_text("[chat]\nname = \"Ada\"\n");
+        assert_eq!(s.chat_name.as_deref(), Some("Ada"));
+        s.merge_text("[chat]\nname = \"  \"\n");
+        assert_eq!(s.chat_name, None, "a blank name is no name");
+    }
+
+    #[test]
     fn fullscreen_vsync_pin_defaults_false_and_parses() {
         // Default false — most panels are fixed-refresh; #15's
         // steady-redraw guard stays off until someone opts in on a

@@ -225,6 +225,7 @@ pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String
             Pane::Nav => &[Action::NavExpand, Action::NavOpen],
             Pane::Repl => &[Action::ReplSubmit, Action::ReplClear],
             Pane::Agent => &[Action::Paste, Action::CopySelection],
+            Pane::Chat => &[Action::ChatSend, Action::ChatNewline],
             _ => &[],
         }
     };

@@ -65,6 +65,7 @@ out-of-range values warn and fall back to the default.
 |---------------|------|---------|---------|
 | `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
 | `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
+| `[chat] name` | string | *(unset)* | The author a chat post carries beside the app's name. Unset or blank, the Chat drawer does not post. |
 | `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
 
 ### `[gpu]`
