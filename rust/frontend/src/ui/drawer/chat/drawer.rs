@@ -342,6 +342,11 @@ impl ChatDrawer {
         self.view.release();
     }
 
+    /// What `chat.copy_selection` copies (`view::ChatView::copy_text`).
+    pub(in crate::ui) fn copy_text(&self) -> Option<String> {
+        self.view.copy_text()
+    }
+
     pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
         self.view.selection_rects()
     }

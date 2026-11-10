@@ -622,4 +622,5 @@ fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
     assert!(d.close_thread());
     d.layout(&mut fonts, body(), 1.0);
     assert!(d.selection_rects().is_empty(), "the old selection does not return at close");
+    assert_eq!(d.copy_text().as_deref(), Some("message 2"), "Primary+c copies the marked parent, not the old selection");
 }

@@ -266,9 +266,22 @@ impl ChatView {
         self.selected = None;
     }
 
-    #[cfg(test)]
+    /// The selected bytes of the record's buffer.
     pub(in crate::ui) fn selected_text(&self) -> Option<String> {
         self.selection.text(&self.lent()?)
+    }
+
+    /// The marked record's shown text: its buffer after the header line.
+    pub(in crate::ui) fn marked_text(&self) -> Option<String> {
+        let ts = self.mark.as_ref()?;
+        let key = &self.placed.iter().find(|p| &p.2 == ts)?.0;
+        let text = self.cache[key].buffer.lines.iter().skip(1).map(|l| l.text()).collect::<Vec<_>>().join("\n");
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// What `chat.copy_selection` copies: the selection, else the marked message's shown text.
+    pub(in crate::ui) fn copy_text(&self) -> Option<String> {
+        self.selected_text().or_else(|| self.marked_text())
     }
 
     /// The tint of the selection, one rectangle a visual line.

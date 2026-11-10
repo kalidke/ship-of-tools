@@ -150,6 +150,10 @@ pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: Strin
         if !event.repeat {
             state.send_chat_draft();
         }
+    } else if action == Some(Action::ChatCopySelection) {
+        if !event.repeat {
+            state.status.set(copy_status(state.chat.copy_text(), |text| write_clipboard_text(text).map_err(|e| e.to_string())));
+        }
     } else if action == Some(Action::Paste) {
         if let Some(text) = (!event.repeat).then(read_clipboard_text).flatten() {
             state.edit_chat_draft(Edit::Text(&text));
@@ -161,6 +165,15 @@ pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: Strin
     }
     state.last_key = Some(label);
     true
+}
+
+/// The status line's words for `chat.copy_selection`: the text goes to the clipboard, and nothing to copy is said.
+fn copy_status(text: Option<String>, clipboard: impl FnOnce(String) -> Result<(), String>) -> String {
+    match text.map(clipboard) {
+        Some(Ok(())) => "copied chat text".into(),
+        Some(Err(e)) => format!("copy failed · {e}"),
+        None => "nothing to copy: select text or mark a message".into(),
+    }
 }
 
 /// Applies a move; whether there was one.

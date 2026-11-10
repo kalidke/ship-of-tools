@@ -56,7 +56,7 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.send", "chat.newline"] {
+    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.copy_selection", "chat.send", "chat.newline"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
@@ -94,6 +94,26 @@ fn enter_and_shift_enter_resolve_in_every_context_and_the_chat_border_names_them
     }
     let hint = format!("{} {}", b.first_label(Action::ChatSend), Action::ChatSend.spec().label);
     assert!(border(&pane(Pane::Chat), &b, 100).starts_with(&hint), "the Chat border names Enter first");
+}
+
+/// The Primary+c chords belong to the Chat's copy in the Chat tenant alone (K1): the agent pane's, the Terminal's, the
+/// REPL's and every other context's resolve as they did.
+#[test]
+fn the_chat_copy_chords_resolve_in_the_chat_tenant_alone() {
+    use crate::ui::input::help::{Context, Pane};
+    let b = KeyBindings::defaults();
+    let mac = cfg!(target_os = "macos");
+    let resolve = |context: &Context, shift: bool| {
+        let m = Modifiers { ctrl: !mac, super_: mac, shift, ..Modifiers::default() };
+        b.resolve(&Key::Character("c".into()), None, m, context.consumes_text(), |a| context.allows(a)).map(|a| a.spec().name)
+    };
+    let pane = |pane| Context { pane, ..Context::default() };
+    assert_eq!((resolve(&pane(Pane::Chat), false), resolve(&pane(Pane::Chat), true)), (Some("chat.copy_selection"), Some("chat.copy_selection")));
+    for p in [Pane::Repl, Pane::Terminal, Pane::Agent, Pane::Nav, Pane::Help, Pane::Monitor] {
+        for shift in [false, true] {
+            assert_ne!(resolve(&pane(p), shift), Some("chat.copy_selection"), "{p:?} {shift}");
+        }
+    }
 }
 
 #[test]
