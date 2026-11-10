@@ -51,6 +51,8 @@ bytemuck_derive = { workspace = true }
 # declares no features.
 vt100 = { package = "vt100-ctt", version = "0.17" }
 base64 = "0.22"
+# The daemon's strict settings reader: the chat name is written only when it parses the result (`persist/chat_name.rs`).
+toml = "1.1.2"
 # OS-independent local wall-clock for the upper-right chrome clock. chrono's
 # `Local` reads the host timezone the same way on Windows/macOS/Linux (no
 # libc/winapi call in our code, no shell-out). Default features include the

@@ -2,6 +2,7 @@
 
 use super::*;
 
+pub(crate) mod chat_name;
 pub(crate) mod discover;
 pub(crate) mod resume;
 pub(crate) mod settings;

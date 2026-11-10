@@ -4332,6 +4332,7 @@ dependencies = [
  "sot-updater",
  "tiny-skia",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
