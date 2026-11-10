@@ -1655,3 +1655,21 @@ A landing's record goes here, with its measured times; the package page holds on
   a one-pixel header); two fix rounds of 5 and 2 minutes, the second read by the session in place of a third review;
   three scoped gates of 1 to 2 minutes. The cause: the brief left the builder to define "in view", the one term the guarantee turns on, so each
   review found a definition that let the mark leave the person's sight.
+- The project chat's B5p, one thread view, 2026-11-10, in three commits landed in two pushes: builder launched 01:46;
+  the view (85f14caf7) main 03:15, 89 minutes; the owner's reserve and the thread's reads (6afab7bcf, 90002ae5f) main
+  03:27, 101 minutes; both past the half hour, a failure by this page's standard. ArrowRight opens the marked
+  message's thread and Escape, a row switch, hiding the drawer or its channel's watch changing closes it, the
+  channel's place kept; the title keeps the link's words over a thread; the thread is read whole, 20 at a time through
+  the reads in flight, each reply taken only for the read it answers, repeats dropped, up to 156 messages with the
+  channel's older records giving way and never its newest 100; refused reads asked again on the pace with words
+  (CHAT-THREAD-REREAD-CLEARS and CHAT-THREAD-RETRY-WHILE-DOWN noted). Posting into a thread is the next landing. About
+  230 product lines and 535 test lines over the three. Where the minutes went: the first build, stopped at its size
+  bound at about 200 lines for what the plan put at 55 (6 minutes); the split into the view and the reads (21
+  minutes); the view's review (blockers 1, 8 minutes: the title hid a lost link) while the reads were split again into
+  the reserve and the reads (13 minutes); the view's fixes and the stack rebuilt on them (17 minutes); a review of the
+  stack (blockers 0, six should-fix, 14 minutes: a thread outliving its channel's watch, repeats within a page, a held
+  read surviving a link change); a fix round (12 minutes); a second review of the reads (blockers 0, four should-fix,
+  12 minutes); a last fix of tests and records (2 minutes, read by the session); seven scoped gates of 1 to 2 minutes.
+  The causes: the plan sized the whole step at 100 product lines, half what its first part took, so it was split twice
+  after it was built; and the reviews kept finding rules a thread shares with the channel (the title, the watch, the
+  reads in flight) that the plan stated for the channel alone.
