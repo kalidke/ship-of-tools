@@ -10,7 +10,7 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
-use super::compose::{Compose, Edit};
+use super::compose::{Compose, ComposeText, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out};
 use super::row_channel::{RowChannel, Stand};
 use sot_protocol::ops::ChatCode;
@@ -77,6 +77,8 @@ pub(in crate::ui) struct ChatDrawer {
     flight: Flight,
     view: ChatView,
     compose: Compose,
+    /// How many compose rows the last frame drew at the drawer's foot: the records' body is that much shorter.
+    foot: u16,
 }
 
 impl ChatDrawer {
@@ -188,6 +190,22 @@ impl ChatDrawer {
     /// Rows a listing retired lose their drafts.
     pub(in crate::ui) fn retire(&mut self, rows: &[ResultRowIdentity]) {
         self.compose.retire(rows);
+    }
+
+    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and its channel,
+    /// else the watched channel.
+    pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
+        let draft = self.rows.row().and_then(|r| self.compose.draft(r));
+        let dest = draft.map(|d| &d.dest).or_else(|| self.owner.target().filter(|t| self.rows.row().is_some_and(|r| t.row == r.workspace_id)))?;
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), dest.channel.as_str(), focused))
+    }
+
+    pub(in crate::ui) fn set_foot(&mut self, rows: u16) {
+        self.foot = rows;
+    }
+
+    pub(in crate::ui) fn foot(&self) -> u16 {
+        self.foot
     }
 
     /// The wanted row's draft: its text and the channel it goes to.

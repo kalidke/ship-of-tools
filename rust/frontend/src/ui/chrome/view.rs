@@ -68,6 +68,10 @@ pub(super) struct ChromeView<'a> {
     pub(super) drawer: DrawerContent,
     pub(super) chat_empty: bool,
     pub(super) chat_title: &'a str,
+    /// What the Chat drawer's compose rows are made of, while it is shown with a channel to write to.
+    pub(super) chat_compose: Option<&'a crate::ui::drawer::chat::ComposeText>,
+    /// How many compose rows were drawn, for the records' body to leave room for.
+    pub(super) chat_foot: u16,
     pub(super) monitor_host_connected: bool,
     pub(super) monitor_host_label: &'a HostKey,
     pub(super) repl_input: &'a String,
@@ -431,16 +435,23 @@ impl ChromeView<'_> {
     }
 
     fn render_drawer_widgets(
-        &self,
+        &mut self,
         frame: &mut ratatui::Frame<'_>,
         repl_rect: ratatui::layout::Rect,
         scroll_para: Paragraph<'static>,
         input_para: Paragraph<'static>,
         repl_split: ReplDrawerLayout,
     ) {
-        let ChromeView { drawer, chat_empty, help_state, help_bindings, .. } = *self;
+        let ChromeView { drawer, chat_empty, chat_compose, help_state, help_bindings, .. } = *self;
         if drawer == DrawerContent::Chat && chat_empty {
             frame.render_widget(Paragraph::new("no messages").style(Style::default().fg(Color::DarkGray)), repl_rect);
+        }
+        if let Some(text) = chat_compose.filter(|_| drawer == DrawerContent::Chat) {
+            let rows = crate::ui::drawer::chat::compose_rows(text, repl_rect.width as usize, repl_rect.height as usize);
+            let n = rows.len() as u16;
+            let foot = ratatui::layout::Rect { y: repl_rect.y + repl_rect.height - n, height: n, ..repl_rect };
+            frame.render_widget(Paragraph::new(rows.join("\n")), foot);
+            self.chat_foot = n;
         }
         if drawer == DrawerContent::Help {
             help::render(frame, repl_rect, help_state, help_bindings);

@@ -14,7 +14,7 @@ mod owner;
 mod project;
 mod row_channel;
 mod view;
-pub(in crate::ui) use compose::Edit;
+pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use drawer::ChatDrawer;
 pub(in crate::ui) use view::Step;
 use owner::Out;
