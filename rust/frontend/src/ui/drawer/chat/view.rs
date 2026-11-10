@@ -5,8 +5,9 @@ use std::collections::HashMap;
 
 use chrono::FixedOffset;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
-use sot_protocol::chat::ChatRecord;
+use sot_protocol::chat::{ChatRecord, Ts};
 
+use super::owner::ts_order;
 use super::project::{project, Kind, Span};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
 use crate::ui::render::quad::ScreenRect;
@@ -22,9 +23,10 @@ pub(super) struct Placed {
     pub top: f32,
 }
 
-/// The records that reach a body `body_h` tall, in order. `from` is the first record at the top; `None` follows the
-/// newest, placed upward from the bottom. `height` is asked only of a record that reaches the body.
-pub(super) fn place(count: usize, body_h: f32, from: Option<usize>, mut height: impl FnMut(usize) -> f32) -> Vec<Placed> {
+/// The records that reach a body `body_h` tall, in order. `from` is the record at the top and its top's distance below the
+/// body's top; `None` follows the newest, placed upward from the bottom. `height` is asked only of a record that reaches
+/// the body.
+pub(super) fn place(count: usize, body_h: f32, from: Option<(usize, f32)>, mut height: impl FnMut(usize) -> f32) -> Vec<Placed> {
     let mut out = Vec::new();
     match from {
         None => {
@@ -39,8 +41,8 @@ pub(super) fn place(count: usize, body_h: f32, from: Option<usize>, mut height: 
             }
             out.reverse();
         }
-        Some(from) => {
-            let mut y = 0.0;
+        Some((from, dy)) => {
+            let mut y = dy;
             for index in from.min(count)..count {
                 if y >= body_h {
                     break;
@@ -52,6 +54,29 @@ pub(super) fn place(count: usize, body_h: f32, from: Option<usize>, mut height: 
         }
     }
     out
+}
+
+/// A position kept honest: the records above the body's top are taken up while there is room above, none is left wholly
+/// above it, and a position whose newest record is wholly in view is `None` (following).
+pub(super) fn settle(count: usize, body_h: f32, (mut i, mut dy): (usize, f32), mut height: impl FnMut(usize) -> f32) -> Option<(usize, f32)> {
+    while dy > 0.0 && i > 0 {
+        i -= 1;
+        dy -= height(i);
+    }
+    dy = dy.min(0.0);
+    while i < count && dy + height(i) <= 0.0 {
+        dy += height(i);
+        i += 1;
+    }
+    let mut end = dy;
+    (i..count).any(|j| { end += height(j); end > body_h }).then_some((i, dy))
+}
+
+/// How far a key moves the position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::ui) enum Step {
+    Line,
+    Page,
 }
 
 /// Each span kind has a style of its own; the kind alone tells a header from a body line that imitates one.
@@ -78,8 +103,11 @@ struct Shaped {
 
 #[derive(Default)]
 pub(in crate::ui) struct ChatView {
-    /// The first record at the body's top; `None` follows the newest.
-    pub(super) from: Option<usize>,
+    /// The record at the body's top (by its time) and its top's distance below the body's top; `None` follows the newest.
+    pub(super) anchor: Option<(Ts, f32)>,
+    /// What keys and the wheel asked since the last frame, toward older records: lines and pages, turned into pixels by
+    /// the frame that spends them, so a key before the first frame is kept and a resize or scale change does not matter.
+    pending: (f32, f32),
     cache: HashMap<Key, Shaped>,
     placed: Vec<(Key, f32)>,
     body: Option<ScreenRect>,
@@ -91,22 +119,49 @@ impl ChatView {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
-        let spots = place(records.len(), body.h, self.from, |at| {
+        let mut height = |at: usize| {
             let key = (project(records[at], now, offset, false), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
             shaped.height
-        });
+        };
+        let count = records.len();
+        // The anchor is found by its time: a record gone passes it to the nearest newer one, and a snapshot that replaced
+        // every record does the same against the new set.
+        let found = self.anchor.as_ref().map(|(ts, dy)| (records.partition_point(|r| ts_order(&r.ts) < ts_order(ts)), *dy));
+        let pending = self.pending.0 * BODY_LINE_H * scale + self.pending.1 * body.h / 3.0;
+        let found = match (found, pending > 0.0) {
+            (None, true) if count > 0 => Some((count - 1, body.h - height(count - 1))),
+            (found, _) => found,
+        };
+        let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + pending), &mut height));
+        self.pending = (0.0, 0.0);
+        self.anchor = from.map(|(i, dy)| (records[i].ts.clone(), dy));
+        let spots = place(count, body.h, from, &mut height);
         self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
         self.body = Some(body);
-        let centre = self.from.unwrap_or(records.len());
+        let centre = from.map_or(count, |f| f.0);
         let mut others: Vec<_> =
             self.cache.iter().filter(|(k, _)| !self.placed.iter().any(|(u, _)| u == *k)).map(|(k, s)| (s.at.abs_diff(centre), k.clone())).collect();
         others.sort_by(|a, b| b.0.cmp(&a.0));
         for (_, key) in others.into_iter().take(self.cache.len().saturating_sub(self.placed.len() + SPARE)) {
             self.cache.remove(&key);
         }
+    }
+
+    /// A key or the wheel moves the position `step` toward older records (`up`) or newer; it takes effect at the next frame.
+    pub(super) fn scroll(&mut self, up: bool, step: Step) {
+        let n = if up { 1.0 } else { -1.0 };
+        match step {
+            Step::Line => self.pending.0 += n,
+            Step::Page => self.pending.1 += n,
+        }
+    }
+
+    /// The reader asks for the newest: the view follows it again.
+    pub(super) fn latest(&mut self) {
+        (self.anchor, self.pending) = (None, (0.0, 0.0));
     }
 
     /// The drawer is not showing the chat: nothing is prepared.
@@ -143,6 +198,12 @@ impl ChatView {
     #[cfg(test)]
     pub(super) fn placed_text(&self) -> Vec<String> {
         self.placed.iter().map(|(k, _)| k.0.iter().map(|s| s.text.as_str()).collect()).collect()
+    }
+
+    /// The placed records' tops, in placement order.
+    #[cfg(test)]
+    pub(super) fn placed_tops(&self) -> Vec<f32> {
+        self.placed.iter().map(|(_, top)| *top).collect()
     }
 
     #[cfg(test)]

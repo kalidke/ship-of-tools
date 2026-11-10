@@ -9,6 +9,8 @@ use sot_protocol::chat::ChatRecord;
 use super::drawer::ChatDrawer;
 use super::row_channel_tests::{answer, mapped};
 use crate::ui::ResultRowIdentity;
+use crate::ui::input::help::Pane;
+use crate::ui::preview::markdown::BODY_LINE_H;
 use sot_protocol::ops::{ChatCode, ChatWatchRes, ChatWatchState};
 use std::time::{Duration, Instant};
 
@@ -58,7 +60,9 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     let four = place(4, 200.0, None, |i| heights[i]);
     assert_eq!(tops(&four), [(0, 60.0), (1, 90.0), (2, 130.0), (3, 180.0)]);
     // From a position, records run down from the top and stop at the body's bottom.
-    assert_eq!(tops(&place(4, 100.0, Some(1), |i| heights[i])), [(1, 0.0), (2, 40.0), (3, 90.0)]);
+    assert_eq!(tops(&place(4, 100.0, Some((1, 0.0)), |i| heights[i])), [(1, 0.0), (2, 40.0), (3, 90.0)]);
+    // A top below the body's top moves every record down with it.
+    assert_eq!(tops(&place(4, 100.0, Some((1, 20.0)), |i| heights[i])), [(1, 20.0), (2, 60.0)]);
     // With 256 records, only those reaching the body are measured.
     let mut asked = Vec::new();
     let many = place(256, 100.0, None, |i| {
@@ -87,7 +91,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     // the first positions' are gone.
     let spans = |i: usize| project(records[i], 1_700_000_000, offset, false);
     for from in (0..=240).step_by(8) {
-        view.from = Some(from);
+        view.anchor = Some((records[from].ts.clone(), 0.0));
         view.layout(&mut fonts, &records, body, 1.0, 1_700_000_000, offset);
         assert!(view.cached() <= view.areas().len() + 64, "{from}: {}", view.cached());
     }
@@ -273,4 +277,158 @@ fn history_req(outs: &[Out]) -> sot_protocol::ops::ChatHistoryReq {
         [(_, OutgoingReq::ChatHistory { req })] => req.clone(),
         _ => panic!("one read expected"),
     }
+}
+
+/// Lays `held` out in a body `lines` records tall and a half (so a record crosses the top); the placed records' texts
+/// (`message N` ends the text) and tops.
+fn lay(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], h: f32) -> Vec<(String, f32)> {
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h };
+    view.layout(fonts, &records, body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    view.placed_text().into_iter().zip(view.placed_tops()).collect()
+}
+
+/// The first placed record's number and top.
+fn top_of(shown: &[(String, f32)]) -> (String, f32) {
+    let (text, top) = &shown[0];
+    (text.rsplit("message ").next().unwrap().to_string(), *top)
+}
+
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.01
+}
+
+#[test]
+fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
+    let mut fonts = FontSystem::new();
+    let mut view = ChatView::default();
+    let mut held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    // One record's height, from two records of a following view.
+    let probe = lay(&mut view, &mut fonts, &held, 1000.0);
+    let h = probe[1].1 - probe[0].1;
+    let at = |view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], n: &str, dy: f32| {
+        let shown = lay(view, fonts, held, h);
+        let (got, top) = top_of(&shown);
+        assert!(got == n && near(top, dy), "wanted message {n} at {dy}, got message {got} at {top}");
+    };
+    // Following: the newest ends at the bottom, and a step down changes nothing.
+    view.layout(&mut fonts, &held.iter().collect::<Vec<_>>(), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h }, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    view.scroll(false, Step::Page);
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
+    // A page up moves a third of the body: the reader is now at message 14, 5h above the follow position.
+    view.scroll(true, Step::Page);
+    at(&mut view, &mut fonts, &held, "14", 0.0);
+    assert!(view.anchor.is_some());
+    // An arrival moves nothing.
+    held.extend((20..22).map(rec));
+    at(&mut view, &mut fonts, &held, "14", 0.0);
+    // A line down moves the record up a line; a line up moves it back (the wheel and Alt+Down use the same step).
+    view.scroll(false, Step::Line);
+    let line = BODY_LINE_H;
+    at(&mut view, &mut fonts, &held, "14", -line);
+    // A page down passes the record: none is left wholly above the top, and a page up returns to it.
+    view.scroll(false, Step::Page);
+    let (got, top) = top_of(&lay(&mut view, &mut fonts, &held, h));
+    assert!(got != "14" && top + h > 0.0, "message {got} at {top}");
+    view.scroll(true, Step::Page);
+    at(&mut view, &mut fonts, &held, "14", -line);
+    // Edits that change height keep the anchor's top: the anchor taller, a record below it taller, one above it taller.
+    let long = "word ".repeat(200);
+    for n in [14, 16, 10] {
+        held[n] = rec_at(&format!("1700000{n:03}.000100"), &format!("{long}message {n}"));
+        at(&mut view, &mut fonts, &held, "14", -line);
+    }
+    // A delete above the anchor moves nothing.
+    held.remove(12);
+    at(&mut view, &mut fonts, &held, "14", -line);
+    // The anchor deleted: the next record takes its top.
+    held.remove(13);
+    at(&mut view, &mut fonts, &held, "15", -line);
+    // A snapshot that replaces every record and drops the anchor: the first record newer than it, at the same top.
+    let snapshot: Vec<ChatRecord> = (17..30).map(rec).collect();
+    at(&mut view, &mut fonts, &snapshot, "17", -line);
+    // A snapshot wholly older than the anchor leaves nothing newer: the view follows the newest.
+    let older: Vec<ChatRecord> = (0..10).map(rec).collect();
+    let shown = lay(&mut view, &mut fonts, &older, h);
+    assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
+    // Page down from an anchor brings the newest wholly into view, and the position becomes None.
+    view.scroll(true, Step::Page);
+    lay(&mut view, &mut fonts, &held, h);
+    assert!(view.anchor.is_some());
+    for _ in 0..8 {
+        view.scroll(false, Step::Page);
+        let shown = lay(&mut view, &mut fonts, &held, h);
+        let (text, top) = shown.last().unwrap();
+        assert!(view.anchor.is_none() || !text.ends_with("message 21") || top + h > 4.5 * h, "the newest is in view but the reader is not following");
+    }
+    assert!(view.anchor.is_none(), "the newest is in view");
+    // Paging up past the oldest stops with it at the top, never an empty body.
+    for _ in 0..60 {
+        view.scroll(true, Step::Page);
+        lay(&mut view, &mut fonts, &held, h);
+    }
+    at(&mut view, &mut fonts, &held, "0", 0.0);
+    // A line is the text scale's: at scale 2 a line down moves the anchor twice as far, and a key before the first frame
+    // is kept.
+    let mut big = ChatView::default();
+    big.anchor = Some((held[10].ts.clone(), 0.0));
+    big.scroll(false, Step::Line);
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    big.layout(&mut fonts, &records, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 1000.0 }, 2.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    assert!(near(big.placed_tops()[0], -2.0 * BODY_LINE_H), "{:?}", big.placed_tops());
+    // End: back to the newest from anywhere, and a pending move is dropped.
+    view.scroll(true, Step::Page);
+    lay(&mut view, &mut fonts, &held, h);
+    view.scroll(true, Step::Page);
+    view.latest();
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h));
+}
+
+#[test]
+fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
+    use crate::ui::DrawerContent::*;
+    use crate::ui::drawer::chat::{chat_move, chat_wheel, Move};
+    use crate::ui::input::keybindings::Action as A;
+    for (action, want) in [
+        (A::ScrollPageUp, Move::Scroll(true, Step::Page)), (A::ScrollPageDown, Move::Scroll(false, Step::Page)),
+        (A::ChatLatest, Move::Latest),
+    ] {
+        assert_eq!(chat_move(Chat, Some(action)), Some(want), "{action:?}");
+        for other in [Closed, Repl, Terminal, Monitor, Help] {
+            assert_eq!(chat_move(other, Some(action)), None, "{action:?} in {other:?}");
+        }
+    }
+    assert_eq!(chat_move(Chat, Some(A::ReplHistoryPrev)), None);
+    assert_eq!(chat_move(Chat, None), None);
+    assert_eq!(chat_wheel(Chat, 3), Some(Move::Scroll(true, Step::Line)));
+    assert_eq!(chat_wheel(Chat, -3), Some(Move::Scroll(false, Step::Line)));
+    for other in [Closed, Repl, Terminal, Monitor, Help] {
+        assert_eq!(chat_wheel(other, 3), None, "{other:?}");
+    }
+    // End is the chat's alone.
+    let ctx = |pane| crate::ui::input::help::Context { pane, ..Default::default() };
+    assert!(ctx(crate::ui::input::help::Pane::Chat).allows(A::ChatLatest));
+    for pane in [Pane::Nav, Pane::Preview, Pane::Repl, Pane::Terminal, Pane::Monitor, Pane::Agent, Pane::Help] {
+        assert!(!ctx(pane).allows(A::ChatLatest), "{pane:?}");
+    }
+}
+
+#[test]
+fn a_row_change_returns_the_reader_to_the_newest() {
+    let (mut d, at) = answered_with(mapped);
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let outs = d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at);
+    let held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let page = serde_json::from_value(serde_json::json!({ "records": held, "next": null })).unwrap();
+    d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
+    let mut fonts = FontSystem::new();
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
+    d.layout(&mut fonts, body, 1.0);
+    d.scroll(true, Step::Page);
+    d.layout(&mut fonts, body, 1.0);
+    assert!(!d.following(), "scrolled up");
+    d.tick(shown("S"), at + Duration::from_secs(1));
+    assert!(d.following(), "another row is read from its newest");
 }

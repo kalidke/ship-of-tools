@@ -123,6 +123,7 @@ impl Context {
             Drawing => preview && self.drawing,
             Preview => preview,
             Reading => preview || repl || self.pane == Pane::Chat,
+            Chat => self.pane == Pane::Chat,
             PreviewFile => preview && self.editable && !self.canvas,
             PageScroll => {
                 (text && !self.pages)

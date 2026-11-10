@@ -204,8 +204,10 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
                 state.repl_model.scroll_rows(rows_above);
                 state.window.request_redraw();
             }
-            // Chat, Monitor and Help scroll nothing the wheel can reach yet, and never the REPL.
-            help::DrawerInput::Inert => {}
+            // Only the Chat tenant takes the wheel; Monitor and Help scroll nothing it can reach, and never the REPL.
+            help::DrawerInput::Inert => {
+                let _ = drawer::chat::chat_apply(state, drawer::chat::chat_wheel(state.layout_help.drawer(), rows_above));
+            }
         },
         PaneFocus::Preview => {
             state.shaped.scroll_by(-rows_above);

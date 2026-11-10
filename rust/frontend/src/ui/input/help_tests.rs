@@ -219,11 +219,15 @@ fn the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler() {
     ] {
         assert_eq!(Pane::of_drawer(drawer), pane, "{drawer:?}");
         assert_eq!(DrawerInput::of(drawer), input, "{drawer:?}");
-        let want = if input == DrawerInput::Repl { LineScroll::Repl } else { LineScroll::Nowhere };
-        assert_eq!(line_scroll_target(PaneFocus::Repl, input), want, "{drawer:?} line scroll");
-        assert_eq!(line_scroll_target(PaneFocus::Preview, input), LineScroll::Preview);
-        assert_eq!(line_scroll_target(PaneFocus::NavTree, input), LineScroll::Nowhere);
-        assert_eq!(line_scroll_target(PaneFocus::Llm, input), LineScroll::Nowhere);
+        let want = match (input, drawer) {
+            (DrawerInput::Repl, _) => LineScroll::Repl,
+            (_, Chat) => LineScroll::Chat,
+            _ => LineScroll::Nowhere,
+        };
+        assert_eq!(line_scroll_target(PaneFocus::Repl, drawer), want, "{drawer:?} line scroll");
+        assert_eq!(line_scroll_target(PaneFocus::Preview, drawer), LineScroll::Preview);
+        assert_eq!(line_scroll_target(PaneFocus::NavTree, drawer), LineScroll::Nowhere, "{drawer:?} without the focus");
+        assert_eq!(line_scroll_target(PaneFocus::Llm, drawer), LineScroll::Nowhere);
     }
     let chat = Context { pane: Pane::Chat, ..Context::default() };
     for a in [Action::ReplSubmit, Action::ReplClear, Action::ReplInterrupt, Action::ReplHistoryPrev, Action::ReplNewline] {

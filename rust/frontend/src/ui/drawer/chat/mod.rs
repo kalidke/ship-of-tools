@@ -13,6 +13,7 @@ mod project;
 mod row_channel;
 mod view;
 pub(in crate::ui) use drawer::ChatDrawer;
+pub(in crate::ui) use view::Step;
 use owner::Out;
 #[cfg(test)]
 mod project_tests;
@@ -56,6 +57,43 @@ impl State {
             self.pacer.mark_dirty();
         }
     }
+}
+
+/// A reader's move through the chat.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum Move {
+    Scroll(bool, Step),
+    Latest,
+}
+
+/// What a key does in the Chat tenant, and nowhere else: PageUp and PageDown move a third of the body and End returns
+/// to the newest (Alt+Up and Alt+Down are `line_scroll_target`'s, the wheel `chat_wheel`'s).
+pub(in crate::ui) fn chat_move(drawer: DrawerContent, action: Option<Action>) -> Option<Move> {
+    if drawer != DrawerContent::Chat {
+        return None;
+    }
+    match action? {
+        Action::ScrollPageUp => Some(Move::Scroll(true, Step::Page)),
+        Action::ScrollPageDown => Some(Move::Scroll(false, Step::Page)),
+        Action::ChatLatest => Some(Move::Latest),
+        _ => None,
+    }
+}
+
+/// The wheel moves one line in the Chat tenant only; `rows_above` is positive toward older records.
+pub(in crate::ui) fn chat_wheel(drawer: DrawerContent, rows_above: i32) -> Option<Move> {
+    (drawer == DrawerContent::Chat && rows_above != 0).then_some(Move::Scroll(rows_above > 0, Step::Line))
+}
+
+/// Applies a move; whether there was one.
+pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
+    match mv {
+        Some(Move::Scroll(up, step)) => state.chat.scroll(up, step),
+        Some(Move::Latest) => state.chat.latest(),
+        None => return false,
+    }
+    state.window.request_redraw();
+    true
 }
 
 /// The row the chat follows: the selected row's host and canonical id (never the slug, which the daemon refuses as

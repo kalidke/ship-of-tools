@@ -13,7 +13,7 @@ use crate::ui::render::quad::ScreenRect;
 use super::owner::{dead, ChatOwner, Fill, Out};
 use super::row_channel::{RowChannel, Stand};
 use sot_protocol::ops::ChatCode;
-use super::view::ChatView;
+use super::view::{ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -81,7 +81,12 @@ impl ChatDrawer {
     /// The frame: follow the wanted row (see `RowChannel`) and pace the owner. The flag asks for another frame.
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> (Vec<Out>, bool) {
         let step = self.rows.tick(wanted, now);
-        let mut outs = if step.changed { self.owner_outs(ChatOwner::stop) } else { Vec::new() };
+        let mut outs = Vec::new();
+        if step.changed {
+            // Another row's records are not the reader's place.
+            self.view.latest();
+            outs = self.owner_outs(ChatOwner::stop);
+        }
         outs.extend(step.resolve);
         outs.extend(self.owner_outs(|o| o.tick(now)));
         (outs, step.settling)
@@ -150,6 +155,16 @@ impl ChatDrawer {
         self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
     }
 
+    /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
+    pub(in crate::ui) fn scroll(&mut self, up: bool, step: Step) {
+        self.view.scroll(up, step);
+    }
+
+    /// The reader asks for the newest.
+    pub(in crate::ui) fn latest(&mut self) {
+        self.view.latest();
+    }
+
     /// The chat is not shown: no record is prepared.
     pub(in crate::ui) fn hide(&mut self) {
         self.view.hide();
@@ -157,6 +172,11 @@ impl ChatDrawer {
 
     pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {
         self.view.areas()
+    }
+
+    #[cfg(test)]
+    pub(super) fn following(&self) -> bool {
+        self.view.anchor.is_none()
     }
 
     #[cfg(test)]

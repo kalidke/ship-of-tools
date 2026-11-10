@@ -185,6 +185,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.up` | `ArrowUp` | Move up through the displayed text. |
 | `preview.down` | `ArrowDown` | Move down through the displayed text. |
 | `preview.start` | `Home` | Scroll to the beginning of the displayed text. |
+| `chat.latest` | `End` | Return the Chat drawer to the newest message and follow it. |
 | `preview.end` | `End` | Scroll to the end of the displayed text. |
 | `preview.half_up` | `Ctrl+u` | Scroll up half a pane. |
 | `preview.half_down` | `Ctrl+d` | Scroll down half a pane. |

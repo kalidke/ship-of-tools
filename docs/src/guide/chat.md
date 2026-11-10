@@ -4,6 +4,14 @@ The Chat drawer (`Ctrl+Shift+K`) shows the messages of one Slack channel: the ch
 The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
 a message that arrives takes the bottom line and lifts the rest. An empty channel shows `no messages`.
 
+To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
+line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
+and a message deleted at the reader's place lets the next one take it. `End` (`chat.latest`) returns to the newest and
+follows it again, and scrolling down to the newest does the same. Two cases move the view: once the drawer holds its
+100 newest messages, each arrival drops the oldest, so a reader on the oldest message moves up one message per arrival
+(until older pages can be read); and deleting or shortening the newest message can bring the newest wholly into view,
+which returns the reader to following. Switching to another row's channel starts at its newest.
+
 Each message starts with its own header line: the author's name, a tag for a post that came from the drawer, a row or a
 bot, and the time (`HH:MM` for today, with the date for an earlier day). The text follows as typed.
 
