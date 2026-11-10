@@ -1516,3 +1516,24 @@ A landing's record goes here, with its measured times; the package page holds on
   channel kept watched after a link change and when the watch runs untested, three mutants passing the suite); one fix
   round of 7 minutes; two scoped gates of 2 minutes. The causes: a builder that did not stop at the split, and a red
   test that covered the row channel's decisions but not the conditions that start and stop it.
+- The project chat's B5c2, the reads in flight, 2026-11-09: split from B5c's build 16:25, rebased onto main as its own
+  landing 17:12, main 18:08 (536cf56fe), 56 minutes from the rebase and 103 from the split, past the half hour, a
+  failure by this page's standard. The drawer keeps, per host, the set of history reads in flight; a read equal to one
+  in flight waits, a read its reader gave up is an orphan whose reply is dropped, a held read given up is cancelled, each
+  owner call gives up what it dropped in one place, and a link change clears the host's set, so a read from before a
+  re-watch never fills the new watch. About 85 product lines and 140 test lines. Where the minutes went: 45 minutes
+  behind B5c's review rounds before its own began; a rebase of 2 minutes; three review rounds (blockers 2, 1, 0; 18, 14
+  and 14 minutes); two fix rounds of 3 and 2 minutes; three scoped gates of 2 minutes. The cause: the plan's red test
+  pinned only the equal-read wait, and each review found another rule of the set with no test (the link clear and the
+  held cancel; then the half of the comparison that keeps a read still wanted; then the two-host parts, left to B5c3).
+- The project chat's B5d, a gap only after the daemon's slowest snapshot, 2026-11-09: builder launched 17:15, main
+  18:13 (d39167f49), 58 minutes, past the half hour, a failure by this page's standard. The drawer shows a channel as
+  not up to date only 20 s after the daemon admits its watch (any answer but `unavailable`), or after the recovery's
+  start when no answer comes; a refused watch is a gap at once; the gap carries its reason, a refused read's code
+  included; `stale_row`, `stale_mapping` and `unmapped` are not asked again (CHAT-GAP-ASKS-DEAD-TARGET closed). About
+  57 product lines and 190 test lines. Where the minutes went: the build (4 minutes); three review rounds (blockers 1,
+  0, 0; 12, 13 and 12 minutes); three fix rounds of 2 to 3 minutes and a records fix of 1; two rebases onto B5c2's
+  rounds (1 minute each); four scoped gates of 2 minutes. The causes: the build removed the old attempt cap and the
+  red test's cases all had reads that succeed, so a complete watch whose reads were all refused never became a gap
+  (the first review's blocker), and a watch never answered was found in the second; its rounds also waited on
+  B5c2's, since it was built on that commit.
