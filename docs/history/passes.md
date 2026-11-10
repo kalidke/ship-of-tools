@@ -1589,3 +1589,21 @@ A landing's record goes here, with its measured times; the package page holds on
   words, codes shown in Rust's spelling and six rules unpinned); two fix rounds of 8 and 2 minutes, the first moving the
   daemon's per-code text into wire; three scoped gates of 3 minutes. The causes: a builder that left a table row
   unbuilt and wrote its test to the words it had, and a fix that crossed three crates.
+- The project chat's B5i, a reader scrolled up stays put, 2026-11-09: builder launched 20:28, main 20:59 (f7bde24c4), 31
+  minutes, just past the half hour, a failure by this page's standard. The view's position is following or a record's
+  top and offset; PageUp and PageDown move a third of the body, Alt+Up, Alt+Down and the wheel one line, only in the
+  Chat tenant with its focus, and End returns to following; an anchor that goes passes to the nearest newer record; a
+  row change returns to following. About 124 product lines and 160 test lines. Where the minutes went: the build (11
+  minutes, past its 100-line stop, which it reported with a split point); one review round of 12 minutes (blockers 0;
+  the focus rule, the clamp and the row reset untested); one fix round of 4 minutes; two scoped gates of 2 minutes. The
+  cause: the build's size, about twice the plan's 60 lines.
+- The project chat's B5j, tombstones, 2026-11-09: builder launched 20:32, main 21:31 (3fc1e22ab), 59 minutes, past the
+  half hour, a failure by this page's standard. A message deleted while the window watches stays in place as
+  `(message deleted)`: the owner holds each record with its deleted flag as one pair, keeping only the deleted record's
+  identity, author, time and origin; a tombstone counts against the bound and a replacing snapshot drops it. About 32
+  product lines and 120 test lines. Where the minutes went: a git slip in its first worktree (a stash command whose
+  flag was read as a path, then a pop of an old unrelated stash) and a restart in a new worktree (5 minutes); the build
+  (8 minutes); three review rounds (blockers 1, 2, 0; 12, 9 and 6 minutes: a tombstone marked by two wire flags the
+  wire accepts, then a set beside the records whose drawer wiring was untested); three fix rounds of 9, 4 and 2
+  minutes, the first waiting for B5i to land; four scoped gates of 2 minutes. The causes: a representation the plan
+  left open and the builder chose from wire fields, and the slip.

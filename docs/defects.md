@@ -764,6 +764,11 @@ owned by `docs/CLAUDE.md`.
   owing a snapshot (`publish`, `rust/backend/src/chat/watch.rs`, which sends nothing when that set is unchanged or
   empty), and sends nothing when the gap closes, so no window can show the Slack link's state. Found reading code; never
   seen.
+- **CHAT-DELETED-NOT-ALWAYS-DELETED** [note] The daemon's `chat.changed` `deleted` list is a before-and-after comparison
+  of its model, not Slack's delete events (`rust/backend/src/chat/watch.rs`): when a snapshot is not installed it names
+  every snapshot record its model lacks, and a trim handled with a delete can name the trimmed record. Since the window
+  keeps a delete as `(message deleted)`, such a message, which still exists, shows as deleted until the next snapshot.
+  Needs a rare race. Found by B5j's reviews, reading code; never seen.
 
 ## records
 
