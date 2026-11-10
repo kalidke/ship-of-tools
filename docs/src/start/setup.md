@@ -28,7 +28,7 @@ machine (Windows, Linux, or macOS). Done manually, these are the steps:
 5. **Instantiate Julia environments**: the repo root, `core`, `julia/kernel`,
    `julia/repl`, and `julia/pluto`.
 6. **Write `hosts.toml`** (the hub's canonical copy, or a `sotd topology
-   sync --hub <alias>` fetch of it) **and `.sot/settings.toml`** from your
+   sync --hub <alias>` fetch of it) **and `settings.toml`** (in the per-user config folder) from your
    answers.
 7. **Install agent comm resources**:
    `julia --project=. -e 'using ShipTools; ShipTools.update_comm()'`.
@@ -118,10 +118,8 @@ file never crashes the chrome.
 preset = "auto"   # auto | ultrawide | laptop | portrait
 ```
 
-The frontend reads the first of `$SOT_SETTINGS`, a `.sot/settings.toml`
-found by walking up from the frontend's working directory, and
-`$HOME/.config/sot/settings.toml`; built-in defaults fill the rest. Keybindings live in a
-sibling `.sot/keybindings.toml` with the same discovery order.
+Which file the frontend reads, and in what order, is stated once, under
+[Discovery order](../ref/config.md#settings-discovery-order); keybindings are found the same way.
 
 The other sections are listed in [Configuration Files](../ref/config.md).
 

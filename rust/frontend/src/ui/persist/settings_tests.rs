@@ -285,6 +285,14 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The daemon's `[trust]` section shares the file; the window loads its own sections from it.
+    #[test]
+    fn a_file_holding_trust_and_chat_loads_the_chat_name() {
+        let mut s = Settings::default();
+        s.merge_text("[trust]\nroot_prefix = \"/work\"\n\n[chat]\nname = \"Ada\"\n");
+        assert_eq!(s.chat_name.as_deref(), Some("Ada"));
+    }
+
     /// Input class -> result of `strip_quotes`; the keybindings reader pins the same table.
     #[test]
     fn strip_quotes_table() {

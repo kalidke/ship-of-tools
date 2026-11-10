@@ -1,10 +1,10 @@
 # Ship of Tools frontend settings — TEMPLATE (copy to settings.toml and edit).
 #
 # The real settings.toml is machine/user-specific and NOT committed
-# (ADR 0030 §6): copy this next to it, or to ~/.config/sot/settings.toml.
+# (ADR 0030 §6): copy this next to it, or to the per-user config folder.
 #
-# Discovery order: $SOT_SETTINGS → the nearest .sot/settings.toml in the cwd
-# or an ancestor → $HOME/.config/sot/settings.toml → built-in defaults.
+# Discovery order: docs/src/ref/config.md, "Discovery order". A person's own
+# settings go in the per-user config folder.
 # Any value missing or out-of-range silently falls back to the default;
 # the chrome should never crash because the user wrote a malformed
 # settings file.
@@ -69,7 +69,7 @@ new_session_root = "/home/me/dev"
 
 # ---------------------------------------------------------------------------
 # [trust] — read by the DAEMON, and only from the user-level file
-# (~/.config/sot/settings.toml). A project-level copy of this file cannot
+# (the per-user settings.toml). A project-level copy of this file cannot
 # declare its own repo trusted, which is the point of the restriction.
 #
 # Every session root under this absolute prefix counts as already trusted, so

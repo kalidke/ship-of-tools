@@ -1,8 +1,9 @@
 # Configuration Files
 
-Five TOML files, each with one reader and none read by more than
-one parser: `settings.toml` (layout + terminal, read by the frontend,
-first file found wins), `hosts.toml` (the declared topology —
+Five TOML files, each with one reader but `settings.toml`, which has
+two: `settings.toml` (layout + terminal, read by the frontend, first
+file found wins; the daemon reads its `[trust]` table too, see
+[Install](../start/install.md)), `hosts.toml` (the declared topology —
 hub, daemon and frontend hosts, monitor targets — read ONLY by
 `sot_topology`/`sotd topology`; the frontend reads no config
 file for hosts at all, see below), `keybindings.toml` (chords, read by
@@ -22,13 +23,26 @@ chrome. `hosts.toml` has its own, simpler search order — see below.
 
 Frontend settings.
 
-### Discovery order
+### [Discovery order](@id settings-discovery-order)
 
 1. `$SOT_SETTINGS` — explicit path override.
 2. `.sot/settings.toml`, found by walking upward from the frontend's working
    directory (not the session's project).
-3. `$HOME/.config/sot/settings.toml` — per-user settings.
+3. `settings.toml` in the per-user config folder: `$XDG_CONFIG_HOME/sot`, else `$HOME/.config/sot` on Linux and
+   macOS, `%LOCALAPPDATA%\sot\config` on Windows (the folder the daemon reads too; the window ignores its
+   `[trust]` table). This is the place for a person's own settings.
 4. Built-in defaults.
+
+`keybindings.toml` is found the same way, by its own variable `$SOT_KEYBINDINGS`.
+
+A file kept in an old place is no longer read, with no message: one under `$HOME/.config/sot` while
+`XDG_CONFIG_HOME` is set, one in a clone's `.sot/` on a Windows computer that starts the window outside that clone,
+and one under `~/.config/sot` on a Windows window that had `HOME` set. Move it to the config folder, or set
+`$SOT_SETTINGS` (`$SOT_KEYBINDINGS`) to its path.
+
+The daemon reads the same file with a strict TOML parser, which refuses a value the window accepts, such as an
+unquoted `[chat] name`; the daemon then records no folder trust (open item `SETTINGS-PARSERS-DISAGREE` in
+`docs/defects.md`). Write every value as valid TOML.
 
 Any value that is missing or out of range silently falls back to its default —
 the chrome never crashes on a malformed settings file.
