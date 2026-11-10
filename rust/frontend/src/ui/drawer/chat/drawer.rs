@@ -13,6 +13,7 @@ use crate::ui::render::quad::ScreenRect;
 use super::compose::{Compose, ComposeText, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::row_channel::{RowChannel, Stand};
+use super::thread::Thread;
 use super::view::{ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
@@ -75,6 +76,8 @@ pub(in crate::ui) struct ChatDrawer {
     rows: RowChannel,
     flight: Flight,
     view: ChatView,
+    /// The open thread, which holds the channel's view meanwhile: the one switch for which collection the drawer shows.
+    thread: Option<Thread>,
     compose: Compose,
     /// How many compose rows the last frame drew at the drawer's foot: the records' body is that much shorter.
     foot: u16,
@@ -105,7 +108,8 @@ impl ChatDrawer {
         let step = self.rows.tick(wanted, now);
         let mut outs = Vec::new();
         if step.changed {
-            // Another row's records are not the reader's place.
+            // Another row's records are not the reader's place, and its thread is no one's.
+            self.close_thread();
             self.view.reset();
             outs = self.owner_outs(ChatOwner::stop);
         }
@@ -189,6 +193,8 @@ impl ChatDrawer {
         let host = self.rows.host();
         let words = match (self.rows.stand(), self.owner.fill()) {
             (Stand::Mapped, Some(Fill::Needed | Fill::Reading)) => Stand::Resolving.words(host),
+            // The older pages are the channel's: a thread shows none of them.
+            (Stand::Mapped, Some(Fill::Complete)) if self.thread.is_some() => String::new(),
             (Stand::Mapped, Some(Fill::Complete)) => self.owner.older_words().unwrap_or_default(),
             (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => "the hub's chat service is not running: its daemon log says why".into(),
             // A target refused for good is asked again only at a row or link change.
@@ -197,20 +203,25 @@ impl ChatDrawer {
             (stand, _) => stand.words(host),
         };
         let channel = self.owner.channel().map(|c| format!("{c} ")).unwrap_or_default();
-        format!(" chat · {channel}{}", if words.is_empty() { String::new() } else { format!("{words} ") })
+        let thread = if self.thread.is_some() { "· thread " } else { "" };
+        format!(" chat · {channel}{thread}{}", if words.is_empty() { String::new() } else { format!("{words} ") })
     }
 
-    /// Whether the drawer says `no messages`.
+    /// Whether the drawer says `no messages`: of the channel, so never over a thread.
     pub(in crate::ui) fn no_messages(&self) -> bool {
-        self.owner.no_messages()
+        self.thread.is_none() && self.owner.no_messages()
     }
 
     /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it.
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
         let now = chrono::Local::now();
-        self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
-        self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
-        self.owner.reaches(self.view.at_oldest);
+        // The thread's records are its own; the channel's reader keeps the place it left.
+        let records = self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records);
+        self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
+        if self.thread.is_none() {
+            self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
+            self.owner.reaches(self.view.at_oldest);
+        }
     }
 
     /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
@@ -228,8 +239,24 @@ impl ChatDrawer {
         self.view.latest();
     }
 
+    /// ArrowRight: opens the marked message's thread. The channel's view is parked in it, so its position and mark return at close.
+    /// Nothing while a thread is open or none is marked.
+    pub(in crate::ui) fn open_thread(&mut self) {
+        let (Some(mark), None) = (self.view.mark.clone(), &self.thread) else { return };
+        let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return };
+        self.thread = Some(Thread::new(parent.clone(), deleted, std::mem::take(&mut self.view)));
+    }
+
+    /// Escape: closes the open thread; the channel's view returns, its mark on the parent or, if that gave way, passed on.
+    pub(in crate::ui) fn close_thread(&mut self) -> bool {
+        let Some(t) = self.thread.take() else { return false };
+        self.view = t.parked;
+        true
+    }
+
     /// The chat is not shown: no record is prepared.
     pub(in crate::ui) fn hide(&mut self) {
+        self.close_thread();
         self.view.hide();
     }
 

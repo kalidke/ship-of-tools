@@ -407,6 +407,7 @@ fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
     for (action, want) in [
         (A::ScrollPageUp, Move::Scroll(true, Step::Page)), (A::ScrollPageDown, Move::Scroll(false, Step::Page)),
         (A::ChatLatest, Move::Latest), (A::ChatMarkOlder, Move::Mark(true)), (A::ChatMarkNewer, Move::Mark(false)),
+        (A::ChatThreadOpen, Move::Thread),
     ] {
         assert_eq!(chat_move(Some(action)), Some(want), "{action:?}");
     }

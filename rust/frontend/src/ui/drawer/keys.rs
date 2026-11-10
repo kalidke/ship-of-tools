@@ -16,7 +16,11 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
                 return Break(());
             }
             if action == Some(Action::ReturnNav) && !event.repeat {
-                state.set_focus(PaneFocus::NavTree);
+                // Escape closes an open thread first.
+                if !state.chat.close_thread() {
+                    state.set_focus(PaneFocus::NavTree);
+                }
+                state.window.request_redraw();
                 return Break(());
             }
             if drawer::chat::chat_key(state, key, label) {
