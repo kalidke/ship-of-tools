@@ -71,6 +71,11 @@ owned by `docs/CLAUDE.md`.
   check.
 - **LANE-BUILD-DELETE** [note] Delete `DaemonVersion.lane_build` and `sot-fe version`'s build words in the release after
   0.7.0; no protocol-3 reader passes hello any more.
+- **PAGE-REPLY-UNSAFE-CHAR-PARTIAL** [note] `page_reply::unsafe_char` (`rust/protocol/src/page_reply.rs`), which the
+  chat drawer also uses to clean names, does not list the deprecated format characters U+206A to U+206F, the soft
+  hyphen, the tag characters (U+E0001, U+E0020 to U+E007F, which can carry hidden text) or U+180E, while
+  `docs/integration.md`'s page reply row says it refuses "invisible formatting characters". None breaks a line. Found by
+  B5f's reviews, reading code; never seen.
 
 ## topology
 

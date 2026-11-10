@@ -1543,3 +1543,28 @@ A landing's record goes here, with its measured times; the package page holds on
   no product logic. About 70 test lines. Where the minutes went: the build (3 minutes); one review round of 8 minutes
   (blockers 0; the per-host match noted as CHAT-FLIGHT-HOST-UNPINNED); a rebase onto B5d (1 minute); one scoped gate of
   2 minutes.
+- The project chat's B5e, the Slack text grammar in wire, 2026-11-09: builder launched 18:17, main 18:43 (a8a1edc62), 26
+  minutes. One parser reads a record's text (`text_segments`: a bare `<` opens a token to the next `>` or the end, then
+  exactly three entities are decoded, `&amp;` last), and one escape and one bound make a post's (`escape_text`,
+  `post_text_fits`, 8 KiB escaped). About 38 product lines and 42 test lines. Where the minutes went: the build (4
+  minutes, 63 product lines); two review rounds (blockers 1, 0; 10 and 8 minutes); two fix rounds of 2 and 1 minutes,
+  the second in a worktree of its own after a brief of mine first pointed it at the worktree another builder held; three
+  scoped gates of 2 minutes. The first review's blocker was a record: the plan's premise that no release carries
+  `chat.post` was false (both 0.7.1 candidates do, at protocol 4, and send the text as given), so the version exception
+  was deleted and the hub's hello says instead whether its door escapes (built in B5l).
+- The project chat's B5l, chat's one door escapes every message text, 2026-11-09: builder launched 18:35, main 18:57
+  (0e2b0ffd3), 22 minutes. Every message text the chat crate sends is made Slack's by one function (bounded, then
+  escaped; empty or over the bound is `bad_request`, unsent), and a post's body carries exactly its keys, so no post
+  can mention or ping; `HelloRes.posts_plain_text`, defaulted and left out when false, says the hub's door escapes.
+  About 22 product lines and 96 test lines. Where the minutes went: the build (4 minutes); one review round of 12
+  minutes (blockers 0; two false records and the body's keys untested); one fix round of 2 minutes; a rebase onto B5e's
+  last commit (2 minutes); two scoped gates of 3 minutes.
+- The project chat's B5f, the literal projection, 2026-11-09: builder launched 18:30, main 19:04 (450fcfb51), 34
+  minutes, past the half hour, a failure by this page's standard. A record becomes kinded spans: a header (the name
+  cleaned of controls and wire's unsafe characters, the origin tag, the local time by checked integer math, raw past
+  range), the body through wire's grammar with markup its own kind and controls made U+FFFD, and meta lines. About 107
+  product lines and 120 test lines. Where the minutes went: the build (3 minutes); two review rounds (blockers 1, 0; 12
+  and 10 minutes: the first found a wire-legal stamp near chrono's limit that panicked the window east of UTC, and five
+  of six mutants alive); two fix rounds of 3 and 2 minutes; three rebases onto B5e's and B5l's commits (1 minute each);
+  four scoped gates of 2 minutes. The causes: a red test without the time format's edges or the meta rules, and the
+  rebases while B5e and B5l moved under it.
