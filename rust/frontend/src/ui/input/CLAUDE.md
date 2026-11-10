@@ -4,6 +4,10 @@ Mouse routing focuses the agent pane or flowed text preview before starting its 
 each pane clears that owner's selection; motion extends an active drag to the visible edge and release ends it.
 The preview uses ShapedPreview's buffer positions and rect, and is selectable only while flowed text is shown.
 
+Whether a chord that resolved to no action types its character is `chord_types_text` (`input/mod.rs`), the window's one
+rule: AltGr (Ctrl with Alt) types, a Ctrl chord and a macOS Command chord do not. The editor calls it; the REPL's draft
+keeps its own narrower rule (docs/defects.md: REPL-CTRL-CHORD-TYPES). Pinned by `typing_tests`.
+
 The drawer's tenant decides who its input reaches. `help::Pane::of_drawer` is the one exhaustive map from `DrawerContent`
 to the pane the help context and the dispatch scopes see, and `help::DrawerInput::of` is the one exhaustive decision
 (`Repl`, `Terminal`, `Inert`) that `drawer_pane_key`, the wheel and the line-scroll chords (`line_scroll_target`) match;

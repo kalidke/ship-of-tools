@@ -533,11 +533,9 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
             buf_changed = true;
         }
         Key::Character(s) => {
-            // Same invariant as the Julia input line
-            // and `key_to_pty_bytes`: a chord that
-            // resolved to no editor action must not
-            // insert text either.
-            let types = super::keys::chord_types_text(ctrl, alt, super_);
+            // The window's one typing rule (`input::chord_types_text`): a chord that resolved to no
+            // editor action inserts its text only where the rule says it types.
+            let types = crate::ui::input::chord_types_text(ctrl, alt, super_);
             for c in s.chars() {
                 if types && !c.is_control() {
                     edit.buf.insert_char(c);
