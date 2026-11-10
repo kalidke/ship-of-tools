@@ -564,3 +564,49 @@ fn identity_from_takes_the_longest_whole_component_prefix() {
     assert_eq!(identity_from(&v3, Path::new("/fixture-home"), "m"), "none@m");
     assert_eq!(identity_from(&v3, Path::new("/fixture-home"), ""), "none");
 }
+
+/// A comm folder whose inbox lock manager is this box's own, so readers take the shared lock.
+fn lines_home(inboxes: &[(&str, &str)]) -> (tempfile::TempDir, String) {
+    let d = tempfile::tempdir().unwrap();
+    let inbox = d.path().join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let own = lock_identity(&inbox);
+    std::fs::write(d.path().join(LOCK_RECORD), format!("{own}\n")).unwrap();
+    for (h, text) in inboxes {
+        std::fs::write(inbox.join(format!("{h}.jsonl")), text).unwrap();
+    }
+    (d, own)
+}
+
+fn line(from: &str, msg: &str) -> String {
+    format!("{{\"from\":\"{from}\",\"to\":\"x\",\"msg\":\"{msg}\"}}\n")
+}
+
+#[test]
+fn lines_from_reads_every_inbox_whole_and_only_the_senders_lines() {
+    let (a, b, c) = (
+        format!("{}{}not json\n{}", line("#chat", "a1"), line("h", "no"), line("#chat", "a2")),
+        format!("{}{}", line("h", "no"), line("#chat", "b1")),
+        format!("{}{}", line("#chat", "c1"), line("#chat", "cut").trim_end()),
+    );
+    let (d, _) = lines_home(&[("a", &a), ("b", &b), ("c", &c)]);
+    let got = lines_from(d.path(), "#chat", &sot_platform::host::env::Env::empty()).unwrap();
+    assert_eq!(got, ["a1", "a2", "b1", "c1"]);
+    let names = |p: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(p).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(d.path()), ["inbox", LOCK_RECORD], "no cursor, no registry entry");
+    assert!(names(&d.path().join("inbox")).iter().all(|n| n.ends_with(".jsonl") || n.ends_with(".lock")));
+}
+
+#[test]
+fn a_held_inbox_lock_fails_the_whole_read() {
+    let (d, own) = lines_home(&[("a", &line("#chat", "a1")), ("b", &line("#chat", "b1"))]);
+    let inbox = d.path().join("inbox");
+    let _held = take_lock(open_lock(&inbox, "b").unwrap(), &own, Duration::from_secs(5), false).ok().expect("the writer's lock");
+    let env = sot_platform::host::env::Env::empty().with(INBOX_READ_WAIT_ENV, "1");
+    let err = lines_from(d.path(), "#chat", &env).unwrap_err();
+    assert!(err.contains("@b"), "{err}");
+}

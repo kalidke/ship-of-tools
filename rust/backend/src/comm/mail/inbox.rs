@@ -274,6 +274,41 @@ pub fn appends_here(comm_home: &Path, own: &str) -> bool {
     own != "none" && !own.is_empty() && parse_record(&record).0 == own
 }
 
+/// The `msg` of every complete line from `from` in every `inbox/*.jsonl` under `comm_home`, in each file's order, one
+/// inbox read at a time as a poll reads it (the shared lock where this box appends itself). It moves no cursor and
+/// creates nothing. A held lock fails the whole read with that inbox's name, never a skip: a skipped inbox could let
+/// a line be filed twice. Any other lock fault is logged and that inbox is read unlocked.
+#[allow(dead_code, reason = "the chat's rebuild is its caller, not yet built")]
+pub fn lines_from(comm_home: &Path, from: &str, env: &sot_platform::host::env::Env) -> Result<Vec<String>, String> {
+    let dir = comm_home.join("inbox");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(Vec::new()) };
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl")).collect();
+    files.sort();
+    let (own, mut out) = (lock_identity(&dir), Vec::new());
+    let here = appends_here(comm_home, &own);
+    for path in files {
+        let handle = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let lock = read_lock(&dir, handle, &own, here, env);
+        match &lock {
+            ReadLock::Busy => return Err(format!("the inbox for @{handle} is being written")),
+            ReadLock::Fault(w) => tracing::warn!("{w}"),
+            _ => {}
+        }
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        drop(lock);
+        let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        for line in bytes[..end].split(|b| *b == b'\n') {
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+            if v["from"] == from {
+                if let Some(m) = v["msg"].as_str() {
+                    out.push(m.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `line` goes in whole or not at all ("filed" means kept): an unterminated
 /// tail (a writer that died mid-line, or NULs after a client crash) is cut
 /// back to the last newline first — everything past it was written by a
