@@ -1,12 +1,13 @@
 use std::time::{Duration, Instant};
 
-use sot_protocol::ops::ChatTarget;
+use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTarget};
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
 use super::drawer::ChatDrawer;
 use super::draft_edit;
 use super::row_channel_tests::{answer, mapped};
+use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::input::keybindings::Action;
 use crate::ui::ResultRowIdentity;
 
@@ -174,4 +175,79 @@ fn the_compose_rows_show_the_draft_wrapped_to_the_drawer_and_counted() {
     assert_eq!(shown(&d, false, 12, 3), ["> uvwxyz0123", "  45678", "to C1 · 2 lines not shown"]);
     assert_eq!(shown(&d, false, 12, 2), ["> 45678", "to C1 · 3 lines not shown"]);
     assert_eq!(shown(&d, false, 12, 1), ["to C1 · 4 lines not shown"]);
+}
+
+/// The one post `outs` holds.
+fn posted(outs: Vec<(String, OutgoingReq)>) -> ChatPostReq {
+    match outs.as_slice() {
+        [(_, OutgoingReq::ChatPost { req })] => req.clone(),
+        other => panic!("one chat.post expected, got {other:?}"),
+    }
+}
+
+fn reply(d: &mut ChatDrawer, req: &ChatPostReq, reply: ChatReply<ChatPostRes>, at: Instant) {
+    d.on_evt(&"a".to_string(), ChatEvt::Posted { req: req.clone(), reply }, at);
+}
+
+#[test]
+fn compose_retains_refused_limited_and_unknown_drafts() {
+    let r = row("R");
+    let (mut d, at) = watching();
+
+    // Nothing to post: no draft, a blank one, no name.
+    assert_eq!(d.send(Some(&r), "Ada", at).unwrap_err(), "nothing to post");
+    d.edit(Some(&r), Edit::Space).unwrap();
+    assert_eq!(d.send(Some(&r), "Ada", at).unwrap_err(), "nothing to post", "blank is nothing");
+    d.edit(Some(&r), Edit::Backspace).unwrap();
+    d.edit(Some(&r), Edit::Text("a < b")).unwrap();
+    assert!(d.send(Some(&r), " ", at).unwrap_err().contains("[chat] name"));
+    assert_eq!(d.send(None, "Ada", at).unwrap_err(), "no row to write for");
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+
+    // The plain draft goes once, as typed, to the channel it was begun in; the draft is frozen while the post waits.
+    let req = posted(d.send(Some(&r), "Ada", at).unwrap());
+    assert_eq!((req.text.as_str(), req.name.as_str(), req.target.channel.as_str(), req.thread.as_ref(), req.kind), ("a < b", "Ada", "C1", None, ChatPostKind::Person));
+    assert_eq!(d.draft(), Some(("a < b", "C1")), "kept while it waits");
+    assert_eq!(d.send(Some(&r), "Ada", at).unwrap_err(), "posting…", "no second post");
+    assert_eq!(d.edit(Some(&r), Edit::Text("x")), Err("posting…"));
+    assert_eq!(d.edit(Some(&r), Edit::Backspace), Err("posting…"));
+    assert_eq!(d.take_notice(), None);
+
+    // Refused bad_request: kept, and the status names the setting; Enter works again.
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::BadRequest }), at);
+    assert!(d.take_notice().unwrap().contains("[chat] name"));
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+    // Any other refusal: kept, with its reason.
+    let req = posted(d.send(Some(&r), "Ada", at).unwrap());
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), at);
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: the chat service is busy"));
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+
+    // Limited: kept, the words say about N s when assumed, and Enter is refused until the wait passes.
+    let req = posted(d.send(Some(&r), "Ada", at).unwrap());
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: true }), at);
+    assert!(d.take_notice().unwrap().contains("about 30 s"));
+    assert!(d.send(Some(&r), "Ada", at + Duration::from_secs(10)).unwrap_err().contains("wait 21 s"));
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+    let req = posted(d.send(Some(&r), "Ada", at + Duration::from_secs(31)).unwrap());
+
+    // Unknown: kept, and the words say to look before sending again.
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Unknown), at);
+    assert!(d.take_notice().unwrap().starts_with("may have been posted"));
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+
+    // A hub that does not post plain text: the window never wrote it, the draft is kept.
+    let req = posted(d.send(Some(&r), "Ada", at + Duration::from_secs(40)).unwrap());
+    d.on_evt(&"a".to_string(), ChatEvt::PostNotSent { req }, at);
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: the hub must be updated to post"));
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+
+    // A reply for a post that is not waiting changes nothing; the reply that proves the post clears that draft alone.
+    let req = posted(d.send(Some(&r), "Ada", at + Duration::from_secs(40)).unwrap());
+    let other = ChatPostReq { text: "other".into(), ..req.clone() };
+    reply(&mut d, &other, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap() }), at);
+    assert_eq!(d.draft(), Some(("a < b", "C1")));
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap() }), at);
+    assert_eq!(d.draft(), None);
+    assert_eq!(d.take_notice(), None);
 }

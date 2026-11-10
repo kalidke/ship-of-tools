@@ -69,6 +69,11 @@ impl Compose {
         Ok(())
     }
 
+    /// A post was made: the row's draft is done.
+    pub(super) fn clear(&mut self, row: &ResultRowIdentity) {
+        self.drafts.remove(row);
+    }
+
     /// Rows a listing retired lose their drafts.
     pub(super) fn retire(&mut self, rows: &[ResultRowIdentity]) {
         self.drafts.retain(|row, _| !rows.contains(row));

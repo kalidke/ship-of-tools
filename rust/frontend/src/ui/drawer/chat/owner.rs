@@ -45,7 +45,8 @@ pub(super) enum Fill {
 pub(super) enum PostShown {
     Posted(Ts),
     Refused(ChatCode),
-    Limited(u64),
+    /// The wait in seconds, and whether it is a guess.
+    Limited(u64, bool),
     Unknown,
     /// Refused before it was written: the connection's daemon does not post plain text (T20).
     Outdated,
@@ -131,6 +132,8 @@ pub(super) struct ChatOwner {
     watch: Option<Watch>,
     posting: Option<(HostKey, ChatPostReq)>,
     shown: Option<PostShown>,
+    /// When a `limited` post may be sent again.
+    wait_until: Option<Instant>,
 }
 
 impl ChatOwner {
@@ -185,17 +188,36 @@ impl ChatOwner {
 
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the post bar (B5m) sends"))]
     pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
         if self.posting.is_some() {
             return None;
         }
+        self.shown = None;
         if !self.connected.contains(&host) {
             self.shown = Some(PostShown::Refused(ChatCode::Unavailable));
             return None;
         }
         self.posting = Some((host.clone(), req.clone()));
         Some((host, OutgoingReq::ChatPost { req }))
+    }
+
+    /// Whether `req` is the post waiting for its reply on `host`.
+    pub(super) fn awaiting(&self, host: &HostKey, req: &ChatPostReq) -> bool {
+        self.posting.as_ref().is_some_and(|(h, r)| h == host && r == req)
+    }
+
+    /// The post waiting for its reply: its host and target row.
+    pub(super) fn posting_row(&self) -> Option<(&HostKey, &str)> {
+        self.posting.as_ref().map(|(h, r)| (h, r.target.row.as_str()))
+    }
+
+    pub(super) fn shown(&self) -> Option<&PostShown> {
+        self.shown.as_ref()
+    }
+
+    /// Whole seconds left of a `limited` wait.
+    pub(super) fn waiting(&self, now: Instant) -> Option<u64> {
+        self.wait_until.and_then(|t| t.checked_duration_since(now)).map(|d| d.as_secs() + 1)
     }
 
     /// A link came or went. Either way the watch starts over: a coming link clears the unsupported mark and begins a recovery,
@@ -236,7 +258,7 @@ impl ChatOwner {
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),
             ChatEvt::Posted { req, reply } => {
-                self.on_posted(host, &req, reply);
+                self.on_posted(host, &req, reply, now);
                 Vec::new()
             }
             ChatEvt::PostNotSent { req } => {
@@ -381,7 +403,7 @@ impl ChatOwner {
         self.drive(now)
     }
 
-    fn on_posted(&mut self, host: &HostKey, req: &ChatPostReq, reply: ChatReply<ChatPostRes>) {
+    fn on_posted(&mut self, host: &HostKey, req: &ChatPostReq, reply: ChatReply<ChatPostRes>, now: Instant) {
         if self.posting.take_if(|(h, r)| h == host && r == req).is_none() {
             return;
         }
@@ -389,7 +411,10 @@ impl ChatOwner {
         self.shown = Some(match reply {
             ChatReply::Done(ChatPostRes::Posted { ts }) => PostShown::Posted(ts),
             ChatReply::Done(ChatPostRes::Refused { code }) => PostShown::Refused(code),
-            ChatReply::Done(ChatPostRes::Limited { retry_after_secs, .. }) => PostShown::Limited(retry_after_secs),
+            ChatReply::Done(ChatPostRes::Limited { retry_after_secs, assumed }) => {
+                self.wait_until = Some(now + Duration::from_secs(retry_after_secs));
+                PostShown::Limited(retry_after_secs, assumed)
+            }
             ChatReply::Unsupported => PostShown::Refused(ChatCode::Unavailable),
             ChatReply::Done(ChatPostRes::Unknown) | ChatReply::Refused(_) => PostShown::Unknown,
         });

@@ -62,10 +62,22 @@ draft is longer, how many rows are not shown (a line wider than the drawer wraps
 (`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and the channel it goes to
 is the one shown when its first character was typed, even if you move the view afterwards. A draft stops at what a post
 can carry (8 KiB, counting `&`, `<` and `>` as five, four and four bytes); a key or paste past it is refused whole and
-the status line says so. Control characters other than tab are dropped. Nothing posts yet: `Enter` does nothing, and a
-draft is lost when its row goes or the window closes.
+the status line says so. Control characters other than tab are dropped. A draft is lost when its row goes or the window
+closes.
+
+## Posting
+
+`Enter` (`chat.send`) posts the draft once, to the channel its compose line names. The post carries the name in
+`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)); with no name set, nothing is sent and the status line
+says so. While the post waits the draft is frozen and the compose line shows `posting…`. The draft is cleared only by a
+reply that proves the post was made. Any other outcome keeps it, and the status line says why: `not posted` with the
+reason (a `bad request` names `[chat] name`), a wait when Slack is rate limiting (`Enter` is refused until it passes), or
+`may have been posted` when the answer was lost, in which case look at the channel before sending it again: a post is never
+sent a second time on its own. A typed `<` posts as itself, and a post cannot mention or ping anyone: `@here` and
+`<!channel>` arrive as plain text. A window posts only to a hub that is updated to escape text; to an older hub it says
+`the hub must be updated to post` and keeps the draft.
 
 ## Not yet
 
-Posting from the drawer, older pages of history, threads and sharing a selection with the agent are not built yet. Each
+Older pages of history, threads and sharing a selection with the agent are not built yet. Each
 arrives with its own change, and this page says so when it does.
