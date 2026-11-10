@@ -8,7 +8,9 @@ To read older messages, scroll up: PageUp and PageDown move a third of the drawe
 line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
 and a message deleted at the reader's place stays there as `(message deleted)`; the next one takes the place only when a new snapshot or the trim drops it. `End` (`chat.latest`) returns to the newest and
 follows it again, and scrolling down to the newest does the same. One case moves the view: deleting or shortening the newest message can bring the newest wholly into view,
-which returns the reader to following. The drawer keeps up to 256 messages and drops the oldest past that, never the message
+which returns the reader to following. Scrolling to the oldest message reads older pages from Slack, up to the 256 messages the drawer keeps; the title says when a
+refused or empty read stops it, when Slack's plan hides older messages and when the full drawer leaves older ones unshown. Messages
+older than the newest 100 are as read: an edit or delete of one does not reach the drawer. The drawer drops the oldest past 256, never the message
 the reader is on or a newer one, so a reader on the oldest message stays there while the drawer holds up to 276; past 276 the
 oldest go anyway and the view moves to the next message that is kept. Switching to another row's channel starts at its newest.
 

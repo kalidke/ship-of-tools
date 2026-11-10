@@ -189,7 +189,7 @@ impl ChatDrawer {
         let host = self.rows.host();
         let words = match (self.rows.stand(), self.owner.fill()) {
             (Stand::Mapped, Some(Fill::Needed | Fill::Reading)) => Stand::Resolving.words(host),
-            (Stand::Mapped, Some(Fill::Complete)) => String::new(),
+            (Stand::Mapped, Some(Fill::Complete)) => self.owner.older_words().unwrap_or_default(),
             (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => "the hub's chat service is not running: its daemon log says why".into(),
             // A target refused for good is asked again only at a row or link change.
             (Stand::Mapped, Some(Fill::Gap(Some(code)))) if dead(code) => code.text().into(),
@@ -210,6 +210,7 @@ impl ChatDrawer {
         let now = chrono::Local::now();
         self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
         self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
+        self.owner.reaches(self.view.at_oldest);
     }
 
     /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
@@ -283,6 +284,17 @@ impl ChatDrawer {
         self.owner.anchor_held()
     }
 
+    /// A test places the reader at the oldest record, as a frame's layout would.
+    #[cfg(test)]
+    pub(super) fn reach_oldest(&mut self, yes: bool) {
+        self.owner.reaches(yes);
+    }
+
+    #[cfg(test)]
+    pub(super) fn held(&self) -> usize {
+        self.owner.records().len()
+    }
+
     #[cfg(test)]
     pub(super) fn placed_text(&self) -> Vec<String> {
         self.view.placed_text()
@@ -303,9 +315,9 @@ impl ChatDrawer {
     /// of the set. The check compares reads by value, so an owner call must not give a read up and ask for an equal one in
     /// the same call.
     fn owner_outs(&mut self, f: impl FnOnce(&mut ChatOwner) -> Vec<Out>) -> Vec<Out> {
-        let before = self.owner.reading();
+        let before = [self.owner.reading(), self.owner.paging()];
         let outs = f(&mut self.owner);
-        if let Some((host, req)) = before.filter(|b| Some(b) != self.owner.reading().as_ref()) {
+        for (host, req) in before.into_iter().flatten().filter(|b| Some(b) != self.owner.reading().as_ref() && Some(b) != self.owner.paging().as_ref()) {
             self.flight.abandon(&host, &req);
         }
         if let Some(outcome) = self.owner.take_report() {

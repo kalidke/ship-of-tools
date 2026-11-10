@@ -702,7 +702,19 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   oldest go anyway: `a_parked_reader_holds_the_store_to_the_ceiling`). One pass (`bound`) trims after every change to the records,
   a snapshot's merge included (`every_change_is_bounded_and_the_overlap_is_at_or_before`). A snapshot with a `next` that reaches back to the oldest held record replaces the records from
   its own oldest up and keeps the older ones, tombstones included, lowering the floor if it reaches below it; one that does not reach clears them and its oldest is the floor;
-  one without `next` replaces all (`older_pages_preserve_the_anchor_within_the_bound`). A
+  one without `next` replaces all (`older_pages_preserve_the_anchor_within_the_bound`). Older pages: when the view reports the
+  oldest held record in the body (`ChatView::at_oldest`, handed over each frame), the floor is set and the store has room for a
+  page (at most `KEPT` less 21), the owner asks `chat.history {upper: before(floor), limit: 20}` in its own slot (`paging`, apart
+  from the snapshot's `reading`, and in the drawer's reads-in-flight set, which orphans it when the watch is replaced or a
+  snapshot clears the older records); the reply is taken only while it equals that slot and its upper bound is still `before(floor)`; as many of its newest top-level
+  records as fit in `KEPT` join below the floor, which falls to the oldest joined, or to the page's oldest while it had a `next`
+  (`older_pages_join_below_the_floor_without_a_hole`, `a_page_is_taken_only_below_the_floor_it_was_asked_for_and_within_the_bound`).
+  Paging is a condition: a refused page is asked again after `PACE` (30 s for `limited`; never for `stale_row`, `stale_mapping`
+  or `unmapped`, until a link or row change: `a_page_refused_for_good_is_asked_again_only_after_a_link_change`), a page cut at
+  Slack's plan ends it, and an empty page or snapshot that says more history exists keeps the floor and stops the paging until a
+  replacing snapshot (`an_empty_page_with_more_history_stops_the_paging_and_says_so`; the daemon's dropped events can make one,
+  and the window cannot move past it without a cursor). The title says which, or that the full store (`KEPT` held) hides older
+  messages (`a_full_store_a_refused_page_and_a_hidden_history_are_told`). A
   `floor` (set by a snapshot that is not the whole channel, raised by the trim) bounds what is added: a `put` of a record not held
   and older than it is not added, the daemon's own rule for an edit below its set (`the_owner_holds_only_what_the_daemon_tracks`,
   `a_put_below_the_floor_is_refused_after_deletes_too`); a whole channel has no floor, so its first message is held
