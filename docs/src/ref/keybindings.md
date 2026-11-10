@@ -188,7 +188,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `chat.latest` | `End` | Return the Chat drawer to the newest message and follow it. |
 | `chat.mark_older` | `ArrowUp` | Mark the next older message in the Chat drawer, or the newest when none is marked; the view moves to show it. |
 | `chat.mark_newer` | `ArrowDown` | Mark the next newer message in the Chat drawer, or the newest when none is marked; the view moves to show it. |
-| `chat.thread_open` | `ArrowRight` | Open the marked message's thread in the Chat drawer, showing its parent; Escape closes it. |
+| `chat.thread_open` | `ArrowRight` | Open the marked message's thread in the Chat drawer, showing its parent and replies; Escape closes it. |
 | `chat.send` | `Enter` | Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made. |
 | `chat.newline` | `Shift+Enter` | Continue the chat draft on another line. |
 | `preview.end` | `End` | Scroll to the end of the displayed text. |

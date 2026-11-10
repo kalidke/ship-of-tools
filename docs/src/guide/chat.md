@@ -6,7 +6,7 @@ a message that arrives takes the bottom line and lifts the rest. An empty channe
 
 ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view moves to show it; a scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
 
-ArrowRight (`chat.thread_open`) opens the marked message's thread, which shows the message alone for now (its replies are not read yet); Escape closes the thread and the mark is back on the message. Changing the row or hiding the drawer closes it too. A message typed while a thread is open is still posted to the channel (the line under the draft says where it goes); posting into a thread comes later.
+ArrowRight (`chat.thread_open`) opens the marked message's thread, a message with no replies included: the thread shows the message and its replies, oldest first, and Escape closes it, with the mark back on the message. Changing the row or hiding the drawer closes it too. A thread is read when it is opened, not watched: a reply made on the phone shows when the thread is opened again, and `N replies` on a message is not live either. Each open reads the thread in at most 8 Slack reads, plus the lookups of the authors' names. A thread shows up to 156 messages, the parent included: past that the newest replies are not shown, and the title says so. While a thread is open the channel's older messages give way to it, never its newest 100. A refused read is asked again after a few seconds (thirty when Slack rate limits), and the title says why. A message typed while a thread is open is still posted to the channel (the line under the draft says where it goes); posting into a thread comes later.
 
 To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
 line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
@@ -86,5 +86,5 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 
 ## Not yet
 
-Older pages of history, a thread's replies and sharing a selection with the agent are not built yet. Each
+Older pages of history and sharing a selection with the agent are not built yet. Each
 arrives with its own change, and this page says so when it does.

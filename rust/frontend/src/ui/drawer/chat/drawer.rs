@@ -115,13 +115,16 @@ impl ChatDrawer {
         }
         outs.extend(step.resolve);
         outs.extend(self.owner_outs(|o| o.tick(now)));
+        outs.extend(self.thread_outs(|t| t.tick(now)));
         (outs, step.settling)
     }
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
         self.flight.clear(host);
-        self.owner_outs(|o| o.on_connection(host, up, now))
+        let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
+        outs.extend(self.thread_outs(|t| t.on_connection(host, up)));
+        outs
     }
 
     pub(super) fn on_bus_lost(&mut self, host: &HostKey, bus: &str, now: Instant) -> Vec<Out> {
@@ -145,7 +148,11 @@ impl ChatDrawer {
             ChatEvt::Resolved { .. } => Vec::new(),
             ChatEvt::History { req, reply } => {
                 let orphan = self.flight.answered(host, &req);
-                let mut outs = if orphan { Vec::new() } else { self.owner_outs(|o| o.on_evt(host, ChatEvt::History { req, reply }, now)) };
+                let mut outs = match (orphan, req.thread.is_some()) {
+                    (true, _) => Vec::new(),
+                    (false, true) => self.thread_outs(|t| t.on_reply(host, &req, reply, now)),
+                    (false, false) => self.owner_outs(|o| o.on_evt(host, ChatEvt::History { req, reply }, now)),
+                };
                 let held = std::mem::take(&mut self.flight.held);
                 outs.extend(self.flight.send(held));
                 outs
@@ -203,8 +210,10 @@ impl ChatDrawer {
             (stand, _) => stand.words(host),
         };
         let channel = self.owner.channel().map(|c| format!("{c} ")).unwrap_or_default();
+        // Each phrase is its own: the thread's, then the link's and the watch's.
+        let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };
-        format!(" chat · {channel}{thread}{}", if words.is_empty() { String::new() } else { format!("{words} ") })
+        format!(" chat · {channel}{thread}{}", if phrases.is_empty() { String::new() } else { format!("{} ", phrases.join(" · ")) })
     }
 
     /// Whether the drawer says `no messages`: of the channel, so never over a thread.
@@ -239,21 +248,42 @@ impl ChatDrawer {
         self.view.latest();
     }
 
-    /// ArrowRight: opens the marked message's thread. The channel's view is parked in it, so its position and mark return at close.
-    /// Nothing while a thread is open or none is marked.
-    pub(in crate::ui) fn open_thread(&mut self) {
-        let (Some(mark), None) = (self.view.mark.clone(), &self.thread) else { return };
-        let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return };
-        self.thread = Some(Thread::new(parent.clone(), deleted, std::mem::take(&mut self.view)));
-        // The reader may be at the oldest record: no channel page is asked for while the thread is shown.
+    /// ArrowRight: opens the marked message's thread. The channel's view is parked in it, so its position and mark return at close;
+    /// the owner holds no anchor and asks for no page meanwhile. Nothing while a thread is open or none is marked.
+    pub(in crate::ui) fn open_thread(&mut self) -> Vec<Out> {
+        let Some(row) = self.rows.row().cloned() else { return Vec::new() };
+        let (Some(mark), Some(target), None) = (self.view.mark.clone(), self.watch_for(&row), &self.thread) else { return Vec::new() };
+        let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return Vec::new() };
+        self.thread = Some(Thread::new(row.host, target.clone(), parent.clone(), deleted, std::mem::take(&mut self.view)));
+        self.owner.anchored(None);
         self.owner.reaches(false);
+        self.thread_outs(Thread::start)
     }
 
     /// Escape: closes the open thread; the channel's view returns, its mark on the parent or, if that gave way, passed on.
     pub(in crate::ui) fn close_thread(&mut self) -> bool {
         let Some(t) = self.thread.take() else { return false };
+        t.reading.iter().for_each(|req| self.flight.abandon(t.host(), req));
         self.view = t.parked;
+        self.owner.reserve(0);
         true
+    }
+
+    /// Runs `f` on the open thread, tells the owner how much of the bound it holds, and sends its reads through the set.
+    fn thread_outs(&mut self, f: impl FnOnce(&mut Thread) -> Vec<Out>) -> Vec<Out> {
+        let before = self.thread.as_ref().and_then(|t| t.reading.clone().map(|r| (t.host().clone(), r)));
+        let outs = self.thread.as_mut().map(f).unwrap_or_default();
+        // A read the thread dropped (a link change) is given up, so one held behind it is cancelled, as `owner_outs` does.
+        if let Some((host, req)) = before.filter(|(_, r)| self.thread.as_ref().is_none_or(|t| t.reading.as_ref() != Some(r))) {
+            self.flight.abandon(&host, &req);
+        }
+        self.owner.reserve(self.thread.as_ref().map_or(0, Thread::len));
+        self.flight.send(outs)
+    }
+
+    #[cfg(test)]
+    pub(super) fn thread_len(&self) -> usize {
+        self.thread.as_ref().map_or(0, Thread::len)
     }
 
     /// The chat is not shown: no record is prepared.
@@ -355,7 +385,12 @@ impl ChatDrawer {
     /// the same call.
     fn owner_outs(&mut self, f: impl FnOnce(&mut ChatOwner) -> Vec<Out>) -> Vec<Out> {
         let before = [self.owner.reading(), self.owner.paging()];
+        let watched = self.owner.target().cloned();
         let outs = f(&mut self.owner);
+        // A thread lives only under its channel's watch: a watch replaced by another channel's or stopped closes it.
+        if self.owner.target() != watched.as_ref() {
+            self.close_thread();
+        }
         for (host, req) in before.into_iter().flatten().filter(|b| Some(b) != self.owner.reading().as_ref() && Some(b) != self.owner.paging().as_ref()) {
             self.flight.abandon(&host, &req);
         }
