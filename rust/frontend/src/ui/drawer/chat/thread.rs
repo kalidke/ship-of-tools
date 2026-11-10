@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use sot_protocol::chat::ChatRecord;
+use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatTarget, MAX_PAGE};
 
 use super::owner::{ts_order, Out, LIMITED_PACE, PACE};
@@ -41,6 +41,15 @@ impl Thread {
 
     pub fn host(&self) -> &HostKey {
         &self.host
+    }
+
+    /// Whether this is the thread `parent` of `target` on `host`.
+    pub fn is(&self, host: &HostKey, target: &ChatTarget, parent: &Ts) -> bool {
+        self.host == *host && self.target == *target && self.parent.ts == *parent
+    }
+
+    pub fn parent_ts(&self) -> &Ts {
+        &self.parent.ts
     }
 
     /// The walk from its first page, with nothing held.

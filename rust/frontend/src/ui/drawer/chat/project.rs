@@ -91,7 +91,7 @@ fn literal(s: &str) -> String {
 
 /// `HH:MM` today, `YYYY-MM-DD HH:MM` earlier, the stamp's own text when its seconds, moved by the offset, are not a
 /// time. The offset is added as integers, so no stamp reaches chrono's zone arithmetic.
-fn when(ts: &str, now: i64, offset: FixedOffset) -> String {
+pub(super) fn when(ts: &str, now: i64, offset: FixedOffset) -> String {
     let local = |secs: i64| {
         secs.checked_add(i64::from(offset.local_minus_utc())).and_then(|l| DateTime::from_timestamp(l, 0)).map(|t| t.naive_utc())
     };

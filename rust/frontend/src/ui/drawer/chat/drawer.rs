@@ -160,12 +160,16 @@ impl ChatDrawer {
             }
             ChatEvt::Posted { req, reply } => {
                 let mut made = None;
-                let outs = self.owner_outs(|o| {
+                let mut outs = self.owner_outs(|o| {
                     made = o.on_posted(host, &req, reply, now);
                     Vec::new()
                 });
                 if let Some(row) = made {
                     self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
+                    // A post into the open thread: the thread is read again whole.
+                    if req.thread.as_ref().is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, &req.target, p))) {
+                        outs.extend(self.thread_outs(Thread::start));
+                    }
                 }
                 outs
             }
@@ -173,7 +177,7 @@ impl ChatDrawer {
         }
     }
 
-    /// Enter: posts `row`'s draft once, to the channel it was begun in, under `name` (`[chat] name`, `None` when unset or
+    /// Enter: posts `row`'s draft once, to the channel and thread it was begun in, under `name` (`[chat] name`, `None` when unset or
     /// blank). It needs a draft with something in it and the name set, no post waiting and no `limited` wait running; the
     /// draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
@@ -186,7 +190,7 @@ impl ChatDrawer {
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }
-        let req = ChatPostReq { target: draft.dest.clone(), thread: None, kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
+        let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
     }
@@ -312,7 +316,7 @@ impl ChatDrawer {
             return Err("posting…");
         }
         let dest = self.watch_for(row).cloned();
-        self.compose.edit(row, dest.as_ref(), edit)
+        self.compose.edit(row, dest.as_ref(), self.thread.as_ref().map(Thread::parent_ts), edit)
     }
 
     /// Rows a listing retired lose their drafts.
@@ -320,12 +324,19 @@ impl ChatDrawer {
         self.compose.retire(rows);
     }
 
-    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and its channel,
-    /// else the watched channel.
+    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
+    /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let draft = self.rows.row().and_then(|r| self.compose.draft(r));
         let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
-        Some(ComposeText::of(draft.map(|d| d.text.as_str()), dest.channel.as_str(), focused))
+        let to = match draft.and_then(|d| d.thread.as_ref()) {
+            Some(p) => {
+                let now = chrono::Local::now();
+                format!("reply in thread of {}", super::project::when(p.as_str(), now.timestamp(), *now.offset()))
+            }
+            None => format!("to {}", dest.channel.as_str()),
+        };
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
     }
 
     pub(in crate::ui) fn set_foot(&mut self, rows: u16) {
