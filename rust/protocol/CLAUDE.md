@@ -51,7 +51,7 @@ name is in this crate's one op table.
    classification (the Julia twin is exercised against the same corpus); page reply text (`page_reply::line` and
    `check_line`). Reply text trims ASCII spaces, is nonempty and at most `MAX_TEXT` (512) UTF-8 bytes, and refuses
    controls and the listed invisible formatting characters, naming the first code point. Every canonical line begins
-   with the one `MARK`, `[sot-page] `. `check_line` accepts exactly a canonical marked line, without rewriting it.
+   with the one `MARK`, `[sot-page] `. `check_line` accepts exactly a canonical marked line, without rewriting it. The chat text grammar (`chat::{text_segments, escape_text, post_text_fits}`): a bare `<` opens a token (`Markup`) closed by the next `>` or the end of the text, so a token a byte cut split is still markup; everything else is `Text`; then, per segment and in one pass, exactly `&lt;`, `&gt;` and `&amp;` are decoded and no segment is empty. `escape_text` is its inverse, so an escaped string parses to `Text` only and its segments join back to the original plain text, and `post_text_fits` holds a post's escaped form to `MAX_TEXT` (8 KiB).
 
 7. **A frame write to a connection ends in an error rather than parking.** `reply::write_frame_to` fails after 10 s plus 1 s
    per MiB of blob (`write_frame_within` takes the bound), so a peer that stops draining cannot hold its writer; an
@@ -88,7 +88,7 @@ name is in this crate's one op table.
 
 11. **One shared chat record, with a validated timestamp.** `chat::ChatRecord` (`chat.rs`): `workspace` and `channel`
     (part of a message's identity), `ts` and `thread_ts`, `author {id, name}`, `origin` (`member`, `drawer`, `row`,
-    `bot`), `text`, `reply_count`, `files` (`{id, name, mime, bytes, thumbnail}`, no URL), and the defaulted
+    `bot`), `text` (Slack's markup as sent, read through the chat text grammar of guarantee 6), `reply_count`, `files` (`{id, name, mime, bytes, thumbnail}`, no URL), and the defaulted
     `truncated`, `latest_reply`, `limited`, `omitted` and `files_omitted`, left out of the JSON when false, zero or
     absent. `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
     refuse any other number of fraction digits, because Slack answers such a bound with an empty page and no error.
@@ -102,7 +102,7 @@ name is in this crate's one op table.
 
 12. **Every chat payload is typed and bounded at decode, and every chat op is in the one table.** `ops/chat.rs`: requests
     `chat.resolve {row}`, `chat.watch {target}`, `chat.unwatch {target}`, `chat.history {target, thread?, after?, upper?, limit,
-    cursor?}`, `chat.post {target, thread?, kind, name, text}`, each with a reply, and the events `chat.changed` (puts and deletes in
+    cursor?}`, `chat.post {target, thread?, kind, name, text}` (`text` is plain text, what the person typed; chat's door will escape it, unbuilt until its own landing, so today the door sends the text as given), each with a reply, and the events `chat.changed` (puts and deletes in
     a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
@@ -178,9 +178,9 @@ name is in this crate's one op table.
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
-annotation, physical-scale, page-URL, video-suffix and page-reply grammars; the daemon's frame writes and byte pipe (`reply.rs`:
+annotation, physical-scale, page-URL, video-suffix, page-reply and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
 here and never from the server. Owns no runtime state.
 
@@ -192,12 +192,12 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 `PROTOCOL_VERSION`, `op::ALL`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
 `is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
-`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`; the shell twin `sot_hello_frame`
+`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
 ## Does not
 Decide policy from the version string (only `is_release_build`). Admit a connection (server's hello gate). Own a
-connection's life (the pipe takes the halves it is given for the length of one call), a child or a socket. Interpret a payload's meaning (the op's handler does).
+connection's life (the pipe takes the halves it is given for the length of one call), a child or a socket. Interpret a payload's meaning beyond the grammars it owns (the op's handler does).
 
 ## Platforms
 Same on all three; the blocking codec is the one the ssh bridge and shell wrappers use.
@@ -210,7 +210,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; `ops/pages_tests.rs`: `docs_open_grows_by_a_defaulted_scope_and_old_payloads_grant_none`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
 | 4 | lossy lines | `child_lines_tests.rs`: `every_byte_a_child_writes_reads_as_a_line` |
 | 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
-| 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked` |
+| 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked`, `chat_tests.rs::slack_text_decodes_entities_once_delimited_and_escape_inverts_it` |
 | 7 | a bounded frame write | `reply_tests.rs`: `write_frame_within_times_out_on_stuck_peer`, `write_timeout_is_not_confused_with_an_oversize_envelope`, `oversize_envelope_stays_downcastable_through_write_frame_within`, `write_frame_within_succeeds_on_healthy_peer`, `write_deadline_scales_with_blob_size` |
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
