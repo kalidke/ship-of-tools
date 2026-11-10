@@ -33,6 +33,9 @@ pub(super) struct SelfFileEnvGuard {
     claude_config_dir: Option<std::ffi::OsString>,
     xdg_config_home: Option<std::ffi::OsString>,
     localappdata: Option<std::ffi::OsString>,
+    // The comm folder every test here starts with (one that sets `SOT_COMM_HOME` itself replaces it), so none reaches
+    // the process environment's.
+    _comm: tempfile::TempDir,
 }
 
 impl Drop for SelfFileEnvGuard {
@@ -58,7 +61,9 @@ pub(super) fn self_file_env_guarded() -> SelfFileEnvGuard {
     let serial = crate::paths::ENV_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    SelfFileEnvGuard {
+    let comm = tempfile::tempdir().expect("comm tempdir");
+    let guard = SelfFileEnvGuard {
+        _comm: comm,
         home: std::env::var_os("HOME"),
         userprofile: std::env::var_os("USERPROFILE"),
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
@@ -67,7 +72,9 @@ pub(super) fn self_file_env_guarded() -> SelfFileEnvGuard {
         xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
         localappdata: std::env::var_os("LOCALAPPDATA"),
         _serial: serial,
-    }
+    };
+    std::env::set_var("SOT_COMM_HOME", guard._comm.path().join("comm"));
+    guard
 }
 
 /// Two separate facts about the machine running the test: its token can make a symlink, and it can cross a junction

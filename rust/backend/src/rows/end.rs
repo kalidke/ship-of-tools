@@ -162,7 +162,7 @@ async fn end_row(
     let prune = tokio::task::spawn_blocking(move || {
         crate::comm::registry::registry::remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     });
-    if tokio::time::timeout_at(deadline, prune).await.is_err() {
+    if tokio::time::timeout_at(deadline, prune).await.map(crate::comm::joined).is_err() {
         tracing::warn!(workspace_id = %ws.workspace_id, "{reason}: the comm prune was still running at the deadline; not ended");
         return Ended::Not;
     }

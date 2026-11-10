@@ -78,16 +78,18 @@ fn agent_exec_argv_none_is_refused_it_has_no_shared_recipe() {
     // shell) but shares no `--permission-mode`/skill recipe shape
     // with "claude" -- `agent-exec` refuses it regardless of whether
     // PATH/HOME would resolve anything, so neither is touched here.
-    let err = agent_exec_argv("none", &[]).unwrap_err();
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
+    let err = agent_exec_argv_in(&env, "none", &[]).unwrap_err();
     assert!(err.contains("none"), "got: {err}");
 }
 
 #[test]
 #[cfg(unix)]
 fn agent_exec_argv_unknown_kind_prints_agent_argvs_own_error() {
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
     assert_eq!(
-        agent_exec_argv("bogus", &[]).unwrap_err(),
-        agent_argv("bogus", None).unwrap_err()
+        agent_exec_argv_in(&env, "bogus", &[]).unwrap_err(),
+        agent_argv_in(&env, "bogus", None).unwrap_err()
     );
 }
 
@@ -192,7 +194,8 @@ fn claude_recipe_emits_our_settings_unless_the_caller_brought_one() {
 
 #[test]
 fn agent_argv_rejects_unsupported_kinds() {
-    assert!(agent_argv("bogus", None).is_err());
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
+    assert!(agent_argv_in(&env, "bogus", None).is_err());
 }
 
 /// `agent_argv("codex")` over a `PATH` and `HOME` of the test's own.

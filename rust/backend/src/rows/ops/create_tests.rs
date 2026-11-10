@@ -209,16 +209,17 @@ mod refusal_tests {
     }
 
     /// Pins the three folders the config and state roots resolve under (the two XDG ones, and the Windows local-app-data
-    /// one) to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
+    /// one), and the comm folder, to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
     pub(super) struct EnvPinned {
-        _guards: [crate::paths::EnvGuard; 3],
+        _guards: [crate::paths::EnvGuard; 4],
         _serial: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvPinned {
         pub(super) fn new(dir: &Path) -> Self {
             let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA"].map(crate::paths::EnvGuard::capture);
+            let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA", "SOT_COMM_HOME"].map(crate::paths::EnvGuard::capture);
+            std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
             std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
             std::env::set_var("XDG_STATE_HOME", dir.join("state"));
             std::env::set_var("LOCALAPPDATA", dir.join("local"));

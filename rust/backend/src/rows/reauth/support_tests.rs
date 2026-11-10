@@ -18,6 +18,9 @@ pub(super) struct EnvGuard {
     xdg_config_home: Option<std::ffi::OsString>,
     xdg_state_home: Option<std::ffi::OsString>,
     localappdata: Option<std::ffi::OsString>,
+    sot_comm_home: Option<std::ffi::OsString>,
+    // The comm folder every reauth test starts with, so none reaches the process environment's.
+    _comm: tempfile::TempDir,
 }
 
 impl Drop for EnvGuard {
@@ -28,6 +31,7 @@ impl Drop for EnvGuard {
             ("XDG_CONFIG_HOME", &self.xdg_config_home),
             ("XDG_STATE_HOME", &self.xdg_state_home),
             ("LOCALAPPDATA", &self.localappdata),
+            ("SOT_COMM_HOME", &self.sot_comm_home),
         ] {
             match val {
                 Some(v) => std::env::set_var(key, v),
@@ -39,14 +43,19 @@ impl Drop for EnvGuard {
 
 pub(super) fn env_guarded() -> EnvGuard {
     let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    EnvGuard {
+    let comm = tempfile::tempdir().expect("comm tempdir");
+    let guard = EnvGuard {
         _serial: serial,
+        sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
+        _comm: comm,
         home: std::env::var_os("HOME"),
         userprofile: std::env::var_os("USERPROFILE"),
         xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
         xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
         localappdata: std::env::var_os("LOCALAPPDATA"),
-    }
+    };
+    std::env::set_var("SOT_COMM_HOME", guard._comm.path().join("comm"));
+    guard
 }
 
 /// A home with a default `.claude` folder and one `.claude-auth`

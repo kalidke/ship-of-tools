@@ -35,6 +35,14 @@ pub(crate) fn sot_comm_home() -> Option<PathBuf> {
 
 /// [`sot_comm_home`] reading the three variables from `env`.
 pub(crate) fn sot_comm_home_in(env: &Env) -> Option<PathBuf> {
+    let home = comm_home_rule(env)?;
+    #[cfg(test)]
+    assert_scratch(&home);
+    Some(home)
+}
+
+/// The resolution rule alone, with no test guard: what the rule's own tests read.
+fn comm_home_rule(env: &Env) -> Option<PathBuf> {
     if let Some(v) = env.get_nonempty("SOT_COMM_HOME") {
         return Some(PathBuf::from(v));
     }
@@ -42,6 +50,31 @@ pub(crate) fn sot_comm_home_in(env: &Env) -> Option<PathBuf> {
         return Some(PathBuf::from(h).join(".sot-comm"));
     }
     env.get_nonempty("USERPROFILE").map(|u| PathBuf::from(u).join(".sot-comm"))
+}
+
+/// Under test, the one resolver refuses a comm folder that is not beneath the temporary folder, so a test that
+/// forgot to isolate its comm home fails by name instead of pruning or locking a live folder.
+#[cfg(test)]
+pub(crate) fn assert_scratch(home: &std::path::Path) {
+    let abs = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let tmp = std::env::temp_dir();
+    let beneath = |t: &std::path::Path| abs(home).starts_with(abs(t));
+    let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+    assert!(
+        beneath(&tmp) || real(&tmp).is_some_and(|t| beneath(&t)),
+        "a test resolved the comm folder {} outside the temporary folder: it must set SOT_COMM_HOME to a folder it made",
+        home.display()
+    );
+}
+
+/// A blocking task's join result, with a panic in the task surfaced under test: the callers that prune the registry
+/// treat a failed task as a prune that found nothing, which would swallow the guard above.
+pub(crate) fn joined<T>(r: Result<T, tokio::task::JoinError>) -> Result<T, tokio::task::JoinError> {
+    #[cfg(test)]
+    if let Err(e) = r {
+        return if e.is_panic() { std::panic::resume_unwind(e.into_panic()) } else { Err(e) };
+    }
+    r
 }
 
 #[cfg(test)]

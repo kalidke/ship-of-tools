@@ -226,8 +226,8 @@ pub(crate) async fn end_default_row_run(
     let comm_removed = tokio::task::spawn_blocking(move || {
         remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
-    .await
-    .unwrap_or_default();
+    .await;
+    let comm_removed = crate::comm::joined(comm_removed).unwrap_or_default();
     if !comm_removed.is_empty() {
         tracing::info!(
             removed = ?comm_removed,
