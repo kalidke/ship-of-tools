@@ -1579,3 +1579,13 @@ A landing's record goes here, with its measured times; the package page holds on
   2 minutes; three scoped gates of 2 minutes. The causes: a red test of three placements that pinned none of the
   view's other rules, and a fix round whose mutant runs stacked when a restore failed, so a reviewer reran them one at
   a time.
+- The project chat's B5h, every outcome has a state, a next action and words, 2026-11-09: builder launched 19:43, main
+  20:27 (c0eff1431), 44 minutes, past the half hour, a failure by this page's standard. The Chat drawer's title says
+  each outcome of the shown row's channel (unlisted, offline, reading, unmapped, no configuration, not the hub, the row
+  gone, a refusal, no chat, a gap and its reason, a watch refused for good) and when it is asked again; a refusal
+  code's words have one owner, wire's `ChatCode::text()`, which the daemon's refusal and the window both use. About 100
+  product lines and 175 test lines. Where the minutes went: the build (6 minutes, with the last table row unbuilt);
+  two review rounds (blockers 1, 0; 13 and 9 minutes: the first found that row unbuilt and its test pinning the wrong
+  words, codes shown in Rust's spelling and six rules unpinned); two fix rounds of 8 and 2 minutes, the first moving the
+  daemon's per-code text into wire; three scoped gates of 3 minutes. The causes: a builder that left a table row
+  unbuilt and wrote its test to the words it had, and a fix that crossed three crates.
