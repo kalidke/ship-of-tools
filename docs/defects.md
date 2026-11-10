@@ -796,7 +796,7 @@ owned by `docs/CLAUDE.md`.
   the rule for a record no longer held (`rust/frontend/src/ui/drawer/chat/drawer.rs`, `ChatDrawer::tick`). It predates
   B5o for the position. Found by B5o's first review, reading code; never seen.
 - **CHAT-THREAD-REREAD-CLEARS** [note] A thread read again (after the link returns, and after the person's own post
-  once posting into a thread lands) clears its replies and shows the parent alone until the first page returns, so a
+  in the open thread) clears its replies and shows the parent alone until the first page returns, so a
   reader inside the thread loses their place (`rust/frontend/src/ui/drawer/chat/thread.rs`). Merging the new walk into
   the held replies by time, and dropping the ones it did not return at its end, would keep them. A limit taken in
   B5p; never seen.

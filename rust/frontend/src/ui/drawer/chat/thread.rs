@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use sot_protocol::chat::ChatRecord;
+use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatTarget, MAX_PAGE};
 
 use super::owner::{ts_order, Out, LIMITED_PACE, PACE};
@@ -43,6 +43,15 @@ impl Thread {
         &self.host
     }
 
+    /// Whether this is the Slack thread `parent` of `target`'s channel on `host`, whatever row asked.
+    pub fn is(&self, host: &HostKey, target: &ChatTarget, parent: &Ts) -> bool {
+        self.host == *host && self.target.workspace == target.workspace && self.target.channel == target.channel && self.parent.ts == *parent
+    }
+
+    pub fn parent_ts(&self) -> &Ts {
+        &self.parent.ts
+    }
+
     /// The walk from its first page, with nothing held.
     pub fn start(&mut self) -> Vec<Out> {
         (self.replies, self.cut, self.refused, self.unsupported) = (Vec::new(), false, None, false);
@@ -56,13 +65,13 @@ impl Thread {
         vec![(self.host.clone(), OutgoingReq::ChatHistory { req })]
     }
 
-    /// The link ended: no read is in flight. Its return starts the walk again.
-    pub fn on_connection(&mut self, host: &HostKey, up: bool) -> Vec<Out> {
-        if *host != self.host {
-            return Vec::new();
+    /// The link ended: no read is in flight. Whether the link is this thread's; its return restarts the walk (the drawer's).
+    pub fn on_connection(&mut self, host: &HostKey) -> bool {
+        let ours = *host == self.host;
+        if ours {
+            self.reading = None;
         }
-        self.reading = None;
-        if up { self.start() } else { Vec::new() }
+        ours
     }
 
     /// A reply, taken only while it equals the read in flight (replies are matched by value). Only this parent's replies
