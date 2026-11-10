@@ -43,6 +43,12 @@ A message is shown as its poster typed it. Slack's markup, such as a mention or 
 its own color and is not rendered: a link is not clickable and a mention is not replaced by a name. Text that looks like
 a header inside a message stays body text.
 
+## Deleted messages
+
+A message deleted while the drawer watches stays in its place, with its author and time, and reads `(message deleted)`.
+It counts toward the 100 messages the drawer keeps. A new snapshot (the window reads one after any loss of the chat feed) drops it, since the snapshot
+holds only what Slack still has.
+
 ## When Slack is unreachable
 
 The title does not show the state of the Slack connection. A socket outage shows only when it costs a snapshot, as

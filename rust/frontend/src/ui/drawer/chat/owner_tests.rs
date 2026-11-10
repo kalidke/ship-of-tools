@@ -251,7 +251,10 @@ fn changed_events_put_and_delete_the_watched_channels_records() {
     o.on_evt(&host(), changed("C2", &["3.000001"], &["1.000001"]), now);
     assert_eq!(o.watch.as_ref().unwrap().records.len(), 2, "C2's event changed nothing");
     o.on_evt(&host(), changed("C1", &[], &["1.000001"]), now);
-    assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("2.000001")]);
+    let w = o.watch.as_ref().unwrap();
+    assert_eq!(w.records.len(), 2, "the delete leaves a tombstone");
+    assert!(o.is_deleted(&ts("1.000001")) && !o.is_deleted(&ts("2.000001")));
+    assert!(w.records[&ts("1.000001")].text.is_empty() && w.records[&ts("2.000001")].text == "hi");
 }
 
 fn stopped() -> ChatEvt {
@@ -290,7 +293,8 @@ fn a_change_during_the_read_is_kept_over_the_older_snapshot() {
     o.on_evt(&host(), ChatEvt::History { req, reply: page(&["1.000001", "2.000001"], None) }, t0 + PACE);
     let mut held: Vec<_> = o.watch.as_ref().unwrap().records.keys().cloned().collect();
     held.sort_by_key(|t| String::from(t.clone()));
-    assert_eq!(held, [ts("2.000001"), ts("3.000001")]);
+    assert_eq!(held, [ts("1.000001"), ts("2.000001"), ts("3.000001")], "1 is a tombstone");
+    assert!(o.is_deleted(&ts("1.000001")));
     assert!(o.watch.as_ref().unwrap().overlay.is_empty());
 }
 
@@ -595,9 +599,9 @@ fn the_owner_keeps_at_most_the_daemons_newest_records() {
     assert!(o.watch.as_ref().unwrap().records.contains_key(&ts("199.000001")));
 }
 
-/// Deletes that empty the page leave the floor of the snapshot: an older record the daemon holds is not added alone.
+/// Deleted records stay held, so the floor of the snapshot stands: an older record the daemon holds is not added alone.
 #[test]
-fn deletes_emptying_the_page_do_not_lower_the_floor() {
+fn a_put_below_the_floor_is_refused_after_deletes_too() {
     let t0 = Instant::now();
     let mut o = complete(t0);
     o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
@@ -606,9 +610,60 @@ fn deletes_emptying_the_page_do_not_lower_the_floor() {
     o.on_evt(&host(), ChatEvt::History { req, reply }, t0 + PACE);
     let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["20.000001", "30.000001"] });
     o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), t0 + PACE);
-    assert_eq!(held(&o), 0);
+    assert_eq!(held(&o), 2, "two tombstones");
     o.on_evt(&host(), changed(vec![record_with("10.000001", "10.000001", "C1", "older")]), t0 + PACE);
-    assert_eq!(held(&o), 0, "below the floor");
+    assert_eq!(held(&o), 2, "below the floor");
+}
+
+/// A delete keeps the record's place, author and time and drops its text; the tombstone counts against the bound, shows as
+/// `(message deleted)`, and a replacing snapshot drops it. A delete of a record not held adds nothing.
+#[test]
+fn a_delete_leaves_a_tombstone_in_place() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), changed(vec![record_with("5.000001", "5.000001", "C1", "secret")]), t0);
+    let gone = |ts: &str| ChatEvt::Changed(serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": [ts] })).unwrap());
+    o.on_evt(&host(), gone("9.000001"), t0);
+    assert_eq!(held(&o), 1, "a delete of a record not held adds nothing");
+    o.on_evt(&host(), gone("5.000001"), t0);
+    assert_eq!(held(&o), 1, "the record stays");
+    let r = o.records()[0].clone();
+    assert_eq!((r.ts.clone(), r.author.name.as_str()), (ts("5.000001"), "Ada"), "identity, author and time kept");
+    assert!(r.text.is_empty(), "text dropped");
+    assert!(o.is_deleted(&ts("5.000001")), "the owner keeps that it was deleted");
+    for i in 0..KEPT {
+        o.on_evt(&host(), changed(vec![record_with(&format!("{}.000001", 100 + i), &format!("{}.000001", 100 + i), "C1", "new")]), t0);
+    }
+    assert_eq!(held(&o), KEPT, "a tombstone counts against the bound");
+    assert!(!o.watch.as_ref().unwrap().records.contains_key(&ts("5.000001")), "and is the oldest to go");
+    assert!(!o.is_deleted(&ts("5.000001")), "its flag goes with it");
+    o.on_evt(&host(), changed(vec![record_with("500.000001", "500.000001", "C1", "x")]), t0);
+    o.on_evt(&host(), gone("500.000001"), t0);
+    o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    o.on_evt(&host(), ChatEvt::History { req, reply: snapshot(vec![record_with("7.000001", "7.000001", "C1", "kept")]) }, t0 + PACE);
+    assert_eq!(o.records().len(), 1, "a replacing snapshot drops every tombstone");
+    assert!(!o.is_deleted(&ts("500.000001")), "and every flag");
+}
+
+/// A put after a delete for the same time brings the message back with the new text; a message the daemon could not read
+/// is never a deleted one.
+#[test]
+fn a_put_after_a_delete_brings_the_message_back() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    o.on_evt(&host(), changed(vec![record_with("5.000001", "5.000001", "C1", "first")]), t0);
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["5.000001"] });
+    o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), t0);
+    assert!(o.is_deleted(&ts("5.000001")));
+    o.on_evt(&host(), changed(vec![record_with("5.000001", "5.000001", "C1", "again")]), t0);
+    assert!(!o.is_deleted(&ts("5.000001")));
+    assert_eq!(text_of(&o, "5.000001"), "again");
+    let mut unreadable = record_with("6.000001", "6.000001", "C1", "");
+    unreadable["omitted"] = true.into();
+    unreadable["truncated"] = true.into();
+    o.on_evt(&host(), changed(vec![unreadable]), t0);
+    assert!(!o.is_deleted(&ts("6.000001")), "an unreadable message is not a deleted one");
 }
 
 /// A whole, empty channel has no floor: its first message is held.

@@ -66,6 +66,9 @@ struct Watch {
     /// Why the last snapshot read was refused: the reason of a gap that the daemon's watch did not give.
     read_refused: Option<ChatCode>,
     records: HashMap<Ts, ChatRecord>,
+    /// The held records the daemon told this window were deleted: kept in place, text dropped. A put of one brings it back; a
+    /// replacing snapshot, which holds only what exists, clears them all.
+    deleted: HashSet<Ts>,
     /// The oldest timestamp the daemon still tracks: the snapshot's oldest when older history exists, raised by the trim.
     floor: Option<Ts>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
@@ -101,12 +104,19 @@ impl Watch {
         for r in &c.put {
             let below = !self.records.contains_key(&r.ts) && self.floor.as_ref().is_some_and(|f| ts_order(&r.ts) < ts_order(f));
             if !below {
+                self.deleted.remove(&r.ts);
                 self.records.insert(r.ts.clone(), r.clone());
             }
         }
-        c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
+        // A delete leaves the record's place, author and time with no text; it counts against `KEPT` like any record.
+        for ts in &c.deleted {
+            if let Some(r) = self.records.get_mut(ts) {
+                r.text.clear();
+                self.deleted.insert(ts.clone());
+            }
+        }
         while self.records.len() > KEPT {
-            self.oldest().iter().for_each(|k| drop(self.records.remove(k)));
+            self.oldest().iter().for_each(|k| drop((self.records.remove(k), self.deleted.remove(k))));
             self.floor = self.oldest();
         }
     }
@@ -131,7 +141,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), deleted: HashSet::new(), floor: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -151,6 +161,11 @@ impl ChatOwner {
         let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values()).collect();
         held.sort_by(|a, b| ts_order(&a.ts).cmp(&ts_order(&b.ts)));
         held
+    }
+
+    /// Whether the held record at `ts` was deleted.
+    pub(super) fn is_deleted(&self, ts: &Ts) -> bool {
+        self.watch.as_ref().is_some_and(|w| w.deleted.contains(ts))
     }
 
     /// The channel is known to be empty: the snapshot was read whole and holds no record. Not while it is read, offline, a gap
@@ -347,6 +362,7 @@ impl ChatOwner {
                 // `next` cursor is the older history, which the drawer pages.
                 // Only the channel's top-level messages: the daemon tracks no thread reply, so it would never send its edit or delete.
                 w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), r)).collect();
+                w.deleted.clear();
                 w.floor = if res.next.is_some() { w.oldest() } else { None };
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 w.fill = Fill::Complete;

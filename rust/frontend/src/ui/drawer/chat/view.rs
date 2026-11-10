@@ -115,12 +115,12 @@ pub(in crate::ui) struct ChatView {
 
 impl ChatView {
     /// Places the records in `body` and shapes those that reach it; the rest of the cache is trimmed.
-    pub(super) fn layout(&mut self, fonts: &mut FontSystem, records: &[&ChatRecord], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
+    pub(super) fn layout(&mut self, fonts: &mut FontSystem, records: &[&ChatRecord], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset, deleted: &dyn Fn(&Ts) -> bool) {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
         let mut height = |at: usize| {
-            let key = (project(records[at], now, offset, false), width.to_bits(), scale.to_bits());
+            let key = (project(records[at], now, offset, false, deleted(&records[at].ts)), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);

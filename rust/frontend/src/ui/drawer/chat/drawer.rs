@@ -152,7 +152,7 @@ impl ChatDrawer {
     /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it.
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
         let now = chrono::Local::now();
-        self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
+        self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset(), &|ts| self.owner.is_deleted(ts));
     }
 
     /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
