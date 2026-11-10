@@ -1621,3 +1621,14 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes); a review of the whole stack (blockers 0; 8 minutes); a last fix of two commits (5 minutes); ten scoped
   gates of 2 minutes. The causes: a builder that did not stop at its size bound, so the change was split after it was
   built, and the full disk.
+- The project chat's B5m, the post, 2026-11-09, in three landings: builder launched 22:43; the flag (760a6c2c9: a
+  connection keeps whether its hello said the daemon posts plain text, and a post on one that did not is refused
+  locally) and the name (9250e00ce: `[chat] name` in settings.toml) main 23:35, 52 minutes; the post (fa9070892) main
+  23:40, 57 minutes; past the half hour, a failure by this page's standard. Enter posts the draft once, frozen while it
+  waits, and only a `posted` reply for that post clears its own row's draft; every outcome is reported once, its words
+  on the status line. About 180 product lines and 250 test lines over the three. Where the minutes went: the build (10
+  minutes, which stopped at its size bound uncommitted, as its brief said); the split into three (5 minutes); three
+  reviews in parallel (blockers 0, 1, 0; 9 to 10 minutes: part 2's manual said Enter posts before it did); one fix
+  round across the stack (14 minutes); a review of the whole stack (blockers 0; 5 minutes; three of part 3's rules
+  alive, two of them double-post risks); a last fix of part 3 (3 minutes); seven scoped gates of 2 minutes. The cause:
+  a step of about 145 product lines planned as 55, so it was split after it was built.

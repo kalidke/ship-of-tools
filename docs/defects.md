@@ -636,6 +636,12 @@ owned by `docs/CLAUDE.md`.
   dropped, and b's next equal read would wait until b's link changes. The comment on `Flight::clear` there says "no reply
   will come", which the contract's limit (fe-net's exception for a request sent before a link change is drained)
   contradicts. Found by B5c3's review, reading code; never seen.
+- **SETTINGS-PARSERS-DISAGREE** [note] The window's `settings.toml` reader (`rust/frontend/src/ui/persist/settings.rs`)
+  accepts what the daemon's TOML reader refuses: `name = Ada` without quotes, and an escaped quote kept with its
+  backslash. The daemon reads the same file each time it starts a row, and a file it cannot read leaves folder trust
+  unrecorded, so every Claude row on that computer stops at the trust dialog. The chat's `[chat] name` makes a
+  hand-edited setting likelier; the manual shows it quoted. One reader for both, or the window refusing what the daemon
+  refuses, closes it. Found by B5m's review, probing; never seen.
 
 ## distribution
 
