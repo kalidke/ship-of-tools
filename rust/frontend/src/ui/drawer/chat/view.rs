@@ -113,6 +113,11 @@ pub(in crate::ui) struct ChatView {
     body: Option<ScreenRect>,
     /// The oldest held record reaches the body: older history is wanted.
     pub(super) at_oldest: bool,
+    /// The marked record (by its time), always a held record in view; `None` until a key marks.
+    pub(super) mark: Option<Ts>,
+    /// The mark keys since the last frame, in order (`true` toward older records): the frame that spends them knows the
+    /// records, and folds them one at a time, each with its clamp.
+    mark_keys: Vec<bool>,
 }
 
 impl ChatView {
@@ -121,8 +126,11 @@ impl ChatView {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
+        // The mark passes on like the anchor: to the nearest newer held record, or to none.
+        let held_mark = self.mark.as_ref().map(|ts| find(records, ts)).filter(|i| *i < records.len());
+        let marked = std::cell::Cell::new(held_mark);
         let mut height = |at: usize| {
-            let key = (project(records[at].0, now, offset, false, records[at].1), width.to_bits(), scale.to_bits());
+            let key = (project(records[at].0, now, offset, marked.get() == Some(at), records[at].1), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
@@ -131,7 +139,7 @@ impl ChatView {
         let count = records.len();
         // The anchor is found by its time: a record gone passes it to the nearest newer one, and a snapshot that replaced
         // every record does the same against the new set.
-        let found = self.anchor.as_ref().map(|(ts, dy)| (records.partition_point(|r| ts_order(&r.0.ts) < ts_order(ts)), *dy));
+        let found = self.anchor.as_ref().map(|(ts, dy)| (find(records, ts), *dy));
         let pending = self.pending.0 * BODY_LINE_H * scale + self.pending.1 * body.h / 3.0;
         let found = match (found, pending > 0.0) {
             (None, true) if count > 0 => Some((count - 1, body.h - height(count - 1))),
@@ -139,8 +147,45 @@ impl ChatView {
         };
         let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + pending), &mut height));
         self.pending = (0.0, 0.0);
+        let mut spots = place(count, body.h, from, &mut height);
+        // The mark: keys move it, one at a time, and the view shows it (a record above the body has its top at the body's
+        // top, one below its bottom at the foot, one taller than the body its top). Then the mark is in view: its header
+        // row is inside the body, else it goes to the nearest record whose is; when none is, to the first placed
+        // record, which crosses the top and so covers all of the body but one line.
+        let mut mark = held_mark;
+        let keys = std::mem::take(&mut self.mark_keys);
+        let from = if !keys.is_empty() && count > 0 {
+            let i = keys.iter().fold(mark, |at, older| Some(at.map_or(count - 1, |i| if *older { i.saturating_sub(1) } else { (i + 1).min(count - 1) }))).expect("a key");
+            mark = Some(i);
+            let top = spots.iter().find(|p| p.index == i).map(|p| p.top);
+            let h = height(i);
+            if top.is_some_and(|t| t >= 0.0 && t + h <= body.h) {
+                from
+            } else {
+                let above = top.map_or(spots.first().is_none_or(|p| i < p.index), |t| t < 0.0);
+                let from = settle(count, body.h, (i, if above || h > body.h { 0.0 } else { body.h - h }), &mut height);
+                spots = place(count, body.h, from, &mut height);
+                from
+            }
+        } else {
+            from
+        };
+        let line = BODY_LINE_H * scale;
+        let mut seen: Vec<usize> = spots.iter().filter(|p| p.top >= 0.0 && p.top + line <= body.h).map(|p| p.index).collect();
+        if seen.is_empty() {
+            seen = spots.first().map(|p| p.index).into_iter().collect();
+        }
+        if let Some(i) = mark {
+            mark = seen.iter().copied().min_by_key(|s| s.abs_diff(i)).or(mark);
+        }
+        marked.set(mark);
+        if mark != held_mark {
+            for p in &spots {
+                height(p.index);
+            }
+        }
+        self.mark = mark.map(|i| records[i].0.ts.clone());
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
-        let spots = place(count, body.h, from, &mut height);
         self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
         self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
         self.body = Some(body);
@@ -160,6 +205,17 @@ impl ChatView {
             Step::Line => self.pending.0 += n,
             Step::Page => self.pending.1 += n,
         }
+    }
+
+    /// A mark key moves the mark one record toward older records (`older`) or newer; it takes effect at the next frame.
+    pub(super) fn mark(&mut self, older: bool) {
+        self.mark_keys.push(older);
+    }
+
+    /// A row change: the reader follows the newest, and the old row's mark is no one's.
+    pub(super) fn reset(&mut self) {
+        self.latest();
+        (self.mark, self.mark_keys) = (None, Vec::new());
     }
 
     /// The reader asks for the newest: the view follows it again.
@@ -209,10 +265,21 @@ impl ChatView {
         self.placed.iter().map(|(_, top)| *top).collect()
     }
 
+    /// Whether each placed record's header is the marked one, in placement order.
+    #[cfg(test)]
+    pub(super) fn placed_marks(&self) -> Vec<bool> {
+        self.placed.iter().map(|(k, _)| k.0[0].kind == Kind::Header(true)).collect()
+    }
+
     #[cfg(test)]
     pub(super) fn cached(&self) -> usize {
         self.cache.len()
     }
+}
+
+/// Where `ts` sits among the records by time: a record gone gives the nearest newer one, and `records.len()` when none is.
+fn find(records: &[(&ChatRecord, bool)], ts: &Ts) -> usize {
+    records.partition_point(|r| ts_order(&r.0.ts) < ts_order(ts))
 }
 
 fn shape(fonts: &mut FontSystem, spans: &[Span], width: f32, scale: f32) -> Shaped {
