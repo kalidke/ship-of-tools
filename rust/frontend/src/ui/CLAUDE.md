@@ -700,7 +700,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   anchored on or a newer one (the view's anchor, handed to the owner each frame: `the_readers_anchor_reaches_the_owner_each_frame`),
   so a reader on the oldest meets no move while the store passes `KEPT`, up to `CEILING` (`KEPT` and one page, 276; past it the
   oldest go anyway: `a_parked_reader_holds_the_store_to_the_ceiling`). One pass (`bound`) trims after every change to the records,
-  a snapshot's merge included (`every_change_is_bounded_and_the_overlap_is_at_or_before`). A snapshot with a `next` that reaches back to the oldest held record replaces the records from
+  a snapshot's merge included (`every_change_is_bounded_and_the_overlap_is_at_or_before`). `reserve(n)` (B5p) tells the owner how many of the `KEPT` records an open thread holds (at most 156, so the channel keeps at least its newest 100): the bound, a page's room and the asking for a page all use the channel's share, `KEPT - n`, and `reserve(0)` gives the room back (`a_reserve_takes_room_from_the_channels_oldest_and_gives_it_back`); nothing calls it until the thread reads. A snapshot with a `next` that reaches back to the oldest held record replaces the records from
   its own oldest up and keeps the older ones, tombstones included, lowering the floor if it reaches below it; one that does not reach clears them and its oldest is the floor;
   one without `next` replaces all (`older_pages_preserve_the_anchor_within_the_bound`). Older pages: when the view reports the
   oldest held record in the body (`ChatView::at_oldest`, handed over each frame), the floor is set and the store has room for a
