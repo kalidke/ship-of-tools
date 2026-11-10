@@ -34,6 +34,7 @@ fn parked_view(page: Option<(u32, u32)>) -> WorkspaceUiSnapshot {
         mode: Mode::Files,
         bl_pane_target: None,
         preview_node_id_fired: None,
+        preview_refused: false,
         pinned_preview_node_id: None,
         source: Default::default(),
         figure_failed: Default::default(),

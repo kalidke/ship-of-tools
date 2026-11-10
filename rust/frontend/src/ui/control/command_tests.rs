@@ -525,3 +525,55 @@ fn a_command_file_cannot_open_a_reply_bar() {
     // The same file's other commands still parse, so the refusal is the variant's, not the format's.
     assert!(serde_json::from_str::<FeCommand>(r#"{"cmd": "notify", "text": "hi"}"#).is_ok());
 }
+
+/// An agent badges a PDF it built as `show-result "$PWD/../a.pdf"`: the daemon refuses a node id holding `..`, and the
+/// tree and the watcher spell the file without it, so a path from any of the three ways in (the daemon's relay, the
+/// command file, a `sot_ui` envelope) is taken as the tree spells it, and one that leaves the workspace is no command.
+#[test]
+fn an_agents_path_is_taken_in_the_trees_spelling() {
+    let routed = |cmd: &str, path: &str| {
+        match route_fe_command(&fe_evt(cmd, serde_json::json!({"workspace": "ws", "path": path}), None), "fe@host-a") {
+            Some(FeCommand::Preview { path, .. } | FeCommand::Reveal { path, .. }) => Some(path),
+            _ => None,
+        }
+    };
+    for cmd in ["preview", "reveal"] {
+        assert_eq!(routed(cmd, "out/drafts/build/../a.pdf").as_deref(), Some("out/drafts/a.pdf"), "{cmd}");
+        assert_eq!(routed(cmd, "./out//a.pdf").as_deref(), Some("out/a.pdf"), "{cmd}");
+        assert_eq!(routed(cmd, "out/../../a.pdf"), None, "{cmd}: a path that leaves the workspace");
+        // The daemon refuses a rooted id as it does `..`, so none of these may be re-rooted into a relative one.
+        for rooted in ["/a.pdf", "//a.pdf", "/"] {
+            assert_eq!(routed(cmd, rooted), None, "{cmd}: the rooted path {rooted}");
+        }
+    }
+    for cmd in ["preview", "reveal"] {
+        let filed = |path: &str| {
+            let file = serde_json::json!({"cmd": cmd, "workspace": "ws", "path": path}).to_string();
+            match serde_json::from_str::<FeCommand>(&file) {
+                Ok(FeCommand::Preview { path, .. } | FeCommand::Reveal { path, .. }) => Some(path),
+                _ => None,
+            }
+        };
+        assert_eq!(filed("out/drafts/build/../a.pdf").as_deref(), Some("out/drafts/a.pdf"), "{cmd}");
+        assert_eq!(filed("../a.pdf"), None, "{cmd}: a command file whose path leaves the workspace");
+    }
+    let enveloped = |path: &str| {
+        let ui = serde_json::json!({"v": 1, "cmd": "nav.preview", "workspace": "ws", "path": path});
+        parse_nav_envelope(&serde_json::json!({ "sot_ui": ui }).to_string())
+    };
+    assert_eq!(enveloped("out/drafts/build/../a.pdf"), enveloped("out/drafts/a.pdf"));
+    assert!(enveloped("out/drafts/a.pdf").is_some());
+    assert_eq!(enveloped("../a.pdf"), None, "an envelope whose path leaves the workspace");
+}
+
+#[test]
+fn a_relayed_path_that_leaves_the_workspace_is_named_for_the_status_line() {
+    let evt = |cmd: &str, path: &str, target: Option<&str>| {
+        fe_evt(cmd, serde_json::json!({"workspace": "ws", "path": path}), target)
+    };
+    assert_eq!(refused_path(&evt("preview", "../a.pdf", None), "fe@host-a").as_deref(), Some("../a.pdf"));
+    assert_eq!(refused_path(&evt("reveal", "a/../../b", Some("fe@host-a")), "fe@host-a").as_deref(), Some("a/../../b"));
+    assert_eq!(refused_path(&evt("preview", "../a.pdf", Some("fe@other")), "fe@host-a"), None);
+    assert_eq!(refused_path(&evt("preview", "a/../b.pdf", None), "fe@host-a"), None);
+    assert_eq!(refused_path(&evt("notify", "../a.pdf", None), "fe@host-a"), None);
+}

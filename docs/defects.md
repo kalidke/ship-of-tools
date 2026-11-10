@@ -654,6 +654,11 @@ owned by `docs/CLAUDE.md`.
   unrecorded, so every Claude row on that computer stops at the trust dialog. The chat's `[chat] name` makes a
   hand-edited setting likelier; the manual shows it quoted. One reader for both, or the window refusing what the daemon
   refuses, closes it. Found by B5m's review, probing; never seen.
+- **PATH-FOLD-LEXICAL** [note] The window's fold of an agent's path (`nav::files::node_path`) is text only. It does not
+  follow a symlink, so `a/link/../x` names `a/x` where the kernel and shell resolve `..` after the link (a result folder
+  that is a link into other storage); and it splits on `/` only, so a Windows daemon's `a\b.pdf` is accepted but never
+  equals the tree's `a/b.pdf` and never refreshes, and `a\..\b.pdf` is refused and marked. Found by the review of the
+  landing that closed PREVIEW-PDF-STALE, probing the first and reading the second; the second never seen.
 
 ## distribution
 
@@ -870,6 +875,10 @@ owned by `docs/CLAUDE.md`.
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
 - **WINDOWS-SETTINGS-NO-DURABLE-HOME** (fe-ui) closed by the landing that fixes it, 2026-11-10: a Windows window read no settings file (the launcher's `SOT_SETTINGS` default named a file inside the release checkout, which an update deletes, and `$HOME` is unset there), so Enter in the Chat drawer never posted; the window's per-user place is now platform's config folder (`sot_config_dir_in`) for `settings.toml` and `keybindings.toml`, the launcher sets no `SOT_SETTINGS`, and the window ignores the daemon's `[trust]` section.
+- **PREVIEW-PDF-STALE** (fe-ui) closed by the landing that fixes it, 2026-11-10: a PDF an agent rebuilt and badged as
+  `show-result "$PWD/../<file>"` from its build folder kept showing the old version; the window took the path as sent,
+  the daemon refused its `..` id, and the failure left the pane on what it showed, so each return to the row (the
+  result never acknowledged) showed the old PDF again; the window now takes an agent's path in the tree's spelling, and a refused preview marks the pane's title (and the mark parks with the row's older bytes), and a reply for a badged file's newer re-fetch acknowledges its result.
 - **TESTS-REACH-LIVE-COMM-HOME** (messaging) closed by the landing that fixes it, 2026-11-10: four destroy tests set no `SOT_COMM_HOME`, so a test run started from a session pruned, and took the registry lock of, that session's live comm folder; under test the one resolver now refuses a comm folder not beneath the temporary folder, so a test that forgets aborts the run with its name; every fixture that inherited the process environment's folder (the destroy, reauth, create-rollback and agent-environment fixtures) is isolated, and three argv tests now read no environment; a second landing isolated the four tests that resolved the folder through `HOME` or `USERPROFILE` with `SOT_COMM_HOME` unset (the gate's and the hosted runners' setting), one on every platform and three Windows argv tests.
 - **GATE-SCOPED-MISSES-SHARED-CALLEE** (distribution) closed as not a gate defect, 2026-11-10: the scoped gate ran the
   same daemon test job, filters and home as the unscoped one; the test it passed was a race (COMM-GUARD-RACES-ENV).

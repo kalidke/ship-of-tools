@@ -41,6 +41,8 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// The node id we most recently asked the backend to preview, so
     /// switching back doesn't bounce-fetch the same preview again.
     preview_node_id_fired: Option<String>,
+    /// Whether the daemon refused that request, so the older bytes in `source` come back marked.
+    preview_refused: bool,
     /// C2 pin-and-leave state for this workspace. `Some` if a node was
     /// pinned when the user swapped away; restored on swap-in so the
     /// preview stays parked on the same file across workspace switches.
@@ -103,6 +105,7 @@ impl State {
                 // at snapshot time.
                 bl_pane_target: self.agent_pane.snapshot_target(),
                 preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
+                preview_refused: self.preview_requests.fired_refused(),
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),
                 page: self.pages.page(),
@@ -137,7 +140,7 @@ impl State {
         // was captured while that host was active, so its bare session
         // name always belonged to it.
         self.agent_pane.restore_snapshot_target(key.0.clone(), snap.bl_pane_target);
-        self.preview_requests.restore_fired(snap.preview_node_id_fired);
+        self.preview_requests.restore_fired(snap.preview_node_id_fired, snap.preview_refused);
         self.nav_cursor.restore_pin(snap.pinned_preview_node_id);
         // The shaped concept body gets re-shaped on the next frame by the
         // cursor-tracking concept.read path (memo cleared below). The

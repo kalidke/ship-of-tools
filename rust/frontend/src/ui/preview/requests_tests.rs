@@ -486,3 +486,29 @@ fn page_presses_and_repeats_coalesce_until_the_latest_target_is_shown() {
     changed.shown = None;
     assert!(!continue_page_key(&mut changed, Some(crate::ui::Action::PageNext)));
 }
+
+/// A daemon that refuses the fired node leaves the pane on its older view; the title says so until a reply installs or
+/// another node is fired, and a refusal of a node no longer fired marks nothing.
+#[test]
+fn a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it() {
+    let mut requests = PreviewRequests::default();
+    requests.record_fired("files:a.pdf".into());
+    requests.refuse(Some("files:b.pdf"));
+    assert!(!requests.fired_refused(), "a refusal of another node");
+    requests.refuse(Some("files:a.pdf"));
+    assert!(requests.fired_refused());
+    requests.clear_refusal();
+    assert!(!requests.fired_refused(), "a reply installed");
+    requests.refuse(Some("files:a.pdf"));
+    requests.record_fired("files:c.pdf".into());
+    assert!(!requests.fired_refused(), "a new request");
+    // The mark parks with the pair it describes: a row's snapshot restores it, and another row's has none.
+    requests.record_fired("files:a.pdf".into());
+    requests.refuse(Some("files:a.pdf"));
+    requests.restore_fired(Some("files:b.pdf".into()), false);
+    assert!(!requests.fired_refused(), "a row restored without a refusal");
+    requests.restore_fired(Some("files:a.pdf".into()), true);
+    assert!(requests.fired_refused(), "a row restored with its refusal");
+    requests.forget_fired();
+    assert!(!requests.fired_refused(), "a first visit");
+}

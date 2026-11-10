@@ -237,3 +237,9 @@ fn preview_scroll_target_measures_only_the_buffer_on_screen() {
     let s = preview_max_scroll(h, vis, b);
     assert!((s as f32) * h < edit.total_visual_pixels(h) - vis + h);
 }
+
+#[test]
+fn a_refused_preview_says_so_in_the_pane_title() {
+    assert_eq!(pane_name("a.pdf", Some((2, 5)), false), "a.pdf · p 2/5 · n/p");
+    assert_eq!(pane_name("a.pdf", None, true), "a.pdf · REFUSED, view not updated");
+}
