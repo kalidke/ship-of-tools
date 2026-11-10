@@ -678,14 +678,18 @@ its records), the one post in flight and the last post's outcome. It sends nothi
 returns the requests for State to send. Rules, each with its test in `drawer/chat/owner_tests.rs`:
 - One recovery serves every loss: the link returning, `bus.lost` for `chat.changed`, a `chat.status` that lists the channel or
   says the service is not running, and an `Unreadable` event. It forgets the registration and sends `chat.watch`
-  (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_and_capped_watch`,
+  (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_watch`,
   `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
-  `chat.history` read; a pending watch is sent again by `tick`. Watches are five seconds apart, the last of three gets its full pace to be answered (`a_slow_last_watch_still_ends_complete`), and three without a completed
-  snapshot end in `Gap`; a stream of losses whose recoveries succeed is paced, not capped. A refused watch is `Gap`
+  `chat.history` read; a pending watch is sent again by `tick`. Watches go out at 0, 1 s, then every 5 s; the recovery keeps its start and pace through a loss, and a `complete` snapshot ends it.
+  `Gap(reason)` is shown only after the daemon's slowest snapshot: 20 s from the first watch it admits, the last watch getting its full pace to be answered
+  (`a_slow_last_watch_still_ends_complete`), and a refusal of `unavailable` (the service may be starting) is asked on that pace for 20 s before it is
+  `Gap(Some(Unavailable))`; a snapshot that never completes is `Gap(None)` (`a_gap_comes_only_after_the_daemons_slowest_snapshot_and_says_why`).
+  A stream of losses whose recoveries succeed is paced, not capped. A watch refused `stale_row`, `stale_mapping` or `unmapped` is
+  `Gap(Some(code))` and is not asked again until a row or link change; any other refusal is `Gap(Some(code))`
   (`a_refused_watch_is_a_gap_and_a_duplicate_reply_starts_no_read`). `Gap` is shown and asked again: a watch goes out every
   minute with no cap, because the daemon answers a watch from its state at that moment and says nothing later, and each
   watch also starts its retry of a failed snapshot; a `complete` reply reads as from `Needed`, a refused one stays `Gap`
-  (`a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it`). The state is not whole while the link is down.
+  (`a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it`); `too_many_watches` and `unavailable` keep this ask on purpose, since each can clear. The state is not whole while the link is down.
 - A `chat.changed` that came while the read was in flight is kept over its older snapshot (`a_change_during_the_read_is_kept_over_the_older_snapshot`);
   an event from before a refused read, a link loss or with no read in flight is not (`only_the_events_of_the_read_in_flight_cover_a_snapshot`).
   The read asks for the wire's page (`MAX_PAGE`).
@@ -733,7 +737,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   link change clears the host's set, since no reply comes for what its end dropped. Pinned by
   `a_read_from_before_a_rewatch_never_fills_the_new_watch` (the clearing is pinned by no test).
 
-Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatDrawer` and its parts and a `State` needs a window; `tick_chat`'s own
+Limits: records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatDrawer` and its parts and a `State` needs a window; `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
 suite); `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
