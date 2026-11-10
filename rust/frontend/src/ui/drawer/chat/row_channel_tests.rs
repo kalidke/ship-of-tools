@@ -299,6 +299,80 @@ fn a_link_change_cancels_that_hosts_held_read() {
     assert_eq!(history(&d.on_evt(&host(), complete("R"), at(1070))), old, "the re-watch's read goes at once");
 }
 
+/// A page of `n` top-level records of channel `channel` (times 100.000001 and up), the whole channel.
+fn page_of(channel: &str, n: u64) -> ChatReply<sot_protocol::ops::ChatHistoryRes> {
+    let records: Vec<serde_json::Value> = (0..n).map(|i| serde_json::json!({ "workspace": "T1", "channel": channel, "ts": format!("{}.000001", 100 + i),
+        "thread_ts": format!("{}.000001", 100 + i), "author": { "id": "U1", "name": "A" }, "origin": "member", "text": "x", "reply_count": 0, "files": [] })).collect();
+    ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records })).unwrap())
+}
+
+/// A channel shown a moment ago draws what the window held for it as soon as the hub answers the row's resolve with it,
+/// while its snapshot is read again, which replaces them; another channel never shows them, and the owner keeps two.
+#[test]
+fn a_switch_back_draws_the_channels_records_while_it_is_read_again() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    let shown = |d: &mut ChatDrawer, from: u64, row: &str, channel: Option<&str>| {
+        d.tick(wanted(row), at(from));
+        assert_eq!(resolves(&d.tick(wanted(row), at(from + 150)).0), 1);
+        let evt = channel.map_or_else(|| answer(row, serde_json::json!({ "state": "unmapped" })), |c| mapped_to(row, c));
+        d.on_evt(&host(), evt, at(from + 160))
+    };
+    shown(&mut d, 0, "R", Some("C1"));
+    let read = history(&d.on_evt(&host(), complete_to("R", "C1"), at(170)));
+    d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of("C1", 3) }, at(180));
+    assert_eq!(d.held(), 3);
+
+    // Another row: nothing of R's channel shows, mapped or not.
+    assert_eq!(unwatches(&d.tick(wanted("S"), at(1000)).0), 1);
+    assert_eq!(d.held(), 0);
+    shown(&mut d, 1000, "S", None);
+    assert_eq!(d.held(), 0, "an unmapped row shows nothing");
+    shown(&mut d, 2000, "T", Some("C2"));
+    assert_eq!(d.held(), 0, "another channel never shows them");
+
+    // Back to R: its records at the hub's answer, before any read, under its channel and the recovery's words.
+    assert_eq!(watches(&shown(&mut d, 3000, "R", Some("C1"))), 1);
+    assert_eq!(d.held(), 3, "a switch back draws what was held at once");
+    assert_eq!(d.fill(), Some(Fill::Needed));
+    assert_eq!(d.title(), " chat · C1 reading… ");
+    let read = history(&d.on_evt(&host(), complete_to("R", "C1"), at(3170)));
+    d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of("C1", 1) }, at(3180));
+    assert_eq!((d.held(), d.fill()), (1, Some(Fill::Complete)), "the snapshot replaces them");
+
+    // The same channel through another row of the same folder takes them up too.
+    shown(&mut d, 4000, "S", None);
+    shown(&mut d, 5000, "R2", Some("C1"));
+    assert_eq!(d.held(), 1, "the records are the channel's");
+
+    // Two are kept: passing through C3 and C4 pushes C2 out.
+    shown(&mut d, 6000, "U", Some("C3"));
+    shown(&mut d, 7000, "V", Some("C4"));
+    shown(&mut d, 8000, "T", Some("C2"));
+    assert_eq!(d.held(), 0, "the oldest parked channel is gone");
+}
+
+/// The frame asks for another one while a first show's watch waits on its short paces, which is what wakes an idle window
+/// for the second ask, and stops asking once the watch is complete.
+#[test]
+fn a_frame_is_asked_for_while_a_first_watch_waits_its_short_paces() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.tick(wanted("R"), t0);
+    assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
+    assert_eq!(watches(&d.on_evt(&host(), mapped_to("R", "C1"), at(160))), 1);
+    let (outs, again) = d.tick(wanted("R"), at(170));
+    assert!(outs.is_empty() && again, "the answer is awaited, and a frame is wanted for the second ask");
+    let (outs, again) = d.tick(wanted("R"), at(410));
+    assert_eq!((watches(&outs), again), (1, true), "the second ask goes at 250 ms and the third is still to come");
+    let (outs, again) = d.tick(wanted("R"), at(1160));
+    assert_eq!((watches(&outs), again), (1, false), "the third goes at one second, and no frame is wanted after it");
+}
+
 /// A page read for the channel a row left is an orphan: asked again after a hide and show, the same page waits for the first
 /// one's reply, and the first reply fills nothing.
 #[test]

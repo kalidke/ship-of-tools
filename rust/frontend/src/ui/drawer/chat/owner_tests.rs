@@ -104,8 +104,34 @@ fn a_status_is_answered_by_a_paced_watch() {
     now += FIRST_PACE;
     assert!(is_watch(&o.tick(now)));
     assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty());
+    assert!(o.tick(now + SECOND_PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(now + SECOND_PACE)));
+    now += SECOND_PACE;
     assert!(o.tick(now + PACE - Duration::from_millis(1)).is_empty());
     assert!(is_watch(&o.tick(now + PACE)));
+}
+
+/// After a `pending` answer the watch is asked again at 250 ms, 750 ms later, then every `PACE`, and the owner says a frame
+/// is wanted until the last short ask has gone, so an idle window is woken for it.
+#[test]
+fn a_pending_watch_is_asked_again_soon_and_the_window_is_woken() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(!o.asks_soon(), "nothing watched");
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(20));
+    assert!(o.asks_soon());
+    assert!(o.tick(t0 + Duration::from_millis(249)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(250))), "the second ask goes at 250 ms");
+    assert!(o.asks_soon());
+    assert!(o.tick(t0 + Duration::from_millis(999)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000))), "the third at one second");
+    assert!(!o.asks_soon(), "from then on the pace is PACE and nothing wakes the window");
+    assert!(o.tick(t0 + Duration::from_millis(1000) + PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000) + PACE)));
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + Duration::from_secs(7)));
+    assert!(!o.asks_soon(), "a read in flight wants no ask");
 }
 
 /// Rule 3: a status entry for another channel, a bare gap flag, or any status once nothing is watched starts nothing.
@@ -287,8 +313,8 @@ fn a_slow_last_watch_still_ends_complete() {
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), now)));
     o.on_evt(&host(), watched(ChatWatchState::Pending), now);
-    for s in [1, 6, 11, 16, 21] {
-        now = t0 + PACE + Duration::from_secs(s);
+    for ms in [250, 1000, 6000, 11000, 16000, 21000] {
+        now = t0 + PACE + Duration::from_millis(ms);
         assert!(is_watch(&o.tick(now)));
     }
     assert!(o.tick(now + Duration::from_millis(16)).is_empty());

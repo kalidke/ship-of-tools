@@ -117,7 +117,7 @@ impl ChatDrawer {
         outs.extend(step.resolve);
         outs.extend(self.owner_outs(|o| o.tick(now)));
         outs.extend(self.thread_outs(|t| t.tick(now)));
-        (outs, step.settling)
+        (outs, step.settling || self.owner.asks_soon())
     }
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
