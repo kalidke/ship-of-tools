@@ -209,6 +209,7 @@ impl ChatDrawer {
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
         let now = chrono::Local::now();
         self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
+        self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
     }
 
     /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
@@ -274,6 +275,12 @@ impl ChatDrawer {
     pub(super) fn draft(&self) -> Option<(&str, &str)> {
         let d = self.compose.draft(self.rows.row()?)?;
         Some((d.text.as_str(), d.dest.channel.as_str()))
+    }
+
+    /// The anchor the owner holds for the trim.
+    #[cfg(test)]
+    pub(super) fn owner_anchor(&self) -> Option<sot_protocol::chat::Ts> {
+        self.owner.anchor_held()
     }
 
     #[cfg(test)]

@@ -218,9 +218,9 @@ fn a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap() {
     assert_eq!(o.watch.as_ref().unwrap().records.len(), 2);
     o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
     let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
-    o.on_evt(&host(), ChatEvt::History { req, reply: page(&["2.000001"], Some("older")) }, t0 + PACE);
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&["1.000001"], Some("older")) }, t0 + PACE);
     assert_eq!(fill(&o), Fill::Complete);
-    assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("2.000001")]);
+    assert_eq!(o.watch.as_ref().unwrap().records.keys().collect::<Vec<_>>(), [&ts("1.000001")]);
 }
 
 /// The reply of a read a loss outdated merges nothing and does not make the state whole.
@@ -605,7 +605,7 @@ fn held(o: &ChatOwner) -> usize {
     o.watch.as_ref().unwrap().records.len()
 }
 
-/// The owner keeps the daemon model's newest 100 records, as the daemon does: past them the oldest go, and an edit of one
+/// The owner keeps up to `KEPT` records: past them the oldest go, and an edit of one
 /// of them is never sent, so it must not stay shown.
 #[test]
 fn the_owner_keeps_at_most_the_daemons_newest_records() {
@@ -886,4 +886,135 @@ fn a_late_admission_still_ends_the_window_at_twenty_seconds() {
     assert_eq!(gap_of(&o), None);
     assert!(o.tick(at(26)).is_empty());
     assert_eq!(gap_of(&o), Some(None));
+}
+
+/// A replacing snapshot read after a resync: `status` then the watch's `complete` then the read's reply.
+fn replace_with(o: &mut ChatOwner, now: Instant, reply: ChatReply<ChatHistoryRes>) {
+    o.on_evt(&host(), status(false, &["C1"]), now);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    o.on_evt(&host(), ChatEvt::History { req, reply }, now);
+}
+
+fn top_level(range: std::ops::RangeInclusive<u32>) -> Vec<serde_json::Value> {
+    range.map(|i| record_with(&format!("{i}.000001"), &format!("{i}.000001"), "C1", "m")).collect()
+}
+
+/// The held timestamps' seconds, oldest first.
+fn seconds(o: &ChatOwner) -> Vec<u32> {
+    o.records().iter().map(|(r, _)| r.ts.as_str().split_once('.').unwrap().0.parse().unwrap()).collect()
+}
+
+/// The store: up to `KEPT` records above the floor, a replacing snapshot's three cases, and a trim that never takes the
+/// record a reader is anchored on.
+#[test]
+fn older_pages_preserve_the_anchor_within_the_bound() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    // A put older than the floor is not added.
+    let mut o = complete(t0);
+    replace_with(&mut o, now, snapshot_with_next(top_level(82..=101)));
+    o.on_evt(&host(), changed(top_level(80..=80)), now);
+    assert_eq!(held(&o), 20, "r80 is below the floor");
+    // Without `next` a snapshot is the whole channel and replaces everything.
+    let mut o = complete(t0);
+    replace_with(&mut o, now, snapshot_with_next(top_level(70..=90)));
+    replace_with(&mut o, now, snapshot(top_level(85..=95)));
+    assert_eq!(seconds(&o), (85..=95).collect::<Vec<_>>());
+    // With `next` and overlapping, it keeps the older records, a tombstone below it included, and replaces those in its range.
+    let mut o = complete(t0);
+    replace_with(&mut o, now, snapshot_with_next(top_level(70..=90)));
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["72.000001", "85.000001"] });
+    o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), now);
+    replace_with(&mut o, now, snapshot_with_next(top_level(80..=100)));
+    assert_eq!(seconds(&o), (70..=100).collect::<Vec<_>>());
+    assert!(deleted(&o, &ts("72.000001")), "a tombstone below the snapshot stays");
+    assert!(!deleted(&o, &ts("85.000001")), "one in its range is replaced");
+    o.on_evt(&host(), changed(top_level(60..=60)), now);
+    assert_eq!(held(&o), 31, "the floor stays below the kept records");
+    // With `next` and not overlapping, the older records go and its oldest is the floor.
+    replace_with(&mut o, now, snapshot_with_next(top_level(200..=210)));
+    assert_eq!(seconds(&o), (200..=210).collect::<Vec<_>>());
+    o.on_evt(&host(), changed(top_level(150..=150)), now);
+    assert_eq!(held(&o), 11, "the new oldest is the floor");
+    // The trim never takes the reader's record: one on the oldest keeps it while records arrive, one in the middle loses
+    // only the records older than it, and one following loses the oldest.
+    let mut o = complete(t0);
+    top_level(1000..=1255).into_iter().for_each(|r| drop(o.on_evt(&host(), changed(vec![r]), now)));
+    assert_eq!(held(&o), 256);
+    o.anchored(Some(ts("1000.000001")));
+    o.on_evt(&host(), changed(top_level(2000..=2004)), now);
+    assert_eq!(held(&o), 261, "the anchored oldest stays, and the bound is passed meanwhile");
+    assert_eq!(seconds(&o)[0], 1000);
+    o.anchored(Some(ts("1010.000001")));
+    o.on_evt(&host(), changed(top_level(2005..=2005)), now);
+    assert_eq!(held(&o), 256);
+    assert_eq!(seconds(&o)[0], 1006, "only records older than the anchor went, down to the bound");
+    o.anchored(None);
+    o.on_evt(&host(), changed(top_level(2006..=2006)), now);
+    assert_eq!((held(&o), seconds(&o)[0]), (256, 1007));
+}
+
+/// A reader parked on the oldest record holds the store to the ceiling, and the oldest go past it, in one pass.
+#[test]
+fn a_parked_reader_holds_the_store_to_the_ceiling() {
+    let t0 = Instant::now();
+    let mut o = complete(t0);
+    top_level(1000..=1255).into_iter().for_each(|r| drop(o.on_evt(&host(), changed(vec![r]), t0)));
+    o.anchored(Some(ts("1000.000001")));
+    let mut peak = 0;
+    for i in 1256..2256 {
+        o.on_evt(&host(), changed(top_level(i..=i)), t0);
+        assert!(held(&o) <= CEILING, "{} records after {i}", held(&o));
+        peak = peak.max(held(&o));
+    }
+    assert_eq!(peak, CEILING, "the parked reader holds exactly the ceiling");
+    assert!(held(&o) >= KEPT, "and the trim keeps the bound");
+    assert!(seconds(&o)[0] > 1000, "the anchored record went at the ceiling");
+    assert_eq!(o.watch.as_ref().unwrap().floor.as_ref(), Some(&ts(&format!("{}.000001", seconds(&o)[0]))), "the floor is the oldest held");
+}
+
+/// One trim runs after every change to the records, the merge of an overlapping snapshot included; the overlap is "at or before"
+/// the newest held record; and a snapshot reaching below the floor lowers it.
+#[test]
+fn every_change_is_bounded_and_the_overlap_is_at_or_before() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    let mut o = complete(t0);
+    top_level(1000..=1255).into_iter().for_each(|r| drop(o.on_evt(&host(), changed(vec![r]), t0)));
+    replace_with(&mut o, now, snapshot_with_next(top_level(1250..=1269)));
+    assert_eq!((held(&o), seconds(&o)[0]), (KEPT, 1014), "the merge is trimmed");
+    o.on_evt(&host(), changed(top_level(1000..=1000)), now);
+    assert_eq!(held(&o), KEPT, "the trim raised the floor");
+    // The snapshot's oldest equal to the newest held record still overlaps.
+    let mut o = complete(t0);
+    replace_with(&mut o, now, snapshot_with_next(top_level(70..=90)));
+    replace_with(&mut o, now, snapshot_with_next(top_level(90..=99)));
+    assert_eq!(seconds(&o), (70..=99).collect::<Vec<_>>());
+    // Below the floor, the floor goes down with it.
+    let mut o = at_floor_82(t0);
+    replace_with(&mut o, now, snapshot_with_next(top_level(79..=98)));
+    assert_eq!(o.watch.as_ref().unwrap().floor, Some(ts("79.000001")));
+    o.on_evt(&host(), changed(top_level(78..=78)), now);
+    assert_eq!(held(&o), 20, "78 is below the new floor");
+}
+
+fn at_floor_82(t0: Instant) -> ChatOwner {
+    let mut o = complete(t0);
+    replace_with(&mut o, t0 + PACE, snapshot_with_next(top_level(82..=101)));
+    o
+}
+
+/// A snapshot of nothing but thread replies, with older history, takes its floor from the oldest reply, so an edit below it
+/// is not held.
+#[test]
+fn a_snapshot_of_only_thread_replies_still_sets_the_floor() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    let mut o = complete(t0);
+    replace_with(&mut o, now, snapshot_with_next(vec![record_with("50.000002", "1.000001", "C1", "a reply")]));
+    assert_eq!(o.watch.as_ref().unwrap().floor, Some(ts("50.000002")));
+    o.on_evt(&host(), changed(top_level(40..=40)), now);
+    assert_eq!(held(&o), 0, "below the floor");
+    replace_with(&mut o, now, snapshot_with_next(vec![]));
+    assert_eq!(o.watch.as_ref().unwrap().floor, None, "no record at all has no edge");
 }
