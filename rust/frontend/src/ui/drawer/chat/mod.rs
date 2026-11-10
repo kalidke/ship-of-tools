@@ -4,7 +4,8 @@
 use std::time::Instant;
 
 use crate::net::dial::HostKey;
-use crate::net::transport::ChatEvt;
+use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
+use sot_protocol::ops::{ChatCode, ChatPostRes};
 use super::super::*;
 use crate::ui::input::keypress::KeyPress;
 
@@ -32,10 +33,34 @@ impl State {
     /// the next connection, ask again).
     fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
         for (host, req) in f(&mut self.chat, Instant::now()) {
+            let post = if let OutgoingReq::ChatPost { req } = &req { Some(req.clone()) } else { None };
             if let Err(e) = self.send_to(&host, req) {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
+                // A post the channel refused was never written: the owner reads it as refused, not as waiting for a reply.
+                if let Some(req) = post {
+                    let reply = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Unavailable });
+                    self.chat.on_evt(&host, ChatEvt::Posted { req, reply }, Instant::now());
+                }
             }
         }
+        if let Some(words) = self.chat.take_notice() {
+            self.status.set(words);
+        }
+    }
+
+    /// Enter in the Chat tenant: posts the draft of the row the chat shows, under `[chat] name`; a refusal goes to the status line.
+    pub(in crate::ui) fn send_chat_draft(&mut self) {
+        let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
+        let name = self.settings.chat_name.clone();
+        let mut refused = None;
+        self.with_chat(|c, now| c.send(row.as_ref(), name.as_deref(), now).unwrap_or_else(|words| {
+            refused = Some(words);
+            Vec::new()
+        }));
+        if let Some(words) = refused {
+            self.status.set(words);
+        }
+        self.window.request_redraw();
     }
 
     /// The person edits the draft of the row the chat shows, read at this key; a refusal goes to the status line.
@@ -108,10 +133,14 @@ pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, s
     }
 }
 
-/// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft; whether it was taken.
+/// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft, and `chat.send` posts it; whether it was taken.
 pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: String) -> bool {
     let KeyPress { event, action, ctrl, alt, super_, .. } = key;
-    if action == Some(Action::Paste) {
+    if action == Some(Action::ChatSend) {
+        if !event.repeat {
+            state.send_chat_draft();
+        }
+    } else if action == Some(Action::Paste) {
         if let Some(text) = (!event.repeat).then(read_clipboard_text).flatten() {
             state.edit_chat_draft(Edit::Text(&text));
         }

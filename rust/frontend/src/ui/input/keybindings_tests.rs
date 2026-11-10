@@ -56,12 +56,44 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.newline"] {
+    for name in ["preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.send", "chat.newline"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");
         assert_eq!(row, format!("| `{}` | {shortcuts} | {} |", spec.name, spec.detail));
     }
+}
+
+/// Enter and Shift+Enter belong to one action per context (D2, D3, K1): the Chat's post and newline reach the Chat alone,
+/// and every other pane keeps its own, because catalog order is dispatch precedence. The Chat border names them.
+#[test]
+fn enter_and_shift_enter_resolve_in_every_context_and_the_chat_border_names_them() {
+    use crate::ui::input::help::{border, Context, Pane};
+    use winit::keyboard::NamedKey;
+    let b = KeyBindings::defaults();
+    let resolve = |context: &Context, shift: bool| {
+        let m = Modifiers { shift, ..Modifiers::default() };
+        b.resolve(&Key::Named(NamedKey::Enter), None, m, context.consumes_text(), |a| context.allows(a)).map(|a| a.spec().name)
+    };
+    let pane = |pane| Context { pane, ..Context::default() };
+    let file = || Context { pane: Pane::Preview, file: Some("example.txt".into()), ..Context::default() };
+    for (name, context, enter, shift_enter) in [
+        ("Chat", pane(Pane::Chat), Some("chat.send"), Some("chat.newline")),
+        ("Repl", pane(Pane::Repl), Some("repl.submit"), Some("repl.newline")),
+        ("Nav", pane(Pane::Nav), Some("nav.open"), None),
+        ("Help", pane(Pane::Help), Some("help.manual"), None),
+        ("prompt", Context { prompt: true, ..pane(Pane::Nav) }, Some("input.confirm"), None),
+        ("picker", Context { picker: true, ..pane(Pane::Nav) }, Some("session.create"), Some("session.create_bare")),
+        ("editing", Context { editing: true, ..file() }, Some("edit.newline"), None),
+        ("Preview", file(), None, None),
+        ("Terminal", pane(Pane::Terminal), None, None),
+        ("Monitor", pane(Pane::Monitor), None, None),
+        ("Agent", pane(Pane::Agent), None, None),
+    ] {
+        assert_eq!((resolve(&context, false), resolve(&context, true)), (enter, shift_enter), "{name}");
+    }
+    let hint = format!("{} {}", b.first_label(Action::ChatSend), Action::ChatSend.spec().label);
+    assert!(border(&pane(Pane::Chat), &b, 100).starts_with(&hint), "the Chat border names Enter first");
 }
 
 #[test]

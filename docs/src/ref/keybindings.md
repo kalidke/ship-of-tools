@@ -186,6 +186,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.down` | `ArrowDown` | Move down through the displayed text. |
 | `preview.start` | `Home` | Scroll to the beginning of the displayed text. |
 | `chat.latest` | `End` | Return the Chat drawer to the newest message and follow it. |
+| `chat.send` | `Enter` | Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made. |
 | `chat.newline` | `Shift+Enter` | Continue the chat draft on another line. |
 | `preview.end` | `End` | Scroll to the end of the displayed text. |
 | `preview.half_up` | `Ctrl+u` | Scroll up half a pane. |

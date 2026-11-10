@@ -46,7 +46,8 @@ pub(super) enum Fill {
 pub(super) enum PostShown {
     Posted(Ts),
     Refused(ChatCode),
-    Limited(u64),
+    /// The wait in seconds, and whether it is a guess.
+    Limited(u64, bool),
     Unknown,
     /// Refused before it was written: the connection's daemon does not post plain text (T20).
     Outdated,
@@ -131,7 +132,10 @@ pub(super) struct ChatOwner {
     unsupported: HashSet<HostKey>,
     watch: Option<Watch>,
     posting: Option<(HostKey, ChatPostReq)>,
-    shown: Option<PostShown>,
+    /// The outcome taken and not yet reported to the drawer (`take_report`).
+    report: Option<PostShown>,
+    /// When a `limited` post may be sent again, and whether that wait is a guess.
+    wait_until: Option<(Instant, bool)>,
 }
 
 impl ChatOwner {
@@ -186,17 +190,38 @@ impl ChatOwner {
 
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
-    #[cfg_attr(not(test), allow(dead_code, reason = "the post bar (B5m) sends"))]
     pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
         if self.posting.is_some() {
             return None;
         }
         if !self.connected.contains(&host) {
-            self.shown = Some(PostShown::Refused(ChatCode::Unavailable));
+            self.took(PostShown::Refused(ChatCode::Unavailable));
             return None;
         }
         self.posting = Some((host.clone(), req.clone()));
         Some((host, OutgoingReq::ChatPost { req }))
+    }
+
+    /// A post's outcome is taken: the drawer is owed its words, also when it equals the one before.
+    fn took(&mut self, outcome: PostShown) {
+        self.report = Some(outcome);
+    }
+
+    /// The outcome taken since the last ask, once.
+    pub(super) fn take_report(&mut self) -> Option<PostShown> {
+        self.report.take()
+    }
+
+    /// The post waiting for its reply: its host and target row.
+    pub(super) fn posting_row(&self) -> Option<(&HostKey, &str)> {
+        self.posting.as_ref().map(|(h, r)| (h, r.target.row.as_str()))
+    }
+
+    /// The seconds left of a `limited` wait (rounded up, never zero), and whether it is a guess.
+    pub(super) fn waiting(&self, now: Instant) -> Option<(u64, bool)> {
+        let (until, assumed) = self.wait_until?;
+        let left = until.checked_duration_since(now).filter(|d| !d.is_zero())?;
+        Some((left.as_secs() + u64::from(left.subsec_nanos() > 0), assumed))
     }
 
     /// A link came or went. Either way the watch starts over: a coming link clears the unsupported mark and begins a recovery,
@@ -208,7 +233,7 @@ impl ChatOwner {
         } else {
             self.connected.remove(host);
             if self.posting.take_if(|(h, _)| h == host).is_some() {
-                self.shown = Some(PostShown::Unknown);
+                self.took(PostShown::Unknown);
             }
         }
         if let Some(w) = self.of(host) {
@@ -237,12 +262,12 @@ impl ChatOwner {
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),
             ChatEvt::Posted { req, reply } => {
-                self.on_posted(host, &req, reply);
+                self.on_posted(host, &req, reply, now);
                 Vec::new()
             }
             ChatEvt::PostNotSent { req } => {
                 if self.posting.take_if(|(h, r)| h == host && *r == req).is_some() {
-                    self.shown = Some(PostShown::Outdated);
+                    self.took(PostShown::Outdated);
                 }
                 Vec::new()
             }
@@ -382,18 +407,23 @@ impl ChatOwner {
         self.drive(now)
     }
 
-    fn on_posted(&mut self, host: &HostKey, req: &ChatPostReq, reply: ChatReply<ChatPostRes>) {
-        if self.posting.take_if(|(h, r)| h == host && r == req).is_none() {
-            return;
-        }
+    /// Takes the outcome of the post waiting for this reply, and returns the row whose post the reply proves was made.
+    pub(super) fn on_posted(&mut self, host: &HostKey, req: &ChatPostReq, reply: ChatReply<ChatPostRes>, now: Instant) -> Option<String> {
+        self.posting.take_if(|(h, r)| h == host && r == req)?;
         self.mark_unsupported(host, &reply);
-        self.shown = Some(match reply {
+        let outcome = match reply {
             ChatReply::Done(ChatPostRes::Posted { ts }) => PostShown::Posted(ts),
             ChatReply::Done(ChatPostRes::Refused { code }) => PostShown::Refused(code),
-            ChatReply::Done(ChatPostRes::Limited { retry_after_secs, .. }) => PostShown::Limited(retry_after_secs),
+            ChatReply::Done(ChatPostRes::Limited { retry_after_secs, assumed }) => {
+                self.wait_until = Some((now + Duration::from_secs(retry_after_secs), assumed));
+                PostShown::Limited(retry_after_secs, assumed)
+            }
             ChatReply::Unsupported => PostShown::Refused(ChatCode::Unavailable),
             ChatReply::Done(ChatPostRes::Unknown) | ChatReply::Refused(_) => PostShown::Unknown,
-        });
+        };
+        let made = matches!(outcome, PostShown::Posted(_)).then(|| req.target.row.clone());
+        self.took(outcome);
+        made
     }
 }
 

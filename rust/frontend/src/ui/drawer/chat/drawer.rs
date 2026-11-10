@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use sot_protocol::ops::{ChatHistoryReq, ChatResolveRes, ChatTarget};
+use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -11,9 +11,8 @@ use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
 use super::compose::{Compose, ComposeText, Edit};
-use super::owner::{dead, ChatOwner, Fill, Out};
+use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::row_channel::{RowChannel, Stand};
-use sot_protocol::ops::ChatCode;
 use super::view::{ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
@@ -79,6 +78,25 @@ pub(in crate::ui) struct ChatDrawer {
     compose: Compose,
     /// How many compose rows the last frame drew at the drawer's foot: the records' body is that much shorter.
     foot: u16,
+    /// The words of the last post's outcome, until the status line takes them.
+    notice: Option<String>,
+}
+
+/// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
+fn post_words(shown: &PostShown) -> Option<String> {
+    Some(match shown {
+        PostShown::Posted(_) => return None,
+        PostShown::Refused(ChatCode::BadRequest) => "not posted: the request is not valid; check [chat] name in settings.toml".into(),
+        PostShown::Refused(code) => format!("not posted: {}", code.text()),
+        PostShown::Limited(secs, assumed) => wait_words(*secs, *assumed),
+        PostShown::Unknown => "may have been posted: check the channel before sending it again".into(),
+        PostShown::Outdated => "not posted: the hub must be updated to post".into(),
+    })
+}
+
+/// The status line's words for a rate limit: the seconds left, with `about` when the wait is a guess.
+fn wait_words(secs: u64, assumed: bool) -> String {
+    format!("not posted: rate limited; wait {}{secs} s", if assumed { "about " } else { "" })
 }
 
 impl ChatDrawer {
@@ -128,8 +146,42 @@ impl ChatDrawer {
                 outs.extend(self.flight.send(held));
                 outs
             }
+            ChatEvt::Posted { req, reply } => {
+                let mut made = None;
+                let outs = self.owner_outs(|o| {
+                    made = o.on_posted(host, &req, reply, now);
+                    Vec::new()
+                });
+                if let Some(row) = made {
+                    self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
+                }
+                outs
+            }
             evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
         }
+    }
+
+    /// Enter: posts `row`'s draft once, to the channel it was begun in, under `name` (`[chat] name`, `None` when unset or
+    /// blank). It needs a draft with something in it and the name set, no post waiting and no `limited` wait running; the
+    /// draft stays until a reply proves the post.
+    pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
+        let Some(row) = row else { return Err("no row to write for".into()) };
+        if self.owner.posting_row().is_some() {
+            return Err("posting…".into());
+        }
+        let Some(draft) = self.compose.draft(row).filter(|d| !d.text.trim().is_empty()) else { return Err("nothing to post".into()) };
+        let Some(name) = name else { return Err("not posted: set [chat] name in settings.toml".into()) };
+        if let Some((secs, assumed)) = self.owner.waiting(now) {
+            return Err(wait_words(secs, assumed));
+        }
+        let req = ChatPostReq { target: draft.dest.clone(), thread: None, kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
+        let host = row.host.clone();
+        Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+    }
+
+    /// The words of the post outcome that has not yet been said.
+    pub(in crate::ui) fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     /// The title: the channel, then the words of the outcome (the row's, or for a mapped row the fill's).
@@ -189,6 +241,9 @@ impl ChatDrawer {
     /// line's words.
     pub(in crate::ui) fn edit(&mut self, row: Option<&ResultRowIdentity>, edit: Edit) -> Result<(), &'static str> {
         let Some(row) = row else { return Err("no row to write for") };
+        if self.owner.posting_row() == Some((&row.host, row.workspace_id.as_str())) {
+            return Err("posting…");
+        }
         let dest = self.watch_for(row).cloned();
         self.compose.edit(row, dest.as_ref(), edit)
     }
@@ -245,6 +300,9 @@ impl ChatDrawer {
         let outs = f(&mut self.owner);
         if let Some((host, req)) = before.filter(|b| Some(b) != self.owner.reading().as_ref()) {
             self.flight.abandon(&host, &req);
+        }
+        if let Some(outcome) = self.owner.take_report() {
+            self.notice = post_words(&outcome);
         }
         self.flight.send(outs)
     }
