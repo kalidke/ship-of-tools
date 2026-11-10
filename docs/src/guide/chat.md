@@ -17,6 +17,11 @@ refused or empty read stops it, when Slack's plan hides older messages and when 
 older than the newest 100 are as read: an edit or delete of one does not reach the drawer. The drawer drops the oldest past 256, never the message
 the reader is on or a newer one, so a reader on the oldest message stays there while the drawer holds up to 276; past 276 the
 oldest go anyway and the view moves to the next message that is kept. Switching to another row's channel starts at its newest.
+Switching back to one of the last two channels shown draws the messages the drawer held for it as soon as the hub answers
+for the row, with `reading…` in the title until it is read again. The read returns the channel's newest messages, which
+replace the newest held; the older ones kept stay as read, so an edit or delete of one, or a change to a thread's reply count, made while the channel was away does
+not reach the drawer for as long as the channel is one of the last two. The drawer keeps those messages in memory when the
+Chat drawer is hidden.
 
 Each message starts with its own header line: the author's name, a tag for a post that came from the drawer, a row or a
 bot, and the time (`HH:MM` for today, with the date for an earlier day). The text follows as typed.
