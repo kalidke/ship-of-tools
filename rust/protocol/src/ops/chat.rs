@@ -70,6 +70,23 @@ pub enum ChatCode {
     Other,
 }
 
+impl ChatCode {
+    /// The one fixed text of a code: the `error` of a refusal, and what a window shows for it.
+    pub fn text(self) -> &'static str {
+        match self {
+            ChatCode::Unavailable => "the chat is not available here",
+            ChatCode::Unmapped => "the row's folder maps to no channel",
+            ChatCode::StaleRow => "the row is gone or was replaced",
+            ChatCode::StaleMapping => "the row now maps to another channel",
+            ChatCode::BadRequest => "the request is not valid",
+            ChatCode::TooManyWatches => "too many channels are watched",
+            ChatCode::Limited => "the chat service is rate limited",
+            ChatCode::Busy => "the chat service is busy",
+            ChatCode::Failed | ChatCode::Other => "the chat request failed",
+        }
+    }
+}
+
 /// The body of a refusal, as a reader decodes it (`error`, the fixed text, is ignored).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatRefusal {

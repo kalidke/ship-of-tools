@@ -106,7 +106,7 @@ name is in this crate's one op table.
     a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
-    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`), never
+    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
@@ -125,7 +125,7 @@ name is in this crate's one op table.
     `Value`, where the last wins); `chat.status` names the channels that need a snapshot, and nothing says a watch became
     complete: a window reads content by `chat.history` and `chat.changed`, so `complete` matters only to a second watch's reply; the watch count `MAX_WATCHED` is also `sot-chat`'s `watch::MAX_CHANNELS`, held equal by a test;
     a cursor is bounded here and bound to its query by `sot-chat`; `chat.fetch` and `chat.post_file` are B4's.
-    Tests `ops/chat_tests.rs`: `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
+    Tests `ops/chat_tests.rs`: `every_code_has_its_one_text`, `the_chat_ops_are_declared_in_the_one_table`, `every_request_reply_and_event_keeps_its_shape`,
     `a_page_carries_records_that_round_trip`, `a_code_added_later_reads_as_other`,
     `an_older_daemons_unknown_op_refusal_reads_as_a_refusal_with_no_code`, `a_phase_or_outcome_added_later_reads_as_the_safe_one`,
     `a_wait_is_clamped_to_an_hour`, `a_state_added_later_reads_as_a_safe_one`, `a_record_with_an_origin_added_later_does_not_spoil_its_page`, `a_legal_page_fits_the_envelope`,

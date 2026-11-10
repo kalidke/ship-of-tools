@@ -22,23 +22,9 @@ use super::watch::Conn;
 use super::Chat;
 use crate::rows::Workspaces;
 
-fn text(code: ChatCode) -> &'static str {
-    match code {
-        ChatCode::Unavailable => "the chat is not available here",
-        ChatCode::Unmapped => "the row's folder maps to no channel",
-        ChatCode::StaleRow => "the row is gone or was replaced",
-        ChatCode::StaleMapping => "the row now maps to another channel",
-        ChatCode::BadRequest => "the request is not valid",
-        ChatCode::TooManyWatches => "too many channels are watched",
-        ChatCode::Limited => "the chat service is rate limited",
-        ChatCode::Busy => "the chat service is busy",
-        ChatCode::Failed | ChatCode::Other => "the chat request failed",
-    }
-}
-
 /// A refusal: the standard error payload with the fixed text and the code, never Slack's or a library's words.
 fn refuse(req_id: u64, op: &str, code: ChatCode) -> HandlerOutput {
-    let payload = serde_json::json!({ "error": text(code), "code": code });
+    let payload = serde_json::json!({ "error": code.text(), "code": code });
     vec![(Frame::res(req_id, op, payload), None)]
 }
 
@@ -216,4 +202,15 @@ pub(crate) async fn unwatch(req_id: u64, payload: serde_json::Value, chat: &Arc<
     }
     conn.release(req.target.channel.as_str());
     reply(req_id, NAME, &ChatUnwatchRes {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_carries_its_codes_one_text() {
+        let out = refuse(7, "chat.watch", ChatCode::StaleMapping);
+        assert_eq!(out[0].0.payload, serde_json::json!({ "error": ChatCode::StaleMapping.text(), "code": "stale_mapping" }));
+    }
 }

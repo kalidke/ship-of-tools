@@ -245,3 +245,22 @@ fn a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds() {
     assert!(serde_json::from_value::<ChatStatusEvt>(status(32)).is_ok());
     assert!(serde_json::from_value::<ChatStatusEvt>(status(33)).is_err());
 }
+
+#[test]
+fn every_code_has_its_one_text() {
+    let table = [
+        (ChatCode::Unavailable, "the chat is not available here"),
+        (ChatCode::Unmapped, "the row's folder maps to no channel"),
+        (ChatCode::StaleRow, "the row is gone or was replaced"),
+        (ChatCode::StaleMapping, "the row now maps to another channel"),
+        (ChatCode::BadRequest, "the request is not valid"),
+        (ChatCode::TooManyWatches, "too many channels are watched"),
+        (ChatCode::Limited, "the chat service is rate limited"),
+        (ChatCode::Busy, "the chat service is busy"),
+        (ChatCode::Failed, "the chat request failed"),
+        (ChatCode::Other, "the chat request failed"),
+    ];
+    for (code, words) in table {
+        assert_eq!(code.text(), words, "{code:?}");
+    }
+}
