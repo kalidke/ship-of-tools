@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTarget};
+use sot_protocol::chat::MAX_NAME;
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
@@ -291,4 +292,98 @@ fn a_posted_reply_clears_the_draft_of_the_row_it_proves_and_no_other() {
     assert_eq!(d.draft(), Some(("from b", "C1")), "the shown row's draft stays");
     show(&mut d, "R", at + Duration::from_secs(1));
     assert_eq!(d.draft(), None, "the row the reply proves is cleared");
+}
+
+/// The prompt open over row R's draft.
+fn asking() -> (ChatDrawer, Instant) {
+    let (mut d, at) = watching();
+    d.edit(Some(&row("R")), Edit::Text("hello")).unwrap();
+    d.ask_name();
+    assert_eq!(d.asking(), Some(""));
+    (d, at)
+}
+
+#[test]
+fn the_name_prompt_edits_the_name_not_the_draft_and_escape_keeps_it() {
+    let (mut d, _) = asking();
+    let foot = |d: &ChatDrawer, w| compose_rows(&d.compose_text(true).unwrap(), w, 10);
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: █"]);
+
+    // The keys edit the name, not the draft.
+    for e in [Edit::Text("Ad"), Edit::Text("x"), Edit::Backspace, Edit::Text("a"), Edit::Space, Edit::Newline] {
+        d.edit_name(e).unwrap();
+    }
+    assert_eq!(d.asking(), Some("Ada "));
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: Ada █"]);
+    assert_eq!(foot(&d, 29), ["Name for your chat posts: a █"], "a narrow foot keeps the end of the name");
+    d.ask_name();
+    assert_eq!(d.asking(), Some("Ada "), "asking again keeps a name half typed");
+
+    // Escape cancels and keeps the draft; the foot is the draft's again.
+    d.cancel_name();
+    assert_eq!(d.asking(), None);
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["> hello█", "to C1"]);
+}
+
+#[test]
+fn the_prompt_ends_where_the_view_it_asked_in_ends_and_keeps_the_draft() {
+    // The same row and mapping: it stays, and Enter again does not empty a name half typed.
+    let (mut d, at) = asking();
+    d.edit_name(Edit::Text("Ad")).unwrap();
+    d.tick(Some(row("R")), at + Duration::from_secs(1));
+    d.ask_name();
+    assert_eq!(d.asking(), Some("Ad"));
+
+    // Another row is shown.
+    d.tick(Some(row("S")), at + Duration::from_secs(2));
+    assert_eq!(d.asking(), None, "a row change");
+    assert_eq!(d.draft(), None, "row S has no draft");
+    // The drawer is hidden (a frame with no wanted row, and the hide call).
+    let (mut d, _) = asking();
+    d.hide();
+    assert_eq!(d.asking(), None, "a hide");
+    let (mut d, at2) = asking();
+    d.tick(None, at2 + Duration::from_secs(1));
+    assert_eq!(d.asking(), None, "no wanted row");
+    // The link changes.
+    let (mut d, at3) = asking();
+    d.on_connection(&"a".to_string(), false, at3);
+    assert_eq!(d.asking(), None, "a link change");
+    // The row's mapping is gone: unmapped.
+    let (mut d, at4) = asking();
+    d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "unmapped" })), at4);
+    d.tick(Some(row("R")), at4 + Duration::from_secs(1));
+    assert_eq!(d.asking(), None, "an unmapped row");
+    // The draft was kept through each.
+    let (mut d, _) = asking();
+    d.hide();
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+}
+
+#[test]
+fn a_pasted_control_character_or_a_name_past_the_bound_is_refused_whole() {
+    let (mut d, _) = asking();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert!(d.edit_name(Edit::Text("a\nb")).unwrap_err().contains("control"));
+    assert!(d.edit_name(Edit::Text("a\tb")).is_err());
+    assert_eq!(d.asking(), Some("Ada"), "nothing joined");
+    d.edit_name(Edit::Text(&"n".repeat(MAX_NAME - 3))).unwrap();
+    assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
+    assert_eq!(d.edit_name(Edit::Space), Err("name is full: nothing added"));
+    assert!(d.edit_name(Edit::Text("é")).is_err());
+    d.edit_name(Edit::Backspace).unwrap();
+    assert!(d.edit_name(Edit::Text("é")).is_err(), "the bound counts bytes");
+    d.edit_name(Edit::Text("x")).unwrap();
+    assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
+}
+
+#[test]
+fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height() {
+    let (mut d, _) = asking();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert_eq!(compose_rows(&d.compose_text(false).unwrap(), 40, 10), ["Name for your chat posts: Ada"], "no block unfocused");
+    assert_eq!(compose_rows(&d.compose_text(true).unwrap(), 40, 10), ["Name for your chat posts: Ada█"]);
+    assert!(compose_rows(&d.compose_text(true).unwrap(), 40, 0).is_empty(), "never more rows than the height");
 }
