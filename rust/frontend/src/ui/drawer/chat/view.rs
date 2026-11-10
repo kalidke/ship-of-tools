@@ -111,6 +111,8 @@ pub(in crate::ui) struct ChatView {
     cache: HashMap<Key, Shaped>,
     placed: Vec<(Key, f32)>,
     body: Option<ScreenRect>,
+    /// The oldest held record reaches the body: older history is wanted.
+    pub(super) at_oldest: bool,
 }
 
 impl ChatView {
@@ -139,6 +141,7 @@ impl ChatView {
         self.pending = (0.0, 0.0);
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
         let spots = place(count, body.h, from, &mut height);
+        self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
         self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
         self.body = Some(body);
         let centre = from.map_or(count, |f| f.0);

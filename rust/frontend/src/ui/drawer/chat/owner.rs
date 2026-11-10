@@ -9,7 +9,7 @@ use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{
     ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
-    ChatWatchState, MAX_PAGE,
+    ChatWatchState, ChatUpper, MAX_PAGE,
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
@@ -27,6 +27,8 @@ pub(super) const GAP_PACE: Duration = Duration::from_secs(60);
 const KEPT: usize = 256;
 /// The most a parked reader holds the store to: `KEPT` and one page. Past it the oldest go whoever reads them.
 const CEILING: usize = KEPT + MAX_PAGE as usize;
+/// Between two asks of a page that was refused as rate limited.
+const LIMITED_PACE: Duration = Duration::from_secs(30);
 
 pub(super) type Out = (HostKey, OutgoingReq);
 
@@ -56,6 +58,18 @@ pub(super) enum PostShown {
     Outdated,
 }
 
+/// Why the older pages stopped.
+#[derive(Clone, Copy, PartialEq)]
+enum Stop {
+    /// Slack's plan hides the history below the last page.
+    Hides,
+    /// A page or snapshot came back empty with older history said to remain: nothing to move the floor to, so paging stops
+    /// until a replacing snapshot or a row change.
+    Stuck,
+    /// The last page read was refused, when and with what: asked again after a pace unless the refusal is for good.
+    Refused(Instant, ChatCode),
+}
+
 struct Watch {
     host: HostKey,
     target: ChatTarget,
@@ -80,6 +94,12 @@ struct Watch {
     floor: Option<Ts>,
     /// The record the reader is anchored on (the view's, set each frame): the bound's trim never takes it.
     anchor: Option<Ts>,
+    /// The oldest held record is in the view, as the view last placed it: older history is wanted.
+    reaches: bool,
+    /// The one page read in flight, apart from the snapshot's `reading`: it never delays a watch.
+    paging: Option<ChatHistoryReq>,
+    /// Why paging stopped, if it did.
+    stop: Option<Stop>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
     overlay: Vec<ChatChangedEvt>,
 }
@@ -104,6 +124,20 @@ impl Watch {
 
     fn oldest(&self) -> Option<Ts> {
         self.records.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
+    }
+
+    /// The page below the floor, asked for while the reader is at the oldest held record, older history exists and a page
+    /// fits. A refused page waits out its pace first, and one refused for good is not asked again until a row or link change.
+    fn older(&mut self, now: Instant) -> Option<ChatHistoryReq> {
+        let due = match self.stop {
+            None => true,
+            Some(Stop::Refused(at, code)) => !dead(code) && now.duration_since(at) >= if code == ChatCode::Limited { LIMITED_PACE } else { PACE },
+            Some(Stop::Hides | Stop::Stuck) => false,
+        };
+        let floor = self.floor.clone().filter(|_| self.reaches && self.paging.is_none() && due && self.records.len() < KEPT)?;
+        let req = ChatHistoryReq { target: self.target.clone(), thread: None, after: None, upper: Some(ChatUpper::Before(floor)), limit: MAX_PAGE, cursor: None };
+        self.paging = Some(req.clone());
+        Some(req)
     }
 
     /// A put of a record not held and older than the floor is not added: it is an edit below what the daemon tracks (its
@@ -170,7 +204,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, anchor: None, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, anchor: None, reaches: false, paging: None, stop: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -197,6 +231,30 @@ impl ChatOwner {
         self.watch.as_ref().and_then(|w| w.anchor.clone())
     }
 
+    /// Whether the oldest held record is in the view, as the view last placed it.
+    pub(super) fn reaches(&mut self, yes: bool) {
+        if let Some(w) = self.watch.as_mut() {
+            w.reaches = yes;
+        }
+    }
+
+    /// The page read in flight, with its host.
+    pub(super) fn paging(&self) -> Option<(HostKey, ChatHistoryReq)> {
+        self.watch.as_ref().and_then(|w| w.paging.clone().map(|r| (w.host.clone(), r)))
+    }
+
+    /// What the title says of the older history: Slack's plan hides it, a page was refused, or the store is full.
+    pub(super) fn older_words(&self) -> Option<String> {
+        let w = self.watch.as_ref()?;
+        match w.stop {
+            Some(Stop::Hides) => Some("Slack's plan hides older messages".into()),
+            Some(Stop::Stuck) => Some("older messages could not be read".into()),
+            Some(Stop::Refused(_, code)) if w.floor.is_some() => Some(format!("older messages are not read: {}", code.text())),
+            _ if w.floor.is_some() && w.records.len() >= KEPT => Some("older messages past the drawer's bound are not shown".into()),
+            _ => None,
+        }
+    }
+
     /// The held records with whether each was deleted, oldest first.
     pub(super) fn records(&self) -> Vec<(&ChatRecord, bool)> {
         let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values().map(|(r, d)| (r, *d))).collect();
@@ -207,7 +265,7 @@ impl ChatOwner {
     /// The channel is known to be empty: the snapshot was read whole and holds no record. Not while it is read, offline, a gap
     /// or unsupported.
     pub(super) fn no_messages(&self) -> bool {
-        self.fill() == Some(Fill::Complete) && self.watch.as_ref().is_some_and(|w| w.records.is_empty())
+        self.fill() == Some(Fill::Complete) && self.watch.as_ref().is_some_and(|w| w.records.is_empty() && w.stop != Some(Stop::Stuck))
     }
 
     /// The watched channel's id.
@@ -272,8 +330,9 @@ impl ChatOwner {
             }
         }
         if let Some(w) = self.of(host) {
-            (w.registered, w.fill, w.reading, w.stale) = (false, Fill::Needed, None, false);
+            (w.registered, w.fill, w.reading, w.stale, w.paging) = (false, Fill::Needed, None, false, None);
             w.begin(now);
+            w.stop = None;
             w.overlay.clear();
         }
         self.drive(now)
@@ -362,7 +421,8 @@ impl ChatOwner {
             return Vec::new();
         }
         match w.fill {
-            Fill::Reading | Fill::Complete => return Vec::new(),
+            Fill::Reading => return Vec::new(),
+            Fill::Complete => return w.older(now).map(|req| (w.host.clone(), OutgoingReq::ChatHistory { req })).into_iter().collect(),
             Fill::Gap(Some(code)) if dead(code) => return Vec::new(),
             Fill::Gap(_) => {
                 if w.last_try.is_some_and(|t| now.duration_since(t) < GAP_PACE) {
@@ -420,6 +480,9 @@ impl ChatOwner {
     /// read a loss outdated replaces nothing.
     fn on_history(&mut self, host: &HostKey, req: &ChatHistoryReq, reply: ChatReply<ChatHistoryRes>, now: Instant) -> Vec<Out> {
         self.mark_unsupported(host, &reply);
+        if self.of(host).is_some_and(|w| w.paging.as_ref() == Some(req)) {
+            return self.on_page(host, req, reply, now);
+        }
         let Some(w) = self.of(host).filter(|w| w.reading.as_ref() == Some(req)) else { return Vec::new() };
         w.reading = None;
         w.fill = Fill::Needed;
@@ -432,6 +495,11 @@ impl ChatOwner {
                 let fresh: HashMap<_, _> = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), (r, false))).collect();
                 // Without `next` it is the whole channel. With `next` that reaches back to what was held, the older held
                 // records stay (tombstones too) and the floor with them; otherwise they go and its oldest is the floor.
+                let empty_more = fresh.is_empty() && res.next.is_some();
+                // A replacing snapshot ends a stuck page.
+                if w.stop == Some(Stop::Stuck) {
+                    w.stop = None;
+                }
                 let first = fresh.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned();
                 let newest = w.records.keys().max_by(|a, b| ts_order(a).cmp(&ts_order(b)));
                 let overlaps = first.as_ref().zip(newest).is_some_and(|(f, n)| ts_order(f) <= ts_order(n));
@@ -444,7 +512,10 @@ impl ChatOwner {
                     w.records = fresh;
                     // A snapshot of nothing but thread replies has no top-level record to be the floor: the oldest reply is.
                     w.floor = if res.next.is_some() { w.oldest().or(raw) } else { None };
+                    // The page in flight was for the older records: its reply is an orphan.
+                    (w.paging, w.stop) = (None, empty_more.then_some(Stop::Stuck));
                 }
+                w.reaches = false;
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 w.bound();
                 w.fill = Fill::Complete;
@@ -455,6 +526,43 @@ impl ChatOwner {
             ChatReply::Unsupported => w.registered = false,
         }
         (w.stale, w.overlay) = (false, Vec::new());
+        self.drive(now)
+    }
+
+    /// The page read's reply, taken only while its upper bound is still `before(floor)`: a floor that moved meanwhile (a trim)
+    /// would leave a hole. As many of its newest top-level records as fit in `KEPT` join, and the floor falls to the oldest
+    /// joined, or to the page's oldest while a `next` remains (Slack's plan hiding the rest ends the paging). An empty page
+    /// with a `next` keeps the floor and stops the paging. A refusal is asked again by `older` after its pace.
+    fn on_page(&mut self, host: &HostKey, req: &ChatHistoryReq, reply: ChatReply<ChatHistoryRes>, now: Instant) -> Vec<Out> {
+        let Some(w) = self.of(host) else { return Vec::new() };
+        w.paging = None;
+        match reply {
+            ChatReply::Done(res) if req.upper == w.floor.clone().map(ChatUpper::Before) => {
+                let raw = res.records.iter().map(|r| r.ts.clone()).min_by(|a, b| ts_order(a).cmp(&ts_order(b)));
+                let mut top: Vec<ChatRecord> = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts && w.floor.as_ref().is_none_or(|f| ts_order(&r.ts) < ts_order(f))).collect();
+                top.sort_by(|a, b| ts_order(&b.ts).cmp(&ts_order(&a.ts)));
+                let room = KEPT.saturating_sub(w.records.len());
+                let cut = top.len() > room;
+                top.truncate(room);
+                let joined = top.last().map(|r| r.ts.clone());
+                w.records.extend(top.into_iter().map(|r| (r.ts.clone(), (r, false))));
+                w.stop = None;
+                if cut {
+                    w.floor = joined.or(w.floor.take());
+                } else {
+                    if raw.is_none() && res.next.is_some() {
+                        w.stop = Some(Stop::Stuck);
+                    }
+                    w.floor = if w.stop.is_some() { w.floor.take() } else { raw.filter(|_| res.next.is_some() && !res.limited) };
+                    w.stop = if res.limited { Some(Stop::Hides) } else { w.stop };
+                }
+                // The view's word is of the records before this page: the next frame says whether the reader is at the oldest now.
+                w.reaches = false;
+            }
+            ChatReply::Done(_) => w.reaches = false,
+            ChatReply::Refused(code) => w.stop = Some(Stop::Refused(now, code)),
+            ChatReply::Unsupported => {}
+        }
         self.drive(now)
     }
 

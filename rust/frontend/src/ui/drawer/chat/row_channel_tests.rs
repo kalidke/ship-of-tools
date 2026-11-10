@@ -298,3 +298,36 @@ fn a_link_change_cancels_that_hosts_held_read() {
     d.on_evt(&host(), mapped("R"), at(1060));
     assert_eq!(history(&d.on_evt(&host(), complete("R"), at(1070))), old, "the re-watch's read goes at once");
 }
+
+/// A page read for the channel a row left is an orphan: asked again after a hide and show, the same page waits for the first
+/// one's reply, and the first reply fills nothing.
+#[test]
+fn a_page_read_again_after_a_hide_and_show_waits_for_the_first_reply() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    let snapshot = reading(&mut d, t0, 0, "C1");
+    let reply = serde_json::json!({ "records": [{ "workspace": "T1", "channel": "C1", "ts": "5.000001", "thread_ts": "5.000001",
+        "author": { "id": "U1", "name": "A" }, "origin": "member", "text": "x", "reply_count": 0, "files": [] }], "next": "older" });
+    let snap = ChatEvt::History { req: snapshot, reply: ChatReply::Done(serde_json::from_value(reply).unwrap()) };
+    d.on_evt(&host(), snap, at(180));
+    d.reach_oldest(true);
+    let (outs, _) = d.tick(wanted("R"), at(190));
+    let first = history(&outs);
+    d.tick(None, at(200));
+    d.tick(wanted("R"), at(300));
+    d.tick(wanted("R"), at(450));
+    d.on_evt(&host(), mapped("R"), at(460));
+    let snapshot = history(&d.on_evt(&host(), complete("R"), at(470)));
+    let reply = serde_json::json!({ "records": [{ "workspace": "T1", "channel": "C1", "ts": "5.000001", "thread_ts": "5.000001",
+        "author": { "id": "U1", "name": "A" }, "origin": "member", "text": "x", "reply_count": 0, "files": [] }], "next": "older" });
+    let snap = ChatEvt::History { req: snapshot, reply: ChatReply::Done(serde_json::from_value(reply).unwrap()) };
+    assert!(d.on_evt(&host(), snap, at(480)).is_empty());
+    d.reach_oldest(true);
+    assert!(d.tick(wanted("R"), at(490)).0.is_empty(), "the same page waits for the first one's reply");
+    let late = ChatEvt::History { req: first.clone(), reply: ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": [{ "workspace": "T1", "channel": "C1",
+        "ts": "4.000001", "thread_ts": "4.000001", "author": { "id": "U1", "name": "A" }, "origin": "member", "text": "x", "reply_count": 0, "files": [] }] })).unwrap()) };
+    assert_eq!(history(&d.on_evt(&host(), late, at(500))), first, "then it goes");
+    assert_eq!(d.held(), 1, "and the first reply fills nothing");
+}
