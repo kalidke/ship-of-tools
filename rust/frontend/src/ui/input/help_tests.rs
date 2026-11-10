@@ -215,13 +215,13 @@ fn the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler() {
     for (drawer, pane, input) in [
         (Closed, Pane::Repl, DrawerInput::Repl), (Repl, Pane::Repl, DrawerInput::Repl),
         (Terminal, Pane::Terminal, DrawerInput::Terminal), (Monitor, Pane::Monitor, DrawerInput::Inert),
-        (Help, Pane::Help, DrawerInput::Inert), (Chat, Pane::Chat, DrawerInput::Inert),
+        (Help, Pane::Help, DrawerInput::Inert), (Chat, Pane::Chat, DrawerInput::Chat),
     ] {
         assert_eq!(Pane::of_drawer(drawer), pane, "{drawer:?}");
         assert_eq!(DrawerInput::of(drawer), input, "{drawer:?}");
         let want = match (input, drawer) {
             (DrawerInput::Repl, _) => LineScroll::Repl,
-            (_, Chat) => LineScroll::Chat,
+            (DrawerInput::Chat, _) => LineScroll::Chat,
             _ => LineScroll::Nowhere,
         };
         assert_eq!(line_scroll_target(PaneFocus::Repl, drawer), want, "{drawer:?} line scroll");

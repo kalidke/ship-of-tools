@@ -53,16 +53,18 @@ pub struct Context {
     pub alternate_screen: bool,
 }
 /// Who the drawer's keys, paste, wheel and line scroll reach: the one decision every handler matches, with no
-/// wildcard. Only `Repl` reaches the REPL's draft and scrollback; an `Inert` tenant takes nothing but Escape.
+/// wildcard. Only `Repl` reaches the REPL's draft and scrollback; `Chat` reaches the chat's reading keys and its draft;
+/// an `Inert` tenant (Monitor, Help) takes nothing but Escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DrawerInput { Repl, Terminal, Inert }
+pub enum DrawerInput { Repl, Terminal, Chat, Inert }
 impl DrawerInput {
     pub fn of(drawer: crate::ui::DrawerContent) -> Self {
         use crate::ui::DrawerContent as D;
         match drawer {
             D::Closed | D::Repl => Self::Repl,
             D::Terminal => Self::Terminal,
-            D::Monitor | D::Help | D::Chat => Self::Inert,
+            D::Chat => Self::Chat,
+            D::Monitor | D::Help => Self::Inert,
         }
     }
 }

@@ -164,6 +164,7 @@ actions! {
     PreviewDown, "preview.down", ["ArrowDown"], "Scroll down one line", "Move down through the displayed text.", "Text", Text;
     PreviewStart, "preview.start", ["Home"], "Document start", "Scroll to the beginning of the displayed text.", "Text", Text;
     ChatLatest, "chat.latest", ["End"], "Newest message", "Return the Chat drawer to the newest message and follow it.", "Chat", Chat;
+    ChatNewline, "chat.newline", ["Shift+Enter"], "Insert newline", "Continue the chat draft on another line.", "Chat", Chat;
     PreviewEnd, "preview.end", ["End"], "Document end", "Scroll to the end of the displayed text.", "Text", Text;
     PreviewHalfUp, "preview.half_up", ["Ctrl+u"], "Half page up", "Scroll up half a pane.", "Text", HalfScroll;
     PreviewHalfDown, "preview.half_down", ["Ctrl+d"], "Half page down", "Scroll down half a pane.", "Text", HalfScroll;

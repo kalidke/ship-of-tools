@@ -360,10 +360,10 @@ pub(in crate::ui) enum LineScroll { Repl, Chat, Preview, Nowhere }
 /// Where Alt+Up / Alt+Down scroll: the REPL only when the drawer's input is the REPL's, never a tenant's; the chat only
 /// when it is the shown tenant and has the focus.
 pub(in crate::ui) fn line_scroll_target(focus: PaneFocus, drawer: DrawerContent) -> LineScroll {
-    match (focus, help::DrawerInput::of(drawer), drawer) {
-        (PaneFocus::Repl, help::DrawerInput::Repl, _) => LineScroll::Repl,
-        (PaneFocus::Repl, _, DrawerContent::Chat) => LineScroll::Chat,
-        (PaneFocus::Preview, ..) => LineScroll::Preview,
+    match (focus, help::DrawerInput::of(drawer)) {
+        (PaneFocus::Repl, help::DrawerInput::Repl) => LineScroll::Repl,
+        (PaneFocus::Repl, help::DrawerInput::Chat) => LineScroll::Chat,
+        (PaneFocus::Preview, _) => LineScroll::Preview,
         _ => LineScroll::Nowhere,
     }
 }

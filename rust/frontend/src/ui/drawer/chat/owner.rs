@@ -170,7 +170,11 @@ impl ChatOwner {
 
     /// The watched channel's id.
     pub(super) fn channel(&self) -> Option<&str> {
-        self.watch.as_ref().map(|w| w.target.channel.as_str())
+        self.target().map(|t| t.channel.as_str())
+    }
+
+    pub(super) fn target(&self) -> Option<&ChatTarget> {
+        self.watch.as_ref().map(|w| &w.target)
     }
 
     pub(super) fn fill(&self) -> Option<Fill> {

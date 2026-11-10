@@ -1,8 +1,12 @@
+use std::time::{Duration, Instant};
+
 use sot_protocol::ops::ChatTarget;
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{Compose, Edit};
+use super::drawer::ChatDrawer;
 use super::draft_edit;
+use super::row_channel_tests::{answer, mapped};
 use crate::ui::input::keybindings::Action;
 use crate::ui::ResultRowIdentity;
 
@@ -87,4 +91,45 @@ fn the_draft_keeps_its_destination_and_its_escaped_bound() {
     assert_eq!(held(&c, &r), Some(("gone", "C2")));
     c.retire(&[r.clone()]);
     assert_eq!(held(&c, &r), None);
+}
+
+/// A connected drawer on row `R`, its channel `C1` resolved and watched.
+fn watching() -> (ChatDrawer, Instant) {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.on_connection(&"a".to_string(), true, t0);
+    d.tick(Some(row("R")), t0);
+    let at = t0 + Duration::from_millis(200);
+    d.tick(Some(row("R")), at);
+    d.on_evt(&"a".to_string(), mapped("R"), at);
+    (d, at)
+}
+
+#[test]
+fn the_wired_draft_is_the_shown_rows_and_begins_in_its_own_watch() {
+    // chat.newline is an edit; plain Enter is not (it posts at B5m).
+    assert!(matches!(draft_edit(Some(Action::ChatNewline), &Key::Named(NamedKey::Enter), (false, false, false)), Some(Edit::Newline)));
+
+    // No shown row, no draft.
+    let (mut d, at) = watching();
+    assert_eq!(d.edit(None, Edit::Text("a")), Err("no row to write for"));
+
+    // The row is the one given at the key: `S` has no watch yet (the frame has not moved it), so nothing begins in `R`'s
+    // channel for it, and `R`'s own draft is untouched.
+    d.edit(Some(&row("R")), Edit::Text("hi")).unwrap();
+    assert_eq!(d.edit(Some(&row("S")), Edit::Text("x")), Err("no channel to write to"));
+    let other_host = ResultRowIdentity { host: "b".to_string(), workspace_id: "R".to_string() };
+    assert_eq!(d.edit(Some(&other_host), Edit::Text("x")), Err("no channel to write to"), "the same id on another host is another row");
+    assert_eq!(d.draft(), Some(("hi", "C1")));
+
+    // The destination is fixed at the first character: the view's channel moves, the draft stays.
+    d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false })), at);
+    d.edit(Some(&row("R")), Edit::Text("!")).unwrap();
+    assert_eq!(d.draft(), Some(("hi!", "C1")));
+
+    // A row a listing retires drops its draft.
+    d.retire(&[row("R")]);
+    assert_eq!(d.draft(), None);
+    d.edit(Some(&row("R")), Edit::Text("again")).unwrap();
+    assert_eq!(d.draft(), Some(("again", "C2")), "a new draft begins in the channel now watched");
 }

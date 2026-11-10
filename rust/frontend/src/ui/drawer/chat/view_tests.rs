@@ -395,23 +395,26 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
 fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
     use crate::ui::DrawerContent::*;
     use crate::ui::drawer::chat::{chat_move, chat_wheel, Move};
+    use crate::ui::input::help::DrawerInput;
     use crate::ui::input::keybindings::Action as A;
+    // The tenant decision: the Chat's keys, wheel, line scroll and draft are reached through `DrawerInput::Chat` alone, so
+    // typing in the Monitor or Help drawer (`Inert`) reaches neither the draft nor the REPL.
+    assert_eq!(DrawerInput::of(Chat), DrawerInput::Chat);
+    for other in [Closed, Repl, Terminal, Monitor, Help] {
+        assert_ne!(DrawerInput::of(other), DrawerInput::Chat, "{other:?}");
+    }
+    assert_eq!((DrawerInput::of(Monitor), DrawerInput::of(Help)), (DrawerInput::Inert, DrawerInput::Inert));
     for (action, want) in [
         (A::ScrollPageUp, Move::Scroll(true, Step::Page)), (A::ScrollPageDown, Move::Scroll(false, Step::Page)),
         (A::ChatLatest, Move::Latest),
     ] {
-        assert_eq!(chat_move(Chat, Some(action)), Some(want), "{action:?}");
-        for other in [Closed, Repl, Terminal, Monitor, Help] {
-            assert_eq!(chat_move(other, Some(action)), None, "{action:?} in {other:?}");
-        }
+        assert_eq!(chat_move(Some(action)), Some(want), "{action:?}");
     }
-    assert_eq!(chat_move(Chat, Some(A::ReplHistoryPrev)), None);
-    assert_eq!(chat_move(Chat, None), None);
-    assert_eq!(chat_wheel(Chat, 3), Some(Move::Scroll(true, Step::Line)));
-    assert_eq!(chat_wheel(Chat, -3), Some(Move::Scroll(false, Step::Line)));
-    for other in [Closed, Repl, Terminal, Monitor, Help] {
-        assert_eq!(chat_wheel(other, 3), None, "{other:?}");
-    }
+    assert_eq!(chat_move(Some(A::ReplHistoryPrev)), None);
+    assert_eq!(chat_move(None), None);
+    assert_eq!(chat_wheel(3), Some(Move::Scroll(true, Step::Line)));
+    assert_eq!(chat_wheel(-3), Some(Move::Scroll(false, Step::Line)));
+    assert_eq!(chat_wheel(0), None);
     // End is the chat's alone.
     let ctx = |pane| crate::ui::input::help::Context { pane, ..Default::default() };
     assert!(ctx(crate::ui::input::help::Pane::Chat).allows(A::ChatLatest));

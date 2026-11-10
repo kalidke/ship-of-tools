@@ -1,4 +1,5 @@
-//! What a key does in the drawer: clear and paste, then the Terminal's pty or the REPL's scroll, history and input.
+//! What a key does in the drawer: the Chat's reading keys and draft, clear and paste, then the Terminal's pty or the REPL's
+//! scroll, history and input.
 
 use crate::ui::*;
 use std::ops::ControlFlow::{self, Break, Continue};
@@ -6,14 +7,24 @@ use crate::ui::input::{help, keypress::KeyPress};
 
 pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
-    // One decision for the whole drawer (`DrawerInput::of`): a tenant other than the REPL and the Terminal takes
-    // nothing here but `ReturnNav` (Chat admits it; Monitor and Help resolve none), so no key of theirs can reach
-    // the REPL's draft or scrollback. The Terminal's keys go to its pty, paste first.
+    // One decision for the whole drawer (`DrawerInput::of`): the Chat tenant takes its reading keys, `ReturnNav`, and
+    // typing and paste into its draft; Monitor and Help take nothing but `ReturnNav` (they resolve none), so no key of
+    // theirs can reach the REPL's draft or scrollback or the chat's. The Terminal's keys go to its pty, paste first.
     match help::DrawerInput::of(state.layout_help.drawer()) {
-        help::DrawerInput::Inert => {
-            if drawer::chat::chat_apply(state, drawer::chat::chat_move(state.layout_help.drawer(), action)) {
+        help::DrawerInput::Chat => {
+            if drawer::chat::chat_apply(state, drawer::chat::chat_move(action)) {
                 return Break(());
             }
+            if action == Some(Action::ReturnNav) && !event.repeat {
+                state.set_focus(PaneFocus::NavTree);
+                return Break(());
+            }
+            if drawer::chat::chat_key(state, key, label) {
+                return Break(());
+            }
+            return Continue(());
+        }
+        help::DrawerInput::Inert => {
             if action == Some(Action::ReturnNav) && !event.repeat {
                 state.set_focus(PaneFocus::NavTree);
                 return Break(());
