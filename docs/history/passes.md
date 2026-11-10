@@ -1720,3 +1720,14 @@ A landing's record goes here, with its measured times; the package page holds on
   by two scratch-branch probes with a 1000 ms delay before the folder's sync: the new test and the two-writers test red
   at the parent with the hosted log's error, all 32 beneath tests green with the fix. Where the minutes went: the build
   (2 minutes); the probes (6 minutes, while the gate ran 2 and one review 6, blockers 0).
+- No daemon test reaches the live comm folder, 2026-11-10: builder launched 06:25, main 07:14 (102b3b766), 49 minutes,
+  past the half hour, a failure by this page's standard. Under test, the one comm-home resolver aborts the run, naming
+  the test and the path, when the home it resolves is outside the temporary folder (TESTS-REACH-LIVE-COMM-HOME, Closed).
+  Found by REGISTRY-TEMPFAIL-LOCK-TURN's diagnosis, which saw four destroy tests prune and lock the comm folder their
+  environment named; the guard then found 31 tests reaching it (destroy 4, reauth 16, create rollback 5, agent
+  environment 5, agent argv 3), each now isolated or reading no environment. About 29 product lines and 90 test lines.
+  Where the minutes went: the build (28 minutes: the class was eight times the four named, and a blocking task's join
+  swallowed the guard's first form, a panic); one review (blockers 0, 10 minutes: three more callers swallowed a
+  panic); one fix round (6 minutes: the guard aborts, which deleted the re-raising helper and its three call sites,
+  read by the session); two scoped gates of 2 minutes. The cause: the brief sized the class by the diagnosis's four
+  tests, and a guard that panics can be caught.

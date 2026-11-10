@@ -742,6 +742,11 @@ owned by `docs/CLAUDE.md`.
   `cmd /c rmdir ... 2>&1 | Out-Null`; under a suite's `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns a native
   command's stderr into a terminating error (`scripts/tests/test-native-stderr.ps1`), so if rmdir printed anything the
   parent would end with exit 1. Found reading code in the scratch guard diagnosis; never seen.
+- **HOSTED-RENDERER-APT-STALL** [note] The per-landing hosted run's step that installs the software renderer and the
+  virtual display (`.github/workflows/rust.yml`, Linux shard `rest-0`) downloads its packages from Ubuntu's mirror under
+  a 120 second bound; on 2026-11-10 the mirror served one 17.5 MB package too slowly, the step timed out (exit 124)
+  before any build or test, and a re-run of the job passed. A cached package set, or the bound widened only for the
+  download, would keep a mirror stall from reading as a red run.
 
 ## chat
 
