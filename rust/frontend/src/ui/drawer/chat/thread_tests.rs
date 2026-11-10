@@ -604,3 +604,22 @@ fn a_thread_is_the_one_posted_to_by_host_workspace_channel_and_parent() {
     assert!(!t.is(&host(), &mk("ROW1", "WS1", "CH2"), &parent.ts));
     assert!(!t.is(&host(), &mk("ROW1", "WS1", "CH1"), &top(2).ts));
 }
+
+#[test]
+fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let (mut d, _) = channel(&held);
+    d.layout(&mut fonts, body(), 1.0);
+    let hit = d.hit(d.point_at(&held[0].ts, 1, 0).unwrap());
+    assert!(d.press(hit));
+    let end = d.point_at(&held[0].ts, 1, 4).unwrap();
+    d.extend_drag(end);
+    assert!(!d.selection_rects().is_empty(), "record 0 is selected");
+    // Mark another message and open its thread: a press elsewhere (an agent click) while it is open, then close.
+    open(&mut d, &mut fonts, &[true]);
+    d.press(None);
+    assert!(d.close_thread());
+    d.layout(&mut fonts, body(), 1.0);
+    assert!(d.selection_rects().is_empty(), "the old selection does not return at close");
+}

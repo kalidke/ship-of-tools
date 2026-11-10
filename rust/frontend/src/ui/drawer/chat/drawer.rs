@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use sot_protocol::chat::Ts;
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
 
 use crate::net::dial::HostKey;
@@ -14,7 +15,7 @@ use super::compose::{Compose, ComposeText, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::row_channel::{RowChannel, Stand};
 use super::thread::Thread;
-use super::view::{ChatView, Step};
+use super::view::{ChatHit, ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -264,10 +265,18 @@ impl ChatDrawer {
         let Some(row) = self.rows.row().cloned() else { return Vec::new() };
         let (Some(mark), Some(target), None) = (self.view.mark.clone(), self.watch_for(&row), &self.thread) else { return Vec::new() };
         let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return Vec::new() };
-        self.thread = Some(Thread::new(row.host, target.clone(), parent.clone(), deleted, std::mem::take(&mut self.view)));
+        self.thread = Some(Thread::new(row.host, target.clone(), parent.clone(), deleted, self.parked_view()));
         self.owner.anchored(None);
         self.owner.reaches(false);
         self.thread_outs(Thread::start)
+    }
+
+    /// The channel's view, set aside for a thread. Nothing selectable is parked: a press made in the thread could not
+    /// clear a selection held in the view parked behind it, and it would come back at close.
+    fn parked_view(&mut self) -> super::view::ChatView {
+        let mut view = std::mem::take(&mut self.view);
+        view.clear_selection();
+        view
     }
 
     /// Escape: closes the open thread; the channel's view returns, its mark on the parent or, if that gave way, passed on.
@@ -301,6 +310,11 @@ impl ChatDrawer {
     }
 
     #[cfg(test)]
+    pub(super) fn point_at(&self, ts: &Ts, line: usize, byte: usize) -> Option<(f32, f32)> {
+        self.view.point_at(ts, line, byte)
+    }
+
+    #[cfg(test)]
     pub(super) fn thread_len(&self) -> usize {
         self.thread.as_ref().map_or(0, Thread::len)
     }
@@ -309,6 +323,27 @@ impl ChatDrawer {
     pub(in crate::ui) fn hide(&mut self) {
         self.close_thread();
         self.view.hide();
+    }
+
+    /// The selection's view calls: a press, the drag, the copy and the tint (`view::ChatView`).
+    pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
+        self.view.hit(at)
+    }
+
+    pub(in crate::ui) fn press(&mut self, hit: Option<ChatHit>) -> bool {
+        self.view.press(hit)
+    }
+
+    pub(in crate::ui) fn extend_drag(&mut self, at: (f32, f32)) -> bool {
+        self.view.extend_drag(at)
+    }
+
+    pub(in crate::ui) fn release(&mut self) {
+        self.view.release();
+    }
+
+    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+        self.view.selection_rects()
     }
 
     pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {

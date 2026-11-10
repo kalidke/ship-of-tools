@@ -18,7 +18,9 @@ mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use drawer::ChatDrawer;
-pub(in crate::ui) use view::Step;
+pub(in crate::ui) use view::{ChatHit, Step};
+#[cfg(test)]
+pub(in crate::ui) use view::ChatView;
 use owner::Out;
 #[cfg(test)]
 mod compose_tests;

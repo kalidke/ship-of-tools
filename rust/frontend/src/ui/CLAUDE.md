@@ -385,6 +385,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.
   Mouse routing focuses the agent or flowed-text preview before anchoring its selection; an outside left press
   clears each pane's selection, motion extends its active drag to the visible edge, and release ends both drags.
+  The Chat drawer's records are the third selectable pane (B5q1): `ChatView` holds a `FlowedSelection` over one record's
+  buffer (`reserved: None`) and that record, found again by its time and buffer key. A left press anywhere in the records
+  area focuses the drawer; only a press on a body line (buffer line 1 on, never the header, never between records) starts
+  a selection, and the drag is clamped to the record, its end never above the body's first position
+  (`a_press_selects_in_the_record_under_it_and_a_drag_stays_in_it`). Any other press clears it; the chat's arm in
+  `press_selections` follows the agent's and the preview's, and a drawing press clears it too
+  (`preview_press_focuses_and_selects_and_agent_press_clears_it`,
+  `a_press_the_drawing_takes_focuses_the_preview_and_starts_no_selection`). The frame ends the selection when its record's
+  buffer changes: an edit, a delete, a record a snapshot dropped (a twin with the same words does not take its place), a
+  new width or scale, a buffer the trim let go, the mark moving onto or off the record (it restyles the header), and a row
+  change (`a_change_to_the_selected_buffer_clears_the_selection`); a thread opening clears it before the channel's view is
+  parked, so nothing selectable is parked and none returns at close (`a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens`). The tint joins the one batched `Solid::SelectionBg`
+  paint with the preview's and the agent pane's (`paint_text_selections`). A chat selection is never shared with the
+  agent. Copy is next (B5q2); the selection's bytes are read only by tests until then
+  (`chat_and_preview_copy_same_utf8_ranges`: the same buffer ranges copy what the preview copies, markup as shown).
 - `ProxyArms` privately owns the window half of the page proxy (ADR 0035): a host's pages are proxied exactly when
   its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
   port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or

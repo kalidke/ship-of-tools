@@ -2,6 +2,9 @@ Part of fe-ui: see ../CLAUDE.md.
 
 Mouse routing focuses the agent pane or flowed text preview before starting its selection. A left press outside
 each pane clears that owner's selection; motion extends an active drag to the visible edge and release ends it.
+The Chat drawer's records are a third pane: `SelectionContext::chat_hit` is a press in the records area (it focuses the
+drawer) and names a record and position only on a body line; `press_chat` follows the agent's and the preview's arms, and a
+drawing press calls it with none. The pointer never shares a chat selection with the agent.
 The preview uses ShapedPreview's buffer positions and rect, and is selectable only while flowed text is shown.
 
 Whether a chord that resolved to no action types its character is `chord_types_text` (`input/mod.rs`), the window's one
