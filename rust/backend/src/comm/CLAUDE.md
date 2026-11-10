@@ -259,7 +259,7 @@ Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) an
 process environment and none needs a lock for one; a test that starts a child sets the child's environment on its
 `Command`. The one lock left, `registry::lock::TURN_TESTS`, guards no variable: the registry lock's turn is
 process-wide, so the module's own tests (which hold it long) take it for write and every test that takes the lock
-takes it for read. One unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
+takes it for read. Under test `sot_comm_home_in` refuses a comm folder not beneath the temporary folder: it names the path and the test on stderr and aborts the run, which no caller can swallow, so a test that forgets its `SOT_COMM_HOME` stops the run with its name (`sot_comm_home_tests::a_test_resolving_a_comm_folder_it_did_not_make_aborts_by_name`, in a child process). The guard covers the `sotd` unit tests, not the integration suites. One unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
 integration suites `comm_wake` (a real daemon and capsule row: a free prompt is woken, a draft, a dialog and a working
 row are not), `comm_file`, `comm_send`, `hub_link` and `comm_cli` (the wrappers and `sotd comm` on a scratch home);
 `comm/tests/interop-066.sh`, run by hand on a build host, for the 0.6.6 scripts and a 0.6.6 daemon beside this build,

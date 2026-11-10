@@ -47,6 +47,9 @@ struct EnvGuard {
     // private) -- captured/restored exactly like the other five so a
     // test that pins it never leaks the override past its own scope.
     sot_runtime_dir: Option<std::ffi::OsString>,
+    // The comm folder every test here starts with: the destroy's prune takes its registry lock, so a test that seeds no
+    // comm folder of its own must not reach the process environment's (a test that does sets `SOT_COMM_HOME` itself).
+    _comm: tempfile::TempDir,
 }
 
 impl Drop for EnvGuard {
@@ -71,7 +74,8 @@ fn env_guarded() -> EnvGuard {
     let serial = crate::paths::ENV_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    EnvGuard {
+    let comm = tempfile::tempdir().expect("comm tempdir");
+    let guard = EnvGuard {
         xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
         xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
         localappdata: std::env::var_os("LOCALAPPDATA"),
@@ -79,7 +83,10 @@ fn env_guarded() -> EnvGuard {
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         sot_runtime_dir: std::env::var_os("SOT_RUNTIME_DIR"),
         _serial: serial,
-    }
+        _comm: comm,
+    };
+    std::env::set_var("SOT_COMM_HOME", guard._comm.path().join("comm"));
+    guard
 }
 
 /// Points wherever `sot_platform::host::state_dir::sot_state_dir()` ACTUALLY reads

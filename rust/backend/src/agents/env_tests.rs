@@ -1,6 +1,11 @@
 use super::*;
 use super::super::support_tests::self_file_env_guarded;
 
+/// A comm folder name under the temporary folder, as the leg's environment spells it; nothing is made there.
+fn comm_home_str() -> String {
+    std::env::temp_dir().join("fake-home/.sot-comm").to_string_lossy().replace('\\', "/")
+}
+
 #[test]
 fn nesting_env_scrub_list_is_pinned() {
     // The list's own pin, the one list the supervisor env and `sotd agent-exec` scrub; `ccx_unsets_the_nesting_markers_the_scrub_list_names` holds `ccx`'s `unset` line to it.
@@ -95,7 +100,7 @@ fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
     crate::agents::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
-    std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+    std::env::set_var("SOT_COMM_HOME", comm_home_str());
     let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
     assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
@@ -117,10 +122,10 @@ fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
     } else {
         assert_eq!(get("SOT_SOCKET"), None, "S4: SOT_SOCKET is pinned on Unix only");
     }
-    assert_eq!(get("SOT_COMM_HOME"), Some("/fake-home/.sot-comm"));
+    assert_eq!(get("SOT_COMM_HOME"), Some(comm_home_str().as_str()));
     assert_eq!(
         get("SOT_COMM_SELF_FILE"),
-        Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
+        Some(format!("{}/self/testhost__ws-myrepo-1a2b.txt", comm_home_str()).as_str())
     );
     assert_eq!(
         get("SOTD_BIN"),
@@ -136,7 +141,7 @@ fn capsule_supervisor_env_disables_the_feedback_survey() {
     // someone answers it. Only that switch, not telemetry's.
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
-    std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+    std::env::set_var("SOT_COMM_HOME", comm_home_str());
     let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
     assert_eq!(hits.len(), 1, "exactly one survey switch");
@@ -153,7 +158,7 @@ fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
     // and the bg exit handoff stay as they are.
     let _guard = self_file_env_guarded();
     std::env::set_var("SOT_SELF_HOST", "testhost");
-    std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+    std::env::set_var("SOT_COMM_HOME", comm_home_str());
     let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), "claude", Path::new("/state/ws"));
     let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
     assert_eq!(hits.len(), 1, "exactly one agent-view switch");
