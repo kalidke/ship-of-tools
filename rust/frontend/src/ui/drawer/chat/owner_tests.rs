@@ -104,8 +104,35 @@ fn a_status_is_answered_by_a_paced_watch() {
     now += FIRST_PACE;
     assert!(is_watch(&o.tick(now)));
     assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty());
+    assert!(o.tick(now + SECOND_PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(now + SECOND_PACE)));
+    now += SECOND_PACE;
     assert!(o.tick(now + PACE - Duration::from_millis(1)).is_empty());
     assert!(is_watch(&o.tick(now + PACE)));
+}
+
+/// After a `pending` answer the watch is asked again at 250 ms, 750 ms later, then every `PACE`, and the owner says a frame
+/// is wanted until the last short ask has gone, so an idle window is woken for it.
+#[test]
+fn a_pending_watch_is_asked_again_soon_and_the_window_is_woken() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert_eq!(o.next_ask(), None, "nothing watched");
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(20));
+    assert_eq!(o.next_ask(), Some(t0 + FIRST_PACE), "the window is woken for the second ask");
+    assert!(o.tick(t0 + Duration::from_millis(249)).is_empty());
+    assert!(o.next_ask().is_some_and(|t| t <= t0 + Duration::from_millis(251)), "a frame just after it finds the instant passed");
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(250))), "the second ask goes at 250 ms");
+    assert_eq!(o.next_ask(), Some(t0 + FIRST_PACE + SECOND_PACE), "and for the third");
+    assert!(o.tick(t0 + Duration::from_millis(999)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000))), "the third at one second");
+    assert_eq!(o.next_ask(), None, "from then on the pace is PACE and nothing wakes the window");
+    assert!(o.tick(t0 + Duration::from_millis(1000) + PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000) + PACE)));
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + Duration::from_secs(7)));
+    assert_eq!(o.next_ask(), None, "a read in flight wants no ask");
 }
 
 /// Rule 3: a status entry for another channel, a bare gap flag, or any status once nothing is watched starts nothing.
@@ -287,8 +314,8 @@ fn a_slow_last_watch_still_ends_complete() {
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), now)));
     o.on_evt(&host(), watched(ChatWatchState::Pending), now);
-    for s in [1, 6, 11, 16, 21] {
-        now = t0 + PACE + Duration::from_secs(s);
+    for ms in [250, 1000, 6000, 11000, 16000, 21000] {
+        now = t0 + PACE + Duration::from_millis(ms);
         assert!(is_watch(&o.tick(now)));
     }
     assert!(o.tick(now + Duration::from_millis(16)).is_empty());
@@ -1297,4 +1324,502 @@ fn a_reserve_takes_room_from_the_channels_oldest_and_gives_it_back() {
     assert_eq!(o.records().len(), 100, "no room: the newest 100 never give way");
     o.reaches(true);
     assert!(o.tick(now).is_empty(), "no page is asked for a share that is full");
+}
+
+/// A snapshot of 481..=500 with older history behind it, after a `chat.changed` put of 500 that came during the recovery:
+/// it does not reach the three records held from before (100..=102), so they go, and no hole is left between them.
+fn snapshot_after_a_put_during_the_recovery(mut o: ChatOwner, now: Instant) {
+    o.on_evt(&host(), watched(ChatWatchState::Pending), now);
+    o.on_evt(&host(), changed(top_level(500..=500)), now);
+    assert_eq!(held(&o), 4);
+    snapshot_of_481_to_500(o, now);
+}
+
+fn snapshot_of_481_to_500(mut o: ChatOwner, now: Instant) {
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    let snap: Vec<String> = (481..=500).map(|i| format!("{i}.000001")).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snap.iter().map(String::as_str).collect::<Vec<_>>(), Some("older")) }, now);
+    assert_eq!(held(&o), 20, "the records held from before are not kept across a gap the snapshot leaves");
+    assert_eq!(seconds(&o)[0], 481);
+}
+
+/// Whether a snapshot reaches back to the records held is judged against the newest held when the recovery began, not
+/// against what a `chat.changed` put during it raised.
+#[test]
+fn a_put_between_the_take_up_and_the_snapshot_leaves_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    assert_eq!(held(&o), 3, "the parked records are drawn");
+    snapshot_after_a_put_during_the_recovery(o, t0 + PACE);
+}
+
+/// The same for a link's return.
+#[test]
+fn a_put_between_a_links_return_and_the_snapshot_leaves_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    snapshot_after_a_put_during_the_recovery(o, t0 + PACE);
+}
+
+/// What is parked is trimmed to `KEPT`: a reader anchored on the oldest holds the live store up to `CEILING`, which the
+/// parked watch must not keep.
+#[test]
+fn a_parked_watch_is_trimmed_to_the_kept_records() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.anchored(Some(ts("1.000001")));
+    for i in 0..13u32 {
+        o.on_evt(&host(), changed(top_level(100 + 20 * i..=119 + 20 * i)), t0);
+    }
+    assert!(held(&o) > KEPT && held(&o) <= CEILING, "the anchored reader holds the live store past KEPT");
+    o.stop();
+    assert!(o.parked[0].records.len() <= KEPT);
+    assert_eq!(o.parked[0].anchor, None);
+}
+
+/// A channel passed through before its read holds nothing and parks nothing, so it does not push out a channel that does.
+#[test]
+fn a_watch_that_held_nothing_parks_nothing() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.stop();
+    for c in ["C2", "C3", "C4"] {
+        o.watch(host(), target(c), t0);
+        o.stop();
+    }
+    assert_eq!(o.parked.len(), 1);
+}
+
+/// A daemon that does not know the chat ops is never asked again, so no frame is wanted for an ask that will not go; nor
+/// is one wanted while the link is down.
+#[test]
+fn no_frame_is_wanted_for_an_ask_that_will_not_go() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    assert!(o.next_ask().is_some());
+    o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Unsupported }, t0);
+    assert_eq!(o.next_ask(), None, "an unsupported daemon is not asked again");
+    // A watch refused at once is a gap, asked again only on `GAP_PACE`: no frame is wanted for the short paces.
+    let mut g = ChatOwner::default();
+    g.on_connection(&host(), true, t0);
+    assert!(is_watch(&g.watch(host(), target("C1"), t0)));
+    g.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, t0);
+    assert_eq!(fill(&g), Fill::Gap(Some(ChatCode::Busy)));
+    assert_eq!(g.next_ask(), None, "a gap names no short ask");
+    assert!(is_watch(&o.on_connection(&host(), true, t0)) && o.next_ask().is_some());
+    o.on_connection(&host(), false, t0);
+    assert_eq!(o.next_ask(), None, "a link that is down sends nothing");
+}
+
+/// A recovery that begins again before its snapshot has landed keeps the reach it began with: the put of the first one has
+/// raised the newest held, which is no measure of what was held before.
+#[test]
+fn two_link_flaps_with_a_put_between_leave_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + PACE);
+    o.on_evt(&host(), changed(top_level(500..=500)), t0 + PACE);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + PACE);
+    assert_eq!(held(&o), 4);
+    snapshot_of_481_to_500(o, t0 + PACE);
+}
+
+/// The same for a person who passes away from the channel and back twice inside one recovery.
+#[test]
+fn two_switches_away_and_back_with_a_put_between_leave_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + PACE);
+    o.on_evt(&host(), changed(top_level(500..=500)), t0 + PACE);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    assert_eq!(held(&o), 4, "the parked records are drawn");
+    snapshot_of_481_to_500(o, t0 + PACE);
+}
+
+/// A resync while the snapshot read is in flight (the read is stale, the state `Needed`) names no ask: the watch is not
+/// sent again until the read's reply, so the window is not woken for it.
+#[test]
+fn no_ask_is_named_while_a_read_is_in_flight() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &[]);
+    assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), t0 + PACE)));
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE));
+    assert!(o.on_evt(&host(), status(false, &["C1"]), t0 + PACE).is_empty());
+    assert_eq!(fill(&o), Fill::Needed);
+    assert!(o.watch.as_ref().unwrap().reading.is_some());
+    assert_eq!(o.next_ask(), None);
+}
+
+/// The four orders in which records held before the state was ever whole (puts of the first recovery) were taken for
+/// history: the snapshot then kept them above a hole, or kept a floor of none so older pages were never read.
+fn first_recovery_with_puts(then_away_and_back: bool, loss: bool) -> ChatOwner {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0);
+    let (first, second) = if loss { (73, 107) } else { (501, 501) };
+    o.on_evt(&host(), changed(top_level(first..=first)), t0);
+    if loss {
+        o.on_evt(&host(), status(false, &["C1"]), t0);
+        o.on_evt(&host(), changed(top_level(second..=second)), t0);
+    }
+    if then_away_and_back {
+        o.stop();
+        assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    }
+    o
+}
+
+fn first_snapshot(mut o: ChatOwner, range: std::ops::RangeInclusive<u32>) -> ChatOwner {
+    let now = Instant::now();
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    let snap: Vec<String> = range.map(|i| format!("{i}.000001")).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snap.iter().map(String::as_str).collect::<Vec<_>>(), Some("older")) }, now);
+    o
+}
+
+fn floor_of(o: &ChatOwner) -> Option<Ts> {
+    o.watch.as_ref().unwrap().floor.clone()
+}
+
+#[test]
+fn a_first_snapshot_with_a_put_during_its_read_keeps_a_floor() {
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, Instant::now());
+    o.watch(host(), target("C1"), Instant::now());
+    let now = Instant::now();
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    o.on_evt(&host(), changed(top_level(501..=501)), now);
+    let snap: Vec<String> = (481..=500).map(|i| format!("{i}.000001")).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snap.iter().map(String::as_str).collect::<Vec<_>>(), Some("older")) }, now);
+    assert_eq!((held(&o), floor_of(&o)), (21, Some(ts("481.000001"))), "older pages are owed");
+}
+
+#[test]
+fn a_put_in_the_first_read_then_away_and_back_keeps_a_floor() {
+    let o = first_snapshot(first_recovery_with_puts(true, false), 482..=501);
+    assert_eq!((held(&o), floor_of(&o)), (20, Some(ts("482.000001"))));
+}
+
+#[test]
+fn puts_around_a_loss_in_the_first_recovery_leave_no_break() {
+    let o = first_snapshot(first_recovery_with_puts(false, true), 88..=107);
+    assert_eq!((held(&o), seconds(&o)[0], floor_of(&o)), (20, 88, Some(ts("88.000001"))));
+}
+
+#[test]
+fn the_same_puts_away_and_back_leave_no_break() {
+    let o = first_snapshot(first_recovery_with_puts(true, true), 88..=107);
+    assert_eq!((held(&o), seconds(&o)[0], floor_of(&o)), (20, 88, Some(ts("88.000001"))));
+}
+
+/// The one state a snapshot may be judged against is the newest record held when the state was last whole; a snapshot
+/// takes it, so a later recovery is judged against what that one left.
+#[test]
+fn a_snapshot_takes_the_reach_it_was_judged_against() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.on_evt(&host(), changed(top_level(103..=122)), t0);
+    o.on_evt(&host(), changed(top_level(123..=130)), t0);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    snapshot_overlapping(&mut o, t0 + PACE, 111..=130);
+    assert_eq!(held(&o), 31, "the snapshot reaches back, so what was held below it stays");
+    assert!(o.watch.as_ref().unwrap().reach.is_none(), "and the reach is spent");
+    // A second recovery is judged against what the first one left, 140, not against 130.
+    o.on_evt(&host(), changed(top_level(131..=140)), t0 + PACE);
+    o.on_connection(&host(), false, t0 + PACE * 2);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE * 2)));
+    snapshot_overlapping(&mut o, t0 + PACE * 2, 135..=140);
+    assert_eq!(held(&o), 41, "135 reaches back to 140");
+}
+
+fn snapshot_overlapping(o: &mut ChatOwner, now: Instant, range: std::ops::RangeInclusive<u32>) {
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    let snap: Vec<String> = range.map(|i| format!("{i}.000001")).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snap.iter().map(String::as_str).collect::<Vec<_>>(), Some("older")) }, now);
+}
+
+/// A deterministic generator (splitmix64), so a failing walk is its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// The channels' messages are `1..=world[c]`, so a held set is whole when it is a run of consecutive numbers ending there.
+struct Walk {
+    o: ChatOwner,
+    rng: Rng,
+    world: [u32; 3],
+    connected: bool,
+    /// The daemon holds the watch, so its changes reach the window: a watch answered, on a link that is up.
+    answered: bool,
+    reads: Vec<(ChatHistoryReq, u32)>,
+    now: Instant,
+    trail: Vec<String>,
+    snapshots: u32,
+}
+
+fn chan(i: usize) -> String {
+    format!("C{}", i + 1)
+}
+
+fn number(t: &Ts) -> u32 {
+    t.as_str().split_once('.').unwrap().0.parse().unwrap()
+}
+
+impl Walk {
+    fn watched_channel(&self) -> Option<usize> {
+        self.o.watch.as_ref().map(|w| w.target.channel.as_str().trim_start_matches('C').parse::<usize>().unwrap() - 1)
+    }
+
+    fn put_event(&self, c: usize, range: std::ops::RangeInclusive<u32>) -> ChatEvt {
+        let put: Vec<_> = range.map(|i| record(&format!("{i}.000001"), &chan(c))).collect();
+        ChatEvt::Changed(serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": chan(c), "put": put, "deleted": [] })).unwrap())
+    }
+
+    /// A page of up to 20 messages ending at `upto` or just below `below`; `limited` is Slack's plan hiding what is older.
+    fn page_reply(&self, c: usize, upto: u32, below: Option<u32>, limited: bool) -> ChatReply<ChatHistoryRes> {
+        let top = below.map_or(upto, |b| b - 1);
+        let low = top.saturating_sub(19).max(1);
+        let records: Vec<_> = (low..=top).map(|i| record(&format!("{i}.000001"), &chan(c))).collect();
+        let next = (low > 1).then_some("older");
+        ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records, "next": next, "limited": limited && next.is_some() })).unwrap())
+    }
+
+    fn sent(&mut self, outs: Vec<Out>) {
+        for (_, req) in outs {
+            match req {
+                OutgoingReq::ChatWatch { .. } => self.answered = false,
+                OutgoingReq::ChatHistory { req } => {
+                    let c = req.target.channel.as_str().trim_start_matches('C').parse::<usize>().unwrap() - 1;
+                    self.reads.push((req, self.world[c]));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn step(&mut self) {
+        let host = host();
+        let now = self.now;
+        let c = self.rng.below(3) as usize;
+        let note;
+        match self.rng.below(24) {
+            0..=3 => {
+                // Messages arrive on the watched channel (told to the window while the daemon holds its watch) or elsewhere.
+                let on = self.watched_channel().filter(|_| self.rng.below(4) != 0).unwrap_or(c);
+                let k = 1 + self.rng.below(20) as u32;
+                let range = self.world[on] + 1..=self.world[on] + k;
+                self.world[on] += k;
+                let told = self.connected && self.answered && self.watched_channel() == Some(on);
+                note = format!("put {on} +{k} told={told}");
+                if told {
+                    let evt = self.put_event(on, range);
+                    let outs = self.o.on_evt(&host, evt, now);
+                    self.sent(outs);
+                }
+            }
+            4 => {
+                note = "stop".into();
+                self.o.stop();
+                self.reads.clear();
+                self.answered = false;
+            }
+            5 | 6 => {
+                note = format!("watch {c}");
+                // The same target again is nothing.
+                let same = self.watched_channel() == Some(c);
+                let outs = self.o.watch(host.clone(), target(&chan(c)), now);
+                if !same {
+                    self.reads.clear();
+                    self.answered = false;
+                }
+                self.sent(outs);
+            }
+            7 => {
+                note = format!("link {}", if self.connected { "down" } else { "up" });
+                self.connected = !self.connected;
+                self.answered = false;
+                if !self.connected {
+                    self.reads.clear();
+                }
+                let outs = self.o.on_connection(&host, self.connected, now);
+                self.sent(outs);
+            }
+            8..=12 => {
+                // The daemon's answer to the watch: pending, complete, or a service still starting.
+                let Some(w) = self.o.watch.as_ref().filter(|w| self.connected && w.fill != Fill::Complete) else { return self.trail.push("no watch to answer".into()) };
+                let (target, kind) = (w.target.clone(), self.rng.below(10));
+
+                note = format!("watched {kind}");
+                let reply = match kind {
+                    0 => ChatReply::Refused(ChatCode::Unavailable),
+                    1..=4 => ChatReply::Done(ChatWatchRes { state: ChatWatchState::Pending }),
+                    _ => ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }),
+                };
+                self.answered = kind != 0;
+                let outs = self.o.on_evt(&host, ChatEvt::Watched { target, reply }, now);
+                self.sent(outs);
+            }
+            13..=17 => {
+                if self.reads.is_empty() {
+                    return self.trail.push("no read to answer".into());
+                }
+                let i = self.rng.below(self.reads.len() as u64) as usize;
+                let (req, at_send) = self.reads.remove(i);
+                let ch = req.target.channel.as_str().trim_start_matches('C').parse::<usize>().unwrap() - 1;
+                let refused = self.rng.below(5) == 0;
+                let reply = if refused {
+                    ChatReply::Refused(if self.rng.below(2) == 0 { ChatCode::Busy } else { ChatCode::Limited })
+                } else if let Some(ChatUpper::Before(floor)) = &req.upper {
+                    let limited = self.rng.below(6) == 0;
+                    self.page_reply(ch, 0, Some(number(floor)), limited)
+                } else {
+                    let upto = if self.rng.below(2) == 0 { at_send } else { self.world[ch] };
+                    self.page_reply(ch, upto, None, false)
+                };
+                note = format!("history {} refused={refused}", if req.upper.is_some() { "page" } else { "snapshot" });
+                let snapshot = req.upper.is_none();
+                let outs = self.o.on_evt(&host, ChatEvt::History { req, reply }, now);
+                self.snapshots += u32::from(snapshot && !refused);
+                self.sent(outs);
+            }
+            18 | 19 => {
+                // A loss: the daemon's bus dropped events, or a status lists the channel, after some messages nobody told.
+                let Some(on) = self.watched_channel().filter(|_| self.connected) else { return self.trail.push("no loss".into()) };
+                let lost = self.rng.below(46) as u32;
+                self.world[on] += lost;
+                note = format!("loss +{lost}");
+                let outs = if self.rng.below(2) == 0 { self.o.on_bus_lost(&host, "chat.changed", now) } else { self.o.on_evt(&host, status(false, &[&chan(on)]), now) };
+                self.answered = false;
+                self.sent(outs);
+            }
+            20 => {
+                note = "reader at the oldest".into();
+                self.o.reaches(true);
+                let outs = self.o.tick(now);
+                self.sent(outs);
+            }
+            _ => {
+                let dt = [1, 20, 300, 1_200, 6_000, 61_000][self.rng.below(6) as usize];
+                self.now += Duration::from_millis(dt);
+                note = format!("tick +{dt} ms");
+                let outs = self.o.tick(self.now);
+                self.sent(outs);
+            }
+        }
+        self.trail.push(note);
+    }
+
+    /// What the owner holds is always the watched channel's, within its bounds, and in `Complete` one run of consecutive
+    /// messages ending at the channel's newest, with a floor wherever older history is owed.
+    fn check(&self, seed: u64) {
+        let trail = || format!("seed {seed}: {}", self.trail.join(", "));
+        assert!(self.o.parked.len() <= PARKED && self.o.parked.iter().all(|p| p.records.len() <= KEPT), "parked bounds; {}", trail());
+        let Some(w) = self.o.watch.as_ref() else { return };
+        assert!(w.records.len() <= CEILING, "the live bound; {}", trail());
+        assert!(w.records.values().all(|(r, _)| r.channel == w.target.channel.as_str()), "another channel's record; {}", trail());
+        if w.fill == Fill::Complete && !w.records.is_empty() {
+            let mut ids: Vec<u32> = w.records.keys().map(number).collect();
+            ids.sort_unstable();
+            let c = self.watched_channel().unwrap();
+            assert!(ids.windows(2).all(|p| p[1] == p[0] + 1), "a hole in {ids:?}; {}", trail());
+            assert_eq!(*ids.last().unwrap(), self.world[c], "not ending at the newest; {}", trail());
+            assert!(ids[0] == 1 || w.floor.is_some() || w.stop == Some(Stop::Hides), "no floor or word with older history owed, held {ids:?}; {}", trail());
+        }
+    }
+}
+
+/// The owner's rule for what it holds, walked: 12,000 seeds of 40 steps over three channels of row switches, link losses and
+/// returns, change events, lost messages, snapshots as of the read's send or its reply, refused reads and older pages.
+#[test]
+fn a_walk_over_three_channels_leaves_no_hole_and_a_floor_wherever_one_is_owed() {
+    let mut snapshots = 0;
+    for seed in 0..12_000u64 {
+        let mut w = Walk { o: ChatOwner::default(), rng: Rng(seed), world: [0; 3], connected: false, answered: false, reads: Vec::new(), now: Instant::now(), trail: Vec::new(), snapshots: 0 };
+        w.o.on_connection(&host(), true, w.now);
+        w.connected = true;
+        for _ in 0..40 {
+            w.step();
+            w.check(seed);
+        }
+        snapshots += w.snapshots;
+    }
+    assert!(snapshots > 4_000, "the walk lands snapshots: {snapshots}");
+}
+
+/// A park of a whole state keeps what it held as history: the snapshot of the take-up that reaches back to it keeps it.
+#[test]
+fn a_snapshot_reaching_back_to_a_parked_whole_state_keeps_what_it_held() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    snapshot_overlapping(&mut o, t0 + PACE, 101..=120);
+    assert_eq!(held(&o), 21, "100 stays below the snapshot's oldest");
+}
+
+/// A channel whose older history Slack's plan hides: 82..=101 held with a floor, the reader at the oldest, a page 62..=81
+/// answered `limited`. Hides is a fact about the history below the held records, which neither a row switch nor a link change
+/// alters, so it survives both, and the snapshot after either that reaches back keeps what is held and the word.
+fn hidden_below_62(t0: Instant) -> ChatOwner {
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    snapshot_overlapping(&mut o, t0, 82..=101);
+    o.reaches(true);
+    let req = match o.tick(t0).as_slice() {
+        [(_, OutgoingReq::ChatHistory { req })] => req.clone(),
+        other => panic!("one page read expected, got {} requests", other.len()),
+    };
+    let recs: Vec<_> = (62..=81).map(|i| record(&format!("{i}.000001"), "C1")).collect();
+    let reply = ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": recs, "next": "older", "limited": true })).unwrap());
+    o.on_evt(&host(), ChatEvt::History { req, reply }, t0);
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("Slack's plan hides older messages")));
+    o
+}
+
+#[test]
+fn hidden_history_survives_a_switch_back() {
+    let t0 = Instant::now();
+    let mut o = hidden_below_62(t0);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    snapshot_overlapping(&mut o, t0 + PACE, 82..=101);
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("Slack's plan hides older messages")));
+}
+
+#[test]
+fn hidden_history_survives_a_links_return() {
+    let t0 = Instant::now();
+    let mut o = hidden_below_62(t0);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    snapshot_overlapping(&mut o, t0 + PACE, 82..=101);
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("Slack's plan hides older messages")));
 }

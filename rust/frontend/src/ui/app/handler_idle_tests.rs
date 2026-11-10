@@ -1,4 +1,4 @@
-use super::arm_idle;
+use super::{arm_idle, earliest, has_passed};
 use std::time::{Duration, Instant};
 
 /// One slot, driven through the wakes `about_to_wait` sees: the armed repaint does not move later.
@@ -93,4 +93,35 @@ fn peek_deadlines_wake_fade_and_expire_without_postponement() {
     assert!(layout.expire_peek(|| fade + fade_span));
     assert!(layout.peek_deadline().is_none());
     assert!(!layout.expire_peek(|| panic!("absent peek sampled the clock")));
+}
+
+/// The chat's next ask joins the idle deadlines: it neither delays nor drops an earlier one, and an earlier ask is the one
+/// the loop sleeps to.
+#[test]
+fn the_chats_next_ask_joins_the_idle_deadlines() {
+    let start = Instant::now();
+    let second = Duration::from_secs(1);
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let arm = |deadlines: [Option<Instant>; 4]| arm_idle(&mut None, start, second, earliest(deadlines));
+    // Help peek 100 ms, hint 300 ms, reply bar 200 ms, and the chat at 250 ms: the peek still wakes the loop first.
+    assert_eq!(arm([Some(at(100)), Some(at(300)), Some(at(200)), Some(at(250))]), at(100), "an earlier deadline is not delayed");
+    assert_eq!(arm([None, Some(at(300)), Some(at(200)), Some(at(250))]), at(200), "nor is one dropped for the chat's");
+    // The chat's ask at 250 ms is the earliest: the loop sleeps to it, and to nothing later.
+    assert_eq!(arm([None, Some(at(300)), None, Some(at(250))]), at(250), "an earlier chat ask is honored");
+    assert_eq!(arm([None, None, None, Some(at(250))]), at(250), "alone it wakes the idle loop before its second");
+    assert_eq!(arm([None, None, None, None]), start + second);
+    // An ask already past is not slept to.
+    assert_eq!(arm_idle(&mut None, at(500), second, earliest([None, None, None, Some(at(250))])), at(500) + second);
+}
+
+/// An ask whose instant passed before the loop went to sleep is not slept to (`arm_idle` takes only a deadline ahead), so it
+/// is a redraw now.
+#[test]
+fn an_ask_that_has_passed_is_a_redraw_now() {
+    let start = Instant::now();
+    let at = start + Duration::from_millis(250);
+    assert!(!has_passed(None, at));
+    assert!(!has_passed(Some(at), at - Duration::from_millis(1)), "not yet");
+    assert!(has_passed(Some(at), at), "at its instant");
+    assert!(has_passed(Some(at), at + Duration::from_millis(1)), "after it");
 }

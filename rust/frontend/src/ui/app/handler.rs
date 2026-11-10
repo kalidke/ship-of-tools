@@ -234,6 +234,10 @@ impl ApplicationHandler for App {
         if state.layout_help.expire_peek(std::time::Instant::now) {
             state.window.request_redraw();
         }
+        // The chat's next watch, once its instant has passed before the loop went to sleep: the redraw's tick sends it.
+        if has_passed(state.chat.next_ask(), std::time::Instant::now()) {
+            state.window.request_redraw();
+        }
         // Notify toast expiry: once the sticky window elapses, restore the
         // normal connection status so the toast doesn't linger until the next
         // event. The idle/flash tick below brings us back here within ~1s.
@@ -296,9 +300,12 @@ impl ApplicationHandler for App {
             // to the 1s idle tick automatically once none remain.
             let fading_help = state.layout_help.peek_fading(std::time::Instant::now);
             let interval = idle_interval(fading_help, state.row_presentation.has_flashes());
-            let fade_at = state.layout_help.peek_deadline()
-                .into_iter().chain(state.focus_prompts.hint_deadline())
-                .chain(state.reply_bar.arm_deadline(std::time::Instant::now())).min();
+            let fade_at = earliest([
+                state.layout_help.peek_deadline(),
+                state.focus_prompts.hint_deadline(),
+                state.reply_bar.arm_deadline(std::time::Instant::now()),
+                state.chat.next_ask(),
+            ]);
             let deadline = arm_idle(&mut self.idle_due, std::time::Instant::now(), interval, fade_at);
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
@@ -373,6 +380,18 @@ fn idle_interval(fading_help: bool, flashes: bool) -> std::time::Duration {
     if fading_help { std::time::Duration::from_millis(16) }
     else if flashes { std::time::Duration::from_millis(80) }
     else { std::time::Duration::from_secs(1) }
+}
+
+/// The earliest of the instants a part of the window wants a frame at while it is idle: a help peek's fade, the quit hint's
+/// expiry, the reply bar's arm moment and the chat's next watch.
+fn earliest(deadlines: impl IntoIterator<Item = Option<std::time::Instant>>) -> Option<std::time::Instant> {
+    deadlines.into_iter().flatten().min()
+}
+
+/// Whether a deadline is set and has passed: the idle arm sleeps only to one ahead of now, so a part's expiry that fell in
+/// between is a redraw now.
+fn has_passed(deadline: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    deadline.is_some_and(|t| t <= now)
 }
 
 /// Arms the idle repaint in `slot` and returns its deadline: the one already armed while it is still ahead, brought
