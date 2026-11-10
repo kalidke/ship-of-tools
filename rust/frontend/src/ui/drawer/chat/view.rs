@@ -113,6 +113,10 @@ pub(in crate::ui) struct ChatView {
     body: Option<ScreenRect>,
     /// The oldest held record reaches the body: older history is wanted.
     pub(super) at_oldest: bool,
+    /// The marked record (by its time), always a held record in view; `None` until a key marks.
+    pub(super) mark: Option<Ts>,
+    /// What the mark keys asked since the last frame, toward older records: the frame that spends them knows the records.
+    mark_moves: i32,
 }
 
 impl ChatView {
@@ -121,8 +125,11 @@ impl ChatView {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
+        // The mark passes on like the anchor: to the nearest newer held record, or to none.
+        let held_mark = self.mark.as_ref().map(|ts| records.partition_point(|r| ts_order(&r.0.ts) < ts_order(ts))).filter(|i| *i < records.len());
+        let marked = std::cell::Cell::new(held_mark);
         let mut height = |at: usize| {
-            let key = (project(records[at].0, now, offset, false, records[at].1), width.to_bits(), scale.to_bits());
+            let key = (project(records[at].0, now, offset, marked.get() == Some(at), records[at].1), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
@@ -139,8 +146,40 @@ impl ChatView {
         };
         let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + pending), &mut height));
         self.pending = (0.0, 0.0);
+        let mut spots = place(count, body.h, from, &mut height);
+        // The mark: keys move it and the view shows it (a record above the body has its top at the body's top, one below its
+        // bottom at the foot, one taller than the body its top); otherwise a mark outside the body goes to the nearest record
+        // in view, one with at least one row inside the body, which the placed records are.
+        let mut mark = held_mark;
+        let moves = std::mem::take(&mut self.mark_moves);
+        let from = if moves != 0 && count > 0 {
+            let (start, rest) = mark.map_or((count - 1, moves - moves.signum()), |i| (i, moves));
+            let i = (start as i64 - i64::from(rest)).clamp(0, count as i64 - 1) as usize;
+            mark = Some(i);
+            let top = spots.iter().find(|p| p.index == i).map(|p| p.top);
+            let h = height(i);
+            if top.is_some_and(|t| t >= 0.0 && t + h <= body.h) {
+                from
+            } else {
+                let above = top.map_or(spots.first().is_none_or(|p| i < p.index), |t| t < 0.0);
+                let from = settle(count, body.h, (i, if above || h > body.h { 0.0 } else { body.h - h }), &mut height);
+                spots = place(count, body.h, from, &mut height);
+                from
+            }
+        } else {
+            from
+        };
+        if let (Some(i), Some(first), Some(last)) = (mark, spots.first(), spots.last()) {
+            mark = Some(i.clamp(first.index, last.index));
+        }
+        marked.set(mark);
+        if mark != held_mark {
+            for p in &spots {
+                height(p.index);
+            }
+        }
+        self.mark = mark.map(|i| records[i].0.ts.clone());
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
-        let spots = place(count, body.h, from, &mut height);
         self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
         self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
         self.body = Some(body);
@@ -160,6 +199,17 @@ impl ChatView {
             Step::Line => self.pending.0 += n,
             Step::Page => self.pending.1 += n,
         }
+    }
+
+    /// A mark key moves the mark one record toward older records (`older`) or newer; it takes effect at the next frame.
+    pub(super) fn mark(&mut self, older: bool) {
+        self.mark_moves += if older { 1 } else { -1 };
+    }
+
+    /// Another row or channel: the reader follows the newest, and the old place's mark is no one's.
+    pub(super) fn reset(&mut self) {
+        self.latest();
+        (self.mark, self.mark_moves) = (None, 0);
     }
 
     /// The reader asks for the newest: the view follows it again.
@@ -207,6 +257,12 @@ impl ChatView {
     #[cfg(test)]
     pub(super) fn placed_tops(&self) -> Vec<f32> {
         self.placed.iter().map(|(_, top)| *top).collect()
+    }
+
+    /// Whether each placed record's header is the marked one, in placement order.
+    #[cfg(test)]
+    pub(super) fn placed_marks(&self) -> Vec<bool> {
+        self.placed.iter().map(|(k, _)| k.0[0].kind == Kind::Header(true)).collect()
     }
 
     #[cfg(test)]

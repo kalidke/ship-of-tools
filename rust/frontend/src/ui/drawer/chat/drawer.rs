@@ -106,7 +106,7 @@ impl ChatDrawer {
         let mut outs = Vec::new();
         if step.changed {
             // Another row's records are not the reader's place.
-            self.view.latest();
+            self.view.reset();
             outs = self.owner_outs(ChatOwner::stop);
         }
         outs.extend(step.resolve);
@@ -218,6 +218,11 @@ impl ChatDrawer {
         self.view.scroll(up, step);
     }
 
+    /// A mark key moves the mark (`view::ChatView::mark`).
+    pub(in crate::ui) fn mark(&mut self, older: bool) {
+        self.view.mark(older);
+    }
+
     /// The reader asks for the newest.
     pub(in crate::ui) fn latest(&mut self) {
         self.view.latest();
@@ -298,6 +303,11 @@ impl ChatDrawer {
     #[cfg(test)]
     pub(super) fn placed_text(&self) -> Vec<String> {
         self.view.placed_text()
+    }
+
+    #[cfg(test)]
+    pub(super) fn marked(&self) -> Option<sot_protocol::chat::Ts> {
+        self.view.mark.clone()
     }
 
     #[cfg(test)]
