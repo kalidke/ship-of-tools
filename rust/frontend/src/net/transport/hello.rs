@@ -174,6 +174,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         session.memory.session_id = Some(hello_res.session_id.clone());
     }
     session.takes_drawing = hello_res.takes_drawing;
+    session.posts_plain_text = hello_res.posts_plain_text;
     crate::net::state::save(host, &session.memory).ok();
     // ADR 0046 decision 1: the daemon's declared host travels on this
     // event for display only (see `State::record_declared_host` and

@@ -22,11 +22,11 @@ struct Rig {
 }
 
 fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
-    rig_taking(capacity, ping_every, first_id, false)
+    rig_taking(capacity, ping_every, first_id, (false, true))
 }
 
 /// `rig` whose connection's hello said whether the daemon reads a drawing.
-fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, takes_drawing: bool) -> Rig {
+fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, posts_plain_text): (bool, bool)) -> Rig {
     let env = crate::net::state::test_env::set_test_env();
     let (near, far) = tokio::io::duplex(capacity);
     let (events_tx, events) = std::sync::mpsc::channel();
@@ -39,6 +39,7 @@ fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, takes_drawin
             memory: crate::net::state::SessionMemory::fresh(),
             gate: StateSaveGate::new(),
             takes_drawing,
+            posts_plain_text,
         };
         let (rx, tx) = tokio::io::split(near);
         steady::steady_loop(
@@ -397,6 +398,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
                 memory: crate::net::state::SessionMemory::fresh(),
                 gate: StateSaveGate::new(),
                 takes_drawing: false,
+                posts_plain_text: false,
             };
             steady::steady_loop(
                 codec::buffered(reader),
@@ -481,7 +483,7 @@ async fn a_drawing_is_written_only_on_a_connection_whose_hello_took_one() {
     let drawing = || sel(serde_json::json!({ "workspace_id": "w", "selection": null, "drawing": { "base": "canvas", "strokes": [[[1, 2]]] } }));
     let clear = || sel(serde_json::json!({ "workspace_id": "w", "selection": null }));
     for takes in [false, true] {
-        let mut rig = rig_taking(1 << 16, NEVER, 1, takes);
+        let mut rig = rig_taking(1 << 16, NEVER, 1, (takes, true));
         rig.out_tx.as_ref().unwrap().send(drawing()).unwrap();
         rig.out_tx.as_ref().unwrap().send(clear()).unwrap();
         let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
@@ -495,5 +497,30 @@ async fn a_drawing_is_written_only_on_a_connection_whose_hello_took_one() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(unsupported, !takes, "takes={takes}: the unsupported answer");
+    }
+}
+
+/// A post goes only to a connection whose hello said the daemon's door posts plain text; on any other it is answered
+/// `PostNotSent` and never written (the daemon would send `<!channel>` as a ping), and a clear request behind it still goes.
+#[tokio::test]
+async fn a_post_is_written_only_on_a_connection_whose_hello_posts_plain_text() {
+    let post = || OutgoingReq::ChatPost {
+        req: serde_json::from_value(serde_json::json!({ "target": { "row": "r", "workspace": "T1", "channel": "C1" }, "kind": "person", "name": "n", "text": "<!channel>" })).unwrap(),
+    };
+    for plain in [false, true] {
+        let mut rig = rig_taking(1 << 16, NEVER, 1, (false, plain));
+        rig.out_tx.as_ref().unwrap().send(post()).unwrap();
+        rig.out_tx.as_ref().unwrap().send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+        let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
+        assert_eq!(req.op == op::CHAT_POST, plain, "plain={plain}: the first frame written is {}", req.op);
+        let mut refused = false;
+        for _ in 0..if plain { 1 } else { 1000 } {
+            refused = rig.events.try_iter().any(|(_, e)| matches!(e, IncomingEvt::Chat(ChatEvt::PostNotSent { .. })));
+            if refused {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(refused, !plain, "plain={plain}: the not-sent answer");
     }
 }

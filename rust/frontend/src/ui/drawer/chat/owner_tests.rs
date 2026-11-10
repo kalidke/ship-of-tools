@@ -171,6 +171,21 @@ fn a_post_is_unknown_only_when_it_may_exist() {
 }
 
 /// Every post reply reads as what it proves, and a reply for another request changes nothing.
+
+/// A post refused locally (the connection's hello did not say the daemon posts plain text) was never written: it reads as
+/// not posted, frees the post slot, and a notice for another post changes nothing.
+#[test]
+fn a_post_not_sent_reads_as_outdated_and_frees_the_slot() {
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, Instant::now());
+    assert!(o.post(host(), post_req("one")).is_some());
+    o.on_evt(&host(), ChatEvt::PostNotSent { req: post_req("other") }, Instant::now());
+    assert!(o.posting.is_some() && o.shown.is_none(), "a notice for another post clears nothing");
+    o.on_evt(&host(), ChatEvt::PostNotSent { req: post_req("one") }, Instant::now());
+    assert_eq!(o.shown, Some(PostShown::Outdated));
+    assert!(o.posting.is_none());
+    assert!(o.post(host(), post_req("two")).is_some());
+}
 #[test]
 fn a_posts_outcome_reads_as_the_reply_proves() {
     let cases: Vec<(ChatReply<ChatPostRes>, PostShown)> = vec![

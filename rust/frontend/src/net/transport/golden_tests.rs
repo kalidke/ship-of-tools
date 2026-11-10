@@ -151,7 +151,7 @@ async fn every_request_kind_and_its_error_reply_match_the_golden() {
         let (rx, mut tx) = tokio::io::split(far);
         let mut rx = codec::buffered(rx);
         let (hello, _) = codec::read_frame(&mut rx).await.unwrap();
-        let hello_ok = serde_json::json!({ "session_id": "sess-1", "revision": 0, "snapshot_pending": false });
+        let hello_ok = serde_json::json!({ "session_id": "sess-1", "revision": 0, "snapshot_pending": false, "posts_plain_text": true });
         codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_ok).with_rev(0), None).await.unwrap();
         let mut wire = Vec::new();
         for _ in 0..(2 + n) {

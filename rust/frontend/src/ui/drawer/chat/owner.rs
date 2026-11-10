@@ -47,6 +47,8 @@ pub(super) enum PostShown {
     Refused(ChatCode),
     Limited(u64),
     Unknown,
+    /// Refused before it was written: the connection's daemon does not post plain text (T20).
+    Outdated,
 }
 
 struct Watch {
@@ -235,6 +237,12 @@ impl ChatOwner {
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),
             ChatEvt::Posted { req, reply } => {
                 self.on_posted(host, &req, reply);
+                Vec::new()
+            }
+            ChatEvt::PostNotSent { req } => {
+                if self.posting.take_if(|(h, r)| h == host && *r == req).is_some() {
+                    self.shown = Some(PostShown::Outdated);
+                }
                 Vec::new()
             }
             ChatEvt::Changed(c) => {

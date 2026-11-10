@@ -190,6 +190,10 @@ where
                     // This daemon's hello did not say it reads a drawing; it would read the request as a clear.
                     emit_selection_unsupported(evt_tx, &host, req);
                 }
+                Some(OutgoingReq::ChatPost { req }) if !session.posts_plain_text => {
+                    // This daemon's door sends the text as given, so `<!channel>` would ping; the post is never written.
+                    let _ = evt_tx.send((host.clone(), IncomingEvt::Chat(ChatEvt::PostNotSent { req })));
+                }
                 Some(req) => {
                     let id = take_id(&mut next_id);
                     // Registered before the first network byte, and also when encoding fails part way, so a
