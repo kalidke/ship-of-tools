@@ -78,10 +78,20 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
         }
         Some(truncate_caption(&collapsed))
     };
+    // The path a preview or a reveal shows, in the tree's spelling (`node_path`); one that leaves the workspace is
+    // refused here, as a scheme is for `open_url` below, since no row could show it.
+    let path_arg = || {
+        let sent = str_arg("path")?;
+        let path = node_path(&sent);
+        if path.is_none() {
+            tracing::warn!(cmd = %evt.cmd, path = %sent, "fe-command: a path that leaves the workspace refused");
+        }
+        path
+    };
     match evt.cmd.as_str() {
         "preview" => {
             let workspace = str_arg("workspace")?;
-            let path = str_arg("path")?;
+            let path = path_arg()?;
             Some(FeCommand::Preview {
                 workspace,
                 path,
@@ -92,7 +102,7 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
         }
         "reveal" => {
             let workspace = str_arg("workspace")?;
-            let path = str_arg("path")?;
+            let path = path_arg()?;
             Some(FeCommand::Reveal {
                 workspace,
                 path,
@@ -167,6 +177,21 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
     }
 }
 
+/// The `path` of a relayed preview or reveal this window would have acted on but for it leaving the workspace, for the
+/// status line (`route_fe_command` has already logged it); `None` for any other command, another window's or a good path.
+pub(in crate::ui) fn refused_path(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) -> Option<String> {
+    let mine = evt.target.as_deref().is_none_or(|t| t == self_handle);
+    let sent = evt.args.get("path")?.as_str()?;
+    (mine && matches!(evt.cmd.as_str(), "preview" | "reveal") && node_path(sent).is_none()).then(|| sent.to_string())
+}
+
+/// The command file's `path` of a preview or a reveal, taken as `route_fe_command` takes the relay's (`node_path`):
+/// a file whose path leaves the workspace does not parse, and the watcher drops it as it drops any bad file.
+fn node_path_field<'de, D: serde::Deserializer<'de>>(field: D) -> Result<String, D::Error> {
+    let sent = <String as serde::Deserialize>::deserialize(field)?;
+    node_path(&sent).ok_or_else(|| serde::de::Error::custom(format!("the path {sent:?} leaves the workspace")))
+}
+
 /// A control command raised through the FE command-file channel (ADR 0019).
 /// One JSON object per file under `fe-commands/`, internally tagged by `cmd`.
 /// The watcher parses into this enum and the main thread dispatches each
@@ -213,7 +238,7 @@ pub(in crate::ui) enum FeCommand {
     /// without the `C` hotkey — the "look at what I'm zoomed into" pull path.
     /// No-op (status hint) when the preview isn't a croppable image.
     CaptureRoi,
-    /// ADR 0025 imperative preview: show `path` (workspace-relative) in
+    /// ADR 0025 imperative preview: show `path` (workspace-relative, in the tree's spelling: `node_path`) in
     /// `workspace`'s Files-mode preview. `urgent` requests force-show (switch +
     /// show now) and is honoured whenever the send is DIRECTED; without it a
     /// send degrades to the badge floor (`mark_pending_nav`), the
@@ -232,6 +257,7 @@ pub(in crate::ui) enum FeCommand {
     /// caption for that file (see `dispatch_fe_command`).
     Preview {
         workspace: String,
+        #[serde(deserialize_with = "node_path_field")]
         path: String,
         #[serde(default)]
         urgent: bool,
@@ -247,6 +273,7 @@ pub(in crate::ui) enum FeCommand {
     /// `reveal` and `preview` both move the nav cursor onto the file.
     Reveal {
         workspace: String,
+        #[serde(deserialize_with = "node_path_field")]
         path: String,
         #[serde(default)]
         urgent: bool,

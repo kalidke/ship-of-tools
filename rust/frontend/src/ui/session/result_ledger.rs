@@ -234,7 +234,9 @@ impl ResultLedger {
             .and_then(|target| self.pending_nav.entries.get_mut(target.identity()))
             .and_then(|entry| entry.attempt.as_mut());
         if let Some(a) = attempt {
-            if a.preview_gen == generation && node_id == Some(a.node_id.as_str()) {
+            // A reply that installs passed `admits_preview`, so it is the latest: a newer one (a change event re-fetched the
+            // file while the attempt's request was out) satisfies the attempt as its own does.
+            if generation >= a.preview_gen && node_id == Some(a.node_id.as_str()) {
                 a.preview_installed = true;
             }
         }

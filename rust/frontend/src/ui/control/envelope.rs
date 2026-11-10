@@ -53,8 +53,9 @@ pub(in crate::ui) struct NavEnvelope {
 ///                 "mode":"files","path":"<ws-rel>"}}
 /// Pure + total so it's unit-testable and can't panic in the event drain.
 /// `mode` is accepted-and-ignored in v1 (only files-mode preview exists);
-/// `cmd` leaves room to grow. The path is taken verbatim — the emitter
-/// already relativized any absolute path against the workspace root.
+/// `cmd` leaves room to grow. The emitter relativized any absolute path
+/// against the workspace root; the path is taken in the tree's spelling
+/// (`node_path`), and one that leaves the workspace is no envelope.
 pub(in crate::ui) fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
     let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
     let ui = v.get("sot_ui")?;
@@ -65,7 +66,11 @@ pub(in crate::ui) fn parse_nav_envelope(text: &str) -> Option<NavEnvelope> {
         return None;
     }
     let workspace = ui.get("workspace").and_then(|x| x.as_str())?.to_string();
-    let path = ui.get("path").and_then(|x| x.as_str())?.to_string();
+    let sent = ui.get("path").and_then(|x| x.as_str())?;
+    let Some(path) = node_path(sent) else {
+        tracing::warn!(path = %sent, "sot_ui envelope: a path that leaves the workspace refused");
+        return None;
+    };
     if workspace.is_empty() || path.is_empty() {
         return None;
     }

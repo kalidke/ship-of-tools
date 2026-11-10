@@ -668,6 +668,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.
 - Showing a result never steals the view: `route_fe_command` (control/command.rs) honours force-show only for a
   command addressed to this frontend, and a broadcast `relaunch` is refused.
+- A path an agent sends (a preview or a reveal from the daemon's relay or the command file, a `sot_ui` envelope) is
+  taken in the spelling the Files tree lists and the watcher reports (`nav::files::node_path`): empty and `.` names
+  dropped, each `..` folded into the name before it (text only, no symlink followed: docs/defects.md: PATH-FOLD-LEXICAL),
+  and a rooted path or one that leaves the workspace is no command (the command file's and an envelope's is dropped with
+  a log line; the relay's is named on the status line). The daemon
+  refuses a node id holding `..`, and the fired target, the cursor and `preview.changed` compare ids as text, so a
+  path in another spelling would be refused or never refreshed (docs/defects.md: PREVIEW-PDF-STALE). Test:
+  `control::command::tests::an_agents_path_is_taken_in_the_trees_spelling`.
+- A preview the daemon refuses leaves the pane on what it showed; while the refused node is the fired target the pane's
+  title ends `REFUSED, view not updated` (`preview_requests.refuse`). The mark parks in the row's snapshot with the older
+  bytes and returns with them; a reply that installs, a new request or a first visit clears it. A reply for a newer
+  generation than a badged result's attempt satisfies the attempt (`preview_installed`). Tests:
+  `preview::requests::tests::a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it`, the native
+  fixture `passing_a_result_row_keeps_its_badge`, `session::result_ledger::tests::a_newer_reply_for_the_attempts_node_satisfies_it`.
 - Help is one chord: `help.toggle` = `Primary+?` and `drawer.help` = `F1` (input/keybindings.rs). There is no bare `?`
   binding and no "press ?" wording in hints; a bare-text chord never fires where the pane consumes typed text
   (`Chord::is_bare_text`). A `keybindings.toml` entry replaces that action's default chords. If Ctrl+? fails on a

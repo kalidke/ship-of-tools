@@ -176,7 +176,7 @@ fn acknowledgment_requires_row_cursor_preview_and_presentation() {
         ledger.cursor_landed(&dir, &b, &attempt.node_id);
         ledger.cursor_landed(&dir, &a, "files:wrong.rs");
         ledger.preview_installed(Some(&other), attempt.preview_gen, node);
-        ledger.preview_installed(Some(&target), attempt.preview_gen + 1, node);
+        ledger.preview_installed(Some(&target), attempt.preview_gen - 1, node);
         ledger.preview_installed(Some(&target), attempt.preview_gen, Some("files:wrong.rs"));
         assert!(!present(&mut ledger, Some(&target), node, node));
         if cursor_first {
@@ -464,4 +464,21 @@ fn result_attempt_allocates_exactly_once_only_after_admission() {
         assert!(matches!(result, Err("result attempt serial space exhausted")));
         assert_eq!((calls.get(), requests.preview_generation()), (2, 2));
     }
+}
+
+/// A change event re-fetches the badged file while the attempt's request is out; the newer reply is the one that
+/// installs, and it satisfies the attempt (an older generation never does).
+#[test]
+fn a_newer_reply_for_the_attempts_node_satisfies_it() {
+    let (dir, mut ledger, a, _) = setup();
+    let target = dir.resolve(&a, "project").unwrap();
+    record(&mut ledger, &dir, &a, "project", "same.rs");
+    let attempt = start(&mut ledger, &target, 10);
+    ledger.arm_reveal(attempt.id.clone());
+    let node = Some(attempt.node_id.as_str());
+    ledger.cursor_landed(&dir, &a, &attempt.node_id);
+    ledger.preview_installed(Some(&target), attempt.preview_gen - 1, node);
+    assert!(!present(&mut ledger, Some(&target), node, node), "an older reply");
+    ledger.preview_installed(Some(&target), attempt.preview_gen + 1, node);
+    assert!(present(&mut ledger, Some(&target), node, node), "the newer reply");
 }
