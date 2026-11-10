@@ -1568,3 +1568,14 @@ A landing's record goes here, with its measured times; the package page holds on
   of six mutants alive); two fix rounds of 3 and 2 minutes; three rebases onto B5e's and B5l's commits (1 minute each);
   four scoped gates of 2 minutes. The causes: a red test without the time format's edges or the meta rules, and the
   rebases while B5e and B5l moved under it.
+- The project chat's B5g, the drawer shows the channel, 2026-11-09: builder launched 19:05, main 19:42 (de3089241), 37
+  minutes, past the half hour, a failure by this page's standard. With Chat shown, the held records are placed oldest
+  to newest with the newest at the body's bottom; only records that reach the body are measured and shaped, their
+  buffers cached by spans, width and scale (those in view plus 64 others, the farthest evicted first), prepared as
+  clipped areas in the frame's one text vector; `no messages` only for a channel read whole and empty. A new manual
+  page, `guide/chat.md`. About 220 product lines with comments and 160 test lines. Where the minutes went: the build (5
+  minutes); three review rounds (blockers 2, 0, then a check of my own; 12 and 8 minutes: the first found all six
+  mutants alive, the order resting on an untested sort and a cache test that could not fail); two fix rounds of 6 and
+  2 minutes; three scoped gates of 2 minutes. The causes: a red test of three placements that pinned none of the
+  view's other rules, and a fix round whose mutant runs stacked when a restore failed, so a reviewer reran them one at
+  a time.
