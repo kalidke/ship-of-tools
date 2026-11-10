@@ -99,6 +99,12 @@ Reading:
 - A reader on a box that appends itself reads under a shared lock on `inbox/<h>.lock`, bounded at 3 s: a held lock is
   "try again" (poll exits 75 and moves nothing); any other lock fault is named and the read runs unlocked, covered by
   the cursor's hash.
+- One more reader, `mail::inbox::lines_from(comm_home, from, env)`, returns the `msg` of every complete line from one
+  sender across every `inbox/*.jsonl`, in each file's order, the inboxes in file-name order, one inbox read at a time under the same shared lock. It moves
+  no cursor, writes no registry entry, creates no inbox and names no handle (it creates each inbox's lock sidecar, as a
+  poll does); a held lock or any read error but a missing path (a stray directory named `x.jsonl` included) fails the
+  whole read (a skipped inbox could let a line be filed twice), any other lock fault is logged and that inbox is read
+  unlocked. It is a blocking read (up to 3 s on a held lock), so an async caller runs it on a blocking thread.
 - Unread mail is a line past the cursor that is a JSON object whose `to` is the handle and whose `from` is not; a
   broadcast copy (`to` empty) is shown at the next poll and never counted. One rule counts (`mail::cursor::counts`), for
   the wake, the end-of-turn check and `sotd comm unread`.
@@ -239,7 +245,7 @@ worktree status and sync scripts, `comm-status.sh`, the turn auditor and both ho
 `sot_require_routable_identity` (`sot-nav.sh`, the bootstrap, the comm matrix). `sot_canonical_path`, which runs no
 sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
-`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`).
+`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), and the chat's rebuild of which channel posts were filed (`lines_from`; not yet built).
 
 Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); the package page's target puts the
 wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist
