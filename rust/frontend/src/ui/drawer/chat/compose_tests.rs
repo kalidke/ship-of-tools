@@ -33,9 +33,8 @@ fn ch(s: &str) -> Key {
     Key::Character(s.into())
 }
 
-/// The wanted row's draft: its text and its channel.
-fn held(d: &ChatDrawer) -> Option<(&str, &str)> {
-    d.draft()
+fn shown(d: &ChatDrawer) -> Vec<String> {
+    d.compose_rows(false)
 }
 
 #[test]
@@ -53,6 +52,7 @@ fn the_draft_keeps_its_destination_and_its_escaped_bound() {
     // No channel to write to: nothing is begun.
     let mut none = ChatDrawer::default();
     assert!(typed(&mut none, "a").is_err());
+    assert!(none.compose_rows(true).is_empty(), "no compose rows while no channel is known");
 
     // The bound counts the escaped form: 1,638 `&` fit and the 1,639th is refused.
     let (mut d, _) = watching();
@@ -70,25 +70,28 @@ fn the_draft_keeps_its_destination_and_its_escaped_bound() {
     d.edit(Edit::Paste("a\r\nb\0c\x07d")).unwrap();
     d.edit(Edit::Paste("\r\te\x1b")).unwrap();
     d.edit(Edit::Typed("\x08f")).unwrap();
-    assert_eq!(held(&d), Some(("a\nbcd\n\tef", "C1")), "LF between, tab kept, other controls gone");
+    assert_eq!(shown(&d), ["> a", "  bcd", "   ef", "to C1"], "LF between, tab kept (a cell shows it as a space), other controls gone");
+    d.edit(Edit::Newline).unwrap();
+    assert_eq!(shown(&d), ["> bcd", "   ef", "  ", "to C1 · 1 line not shown"], "at most four rows, with the count of lines not shown");
 
     // The destination is fixed at the first character: the view moves to another channel and the draft stays.
     let (mut d, at) = watching();
     typed(&mut d, "hi").unwrap();
     d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false })), at);
     typed(&mut d, "!").unwrap();
-    assert_eq!(held(&d), Some(("hi!", "C1")));
-    // Emptied, the draft is dropped and follows the view again.
+    assert_eq!(shown(&d), ["> hi!", "to C1"]);
+    assert_eq!(d.compose_rows(true), ["> hi!█", "to C1"], "the cursor block ends the last line while focused");
+    // Emptied, the draft follows the view again.
     for _ in 0..3 {
         d.edit(Edit::Backspace).unwrap();
     }
-    assert_eq!(held(&d), None);
-    typed(&mut d, "gone").unwrap();
-    assert_eq!(held(&d), Some(("gone", "C2")));
+    assert_eq!(shown(&d), ["> ", "to C2"]);
 
     // A row a listing retires drops its draft, and no other.
+    typed(&mut d, "gone").unwrap();
     d.retire(&[row("S")]);
-    assert_eq!(held(&d), Some(("gone", "C2")));
+    assert_eq!(shown(&d)[0], "> gone");
     d.retire(&[row("R")]);
-    assert_eq!(held(&d), None);
+    assert_eq!(shown(&d), ["> ", "to C2"]);
+    let _ = at;
 }

@@ -68,6 +68,8 @@ pub(super) struct ChromeView<'a> {
     pub(super) drawer: DrawerContent,
     pub(super) chat_empty: bool,
     pub(super) chat_title: &'a str,
+    /// The Chat drawer's compose rows, drawn at the foot of the drawer.
+    pub(super) chat_compose: &'a [String],
     pub(super) monitor_host_connected: bool,
     pub(super) monitor_host_label: &'a HostKey,
     pub(super) repl_input: &'a String,
@@ -438,9 +440,14 @@ impl ChromeView<'_> {
         input_para: Paragraph<'static>,
         repl_split: ReplDrawerLayout,
     ) {
-        let ChromeView { drawer, chat_empty, help_state, help_bindings, .. } = *self;
+        let ChromeView { drawer, chat_empty, chat_compose, help_state, help_bindings, .. } = *self;
         if drawer == DrawerContent::Chat && chat_empty {
             frame.render_widget(Paragraph::new("no messages").style(Style::default().fg(Color::DarkGray)), repl_rect);
+        }
+        if drawer == DrawerContent::Chat && !chat_compose.is_empty() {
+            let n = (chat_compose.len() as u16).min(repl_rect.height);
+            let foot = ratatui::layout::Rect { y: repl_rect.y + repl_rect.height - n, height: n, ..repl_rect };
+            frame.render_widget(Paragraph::new(chat_compose.join("\n")), foot);
         }
         if drawer == DrawerContent::Help {
             help::render(frame, repl_rect, help_state, help_bindings);

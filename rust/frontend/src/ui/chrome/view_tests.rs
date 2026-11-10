@@ -130,6 +130,7 @@ fn paint_chrome_repl(
         drawer,
         chat_empty,
         chat_title: " chat · C1 reading… ",
+        chat_compose: &[],
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,

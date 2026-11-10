@@ -6,7 +6,11 @@ use std::collections::HashMap;
 use sot_protocol::chat::post_text_fits;
 use sot_protocol::ops::ChatTarget;
 
+use crate::ui::chrome::cell_lines;
 use crate::ui::ResultRowIdentity;
+
+/// The compose block's draft rows; the destination row follows them.
+const DRAFT_ROWS: usize = 3;
 
 pub(in crate::ui) enum Edit<'a> {
     Typed(&'a str),
@@ -69,8 +73,28 @@ impl Compose {
         self.drafts.retain(|row, _| !rows.contains(row));
     }
 
-    #[cfg_attr(not(test), allow(dead_code, reason = "the compose rows (B5k) read it"))]
     pub(super) fn draft(&self, row: &ResultRowIdentity) -> Option<&Draft> {
         self.drafts.get(row)
     }
+}
+
+/// The compose rows at the body's foot: `> ` and the draft's last lines (the cursor block ends them when `focused`), then
+/// `to <channel>`, which also says how many lines are not shown.
+pub(super) fn rows(draft: Option<&str>, channel: &str, focused: bool) -> Vec<String> {
+    let text = draft.unwrap_or("");
+    let mut lines = cell_lines(text);
+    if lines.is_empty() || text.ends_with('\n') {
+        lines.push(String::new());
+    }
+    if focused {
+        lines.last_mut().expect("a line").push('█');
+    }
+    let hidden = lines.len().saturating_sub(DRAFT_ROWS);
+    let mut out: Vec<String> = lines.split_off(hidden).into_iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " })).collect();
+    out.push(match hidden {
+        0 => format!("to {channel}"),
+        1 => format!("to {channel} · 1 line not shown"),
+        n => format!("to {channel} · {n} lines not shown"),
+    });
+    out
 }

@@ -10,7 +10,7 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
-use super::compose::{Compose, Edit};
+use super::compose::{rows, Compose, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out};
 use super::row_channel::{RowChannel, Stand};
 use sot_protocol::ops::ChatCode;
@@ -194,11 +194,13 @@ impl ChatDrawer {
         self.compose.retire(rows);
     }
 
-    /// The wanted row's draft: its text and the channel it goes to.
-    #[cfg(test)]
-    pub(super) fn draft(&self) -> Option<(&str, &str)> {
-        let d = self.compose.draft(self.rows.row()?)?;
-        Some((d.text.as_str(), d.dest.channel.as_str()))
+    /// The compose rows at the body's foot: none while no channel is known to write to.
+    pub(in crate::ui) fn compose_rows(&self, focused: bool) -> Vec<String> {
+        let draft = self.rows.row().and_then(|r| self.compose.draft(r));
+        match draft.map(|d| &d.dest).or_else(|| self.view_dest()) {
+            Some(dest) => rows(draft.map(|d| d.text.as_str()), dest.channel.as_str(), focused),
+            None => Vec::new(),
+        }
     }
 
     #[cfg(test)]
