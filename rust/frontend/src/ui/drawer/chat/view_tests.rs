@@ -783,6 +783,23 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     assert_eq!(view.selected_text().as_deref(), Some("a < "), "a release ends the drag");
     assert_eq!(drag(&mut view, &held[2].ts, (1, 0), (1, 18)).as_deref(), Some("<https://x?a=1&b=2"));
 
+    // The copy is the selection's bytes; with none it is the marked message's shown text, the header left out.
+    view.clear_selection();
+    assert_eq!(view.copy_text(), None, "no selection and no mark");
+    view.mark(true);
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    assert_eq!(view.mark.as_ref(), Some(&held[2].ts));
+    assert_eq!(view.copy_text().as_deref(), Some("<https://x?a=1&b=2>"));
+    drag(&mut view, &held[1].ts, (1, 0), (1, 4));
+    assert_eq!(view.copy_text().as_deref(), Some("a < "), "the selection comes first");
+    view.mark(true);
+    view.mark(true);
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    view.clear_selection();
+    assert_eq!(view.copy_text().as_deref(), Some(TEXT), "a marked message's lines, as the record holds them");
+    view.reset();
+    lay_in(&mut view, &mut fonts, &held, BODY);
+
     // The tint: rectangles inside the body, below the header, inside the selected record.
     drag(&mut view, &held[0].ts, (1, 6), (3, 3));
     let top = BODY.y + view.placed_tops()[0];
@@ -892,4 +909,14 @@ fn a_change_to_the_selected_buffer_clears_the_selection() {
     view.anchor = Some((first, 0.0));
     lay_in(&mut view, &mut fonts, &many, small);
     assert!(view.selected_text().is_none(), "an evicted buffer shaped again");
+}
+
+#[test]
+fn the_copy_goes_to_the_clipboard_or_says_why_not() {
+    use super::copy_status;
+    let mut sent = None;
+    assert_eq!(copy_status(Some("a < b".into()), |t| { sent = Some(t); Ok(()) }), "copied chat text");
+    assert_eq!(sent.as_deref(), Some("a < b"));
+    assert_eq!(copy_status(Some("x".into()), |_| Err("no clipboard".into())), "copy failed · no clipboard");
+    assert_eq!(copy_status(None, |_| panic!("nothing is written")), "nothing to copy: select text or mark a message");
 }

@@ -397,8 +397,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   new width or scale, a buffer the trim let go, the mark moving onto or off the record (it restyles the header), and a row
   change (`a_change_to_the_selected_buffer_clears_the_selection`). The tint joins the one batched `Solid::SelectionBg`
   paint with the preview's and the agent pane's (`paint_text_selections`). A chat selection is never shared with the
-  agent. Copy is next (B5q2); the selection's bytes are read only by tests until then
-  (`chat_and_preview_copy_same_utf8_ranges`: the same buffer ranges copy what the preview copies, markup as shown).
+  agent. `chat.copy_selection` (`Primary+c`, `Primary+Shift+c`, the `Chat` scope: only in the Chat tenant, so the agent
+  pane's, the Terminal's and the REPL's Ctrl+C are as before: `the_chat_copy_chords_resolve_in_the_chat_tenant_alone`)
+  writes the selection's bytes through `input::write_clipboard_text`, else the marked message's shown text (its buffer
+  after the header line), else the status line says `nothing to copy: select text or mark a message`
+  (`the_copy_goes_to_the_clipboard_or_says_why_not`); the same buffer ranges copy what the preview copies, markup as shown
+  (`chat_and_preview_copy_same_utf8_ranges`).
 - `ProxyArms` privately owns the window half of the page proxy (ADR 0035): a host's pages are proxied exactly when
   its own `Connected` said so (no host's event touches another's); a page's listener is armed once per (host, daemon
   port), re-armed on reuse, and an `Announced` page whose port is held, by this window's listener for another host or

@@ -92,6 +92,10 @@ nothing, and a click in the messages still focuses the drawer. Any other click c
 to the message (an edit or a delete), a new window width, moving the mark onto or off it, and changing the row. A chat
 selection is never shared with the agent; only the preview's text and your drawing are.
 
-## Not yet
+## Copying
 
-Copying messages from the chat is not built yet. It arrives with its own change, and this page says so when it does.
+`Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
+exactly as shown: Slack's markup as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
+`(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
+message's text, not its name and time line. With neither, the status line says there is nothing to copy. Ctrl+C in the
+agent pane, the Terminal and the Julia REPL is unchanged.
