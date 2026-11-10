@@ -64,8 +64,7 @@ impl Flight {
     }
 
     /// A link changed: nothing of that host is in flight, and no reply will come. Another host's reads stay. A read of
-    /// that host still held is cancelled by `owner_outs` and `thread_outs`, which see the owner or the thread drop it (a link
-    /// change is a give-up).
+    /// that host still held is cancelled by `owner_outs` and, for the thread, `give_up_read` (a link change is a give-up).
     fn clear(&mut self, host: &HostKey) {
         self.reads.remove(host);
     }
@@ -124,7 +123,13 @@ impl ChatDrawer {
         self.rows.on_connection(host, up);
         self.flight.clear(host);
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
-        outs.extend(self.thread_outs(|t| t.on_connection(host, up)));
+        if self.thread.as_ref().is_some_and(|t| t.host() == host) {
+            if up {
+                outs.extend(self.restart_thread());
+            } else {
+                self.give_up_read();
+            }
+        }
         outs
     }
 
@@ -160,12 +165,16 @@ impl ChatDrawer {
             }
             ChatEvt::Posted { req, reply } => {
                 let mut made = None;
-                let outs = self.owner_outs(|o| {
+                let mut outs = self.owner_outs(|o| {
                     made = o.on_posted(host, &req, reply, now);
                     Vec::new()
                 });
                 if let Some(row) = made {
                     self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
+                    // A post into the open thread: the thread is read again whole.
+                    if req.thread.as_ref().is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, &req.target, p))) {
+                        outs.extend(self.restart_thread());
+                    }
                 }
                 outs
             }
@@ -173,7 +182,7 @@ impl ChatDrawer {
         }
     }
 
-    /// Enter: posts `row`'s draft once, to the channel it was begun in, under `name` (`[chat] name`, `None` when unset or
+    /// Enter: posts `row`'s draft once, to the channel and thread it was begun in, under `name` (`[chat] name`, `None` when unset or
     /// blank). It needs a draft with something in it and the name set, no post waiting and no `limited` wait running; the
     /// draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
@@ -186,7 +195,7 @@ impl ChatDrawer {
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }
-        let req = ChatPostReq { target: draft.dest.clone(), thread: None, kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
+        let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
     }
@@ -270,14 +279,23 @@ impl ChatDrawer {
         true
     }
 
-    /// Runs `f` on the open thread, tells the owner how much of the bound it holds, and sends its reads through the set.
-    fn thread_outs(&mut self, f: impl FnOnce(&mut Thread) -> Vec<Out>) -> Vec<Out> {
-        let before = self.thread.as_ref().and_then(|t| t.reading.clone().map(|r| (t.host().clone(), r)));
-        let outs = self.thread.as_mut().map(f).unwrap_or_default();
-        // A read the thread dropped (a link change) is given up, so one held behind it is cancelled, as `owner_outs` does.
-        if let Some((host, req)) = before.filter(|(_, r)| self.thread.as_ref().and_then(|t| t.reading.as_ref()) != Some(r)) {
+    /// The one restart of the open thread's walk: the read in flight is given up first (an equal reply still coming can then
+    /// never be taken as the restart's answer), then the first page is asked for.
+    fn restart_thread(&mut self) -> Vec<Out> {
+        self.give_up_read();
+        self.thread_outs(Thread::start)
+    }
+
+    /// The open thread's read in flight is given up, so one held behind it is cancelled and its reply, if it comes, is dropped.
+    fn give_up_read(&mut self) {
+        if let Some((host, req)) = self.thread.as_mut().and_then(|t| t.reading.take().map(|r| (t.host().clone(), r))) {
             self.flight.abandon(&host, &req);
         }
+    }
+
+    /// Runs `f` on the open thread, tells the owner how much of the bound it holds, and sends its reads through the set.
+    fn thread_outs(&mut self, f: impl FnOnce(&mut Thread) -> Vec<Out>) -> Vec<Out> {
+        let outs = self.thread.as_mut().map(f).unwrap_or_default();
         self.owner.reserve(self.thread.as_ref().map_or(0, Thread::len));
         self.flight.send(outs)
     }
@@ -312,7 +330,7 @@ impl ChatDrawer {
             return Err("posting…");
         }
         let dest = self.watch_for(row).cloned();
-        self.compose.edit(row, dest.as_ref(), edit)
+        self.compose.edit(row, dest.as_ref().map(|t| (t, self.thread.as_ref().map(Thread::parent_ts))), edit)
     }
 
     /// Rows a listing retired lose their drafts.
@@ -320,12 +338,22 @@ impl ChatDrawer {
         self.compose.retire(rows);
     }
 
-    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and its channel,
-    /// else the watched channel.
+    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
+    /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else where the next
+    /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let draft = self.rows.row().and_then(|r| self.compose.draft(r));
         let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
-        Some(ComposeText::of(draft.map(|d| d.text.as_str()), dest.channel.as_str(), focused))
+        // With no draft, the line names where the next one would go: the open thread's parent.
+        let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
+        let to = match thread {
+            Some(p) => {
+                let now = chrono::Local::now();
+                format!("reply in thread of {}", super::project::when(p.as_str(), now.timestamp(), *now.offset()))
+            }
+            None => format!("to {}", dest.channel.as_str()),
+        };
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
     }
 
     pub(in crate::ui) fn set_foot(&mut self, rows: u16) {

@@ -2,8 +2,9 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::FontSystem;
 use sot_protocol::chat::{ChatRecord, Ts};
-use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatTarget, ChatWatchRes, ChatWatchState};
+use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatTarget, ChatWatchRes, ChatWatchState};
 
+use super::compose::{compose_rows, Edit};
 use super::drawer::ChatDrawer;
 use super::owner::Out;
 use super::row_channel_tests::answer;
@@ -473,4 +474,133 @@ fn a_restart_clears_a_refusal() {
     d.on_connection(&host(), true, at);
     assert!(!d.title().contains("not read"), "{}", d.title());
     assert_eq!(reads(&d.tick(shown("ROW1"), at + Duration::from_secs(10)).0), 0, "the old read is not asked again");
+}
+
+/// Types `text` into ROW1's draft and presses Enter: the one post that goes out.
+fn type_and_send(d: &mut ChatDrawer, text: &str, at: Instant) -> ChatPostReq {
+    d.edit(shown("ROW1").as_ref(), Edit::Text(text)).unwrap();
+    send(d, at)
+}
+
+fn send(d: &mut ChatDrawer, at: Instant) -> ChatPostReq {
+    match d.send(shown("ROW1").as_ref(), Some("Ada"), at).unwrap().as_slice() {
+        [(_, OutgoingReq::ChatPost { req })] => req.clone(),
+        other => panic!("one chat.post expected, got {} requests", other.len()),
+    }
+}
+
+fn made(d: &mut ChatDrawer, req: &ChatPostReq, at: Instant) -> Vec<Out> {
+    let ts = serde_json::from_value(serde_json::json!("1900000000.000100")).unwrap();
+    d.on_evt(&host(), ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Posted { ts }) }, at)
+}
+
+fn to_line(d: &ChatDrawer) -> String {
+    compose_rows(&d.compose_text(false).unwrap(), 60, 6).pop().unwrap()
+}
+
+#[test]
+fn a_draft_posts_to_the_destination_it_was_begun_in() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let parent = held[1].ts.clone();
+
+    // Begun in the thread, then the thread closed and the link lost and back: one post, to that thread.
+    let (mut d, at) = channel(&held);
+    open(&mut d, &mut fonts, &[true, true]);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
+    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    d.close_thread();
+    assert!(to_line(&d).starts_with("reply in thread of "), "the draft keeps its thread through the close");
+    // A row switch away and back, and the watch ended, leave it as it was.
+    d.tick(shown("ROW2"), at + Duration::from_secs(1));
+    d.tick(shown("ROW1"), at + Duration::from_secs(2));
+    d.on_evt(&host(), ChatEvt::Resolved { row: "ROW1".into(), reply: ChatReply::Refused(ChatCode::Unmapped) }, at + Duration::from_secs(3));
+    assert!(to_line(&d).starts_with("reply in thread of "), "the draft keeps its thread through a row switch and a lost watch");
+    d.on_connection(&host(), false, at);
+    d.on_connection(&host(), true, at);
+    let req = send(&mut d, at);
+    assert_eq!((req.thread.as_ref(), req.target.channel.as_str(), req.text.as_str()), (Some(&parent), "CH1", "hi"));
+    assert!(d.send(shown("ROW1").as_ref(), Some("Ada"), at).is_err(), "the post waits: no second one");
+    assert_eq!(reads(&made(&mut d, &req, at)), 0, "the thread is closed: nothing is read");
+    assert!(d.draft().is_none());
+
+    // Begun in the channel, then a thread opened: the post is the channel's, and the line says so.
+    let (mut d, at) = channel(&held);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
+    open(&mut d, &mut fonts, &[true, true]);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("!")).unwrap();
+    assert_eq!(to_line(&d), "to CH1");
+    let req = send(&mut d, at);
+    assert_eq!((req.thread.as_ref(), req.target.channel.as_str(), req.text.as_str()), (None, "CH1", "hi!"));
+    assert_eq!(reads(&made(&mut d, &req, at)), 0, "a post to the channel reads no thread");
+
+    // The thread is read again after the person's own post in it, whole, from its first page.
+    let (mut d, at) = channel(&held);
+    let outs = open(&mut d, &mut fonts, &[true, true]);
+    on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
+    d.layout(&mut fonts, body(), 1.0);
+    assert_eq!(d.thread_len(), 2);
+    let req = type_and_send(&mut d, "a reply", at);
+    let again = history(&made(&mut d, &req, at));
+    assert_eq!((again.thread.as_ref(), again.cursor.as_ref()), (Some(&parent), None));
+    assert_eq!(d.thread_len(), 1, "the walk starts over from the parent");
+
+    // Not after a post into another thread: the draft begun in the first, then the second opened.
+    let (mut d, at) = channel(&held);
+    open(&mut d, &mut fonts, &[true, true]);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("to the first")).unwrap();
+    d.close_thread();
+    let outs = open(&mut d, &mut fonts, &[false]);
+    on(&mut d, &history(&outs), page(&[], None), at);
+    let req = send(&mut d, at);
+    assert_eq!(req.thread.as_ref(), Some(&parent));
+    assert_eq!(reads(&made(&mut d, &req, at)), 0, "another thread is open: it is not read again");
+}
+
+/// A thread's posts come back in any order: the reread after `posted` is asked once the first page in flight has left.
+#[test]
+fn a_post_while_the_first_page_is_in_flight_is_read_again_once_it_is_answered() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let parent = held[1].ts.clone();
+    let (mut d, at) = channel(&held);
+    let first = history(&open(&mut d, &mut fonts, &[true, true]));
+    let req = type_and_send(&mut d, "a reply", at);
+    assert_eq!(reads(&made(&mut d, &req, at)), 0, "the equal read is still in flight: the reread waits behind it");
+    let outs = on(&mut d, &first, page(&[], None), at);
+    let again = history(&outs);
+    assert_eq!(again, first, "the first page is asked for again");
+    on(&mut d, &again, page(&[reply_to(&parent, 1)], None), at);
+    assert_eq!(d.thread_len(), 2, "the thread holds the reply the post made");
+}
+
+/// Only a `posted` reply reads the thread again; the line under an empty draft names the thread.
+#[test]
+fn only_a_posted_reply_rereads_and_an_empty_draft_names_the_open_thread() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let parent = held[1].ts.clone();
+    let (mut d, at) = channel(&held);
+    assert_eq!(to_line(&d), "to CH1");
+    let outs = open(&mut d, &mut fonts, &[true, true]);
+    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
+    let req = type_and_send(&mut d, "a reply", at);
+    let refused = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy });
+    let outs = d.on_evt(&host(), ChatEvt::Posted { req, reply: refused }, at);
+    assert_eq!((reads(&outs), d.thread_len()), (0, 2), "a refused post reads nothing");
+}
+
+/// The reread is by the Slack thread's identity: its host, workspace, channel and parent; the row that posted is not part of it.
+#[test]
+fn a_thread_is_the_one_posted_to_by_host_workspace_channel_and_parent() {
+    let parent = top(1);
+    let t = super::thread::Thread::new(host(), target(), parent.clone(), false, Default::default());
+    let at = |v: serde_json::Value| -> ChatTarget { serde_json::from_value(v).unwrap() };
+    let mk = |row: &str, ws: &str, ch: &str| at(serde_json::json!({ "row": row, "workspace": ws, "channel": ch }));
+    assert!(t.is(&host(), &mk("ROW2", "WS1", "CH1"), &parent.ts), "another row's post to the same thread");
+    assert!(!t.is(&"b".to_string(), &mk("ROW1", "WS1", "CH1"), &parent.ts));
+    assert!(!t.is(&host(), &mk("ROW1", "WS2", "CH1"), &parent.ts));
+    assert!(!t.is(&host(), &mk("ROW1", "WS1", "CH2"), &parent.ts));
+    assert!(!t.is(&host(), &mk("ROW1", "WS1", "CH1"), &top(2).ts));
 }

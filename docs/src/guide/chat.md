@@ -6,7 +6,7 @@ a message that arrives takes the bottom line and lifts the rest. An empty channe
 
 ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view moves to show it; a scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
 
-ArrowRight (`chat.thread_open`) opens the marked message's thread, a message with no replies included: the thread shows the message and its replies, oldest first, and Escape closes it, with the mark back on the message. Changing the row or hiding the drawer closes it too. A thread is read when it is opened, not watched: a reply made on the phone shows when the thread is opened again, and `N replies` on a message is not live either. Each open takes about 8 Slack reads for a long thread, more when Slack sends short pages, plus the lookups of the authors' names. A thread shows up to 156 messages, the parent included: past that the newest replies are not shown, and the title says so. While a thread is open the channel's older messages give way to it, never its newest 100. A refused read is asked again after a few seconds (thirty when Slack rate limits), and the title says why. A message typed while a thread is open is still posted to the channel (the line under the draft says where it goes); posting into a thread comes later.
+ArrowRight (`chat.thread_open`) opens the marked message's thread, a message with no replies included: the thread shows the message and its replies, oldest first, and Escape closes it, with the mark back on the message. Changing the row or hiding the drawer closes it too. A thread is read when it is opened, not watched: a reply made on the phone shows when the thread is opened again, and `N replies` on a message is not live either. Each open takes about 8 Slack reads for a long thread, more when Slack sends short pages, plus the lookups of the authors' names. A thread shows up to 156 messages, the parent included: past that the newest replies are not shown, and the title says so. While a thread is open the channel's older messages give way to it, never its newest 100. A refused read is asked again after a few seconds (thirty when Slack rate limits), and the title says why. A message begun while a thread is open is a reply in that thread (the line under the draft reads `reply in thread of` the message's time), and one begun in the channel stays the channel's when a thread opens; a draft keeps where it was begun through closing the thread, changing the row and a reconnect. After your own reply is posted and the thread is open, it is read again, which costs about what opening it did (about 8 reads for a long thread), so it shows the parent alone for a moment.
 
 To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
 line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
@@ -64,17 +64,17 @@ for a channel that was read whole and holds none.
 
 ## The draft
 
-With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then `to <channel>` and, if the
+With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then where it goes (`to <channel>`, or `reply in thread of` the parent's time for a draft begun in a thread, and for the next one while a thread is open) and, if the
 draft is longer, how many rows are not shown (a line wider than the drawer wraps, and each wrapped row counts). `Shift+Enter`
-(`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and the channel it goes to
-is the one shown when its first character was typed, even if you move the view afterwards. A draft stops at what a post
+(`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and where it goes
+(the channel, or the thread open then) is fixed when its first character is typed, even if you move the view afterwards. A draft stops at what a post
 can carry (8 KiB, counting `&`, `<` and `>` as five, four and four bytes); a key or paste past it is refused whole and
 the status line says so. Control characters other than tab are dropped. A draft is lost when its row goes or the window
 closes.
 
 ## Posting
 
-`Enter` (`chat.send`) posts the draft once, to the channel its compose line names. The post carries the name in
+`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. The post carries the name in
 `[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)); with no name set, nothing is sent and the status line
 says so. While the post waits the draft is frozen: a key or `Enter` is refused with `posting…` on the status line. The draft is cleared only by a
 reply that proves the post was made. Any other outcome keeps it, and the status line says why: `not posted` with the
@@ -86,5 +86,5 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 
 ## Not yet
 
-Older pages of history and sharing a selection with the agent are not built yet. Each
-arrives with its own change, and this page says so when it does.
+Selecting and copying messages in the chat is not built yet. It arrives with its own change, and this page says so
+when it does.
