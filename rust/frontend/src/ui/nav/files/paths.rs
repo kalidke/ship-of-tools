@@ -14,6 +14,25 @@ pub(in crate::ui) fn parent_files_node_id(node_id: &str) -> String {
     }
 }
 
+/// A workspace-relative path an agent sent, in the spelling the Files tree lists and the watcher reports: its names
+/// between `/`, with every empty and `.` name dropped and each `..` taking away the name before it, so
+/// `out/build/../a.pdf` is `out/a.pdf`. `None` when a `..` would leave the workspace. The daemon refuses a node id
+/// holding `..`, and the fired target, the cursor and `preview.changed` compare ids as text, so a path kept in any
+/// other spelling is refused or never refreshed.
+pub(in crate::ui) fn node_path(path: &str) -> Option<String> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in path.split('/') {
+        match name {
+            "" | "." => {}
+            ".." => {
+                names.pop()?;
+            }
+            name => names.push(name),
+        }
+    }
+    Some(names.join("/"))
+}
+
 impl State {
     /// Project root for the active workspace, falling back to the
     /// hello root for a default selection. An unknown explicit nondefault

@@ -114,6 +114,7 @@ impl State {
         // figure fetches must go to the same workspace
         // (otherwise active_workspace_id drift sends the
         // request to a project that doesn't have the file).
+        self.preview_requests.clear_refusal();
         let scale = extras.as_ref().and_then(parse_physical_scale);
         self.ink.install_preview(&mut self.preview_source, mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
         // Pagination state (ADR 0021): present only when the
@@ -484,6 +485,7 @@ impl State {
             .unwrap_or("preview")
             .to_string();
         self.status.set(format!("preview failed · {name}: {message}"));
+        self.preview_requests.refuse(node_id.as_deref());
         if self.preview_requests.fail_page_reply() {
             requests::continue_page_request(self);
         }

@@ -869,6 +869,10 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **PREVIEW-PDF-STALE** (fe-ui) closed by the landing that fixes it, 2026-11-10: a PDF an agent rebuilt and badged as
+  `show-result "$PWD/../<file>"` from its build folder kept showing the old version; the window took the path as sent,
+  the daemon refused its `..` id, and the failure left the pane on what it showed, so each return to the row (the
+  result never acknowledged) showed the old PDF again; the window now takes an agent's path in the tree's spelling, and a refused preview marks the pane's title.
 - **TESTS-REACH-LIVE-COMM-HOME** (messaging) closed by the landing that fixes it, 2026-11-10: four destroy tests set no `SOT_COMM_HOME`, so a test run started from a session pruned, and took the registry lock of, that session's live comm folder; under test the one resolver now refuses a comm folder not beneath the temporary folder, so a test that forgets aborts the run with its name; every fixture that inherited the process environment's folder (the destroy, reauth, create-rollback and agent-environment fixtures) is isolated, and three argv tests now read no environment; a second landing isolated the four tests that resolved the folder through `HOME` or `USERPROFILE` with `SOT_COMM_HOME` unset (the gate's and the hosted runners' setting), one on every platform and three Windows argv tests.
 - **GATE-SCOPED-MISSES-SHARED-CALLEE** (distribution) closed as not a gate defect, 2026-11-10: the scoped gate ran the
   same daemon test job, filters and home as the unscoped one; the test it passed was a race (COMM-GUARD-RACES-ENV).

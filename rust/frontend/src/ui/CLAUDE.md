@@ -668,6 +668,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - A presentation receipt requires the current live attached client's checkpoint, a nonempty painted pane and a known request origin, and is emitted once only after frame presentation.
 - Showing a result never steals the view: `route_fe_command` (control/command.rs) honours force-show only for a
   command addressed to this frontend, and a broadcast `relaunch` is refused.
+- A path an agent sends (a preview or a reveal from the daemon's relay or the command file, a `sot_ui` envelope) is
+  taken in the spelling the Files tree lists and the watcher reports (`nav::files::node_path`): empty and `.` names
+  dropped, each `..` folded into the name before it, and a path that leaves the workspace is no command. The daemon
+  refuses a node id holding `..`, and the fired target, the cursor and `preview.changed` compare ids as text, so a
+  path in another spelling would be refused or never refreshed (docs/defects.md: PREVIEW-PDF-STALE). Test:
+  `control::command::tests::an_agents_path_is_taken_in_the_trees_spelling`.
+  A relayed path that leaves the workspace is also named on the status line (`refused_path`).
+- A preview the daemon refuses leaves the pane on what it showed; while the refused node is the fired target the pane's
+  title ends `REFUSED, showing an older view` (`preview_requests.refuse`, cleared by a reply, a new request or a row
+  switch), so a stale view is never taken for the file's current one. Test:
+  `preview::requests::tests::a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it`.
 - Help is one chord: `help.toggle` = `Primary+?` and `drawer.help` = `F1` (input/keybindings.rs). There is no bare `?`
   binding and no "press ?" wording in hints; a bare-text chord never fires where the pane consumes typed text
   (`Chord::is_bare_text`). A `keybindings.toml` entry replaces that action's default chords. If Ctrl+? fails on a

@@ -14,6 +14,8 @@ pub(in crate::ui) struct PreviewRequests {
     driven_preview_hold_cursor: Option<String>,
     /// The node the pane's latest preview request asked for; not the installed reply's node.
     preview_target_fired: Option<String>,
+    /// The fired node the daemon refused, while the pane still shows what it showed before: the title says so.
+    preview_refused: Option<String>,
     /// `(page, zoom)` of an in-flight zoom re-raster of the shown page.
     page_raster_pending: Option<(u32, f32)>,
     page_target: Option<u32>,
@@ -153,17 +155,30 @@ impl PreviewRequests {
     /// A preview request for `node_id` went out (or, for a capture, was asked for).
     pub(in crate::ui) fn record_fired(&mut self, node_id: String) {
         self.preview_target_fired = Some(node_id);
+        self.preview_refused = None;
     }
+
+    /// The daemon refused the request for `node_id`: the pane keeps its old content, now marked while it is the fired target.
+    pub(in crate::ui) fn refuse(&mut self, node_id: Option<&str>) {
+        self.preview_refused = node_id.filter(|n| Some(*n) == self.fired_target()).map(str::to_owned);
+    }
+
+    /// A reply installed, so the pane shows what was asked for.
+    pub(in crate::ui) fn clear_refusal(&mut self) { self.preview_refused = None; }
+
+    pub(in crate::ui) fn fired_refused(&self) -> bool { self.preview_refused.is_some() }
 
     /// Forget the fired target, so the next cursor follow fetches the cursored node again.
     pub(in crate::ui) fn forget_fired(&mut self) {
         self.preview_target_fired = None;
+        self.preview_refused = None;
         self.clear_page_requests();
     }
 
     /// A row's snapshot restores the target it had fired when it was left.
     pub(in crate::ui) fn restore_fired(&mut self, node_id: Option<String>) {
         self.preview_target_fired = node_id;
+        self.preview_refused = None;
         self.clear_page_requests();
     }
 

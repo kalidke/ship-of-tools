@@ -967,8 +967,17 @@ impl State {
         let (a, mut rx, events) = self.prepare_lifetime_probe("<host-badge>", "id-badge");
         let mut wire = TreeWire::new(&a, &events)?;
         let paths = ["top.rs", "other.rs"];
-        // Preview first, cursor second: neither alone clears the badge.
-        self.dispatch_fe_command(Some(&a), show_command("top.rs"));
+        // Preview first, cursor second: neither alone clears the badge. The badge comes as an agent sends one from
+        // a build folder, `sub/../top.rs`, and must be the tree's `top.rs` for the watcher's event to refresh it.
+        let evt = sot_protocol::ops::FeCommandEvt {
+            v: 1,
+            cmd: "preview".into(),
+            args: serde_json::json!({"workspace": "project", "path": "sub/../top.rs"}),
+            target: None,
+            target_serial: None,
+        };
+        let routed = route_fe_command(&evt, "fe@host-a").ok_or_else(|| anyhow::anyhow!("a `..` path was not routed"))?;
+        self.dispatch_fe_command(Some(&a), routed);
         self.dispatch_fe_command(Some(&a), goto_command("project"));
         let served =
             self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Everything)?;
@@ -1001,6 +1010,16 @@ impl State {
             !self.probe_sees_badge(&a),
             "a later frame brought the badge back"
         );
+        self.on_preview_changed(
+            a.clone(),
+            serde_json::json!({"workspace_id": self.selected.workspace_id(), "node_id": "files:top.rs", "kind": "modified"}),
+        );
+        // The badged file is rewritten: the watcher's event, in the tree's spelling, re-fetches it.
+        let refetch = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|r| match r {
+            OutgoingReq::PreviewGet { node_id, generation, .. } if node_id == "files:top.rs" => Some(generation),
+            _ => None,
+        });
+        refetch.ok_or_else(|| anyhow::anyhow!("the watcher's change to the badged file did not re-fetch it"))?;
         // A failed preview, a stale generation and another row's frame keep the next attempt's badge.
         self.switch_to_workspace(a.clone(), None, None, false);
         self.serve_result_requests(&mut wire, &mut rx, &paths, Hold::Nothing)?;
@@ -1025,6 +1044,10 @@ impl State {
             "kernel_unavailable".into(),
         );
         self.redraw()?;
+        anyhow::ensure!(
+            self.preview_pane_name().is_some_and(|name| name.contains("REFUSED")),
+            "a refused preview of the fired node left the pane title unmarked"
+        );
         anyhow::ensure!(
             self.probe_sees_badge(&a),
             "a failed preview cleared the badge"

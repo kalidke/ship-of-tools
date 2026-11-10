@@ -62,6 +62,9 @@ impl State {
                         tracing::info!(cmd = %evt.cmd, target = ?evt.target,
                             "fe.command: dispatching");
                         self.dispatch_fe_command(Some(&event_host), cmd);
+                    } else if let Some(path) = refused_path(&evt, &self_comm_handle()) {
+                        self.status.set(format!("{} refused · {path} leaves the workspace", evt.cmd));
+                        self.window.request_redraw();
                     } else {
                         tracing::debug!(cmd = %evt.cmd, target = ?evt.target,
                             "fe.command: ignored (target mismatch / unknown cmd / missing arg)");

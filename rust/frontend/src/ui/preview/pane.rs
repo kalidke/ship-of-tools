@@ -229,10 +229,7 @@ impl State {
         // when the title overflows the pane width.
         // Paginated preview (ADR 0021): surface position + the page-turn
         // keys in the title so the affordance is discoverable.
-        match self.pages.page() {
-            Some((page, count)) if count > 1 => Some(format!("{rel} · p {page}/{count} · n/p")),
-            _ => Some(rel.to_string()),
-        }
+        Some(pane_name(rel, self.pages.page(), self.preview_requests.fired_refused()))
     }
 
     /// Preview-pane size in physical pixels, as the render-fit hint sent
@@ -427,6 +424,18 @@ impl State {
         ));
         self.shaped.show_fatal(Some(fatal));
     }
+}
+
+/// The title's name: the path, its page, and (a refused request leaves the pane on the older view) the refusal.
+fn pane_name(rel: &str, page: Option<(u32, u32)>, refused: bool) -> String {
+    let mut name = match page {
+        Some((page, count)) if count > 1 => format!("{rel} · p {page}/{count} · n/p"),
+        _ => rel.to_string(),
+    };
+    if refused {
+        name.push_str(" · REFUSED, showing an older view");
+    }
+    name
 }
 
 #[cfg(test)]
