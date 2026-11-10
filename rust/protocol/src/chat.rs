@@ -1,6 +1,6 @@
 //! The one normalized chat record (B1 of the project chat): what the daemon says about one Slack message, shared by
-//! the daemon and the window. Wire owns this representation; `sot-chat` owns the meaning and builds it from Slack's
-//! JSON. A private URL has no field here.
+//! the daemon and the window. Wire owns this representation and the grammar of its text; `sot-chat` builds it from
+//! Slack's JSON. A private URL has no field here.
 
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -158,6 +158,47 @@ pub struct ChatRecord {
     /// File entries not summarized: those past the eighth, and any entry that is not an object or has no valid id.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub files_omitted: u32,
+}
+
+/// One piece of a record's text: a token Slack delimited with `<` and `>`, or the words around it. Both are decoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextSegment {
+    Markup(String),
+    Text(String),
+}
+
+/// Splits Slack's text, which is escaped markup. A bare `<` always opens a token, closed by the next `>` or by the end
+/// of the text (an unclosed one is a token a byte cut split). Only then are `&lt;`, `&gt;` and `&amp;` decoded, in one
+/// pass, in each segment; every other `&...` stays. No segment is empty.
+pub fn text_segments(text: &str) -> Vec<TextSegment> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let markup = rest.starts_with('<');
+        let end = if markup {
+            rest.find('>').map_or(rest.len(), |i| i + 1)
+        } else {
+            rest.find('<').unwrap_or(rest.len())
+        };
+        let decoded = decode_entities(&rest[..end]);
+        out.push(if markup { TextSegment::Markup(decoded) } else { TextSegment::Text(decoded) });
+        rest = &rest[end..];
+    }
+    out
+}
+
+fn decode_entities(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+/// A person's plain text as Slack's: `&`, `<` and `>` become `&amp;`, `&lt;` and `&gt;`, in one pass.
+pub fn escape_text(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The one bound on a post: its escaped form fits `MAX_TEXT`. The draft and chat's door both ask it.
+pub fn post_text_fits(text: &str) -> bool {
+    escape_text(text).len() <= MAX_TEXT
 }
 
 fn is_false(b: &bool) -> bool {

@@ -127,3 +127,45 @@ fn a_record_is_bounded_at_decode() {
     assert!(!ok(&|r| r.files = vec![ChatFile { name: "n".repeat(MAX_FILENAME + 1), ..a_file() }]));
     assert!(!ok(&|r| r.files = vec![ChatFile { mime: "m".repeat(MAX_MIME + 1), ..a_file() }]));
 }
+
+fn text(s: &str) -> TextSegment {
+    TextSegment::Text(s.into())
+}
+
+fn markup(s: &str) -> TextSegment {
+    TextSegment::Markup(s.into())
+}
+
+#[test]
+fn slack_text_decodes_entities_once_delimited_and_escape_inverts_it() {
+    assert_eq!(text_segments("if a &lt; b &amp;&amp; c &gt; d"), [text("if a < b && c > d")]);
+    assert_eq!(text_segments("&lt;@U1&gt; <@U1>"), [text("<@U1> "), markup("<@U1>")]);
+    assert_eq!(
+        text_segments("<https://x?a=1&amp;b=2|a &amp; b>"),
+        [markup("<https://x?a=1&b=2|a & b>")]
+    );
+    assert_eq!(text_segments("hi <@U12"), [text("hi "), markup("<@U12")]);
+    assert_eq!(text_segments("&amp;lt;"), [text("&lt;")]);
+    assert_eq!(text_segments("&nbsp; &"), [text("&nbsp; &")]);
+    assert_eq!(text_segments("<@U1><@U2>x"), [markup("<@U1>"), markup("<@U2>"), text("x")]);
+    assert!(text_segments("").is_empty());
+
+    assert_eq!(escape_text("<&>"), "&lt;&amp;&gt;");
+    for s in ["&lt;", "&gt;", "<&>", "<@U1>", "", "a & b < c > d", "&amp;lt;"] {
+        let segments = text_segments(&escape_text(s));
+        assert!(segments.iter().all(|g| matches!(g, TextSegment::Text(_))), "{s:?}");
+        let joined: String = segments
+            .iter()
+            .map(|g| match g {
+                TextSegment::Text(t) | TextSegment::Markup(t) => t.as_str(),
+            })
+            .collect();
+        assert_eq!(joined, s);
+    }
+
+    assert!(post_text_fits(&"&".repeat(1638)));
+    assert!(!post_text_fits(&"&".repeat(1639)));
+    assert!(post_text_fits(&"a".repeat(8192)));
+    assert!(!post_text_fits(&"a".repeat(8193)));
+    assert!(!post_text_fits(&format!("{}a", "\u{e9}".repeat(4096))));
+}
