@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 fn req(to: &str) -> CommFileReq {
-    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false }
+    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false, expected_row: None }
 }
 
 /// A link that answers each offer with `answer(to)`, or never when it gives `None`.
@@ -101,4 +101,24 @@ async fn a_dropped_link_leaves_and_its_owed_answers_end() {
         Some(Err((NO_ANSWER.into(), "the daemon on a did not answer within 4s; @live may still be filed".into())))
     );
     assert_eq!(links.offer(&req("live"), WITHIN).await, None, "the dropped link is no longer attached");
+}
+
+/// An offer keeps the sender's expected row, and a linked box's move refusal is the verdict over a plain `not_here`.
+#[tokio::test]
+async fn an_offer_keeps_the_expected_row_and_a_move_refusal_outranks_not_here() {
+    let links = Links::default();
+    let _a = serve(&links, "a", not_here);
+    let mut link = Some(links.attach("b".to_string()));
+    let holder = tokio::spawn(async move {
+        let offer = next_offer(&mut link).await;
+        let kept = offer.req.expected_row.clone();
+        let end = link.as_mut().unwrap();
+        let frame = end.request(offer).unwrap();
+        end.answer(Frame::res(frame.id, op::COMM_FILE, json!({"error": "@live is no longer bound to the expected row ws-1", "code": "not_here"})));
+        kept
+    });
+    let ask = CommFileReq { expected_row: Some("ws-1".into()), ..req("live") };
+    let Some(Err((code, error))) = links.offer(&ask, WITHIN).await else { panic!("no refusal") };
+    assert!(crate::comm::mail::filer::is_move(&code, &error), "{code} {error}");
+    assert_eq!(holder.await.unwrap().as_deref(), Some("ws-1"));
 }

@@ -59,7 +59,7 @@ impl Links {
 
     /// Offers `req` to every attached link, marked forwarded so each files only into its own folder, and gives each
     /// `within` to answer. `None` when no link is attached. Otherwise the first `ok` is the verdict; with none, a
-    /// refusal other than `not_here` (the box that lists the handle refused it), by host; else a link that did not
+    /// refusal other than a plain `not_here` (the box that lists the handle refused it, a guarded filing's move included), by host; else a link that did not
     /// answer, by host; else `not_here`.
     pub async fn offer(&self, req: &CommFileReq, within: Duration) -> Option<Result<(), (String, String)>> {
         let linked: Vec<(String, mpsc::Sender<Offer>)> =
@@ -98,7 +98,7 @@ fn refusal(to: &str, mut answers: Vec<(String, Option<serde_json::Value>)>, with
     let field = |a: &serde_json::Value, k: &str| a.get(k).and_then(serde_json::Value::as_str).map(str::to_string);
     for answer in answers.iter().filter_map(|(_, a)| a.as_ref()) {
         match (field(answer, "code"), field(answer, "error")) {
-            (Some(code), _) if code == "not_here" => {}
+            (Some(code), error) if code == "not_here" && !error.as_deref().is_some_and(|e| crate::comm::mail::filer::is_move(&code, e)) => {}
             (code, Some(error)) => return (code.unwrap_or_else(|| "file_failed".into()), error),
             _ => {}
         }

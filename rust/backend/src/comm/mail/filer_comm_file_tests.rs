@@ -21,7 +21,7 @@ fn home() -> tempfile::TempDir {
 }
 
 fn filer(role: crate::comm::mail::inbox::Role, own: &str) -> Filer {
-    Filer { role, own: own.into(), machine_id: Some("m".into()), self_host: "hub-a".into() }
+    Filer { role, own: own.into(), machine_id: Some("m".into()), self_host: "hub-a".into(), env: crate::comm::Env::empty() }
 }
 
 fn no_forward(_: &CommFileReq) -> std::result::Result<serde_json::Value, String> {
@@ -33,7 +33,7 @@ fn file_as(home: Option<&std::path::Path>, filer: &Filer, req: &CommFileReq) -> 
 }
 
 fn req(to: &str) -> CommFileReq {
-    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false }
+    CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false, expected_row: None }
 }
 
 fn file(home: Option<&std::path::Path>, to: &str) -> Verdict {
@@ -278,6 +278,7 @@ fn a_guest_with_a_mismatch_forwards_and_returns_the_hubs_answer() {
         own: "nfs4 A:/x".into(),
         machine_id: Some("m-b".into()),
         self_host: "guest-b".into(),
+        env: crate::comm::Env::empty(),
     };
     let forward_with = |answer: std::result::Result<serde_json::Value, String>| {
         let sent = std::cell::RefCell::new(None);
@@ -353,4 +354,179 @@ fn an_append_is_made_only_for_a_listed_live_handle() {
         assert!(!home.join(format!("inbox/{h}.jsonl")).exists(), "{h}");
     }
     assert_eq!(std::fs::read_to_string(home.join("inbox/a.jsonl")).unwrap().lines().count(), 1);
+}
+
+// P14 — guarded filing: a request naming its expected row appends only while the registry, read fresh under the
+// registry lock, binds the handle to that row.
+
+/// A folder whose `bound` entry is live and bound to row `ws-1`.
+fn bound_home() -> tempfile::TempDir {
+    let d = home();
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(d.path().join("registry.json")).unwrap()).unwrap();
+    let live = json!({"host": "b", "workspace_id": "ws-1", "last_seen": iso8601_utc_from_secs(NOW - 5)});
+    doc["agents"]["bound"] = live.clone();
+    doc["agents"]["bound-stale"] = json!({"host": "b", "workspace_id": "ws-1", "last_seen": iso8601_utc_from_secs(NOW - 3600)});
+    doc["agents"]["unbound"] = json!({"host": "b", "last_seen": iso8601_utc_from_secs(NOW - 5)});
+    doc["agents"]["malformed"] = json!("not an object");
+    std::fs::write(d.path().join("registry.json"), doc.to_string()).unwrap();
+    d
+}
+
+fn expecting(to: &str, row: &str) -> CommFileReq {
+    CommFileReq { expected_row: Some(row.into()), ..req(to) }
+}
+
+fn guarded(home: &std::path::Path, req: &CommFileReq) -> Verdict {
+    let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+    file_as(Some(home), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), req)
+}
+
+/// The registry lock is free: a taker gets it at once.
+fn lock_is_free(home: &std::path::Path) {
+    let env = crate::comm::Env::empty();
+    crate::comm::registry::lock::acquire_in(&env, &home.join(".registry.lock"), Duration::from_secs(5)).expect("the lock was left held");
+}
+
+#[test]
+fn a_matching_row_files_and_an_absent_expectation_files_as_before() {
+    let d = bound_home();
+    assert_eq!(guarded(d.path(), &expecting("bound", "ws-1")), Ok(()));
+    assert_eq!(guarded(d.path(), &req("bound")), Ok(()));
+    assert_eq!(guarded(d.path(), &req("unbound")), Ok(()));
+    assert_eq!(std::fs::read_to_string(d.path().join("inbox/bound.jsonl")).unwrap().lines().count(), 2);
+    lock_is_free(d.path());
+}
+
+#[test]
+fn a_moved_binding_is_not_here_naming_the_move_and_appends_nothing() {
+    let d = bound_home();
+    for to in ["bound", "unbound"] {
+        let (code, error) = guarded(d.path(), &expecting(to, "ws-2")).unwrap_err();
+        assert!(code == "not_here" && is_move(&code, &error), "{to}: {code} {error}");
+        assert!(!d.path().join(format!("inbox/{to}.jsonl")).exists(), "{to}");
+    }
+    let (_, error) = guarded(d.path(), &expecting("bound", "ws-2")).unwrap_err();
+    assert!(error.contains("ws-2") && error.contains("ws-1"), "{error}");
+    // Presence and liveness keep their own refusals.
+    for to in ["nobody", "malformed"] {
+        let (code, error) = guarded(d.path(), &expecting(to, "ws-1")).unwrap_err();
+        assert!(code == "not_here" && !is_move(&code, &error), "{to}: {error}");
+    }
+    assert!(!is_move("not_here", &guarded(d.path(), &expecting("hostless", "ws-1")).unwrap_err().1));
+    assert_eq!(guarded(d.path(), &expecting("bound-stale", "ws-1")).unwrap_err().0, "no_live_session");
+    lock_is_free(d.path());
+}
+
+#[test]
+fn a_registry_that_cannot_be_read_is_file_failed_when_guarded() {
+    let d = bound_home();
+    std::fs::write(d.path().join("registry.json"), "{bad").unwrap();
+    assert_eq!(guarded(d.path(), &expecting("bound", "ws-1")).unwrap_err().0, "file_failed");
+    assert!(!d.path().join("inbox/bound.jsonl").exists());
+    lock_is_free(d.path());
+}
+
+/// The plan's proof: the filing waits on the registry lock, the binding moves through its normal writer while the lock is
+/// held, and the released filing sees the move and appends nothing.
+#[test]
+fn a_binding_moved_while_the_filing_waits_is_seen_and_nothing_is_appended() {
+    let d = bound_home();
+    let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
+    let env = crate::comm::Env::empty();
+    let held = crate::comm::registry::lock::acquire_in(&env, &d.path().join(".registry.lock"), Duration::from_secs(5)).unwrap();
+    let path = d.path().to_path_buf();
+    let filing = std::thread::spawn(move || {
+        let wait = Duration::from_secs(8);
+        comm_file_verdict(Some(&path), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), no_forward, &expecting("bound", "ws-1"), NOW, wait)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(d.path().join("registry.json")).unwrap()).unwrap();
+    doc["agents"]["bound"]["workspace_id"] = json!("ws-2");
+    crate::comm::registry::registry::write_registry(&d.path().join("registry.json"), &d.path().join("registry.json.tmp"), &doc).unwrap();
+    drop(held);
+    let (code, error) = filing.join().unwrap().unwrap_err();
+    assert!(code == "not_here" && is_move(&code, &error) && error.contains("ws-2"), "{code} {error}");
+    assert!(!d.path().join("inbox/bound.jsonl").exists());
+    lock_is_free(d.path());
+}
+
+#[test]
+fn a_registry_lock_that_cannot_be_taken_is_an_explicit_refusal_and_appends_nothing() {
+    let d = bound_home();
+    let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
+    let env = crate::comm::Env::empty();
+    let held = crate::comm::registry::lock::acquire_in(&env, &d.path().join(".registry.lock"), Duration::from_secs(5)).unwrap();
+    let verdict = file_as(Some(d.path()), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &expecting("bound", "ws-1"));
+    let (code, error) = verdict.unwrap_err();
+    assert!(code == "file_failed" && error.contains("nothing was filed"), "{code} {error}");
+    assert!(!d.path().join("inbox/bound.jsonl").exists());
+    // The lock is held across the append: a writer is excluded while the inbox lock is awaited.
+    drop(held);
+    lock_is_free(d.path());
+}
+
+/// The guard is held through the append and gone after it, on an append that fails and on an unwind.
+#[test]
+fn the_guard_is_held_through_the_append_and_released_on_every_path() {
+    let d = bound_home();
+    let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
+    // Held: a filing blocked on the inbox lock keeps the registry lock for its wait.
+    let inbox_lock = std::fs::OpenOptions::new().read(true).create(true).append(true).open(d.path().join("inbox/bound.lock")).unwrap();
+    inbox_lock.lock().unwrap();
+    let path = d.path().to_path_buf();
+    let filing = std::thread::spawn(move || {
+        comm_file_verdict(Some(&path), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), no_forward, &expecting("bound", "ws-1"), NOW, Duration::from_secs(2))
+    });
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(d.path().join(".registry.lock").exists(), "the guard is kept while the appender waits");
+    let (code, _) = filing.join().unwrap().unwrap_err();
+    assert_eq!(code, "file_failed");
+    lock_is_free(d.path());
+    drop(inbox_lock);
+    // A panic inside the guarded section (the appender's thread) releases it too.
+    let env = crate::comm::Env::empty();
+    let lock = d.path().join(".registry.lock");
+    let unwound = std::panic::catch_unwind(|| {
+        let _held = crate::comm::registry::lock::acquire_in(&env, &lock, Duration::from_secs(5)).unwrap();
+        panic!("unwind");
+    });
+    assert!(unwound.is_err());
+    lock_is_free(d.path());
+}
+
+#[test]
+fn a_guest_forwards_the_expectation_to_the_hub() {
+    let d = bound_home();
+    let guest = Filer {
+        role: crate::comm::mail::inbox::Role::Guest,
+        own: "nfs4 A:/x".into(),
+        machine_id: Some("m-b".into()),
+        self_host: "guest-b".into(),
+        env: crate::comm::Env::empty(),
+    };
+    let sent = std::cell::RefCell::new(None);
+    let verdict = comm_file_verdict(
+        Some(d.path()),
+        &guest,
+        |fwd: &CommFileReq| {
+            *sent.borrow_mut() = Some(fwd.clone());
+            Ok(json!({"error": "moved", "code": "not_here"}))
+        },
+        &expecting("bound", "ws-1"),
+        NOW,
+        Duration::from_secs(1),
+    );
+    let sent = sent.into_inner().expect("forwarded");
+    assert!(sent.forwarded && sent.expected_row.as_deref() == Some("ws-1"));
+    assert_eq!(verdict, err("not_here", "moved"));
+}
+
+/// The wire: an ordinary request neither carries nor needs the field, and a named one round-trips.
+#[test]
+fn the_expected_row_is_an_optional_wire_field() {
+    let plain: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "x", "text": "t"})).unwrap();
+    assert_eq!(plain.expected_row, None);
+    assert!(serde_json::to_value(&plain).unwrap().get("expected_row").is_none());
+    let named: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "x", "text": "t", "expected_row": "ws-1"})).unwrap();
+    assert_eq!(named.expected_row.as_deref(), Some("ws-1"));
 }

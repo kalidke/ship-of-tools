@@ -34,7 +34,8 @@ name is in this crate's one op table.
    the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and the last release's whole `HelloRes` parses with `takes_drawing` and `posts_plain_text` absent), the lease
    (`ops/lease_wire_tests.rs`) and docs opens (`ops/pages_tests.rs`). `DocsOpenReq.direct` is an additive field defaulting
    to `ReplyScope::None`; an older frontend's payload without it grants no direct scope. Adding authority must never
-   change that default; incompatible scope vocabulary changes follow this same protocol-number rule. The families
+   change that default; `CommFileReq.expected_row` is an additive optional field, left out of the frame when unset, so an
+   ordinary filing is the one an older daemon reads (`the_expected_row_is_an_optional_wire_field`); incompatible scope vocabulary changes follow this same protocol-number rule. The families
    with none are agent, browse, lane, monitor, pty, repl, update, workspace and the preview payloads (`ir.rs`), and the
    other page payloads have no previous-shape fixtures.
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a

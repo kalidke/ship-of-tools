@@ -36,6 +36,11 @@ pub struct CommFileReq {
     /// a linked daemon. A frame takes at most this one hop, so no daemon forwards or offers it again.
     #[serde(default)]
     pub forwarded: bool,
+    /// The canonical row the sender expects `to` to be bound to. When set, the daemon that appends checks it against the
+    /// registry's fresh `workspace_id` under the registry lock and refuses `not_here`, appending nothing, if the handle
+    /// moved; forwarding and offers carry it on. Absent, the filing is the ordinary one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_row: Option<String>,
 }
 
 /// `comm.file` response: the line is in the file. A refusal is the standard

@@ -110,7 +110,7 @@ fn replace_registry(
 }
 
 /// [`replace_registry`] with its failure as the sentence a command prints after `FAILED: `.
-fn write_registry(reg_path: &std::path::Path, tmp_path: &std::path::Path, root: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn write_registry(reg_path: &std::path::Path, tmp_path: &std::path::Path, root: &serde_json::Value) -> Result<(), String> {
     let nothing = "so nothing was written";
     let mut serialized = serde_json::to_vec_pretty(root).map_err(|e| format!("the registry could not be updated ({e}), {nothing}"))?;
     serialized.push(b'\n');

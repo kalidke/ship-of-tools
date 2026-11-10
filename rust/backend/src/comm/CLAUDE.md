@@ -66,6 +66,17 @@ Sending:
   (`comm.file` to this box's daemon, else the hub), and a handle its folder does not list goes to the hub, which files
   it or offers it to the daemons linked to it (`mail::links`, `mail::hub_link`). The answer decides, never a transport's
   exit status.
+- A filing may name the row it expects (`CommFileReq.expected_row`, defaulted; wire's). A guarded local append takes the
+  registry lock (bounded by the inbox wait), reads the entry fresh, applies the presence rule, checks that its
+  `workspace_id` is the expected row, applies the liveness rule and keeps the lock until the appender returns, so a
+  binding the registry's writers move cannot move between the check and the line. A moved binding is `not_here` naming
+  the move, which no other box is asked about; a lock or read failure is `file_failed`; both append nothing. Forwards and
+  offers carry the expectation, and the lock is never held across one. Lock order: the appender takes only the inbox
+  lock, and no path takes the inbox lock (poll and unread let it go before they touch the registry) and then the
+  registry lock, so the hold cannot invert; the one order is registry, then inbox. The bound it adds to a registry writer
+  is the appender's worst case, the inbox wait (2 s by default) plus one append's I/O: a 1 s stamp or touch can lose its
+  turn to it, a cosmetic miss the next stamp repeats, a 10 s writer waits it out. An ordinary request keeps the unlocked
+  read. Test: `filer_comm_file_tests.rs` (`a_binding_moved_while_the_filing_waits_*`, the guard kept and released).
 - Silence is failure: a send waits 5 s for an answer (`cli::wire::FILE_WINDOW`), and a daemon gives a forward or an
   offer the inbox lock's wait plus 1 s (3 s at the default 2 s), inside the sender's 5 s. A daemon too old for the op answers `unknown op: comm.file`,
   a false failure, never a false success.
