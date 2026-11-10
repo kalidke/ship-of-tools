@@ -103,15 +103,18 @@ impl State {
 pub(in crate::ui) enum Move {
     Scroll(bool, Step),
     Latest,
+    Mark(bool),
 }
 
-/// What a key does in the Chat tenant (`DrawerInput::Chat`): PageUp and PageDown move a third of the body and End returns
-/// to the newest (Alt+Up and Alt+Down are `line_scroll_target`'s, the wheel `chat_wheel`'s).
+/// What a key does in the Chat tenant (`DrawerInput::Chat`): PageUp and PageDown move a third of the body, End returns
+/// to the newest and ArrowUp and ArrowDown move the mark (Alt+Up and Alt+Down are `line_scroll_target`'s, the wheel `chat_wheel`'s).
 pub(in crate::ui) fn chat_move(action: Option<Action>) -> Option<Move> {
     match action? {
         Action::ScrollPageUp => Some(Move::Scroll(true, Step::Page)),
         Action::ScrollPageDown => Some(Move::Scroll(false, Step::Page)),
         Action::ChatLatest => Some(Move::Latest),
+        Action::ChatMarkOlder => Some(Move::Mark(true)),
+        Action::ChatMarkNewer => Some(Move::Mark(false)),
         _ => None,
     }
 }
@@ -158,6 +161,7 @@ pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
     match mv {
         Some(Move::Scroll(up, step)) => state.chat.scroll(up, step),
         Some(Move::Latest) => state.chat.latest(),
+        Some(Move::Mark(older)) => state.chat.mark(older),
         None => return false,
     }
     state.window.request_redraw();

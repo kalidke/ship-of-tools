@@ -406,7 +406,7 @@ fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
     assert_eq!((DrawerInput::of(Monitor), DrawerInput::of(Help)), (DrawerInput::Inert, DrawerInput::Inert));
     for (action, want) in [
         (A::ScrollPageUp, Move::Scroll(true, Step::Page)), (A::ScrollPageDown, Move::Scroll(false, Step::Page)),
-        (A::ChatLatest, Move::Latest),
+        (A::ChatLatest, Move::Latest), (A::ChatMarkOlder, Move::Mark(true)), (A::ChatMarkNewer, Move::Mark(false)),
     ] {
         assert_eq!(chat_move(Some(action)), Some(want), "{action:?}");
     }
@@ -420,6 +420,23 @@ fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
     assert!(ctx(crate::ui::input::help::Pane::Chat).allows(A::ChatLatest));
     for pane in [Pane::Nav, Pane::Preview, Pane::Repl, Pane::Terminal, Pane::Monitor, Pane::Agent, Pane::Help] {
         assert!(!ctx(pane).allows(A::ChatLatest), "{pane:?}");
+    }
+    // K1: plain ArrowUp and ArrowDown mark in the Chat and keep every other pane's meaning; the Alt chords stay the scroll's.
+    use crate::ui::input::keybindings::{KeyBindings, Modifiers};
+    use winit::keyboard::{Key, NamedKey};
+    let b = KeyBindings::defaults();
+    let name = |pane, key: NamedKey, alt: bool| {
+        let c = ctx(pane);
+        b.resolve(&Key::Named(key), None, Modifiers { alt, ..Modifiers::default() }, c.consumes_text(), |a| c.allows(a)).map(|a| a.spec().name)
+    };
+    assert_eq!(name(Pane::Chat, NamedKey::ArrowUp, false), Some("chat.mark_older"));
+    assert_eq!(name(Pane::Chat, NamedKey::ArrowDown, false), Some("chat.mark_newer"));
+    assert_eq!(name(Pane::Chat, NamedKey::ArrowUp, true), Some("view.scroll_line_up"));
+    assert_eq!(name(Pane::Repl, NamedKey::ArrowUp, false), Some("repl.history_prev"));
+    for pane in [Pane::Nav, Pane::Preview, Pane::Repl, Pane::Terminal, Pane::Monitor, Pane::Agent, Pane::Help] {
+        for key in [NamedKey::ArrowUp, NamedKey::ArrowDown] {
+            assert!(!name(pane, key, false).is_some_and(|n| n.starts_with("chat.")), "{pane:?} {key:?}");
+        }
     }
 }
 
@@ -506,4 +523,202 @@ fn the_readers_anchor_reaches_the_owner_each_frame() {
     d.layout(&mut fonts, body, 1.0);
     let second = d.owner_anchor().expect("still anchored");
     assert!(super::owner::ts_order(&second) < super::owner::ts_order(&first), "the owner follows the reader up: {first:?} then {second:?}");
+}
+
+/// The message mark: a held record, and in view (at least one of its rows inside the body).
+#[test]
+fn the_mark_is_a_held_record_and_in_view() {
+    let mut fonts = FontSystem::new();
+    let mut view = ChatView::default();
+    let held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let probe = lay(&mut view, &mut fonts, &held, 1000.0);
+    let h = probe[1].1 - probe[0].1;
+    let number = |view: &ChatView| view.mark.as_ref().map(|t| t.as_str()[7..10].parse::<usize>().unwrap());
+    let top = |view: &ChatView, shown: &[(String, f32)]| (view.anchor.is_some(), top_of(shown));
+    view.reset();
+    // No mark: either key marks the newest, and a mark on the newest wholly in view leaves the view following.
+    view.mark(false);
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert_eq!((number(&view), view.anchor.is_none()), (Some(19), true));
+    assert_eq!(view.placed_marks().iter().filter(|m| **m).count(), 1);
+    assert_eq!(*view.placed_marks().last().unwrap(), true, "the newest is placed last: {shown:?}");
+    // Moving on, with the cache warm: the marked header follows the mark and only it.
+    view.mark(true);
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert_eq!(number(&view), Some(18));
+    assert_eq!(view.placed_marks().iter().position(|m| *m), Some(shown.len() - 2));
+    assert_eq!(view.placed_marks().iter().filter(|m| **m).count(), 1);
+    // The newest is the end: ArrowDown on it stays there.
+    view.mark(false);
+    view.mark(false);
+    lay(&mut view, &mut fonts, &held, h);
+    assert_eq!(number(&view), Some(19));
+    // A mark moved above the body puts that record's top at the body's top.
+    for _ in 0..4 {
+        view.mark(true);
+    }
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert_eq!(number(&view), Some(15));
+    assert_eq!(top(&view, &shown).0, true);
+    assert!(top(&view, &shown).1 .0 == "15" && near(top(&view, &shown).1 .1, 0.0), "{shown:?}");
+    // A mark moved below the body puts its bottom at the body's foot: the newest, wholly in view, follows again.
+    for _ in 0..4 {
+        view.mark(false);
+    }
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    assert_eq!((number(&view), view.anchor.is_none()), (Some(19), true), "{shown:?}");
+    assert!(near(shown.last().unwrap().1, 3.5 * h));
+    // A page up that leaves the mark below the body moves the mark to the nearest record in view.
+    view.scroll(true, Step::Page);
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    let last = shown.last().unwrap().0.rsplit("message ").next().unwrap().parse::<usize>().unwrap();
+    assert!(last < 19 && number(&view) == Some(last), "{last} {:?}", number(&view));
+    // A page down that leaves it above the body does the same at the other edge.
+    for _ in 0..4 {
+        view.mark(true);
+    }
+    lay(&mut view, &mut fonts, &held, h);
+    for _ in 0..3 {
+        view.scroll(false, Step::Page);
+    }
+    let shown = lay(&mut view, &mut fonts, &held, h);
+    // The record crossing the top has lost its header, so the mark takes the first one whose header is in.
+    let first = top_of(&shown).0.parse::<usize>().unwrap() + usize::from(top_of(&shown).1 < 0.0);
+    assert_eq!(number(&view), Some(first), "{shown:?}");
+    // A resync that drops the marked record passes the mark to the nearest newer held one.
+    view.reset();
+    view.mark(true);
+    view.mark(true);
+    view.mark(true);
+    lay(&mut view, &mut fonts, &held, h);
+    assert_eq!(number(&view), Some(17));
+    let fewer: Vec<ChatRecord> = held.iter().filter(|r| r.ts != held[17].ts).cloned().collect();
+    lay(&mut view, &mut fonts, &fewer, h);
+    assert_eq!(number(&view), Some(18));
+    // With none newer the mark is gone, and the next key marks the newest again.
+    let older: Vec<ChatRecord> = held[..17].to_vec();
+    lay(&mut view, &mut fonts, &older, h);
+    assert_eq!(number(&view), None);
+    view.mark(true);
+    lay(&mut view, &mut fonts, &older, h);
+    assert_eq!(number(&view), Some(16));
+    // A record taller than the body shows its top when marked.
+    let mut tall = held.clone();
+    tall[10] = rec_at(&tall[10].ts.as_str().to_string(), &format!("{}message 10", "word ".repeat(300)));
+    view.reset();
+    for _ in 0..16 {
+        view.mark(true);
+    }
+    let shown = lay(&mut view, &mut fonts, &tall, h);
+    assert!(top_of(&shown).0 == "4" && near(top_of(&shown).1, 0.0), "an unplaced record above shows its top: {shown:?}");
+    for _ in 0..6 {
+        view.mark(false);
+    }
+    let shown = lay(&mut view, &mut fonts, &tall, h);
+    assert_eq!(number(&view), Some(10));
+    assert!(top_of(&shown).0 == "10" && near(top_of(&shown).1, 0.0), "{shown:?}");
+    // A change of the watched target clears the mark and the position.
+    view.mark(true);
+    view.scroll(true, Step::Page);
+    lay(&mut view, &mut fonts, &older, h);
+    view.reset();
+    assert!(view.mark.is_none() && view.anchor.is_none());
+    lay(&mut view, &mut fonts, &older, h);
+    assert!(number(&view).is_none() && view.placed_marks().iter().all(|m| !m));
+}
+
+/// Through the drawer: a row change clears the mark.
+#[test]
+fn a_row_change_clears_the_mark() {
+    let (mut d, at) = answered_with(mapped);
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let outs = d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at);
+    let held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let page = serde_json::from_value(serde_json::json!({ "records": held, "next": null })).unwrap();
+    d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
+    let mut fonts = FontSystem::new();
+    d.mark(true);
+    d.layout(&mut fonts, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, 1.0);
+    assert_eq!(d.marked(), Some(held[19].ts.clone()));
+    d.tick(shown("S"), at + Duration::from_secs(1));
+    assert_eq!(d.marked(), None);
+}
+
+/// Lays `held` out in a body of `h` px; the marked record's header top, when a record is marked and placed.
+fn lay_px(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], h: f32) -> Option<f32> {
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h };
+    view.layout(fonts, &plain(&records), body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    view.placed_marks().iter().position(|m| *m).map(|i| view.placed_tops()[i])
+}
+
+/// "In view" is the header row inside the body: records of 44 px in a body of 100 px leave slivers at the top.
+#[test]
+fn the_marks_header_is_inside_the_body() {
+    let mut fonts = FontSystem::new();
+    let mut held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let mut view = ChatView::default();
+    let header_in = |top: Option<f32>| top.is_some_and(|t| t >= 0.0 && t + BODY_LINE_H <= 100.0);
+    for _ in 0..3 {
+        view.mark(true);
+    }
+    assert!(header_in(lay_px(&mut view, &mut fonts, &held, 100.0)));
+    assert_eq!(view.mark.as_ref().map(|t| t.as_str()[7..10].to_string()), Some("017".into()));
+    // End follows the newest: record 17's header would be above the body, so the mark moves to one whose header is not.
+    view.latest();
+    let top = lay_px(&mut view, &mut fonts, &held, 100.0);
+    assert!(header_in(top), "{top:?}");
+    // A page down that leaves the mark above the body.
+    view.reset();
+    for _ in 0..8 {
+        view.mark(true);
+    }
+    lay_px(&mut view, &mut fonts, &held, 100.0);
+    view.scroll(false, Step::Page);
+    let top = lay_px(&mut view, &mut fonts, &held, 100.0);
+    assert!(header_in(top), "{top:?}");
+    // No header inside the body (a tall record crossing the top, the next one's header below the foot): the nearest placed.
+    let mut three: Vec<ChatRecord> = (0..3).map(rec).collect();
+    three[1] = rec_at(three[1].ts.as_str(), &format!("{}message 1", "word ".repeat(300)));
+    let mut view = ChatView::default();
+    lay_px(&mut view, &mut fonts, &three, 5000.0);
+    let tall_h = view.placed_tops()[2] - view.placed_tops()[1];
+    (view.anchor, view.mark) = (Some((three[1].ts.clone(), 80.0 - tall_h)), Some(three[0].ts.clone()));
+    lay_px(&mut view, &mut fonts, &three, 100.0);
+    assert_eq!(view.mark, Some(three[1].ts.clone()));
+    // An arrival while following lifts the marked record out of the top.
+    view.reset();
+    for _ in 0..2 {
+        view.mark(true);
+    }
+    assert!(header_in(lay_px(&mut view, &mut fonts, &held, 100.0)));
+    for n in 20..24 {
+        held.push(rec(n));
+        let top = lay_px(&mut view, &mut fonts, &held, 100.0);
+        assert!(header_in(top), "after arrival {n}: {top:?}");
+    }
+}
+
+/// Keys that arrive before one frame fold one at a time, each with its clamp.
+#[test]
+fn mark_keys_fold_one_at_a_time() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let mut marked = |keys: &[bool], first: &[bool]| {
+        let mut view = ChatView::default();
+        for k in first {
+            view.mark(*k);
+        }
+        lay_px(&mut view, &mut fonts, &held, 400.0);
+        for k in keys {
+            view.mark(*k);
+        }
+        lay_px(&mut view, &mut fonts, &held, 400.0);
+        view.mark.as_ref().map(|t| t.as_str()[7..10].parse::<usize>().unwrap())
+    };
+    // No mark: Up then Down marks the newest and stays; Down then Up marks the newest and steps back.
+    assert_eq!(marked(&[true, false], &[]), Some(19));
+    assert_eq!(marked(&[false, true], &[]), Some(18));
+    // At the newest, Down on it stays, so Down, Down, Up gives the one before.
+    assert_eq!(marked(&[false, false, true], &[false]), Some(18));
 }
