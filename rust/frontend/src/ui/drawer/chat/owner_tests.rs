@@ -953,3 +953,122 @@ fn older_pages_preserve_the_anchor_within_the_bound() {
     o.on_evt(&host(), changed(top_level(2006..=2006)), now);
     assert_eq!((held(&o), seconds(&o)[0]), (256, 1007));
 }
+
+/// An owner holding `[82..=101]` with older history, the reader at the oldest record.
+fn at_the_oldest(t0: Instant) -> ChatOwner {
+    let mut o = complete(t0);
+    replace_with(&mut o, t0 + PACE, snapshot_with_next(top_level(82..=101)));
+    o.reaches(true);
+    o
+}
+
+/// The page read the owner asks for now, with its floor.
+fn asks(o: &mut ChatOwner, now: Instant) -> Option<Ts> {
+    match o.tick(now).as_slice() {
+        [] => None,
+        [(_, OutgoingReq::ChatHistory { req })] => match &req.upper {
+            Some(ChatUpper::Before(f)) if req.limit == MAX_PAGE && req.cursor.is_none() && req.thread.is_none() && req.after.is_none() => Some(f.clone()),
+            other => panic!("not a page below a floor: {other:?}"),
+        },
+        other => panic!("{} requests", other.len()),
+    }
+}
+
+fn page_reply(o: &ChatOwner, records: Vec<serde_json::Value>, next: bool, limited: bool) -> ChatEvt {
+    let req = o.paging().unwrap().1;
+    let reply = serde_json::json!({ "records": records, "next": next.then_some("older"), "limited": limited });
+    ChatEvt::History { req, reply: ChatReply::Done(serde_json::from_value(reply).unwrap()) }
+}
+
+/// Paging: a page `before(floor)` is asked for when the reader is at the oldest record and older history exists, once at a
+/// time; it joins below the floor without a hole and its top-level records only; the page after every record is deleted
+/// is `before(floor)`; a page for the previous row changes nothing; and paging asks again as a condition, not a latch.
+#[test]
+fn older_pages_join_below_the_floor_without_a_hole() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    let mut o = at_the_oldest(t0);
+    o.reaches(false);
+    assert_eq!(asks(&mut o, now), None, "the reader is not at the oldest record");
+    o.reaches(true);
+    assert_eq!(asks(&mut o, now), Some(ts("82.000001")));
+    assert_eq!(asks(&mut o, now), None, "one page read at a time");
+    let mut records = top_level(62..=81);
+    records[3] = record_with("65.000002", "1.000001", "C1", "a reply sent to the channel");
+    o.on_evt(&host(), page_reply(&o, records, true, false), now);
+    assert_eq!(seconds(&o), (62..=101).filter(|&s| s != 65).collect::<Vec<_>>(), "top-level records only, no hole");
+    o.on_evt(&host(), changed(top_level(60..=60)), now);
+    assert_eq!(held(&o), 39, "the floor fell to the page's oldest");
+    o.reaches(true);
+    assert_eq!(asks(&mut o, now), Some(ts("62.000001")), "paging is a condition: asked again");
+    o.on_evt(&host(), page_reply(&o, top_level(50..=61), false, false), now);
+    o.reaches(true);
+    assert_eq!(asks(&mut o, now), None, "the page without a next was the last");
+    o.on_evt(&host(), changed(top_level(40..=40)), now);
+    assert_eq!(held(&o), 52, "no floor, so an older put is held");
+    // After every held record is deleted, the page is still below the floor.
+    let mut o = at_the_oldest(t0);
+    let all: Vec<String> = (82..=101).map(|i| format!("{i}.000001")).collect();
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": all });
+    o.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), now);
+    assert_eq!(asks(&mut o, now), Some(ts("82.000001")));
+    let mut tomb = at_the_oldest(t0);
+    tomb.on_evt(&host(), ChatEvt::Changed(serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": ["82.000001"] })).unwrap()), now);
+    assert!(asks(&mut tomb, now).is_some());
+    tomb.on_evt(&host(), page_reply(&tomb, top_level(82..=82), true, false), now);
+    assert!(deleted(&tomb, &ts("82.000001")), "a record at the floor is not replaced by the page");
+    // A page for the previous row, arriving after a switch, changes nothing.
+    let old = o.paging().unwrap().1;
+    o.watch(host(), target("C2"), now);
+    let late = ChatEvt::History { req: old, reply: snapshot(top_level(61..=81)) };
+    assert!(o.on_evt(&host(), late, now).is_empty());
+    assert_eq!(held(&o), 0);
+    // A snapshot that does not reach back to what was held leaves the page read as an orphan.
+    let mut o = at_the_oldest(t0);
+    assert!(asks(&mut o, now).is_some());
+    let old = o.paging().unwrap().1;
+    replace_with(&mut o, now, snapshot_with_next(top_level(300..=310)));
+    o.on_evt(&host(), ChatEvt::History { req: old, reply: snapshot(top_level(61..=81)) }, now);
+    assert_eq!(seconds(&o), (300..=310).collect::<Vec<_>>());
+    // A page read dropped at its link's end is asked again.
+    let mut o = at_the_oldest(t0);
+    assert!(asks(&mut o, now).is_some());
+    o.on_connection(&host(), false, now);
+    o.on_connection(&host(), true, now);
+    replace_with(&mut o, now + PACE, snapshot_with_next(top_level(82..=101)));
+    o.reaches(true);
+    assert_eq!(asks(&mut o, now + PACE), Some(ts("82.000001")));
+}
+
+/// A full store asks for nothing and says so in the title; room (a replacing snapshot, deletes) asks again. A refused page is
+/// asked again after the pace, 30 seconds for `limited`, and the title names the code; a page Slack's plan cut ends the paging.
+#[test]
+fn a_full_store_a_refused_page_and_a_hidden_history_are_told() {
+    let t0 = Instant::now();
+    let now = t0 + PACE;
+    let mut o = at_the_oldest(t0);
+    for i in 1000..1236 {
+        o.on_evt(&host(), changed(top_level(i..=i)), now);
+    }
+    assert_eq!(held(&o), 256);
+    assert_eq!(asks(&mut o, now), None, "no room for a page");
+    assert_eq!(o.older_words().as_deref(), Some("older messages past the drawer's bound are not shown"));
+    replace_with(&mut o, now, snapshot_with_next(top_level(2000..=2010)));
+    o.reaches(true);
+    assert_eq!(o.older_words(), None);
+    assert_eq!(asks(&mut o, now), Some(ts("2000.000001")), "room again");
+    for (code, wait) in [(ChatCode::Busy, PACE), (ChatCode::Limited, LIMITED_PACE)] {
+        let mut o = at_the_oldest(t0);
+        assert!(asks(&mut o, now).is_some());
+        let req = o.paging().unwrap().1;
+        o.on_evt(&host(), ChatEvt::History { req, reply: ChatReply::Refused(code) }, now);
+        assert_eq!(o.older_words(), Some(format!("older messages are not read: {}", code.text())));
+        assert_eq!(asks(&mut o, now + wait - Duration::from_millis(1)), None, "inside the pace");
+        assert_eq!(asks(&mut o, now + wait), Some(ts("82.000001")), "after the pace");
+    }
+    let mut o = at_the_oldest(t0);
+    assert!(asks(&mut o, now).is_some());
+    o.on_evt(&host(), page_reply(&o, top_level(62..=81), true, true), now);
+    assert_eq!(o.older_words().as_deref(), Some("Slack's plan hides older messages"));
+    assert_eq!(asks(&mut o, now + LIMITED_PACE), None, "the plan hides the rest");
+}
