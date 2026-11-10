@@ -695,8 +695,12 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   The read asks for the wire's page (`MAX_PAGE`).
 - A snapshot replaces the held records, and its `next` cursor (older history, the drawer's to page) is not a gap
   (`a_snapshot_replaces_the_held_records_and_a_next_cursor_is_not_a_gap`). The snapshot keeps the channel's top-level messages, as the
-  daemon's model does (it sends no edit or delete for a thread reply sent to the channel). The owner holds at most the daemon
-  model's newest 100 records (`KEPT`), dropping the oldest as it does (`the_owner_keeps_at_most_the_daemons_newest_records`). A
+  daemon's model does (it sends no edit or delete for a thread reply sent to the channel). The owner keeps up to 256 records above
+  its floor (`KEPT`), dropping the oldest (`the_owner_keeps_at_most_the_daemons_newest_records`), but never the record the reader is
+  anchored on or a newer one (the view's anchor, handed to the owner each frame), so a reader on the oldest meets no move and the
+  store passes `KEPT` meanwhile. A snapshot with a `next` that reaches back to the oldest held record replaces the records from
+  its own oldest up and keeps the older ones, tombstones included; one that does not reach clears them and its oldest is the floor;
+  one without `next` replaces all (`older_pages_preserve_the_anchor_within_the_bound`). A
   `floor` (set by a snapshot that is not the whole channel, raised by the trim) bounds what is added: a `put` of a record not held
   and older than it is not added, the daemon's own rule for an edit below its set (`the_owner_holds_only_what_the_daemon_tracks`,
   `a_put_below_the_floor_is_refused_after_deletes_too`); a whole channel has no floor, so its first message is held

@@ -22,8 +22,9 @@ const WINDOW: Duration = Duration::from_secs(20);
 /// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot. It also paces
 /// the window's re-asking of a refused resolve (`RowChannel`).
 pub(super) const GAP_PACE: Duration = Duration::from_secs(60);
-/// The daemon's model keeps its newest 100 messages per channel (sot-chat's `watch::MAX_KEPT`).
-const KEPT: usize = 100;
+/// The drawer's bound: the records the owner keeps above its floor. The daemon's model tracks only its newest 100
+/// (sot-chat's `watch::MAX_KEPT`); an older record is as read, and no edit or delete of it comes.
+const KEPT: usize = 256;
 
 pub(super) type Out = (HostKey, OutgoingReq);
 
@@ -74,6 +75,8 @@ struct Watch {
     records: HashMap<Ts, (ChatRecord, bool)>,
     /// The oldest timestamp the daemon still tracks: the snapshot's oldest when older history exists, raised by the trim.
     floor: Option<Ts>,
+    /// The record the reader is anchored on (the view's, set each frame): the bound's trim never takes it.
+    anchor: Option<Ts>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
     overlay: Vec<ChatChangedEvt>,
 }
@@ -101,8 +104,9 @@ impl Watch {
     }
 
     /// A put of a record not held and older than the floor is not added: it is an edit below what the daemon tracks (its
-    /// model refuses it the same way), and adding it would leave a hole. Past `KEPT` records the oldest go, as the
-    /// daemon's do, and the floor rises.
+    /// model refuses it the same way), and adding it would leave a hole. Past `KEPT` records the oldest go and the floor
+    /// rises, but never the record the reader is anchored on nor one newer: while the reader stays on the oldest the store
+    /// passes `KEPT`, rather than the reader moving up a record per arrival.
     fn apply(&mut self, c: &ChatChangedEvt) {
         for r in &c.put {
             let below = !self.records.contains_key(&r.ts) && self.floor.as_ref().is_some_and(|f| ts_order(&r.ts) < ts_order(f));
@@ -119,7 +123,8 @@ impl Watch {
             }
         }
         while self.records.len() > KEPT {
-            self.oldest().iter().for_each(|k| drop(self.records.remove(k)));
+            let Some(old) = self.oldest().filter(|o| self.anchor.as_ref().is_none_or(|a| ts_order(o) < ts_order(a))) else { break };
+            self.records.remove(&old);
             self.floor = self.oldest();
         }
     }
@@ -147,7 +152,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, anchor: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -160,6 +165,13 @@ impl ChatOwner {
     /// The one snapshot read in flight, with its host.
     pub(super) fn reading(&self) -> Option<(HostKey, ChatHistoryReq)> {
         self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
+    }
+
+    /// The reader's anchor, as the view last placed it.
+    pub(super) fn anchored(&mut self, anchor: Option<Ts>) {
+        if let Some(w) = self.watch.as_mut() {
+            w.anchor = anchor;
+        }
     }
 
     /// The held records with whether each was deleted, oldest first.
@@ -393,8 +405,19 @@ impl ChatOwner {
                 // The snapshot replaces what was held: a record it no longer holds was deleted during the loss. Its
                 // `next` cursor is the older history, which the drawer pages.
                 // Only the channel's top-level messages: the daemon tracks no thread reply, so it would never send its edit or delete.
-                w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), (r, false))).collect();
-                w.floor = if res.next.is_some() { w.oldest() } else { None };
+                let fresh: HashMap<_, _> = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), (r, false))).collect();
+                // Without `next` it is the whole channel. With `next` that reaches back to what was held, the older held
+                // records stay (tombstones too) and the floor with them; otherwise they go and its oldest is the floor.
+                let first = fresh.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned();
+                let newest = w.records.keys().max_by(|a, b| ts_order(a).cmp(&ts_order(b)));
+                let overlaps = first.as_ref().zip(newest).is_some_and(|(f, n)| ts_order(f) <= ts_order(n));
+                if let Some(first) = first.filter(|_| res.next.is_some() && overlaps) {
+                    w.records.retain(|t, _| ts_order(t) < ts_order(&first));
+                    w.records.extend(fresh);
+                } else {
+                    w.records = fresh;
+                    w.floor = if res.next.is_some() { w.oldest() } else { None };
+                }
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 w.fill = Fill::Complete;
             }
