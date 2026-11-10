@@ -377,8 +377,12 @@ owned by `docs/CLAUDE.md`.
   unguarded reader passes while one does and aborts through `HOME` when none does. On 2026-11-10 such a test passed
   the scoped local gate on an idle server and aborted the unscoped gate and the hosted runs under load (the same job,
   filters and home; reproduced: alone it aborts 3 of 3, its shard at 64 threads passes 4 of 4 and at 2 threads aborts
-  3 of 3). Decided fix: under test, a resolution from the process environment aborts unless the thread holds the
-  environment lock, so the class is caught on every run, not by interleaving.
+  3 of 3). Safety does not depend on the interleaving: such a test reads another test's temporary folder or aborts
+  through `HOME`, and never reaches a folder outside the temporary folder. Only catching it does. Decided 2026-11-10:
+  kept as a limit. A deterministic check (abort unless the thread holds the environment lock) was built and not landed,
+  since it took about 78 product lines of heuristics (a lock wrapper, an environment judged process-derived by
+  comparing values, helper threads exempted by name) and still let a helper thread's read pass; a loaded run, such as
+  the hosted ones, catches such a test.
 
 ## agents
 
