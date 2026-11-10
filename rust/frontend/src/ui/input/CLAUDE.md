@@ -10,12 +10,12 @@ keeps its own narrower rule (docs/defects.md: REPL-CTRL-CHORD-TYPES). Pinned by 
 
 The drawer's tenant decides who its input reaches. `help::Pane::of_drawer` is the one exhaustive map from `DrawerContent`
 to the pane the help context and the dispatch scopes see, and `help::DrawerInput::of` is the one exhaustive decision
-(`Repl`, `Terminal`, `Inert`) that `drawer_pane_key`, the wheel and the line-scroll chords (`line_scroll_target`) match;
-the first two match it with no wildcard, and `line_scroll_target` keeps two wildcard arms for the focus. Only `Repl` (the REPL tenant, and a closed drawer that kept focus) reaches the REPL's draft, paste,
-scrollback and history. In `drawer_pane_key` an `Inert` tenant (Chat, Monitor, Help) takes nothing but `ReturnNav`, which
-only Chat admits: Monitor resolves no Escape action, so Escape does nothing there, and Help's own keys (search, list
-scroll, Escape closing it) are handled before this router. Chat is a tenant (`drawer.chat`, `Primary+Shift+k`) that shows
-nothing yet. Pinned by `help_tests::the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler`, which covers both maps
+(`Repl`, `Terminal`, `Chat`, `Inert`) that `drawer_pane_key`, the wheel and the line-scroll chords (`line_scroll_target`) match;
+the first two match it with no wildcard, and `line_scroll_target` keeps a wildcard arm for the focus. Only `Repl` (the REPL tenant, and a closed drawer that kept focus) reaches the REPL's draft, paste,
+scrollback and history. `Chat` takes its reading keys (PageUp, PageDown, End, Alt+Up and Alt+Down, the wheel), `ReturnNav`, and typing, Backspace, Shift+Enter and paste into its draft; an `Inert` tenant (Monitor, Help) takes nothing but `ReturnNav`, which
+Monitor does not resolve (Escape does nothing there), and Help's own keys (search, list
+scroll, Escape closing it) are handled before this router. Chat is a tenant (`drawer.chat`, `Primary+Shift+k`) that shows the held
+records. Pinned by `help_tests::the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler`, which covers both maps
 and `line_scroll_target` over all six drawer states; the handlers' matches are exhaustive over `DrawerInput`, but no
 test drives the handlers' arms or their call sites: an `Inert` arm that lost its `return`, or a call site handed a
 constant, would pass the suite (docs/defects.md: B5A-ARMS-UNDRIVEN).

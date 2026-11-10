@@ -27,11 +27,13 @@ pub(in crate::ui) fn declared_sessions_from(
 }
 
 impl State {
-    /// Reconcile owed results against the directory's prepared retirement report, before commitment.
-    /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one.
+    /// Reconcile owed results and chat drafts against the directory's prepared retirement report, before commitment.
+    /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one. A
+    /// retired row's chat draft is dropped with its results.
     pub(in crate::ui) fn reconcile_pending_results(&mut self, update: &RowDirectoryUpdate) {
         let effects = self.result_ledger.reconcile_retired(update.retired(), self.selected.host());
         self.apply_result_effects(effects);
+        self.chat.retire(update.retired());
     }
 
     /// Badge changes reorder the existing projection without a directory refresh.
