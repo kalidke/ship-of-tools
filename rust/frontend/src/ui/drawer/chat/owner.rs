@@ -13,6 +13,8 @@ use sot_protocol::ops::{
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
+use super::project::tombstone;
+
 /// Between two watch attempts: the first waits `FIRST_PACE`, the rest `PACE`.
 const FIRST_PACE: Duration = Duration::from_secs(1);
 const PACE: Duration = Duration::from_secs(5);
@@ -104,7 +106,12 @@ impl Watch {
                 self.records.insert(r.ts.clone(), r.clone());
             }
         }
-        c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
+        // A delete leaves the record's place, author and time with no text; it counts against `KEPT` like any record.
+        for ts in &c.deleted {
+            if let Some(r) = self.records.get_mut(ts) {
+                *r = tombstone(r);
+            }
+        }
         while self.records.len() > KEPT {
             self.oldest().iter().for_each(|k| drop(self.records.remove(k)));
             self.floor = self.oldest();

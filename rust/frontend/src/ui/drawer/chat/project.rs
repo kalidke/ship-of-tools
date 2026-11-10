@@ -21,6 +21,16 @@ pub(super) struct Span {
     pub text: String,
 }
 
+/// A deleted record kept in place: its identity, author and time, with no text, files or replies. The wire has no field for
+/// it, so it is marked by `omitted` with `truncated` and nothing else, a combination the daemon never sends.
+pub(super) fn tombstone(r: &ChatRecord) -> ChatRecord {
+    ChatRecord { text: String::new(), truncated: true, reply_count: 0, files: Vec::new(), latest_reply: None, limited: false, omitted: true, files_omitted: 0, ..r.clone() }
+}
+
+fn is_tombstone(r: &ChatRecord) -> bool {
+    r.omitted && r.truncated && r.text.is_empty() && r.files.is_empty() && r.reply_count == 0 && r.files_omitted == 0
+}
+
 /// The header is `name [origin] time` and ends its line; the body follows, then each meta item on its own line.
 pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: bool) -> Vec<Span> {
     let span = |kind, text: String| Span { kind, text };
@@ -33,6 +43,10 @@ pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: boo
     };
     out.extend(tag.map(|t| span(Kind::Origin, t.to_string())));
     out.push(span(Kind::Header(marked), format!("{}\n", when(r.ts.as_str(), now, offset))));
+    if is_tombstone(r) {
+        out.push(span(Kind::Meta, "(message deleted)".to_string()));
+        return out;
+    }
     for seg in text_segments(&r.text) {
         out.push(match seg {
             TextSegment::Text(t) => span(Kind::Body, literal(&t)),

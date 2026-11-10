@@ -707,8 +707,10 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   none is written on a later connection ahead of the owner's new watch, except one queued during the next connection's hello
   (`net/CLAUDE.md`). `watch` with the host and target already watched is
   nothing, and with the same host and channel it sends the watch alone (the daemon's watch replaces the connection's earlier
-  one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts and deletes records
-  (`changed_events_put_and_delete_the_watched_channels_records`).
+  one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts records and turns a deleted one held into a tombstone
+  (`changed_events_put_and_delete_the_watched_channels_records`): the record keeps its identity, author and time and loses its text, files and
+  replies, is marked by `omitted` with `truncated` (a pair the daemon never sends), shows as `(message deleted)` (`project::tombstone`), counts against `KEPT`, and
+  is dropped by a replacing snapshot; a delete of a record not held adds nothing (`a_delete_leaves_a_tombstone_in_place`).
 - A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`). One waiting when its link
   ends is `Unknown` (it may exist); one to a host that is not connected is never written and is `Refused(Unavailable)`
   (`a_post_is_unknown_only_when_it_may_exist`); a reply from another host answers nothing (`a_post_reply_from_another_host_answers_nothing`); each reply reads as it proves (`a_posts_outcome_reads_as_the_reply_proves`). The
