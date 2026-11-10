@@ -1711,3 +1711,12 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes, read by the session); two scoped gates of 2 minutes. Hosted runs on main tonight: two Windows reds in
   other subsystems' tests, each passing on the runs around it (BENEATH-TWO-WRITERS-WINDOWS and
   REGISTRY-TEMPFAIL-LOCK-TURN noted).
+- Platform's write beneath a root on Windows closes its temporary file's handle at the rename, 2026-11-10: builder
+  launched 05:33, main 05:42 (5f3e51af4), 9 minutes, inside the half hour. Each writer kept its renamed file's handle,
+  which shares no deletion, open through the folder's sync, so a second writer of the same name was refused with access
+  denied once the sync outlasted its retries (BENEATH-TWO-WRITERS-WINDOWS, now Closed). About 10 product lines added
+  and 17 removed, and 18 test lines. Found from a hosted Windows red on a commit that touched no platform code; the
+  diagnosis read the cause from the code and the hosted log (14 minutes, before the builder). Proven on hosted Windows
+  by two scratch-branch probes with a 1000 ms delay before the folder's sync: the new test and the two-writers test red
+  at the parent with the hosted log's error, all 32 beneath tests green with the fix. Where the minutes went: the build
+  (2 minutes); the probes (6 minutes, while the gate ran 2 and one review 6, blockers 0).
