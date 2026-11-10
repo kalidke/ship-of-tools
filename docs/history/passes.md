@@ -1673,3 +1673,14 @@ A landing's record goes here, with its measured times; the package page holds on
   The causes: the plan sized the whole step at 100 product lines, half what its first part took, so it was split twice
   after it was built; and the reviews kept finding rules a thread shares with the channel (the title, the watch, the
   reads in flight) that the plan stated for the channel alone.
+- The project chat's B5p, its last part, posting into a thread, 2026-11-10: builder launched 03:31, main 04:08
+  (ae5a44dcb), 37 minutes, past the half hour, a failure by this page's standard. A draft begun while a thread is open
+  posts into that thread and keeps that destination through a close, a row switch and a reconnect; a channel draft
+  stays the channel's; the line under the draft names where it goes; after the person's own post into the open thread
+  it is read again whole through the one restart, which gives up the read in flight first; the thread is matched by
+  host, workspace, channel and parent, whatever row posted. About 75 product lines and 150 test lines. Where the
+  minutes went: the build (5 minutes); two review rounds (blockers 1, then 0; 10 and 9 minutes: a post made while the
+  thread's first page was in flight took that page's old answer as its reread, so the person's reply did not show and
+  could be posted twice); two fix rounds of 6 and 3 minutes, the second read by the session; three scoped gates of 1 to
+  2 minutes. The cause: the brief named the reread after a post but not its race with the read already in flight,
+  the value matching the plan states for every chat read.
