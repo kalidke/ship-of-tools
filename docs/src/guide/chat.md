@@ -84,7 +84,14 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 `<!channel>` arrive as plain text. A window posts only to a hub that is updated to escape text; to an older hub it says
 `the hub must be updated to post` and keeps the draft.
 
+## Selecting
+
+Press the left mouse button on a message's text and drag to select within that message: the selection stays in the message
+where you began, and the name and time line is not selectable. A click on the name and time line, or anywhere else, selects
+nothing, and a click in the messages still focuses the drawer. Any other click clears the selection, and so does a change
+to the message (an edit or a delete), a new window width, moving the mark onto or off it, and changing the row. A chat
+selection is never shared with the agent; only the preview's text and your drawing are.
+
 ## Not yet
 
-Selecting and copying messages in the chat is not built yet. It arrives with its own change, and this page says so
-when it does.
+Copying messages from the chat is not built yet. It arrives with its own change, and this page says so when it does.

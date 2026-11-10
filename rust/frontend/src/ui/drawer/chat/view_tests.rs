@@ -730,3 +730,166 @@ fn mark_keys_fold_one_at_a_time() {
     // Up on the oldest stays there.
     assert_eq!(marked(&[true; 21], &[]), Some(0));
 }
+
+const BODY: ScreenRect = ScreenRect { x: 37.0, y: 61.0, w: 145.0, h: 600.0 };
+const NOW: i64 = 1_700_000_100;
+
+fn lay_in(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], body: ScreenRect) {
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    view.layout(fonts, &plain(&records), body, 1.0, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+}
+
+/// Presses at the record's buffer `(line, byte)` and drags to `to`, as the pointer does; the copied bytes.
+fn drag(view: &mut ChatView, ts: &sot_protocol::chat::Ts, from: (usize, usize), to: (usize, usize)) -> Option<String> {
+    let hit = view.hit(view.point_at(ts, from.0, from.1).unwrap());
+    view.press(hit);
+    view.extend_drag(view.point_at(ts, to.0, to.1).unwrap());
+    view.release();
+    view.selected_text()
+}
+
+#[test]
+fn chat_and_preview_copy_same_utf8_ranges() {
+    use crate::ui::preview::{markdown::{highlight::HighlightService, MarkdownPreview}, shaped::ShapedPreview};
+    const TEXT: &str = "alpha beta gamma delta epsilon zeta eta theta\nbravé ñandú charlie\nomega";
+    let mut fonts = FontSystem::new();
+    let held = [rec_at("1700000001.000100", TEXT), rec_at("1700000002.000100", "a &lt; b"), rec_at("1700000003.000100", "<https://x?a=1&amp;b=2>")];
+    let mut view = ChatView::default();
+    lay_in(&mut view, &mut fonts, &held, BODY);
+
+    // The same drags on the preview of the same text (its line 0 is the record's line 1, after the header): the same bytes.
+    let rect = ScreenRect { x: 37.0, y: 61.0, w: 145.0, h: 400.0 };
+    let mut preview = ShapedPreview::new(MarkdownPreview::new_plain(&mut fonts, TEXT, rect.w, 1.0), HighlightService::new().unwrap(), rect);
+    let at = |preview: &ShapedPreview, line: usize, byte: usize| {
+        let run = preview.md().buffer.layout_runs().find(|r| r.line_i == line && r.glyphs.iter().any(|g| g.start == byte)).unwrap();
+        let g = run.glyphs.iter().find(|g| g.start == byte).unwrap();
+        (rect.x + g.x + g.w * 0.15, rect.y + EXTRA_TOP_PAD_PX + run.line_top + run.line_height * 0.5)
+    };
+    for (from, to) in [((0, 6), (2, 3)), ((0, 6), (1, 7)), ((1, 0), (1, 9)), ((2, 3), (0, 6))] {
+        let start = at(&preview, from.0, from.1);
+        preview.press(preview.hit(start, true));
+        preview.extend_drag(at(&preview, to.0, to.1));
+        preview.release();
+        let chat = drag(&mut view, &held[0].ts, (from.0 + 1, from.1), (to.0 + 1, to.1));
+        assert!(chat.is_some());
+        assert_eq!(chat, preview.selected_text(), "{from:?} to {to:?}");
+    }
+    assert_eq!(drag(&mut view, &held[0].ts, (1, 6), (3, 3)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé ñandú charlie\nome"));
+    assert_eq!(drag(&mut view, &held[0].ts, (1, 6), (2, 7)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé "));
+    // Markup shown as typed is copied as shown.
+    assert_eq!(drag(&mut view, &held[1].ts, (1, 0), (1, 4)).as_deref(), Some("a < "));
+    let end = view.point_at(&held[1].ts, 1, 4).unwrap();
+    view.extend_drag((end.0 + 200.0, end.1));
+    assert_eq!(view.selected_text().as_deref(), Some("a < "), "a release ends the drag");
+    assert_eq!(drag(&mut view, &held[2].ts, (1, 0), (1, 18)).as_deref(), Some("<https://x?a=1&b=2"));
+
+    // The tint: rectangles inside the body, below the header, inside the selected record.
+    drag(&mut view, &held[0].ts, (1, 6), (3, 3));
+    let top = BODY.y + view.placed_tops()[0];
+    let rects = view.selection_rects();
+    assert!(rects.len() >= 3);
+    let height = view.placed_tops()[1] - view.placed_tops()[0];
+    for r in &rects {
+        assert!(r.x >= BODY.x && r.x + r.w <= BODY.x + BODY.w + 0.01 && r.y >= top + BODY_LINE_H - 0.01 && r.y + r.h <= top + height + 0.01 && r.y + r.h <= BODY.y + BODY.h + 0.01, "{r:?}");
+    }
+}
+
+#[test]
+fn a_press_selects_in_the_record_under_it_and_a_drag_stays_in_it() {
+    let mut fonts = FontSystem::new();
+    let held = [rec_at("1700000001.000100", "first one"), rec_at("1700000002.000100", "second one")];
+    let mut view = ChatView::default();
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    // A header starts none, but the press is still in the body; outside the body there is no press at all.
+    let header = view.point_at(&held[0].ts, 0, 0).unwrap();
+    assert!(view.hit(header).is_some_and(|h| !view.press(Some(h))));
+    assert!(view.selected_text().is_none());
+    assert!(view.hit((BODY.x - 1.0, header.1)).is_none() && view.hit((BODY.x + 1.0, BODY.y + BODY.h + 1.0)).is_none());
+    // The body's blank above the oldest record starts none.
+    assert!(view.hit((BODY.x + 1.0, BODY.y + 1.0)).is_some_and(|h| !view.press(Some(h))));
+    // A drag into the next record, or above into the header, stays in the pressed one.
+    let into_second = (BODY.x + BODY.w - 1.0, view.point_at(&held[1].ts, 1, 3).unwrap().1);
+    let hit = view.hit(view.point_at(&held[0].ts, 1, 2).unwrap());
+    assert!(view.press(hit));
+    view.extend_drag(into_second);
+    assert_eq!(view.selected_text().as_deref(), Some("rst one"));
+    view.extend_drag(header);
+    assert_eq!(view.selected_text().as_deref(), Some("fi"));
+}
+
+#[test]
+fn a_change_to_the_selected_buffer_clears_the_selection() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(rec).collect();
+    let ts = held[1].ts.clone();
+    let selected = |held: &[ChatRecord], body: ScreenRect, view: &mut ChatView, fonts: &mut FontSystem| {
+        lay_in(view, fonts, held, body);
+        drag(view, &ts, (1, 0), (1, 4))
+    };
+    let mut view = ChatView::default();
+    assert_eq!(selected(&held, BODY, &mut view, &mut fonts).as_deref(), Some("mess"));
+    // Unchanged frames keep it, and so does a scroll that leaves the record held.
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    assert_eq!(view.selected_text().as_deref(), Some("mess"));
+    assert!(!view.selection_rects().is_empty());
+
+    let mut edited = held.clone();
+    edited[1] = rec_at(ts.as_str(), "message 1, edited");
+    lay_in(&mut view, &mut fonts, &edited, BODY);
+    assert!(view.selected_text().is_none() && view.selection_rects().is_empty(), "an edit");
+
+    selected(&held, BODY, &mut view, &mut fonts);
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let gone: Vec<(&ChatRecord, bool)> = records.iter().map(|r| (*r, r.ts == ts)).collect();
+    view.layout(&mut fonts, &gone, BODY, 1.0, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+    assert!(view.selected_text().is_none(), "a delete");
+
+    selected(&held, BODY, &mut view, &mut fonts);
+    lay_in(&mut view, &mut fonts, &[held[0].clone(), held[2].clone()], BODY);
+    assert!(view.selected_text().is_none(), "a resync that drops the record");
+    // A record of the same words at the same minute does not take its place.
+    let twins: Vec<ChatRecord> = ["1700000001.000100", "1700000002.000100", "1700000003.000100"].map(|ts| rec_at(ts, "same words")).to_vec();
+    lay_in(&mut view, &mut fonts, &twins, BODY);
+    drag(&mut view, &twins[1].ts, (1, 0), (1, 4));
+    assert_eq!(view.selected_text().as_deref(), Some("same"));
+    lay_in(&mut view, &mut fonts, &[twins[0].clone(), twins[2].clone()], BODY);
+    assert!(view.selected_text().is_none(), "a twin of the dropped record");
+
+    selected(&held, BODY, &mut view, &mut fonts);
+    lay_in(&mut view, &mut fonts, &held, ScreenRect { w: 100.0, ..BODY });
+    assert!(view.selected_text().is_none(), "a reshape at a new width");
+
+    // The mark moving onto the record restyles its header: that is a change to its buffer.
+    selected(&held, BODY, &mut view, &mut fonts);
+    view.mark(true);
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    assert_eq!(view.mark.as_ref(), Some(&held[2].ts));
+    assert_eq!(view.selected_text().as_deref(), Some("mess"), "the mark on another record leaves it");
+    view.mark(true);
+    lay_in(&mut view, &mut fonts, &held, BODY);
+    assert_eq!(view.mark.as_ref(), Some(&ts));
+    assert!(view.selected_text().is_none(), "the mark onto the selected record");
+
+    selected(&held, BODY, &mut view, &mut fonts);
+    view.reset();
+    assert!(view.selected_text().is_none(), "a row change");
+
+    // A record the trim let go: scrolled far from it, its buffer is evicted.
+    let many: Vec<ChatRecord> = (0..256).map(rec).collect();
+    let first = many[0].ts.clone();
+    let small = ScreenRect { h: 120.0, ..BODY };
+    view = ChatView::default();
+    view.anchor = Some((first.clone(), 0.0));
+    lay_in(&mut view, &mut fonts, &many, small);
+    drag(&mut view, &first, (1, 0), (1, 4));
+    assert!(view.selected_text().is_some());
+    for from in (8..=248).step_by(8) {
+        view.anchor = Some((many[from].ts.clone(), 0.0));
+        lay_in(&mut view, &mut fonts, &many, small);
+    }
+    assert!(view.selected_text().is_none() && view.selection_rects().is_empty(), "an evicted buffer");
+    // And it stays cleared when the record is shaped again.
+    view.anchor = Some((first, 0.0));
+    lay_in(&mut view, &mut fonts, &many, small);
+    assert!(view.selected_text().is_none(), "an evicted buffer shaped again");
+}

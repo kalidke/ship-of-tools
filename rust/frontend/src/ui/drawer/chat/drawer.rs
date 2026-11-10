@@ -14,7 +14,7 @@ use super::compose::{Compose, ComposeText, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::row_channel::{RowChannel, Stand};
 use super::thread::Thread;
-use super::view::{ChatView, Step};
+use super::view::{ChatHit, ChatView, Step};
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -309,6 +309,27 @@ impl ChatDrawer {
     pub(in crate::ui) fn hide(&mut self) {
         self.close_thread();
         self.view.hide();
+    }
+
+    /// The selection's view calls: a press, the drag, the copy and the tint (`view::ChatView`).
+    pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
+        self.view.hit(at)
+    }
+
+    pub(in crate::ui) fn press(&mut self, hit: Option<ChatHit>) -> bool {
+        self.view.press(hit)
+    }
+
+    pub(in crate::ui) fn extend_drag(&mut self, at: (f32, f32)) -> bool {
+        self.view.extend_drag(at)
+    }
+
+    pub(in crate::ui) fn release(&mut self) {
+        self.view.release();
+    }
+
+    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+        self.view.selection_rects()
     }
 
     pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {

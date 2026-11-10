@@ -4,11 +4,12 @@
 use std::collections::HashMap;
 
 use chrono::FixedOffset;
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight};
+use cosmic_text::{Attrs, Buffer, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use sot_protocol::chat::{ChatRecord, Ts};
 
 use super::owner::ts_order;
 use super::project::{project, Kind, Span};
+use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
 use crate::ui::render::quad::ScreenRect;
 use crate::ui::render::text::{set_buffer_rich_text, ExtraArea, EXTRA_TOP_PAD_PX};
@@ -94,6 +95,10 @@ pub(super) fn attrs(kind: Kind) -> Attrs<'static> {
 /// A buffer is shaped for its spans at a width and text scale (the floats' bits).
 type Key = (Vec<Span>, u32, u32);
 
+/// A press in the records area: the record (its time and buffer key) and the buffer position under the pointer when it
+/// is on a body line, else none.
+pub(in crate::ui) struct ChatHit(Option<((Ts, Key), Cursor)>);
+
 struct Shaped {
     buffer: Buffer,
     height: f32,
@@ -109,7 +114,7 @@ pub(in crate::ui) struct ChatView {
     /// the frame that spends them, so a key before the first frame is kept and a resize or scale change does not matter.
     pending: (f32, f32),
     cache: HashMap<Key, Shaped>,
-    placed: Vec<(Key, f32)>,
+    placed: Vec<(Key, f32, Ts)>,
     body: Option<ScreenRect>,
     /// The oldest held record reaches the body: older history is wanted.
     pub(super) at_oldest: bool,
@@ -118,11 +123,14 @@ pub(in crate::ui) struct ChatView {
     /// The mark keys since the last frame, in order (`true` toward older records): the frame that spends them knows the
     /// records, and folds them one at a time, each with its clamp.
     mark_keys: Vec<bool>,
+    /// The text selected in one record's body (never its header), and that record.
+    selection: FlowedSelection,
+    selected: Option<(Ts, Key)>,
 }
 
 impl ChatView {
     /// Places the records in `body` and shapes those that reach it; the rest of the cache is trimmed.
-    pub(super) fn layout(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
+    pub(in crate::ui) fn layout(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
@@ -187,15 +195,85 @@ impl ChatView {
         self.mark = mark.map(|i| records[i].0.ts.clone());
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
         self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
-        self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
+        self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top, records[p.index].0.ts.clone())).collect();
         self.body = Some(body);
         let centre = from.map_or(count, |f| f.0);
         let mut others: Vec<_> =
-            self.cache.iter().filter(|(k, _)| !self.placed.iter().any(|(u, _)| u == *k)).map(|(k, s)| (s.at.abs_diff(centre), k.clone())).collect();
+            self.cache.iter().filter(|(k, _)| !self.placed.iter().any(|(u, ..)| u == *k)).map(|(k, s)| (s.at.abs_diff(centre), k.clone())).collect();
         others.sort_by(|a, b| b.0.cmp(&a.0));
         for (_, key) in others.into_iter().take(self.cache.len().saturating_sub(self.placed.len() + SPARE)) {
             self.cache.remove(&key);
         }
+        // A change to the selected record's buffer ends the selection: an edit, a delete, the mark's header, a record a
+        // snapshot dropped, a new width or scale, or a buffer the trim let go.
+        let live = self.selected.as_ref().is_none_or(|(ts, key)| {
+            let i = find(records, ts);
+            i < records.len() && records[i].0.ts == *ts && self.cache.contains_key(key)
+                && key.0 == project(records[i].0, now, offset, mark == Some(i), records[i].1) && key.1 == width.to_bits() && key.2 == scale.to_bits()
+        });
+        if !live {
+            self.clear_selection();
+        }
+    }
+
+    /// `shaped` as the selection lends it: placed at `top`, or nowhere (an empty rect) when it is not in the body.
+    fn lend<'a>(&self, shaped: &'a Shaped, top: Option<f32>) -> FlowedText<'a> {
+        let body = self.body.unwrap_or(ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        let y = body.y + top.unwrap_or(-1e9);
+        let (from, to) = (y.max(body.y), (y + shaped.height).min(body.y + body.h));
+        let rect = ScreenRect { x: body.x, y: from, w: body.w, h: (to - from).max(0.0) };
+        FlowedText { buffer: &shaped.buffer, rect, origin_y: y, clip_bottom: to, reserved: None }
+    }
+
+    /// The selected record's buffer, lent.
+    fn lent(&self) -> Option<FlowedText<'_>> {
+        let (ts, key) = self.selected.as_ref()?;
+        Some(self.lend(self.cache.get(key)?, self.placed.iter().find(|p| p.2 == *ts).map(|p| p.1)))
+    }
+
+    /// A press in the body focuses the drawer; one on a body line (never a header or between records) also names the
+    /// record and position.
+    pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
+        let body = self.body?;
+        (at.0 >= body.x && at.0 < body.x + body.w && at.1 >= body.y && at.1 < body.y + body.h).then_some(())?;
+        let line = self.placed.iter().find(|(k, top, _)| at.1 >= body.y + top && at.1 < body.y + top + self.cache[k].height).and_then(|(key, top, ts)| {
+            let cursor = FlowedSelection::hit(&self.lend(&self.cache[key], Some(*top)), at, true).filter(|c| c.line > 0)?;
+            Some(((ts.clone(), key.clone()), cursor))
+        });
+        Some(ChatHit(line))
+    }
+
+    /// A press replaces the selection: the record and position, or none; whether anything changed.
+    pub(in crate::ui) fn press(&mut self, hit: Option<ChatHit>) -> bool {
+        let line = hit.and_then(|h| h.0);
+        let cursor = line.as_ref().map(|l| l.1);
+        self.selected = line.map(|l| l.0);
+        self.selection.press(cursor)
+    }
+
+    /// The drag's end follows the pointer, clamped to the record's body.
+    pub(in crate::ui) fn extend_drag(&mut self, at: (f32, f32)) -> bool {
+        let end = self.lent().and_then(|t| FlowedSelection::hit(&t, at, false)).map(|c| if c.line == 0 { Cursor::new(1, 0) } else { c });
+        self.selection.extend_drag(end)
+    }
+
+    pub(in crate::ui) fn release(&mut self) {
+        self.selection.release();
+    }
+
+    pub(in crate::ui) fn clear_selection(&mut self) {
+        self.selection.clear();
+        self.selected = None;
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn selected_text(&self) -> Option<String> {
+        self.selection.text(&self.lent()?)
+    }
+
+    /// The tint of the selection, one rectangle a visual line.
+    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+        self.lent().map_or_else(Vec::new, |t| self.selection.rects(&t))
     }
 
     /// A key or the wheel moves the position `step` toward older records (`up`) or newer; it takes effect at the next frame.
@@ -216,6 +294,7 @@ impl ChatView {
     pub(super) fn reset(&mut self) {
         self.latest();
         (self.mark, self.mark_keys) = (None, Vec::new());
+        self.clear_selection();
     }
 
     /// The reader asks for the newest: the view follows it again.
@@ -234,7 +313,7 @@ impl ChatView {
         let Some(body) = self.body else { return Vec::new() };
         self.placed
             .iter()
-            .map(|(key, top)| ExtraArea {
+            .map(|(key, top, _)| ExtraArea {
                 buffer: &self.cache[key].buffer,
                 x: body.x,
                 y: body.y + top - EXTRA_TOP_PAD_PX,
@@ -248,6 +327,17 @@ impl ChatView {
             .collect()
     }
 
+    /// Where the glyph of `ts`'s record at buffer `(line, byte)` sits on screen.
+    #[cfg(test)]
+    pub(in crate::ui) fn point_at(&self, ts: &Ts, line: usize, byte: usize) -> Option<(f32, f32)> {
+        let body = self.body?;
+        let (key, top, _) = self.placed.iter().find(|p| &p.2 == ts)?;
+        self.cache[key].buffer.layout_runs().filter(|r| r.line_i == line).find_map(|run| {
+            let g = run.glyphs.iter().find(|g| g.start == byte)?;
+            Some((body.x + g.x + g.w * 0.15, body.y + top + run.line_top + run.line_height * 0.5))
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn holds(&self, spans: &[Span]) -> bool {
         self.cache.keys().any(|k| k.0 == spans)
@@ -256,19 +346,19 @@ impl ChatView {
     /// The placed records' text, in placement order.
     #[cfg(test)]
     pub(super) fn placed_text(&self) -> Vec<String> {
-        self.placed.iter().map(|(k, _)| k.0.iter().map(|s| s.text.as_str()).collect()).collect()
+        self.placed.iter().map(|(k, ..)| k.0.iter().map(|s| s.text.as_str()).collect()).collect()
     }
 
     /// The placed records' tops, in placement order.
     #[cfg(test)]
     pub(super) fn placed_tops(&self) -> Vec<f32> {
-        self.placed.iter().map(|(_, top)| *top).collect()
+        self.placed.iter().map(|(_, top, _)| *top).collect()
     }
 
     /// Whether each placed record's header is the marked one, in placement order.
     #[cfg(test)]
     pub(super) fn placed_marks(&self) -> Vec<bool> {
-        self.placed.iter().map(|(k, _)| k.0[0].kind == Kind::Header(true)).collect()
+        self.placed.iter().map(|(k, ..)| k.0[0].kind == Kind::Header(true)).collect()
     }
 
     #[cfg(test)]

@@ -1,6 +1,7 @@
 //! Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
 
 use super::*;
+use crate::ui::drawer::chat::ChatHit;
 use crate::ui::input::global_keys::confirm_quit_key;
 use winit::dpi::PhysicalPosition;
 use winit::keyboard::ModifiersState;
@@ -11,7 +12,8 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
     let end = state.llm_cell_at_px(state.pointer.at_px(), false);
     let agent_changed = state.agent_pane.extend_drag(end);
     let preview_changed = state.shaped.extend_drag(state.pointer.at_px());
-    if agent_changed || preview_changed { state.window.request_redraw(); }
+    let chat_changed = state.chat.extend_drag(state.pointer.at_px());
+    if agent_changed || preview_changed || chat_changed { state.window.request_redraw(); }
     state.ink_moved();
 }
 
@@ -32,7 +34,7 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
             dismissed
         },
         press_selections,
-        |state| { state.agent_pane.release(); state.shaped.release(); state.ink_released(); },
+        |state| { state.agent_pane.release(); state.shaped.release(); state.chat.release(); state.ink_released(); },
         |state, down| state.ink_right(down));
 }
 
@@ -45,14 +47,19 @@ trait SelectionContext {
     fn focus_selection_pane(&mut self, pane: PaneFocus);
     fn press_agent(&mut self, cell: Option<(u16, u16)>);
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>);
+    /// The chat's body line under the pointer, in the record there.
+    fn chat_hit(&self) -> Option<ChatHit>;
+    fn press_chat(&mut self, hit: Option<ChatHit>);
 }
 
 fn press_selections(context: &mut impl SelectionContext) {
-    if context.draw_press() { context.press_agent(None); return; }
+    if context.draw_press() { context.press_agent(None); context.press_chat(None); return; }
     let cell = context.agent_cell();
     let cursor = context.preview_cursor();
     agent_press_continuation(context, cell, |c| c.focus_selection_pane(PaneFocus::Llm), |c, cell| c.press_agent(cell));
     agent_press_continuation(context, cursor, |c| c.focus_selection_pane(PaneFocus::Preview), |c, cursor| c.press_preview(cursor));
+    let hit = context.chat_hit();
+    agent_press_continuation(context, hit, |c| c.focus_selection_pane(PaneFocus::Repl), |c, hit| c.press_chat(hit));
 }
 
 impl SelectionContext for State {
@@ -69,6 +76,13 @@ impl SelectionContext for State {
     }
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>) {
         if self.shaped.press(cursor) { self.window.request_redraw(); }
+    }
+    fn chat_hit(&self) -> Option<ChatHit> {
+        if self.layout_help.drawer() != DrawerContent::Chat { return None; }
+        self.chat.hit(self.pointer.at_px())
+    }
+    fn press_chat(&mut self, hit: Option<ChatHit>) {
+        if self.chat.press(hit) { self.window.request_redraw(); }
     }
 }
 
@@ -265,6 +279,7 @@ mod tests {
         focused_before_press: bool,
         drawing: bool,
         pressed_agent: Vec<Option<(u16, u16)>>,
+        chat: crate::ui::drawer::chat::ChatView,
     }
     impl SelectionContext for SelectionProbe {
         fn agent_cell(&self) -> Option<(u16, u16)> { self.agent }
@@ -277,6 +292,11 @@ mod tests {
         }
         fn focus_selection_pane(&mut self, pane: PaneFocus) { self.focus = pane; }
         fn press_agent(&mut self, cell: Option<(u16, u16)>) { self.pressed_agent.push(cell); }
+        fn chat_hit(&self) -> Option<ChatHit> { self.chat.hit(self.at) }
+        fn press_chat(&mut self, hit: Option<ChatHit>) {
+            if hit.is_some() { self.focused_before_press = self.focus == PaneFocus::Repl; }
+            self.chat.press(hit);
+        }
         fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>) {
             self.focused_before_press = cursor.is_some() && self.focus == PaneFocus::Preview;
             self.shaped.press(cursor);
@@ -292,7 +312,7 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: None, focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: false, pressed_agent: Vec::new(),
+            text_shown: true, focused_before_press: false, drawing: false, pressed_agent: Vec::new(), chat: Default::default(),
         };
         pointer_continuation(&mut probe, true, MouseButton::Left, |_, _| {}, |_| None, |_, _| {}, |_| false,
             press_selections, |p| p.shaped.release(), |_, _| {});
@@ -317,6 +337,45 @@ mod tests {
         press_selections(&mut probe);
         assert_eq!(probe.focus, PaneFocus::Llm, "an image or editor does not start preview selection");
         assert!(!probe.shaped.extend_drag(end));
+
+        // The chat's records area: a press focuses the drawer and a body line starts a selection there.
+        let (rec, body) = (chat_record(), CHAT_BODY);
+        let mut fonts = glyphon::FontSystem::new();
+        probe.chat.layout(&mut fonts, &[(&rec, false)], body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+        let (chat_at, header) = (probe.chat.point_at(&rec.ts, 1, 3).unwrap(), probe.chat.point_at(&rec.ts, 0, 0).unwrap());
+        probe.focus = PaneFocus::NavTree;
+        probe.at = chat_at;
+        probe.text_shown = false;
+        press_selections(&mut probe);
+        assert_eq!(probe.focus, PaneFocus::Repl);
+        assert!(probe.focused_before_press);
+        probe.chat.extend_drag((body.x + body.w - 1.0, chat_at.1));
+        assert_eq!(probe.chat.selected_text().as_deref(), Some("ha bravo"));
+        // A header press is in the records area and starts no selection.
+        probe.focus = PaneFocus::NavTree;
+        probe.at = header;
+        press_selections(&mut probe);
+        assert_eq!(probe.focus, PaneFocus::Repl);
+        assert!(probe.chat.selected_text().is_none());
+        // An agent press clears a selection.
+        probe.at = chat_at;
+        press_selections(&mut probe);
+        assert!(probe.chat.selected_text().is_none(), "a press only begins a selection; the drag extends it");
+        probe.chat.extend_drag((body.x + body.w - 1.0, chat_at.1));
+        assert!(probe.chat.selected_text().is_some());
+        probe.at = (0.0, 0.0);
+        probe.agent = Some((0, 0));
+        press_selections(&mut probe);
+        assert_eq!(probe.focus, PaneFocus::Llm);
+        assert!(probe.chat.selected_text().is_none(), "an agent press clears the chat's selection");
+    }
+
+    const CHAT_BODY: ScreenRect = ScreenRect { x: 300.0, y: 200.0, w: 200.0, h: 100.0 };
+
+    fn chat_record() -> sot_protocol::chat::ChatRecord {
+        serde_json::from_value(serde_json::json!({ "workspace": "WS1", "channel": "CH1", "ts": "1700000001.000100",
+            "thread_ts": "1700000001.000100", "author": { "id": "U1", "name": "Ada" }, "origin": "member",
+            "text": "alpha bravo", "reply_count": 0, "files": [] })).unwrap()
     }
 
     #[test]
@@ -328,10 +387,18 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: true, pressed_agent: Vec::new(),
+            text_shown: true, focused_before_press: false, drawing: true, pressed_agent: Vec::new(), chat: Default::default(),
         };
+        let (rec, mut fonts) = (chat_record(), glyphon::FontSystem::new());
+        probe.chat.layout(&mut fonts, &[(&rec, false)], CHAT_BODY, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+        let chat_at = probe.chat.point_at(&rec.ts, 1, 3).unwrap();
+        let hit = probe.chat.hit(chat_at);
+        probe.chat.press(hit);
+        probe.chat.extend_drag((CHAT_BODY.x + CHAT_BODY.w - 1.0, chat_at.1));
+        assert!(probe.chat.selected_text().is_some());
         press_selections(&mut probe);
         assert_eq!(probe.focus, PaneFocus::Preview);
+        assert!(probe.chat.selected_text().is_none(), "a drawing press clears the chat's selection");
         assert_eq!(probe.pressed_agent, [None], "a drawing press clears the agent pane's selection");
         assert!(!probe.focused_before_press && !probe.shaped.extend_drag((rect.x + 100.0, rect.y + 60.0)),
             "a drawing press begins no text selection");
