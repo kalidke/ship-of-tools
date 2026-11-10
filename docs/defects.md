@@ -61,11 +61,6 @@ owned by `docs/CLAUDE.md`.
 - **CHILD-RENAMES-NO-RETRY** [note] Three test children rename a file into place with `std::fs::rename`, which does not
   retry on Windows while a scanner holds the new file, as platform's renames do: `test_barrier.rs`, the capsule's
   `tests/supervisor/main.rs` and `contained_job.rs`. Route each through `publish_noreplace`.
-- **BENEATH-TWO-WRITERS-WINDOWS** [note] `host::beneath::tests::two_writers_of_one_name_each_publish_a_whole_file`
-  failed once on the hosted Windows runner ("a writer erred", `rust/platform/src/host/beneath_tests.rs`) on a main
-  commit that touched no platform code (2026-11-10), and passed on the runs before and after. One of two writers of one
-  name beneath a root returned an error where both should publish a whole file; whether the product or the test owns
-  the state is not yet known.
 
 ## wire
 
@@ -863,6 +858,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **BENEATH-TWO-WRITERS-WINDOWS** (platform) closed by the landing that fixes it, 2026-11-10: on Windows a write beneath a root kept its renamed file's handle, which shares no deletion, open through the folder's sync, so a second writer's rename over the same name was refused (access denied) for as long as that sync ran and failed once it outlasted the retry window, as `two_writers_of_one_name_each_publish_a_whole_file` did on a hosted run; the handle now closes at the rename, before the folder's sync.
 - **CHAT-GAP-ASKS-DEAD-TARGET** (fe-ui) closed by the landing that fixes it, 2026-11-09: the chat owner keeps the daemon's refusal in its gap (`Gap(Some(code))`), asks `stale_row`, `stale_mapping` and `unmapped` no more until a row or link change, and shows a gap, for refused snapshot reads too with the read's code, only after the daemon's slowest snapshot; `too_many_watches` and `unavailable` keep the once-a-minute ask on purpose, since each can clear.
 - **MONITOR-TENANT-REACHES-REPL** (fe-ui) closed by the landing that fixes it, 2026-11-09: `help::Pane::of_drawer` is the one exhaustive map from tenant to pane, and in a tenant other than the REPL (Terminal, Monitor, Help, Chat) typing, paste, the line-scroll chords and the wheel no longer reach the REPL; `help::DrawerInput::of` is the one decision their handlers match.
 - **GATE-LEFTOVER-ESCAPED-HOLDER** (containment) closed by the landing that fixes it, 2026-11-09: `output_does_not_wait_for_an_escaped_pipe_holder` (`rust/containment/src/signal_output_bound_tests.rs`) passed and left its escaped `sleep 30` running, so a whole local gate whose `sot_containment` job started within 30 s of the end failed its census (`leftover <pid> sleep 30`); the escapee now holds the pipe only while the test's `keep` file exists, and the test removes the file and sees the escapee gone.
