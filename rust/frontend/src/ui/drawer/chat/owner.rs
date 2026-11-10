@@ -15,7 +15,7 @@ use sot_protocol::chat::{ChatRecord, Ts};
 
 /// Between two watch attempts: the first waits `FIRST_PACE`, the rest `PACE`.
 const FIRST_PACE: Duration = Duration::from_secs(1);
-const PACE: Duration = Duration::from_secs(5);
+pub(super) const PACE: Duration = Duration::from_secs(5);
 /// What the daemon is given before a gap is shown: for its chat service to start (it refuses `unavailable` meanwhile), and,
 /// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes at 21 s).
 const WINDOW: Duration = Duration::from_secs(20);
@@ -28,7 +28,7 @@ const KEPT: usize = 256;
 /// The most a parked reader holds the store to: `KEPT` and one page. Past it the oldest go whoever reads them.
 const CEILING: usize = KEPT + MAX_PAGE as usize;
 /// Between two asks of a page that was refused as rate limited.
-const LIMITED_PACE: Duration = Duration::from_secs(30);
+pub(super) const LIMITED_PACE: Duration = Duration::from_secs(30);
 
 pub(super) type Out = (HostKey, OutgoingReq);
 
