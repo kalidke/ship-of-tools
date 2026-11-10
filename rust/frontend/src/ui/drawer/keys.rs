@@ -18,6 +18,9 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
                 state.set_focus(PaneFocus::NavTree);
                 return Break(());
             }
+            if state.layout_help.drawer() == DrawerContent::Chat && drawer::chat::chat_key(state, key, label) {
+                return Break(());
+            }
             return Continue(());
         }
         help::DrawerInput::Terminal => {

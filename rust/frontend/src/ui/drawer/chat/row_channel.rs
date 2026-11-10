@@ -112,6 +112,11 @@ impl RowChannel {
         self.wanted.iter_mut().for_each(|w| w.answer = Some((stand, now)));
     }
 
+    /// The wanted row.
+    pub(super) fn row(&self) -> Option<&ResultRowIdentity> {
+        self.wanted.as_ref().map(|w| &w.id)
+    }
+
     pub(super) fn host(&self) -> &str {
         self.wanted.as_ref().map_or("", |w| w.id.host.as_str())
     }

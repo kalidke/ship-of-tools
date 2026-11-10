@@ -32,6 +32,7 @@ impl State {
     pub(in crate::ui) fn reconcile_pending_results(&mut self, update: &RowDirectoryUpdate) {
         let effects = self.result_ledger.reconcile_retired(update.retired(), self.selected.host());
         self.apply_result_effects(effects);
+        self.chat.retire(update.retired());
     }
 
     /// Badge changes reorder the existing projection without a directory refresh.

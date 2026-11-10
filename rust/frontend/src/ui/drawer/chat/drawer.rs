@@ -10,6 +10,7 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
+use super::compose::{Compose, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out};
 use super::row_channel::{RowChannel, Stand};
 use sot_protocol::ops::ChatCode;
@@ -75,6 +76,7 @@ pub(in crate::ui) struct ChatDrawer {
     rows: RowChannel,
     flight: Flight,
     view: ChatView,
+    compose: Compose,
 }
 
 impl ChatDrawer {
@@ -172,6 +174,31 @@ impl ChatDrawer {
 
     pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {
         self.view.areas()
+    }
+
+    /// The watched channel, while it is the wanted row's.
+    fn view_dest(&self) -> Option<&ChatTarget> {
+        let row = self.rows.row()?;
+        self.owner.target().filter(|t| t.row == row.workspace_id)
+    }
+
+    /// The person edits the wanted row's draft; a refusal is the status line's words.
+    pub(in crate::ui) fn edit(&mut self, edit: Edit) -> Result<(), &'static str> {
+        let dest = self.view_dest().cloned();
+        let Some(row) = self.rows.row() else { return Err("no row to write for") };
+        self.compose.edit(row, dest.as_ref(), edit)
+    }
+
+    /// Rows a listing retired lose their drafts.
+    pub(in crate::ui) fn retire(&mut self, rows: &[ResultRowIdentity]) {
+        self.compose.retire(rows);
+    }
+
+    /// The wanted row's draft: its text and the channel it goes to.
+    #[cfg(test)]
+    pub(super) fn draft(&self) -> Option<(&str, &str)> {
+        let d = self.compose.draft(self.rows.row()?)?;
+        Some((d.text.as_str(), d.dest.channel.as_str()))
     }
 
     #[cfg(test)]

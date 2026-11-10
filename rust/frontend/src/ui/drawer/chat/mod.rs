@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::net::dial::HostKey;
 use crate::net::transport::ChatEvt;
 use super::super::*;
+use crate::ui::input::keypress::KeyPress;
 
 mod compose;
 mod drawer;
@@ -13,7 +14,6 @@ mod owner;
 mod project;
 mod row_channel;
 mod view;
-#[cfg_attr(not(test), allow(unused_imports, reason = "the draft's wiring (B5k) uses it"))]
 pub(in crate::ui) use compose::Edit;
 pub(in crate::ui) use drawer::ChatDrawer;
 pub(in crate::ui) use view::Step;
@@ -36,6 +36,14 @@ impl State {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
             }
         }
+    }
+
+    /// The person edits the wanted row's draft; a refusal goes to the status line.
+    pub(in crate::ui) fn edit_chat_draft(&mut self, edit: Edit) {
+        if let Err(words) = self.chat.edit(edit) {
+            self.status.set(words);
+        }
+        self.window.request_redraw();
     }
 
     pub(in crate::ui) fn on_chat(&mut self, host: &HostKey, evt: ChatEvt) {
@@ -92,7 +100,6 @@ pub(in crate::ui) fn chat_wheel(drawer: DrawerContent, rows_above: i32) -> Optio
 
 /// The edit a key makes to the draft, when it makes one: a typed character or Space only where the chord types text
 /// (`chord_types_text`), Backspace, and `chat.newline`; a key that resolved to another action matches no arm.
-#[cfg_attr(not(test), allow(dead_code, reason = "the draft's wiring (B5k) calls it"))]
 pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, super_): (bool, bool, bool)) -> Option<Edit<'_>> {
     match (action, key) {
         (Some(Action::ChatNewline), _) => Some(Edit::Newline),
@@ -101,6 +108,22 @@ pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, s
         (None, Key::Character(s)) if chord_types_text(ctrl, alt, super_) => Some(Edit::Typed(s.as_str())),
         _ => None,
     }
+}
+
+/// A key or paste in the Chat tenant edits the draft; whether it was taken.
+pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: String) -> bool {
+    let KeyPress { event, action, ctrl, alt, super_, .. } = key;
+    if action == Some(Action::Paste) {
+        if let Some(text) = (!event.repeat).then(read_clipboard_text).flatten() {
+            state.edit_chat_draft(Edit::Paste(&text));
+        }
+    } else if let Some(edit) = draft_edit(action, &event.logical_key, (ctrl, alt, super_)) {
+        state.edit_chat_draft(edit);
+    } else {
+        return false;
+    }
+    state.last_key = Some(label);
+    true
 }
 
 /// Applies a move; whether there was one.

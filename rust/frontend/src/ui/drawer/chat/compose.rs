@@ -1,8 +1,6 @@
 //! The chat draft: what the person typed, one per canonical row, with the destination it was begun in. It never escapes
 //! its text (chat's door does, B5l); it holds only what `post_text_fits` admits, so the post reads back whole.
 
-#![cfg_attr(not(test), allow(dead_code, reason = "the draft's wiring (B5k) uses it"))]
-
 use std::collections::HashMap;
 
 use sot_protocol::chat::post_text_fits;
@@ -71,7 +69,8 @@ impl Compose {
         self.drafts.retain(|row, _| !rows.contains(row));
     }
 
-        pub(super) fn draft(&self, row: &ResultRowIdentity) -> Option<&Draft> {
+    #[cfg_attr(not(test), allow(dead_code, reason = "the compose rows (B5k) read it"))]
+    pub(super) fn draft(&self, row: &ResultRowIdentity) -> Option<&Draft> {
         self.drafts.get(row)
     }
 }
