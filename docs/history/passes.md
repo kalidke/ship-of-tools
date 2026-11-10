@@ -1684,3 +1684,17 @@ A landing's record goes here, with its measured times; the package page holds on
   could be posted twice); two fix rounds of 6 and 3 minutes, the second read by the session; three scoped gates of 1 to
   2 minutes. The cause: the brief named the reread after a post but not its race with the read already in flight,
   the value matching the plan states for every chat read.
+- The project chat's B5q, selection and copy, 2026-11-10, in two commits landed together: builder launched 04:11, main
+  04:50 (4a2be095b, bbfdab4fc), 39 minutes, past the half hour, a failure by this page's standard. A left press in the
+  chat's records focuses the drawer and a drag selects text inside one message's body, the preview's selection over that
+  record's buffer, cleared by any press elsewhere, an edit, a new width or scale, the record dropped or evicted, the
+  mark moving onto or off it, a row reset and a thread opening; the tint joins the one batched selection paint;
+  Primary+c copies the selection or the marked message's shown text, header excluded; a chat selection is never shared
+  with the agent. About 125 product lines and 355 test lines over the two (test modules inside product files
+  counted as test). Where the minutes went: the build, stopped
+  at its size bound at about 122 product lines with no test yet (3 minutes); the split into the selection and the copy,
+  with every test written then (13 minutes); one review of the stack (blockers 1, 14 minutes: opening a thread set the
+  channel's view aside with its selection, so a press during the thread could not clear it and it came back at close);
+  one fix round (5 minutes, read by the session); four scoped gates of 2 minutes. The causes: a step planned at 65
+  product lines came to 122, and the thread view's parking of the channel's view, landed one step before, carried
+  state the plan had not yet given it.
