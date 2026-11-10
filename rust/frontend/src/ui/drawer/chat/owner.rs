@@ -96,6 +96,8 @@ struct Watch {
     anchor: Option<Ts>,
     /// The oldest held record is in the view, as the view last placed it: older history is wanted.
     reaches: bool,
+    /// What the open thread holds of the drawer's `KEPT` records: the channel keeps the rest.
+    reserved: usize,
     /// The one page read in flight, apart from the snapshot's `reading`: it never delays a watch.
     paging: Option<ChatHistoryReq>,
     /// Why paging stopped, if it did.
@@ -134,7 +136,7 @@ impl Watch {
             Some(Stop::Refused(at, code)) => !dead(code) && now.duration_since(at) >= if code == ChatCode::Limited { LIMITED_PACE } else { PACE },
             Some(Stop::Hides | Stop::Stuck) => false,
         };
-        let floor = self.floor.clone().filter(|_| self.reaches && self.paging.is_none() && due && self.records.len() < KEPT)?;
+        let floor = self.floor.clone().filter(|_| self.reaches && self.paging.is_none() && due && self.records.len() < self.cap())?;
         let req = ChatHistoryReq { target: self.target.clone(), thread: None, after: None, upper: Some(ChatUpper::Before(floor)), limit: MAX_PAGE, cursor: None };
         self.paging = Some(req.clone());
         Some(req)
@@ -160,12 +162,17 @@ impl Watch {
         self.bound();
     }
 
+    /// The channel's share of `KEPT`.
+    fn cap(&self) -> usize {
+        KEPT - self.reserved
+    }
+
     /// The store's bound, after every change to the records: past `KEPT` the oldest go in one pass and the floor rises, but
     /// never the record the reader is anchored on nor a newer one, so a reader on the oldest does not move up a record per
     /// arrival. A reader parked there holds the store to `CEILING`; past that the oldest go anyway and the reader moves by
     /// the view's rule for an anchor no longer held.
     fn bound(&mut self) {
-        let over = self.records.len().saturating_sub(KEPT);
+        let over = self.records.len().saturating_sub(self.cap());
         if over == 0 {
             return;
         }
@@ -204,7 +211,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, anchor: None, reaches: false, paging: None, stop: None, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, anchor: None, reaches: false, reserved: 0, paging: None, stop: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -235,6 +242,14 @@ impl ChatOwner {
     pub(super) fn reaches(&mut self, yes: bool) {
         if let Some(w) = self.watch.as_mut() {
             w.reaches = yes;
+        }
+    }
+
+    /// The open thread holds `held` of the `KEPT` records (none once closed): the channel's oldest give way to it.
+    pub(super) fn reserve(&mut self, held: usize) {
+        if let Some(w) = self.watch.as_mut() {
+            w.reserved = held;
+            w.bound();
         }
     }
 
@@ -541,7 +556,7 @@ impl ChatOwner {
                 let raw = res.records.iter().map(|r| r.ts.clone()).min_by(|a, b| ts_order(a).cmp(&ts_order(b)));
                 let mut top: Vec<ChatRecord> = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts && w.floor.as_ref().is_none_or(|f| ts_order(&r.ts) < ts_order(f))).collect();
                 top.sort_by(|a, b| ts_order(&b.ts).cmp(&ts_order(&a.ts)));
-                let room = KEPT.saturating_sub(w.records.len());
+                let room = w.cap().saturating_sub(w.records.len());
                 let cut = top.len() > room;
                 top.truncate(room);
                 let joined = top.last().map(|r| r.ts.clone());

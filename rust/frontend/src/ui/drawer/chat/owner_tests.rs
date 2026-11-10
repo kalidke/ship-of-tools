@@ -1243,3 +1243,58 @@ fn a_page_refused_for_good_is_asked_again_only_after_a_link_change() {
     o.reaches(true);
     assert!(asks(&mut o, now + PACE).is_some());
 }
+
+fn put(o: &mut ChatOwner, stamps: &[String], now: Instant) {
+    for chunk in stamps.chunks(20) {
+        let put: Vec<_> = chunk.iter().map(|t| record(t, "C1")).collect();
+        let changed = serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "put": put, "deleted": [] })).unwrap();
+        o.on_evt(&host(), ChatEvt::Changed(changed), now);
+    }
+}
+
+fn at_n(n: usize) -> String {
+    format!("1700000{n:03}.000100")
+}
+
+/// An owner whose snapshot holds messages 150 to 169 with older history below, and newer ones put up to message `to`.
+fn older_below(now: Instant, to: usize) -> ChatOwner {
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, now);
+    o.watch(host(), target("C1"), now);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    let snapshot: Vec<String> = (150..170).map(at_n).collect();
+    let snapshot: Vec<&str> = snapshot.iter().map(String::as_str).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snapshot, Some("older")) }, now);
+    put(&mut o, &(170..to).map(at_n).collect::<Vec<_>>(), now);
+    o
+}
+
+/// A thread's reserve takes room from the channel's oldest records and never from its newest 100; a page in flight joins only
+/// within the channel's share; `reserve(0)` gives the room back.
+#[test]
+fn a_reserve_takes_room_from_the_channels_oldest_and_gives_it_back() {
+    let now = Instant::now();
+    let mut o = older_below(now, 406);
+    assert_eq!(o.records().len(), 256);
+    o.reserve(21);
+    assert_eq!(o.records().len(), 235);
+    o.reserve(156);
+    let held = o.records();
+    assert_eq!((held.len(), held[0].0.ts.clone()), (100, ts(&at_n(306))), "the newest 100 stay");
+    o.reserve(0);
+    put(&mut o, &(406..416).map(at_n).collect::<Vec<_>>(), now);
+    assert_eq!(o.records().len(), 110, "the room is the channel's again");
+
+    // A page in flight when the reserve comes joins only within what the channel keeps.
+    let mut o = older_below(now, 250);
+    assert_eq!(o.records().len(), 100);
+    o.reaches(true);
+    let paging = history_req(&o.tick(now));
+    o.reserve(156);
+    let older: Vec<String> = (130..150).map(at_n).collect();
+    let older: Vec<&str> = older.iter().map(String::as_str).collect();
+    o.on_evt(&host(), ChatEvt::History { req: paging, reply: page(&older, Some("older")) }, now);
+    assert_eq!(o.records().len(), 100, "no room: the newest 100 never give way");
+    o.reaches(true);
+    assert!(o.tick(now).is_empty(), "no page is asked for a share that is full");
+}
