@@ -21,8 +21,9 @@ pub(super) struct Span {
     pub text: String,
 }
 
-/// The header is `name [origin] time` and ends its line; the body follows, then each meta item on its own line.
-pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: bool) -> Vec<Span> {
+/// The header is `name [origin] time` and ends its line; the body follows, then each meta item on its own line. A deleted
+/// message (the owner knows it) is its header and `(message deleted)` alone.
+pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: bool, deleted: bool) -> Vec<Span> {
     let span = |kind, text: String| Span { kind, text };
     let mut out = vec![span(Kind::Header(marked), format!("{} ", header_text(&r.author.name)))];
     let tag = match r.origin {
@@ -33,6 +34,10 @@ pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: boo
     };
     out.extend(tag.map(|t| span(Kind::Origin, t.to_string())));
     out.push(span(Kind::Header(marked), format!("{}\n", when(r.ts.as_str(), now, offset))));
+    if deleted {
+        out.push(span(Kind::Meta, "(message deleted)".to_string()));
+        return out;
+    }
     for seg in text_segments(&r.text) {
         out.push(match seg {
             TextSegment::Text(t) => span(Kind::Body, literal(&t)),

@@ -699,7 +699,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   model's newest 100 records (`KEPT`), dropping the oldest as it does (`the_owner_keeps_at_most_the_daemons_newest_records`). A
   `floor` (set by a snapshot that is not the whole channel, raised by the trim) bounds what is added: a `put` of a record not held
   and older than it is not added, the daemon's own rule for an edit below its set (`the_owner_holds_only_what_the_daemon_tracks`,
-  `deletes_emptying_the_page_do_not_lower_the_floor`); a whole channel has no floor, so its first message is held
+  `a_put_below_the_floor_is_refused_after_deletes_too`); a whole channel has no floor, so its first message is held
   (`the_first_message_of_an_empty_channel_is_held`). A watch reply that is not `complete`, arriving during a read, outdates it
   (`a_pending_watch_reply_during_a_read_outdates_it`); a gap with no last try asks at once (`a_gap_with_no_last_try_asks_at_once`). A read's reply is applied only while a read equal to it is in flight
   (`a_second_reply_to_one_read_is_not_applied`), and the reply of a read a loss outdated replaces nothing
@@ -707,8 +707,8 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   none is written on a later connection ahead of the owner's new watch, except one queued during the next connection's hello
   (`net/CLAUDE.md`). `watch` with the host and target already watched is
   nothing, and with the same host and channel it sends the watch alone (the daemon's watch replaces the connection's earlier
-  one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts and deletes records
-  (`changed_events_put_and_delete_the_watched_channels_records`).
+  one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts records and, for a record held, keeps that it was deleted
+  (`changed_events_put_and_delete_the_watched_channels_records`): the owner holds each record with its deleted flag as one pair (`records()` returns the pairs), keeping only the deleted record's identity, author and time, and the view passes the flag to the projection, which shows the header and `(message deleted)` alone (`a_deleted_message_is_its_header_and_the_notice_alone`, `a_deleted_record_shows_as_deleted_through_the_drawer`, `an_anchor_on_a_deleted_message_passes_on_when_a_snapshot_drops_it`). A deleted record counts against `KEPT`, a replacing snapshot holds none deleted, a put of the same time brings the message back (`a_put_after_a_delete_brings_the_message_back`), and a delete of a record not held adds nothing (`a_delete_leaves_a_tombstone_in_place`).
 - A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`). One waiting when its link
   ends is `Unknown` (it may exist); one to a host that is not connected is never written and is `Refused(Unavailable)`
   (`a_post_is_unknown_only_when_it_may_exist`); a reply from another host answers nothing (`a_post_reply_from_another_host_answers_nothing`); each reply reads as it proves (`a_posts_outcome_reads_as_the_reply_proves`). The
