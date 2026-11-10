@@ -25,7 +25,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
 3. **A record is bounded, and a cut is marked.** 32 KiB of encoded JSON, 8 KiB of text, eight file summaries (the rest
    counted in `files_omitted`, as is any file entry with no valid id), 64 ASCII-byte ids, 160 / 256 / 128 bytes for an
    author name / filename / MIME. A cut falls on a character boundary and sets `truncated` (which covers text, names,
-   filename and MIME); the record's size is held by halving the text until it fits, and once the text is gone the other bounds (ids, names, eight files, three timestamps) keep it near 8 KiB, far under the cap, so nothing else is cut. Names, filenames and MIME lose control characters and are trimmed of surrounding whitespace (`clean`), and nothing else is stripped: direction and other format characters stay, for the later display and mail rules. A
+   filename and MIME); the record's size is held by halving the text until it fits, and once the text is gone the other bounds (ids, names, eight files, three timestamps) keep it near 8 KiB, far under the cap, so nothing else is cut. A record's text is Slack's escaped markup (`&amp;`, `&lt;`, `&gt;` stay as Slack sent them), and the byte cut can split a token. Names, filenames and MIME lose control characters and are trimmed of surrounding whitespace (`clean`), and nothing else is stripped: direction and other format characters stay, for the later display and mail rules. A
    file stub (`file_access: check_file_info`) keeps its id only. A private URL is never copied; a thumbnail is a flag.
    Limit: `truncated` does not say which field was cut.
 4. **An attachment-only message is a record with empty text and its files.** Nothing needs a caption.
@@ -89,7 +89,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    code that is not transient) or a request that never left (`busy`, `invalid`, `destination`); `Limited` is a 429 or
    `ratelimited`; every other case without a valid acknowledgement (transport error, timeout, 5xx, unparsable or `ok`-less
    body, transient code, `ok` with no `ts`) is `Unknown`. Nothing resends, and a caller that stops waiting does not
-   cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent.
+   cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent. Every message text this crate sends is plain text made Slack's by one private function (`escape_text` after `post_text_fits`, wire's), the only way a request body gets a `text`; the 8 KiB bound is on the escaped size, and no post can mention a person or ping a channel until a structured field adds one. The daemon's hello says so (`HelloRes.posts_plain_text`).
 13. **A retry header paces reads, never repeats a mutation.** The `Retry-After` header, in any case, in whole seconds
    (capped at one hour), makes every read refuse as `Limited` without a request until it passes; a missing or invalid
    header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
@@ -349,7 +349,7 @@ Paths are under `rust/chat/src/`.
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
 | 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending` |
-| 12 | one post, origin kept | `api_tests.rs`: `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin` |
+| 12 | one post, origin kept | `api_tests.rs`: `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin`, `a_message_text_is_sent_escaped_and_bounded_escaped` |
 | 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
 | 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline`, `name_lookups_together_end_at_the_names_deadline` |
 | 15 | no raw Slack text | `api_tests.rs`: `slack_text_and_identity_failures_reach_no_caller_raw` |
