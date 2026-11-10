@@ -818,7 +818,11 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `row_channel.rs` holds `RowChannel`, which
   resolves the wanted row; `drawer.rs` holds `ChatDrawer`, which owns both and the set of reads in flight, and is what State holds; `mod.rs` holds State's side
   only. State forwards chat events, `bus.lost` and each link's change to `ChatDrawer`, whose methods return the requests to
-  send. No drawer view or key reads it yet.
+  send. `project.rs` turns a record into kinded spans (`project`, pure; `project_tests::chat_markup_and_hostile_text_remain_literal`):
+  the text goes through wire's `text_segments`, Slack's markup is its own `Markup` span shown decoded (entities read, nothing rendered), CR LF and CR become LF, tabs stay, any other C0 or C1
+  control becomes U+FFFD, and a name or file name loses exactly the C0 and C1 controls and the characters `page_reply::unsafe_char` lists (line separators, direction and zero-width formatting characters, U+2060 to U+2069, U+FEFF, U+FFF9 to U+FFFB, U+FFFE and U+FFFF), so no body line can read as a header (the header ends its own line). The time is added to the stamp as integers (`HH:MM` for today's local date, else with the date; a stamp out of chrono's range shows as its own text, never a panic).
+  Limits: one fixed offset serves every stamp, so a post from before a daylight saving change shows an hour off; a member whose name ends in `[drawer]` reads like the drawer's own post but for the span style; a name made only of removed characters shows empty (a file name so made shows `[a file]`); what stays in a name includes the soft hyphen, tag characters, U+180E and U+206A to U+206F, none of which breaks the header line.
+  No drawer view or key reads it yet (B5g).
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
