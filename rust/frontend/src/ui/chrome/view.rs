@@ -66,6 +66,7 @@ pub(super) struct ChromeView<'a> {
     pub(super) preview_name: &'a Option<String>,
     pub(super) pinned_preview_node_id: &'a Option<String>,
     pub(super) drawer: DrawerContent,
+    pub(super) chat_empty: bool,
     pub(super) monitor_host_connected: bool,
     pub(super) monitor_host_label: &'a HostKey,
     pub(super) repl_input: &'a String,
@@ -436,7 +437,10 @@ impl ChromeView<'_> {
         input_para: Paragraph<'static>,
         repl_split: ReplDrawerLayout,
     ) {
-        let ChromeView { drawer, help_state, help_bindings, .. } = *self;
+        let ChromeView { drawer, chat_empty, help_state, help_bindings, .. } = *self;
+        if drawer == DrawerContent::Chat && chat_empty {
+            frame.render_widget(Paragraph::new("no messages").style(Style::default().fg(Color::DarkGray)), repl_rect);
+        }
         if drawer == DrawerContent::Help {
             help::render(frame, repl_rect, help_state, help_bindings);
         }

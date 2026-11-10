@@ -271,6 +271,7 @@ impl State {
             }
         }
 
+        extras.extend(self.chat.areas());
         self.canvas.prepare_text(&self.gpu, &lines, &extras)?;
         Ok((scalebar_draw, media_paint_targets))
     }

@@ -68,6 +68,15 @@ impl State {
         repl_window: (usize, usize),
         repl_cells: ratatui::layout::Rect,
     ) {
+        // The chat drawer's records are placed in the drawer's pixels and shaped, or dropped while it is not shown.
+        let chat_body = (self.layout_help.drawer() == DrawerContent::Chat).then(|| cells_to_px(repl_cells));
+        match chat_body {
+            Some(body) => {
+                let (chat, scale) = (&mut self.chat, (self.canvas.cell_h() / BASE_CELL_H));
+                self.canvas.shape(|fonts| chat.layout(fonts, body, scale));
+            }
+            None => self.chat.hide(),
+        }
         // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
         // Regenerate the SVG → wgpu quad whenever the readings changed
         // (the pane's dirty mark) or the chart on screen was drawn for another size,

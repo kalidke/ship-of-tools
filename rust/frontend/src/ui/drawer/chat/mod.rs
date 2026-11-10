@@ -9,15 +9,17 @@ use super::super::*;
 
 mod drawer;
 mod owner;
-#[allow(dead_code, reason = "B5g's view is its reader")]
 mod project;
 mod row_channel;
+mod view;
 pub(in crate::ui) use drawer::ChatDrawer;
 use owner::Out;
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]
 mod row_channel_tests;
+#[cfg(test)]
+mod view_tests;
 
 impl State {
     /// Sends what the owner asked for; a request that cannot be queued is dropped with a warning (the owner's pace, or
