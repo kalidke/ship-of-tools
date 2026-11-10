@@ -1537,3 +1537,9 @@ A landing's record goes here, with its measured times; the package page holds on
   red test's cases all had reads that succeed, so a complete watch whose reads were all refused never became a gap
   (the first review's blocker), and a watch never answered was found in the second; its rounds also waited on
   B5c2's, since it was built on that commit.
+- The project chat's B5c3, a link change clears and cancels only that host's reads, 2026-11-09: brief sent 18:08, main
+  18:20 (518f7b0b0), 12 minutes. Two two-host tests pin the parts of B5c2's link-change rule its third review found
+  untested (another host's reads stay; the host's held read is cancelled), with doc comments and the contract bullet;
+  no product logic. About 70 test lines. Where the minutes went: the build (3 minutes); one review round of 8 minutes
+  (blockers 0; the per-host match noted as CHAT-FLIGHT-HOST-UNPINNED); a rebase onto B5d (1 minute); one scoped gate of
+  2 minutes.

@@ -738,10 +738,11 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   (`a_held_read_given_up_is_cancelled_and_never_sent`). The give-up is decided in one place, `owner_outs`, which compares the
   owner's read before and after each call it makes, so a watch stopped by hiding the chat (the first test), ended by a
   non-`mapped` answer or replaced by a `mapped` answer for another channel
-  (`an_answer_that_ends_or_replaces_the_watch_orphans_its_read`) all give their read up the same way. A link change is a give-up too: it clears
-  that host's set, since no reply comes for what its end dropped (`a_link_change_clears_the_reads_in_flight`; another host's reads
-  stay, `another_hosts_link_change_keeps_this_hosts_reads_in_flight`), and cancels that host's held read, which never goes out
-  later (`a_link_change_cancels_that_hosts_held_read`). A read the owner still holds
+  (`an_answer_that_ends_or_replaces_the_watch_orphans_its_read`) all give their read up the same way. A host's link change clears that host's set,
+  since no reply comes for what its end dropped (`a_link_change_clears_the_reads_in_flight`; another host's reads
+  stay, `another_hosts_link_change_keeps_this_hosts_reads_in_flight`), and, for the host whose channel is watched, is a
+  give-up too: it cancels that host's held read, which never goes out later
+  (`a_link_change_cancels_that_hosts_held_read`). A read the owner still holds
   is kept when a frame passes (`a_frame_during_the_read_keeps_it`). Limit: fe-net's
   exception (a request sent before the window has drained a link change can be written on the next connection) lets the
   clear admit an equal read beside it, and the earlier reply can then fill the new watch; the fix belongs to fe-net. A read held behind an orphan whose reply never comes waits until a link change; the daemon answers

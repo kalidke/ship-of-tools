@@ -615,6 +615,12 @@ owned by `docs/CLAUDE.md`.
 - **HELP-SEARCH-DROPS-ALTGR** [note] Help's search drops AltGr characters on Windows: its query admits a key only with
   neither Ctrl nor Super (`input/layout_help.rs`, the `Key::Character` arm), and AltGr is Ctrl with Alt there, so the
   editor's `chord_types_text` (`preview/editor/keys.rs`), which admits it, is not used. Found reading code; never seen.
+- **CHAT-FLIGHT-HOST-UNPINNED** [note] The chat drawer's set of reads in flight matches a reply, and cancels a held
+  read, on its own host only (`rust/frontend/src/ui/drawer/chat/drawer.rs`), but no test puts the same read on two hosts,
+  so matching on any host passes every test; if it regressed, host b's reply would remove host a's abandoned read and be
+  dropped, and b's next equal read would wait until b's link changes. The comment on `Flight::clear` there says "no reply
+  will come", which the contract's limit (fe-net's exception for a request sent before a link change is drained)
+  contradicts. Found by B5c3's review, reading code; never seen.
 
 ## distribution
 
