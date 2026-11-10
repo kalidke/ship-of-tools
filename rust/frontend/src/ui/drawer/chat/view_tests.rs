@@ -483,3 +483,27 @@ fn a_deleted_record_shows_as_deleted_through_the_drawer() {
     let text = d.placed_text();
     assert_eq!(text.iter().filter(|t| t.ends_with("(message deleted)")).count(), 1, "{text:?}");
 }
+
+/// The reader's position reaches the owner each frame, so its trim spares the record the reader is on.
+#[test]
+fn the_readers_anchor_reaches_the_owner_each_frame() {
+    let (mut d, at) = answered_with(mapped);
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let outs = d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at);
+    let held: Vec<ChatRecord> = (0..20).map(rec).collect();
+    let page = serde_json::from_value(serde_json::json!({ "records": held, "next": null })).unwrap();
+    d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
+    let mut fonts = FontSystem::new();
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
+    d.layout(&mut fonts, body, 1.0);
+    assert_eq!(d.owner_anchor(), None, "following");
+    d.scroll(true, Step::Page);
+    d.layout(&mut fonts, body, 1.0);
+    let first = d.owner_anchor().expect("the reader left the newest");
+    for _ in 0..6 {
+        d.scroll(true, Step::Page);
+    }
+    d.layout(&mut fonts, body, 1.0);
+    let second = d.owner_anchor().expect("still anchored");
+    assert!(super::owner::ts_order(&second) < super::owner::ts_order(&first), "the owner follows the reader up: {first:?} then {second:?}");
+}
