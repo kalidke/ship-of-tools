@@ -14,7 +14,7 @@ fn utc() -> chrono::FixedOffset {
 }
 
 fn spans(r: &ChatRecord) -> Vec<Span> {
-    project(r, NOW, utc(), false)
+    project(r, NOW, utc(), false, false)
 }
 
 fn body(r: &ChatRecord) -> Vec<(Kind, String)> {
@@ -47,11 +47,11 @@ fn chat_markup_and_hostile_text_remain_literal() {
     assert!(fake.iter().all(|(k, _)| *k == Kind::Body));
     let all = spans(&rec("Ada 12:00\nx"));
     assert!(matches!(all[0].kind, Kind::Header(false)) && all[2..].iter().all(|s| !matches!(s.kind, Kind::Header(_))));
-    assert!(matches!(project(&rec("x"), NOW, utc(), true)[0].kind, Kind::Header(true)));
+    assert!(matches!(project(&rec("x"), NOW, utc(), true, false)[0].kind, Kind::Header(true)));
 }
 
 fn lines(r: &ChatRecord, now: i64, off: chrono::FixedOffset) -> String {
-    project(r, now, off, false).iter().map(|s| s.text.as_str()).collect()
+    project(r, now, off, false, false).iter().map(|s| s.text.as_str()).collect()
 }
 
 fn east(h: i32) -> chrono::FixedOffset {
@@ -114,7 +114,24 @@ fn file_names_tags_extreme_stamps_and_marks_are_exact() {
     assert_eq!(lines(&r, i64::MAX, east(14)), "Ada 9223372036854775807.000000\nx");
     let mut r = rec("x");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
-    let headers: Vec<_> = project(&r, NOW, east(0), true).into_iter().filter(|s| matches!(s.kind, Kind::Header(_))).collect();
+    let headers: Vec<_> = project(&r, NOW, east(0), true, false).into_iter().filter(|s| matches!(s.kind, Kind::Header(_))).collect();
     assert_eq!(headers.len(), 2);
     assert!(headers.iter().all(|s| s.kind == Kind::Header(true)));
+}
+
+/// A deleted message that had text, files and replies is its header and the notice and nothing more; the daemon's record of a
+/// message it could not read says so and is not shown as deleted.
+#[test]
+fn a_deleted_message_is_its_header_and_the_notice_alone() {
+    let mut r = rec("secret");
+    r.reply_count = 2;
+    r.files_omitted = 1;
+    r.truncated = true;
+    r.omitted = true;
+    r.latest_reply = Some(sot_protocol::chat::Ts::parse("1700000001.000000").unwrap());
+    r.files = serde_json::from_value(serde_json::json!([{ "id": "F1", "name": "a.png", "mime": "image/png", "bytes": 10, "thumbnail": false }])).unwrap();
+    let shown: String = project(&r, NOW, utc(), false, true).iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(shown, "Ada 22:13\n(message deleted)");
+    let unreadable = lines(&r, NOW, utc());
+    assert!(unreadable.contains("(this message could not be shown)") && !unreadable.contains("(message deleted)"), "{unreadable:?}");
 }

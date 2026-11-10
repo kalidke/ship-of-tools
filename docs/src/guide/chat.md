@@ -6,7 +6,7 @@ a message that arrives takes the bottom line and lifts the rest. An empty channe
 
 To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
 line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
-and a message deleted at the reader's place lets the next one take it. `End` (`chat.latest`) returns to the newest and
+and a message deleted at the reader's place stays there as `(message deleted)`; the next one takes the place only when a new snapshot or the trim drops it. `End` (`chat.latest`) returns to the newest and
 follows it again, and scrolling down to the newest does the same. Two cases move the view: once the drawer holds its
 100 newest messages, each arrival drops the oldest, so a reader on the oldest message moves up one message per arrival
 (until older pages can be read); and deleting or shortening the newest message can bring the newest wholly into view,
@@ -42,6 +42,12 @@ row. Its title is `chat · <channel id>` (the id shows only while a channel is w
 A message is shown as its poster typed it. Slack's markup, such as a mention or a link, is shown as the markup text in
 its own color and is not rendered: a link is not clickable and a mention is not replaced by a name. Text that looks like
 a header inside a message stays body text.
+
+## Deleted messages
+
+A message deleted while the drawer watches stays in its place, with its author, time and origin, and reads
+`(message deleted)`. It counts toward the 100 messages the drawer keeps. A new snapshot (the window reads one after any
+loss of the chat feed) drops it, since the snapshot holds only what Slack still has.
 
 ## When Slack is unreachable
 

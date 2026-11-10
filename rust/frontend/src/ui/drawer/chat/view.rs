@@ -115,12 +115,12 @@ pub(in crate::ui) struct ChatView {
 
 impl ChatView {
     /// Places the records in `body` and shapes those that reach it; the rest of the cache is trimmed.
-    pub(super) fn layout(&mut self, fonts: &mut FontSystem, records: &[&ChatRecord], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
+    pub(super) fn layout(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
         let width = body.w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
         let mut height = |at: usize| {
-            let key = (project(records[at], now, offset, false), width.to_bits(), scale.to_bits());
+            let key = (project(records[at].0, now, offset, false, records[at].1), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
@@ -129,7 +129,7 @@ impl ChatView {
         let count = records.len();
         // The anchor is found by its time: a record gone passes it to the nearest newer one, and a snapshot that replaced
         // every record does the same against the new set.
-        let found = self.anchor.as_ref().map(|(ts, dy)| (records.partition_point(|r| ts_order(&r.ts) < ts_order(ts)), *dy));
+        let found = self.anchor.as_ref().map(|(ts, dy)| (records.partition_point(|r| ts_order(&r.0.ts) < ts_order(ts)), *dy));
         let pending = self.pending.0 * BODY_LINE_H * scale + self.pending.1 * body.h / 3.0;
         let found = match (found, pending > 0.0) {
             (None, true) if count > 0 => Some((count - 1, body.h - height(count - 1))),
@@ -137,7 +137,7 @@ impl ChatView {
         };
         let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + pending), &mut height));
         self.pending = (0.0, 0.0);
-        self.anchor = from.map(|(i, dy)| (records[i].ts.clone(), dy));
+        self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
         let spots = place(count, body.h, from, &mut height);
         self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top)).collect();
         self.body = Some(body);

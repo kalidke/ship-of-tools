@@ -175,6 +175,11 @@ impl ChatDrawer {
     }
 
     #[cfg(test)]
+    pub(super) fn placed_text(&self) -> Vec<String> {
+        self.view.placed_text()
+    }
+
+    #[cfg(test)]
     pub(super) fn following(&self) -> bool {
         self.view.anchor.is_none()
     }

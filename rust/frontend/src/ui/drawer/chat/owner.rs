@@ -65,7 +65,9 @@ struct Watch {
     admitted: Option<Instant>,
     /// Why the last snapshot read was refused: the reason of a gap that the daemon's watch did not give.
     read_refused: Option<ChatCode>,
-    records: HashMap<Ts, ChatRecord>,
+    /// Each held record with whether the daemon told this window it was deleted: then only its identity, author, time and
+    /// origin are kept. A put of the same time brings it back; a replacing snapshot, which holds only what exists, has none deleted.
+    records: HashMap<Ts, (ChatRecord, bool)>,
     /// The oldest timestamp the daemon still tracks: the snapshot's oldest when older history exists, raised by the trim.
     floor: Option<Ts>,
     /// The `chat.changed` events that came while the read was in flight: they are newer than its snapshot and win over it.
@@ -101,10 +103,17 @@ impl Watch {
         for r in &c.put {
             let below = !self.records.contains_key(&r.ts) && self.floor.as_ref().is_some_and(|f| ts_order(&r.ts) < ts_order(f));
             if !below {
-                self.records.insert(r.ts.clone(), r.clone());
+                self.records.insert(r.ts.clone(), (r.clone(), false));
             }
         }
-        c.deleted.iter().for_each(|ts| drop(self.records.remove(ts)));
+        // A delete leaves the record's place, author and time with no text; it counts against `KEPT` like any record.
+        for ts in &c.deleted {
+            if let Some(e) = self.records.get_mut(ts) {
+                let r = &e.0;
+                let gone = ChatRecord { workspace: r.workspace.clone(), channel: r.channel.clone(), ts: r.ts.clone(), thread_ts: r.thread_ts.clone(), author: r.author.clone(), origin: r.origin, text: String::new(), truncated: false, reply_count: 0, files: Vec::new(), latest_reply: None, limited: false, omitted: false, files_omitted: 0 };
+                *e = (gone, true);
+            }
+        }
         while self.records.len() > KEPT {
             self.oldest().iter().for_each(|k| drop(self.records.remove(k)));
             self.floor = self.oldest();
@@ -146,10 +155,10 @@ impl ChatOwner {
         self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
     }
 
-    /// The held records, oldest first.
-    pub(super) fn records(&self) -> Vec<&ChatRecord> {
-        let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values()).collect();
-        held.sort_by(|a, b| ts_order(&a.ts).cmp(&ts_order(&b.ts)));
+    /// The held records with whether each was deleted, oldest first.
+    pub(super) fn records(&self) -> Vec<(&ChatRecord, bool)> {
+        let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values().map(|(r, d)| (r, *d))).collect();
+        held.sort_by(|a, b| ts_order(&a.0.ts).cmp(&ts_order(&b.0.ts)));
         held
     }
 
@@ -346,7 +355,7 @@ impl ChatOwner {
                 // The snapshot replaces what was held: a record it no longer holds was deleted during the loss. Its
                 // `next` cursor is the older history, which the drawer pages.
                 // Only the channel's top-level messages: the daemon tracks no thread reply, so it would never send its edit or delete.
-                w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), r)).collect();
+                w.records = res.records.into_iter().filter(|r| r.channel == w.target.channel.as_str() && r.thread_ts == r.ts).map(|r| (r.ts.clone(), (r, false))).collect();
                 w.floor = if res.next.is_some() { w.oldest() } else { None };
                 std::mem::take(&mut w.overlay).iter().for_each(|c| w.apply(c));
                 w.fill = Fill::Complete;

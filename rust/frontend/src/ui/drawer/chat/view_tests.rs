@@ -45,6 +45,11 @@ fn complete_with(now: Instant, held: &[ChatRecord]) -> ChatOwner {
     o
 }
 
+/// Records as the view takes them: none deleted.
+fn plain<'a>(r: &[&'a ChatRecord]) -> Vec<(&'a ChatRecord, bool)> {
+    r.iter().map(|r| (*r, false)).collect()
+}
+
 fn tops(p: &[Placed]) -> Vec<(usize, f32)> {
     p.iter().map(|p| (p.index, p.top)).collect()
 }
@@ -79,7 +84,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     let body = ScreenRect { x: 10.0, y: 20.0, w: 400.0, h: 120.0 };
     let offset = chrono::FixedOffset::east_opt(0).unwrap();
     let mut view = ChatView::default();
-    view.layout(&mut fonts, &records, body, 1.0, 1_700_000_000, offset);
+    view.layout(&mut fonts, &plain(&records), body, 1.0, 1_700_000_000, offset);
     let shown = view.areas().len();
     assert!((1..=8).contains(&shown), "{shown}");
     assert_eq!(view.cached(), shown);
@@ -89,16 +94,16 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(areas.iter().any(|a| a.y + EXTRA_TOP_PAD_PX < body.y), "one record crosses the top");
     // Scrolling through the history keeps up to 64 others, the nearest to the position: the last positions' records stay and
     // the first positions' are gone.
-    let spans = |i: usize| project(records[i], 1_700_000_000, offset, false);
+    let spans = |i: usize| project(records[i], 1_700_000_000, offset, false, false);
     for from in (0..=240).step_by(8) {
         view.anchor = Some((records[from].ts.clone(), 0.0));
-        view.layout(&mut fonts, &records, body, 1.0, 1_700_000_000, offset);
+        view.layout(&mut fonts, &plain(&records), body, 1.0, 1_700_000_000, offset);
         assert!(view.cached() <= view.areas().len() + 64, "{from}: {}", view.cached());
     }
     assert!(view.cached() >= 60, "the spare buffers are kept: {}", view.cached());
     assert!(view.holds(&spans(240)) && view.holds(&spans(232)), "the nearest are kept");
     assert!(!view.holds(&spans(0)) && !view.holds(&spans(8)) && !view.holds(&spans(16)), "the farthest are gone");
-    view.layout(&mut fonts, &records, ScreenRect { w: 200.0, ..body }, 1.0, 1_700_000_000, offset);
+    view.layout(&mut fonts, &plain(&records), ScreenRect { w: 200.0, ..body }, 1.0, 1_700_000_000, offset);
     assert!(view.cached() <= view.areas().len() + 64);
     view.hide();
     assert!(view.areas().is_empty());
@@ -110,7 +115,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
             assert_ne!(attrs(*a), attrs(*b), "{a:?} {b:?}");
         }
     }
-    let spans = project(&rec(1), 1_700_000_000, offset, false);
+    let spans = project(&rec(1), 1_700_000_000, offset, false, false);
     assert_eq!(spans[0].kind, Kind::Header(false));
 }
 
@@ -284,7 +289,7 @@ fn history_req(outs: &[Out]) -> sot_protocol::ops::ChatHistoryReq {
 fn lay(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], h: f32) -> Vec<(String, f32)> {
     let records: Vec<&ChatRecord> = held.iter().collect();
     let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h };
-    view.layout(fonts, &records, body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    view.layout(fonts, &plain(&records), body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
     view.placed_text().into_iter().zip(view.placed_tops()).collect()
 }
 
@@ -312,7 +317,7 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
         assert!(got == n && near(top, dy), "wanted message {n} at {dy}, got message {got} at {top}");
     };
     // Following: the newest ends at the bottom, and a step down changes nothing.
-    view.layout(&mut fonts, &held.iter().collect::<Vec<_>>(), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h }, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    view.layout(&mut fonts, &plain(&held.iter().collect::<Vec<_>>()), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h }, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
     view.scroll(false, Step::Page);
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
@@ -375,7 +380,7 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     big.anchor = Some((held[10].ts.clone(), 0.0));
     big.scroll(false, Step::Line);
     let records: Vec<&ChatRecord> = held.iter().collect();
-    big.layout(&mut fonts, &records, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 1000.0 }, 2.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+    big.layout(&mut fonts, &plain(&records), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 1000.0 }, 2.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
     assert!(near(big.placed_tops()[0], -2.0 * BODY_LINE_H), "{:?}", big.placed_tops());
     // End: back to the newest from anywhere, and a pending move is dropped.
     view.scroll(true, Step::Page);
@@ -431,4 +436,47 @@ fn a_row_change_returns_the_reader_to_the_newest() {
     assert!(!d.following(), "scrolled up");
     d.tick(shown("S"), at + Duration::from_secs(1));
     assert!(d.following(), "another row is read from its newest");
+}
+
+/// B5i's rule for an anchor on a deleted message: it is a held record, so the anchor stays on it; a replacing snapshot drops
+/// it, and the anchor passes to the nearest newer held record.
+#[test]
+fn an_anchor_on_a_deleted_message_passes_on_when_a_snapshot_drops_it() {
+    let now = Instant::now();
+    let h = "h".to_string();
+    let held: Vec<ChatRecord> = (0..6).map(rec).collect();
+    let mut o = complete_with(now, &held);
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": [held[2].ts] });
+    o.on_evt(&h, ChatEvt::Changed(serde_json::from_value(gone).unwrap()), now);
+    let (mut fonts, mut view) = (FontSystem::new(), ChatView::default());
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
+    let offset = chrono::FixedOffset::east_opt(0).unwrap();
+    view.anchor = Some((held[2].ts.clone(), 0.0));
+    view.layout(&mut fonts, &o.records(), body, 1.0, 1_700_000_100, offset);
+    assert_eq!(view.anchor.as_ref().map(|a| a.0.clone()), Some(held[2].ts.clone()), "the tombstone is held, so the anchor stays");
+    assert!(view.placed_text().iter().any(|t| t.ends_with("(message deleted)")), "the view shows the owner's flag");
+    o.on_bus_lost(&h, sot_protocol::op::CHAT_CHANGED, now);
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let req = history_req(&o.on_evt(&h, ChatEvt::Watched { target: target(), reply }, now));
+    let page = serde_json::from_value(serde_json::json!({ "records": [held[0], held[1], held[3], held[4], held[5]], "next": null })).unwrap();
+    o.on_evt(&h, ChatEvt::History { req, reply: ChatReply::Done(page) }, now);
+    view.layout(&mut fonts, &o.records(), body, 1.0, 1_700_000_100, offset);
+    assert_eq!(view.anchor.as_ref().map(|a| a.0.clone()), Some(held[3].ts.clone()), "the snapshot dropped the tombstone: the next held record");
+}
+
+/// Through the drawer: a record deleted while watched shows as deleted in what the drawer lays out.
+#[test]
+fn a_deleted_record_shows_as_deleted_through_the_drawer() {
+    let (mut d, at) = answered_with(mapped);
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let outs = d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at);
+    let held: Vec<ChatRecord> = (0..3).map(rec).collect();
+    let page = serde_json::from_value(serde_json::json!({ "records": held, "next": null })).unwrap();
+    d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
+    let gone = serde_json::json!({ "workspace": "T1", "channel": "C1", "put": [], "deleted": [held[1].ts] });
+    d.on_evt(&"a".to_string(), ChatEvt::Changed(serde_json::from_value(gone).unwrap()), at);
+    let mut fonts = FontSystem::new();
+    d.layout(&mut fonts, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }, 1.0);
+    let text = d.placed_text();
+    assert_eq!(text.iter().filter(|t| t.ends_with("(message deleted)")).count(), 1, "{text:?}");
 }
