@@ -92,23 +92,20 @@ fn a_post_is_sent_only_after_the_last_ones_reply() {
 }
 
 /// Rule 2: a status that lists the channel is answered by a watch, never by a read of its own; losses within the pace send
-/// nothing, a watch that stays pending is sent again on the pace and counts, and attempts that never complete end in a
-/// shown gap instead of a loop.
+/// nothing, and a watch that stays pending is sent again on the pace (the gap is `a_gap_comes_only_after_...`).
 #[test]
-fn a_status_is_answered_by_a_paced_and_capped_watch() {
+fn a_status_is_answered_by_a_paced_watch() {
     let t0 = Instant::now();
     let mut o = complete(t0);
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
     assert!(o.on_evt(&host(), status(true, &["C1"]), now).is_empty(), "inside the pace");
-    for _ in 1..MAX_TRIES {
-        assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty(), "a pending watch starts no read");
-        now += PACE;
-        assert!(is_watch(&o.tick(now)));
-    }
+    assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty(), "a pending watch starts no read");
+    now += FIRST_PACE;
+    assert!(is_watch(&o.tick(now)));
     assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty());
-    assert!(o.tick(now + PACE).is_empty());
-    assert_eq!(fill(&o), Fill::Gap, "recovery cannot complete: the gap is shown");
+    assert!(o.tick(now + PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(now + PACE)));
 }
 
 /// Rule 3: a status entry for another channel, a bare gap flag, or any status once nothing is watched starts nothing.
@@ -237,7 +234,7 @@ fn a_refused_watch_is_a_gap_and_a_duplicate_reply_starts_no_read() {
     assert_eq!(fill(&o), Fill::Complete, "a late reply to a watch the state no longer waits on changes nothing");
     o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
     o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, t0 + PACE);
-    assert_eq!(fill(&o), Fill::Gap);
+    assert_eq!(fill(&o), Fill::Gap(Some(ChatCode::Busy)));
     assert!(o.tick(t0 + PACE * 3).is_empty());
 }
 
@@ -261,16 +258,17 @@ fn stopped() -> ChatEvt {
     ChatEvt::Status(serde_json::from_value(serde_json::json!({ "service": "stopped", "gap": false, "resync": [] })).unwrap())
 }
 
-/// The last watch attempt gets its full pace to be answered: a `complete` reply that crosses the link after the cap's tries
-/// still ends complete, and the gap comes one pace after the last send.
+/// The last watch attempt gets its full pace to be answered: a `complete` reply that crosses the link after the window's
+/// last watch still ends complete, and the gap comes one pace after that send.
 #[test]
 fn a_slow_last_watch_still_ends_complete() {
     let t0 = Instant::now();
     let mut o = complete(t0);
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), now)));
-    for _ in 1..MAX_TRIES {
-        now += PACE;
+    o.on_evt(&host(), watched(ChatWatchState::Pending), now);
+    for s in [1, 6, 11, 16, 21] {
+        now = t0 + PACE + Duration::from_secs(s);
         assert!(is_watch(&o.tick(now)));
     }
     assert!(o.tick(now + Duration::from_millis(16)).is_empty());
@@ -304,14 +302,14 @@ fn the_link_returning_starts_the_watch_over() {
     let mut o = complete(t0);
     o.on_evt(&host(), status(false, &["C1"]), t0 + PACE);
     o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, t0 + PACE);
-    assert_eq!(fill(&o), Fill::Gap);
+    assert_eq!(fill(&o), Fill::Gap(Some(ChatCode::Busy)));
     assert!(o.on_evt(&host(), status(false, &["C1"]), t0 + PACE * 2).is_empty(), "a gap ends with the link, not a status");
-    assert_eq!(fill(&o), Fill::Gap);
+    assert_eq!(fill(&o), Fill::Gap(Some(ChatCode::Busy)));
     assert!(o.on_connection(&host(), false, t0 + PACE * 2).is_empty());
     assert!(o.tick(t0 + PACE * 9).is_empty(), "no send while the link is down");
     assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE * 9)));
     assert_eq!(fill(&o), Fill::Needed);
-    assert_eq!(o.watch.as_ref().unwrap().tries, 1, "the attempts started over");
+    assert_eq!(o.watch.as_ref().unwrap().began, t0 + PACE * 9, "the recovery started over");
     history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + PACE * 9));
 
     let mut o = complete(t0);
@@ -434,16 +432,19 @@ fn text_of(o: &ChatOwner, t: &str) -> String {
 fn a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it() {
     let t0 = Instant::now();
     let pending = || watched(ChatWatchState::Pending);
-    // Two failed snapshots, each told by a status; the third attempt succeeds after its reply.
+    // A snapshot slower than the window, told by a status; the gap, then the minute's watch succeeds.
     let mut o = complete(t0);
     let mut now = t0 + PACE;
-    for _ in 0..MAX_TRIES {
-        assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
-        assert!(o.on_evt(&host(), pending(), now).is_empty());
-        now += PACE;
+    assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
+    o.on_evt(&host(), pending(), now);
+    let begun = now;
+    for s in [1, 6, 11, 16, 21] {
+        now = begun + Duration::from_secs(s);
+        assert!(is_watch(&o.tick(now)));
+        o.on_evt(&host(), pending(), now);
     }
-    assert!(o.tick(now).is_empty());
-    assert_eq!(fill(&o), Fill::Gap);
+    assert!(o.tick(now + PACE).is_empty());
+    assert_eq!(fill(&o), Fill::Gap(None));
     assert!(o.tick(now + GAP_PACE - PACE * 2).is_empty(), "inside the minute");
     let late = now + GAP_PACE;
     assert!(is_watch(&o.tick(late)));
@@ -456,19 +457,21 @@ fn a_gap_is_asked_again_every_minute_and_a_complete_reply_ends_it() {
     let mut o = complete(t0);
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
-    for _ in 1..MAX_TRIES {
-        now += PACE;
+    o.on_evt(&host(), pending(), now);
+    let begun = now;
+    for s in [1, 6, 11, 16, 21] {
+        now = begun + Duration::from_secs(s);
         assert!(is_watch(&o.tick(now)));
     }
     o.tick(now + PACE);
-    assert_eq!(fill(&o), Fill::Gap);
+    assert_eq!(fill(&o), Fill::Gap(None));
     let mut at = now;
     for _ in 0..5 {
         at += GAP_PACE;
         assert!(is_watch(&o.tick(at)), "no cap in a gap");
         assert!(o.tick(at + PACE).is_empty());
         o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Busy) }, at);
-        assert_eq!(fill(&o), Fill::Gap, "a refusal stays a gap");
+        assert_eq!(fill(&o), Fill::Gap(Some(ChatCode::Busy)), "a refusal stays a gap");
     }
     at += GAP_PACE;
     assert!(is_watch(&o.tick(at)));
@@ -638,6 +641,163 @@ fn a_gap_with_no_last_try_asks_at_once() {
     let t0 = Instant::now();
     let mut o = complete(t0);
     let w = o.watch.as_mut().unwrap();
-    (w.fill, w.last_try) = (Fill::Gap, None);
+    (w.fill, w.last_try) = (Fill::Gap(None), None);
     assert!(is_watch(&o.tick(t0)));
+}
+
+/// What the drawer would say of the state: `None` when it claims nothing, else the gap and its reason.
+fn gap_of(o: &ChatOwner) -> Option<Option<ChatCode>> {
+    match fill(o) {
+        Fill::Gap(code) => Some(code),
+        _ => None,
+    }
+}
+
+/// A watched channel on a clock of whole seconds: the daemon's reply to each watch sent at second `s` is `answer(s)`, a
+/// history read is answered at once, and `status_at` injects a status that lists the channel (which must send nothing
+/// inside the pace). Returns the seconds a watch went out, and the first second the state was a gap.
+fn run_seconds(until: u64, status_at: Option<u64>, answer: impl Fn(u64) -> ChatReply<ChatWatchRes>) -> (ChatOwner, Vec<u64>, Option<u64>) {
+    run_reads(until, status_at, answer, |_| page(&[], None))
+}
+
+/// `run_seconds` with the reply to each history read sent at second `s` given too.
+fn run_reads(
+    until: u64,
+    status_at: Option<u64>,
+    answer: impl Fn(u64) -> ChatReply<ChatWatchRes>,
+    read: impl Fn(u64) -> ChatReply<ChatHistoryRes>,
+) -> (ChatOwner, Vec<u64>, Option<u64>) {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    let (mut sent, mut gap) = (Vec::new(), None);
+    let mut out = o.watch(host(), target("C1"), t0);
+    for s in 0..=until {
+        let now = t0 + Duration::from_secs(s);
+        if status_at == Some(s) {
+            assert!(o.on_evt(&host(), status(true, &["C1"]), now).is_empty(), "a status inside the pace sends nothing");
+        }
+        if s > 0 {
+            out = o.tick(now);
+        }
+        while !out.is_empty() {
+            let mut next = Vec::new();
+            for (_, req) in out.drain(..) {
+                match req {
+                    OutgoingReq::ChatWatch { .. } => {
+                        sent.push(s);
+                        next.extend(o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: answer(s) }, now));
+                    }
+                    OutgoingReq::ChatHistory { req } => next.extend(o.on_evt(&host(), ChatEvt::History { req, reply: read(s) }, now)),
+                    _ => {}
+                }
+            }
+            out = next;
+        }
+        if gap.is_none() && gap_of(&o).is_some() {
+            gap = Some(s);
+        }
+    }
+    (o, sent, gap)
+}
+
+/// The gap comes only after the daemon has had time to start its service and for its slowest snapshot (20 s from the first
+/// watch it admits), and always says why; a target refused for good is not asked again.
+#[test]
+fn a_gap_comes_only_after_the_daemons_slowest_snapshot_and_says_why() {
+    let pending = || ChatReply::Done(ChatWatchRes { state: ChatWatchState::Pending });
+    let complete = || ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let refused = |c| ChatReply::Refused(c);
+
+    // Pending to 16 s, then complete at 21 s.
+    let (o, sent, gap) = run_seconds(40, None, |s| if s <= 16 { pending() } else { complete() });
+    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 6, 11, 16, 21]));
+
+    // Always pending: the gap comes at 26 s and not before, and a status at 3 s changes nothing.
+    for status_at in [None, Some(3)] {
+        let (o, sent, gap) = run_seconds(30, status_at, |_| pending());
+        assert_eq!((gap, gap_of(&o), sent), (Some(26), Some(None), vec![0, 1, 6, 11, 16, 21]));
+    }
+
+    // A starting service refuses unavailable to 11 s; its snapshot is then slow, and completes at 36 s.
+    let (o, sent, gap) = run_seconds(50, None, |s| match s {
+        0..=11 => refused(ChatCode::Unavailable),
+        12..=31 => pending(),
+        _ => complete(),
+    });
+    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 6, 11, 16, 21, 26, 31, 36]));
+
+    // Refusals that can clear: shown at once with their reason, asked again each minute.
+    let (o, sent, gap) = run_seconds(200, None, |_| refused(ChatCode::TooManyWatches));
+    assert_eq!((gap, gap_of(&o), sent), (Some(0), Some(Some(ChatCode::TooManyWatches)), vec![0, 60, 120, 180]));
+    let (_, sent, gap) = run_seconds(60, None, |_| refused(ChatCode::Unavailable));
+    assert_eq!((gap, sent), (Some(21), vec![0, 1, 6, 11, 16, 21]));
+    let (o, _, _) = run_seconds(60, None, |_| refused(ChatCode::Unavailable));
+    assert_eq!(gap_of(&o), Some(Some(ChatCode::Unavailable)));
+
+    // Refused for good: asked once, and not again for an hour; the others are asked each minute.
+    for (code, for_good) in [(ChatCode::StaleRow, true), (ChatCode::StaleMapping, true), (ChatCode::Unmapped, true), (ChatCode::TooManyWatches, false), (ChatCode::Unavailable, false)] {
+        let (o, sent, _) = run_seconds(3600, None, |_| refused(code));
+        assert_eq!(gap_of(&o), Some(Some(code)));
+        assert_eq!(sent.len() == 1, for_good, "{code:?} asked at {sent:?}");
+        assert!(for_good || sent.last() > Some(&3500), "{code:?} is asked each minute");
+    }
+
+    // The watch complete but every read refused: a gap with the read's reason, asked again each minute.
+    let (o, sent, gap) = run_reads(300, None, |_| complete(), |_| ChatReply::Refused(ChatCode::Busy));
+    assert_eq!((gap, gap_of(&o)), (Some(26), Some(Some(ChatCode::Busy))), "watched at {sent:?}");
+
+    // A gap's reason does not outlive a pending reply: the service that was not running now is.
+    let (o, _, _) = run_seconds(100, None, |s| if s < 30 { refused(ChatCode::Unavailable) } else { pending() });
+    assert_eq!(gap_of(&o), Some(None));
+
+    // A pending answer drops the read's refusal before the gap as well as inside it.
+    let (o, _, _) = run_reads(40, None, |s| if s == 0 { complete() } else { pending() }, |_| ChatReply::Refused(ChatCode::Busy));
+    assert_eq!(gap_of(&o), Some(None));
+
+    // A refusal from before a complete snapshot is not the reason of a later gap (here a watch never answered).
+    let (mut o, _, _) = run_reads(10, None, |_| complete(), |s| if s == 0 { ChatReply::Refused(ChatCode::Busy) } else { page(&[], None) });
+    assert_eq!(fill(&o), Fill::Complete);
+    let t = Instant::now() + Duration::from_secs(100);
+    assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), t)));
+    for s in [1, 6, 11, 16, 21, 26] {
+        o.tick(t + Duration::from_secs(s));
+    }
+    assert_eq!(gap_of(&o), Some(None));
+}
+
+/// A watch the daemon never answers still ends in a gap: the window runs from the recovery's start.
+#[test]
+fn a_watch_never_answered_still_ends_in_a_gap() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    for s in [1, 6, 11, 16, 21] {
+        assert!(is_watch(&o.tick(t0 + Duration::from_secs(s))));
+    }
+    assert!(o.tick(t0 + Duration::from_secs(25)).is_empty());
+    assert_eq!(gap_of(&o), None);
+    assert!(o.tick(t0 + Duration::from_secs(26)).is_empty());
+    assert_eq!(gap_of(&o), Some(None));
+}
+
+/// The window is dated from the last watch sent before the admitting answer, which can be later than the admitted watch when
+/// the answer is slow; the last watch of the window gets one pace, and the gap comes then, not a pace later.
+#[test]
+fn a_late_admission_still_ends_the_window_at_twenty_seconds() {
+    let t0 = Instant::now();
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    assert!(is_watch(&o.tick(at(1))));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), at(1) + Duration::from_millis(500));
+    for s in [6, 11, 16, 21] {
+        assert!(is_watch(&o.tick(at(s))));
+    }
+    assert!(o.tick(at(25)).is_empty());
+    assert_eq!(gap_of(&o), None);
+    assert!(o.tick(at(26)).is_empty());
+    assert_eq!(gap_of(&o), Some(None));
 }

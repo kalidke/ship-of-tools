@@ -555,11 +555,6 @@ owned by `docs/CLAUDE.md`.
   never seen. A math, figure or `markdown.tokenize` reply also reflows a markdown preview (`reflow_markdown_preview`,
   `rust/frontend/src/ui/app/frame.rs`) and clears its selection a frame after the share was sent, with no status line,
   which since the markdown selection can withdraw a rendered selection on a document's first view.
-- **CHAT-GAP-ASKS-DEAD-TARGET** [note] In its gap the window's chat owner (`rust/frontend/src/ui/drawer/chat/owner.rs`)
-  watches again once a minute whatever the last refusal was, so a target the daemon refuses for good (`stale_row`,
-  `stale_mapping`, `unmapped`, `too_many_watches`, or `unavailable` after the daemon's chat has ended) costs one admission
-  per window per minute for as long as the window watches it, and the refusal code is dropped, so the drawer cannot say
-  why it shows a gap. Keep the last refusal in the watch when the drawer needs it. Found reading code; never seen.
 - **INK-RASTER-SERVED-SIZE** [note] The window keeps a drawing's raster at the wire's `raster_dims` of the figure's
   served size (`rust/frontend/src/ui/preview/image/ink.rs`); a figure over 20 MB and 6000 pixels is served downsampled,
   and the preview reply carries the factor only into the physical scale (`rust/backend/src/files/preview/mod.rs`), so
@@ -793,6 +788,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-GAP-ASKS-DEAD-TARGET** (fe-ui) closed by the landing that fixes it, 2026-11-09: the chat owner keeps the daemon's refusal in its gap (`Gap(Some(code))`), asks `stale_row`, `stale_mapping` and `unmapped` no more until a row or link change, and shows a gap, for refused snapshot reads too with the read's code, only after the daemon's slowest snapshot; `too_many_watches` and `unavailable` keep the once-a-minute ask on purpose, since each can clear.
 - **MONITOR-TENANT-REACHES-REPL** (fe-ui) closed by the landing that fixes it, 2026-11-09: `help::Pane::of_drawer` is the one exhaustive map from tenant to pane, and in a tenant other than the REPL (Terminal, Monitor, Help, Chat) typing, paste, the line-scroll chords and the wheel no longer reach the REPL; `help::DrawerInput::of` is the one decision their handlers match.
 - **GATE-LEFTOVER-ESCAPED-HOLDER** (containment) closed by the landing that fixes it, 2026-11-09: `output_does_not_wait_for_an_escaped_pipe_holder` (`rust/containment/src/signal_output_bound_tests.rs`) passed and left its escaped `sleep 30` running, so a whole local gate whose `sot_containment` job started within 30 s of the end failed its census (`leftover <pid> sleep 30`); the escapee now holds the pipe only while the test's `keep` file exists, and the test removes the file and sees the escapee gone.
 - **SELECT-MARKDOWN** (fe-ui) closed by the landing that fixes it, 2026-11-09, before its window test: a selection in a rendered markdown preview is shared as the whole file lines its text was rendered from, with the file's text there; a rendered buffer with no map shares nothing.
