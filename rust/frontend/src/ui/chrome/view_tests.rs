@@ -129,6 +129,7 @@ fn paint_chrome_repl(
         pinned_preview_node_id: &pinned,
         drawer,
         chat_empty,
+        chat_title: " chat · C1 reading… ",
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,
@@ -291,4 +292,14 @@ fn the_chat_drawer_draws_no_messages_only_when_told_the_channel_is_empty() {
     assert!(drawn(DrawerContent::Chat, true));
     assert!(!drawn(DrawerContent::Chat, false));
     assert!(!drawn(DrawerContent::Repl, true), "only the chat drawer says it");
+}
+
+#[test]
+fn the_chat_drawer_title_is_the_one_it_is_given_and_no_other_drawer_shows_it() {
+    let titled = |drawer| {
+        let (rows, ..) = paint_chrome_repl((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false);
+        rows.iter().any(|r| r.contains("chat · C1 reading…"))
+    };
+    assert!(titled(DrawerContent::Chat));
+    assert!(!titled(DrawerContent::Repl));
 }

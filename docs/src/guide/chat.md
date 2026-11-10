@@ -11,7 +11,22 @@ bot, and the time (`HH:MM` for today, with the date for an earlier day). The tex
 
 The hub's `chat.toml` maps a folder to a channel; a row whose folder is mapped shows that channel. How the mapping is
 written is in [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml). The drawer follows the selected
-row; for a row whose folder is unmapped, or while the hub has no chat, it shows nothing.
+row. Its title is `chat · <channel id>` followed by what the drawer is waiting for or why it shows nothing:
+
+| the title says | meaning | asked again |
+|---|---|---|
+| `waiting for this row's listing` | the window has not listed the selected row yet | every frame |
+| `not connected` | the row's computer is not connected | when it connects |
+| `reading…` | the hub is being asked, or the channel is being read | |
+| (nothing after the channel) | the channel was read whole | |
+| `the row's folder maps to no channel` | the folder is not in `chat.toml` | at a link change or another row |
+| `the hub has no usable chat configuration` | `chat.toml` is missing or invalid; the hub's daemon log says why | at a link change |
+| `the chat runs on the hub, not on <host>` | the row's computer is not the hub | at a link change |
+| `this row is gone or was replaced` | the row's id changed | when the listing gives the row a new id |
+| `the hub could not answer: <code>` | the hub refused for another reason | after a minute |
+| `this daemon has no chat: update it` | the row's daemon is too old | at a link change |
+| `the hub's chat service is not running` | the hub's log says why | each minute |
+| `not up to date: <reason>` | the channel could not be read whole | each minute |
 
 ## Markup shows as markup
 
@@ -21,9 +36,9 @@ a header inside a message stays body text.
 
 ## When Slack is unreachable
 
-The drawer does not show the state of the Slack connection yet, nor why a channel is missing; that is a later change. It
-keeps the records it holds until a new snapshot replaces them. `no messages` appears only for a channel that was read
-whole and holds none.
+The title does not show the state of the Slack connection. A socket outage shows only when it costs a snapshot, as
+`not up to date`. The drawer keeps the records it holds until a new snapshot replaces them. `no messages` appears only
+for a channel that was read whole and holds none.
 
 ## Not yet
 
