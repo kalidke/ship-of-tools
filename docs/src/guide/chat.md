@@ -81,8 +81,13 @@ closes.
 ## Posting
 
 `Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. The post carries the name in
-`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)); with no name set, nothing is sent and the status line
-says so. While the post waits the draft is frozen: a key or `Enter` is refused with `posting…` on the status line. The draft is cleared only by a
+`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)); with no name set, nothing is sent: the foot of the drawer becomes the prompt `Name for your chat posts:` and the keys type the name
+instead of the draft. `Enter` saves it to `settings.toml` (the file the window loaded, or the per-user one, made if missing) and uses it at
+once, for every row and project in the window, and the draft stays: the next `Enter` posts it. `Escape` cancels and keeps the draft. A name
+is refused, with the reason on the status line and the prompt open, when it is empty, holds a quote or a backslash, or is longer than
+160 bytes (the prompt takes no more at 160 bytes), and a paste that holds a newline or another control character is refused whole, never
+joined. The prompt ends, with the draft kept, when you change the row, hide the drawer, the link to the hub changes, or the row has no
+mapped channel; scrolling, the mark and a thread's opening still work while it is open. A settings file the window will not edit safely (one that is not valid TOML, or spells `[chat]` or `name` in some other way) is left as it is, and the status line says how to add the name by hand. The name is asked once per settings file; to change it later, edit `[chat] name` and restart the window. While the post waits the draft is frozen: a key or `Enter` is refused with `posting…` on the status line. The draft is cleared only by a
 reply that proves the post was made. Any other outcome keeps it, and the status line says why: `not posted` with the
 reason (a `bad request` names `[chat] name`), a wait when Slack is rate limiting (`Enter` is refused until it passes), or
 `may have been posted` when the answer was lost, in which case look at the channel before sending it again: a post is never

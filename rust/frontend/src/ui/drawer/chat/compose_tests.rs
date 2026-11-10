@@ -4,6 +4,9 @@ use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTa
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
+use super::{apply_name, name_step, NameStep};
+use crate::ui::persist::settings::Settings;
+use sot_protocol::chat::MAX_NAME;
 use super::drawer::ChatDrawer;
 use super::draft_edit;
 use super::row_channel_tests::{answer, mapped};
@@ -200,7 +203,6 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     assert_eq!(d.send(Some(&r), Some("Ada"), at).unwrap_err(), "nothing to post", "blank is nothing");
     d.edit(Some(&r), Edit::Backspace).unwrap();
     d.edit(Some(&r), Edit::Text("a < b")).unwrap();
-    assert!(d.send(Some(&r), None, at).unwrap_err().contains("[chat] name"));
     assert_eq!(d.send(None, Some("Ada"), at).unwrap_err(), "no row to write for");
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
@@ -291,4 +293,171 @@ fn a_posted_reply_clears_the_draft_of_the_row_it_proves_and_no_other() {
     assert_eq!(d.draft(), Some(("from b", "C1")), "the shown row's draft stays");
     show(&mut d, "R", at + Duration::from_secs(1));
     assert_eq!(d.draft(), None, "the row the reply proves is cleared");
+}
+
+#[test]
+fn enter_with_no_name_asks_for_it_and_sends_nothing_until_the_next_enter() {
+    let r = row("R");
+    let (mut d, at) = watching();
+    // No draft: nothing to post, and no prompt.
+    assert_eq!(d.send(Some(&r), None, at).unwrap_err(), "nothing to post");
+    assert_eq!(d.asking(), None);
+
+    d.edit(Some(&r), Edit::Text("hello")).unwrap();
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty(), "no post is sent");
+    assert_eq!(d.asking(), Some(""));
+    let foot = |d: &ChatDrawer, w| compose_rows(&d.compose_text(true).unwrap(), w, 10);
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: █"]);
+
+    // The keys edit the name, not the draft.
+    for e in [Edit::Text("Ad"), Edit::Text("x"), Edit::Backspace, Edit::Text("a"), Edit::Space, Edit::Newline] {
+        d.edit_name(e).unwrap();
+    }
+    assert_eq!(d.asking(), Some("Ada "));
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: Ada █"]);
+    assert_eq!(foot(&d, 29), ["Name for your chat posts: a █"], "a narrow foot keeps the end of the name");
+
+    // Escape cancels and keeps the draft; the foot is the draft's again.
+    d.cancel_name();
+    assert_eq!(d.asking(), None);
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["> hello█", "to C1"]);
+
+    // Saved (the State's part), the next Enter posts under the name.
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty());
+    d.cancel_name();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
+    assert_eq!(d.asking(), None);
+}
+
+/// The prompt open over row R's draft.
+fn asking() -> (ChatDrawer, Instant) {
+    let (mut d, at) = watching();
+    d.edit(Some(&row("R")), Edit::Text("hello")).unwrap();
+    d.send(Some(&row("R")), None, at).unwrap();
+    assert_eq!(d.asking(), Some(""));
+    (d, at)
+}
+
+#[test]
+fn the_prompt_ends_where_the_view_it_asked_in_ends_and_keeps_the_draft() {
+    // The same row and mapping: it stays, and Enter again does not empty a name half typed.
+    let (mut d, at) = asking();
+    d.edit_name(Edit::Text("Ad")).unwrap();
+    d.tick(Some(row("R")), at + Duration::from_secs(1));
+    d.send(Some(&row("R")), None, at).unwrap();
+    assert_eq!(d.asking(), Some("Ad"));
+
+    // Another row is shown.
+    d.tick(Some(row("S")), at + Duration::from_secs(2));
+    assert_eq!(d.asking(), None, "a row change");
+    assert_eq!(d.draft(), None, "row S has no draft");
+    // The drawer is hidden (a frame with no wanted row, and the hide call).
+    let (mut d, _) = asking();
+    d.hide();
+    assert_eq!(d.asking(), None, "a hide");
+    let (mut d, at2) = asking();
+    d.tick(None, at2 + Duration::from_secs(1));
+    assert_eq!(d.asking(), None, "no wanted row");
+    // The link changes.
+    let (mut d, at3) = asking();
+    d.on_connection(&"a".to_string(), false, at3);
+    assert_eq!(d.asking(), None, "a link change");
+    // The row's mapping is gone: unmapped.
+    let (mut d, at4) = asking();
+    d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "unmapped" })), at4);
+    d.tick(Some(row("R")), at4 + Duration::from_secs(1));
+    assert_eq!(d.asking(), None, "an unmapped row");
+    // The draft was kept through each.
+    let (mut d, _) = asking();
+    d.hide();
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+}
+
+#[test]
+fn a_pasted_control_character_or_a_name_past_the_bound_is_refused_whole() {
+    let (mut d, _) = asking();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert!(d.edit_name(Edit::Text("a\nb")).unwrap_err().contains("control"));
+    assert!(d.edit_name(Edit::Text("a\tb")).is_err());
+    assert_eq!(d.asking(), Some("Ada"), "nothing joined");
+    d.edit_name(Edit::Text(&"n".repeat(MAX_NAME - 3))).unwrap();
+    assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
+    assert_eq!(d.edit_name(Edit::Space), Err("name is full: nothing added"));
+    assert!(d.edit_name(Edit::Text("é")).is_err());
+    d.edit_name(Edit::Backspace).unwrap();
+    assert!(d.edit_name(Edit::Text("é")).is_err(), "the bound counts bytes");
+    d.edit_name(Edit::Text("x")).unwrap();
+    assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
+}
+
+#[test]
+fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height() {
+    let (mut d, _) = asking();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert_eq!(compose_rows(&d.compose_text(false).unwrap(), 40, 10), ["Name for your chat posts: Ada"], "no block unfocused");
+    assert_eq!(compose_rows(&d.compose_text(true).unwrap(), 40, 10), ["Name for your chat posts: Ada█"]);
+    assert!(compose_rows(&d.compose_text(true).unwrap(), 40, 0).is_empty(), "never more rows than the height");
+}
+
+fn step(action: Option<Action>, key: Key, repeat: bool, mods: (bool, bool, bool)) -> Option<NameStep<'static>> {
+    // The keys here are characters or named keys: `Edit::Text` borrows its text from the key, so the table leaks it.
+    let key: &'static Key = Box::leak(Box::new(key));
+    name_step(action, key, repeat, mods)
+}
+
+#[test]
+fn name_step_says_what_each_key_is_to_the_prompt() {
+    let none = (false, false, false);
+    assert_eq!(step(Some(Action::ChatSend), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Save));
+    assert_eq!(step(Some(Action::ReturnNav), Key::Named(NamedKey::Escape), false, none), Some(NameStep::Cancel));
+    assert_eq!(step(Some(Action::Paste), ch("v"), false, (true, false, false)), Some(NameStep::Paste));
+    assert_eq!(step(Some(Action::ChatNewline), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Edit(Edit::Newline)));
+    assert_eq!(step(None, ch("a"), false, none), Some(NameStep::Edit(Edit::Text("a"))));
+    assert_eq!(step(None, Key::Named(NamedKey::Space), false, none), Some(NameStep::Edit(Edit::Space)));
+    assert_eq!(step(None, Key::Named(NamedKey::Backspace), false, none), Some(NameStep::Edit(Edit::Backspace)));
+    // A held Enter, Escape or paste is taken and does nothing.
+    for a in [Action::ChatSend, Action::ReturnNav, Action::Paste] {
+        assert_eq!(step(Some(a), ch("x"), true, none), Some(NameStep::Held));
+    }
+    // A reading key is not the prompt's, so it still scrolls, marks and opens a thread.
+    for a in [Action::ScrollPageUp, Action::ChatLatest, Action::ChatMarkOlder, Action::ChatThreadOpen] {
+        assert_eq!(step(Some(a), Key::Named(NamedKey::ArrowUp), false, none), None);
+    }
+}
+
+/// A settings file under a folder that goes with the test; the setting is as loaded from it.
+fn settings_in(dir: &std::path::Path) -> (Settings, std::path::PathBuf) {
+    let f = dir.join("settings.toml");
+    std::fs::write(&f, "[trust]\nroot_prefix = \"/w\"\n").unwrap();
+    (Settings { source: Some(f.clone()), ..Settings::default() }, f)
+}
+
+#[test]
+fn apply_name_saves_closes_the_prompt_and_the_next_enter_posts_under_it() {
+    let dir = std::env::temp_dir().join(format!("sot-name-apply-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = sot_platform::host::env::Env::empty();
+    let (mut d, at) = asking();
+    let (mut settings, file) = settings_in(&dir);
+    // A refusal says why, leaves the prompt open, the file and the setting as they were.
+    assert!(apply_name(&mut d, &mut settings, &env).contains("empty"));
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (Some(""), None));
+    // A file the write cannot edit is refused too.
+    std::fs::write(&file, "[trust\n").unwrap();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert!(apply_name(&mut d, &mut settings, &env).contains("will not edit"));
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (Some("Ada"), None));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "[trust\n");
+    // A good file: saved, the prompt closed, the setting set, the draft kept, and the next Enter posts under the name.
+    std::fs::write(&file, "[trust]\nroot_prefix = \"/w\"\n").unwrap();
+    let words = apply_name(&mut d, &mut settings, &env);
+    assert!(words.starts_with("chat name saved to"), "{words}");
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (None, Some("Ada")));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "[trust]\nroot_prefix = \"/w\"\n\n[chat]\nname = \"Ada\"\n");
+    let req = posted(d.send(Some(&row("R")), settings.chat_name.as_deref(), at).unwrap());
+    assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

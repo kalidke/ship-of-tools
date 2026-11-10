@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use sot_protocol::chat::Ts;
+use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
 
 use crate::net::dial::HostKey;
@@ -84,6 +84,8 @@ pub(in crate::ui) struct ChatDrawer {
     foot: u16,
     /// The words of the last post's outcome, until the status line takes them.
     notice: Option<String>,
+    /// The name being typed at the drawer's foot, while Enter found none set: the keys edit it, not the draft.
+    asking: Option<String>,
 }
 
 /// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
@@ -108,6 +110,11 @@ impl ChatDrawer {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> (Vec<Out>, bool) {
         let step = self.rows.tick(wanted, now);
         let mut outs = Vec::new();
+        // The prompt belongs to the draft being posted and ends where its thread ends: a changed row, a hidden drawer and an
+        // unmapped row all leave the row unmapped for the frame, so a message typed later is never typed into the name.
+        if self.rows.stand() != Stand::Mapped {
+            self.cancel_name();
+        }
         if step.changed {
             // Another row's records are not the reader's place, and its thread is no one's.
             self.close_thread();
@@ -122,6 +129,7 @@ impl ChatDrawer {
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
+        self.cancel_name();
         self.flight.clear(host);
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
@@ -184,21 +192,56 @@ impl ChatDrawer {
     }
 
     /// Enter: posts `row`'s draft once, to the channel and thread it was begun in, under `name` (`[chat] name`, `None` when unset or
-    /// blank). It needs a draft with something in it and the name set, no post waiting and no `limited` wait running; the
-    /// draft stays until a reply proves the post.
+    /// blank). It needs a draft with something in it, no post waiting and no `limited` wait running; with no name it asks for
+    /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to write for".into()) };
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());
         }
         let Some(draft) = self.compose.draft(row).filter(|d| !d.text.trim().is_empty()) else { return Err("nothing to post".into()) };
-        let Some(name) = name else { return Err("not posted: set [chat] name in settings.toml".into()) };
+        // No name set: the foot asks for one, the draft stays, and nothing is sent; the next Enter posts it.
+        let Some(name) = name else {
+            self.asking.get_or_insert_with(String::new);
+            return Ok(Vec::new());
+        };
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }
         let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+    }
+
+    /// The name typed so far, while the foot asks for one.
+    pub(in crate::ui) fn asking(&self) -> Option<&str> {
+        self.asking.as_deref()
+    }
+
+    /// A key edits the name being asked for; nothing when the foot is not asking. A paste with a newline or another control
+    /// character, or one past `MAX_NAME` bytes of name, is refused whole with words (never joined or cut), the name as it was.
+    pub(in crate::ui) fn edit_name(&mut self, edit: Edit) -> Result<(), &'static str> {
+        let Some(name) = self.asking.as_mut() else { return Ok(()) };
+        let add = match edit {
+            Edit::Text(s) if s.chars().any(char::is_control) => return Err("not pasted: a name holds no newline or other control character"),
+            Edit::Text(s) => s,
+            Edit::Space => " ",
+            Edit::Backspace => {
+                name.pop();
+                return Ok(());
+            }
+            Edit::Newline => return Ok(()),
+        };
+        if name.len() + add.len() > MAX_NAME {
+            return Err("name is full: nothing added");
+        }
+        name.push_str(add);
+        Ok(())
+    }
+
+    /// The foot stops asking (Escape, or the row, the link or the view it asked in is gone); the draft was never touched.
+    pub(in crate::ui) fn cancel_name(&mut self) {
+        self.asking = None;
     }
 
     /// The words of the post outcome that has not yet been said.
@@ -322,6 +365,7 @@ impl ChatDrawer {
     /// The chat is not shown: no record is prepared.
     pub(in crate::ui) fn hide(&mut self) {
         self.close_thread();
+        self.cancel_name();
         self.view.hide();
     }
 
@@ -382,6 +426,9 @@ impl ChatDrawer {
     /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else where the next
     /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
+        if let Some(name) = &self.asking {
+            return Some(ComposeText::asking(name, focused));
+        }
         let draft = self.rows.row().and_then(|r| self.compose.draft(r));
         let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
         // With no draft, the line names where the next one would go: the open thread's parent.

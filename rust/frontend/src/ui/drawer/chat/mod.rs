@@ -8,6 +8,9 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{ChatCode, ChatPostRes};
 use super::super::*;
 use crate::ui::input::keypress::KeyPress;
+use crate::ui::persist::chat_name::save_chat_name;
+use crate::ui::persist::settings::Settings;
+use sot_platform::host::env::Env;
 
 mod compose;
 mod drawer;
@@ -82,6 +85,13 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Enter on the name prompt (`apply_name`): the status line says the outcome.
+    fn save_chat_name(&mut self) {
+        let words = apply_name(&mut self.chat, &mut self.settings, &Env::process());
+        self.status.set(words);
+        self.window.request_redraw();
+    }
+
     pub(in crate::ui) fn on_chat(&mut self, host: &HostKey, evt: ChatEvt) {
         self.with_chat(|c, now| c.on_evt(host, evt, now));
     }
@@ -146,6 +156,69 @@ pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, s
         (None, Key::Character(s)) if chord_types_text(ctrl, alt, super_) => Some(Edit::Text(s.as_str())),
         _ => None,
     }
+}
+
+/// What a key does to the name prompt.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum NameStep<'a> {
+    Save,
+    Cancel,
+    Paste,
+    Edit(Edit<'a>),
+    /// A held Enter, Escape or paste: taken, and nothing done.
+    Held,
+}
+
+/// What a key is while the foot asks for the name, when it is the prompt's: Enter saves, Escape cancels, paste and the
+/// draft's edits edit the name; a reading key (scroll, mark, thread) is not (`None`), so it still acts.
+pub(in crate::ui) fn name_step<'a>(action: Option<Action>, key: &'a Key, repeat: bool, mods: (bool, bool, bool)) -> Option<NameStep<'a>> {
+    match action {
+        Some(Action::ChatSend | Action::ReturnNav | Action::Paste) if repeat => Some(NameStep::Held),
+        Some(Action::ChatSend) => Some(NameStep::Save),
+        Some(Action::ReturnNav) => Some(NameStep::Cancel),
+        Some(Action::Paste) => Some(NameStep::Paste),
+        _ => draft_edit(action, key, mods).map(NameStep::Edit),
+    }
+}
+
+/// Saves the typed name through `save_chat_name`; the words of the outcome. On success the prompt closes and the setting
+/// is the name; on a refusal or a failed write the prompt stays open and the setting is as it was.
+pub(in crate::ui) fn apply_name(chat: &mut ChatDrawer, settings: &mut Settings, env: &Env) -> String {
+    match save_chat_name(settings, chat.asking().unwrap_or_default(), env) {
+        Ok(path) => {
+            chat.cancel_name();
+            format!("chat name saved to {}", path.display())
+        }
+        Err(words) => words,
+    }
+}
+
+/// A key while the foot asks for the posting name (`name_step`); whether it was taken.
+pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
+    if state.chat.asking().is_none() {
+        return false;
+    }
+    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
+    let Some(step) = name_step(action, &event.logical_key, event.repeat, (ctrl, alt, super_)) else { return false };
+    let refused = match step {
+        NameStep::Save => {
+            state.save_chat_name();
+            None
+        }
+        NameStep::Cancel => {
+            state.chat.cancel_name();
+            None
+        }
+        NameStep::Paste => read_clipboard_text().and_then(|text| state.chat.edit_name(Edit::Text(&text)).err()),
+        NameStep::Edit(edit) => state.chat.edit_name(edit).err(),
+        NameStep::Held => None,
+    };
+    if let Some(words) = refused {
+        state.status.set(words);
+    }
+    state.last_key = Some(label.to_string());
+    state.window.request_redraw();
+    true
 }
 
 /// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft, and `chat.send` posts it; whether it was taken.

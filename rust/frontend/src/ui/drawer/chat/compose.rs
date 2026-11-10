@@ -12,6 +12,7 @@ use crate::ui::ResultRowIdentity;
 /// The draft rows of the compose block; the row naming where the draft goes (the channel, or the thread) follows them.
 const DRAFT_ROWS: usize = 3;
 
+#[derive(Debug, PartialEq)]
 pub(in crate::ui) enum Edit<'a> {
     /// Typed or pasted text.
     Text(&'a str),
@@ -89,10 +90,14 @@ impl Compose {
 
 /// What the compose rows are made of: the draft's lines (the cursor block ends the last while the drawer has focus) and
 /// where it goes (`to <channel>`, or `reply in thread of HH:MM`).
-pub(in crate::ui) struct ComposeText {
-    pub lines: Vec<String>,
-    pub to: String,
+pub(in crate::ui) enum ComposeText {
+    Draft { lines: Vec<String>, to: String },
+    /// The foot asks for the posting name: the name typed, with the cursor block while focused.
+    Name(String),
 }
+
+/// The one row the foot shows while it asks for the name.
+const ASK: &str = "Name for your chat posts: ";
 
 impl ComposeText {
     pub(super) fn of(draft: Option<&str>, to: String, focused: bool) -> Self {
@@ -104,7 +109,11 @@ impl ComposeText {
         if focused {
             lines.last_mut().expect("a line").push('█');
         }
-        ComposeText { lines, to }
+        ComposeText::Draft { lines, to }
+    }
+
+    pub(super) fn asking(name: &str, focused: bool) -> Self {
+        ComposeText::Name(format!("{name}{}", if focused { "█" } else { "" }))
     }
 }
 
@@ -112,14 +121,24 @@ impl ComposeText {
 /// line wrapped to the width, then its destination with how many rows are not shown. A drawer too short for three keeps
 /// one row fewer than its height, so the destination is the last row dropped and the count is true at every height.
 pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
+    let (lines, to) = match text {
+        ComposeText::Draft { lines, to } => (lines, to),
+        ComposeText::Name(name) => {
+            // The prompt and the end of the name, so the cursor stays in view.
+            let name: Vec<char> = name.chars().collect();
+            let room = width.saturating_sub(ASK.chars().count()).max(1);
+            let tail: String = name[name.len().saturating_sub(room)..].iter().collect();
+            return Some(format!("{ASK}{tail}")).into_iter().take(height).collect();
+        }
+    };
     let inner = width.saturating_sub(2).max(1);
-    let wrapped: Vec<String> = text.lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
+    let wrapped: Vec<String> = lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
     let hidden = wrapped.len().saturating_sub(DRAFT_ROWS.min(height.saturating_sub(1)));
     let mut out: Vec<String> = wrapped[hidden..].iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " })).collect();
     out.push(match hidden {
-        0 => text.to.clone(),
-        1 => format!("{} · 1 line not shown", text.to),
-        n => format!("{} · {n} lines not shown", text.to),
+        0 => to.clone(),
+        1 => format!("{to} · 1 line not shown"),
+        n => format!("{to} · {n} lines not shown"),
     });
     out.split_off(out.len().saturating_sub(height))
 }
