@@ -13,6 +13,7 @@ name = "sot"
 path = "src/main.rs"
 
 [dependencies]
+toml = "1.1.2"
 sot-protocol = { path = "../protocol" }
 sot-topology = { path = "../topology" }
 sot-updater = { path = "../updater" }

@@ -358,6 +358,8 @@ pub struct Settings {
     pub fullscreen_vsync_pin: bool,
     /// `[chat] name` — the author a chat post carries beside the app's name. `None` (unset or blank): the window does not post.
     pub chat_name: Option<String>,
+    /// The settings file the window loaded, when it loaded one: where the Chat drawer writes `[chat] name`.
+    pub source: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -376,6 +378,7 @@ impl Default for Settings {
             gpu_power_preference: GpuPowerPreference::Low,
             fullscreen_vsync_pin: false,
             chat_name: None,
+            source: None,
         }
     }
 }
@@ -391,6 +394,7 @@ impl Settings {
             match fs::read_to_string(&path) {
                 Ok(contents) => {
                     s.merge_text(&contents);
+                    s.source = Some(path.clone());
                     tracing::info!(path = %path.display(), "settings loaded");
                 }
                 Err(e) => {
@@ -438,7 +442,7 @@ impl Settings {
     }
 
     /// Parse a settings file body on top of `self`.
-    fn merge_text(&mut self, contents: &str) {
+    pub(super) fn merge_text(&mut self, contents: &str) {
         let mut section = String::new();
         let (mut ultrawide_keys, mut laptop_keys, mut portrait_keys) =
             (PresetKeys::default(), PresetKeys::default(), PresetKeys::default());
@@ -676,7 +680,7 @@ fn parse_bool(s: &str) -> Option<bool> {
 }
 
 /// Strip a trailing comment outside quotes, preserving the existing value text and quote decoding.
-fn strip_comment(line: &str) -> &str {
+pub(super) fn strip_comment(line: &str) -> &str {
     let mut quote = None;
     let mut escaped = false;
     for (at, c) in line.char_indices() {
