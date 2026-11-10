@@ -104,8 +104,34 @@ fn a_status_is_answered_by_a_paced_watch() {
     now += FIRST_PACE;
     assert!(is_watch(&o.tick(now)));
     assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty());
+    assert!(o.tick(now + SECOND_PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(now + SECOND_PACE)));
+    now += SECOND_PACE;
     assert!(o.tick(now + PACE - Duration::from_millis(1)).is_empty());
     assert!(is_watch(&o.tick(now + PACE)));
+}
+
+/// After a `pending` answer the watch is asked again at 250 ms, 750 ms later, then every `PACE`, and the owner says a frame
+/// is wanted until the last short ask has gone, so an idle window is woken for it.
+#[test]
+fn a_pending_watch_is_asked_again_soon_and_the_window_is_woken() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert_eq!(o.next_ask(), None, "nothing watched");
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(20));
+    assert_eq!(o.next_ask(), Some(t0 + FIRST_PACE), "the window is woken for the second ask");
+    assert!(o.tick(t0 + Duration::from_millis(249)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(250))), "the second ask goes at 250 ms");
+    assert_eq!(o.next_ask(), Some(t0 + FIRST_PACE + SECOND_PACE), "and for the third");
+    assert!(o.tick(t0 + Duration::from_millis(999)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000))), "the third at one second");
+    assert_eq!(o.next_ask(), None, "from then on the pace is PACE and nothing wakes the window");
+    assert!(o.tick(t0 + Duration::from_millis(1000) + PACE - Duration::from_millis(1)).is_empty());
+    assert!(is_watch(&o.tick(t0 + Duration::from_millis(1000) + PACE)));
+    history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), t0 + Duration::from_secs(7)));
+    assert_eq!(o.next_ask(), None, "a read in flight wants no ask");
 }
 
 /// Rule 3: a status entry for another channel, a bare gap flag, or any status once nothing is watched starts nothing.
@@ -287,8 +313,8 @@ fn a_slow_last_watch_still_ends_complete() {
     let mut now = t0 + PACE;
     assert!(is_watch(&o.on_evt(&host(), status(false, &["C1"]), now)));
     o.on_evt(&host(), watched(ChatWatchState::Pending), now);
-    for s in [1, 6, 11, 16, 21] {
-        now = t0 + PACE + Duration::from_secs(s);
+    for ms in [250, 1000, 6000, 11000, 16000, 21000] {
+        now = t0 + PACE + Duration::from_millis(ms);
         assert!(is_watch(&o.tick(now)));
     }
     assert!(o.tick(now + Duration::from_millis(16)).is_empty());
@@ -1297,4 +1323,84 @@ fn a_reserve_takes_room_from_the_channels_oldest_and_gives_it_back() {
     assert_eq!(o.records().len(), 100, "no room: the newest 100 never give way");
     o.reaches(true);
     assert!(o.tick(now).is_empty(), "no page is asked for a share that is full");
+}
+
+/// A snapshot of 481..=500 with older history behind it, after a `chat.changed` put of 500 that came during the recovery:
+/// it does not reach the three records held from before (100..=102), so they go, and no hole is left between them.
+fn snapshot_after_a_put_during_the_recovery(mut o: ChatOwner, now: Instant) {
+    o.on_evt(&host(), watched(ChatWatchState::Pending), now);
+    o.on_evt(&host(), changed(top_level(500..=500)), now);
+    assert_eq!(held(&o), 4);
+    let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), now));
+    let snap: Vec<String> = (481..=500).map(|i| format!("{i}.000001")).collect();
+    o.on_evt(&host(), ChatEvt::History { req, reply: page(&snap.iter().map(String::as_str).collect::<Vec<_>>(), Some("older")) }, now);
+    assert_eq!(held(&o), 20, "the records held from before are not kept across a gap the snapshot leaves");
+    assert_eq!(seconds(&o)[0], 481);
+}
+
+/// Whether a snapshot reaches back to the records held is judged against the newest held when the recovery began, not
+/// against what a `chat.changed` put during it raised.
+#[test]
+fn a_put_between_the_take_up_and_the_snapshot_leaves_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.stop();
+    assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
+    assert_eq!(held(&o), 3, "the parked records are drawn");
+    snapshot_after_a_put_during_the_recovery(o, t0 + PACE);
+}
+
+/// The same for a link's return.
+#[test]
+fn a_put_between_a_links_return_and_the_snapshot_leaves_no_hole() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["100.000001", "101.000001", "102.000001"]);
+    o.on_connection(&host(), false, t0 + PACE);
+    assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
+    snapshot_after_a_put_during_the_recovery(o, t0 + PACE);
+}
+
+/// What is parked is trimmed to `KEPT`: a reader anchored on the oldest holds the live store up to `CEILING`, which the
+/// parked watch must not keep.
+#[test]
+fn a_parked_watch_is_trimmed_to_the_kept_records() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.anchored(Some(ts("1.000001")));
+    for i in 0..13u32 {
+        o.on_evt(&host(), changed(top_level(100 + 20 * i..=119 + 20 * i)), t0);
+    }
+    assert!(held(&o) > KEPT && held(&o) <= CEILING, "the anchored reader holds the live store past KEPT");
+    o.stop();
+    assert!(o.parked[0].records.len() <= KEPT);
+    assert_eq!(o.parked[0].anchor, None);
+}
+
+/// A channel passed through before its read holds nothing and parks nothing, so it does not push out a channel that does.
+#[test]
+fn a_watch_that_held_nothing_parks_nothing() {
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.stop();
+    for c in ["C2", "C3", "C4"] {
+        o.watch(host(), target(c), t0);
+        o.stop();
+    }
+    assert_eq!(o.parked.len(), 1);
+}
+
+/// A daemon that does not know the chat ops is never asked again, so no frame is wanted for an ask that will not go; nor
+/// is one wanted while the link is down.
+#[test]
+fn no_frame_is_wanted_for_an_ask_that_will_not_go() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    assert!(o.next_ask().is_some());
+    o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Unsupported }, t0);
+    assert_eq!(o.next_ask(), None, "an unsupported daemon is not asked again");
+    assert!(is_watch(&o.on_connection(&host(), true, t0)) && o.next_ask().is_some());
+    o.on_connection(&host(), false, t0);
+    assert_eq!(o.next_ask(), None, "a link that is down sends nothing");
 }

@@ -11,6 +11,9 @@ pub(in crate::ui) struct FramePacer {
     /// reschedules at the next frame boundary so a burst (paste, PTY echo
     /// storm, LLM token stream) collapses into one frame.
     dirty: bool,
+    /// An instant a frame is wanted at, with none drawn before it: the chat's next short-paced ask. Set afresh by each
+    /// frame (`wake_at`), so a stale one is never kept.
+    wake: Option<std::time::Instant>,
     /// When the last frame was drawn; `None` before the first.
     last_frame_at: Option<std::time::Instant>,
     /// One-shot: focus + raise the window on the first rendered frame.
@@ -33,11 +36,14 @@ pub(in crate::ui) enum FrameDue {
 }
 
 impl FramePacer {
-    pub(in crate::ui) fn new() -> Self { Self { dirty: false, last_frame_at: None, focus_on_first_frame: true } }
+    pub(in crate::ui) fn new() -> Self { Self { dirty: false, wake: None, last_frame_at: None, focus_on_first_frame: true } }
 
     /// A frame is wanted (an animation still moving, a debounce still waiting).
     pub(in crate::ui) fn mark_dirty(&mut self) { self.dirty = true; }
-    pub(in crate::ui) fn is_dirty(&self) -> bool { self.dirty }
+    /// A frame is owed: a deferred one, or one at `wake`.
+    pub(in crate::ui) fn is_dirty(&self) -> bool { self.dirty || self.wake.is_some() }
+    /// A frame is wanted at `at` and none before it (`None`: none wanted).
+    pub(in crate::ui) fn wake_at(&mut self, at: Option<std::time::Instant>) { self.wake = at; }
     pub(in crate::ui) fn clear_dirty(&mut self) { self.dirty = false; }
 
     /// A redraw request: whether it falls inside the budget, in which case it is deferred (marked dirty); else the
@@ -54,6 +60,16 @@ impl FramePacer {
     /// The deferred frame (the pacer is dirty): now when the budget has passed since the last frame, else at its
     /// boundary.
     pub(in crate::ui) fn due(&mut self) -> FrameDue {
+        // Only a wake is owed: the loop sleeps to it, and the frame is drawn when it is reached.
+        if !self.dirty {
+            match self.wake.take() {
+                Some(at) if at > std::time::Instant::now() => {
+                    self.wake = Some(at);
+                    return FrameDue::At(at);
+                }
+                _ => return FrameDue::Now,
+            }
+        }
         match self.last_frame_at {
             Some(t) => {
                 let elapsed = t.elapsed();
@@ -73,4 +89,29 @@ impl FramePacer {
 
     /// The first drawn frame takes the window's focus, once.
     pub(in crate::ui) fn take_first_frame_focus(&mut self) -> bool { std::mem::take(&mut self.focus_on_first_frame) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A frame wanted at an instant is slept to, not drawn before it: the pacer is not dirty for the frame budget, `due`
+    /// answers `At` that instant, and once it has passed the frame is due now.
+    #[test]
+    fn a_wake_is_slept_to_and_draws_nothing_before_it() {
+        let mut p = FramePacer::new();
+        let at = Instant::now() + Duration::from_secs(60);
+        p.wake_at(Some(at));
+        assert!(!p.dirty, "no frame is deferred");
+        assert!(p.is_dirty(), "a frame is owed, so the loop asks `due`");
+        assert!(matches!(p.due(), FrameDue::At(t) if t == at));
+        assert!(matches!(p.due(), FrameDue::At(t) if t == at), "asking again changes nothing");
+        p.wake_at(Some(Instant::now()));
+        assert!(matches!(p.due(), FrameDue::Now), "reached: the frame is due now");
+        assert!(!p.is_dirty(), "and the wake is spent");
+        p.wake_at(Some(at));
+        p.wake_at(None);
+        assert!(!p.is_dirty(), "a wake no longer wanted is dropped");
+    }
 }

@@ -105,6 +105,7 @@ impl State {
         if settling {
             self.pacer.mark_dirty();
         }
+        self.pacer.wake_at(self.chat.next_ask());
     }
 }
 
