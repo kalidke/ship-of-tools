@@ -1750,3 +1750,22 @@ A landing's record goes here, with its measured times; the package page holds on
   scoped one because the scoped gate had passed the guard (GATE-SCOPED-MISSES-SHARED-CALLEE noted, then closed: a
   diagnosis found the scoped gate ran the same job and the test was a race, COMM-GUARD-RACES-ENV); no review (test
   isolation only, read by the session).
+- The window's per-user settings in platform's config folder (WINDOWS-SETTINGS-NO-DURABLE-HOME), 2026-11-10: found
+  13:19 while the maintainer used the Chat drawer on a Windows window at 0.7.1-rc.3 (the window read no settings file,
+  so Enter never posted); builder launched about 13:27, main 14:14 (227a75877), about 47 minutes, a miss of the half
+  hour. About 25 product lines (discovery takes platform's resolver; the Windows launcher's default deleted), 80 test
+  lines, and the manual's discovery order stated once. Where the minutes went: the build (8 minutes); review round 1
+  (blocker: a new test that would fail on Windows, where the resolver reads neither `XDG_CONFIG_HOME` nor `HOME`);
+  the amended commit's scoped gate failed (an edited skill whose project copy was not edited, which must stay
+  byte-identical); review round 2 (the same copy, two unpinned rules); three scoped gates of 2 to 3 minutes. The
+  Windows-only test first ran in the hosted run on main, green.
+- The preview takes an agent's path in the tree's spelling and marks a refused preview (PREVIEW-PDF-STALE),
+  2026-11-10: reported by the maintainer 13:24 ("pdfs not updated in preview when new pdf is generated"); diagnosis
+  13:2x to 13:50 (an agent badged `$PWD/../x.pdf`; the window kept the `..`, the daemon refused it, the pane kept the
+  older bytes unmarked, and the live refresh never matched the watcher's id); builder launched 13:52, main 14:47
+  (1cb38101d), 55 minutes from the builder and 83 from the report, a miss. About 95 product lines and 130 test lines:
+  one fold at the window's three ways in, a refused preview titled as such, and a badge that a change event re-fetched
+  during its load now clears (found by review round 1 and taken into the same landing). Where the minutes went: two
+  test rounds the session asked for before review (the wiring and the live refresh pinned through the native State
+  harness, run on a second computer under a virtual display); review round 1 (blocker: a row switch restored the
+  stale view unmarked); review round 2 (no blockers; three small fixes); four scoped gates of 2 to 3 minutes.

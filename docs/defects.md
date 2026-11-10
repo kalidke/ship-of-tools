@@ -431,6 +431,10 @@ owned by `docs/CLAUDE.md`.
 
 ## sidecars
 
+- **TEST-CHILD-OUTLIVES-TEST** [session] Julia children that `sotd` unit tests start (a kernel's `start.jl` and two REPL
+  shims in a project named with spaces) outlived their tests by five hours, two of them at full CPU, reparented and
+  still in the row's cgroup, after a run that started each unit test in its own process with a scratch home
+  (2026-11-10, ended by hand). Fix: a test that starts a child ends it on every path, including its own process ending.
 - **JULIA-RELATIVE-PATH** [note] `julia.rs`: an empty or relative PATH entry can give a relative answer, and a broken
   juliaup default falls through to PATH. Fix: refuse a non-absolute candidate; decide the default's fallthrough.
 - **KERNEL-QUEUED-DEAD** [note] `kernel.rs`: submissions still queued when a kernel generation dies get the generic
@@ -555,6 +559,10 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **PDF-TEXT-SELECTION** [feature] Text the person selects in a PDF preview is shared with the row's agent, as a text
+  preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
+  so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
+  the selection's page and text on the existing share. The maintainer asked whether it is listed (2026-11-10).
 - **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
   mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line
   above a paragraph to the one below shares the paragraph), the preview pane's `maps_source` true in
@@ -761,6 +769,17 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-SECRETS-TWO-FORMS** [session] Two programs claim the hub's `chat-secrets.toml` in two forms: the November
+  live-test tool's template writes `[[workspace]]` tables keyed `id`, and the daemon (`config.rs`, `Credentials::parse`)
+  reads three top-level keys, `workspace`, `bot_token` and `app_token`. Seen 2026-11-10 at the first start of the chat
+  on the hub: refused twice (a second workspace, then a malformed file) until the file was rewritten by hand. Fix: one
+  form at that path; the test tool reads the daemon's form or its own file.
+- **CHAT-REFUSAL-NAMES-NO-FILE** [session] The daemon's `project chat` log line gives the same words for a refused
+  `chat.toml` and a refused `chat-secrets.toml` (`ConfigError`'s explanation, `chat.rs` `Status`'s display) and, for a
+  key the file must not hold, no line, so a person cannot tell which file to fix. Fix: name the file.
+- **CHAT-START-NOT-LOGGED** [session] A chat start that succeeds logs only `the chat service is starting`; nothing says
+  it is running, so the log alone cannot confirm the chat is up (2026-11-10, read only by a window's first use). Fix:
+  log the running state once.
 - **CHAT-PUBLISH-SKIPS-A-RESTART** [note] The daemon's chat owner task (`Own::sync`, `rust/backend/src/chat/watch.rs`)
   can take a new socket gap inside one channel's begin and then begin a later channel that has just left complete, in
   the same pass; `publish` then sees that channel pending, not needed, and sends no `chat.status`, so a window holding it
