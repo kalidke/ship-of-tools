@@ -274,6 +274,61 @@ pub fn appends_here(comm_home: &Path, own: &str) -> bool {
     own != "none" && !own.is_empty() && parse_record(&record).0 == own
 }
 
+/// The inbox bytes up to and with the last newline: the lines a reader may count.
+pub(crate) fn complete(bytes: &[u8]) -> &[u8] {
+    bytes.iter().rposition(|b| *b == b'\n').map_or(&bytes[..0], |end| &bytes[..=end])
+}
+
+/// The `msg` of every complete line from `from` in every `inbox/*.jsonl` under `comm_home`, in each file's order, one
+/// inbox read at a time as a poll reads it (the shared lock where this box appends itself). It moves no cursor and
+/// creates no inbox (each one's lock sidecar is, as in a poll). A held lock or any read error other than a missing
+/// path (a stray directory named `x.jsonl` included) fails the whole read with that inbox's name, never a skip: a
+/// skipped inbox could let a line be filed twice. Any other lock fault is logged and that inbox is read unlocked.
+#[allow(dead_code, reason = "the chat's rebuild is its caller, not yet built")]
+pub fn lines_from(comm_home: &Path, from: &str, env: &sot_platform::host::env::Env) -> Result<Vec<String>, String> {
+    let dir = comm_home.join("inbox");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("the inbox folder cannot be read: {e}")),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| format!("the inbox folder cannot be read: {e}"))?.path();
+        if path.extension().is_some_and(|x| x == "jsonl") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    let (own, mut out) = (lock_identity(&dir), Vec::new());
+    let here = appends_here(comm_home, &own);
+    for path in files {
+        let handle = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+        let lock = read_lock(&dir, handle, &own, here, env);
+        match &lock {
+            ReadLock::Busy => return Err(format!("the inbox for @{handle} is being written")),
+            ReadLock::Fault(w) => tracing::warn!("{w}"),
+            _ => {}
+        }
+        let read = std::fs::read(&path);
+        drop(lock);
+        let bytes = match read {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("the inbox for @{handle} cannot be read: {e}")),
+        };
+        for line in complete(&bytes).split(|b| *b == b'\n') {
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+            if v["from"] == from {
+                if let Some(m) = v["msg"].as_str() {
+                    out.push(m.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `line` goes in whole or not at all ("filed" means kept): an unterminated
 /// tail (a writer that died mid-line, or NULs after a client crash) is cut
 /// back to the last newline first — everything past it was written by a

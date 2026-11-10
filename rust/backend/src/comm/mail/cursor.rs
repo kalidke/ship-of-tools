@@ -48,10 +48,8 @@ fn ts_is_greater(segment: &str, cur: &str) -> bool {
     }
 }
 
-/// The inbox bytes up to and with the last newline: the lines a reader may count.
-pub(crate) fn complete(bytes: &[u8]) -> &[u8] {
-    bytes.iter().rposition(|b| *b == b'\n').map_or(&bytes[..0], |end| &bytes[..=end])
-}
+/// The complete-line rule is the inbox's: every reader counts newline-terminated lines only.
+pub(crate) use super::inbox::complete;
 
 /// Where a reader of `inbox/<h>.jsonl` starts: the lines already shown, and whether the cursor's last line was cut
 /// back (the reader then steps back one, and says so).
