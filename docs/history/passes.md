@@ -1507,3 +1507,12 @@ A landing's record goes here, with its measured times; the package page holds on
   so the owner's fields are reachable only through its methods (a read from `mod.rs` no longer compiles). A move: one
   visibility line. Where the minutes went: the build (3 minutes); one scoped gate of 2 minutes; one review round of 8
   minutes, bounded (blockers 0; 310 of 340 lines byte-identical).
+- The project chat's B5c, the watch follows the shown row, 2026-11-09: builder launched 16:16, main 17:10 (165ec8b56),
+  54 minutes, past the half hour, a failure by this page's standard. The window watches exactly the channel of the row
+  the drawer shows, while it shows Chat or Help opened from Chat, and nothing otherwise; a resolve answer other than
+  `mapped` ends the watch. About 150 product lines and 140 test lines. Where the minutes went: the build (6 minutes),
+  which ran past the plan's named split point at 120 product lines to about 210, then a split into this landing and
+  the reads-in-flight set (3 minutes); two review rounds (blockers 2, 0; 19 and 16 minutes: the first found a stale
+  channel kept watched after a link change and when the watch runs untested, three mutants passing the suite); one fix
+  round of 7 minutes; two scoped gates of 2 minutes. The causes: a builder that did not stop at the split, and a red
+  test that covered the row channel's decisions but not the conditions that start and stop it.

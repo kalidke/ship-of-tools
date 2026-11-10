@@ -726,9 +726,12 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   still wanted decides its watch: `mapped` watches it (a second one is nothing, the owner takes the same target twice as
   nothing); anything else (`unmapped`, `invalid`, a refusal, an old daemon) ends the watch, so a channel the daemon no longer
   maps is not asked for again. An answer for a row no longer wanted is nothing. A row that changed or went ends the old watch at once, with the owner's `stop` and one `chat.unwatch`. A link coming
-  up or going resolves the row again.
+  up resolves the row again; a link going down resolves nothing (the row's state is reset then, which no test
+  observes).
 
-Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatOwner` and a `State` needs a window; `Limited`'s `assumed` flag is not kept, and the
+Limits: a first watch and each status-driven recovery wait a pace for the daemon's `pending` reply to be asked again (a shorter first pace is the drawer's call); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatDrawer` and its parts and a `State` needs a window; `tick_chat`'s own
+choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
+suite); `Limited`'s `assumed` flag is not kept, and the
 owner has no view.
 
 ## Selection share
