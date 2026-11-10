@@ -31,7 +31,7 @@ name is in this crate's one op table.
    (held to it by a test that runs it), and refused on mismatch by the daemon's hello, the server's check of this
    integer (`rust/backend/src/server/hello_protocol_gate_tests.rs`, where `hello_refuses_protocol_3` pins the last release's integer as refused, and `rust/backend/tests/admission.rs`). serde does not
    enforce the defaulted-field rule: it is a maintenance obligation, held by review and by previous-shape tests only for
-   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and the last release's whole `HelloRes` parses with `takes_drawing` absent), the lease
+   the hello and version query (`ops/session_tests.rs`, where the last release's `DaemonVersion` is frozen and the last release's whole `HelloRes` parses with `takes_drawing` and `posts_plain_text` absent), the lease
    (`ops/lease_wire_tests.rs`) and docs opens (`ops/pages_tests.rs`). `DocsOpenReq.direct` is an additive field defaulting
    to `ReplyScope::None`; an older frontend's payload without it grants no direct scope. Adding authority must never
    change that default; incompatible scope vocabulary changes follow this same protocol-number rule. The families
@@ -102,7 +102,7 @@ name is in this crate's one op table.
 
 12. **Every chat payload is typed and bounded at decode, and every chat op is in the one table.** `ops/chat.rs`: requests
     `chat.resolve {row}`, `chat.watch {target}`, `chat.unwatch {target}`, `chat.history {target, thread?, after?, upper?, limit,
-    cursor?}`, `chat.post {target, thread?, kind, name, text}` (`text` is plain text, what the person typed; chat's door will escape it, unbuilt until its own landing, so today the door sends the text as given), each with a reply, and the events `chat.changed` (puts and deletes in
+    cursor?}`, `chat.post {target, thread?, kind, name, text}` (`text` is plain text, what the person typed; chat's door escapes it, built; empty text is refused there, unsent, with any other input the post cannot carry. A window posts only to a hub whose hello says `HelloRes.posts_plain_text`, the same kind of flag as guarantee 13's `takes_drawing`: true from a daemon whose door escapes, defaulted and left out when false, so an older hub, which sends the text as given, reads as false; test `a_hello_reply_says_whether_the_daemon_posts_plain_text_and_stays_additive`), each with a reply, and the events `chat.changed` (puts and deletes in
     a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,

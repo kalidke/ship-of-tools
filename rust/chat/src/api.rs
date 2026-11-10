@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde_json::{json, Value};
-use sot_protocol::chat::{ChatRecord, Origin, Ts};
+use sot_protocol::chat::{escape_text, post_text_fits, ChatRecord, Origin, Ts};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret};
-use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_NAME, MAX_TEXT};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_NAME};
 
 /// A read (`auth.test`, history, replies, `users.info`): Slack answers in well under a second, so fifteen seconds
 /// covers a slow link and still frees a drawer waiting on a stalled page.
@@ -528,9 +528,10 @@ impl Api {
         let thread = thread
             .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
             .transpose()?;
-        if !valid_id(channel) || !name_ok || text.is_empty() || text.len() > MAX_TEXT {
+        if !valid_id(channel) || !name_ok {
             return Err(ApiError::BadRequest);
         }
+        let text = slack_text(text)?;
         let mut body = json!({
             "channel": channel,
             "text": text,
@@ -697,6 +698,15 @@ fn retry_after(response: &Response) -> (Duration, bool) {
         Some(secs) => (Duration::from_secs(secs).min(MAX_RETRY), false),
         None => (ASSUMED_RETRY, true),
     }
+}
+
+/// The one way a request body gets a `text`: plain text made Slack's, so no `<!channel>` or `<@U1>` in it pings or
+/// mentions. Empty, or escaped past the bound, it is refused unsent.
+fn slack_text(text: &str) -> Result<String, ApiError> {
+    if text.is_empty() || !post_text_fits(text) {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(escape_text(text))
 }
 
 /// Slack's `error` code, only when it is `[a-z0-9_.]{1,64}`: its text is never copied.
