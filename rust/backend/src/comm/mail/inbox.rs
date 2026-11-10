@@ -112,7 +112,28 @@ fn file_frame_with(
     own: &str,
     sync: impl FnOnce(&File) -> std::io::Result<()>,
 ) -> Result<(), String> {
-    let failed = |e: std::io::Error| format!("the append failed: {e}");
+    file_frame_admitting(inbox_dir, from, repo, to, broadcast, text, ts, wait, own, sync, |_| Ok(())).map_err(|(_, e)| e)
+}
+
+/// [`file_frame_from`] with an admission run once the inbox lock is held: `admit` gets what is left of `wait`, and the
+/// value it returns (a guard) lives until the append has returned. A refusal from it is the filing's, `(code, sentence)`,
+/// and nothing was appended. The inbox lock is taken first, so whatever `admit` takes after it is the later lock.
+#[allow(clippy::too_many_arguments)]
+pub fn file_frame_admitting<G>(
+    inbox_dir: &Path,
+    from: &str,
+    repo: &str,
+    to: &str,
+    broadcast: bool,
+    text: &str,
+    ts: &str,
+    wait: Duration,
+    own: &str,
+    sync: impl FnOnce(&File) -> std::io::Result<()>,
+    admit: impl FnOnce(Duration) -> Result<G, (String, String)>,
+) -> Result<(), (String, String)> {
+    let deadline = Instant::now() + wait;
+    let failed = |e: std::io::Error| ("file_failed".to_string(), format!("the append failed: {e}"));
     let mut line = serde_json::to_string(&Line {
         from,
         to: if broadcast { "" } else { to },
@@ -120,16 +141,18 @@ fn file_frame_with(
         msg: text,
         ts,
     })
-    .map_err(|e| format!("the append failed: {e}"))?;
+    .map_err(|e| failed(e.into()))?;
     line.push('\n');
 
     let lock = open_lock(inbox_dir, to).map_err(failed)?;
     let lock = take_lock(lock, own, wait, false).map_err(|e| match e {
-        LockWait::Timeout => format!("the inbox lock for @{to} was held for {}s — nothing was appended", wait.as_secs()),
+        LockWait::Timeout => ("file_failed".to_string(), format!("the inbox lock for @{to} was held for {}s — nothing was appended", wait.as_secs())),
         LockWait::Io(e) => failed(e),
     })?;
+    let admitted = admit(deadline.saturating_duration_since(Instant::now()))?;
     let written = append_line(&inbox_dir.join(format!("{to}.jsonl")), &line, sync);
-    // The inbox is closed inside `append_line`; only now does the lock go.
+    // The inbox is closed inside `append_line`; only now do the locks go, the later one first.
+    drop(admitted);
     drop(lock);
     written.map_err(failed)
 }

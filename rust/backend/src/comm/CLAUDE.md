@@ -66,6 +66,24 @@ Sending:
   (`comm.file` to this box's daemon, else the hub), and a handle its folder does not list goes to the hub, which files
   it or offers it to the daemons linked to it (`mail::links`, `mail::hub_link`). The answer decides, never a transport's
   exit status.
+- A filing may name the row it expects (`CommFileReq.expected_row`, defaulted; wire's), and then only the daemon where
+  the row is admits it: it is never forwarded to a hub and never offered to a linked daemon, so no peer, of any version,
+  reads or drops the expectation. A guest that cannot append for the folder, and a handle this folder does not list,
+  answer `not_here` saying it is not bound here, and nothing is appended anywhere. Channel mail files to hub rows from
+  inside the hub's daemon (B3), so it needs no more. The guarded append (`filer::file_guarded`) takes the handle's inbox
+  lock first, then, within what is left of the one inbox wait (`SOT_INBOX_LOCK_WAIT_SECS`, 2 s by default, so a guarded
+  filing answers inside the 3 s a forward or an offer is given), the registry lock; it reads the entry fresh, applies the
+  presence rule, checks that its `workspace_id` (`registry::entry_row`) is the expected row, applies the liveness rule and
+  keeps both locks until the appender returns. A moved binding is `not_here` naming the move; an empty expected row, a lock
+  that cannot be taken and a registry that cannot be read are `file_failed`; all append nothing. An ordinary request keeps the
+  unlocked read. Lock order: inbox, then registry, and this is the only path that holds both: the registry-lock holders
+  (`with_comm_registry_lock`, `edit_entry`, `update`, the join's self file) never touch an inbox, and `poll` and `unread`
+  let the shared inbox lock go before their registry `touch`. So a stuck inbox stays that handle's problem: the registry
+  lock is taken only after the inbox lock, and its hold is the fresh read, the checks and one append's I/O, with no wait
+  inside it (a read of an empty registry retries over 200 ms). The writers it can delay are every registry writer of the
+  folder, for that hold: the daemon's heartbeat stamp and the shell heartbeat (`--lock-wait 0`, which loses to any hold, as to
+  any writer), `touch`, the Stop hook's mark (1 s), the activation read-clear (1 s), and the join, leave, spawn,
+  work-state and destroy writes (10 s). Tests: `filer_comm_file_tests.rs`.
 - Silence is failure: a send waits 5 s for an answer (`cli::wire::FILE_WINDOW`), and a daemon gives a forward or an
   offer the inbox lock's wait plus 1 s (3 s at the default 2 s), inside the sender's 5 s. A daemon too old for the op answers `unknown op: comm.file`,
   a false failure, never a false success.
