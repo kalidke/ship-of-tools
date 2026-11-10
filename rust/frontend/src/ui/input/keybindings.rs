@@ -166,6 +166,7 @@ actions! {
     ChatLatest, "chat.latest", ["End"], "Newest message", "Return the Chat drawer to the newest message and follow it.", "Chat", Chat;
     ChatMarkOlder, "chat.mark_older", ["ArrowUp"], "Older message", "Mark the next older message in the Chat drawer, or the newest when none is marked; the view moves to show it.", "Chat", Chat;
     ChatMarkNewer, "chat.mark_newer", ["ArrowDown"], "Newer message", "Mark the next newer message in the Chat drawer, or the newest when none is marked; the view moves to show it.", "Chat", Chat;
+    ChatThreadOpen, "chat.thread_open", ["ArrowRight"], "Open thread", "Open the marked message's thread in the Chat drawer, showing its parent; Escape closes it.", "Chat", Chat;
     ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made.", "Chat", Chat;
     ChatNewline, "chat.newline", ["Shift+Enter"], "Insert newline", "Continue the chat draft on another line.", "Chat", Chat;
     PreviewEnd, "preview.end", ["End"], "Document end", "Scroll to the end of the displayed text.", "Text", Text;
