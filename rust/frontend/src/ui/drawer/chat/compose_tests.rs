@@ -200,7 +200,6 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     assert_eq!(d.send(Some(&r), Some("Ada"), at).unwrap_err(), "nothing to post", "blank is nothing");
     d.edit(Some(&r), Edit::Backspace).unwrap();
     d.edit(Some(&r), Edit::Text("a < b")).unwrap();
-    assert!(d.send(Some(&r), None, at).unwrap_err().contains("[chat] name"));
     assert_eq!(d.send(None, Some("Ada"), at).unwrap_err(), "no row to write for");
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
@@ -291,4 +290,44 @@ fn a_posted_reply_clears_the_draft_of_the_row_it_proves_and_no_other() {
     assert_eq!(d.draft(), Some(("from b", "C1")), "the shown row's draft stays");
     show(&mut d, "R", at + Duration::from_secs(1));
     assert_eq!(d.draft(), None, "the row the reply proves is cleared");
+}
+
+#[test]
+fn enter_with_no_name_asks_for_it_and_sends_nothing_until_the_next_enter() {
+    let r = row("R");
+    let (mut d, at) = watching();
+    // No draft: nothing to post, and no prompt.
+    assert_eq!(d.send(Some(&r), None, at).unwrap_err(), "nothing to post");
+    assert_eq!(d.asking(), None);
+
+    d.edit(Some(&r), Edit::Text("hello")).unwrap();
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty(), "no post is sent");
+    assert_eq!(d.asking(), Some(""));
+    let foot = |d: &ChatDrawer, w| compose_rows(&d.compose_text(true).unwrap(), w, 10);
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: █"]);
+
+    // The keys edit the name, not the draft.
+    d.edit_name(Edit::Text("Ad"));
+    d.edit_name(Edit::Text("x"));
+    d.edit_name(Edit::Backspace);
+    d.edit_name(Edit::Text("a\u{7}"));
+    d.edit_name(Edit::Space);
+    d.edit_name(Edit::Newline);
+    assert_eq!(d.asking(), Some("Ada "));
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["Name for your chat posts: Ada █"]);
+    assert_eq!(foot(&d, 29), ["Name for your chat posts: a █"], "a narrow foot keeps the end of the name");
+
+    // Escape cancels and keeps the draft; the foot is the draft's again.
+    d.cancel_name();
+    assert_eq!(d.asking(), None);
+    assert_eq!(d.draft(), Some(("hello", "C1")));
+    assert_eq!(foot(&d, 40), ["> hello█", "to C1"]);
+
+    // Saved (the State's part), the next Enter posts under the name.
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty());
+    d.cancel_name();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
+    assert_eq!(d.asking(), None);
 }

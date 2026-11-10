@@ -84,6 +84,8 @@ pub(in crate::ui) struct ChatDrawer {
     foot: u16,
     /// The words of the last post's outcome, until the status line takes them.
     notice: Option<String>,
+    /// The name being typed at the drawer's foot, while Enter found none set: the keys edit it, not the draft.
+    asking: Option<String>,
 }
 
 /// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
@@ -192,13 +194,40 @@ impl ChatDrawer {
             return Err("posting…".into());
         }
         let Some(draft) = self.compose.draft(row).filter(|d| !d.text.trim().is_empty()) else { return Err("nothing to post".into()) };
-        let Some(name) = name else { return Err("not posted: set [chat] name in settings.toml".into()) };
+        // No name set: the foot asks for one, the draft stays, and nothing is sent; the next Enter posts it.
+        let Some(name) = name else {
+            self.asking = Some(String::new());
+            return Ok(Vec::new());
+        };
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }
         let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+    }
+
+    /// The name typed so far, while the foot asks for one.
+    pub(in crate::ui) fn asking(&self) -> Option<&str> {
+        self.asking.as_deref()
+    }
+
+    /// A key edits the name being asked for; nothing when the foot is not asking.
+    pub(in crate::ui) fn edit_name(&mut self, edit: Edit) {
+        let Some(name) = self.asking.as_mut() else { return };
+        match edit {
+            Edit::Text(s) => name.extend(s.chars().filter(|c| !c.is_control())),
+            Edit::Space => name.push(' '),
+            Edit::Backspace => {
+                name.pop();
+            }
+            Edit::Newline => {}
+        }
+    }
+
+    /// Escape: the foot stops asking; the draft was never touched.
+    pub(in crate::ui) fn cancel_name(&mut self) {
+        self.asking = None;
     }
 
     /// The words of the post outcome that has not yet been said.
@@ -382,6 +411,9 @@ impl ChatDrawer {
     /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else where the next
     /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
+        if let Some(name) = &self.asking {
+            return Some(ComposeText::asking(name, focused));
+        }
         let draft = self.rows.row().and_then(|r| self.compose.draft(r));
         let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
         // With no draft, the line names where the next one would go: the open thread's parent.

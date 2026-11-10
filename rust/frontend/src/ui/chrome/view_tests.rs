@@ -312,7 +312,7 @@ fn the_chat_drawer_draws_no_messages_only_when_told_the_channel_is_empty() {
 #[test]
 fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does() {
     use crate::ui::drawer::chat::ComposeText;
-    let text = ComposeText { lines: vec!["hello".into(), "wo".into()], to: "to C1".into() };
+    let text = ComposeText { lines: vec!["hello".into(), "wo".into()], to: "to C1".into(), asking: false };
     let drawn = |drawer, short: u16| {
         let (rows, _, _, _, cells, foot) =
             paint_chrome_chat((120, 40 - short), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false, Some(&text));

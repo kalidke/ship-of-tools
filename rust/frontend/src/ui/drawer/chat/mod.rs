@@ -8,6 +8,8 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{ChatCode, ChatPostRes};
 use super::super::*;
 use crate::ui::input::keypress::KeyPress;
+use crate::ui::persist::chat_name::save_chat_name;
+use sot_platform::host::env::Env;
 
 mod compose;
 mod drawer;
@@ -82,6 +84,20 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Enter on the name prompt: saves the name to the settings file and uses it at once; the draft stays and the next Enter
+    /// posts it. A refusal or a failed write goes to the status line and the prompt stays open.
+    fn save_chat_name(&mut self) {
+        let typed = self.chat.asking().unwrap_or_default().to_string();
+        match save_chat_name(&mut self.settings, &typed, &Env::process()) {
+            Ok(path) => {
+                self.chat.cancel_name();
+                self.status.set(format!("chat name saved to {}", path.display()));
+            }
+            Err(words) => self.status.set(words),
+        }
+        self.window.request_redraw();
+    }
+
     pub(in crate::ui) fn on_chat(&mut self, host: &HostKey, evt: ChatEvt) {
         self.with_chat(|c, now| c.on_evt(host, evt, now));
     }
@@ -146,6 +162,35 @@ pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, s
         (None, Key::Character(s)) if chord_types_text(ctrl, alt, super_) => Some(Edit::Text(s.as_str())),
         _ => None,
     }
+}
+
+/// A key while the foot asks for the posting name: the keys edit the name, Enter saves it and Escape cancels; whether it
+/// was taken. Reading keys (scroll, mark) are not taken.
+pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
+    if state.chat.asking().is_none() {
+        return false;
+    }
+    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
+    if action == Some(Action::ChatSend) {
+        if !event.repeat {
+            state.save_chat_name();
+        }
+    } else if action == Some(Action::ReturnNav) {
+        if !event.repeat {
+            state.chat.cancel_name();
+        }
+    } else if action == Some(Action::Paste) {
+        if let Some(text) = (!event.repeat).then(read_clipboard_text).flatten() {
+            state.chat.edit_name(Edit::Text(&text));
+        }
+    } else if let Some(edit) = draft_edit(action, &event.logical_key, (ctrl, alt, super_)) {
+        state.chat.edit_name(edit);
+    } else {
+        return false;
+    }
+    state.last_key = Some(label.to_string());
+    state.window.request_redraw();
+    true
 }
 
 /// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft, and `chat.send` posts it; whether it was taken.

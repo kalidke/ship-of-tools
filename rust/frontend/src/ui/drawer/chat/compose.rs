@@ -92,7 +92,12 @@ impl Compose {
 pub(in crate::ui) struct ComposeText {
     pub lines: Vec<String>,
     pub to: String,
+    /// The foot asks for the posting name: one row, `lines[0]` the name typed.
+    pub asking: bool,
 }
+
+/// The one row the foot shows while it asks for the name.
+const ASK: &str = "Name for your chat posts: ";
 
 impl ComposeText {
     pub(super) fn of(draft: Option<&str>, to: String, focused: bool) -> Self {
@@ -104,7 +109,11 @@ impl ComposeText {
         if focused {
             lines.last_mut().expect("a line").push('█');
         }
-        ComposeText { lines, to }
+        ComposeText { lines, to, asking: false }
+    }
+
+    pub(super) fn asking(name: &str, focused: bool) -> Self {
+        ComposeText { lines: vec![format!("{name}{}", if focused { "█" } else { "" })], to: String::new(), asking: true }
     }
 }
 
@@ -112,6 +121,13 @@ impl ComposeText {
 /// line wrapped to the width, then its destination with how many rows are not shown. A drawer too short for three keeps
 /// one row fewer than its height, so the destination is the last row dropped and the count is true at every height.
 pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
+    if text.asking {
+        // The prompt and the end of the name, so the cursor stays in view.
+        let name: Vec<char> = text.lines[0].chars().collect();
+        let room = width.saturating_sub(ASK.chars().count()).max(1);
+        let tail: String = name[name.len().saturating_sub(room)..].iter().collect();
+        return vec![format!("{ASK}{tail}")].into_iter().take(height).collect();
+    }
     let inner = width.saturating_sub(2).max(1);
     let wrapped: Vec<String> = text.lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
     let hidden = wrapped.len().saturating_sub(DRAFT_ROWS.min(height.saturating_sub(1)));
