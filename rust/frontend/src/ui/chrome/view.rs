@@ -67,6 +67,7 @@ pub(super) struct ChromeView<'a> {
     pub(super) pinned_preview_node_id: &'a Option<String>,
     pub(super) drawer: DrawerContent,
     pub(super) chat_empty: bool,
+    pub(super) chat_title: &'a str,
     pub(super) monitor_host_connected: bool,
     pub(super) monitor_host_label: &'a HostKey,
     pub(super) repl_input: &'a String,
@@ -338,7 +339,7 @@ impl ChromeView<'_> {
     }
 
     fn drawer_title(&self, repl_focus: bool) -> String {
-        let ChromeView { drawer, monitor_host_connected, monitor_host_label, .. } = *self;
+        let ChromeView { drawer, monitor_host_connected, monitor_host_label, chat_title, .. } = *self;
         // G6: the drawer title reflects which content it's showing —
         // the Julia REPL (Ctrl+J) or the local terminal (Ctrl+T).
         let repl_title = match (drawer, repl_focus) {
@@ -356,7 +357,7 @@ impl ChromeView<'_> {
                 }
             }
             (DrawerContent::Help, _) => " help ".to_string(),
-            (DrawerContent::Chat, _) => " chat ".to_string(),
+            (DrawerContent::Chat, _) => chat_title.to_string(),
             (DrawerContent::Closed | DrawerContent::Repl, true) => " repl · julia · [FOCUS] ".to_string(),
             (DrawerContent::Closed | DrawerContent::Repl, false) => " repl · julia ".to_string(),
         };

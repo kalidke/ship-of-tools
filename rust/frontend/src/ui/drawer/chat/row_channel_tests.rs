@@ -16,7 +16,7 @@ fn wanted(row: &str) -> Option<ResultRowIdentity> {
     Some(ResultRowIdentity { host: host(), workspace_id: row.to_string() })
 }
 
-fn answer(row: &str, json: serde_json::Value) -> ChatEvt {
+pub(super) fn answer(row: &str, json: serde_json::Value) -> ChatEvt {
     let res: ChatResolveRes = serde_json::from_value(json).unwrap();
     ChatEvt::Resolved { row: row.to_string(), reply: ChatReply::Done(res) }
 }
@@ -25,7 +25,7 @@ fn mapped_to(row: &str, channel: &str) -> ChatEvt {
     answer(row, serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": channel, "delivers": false }))
 }
 
-fn mapped(row: &str) -> ChatEvt {
+pub(super) fn mapped(row: &str) -> ChatEvt {
     mapped_to(row, "C1")
 }
 

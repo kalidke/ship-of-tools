@@ -245,3 +245,12 @@ fn a_list_of_records_stops_at_a_page_and_an_event_at_its_bounds() {
     assert!(serde_json::from_value::<ChatStatusEvt>(status(32)).is_ok());
     assert!(serde_json::from_value::<ChatStatusEvt>(status(33)).is_err());
 }
+
+#[test]
+fn every_code_has_its_one_text() {
+    for code in [ChatCode::Unavailable, ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::BadRequest,
+        ChatCode::TooManyWatches, ChatCode::Limited, ChatCode::Busy, ChatCode::Failed, ChatCode::Other] {
+        assert!(!code.text().is_empty(), "{code:?}");
+    }
+    assert_eq!(ChatCode::Unmapped.text(), "the row's folder maps to no channel");
+}

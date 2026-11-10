@@ -726,7 +726,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   does not resolve the selected row while the chat is hidden (`the_chat_follows_the_canonical_id_of_the_selected_slug`).
   The rest is pinned by `drawer::chat::row_channel_tests::the_watch_follows_the_shown_rows_channel_and_ends_with_it`.
 - `RowChannel` resolves a wanted row once, with `chat.resolve`, after it has stayed the same for `NAV_FIRE_DEBOUNCE` on a connected
-  host (until then the frame pacer is marked dirty); no answer is cached, so showing Chat again resolves again. The answer for the row
+  host (until then the frame pacer is marked dirty); no answer outlives the wanted row or a link change, so showing Chat again resolves again. `RowChannel` keeps the last answer as a `Stand` (with `Unlisted` and `Offline` read from the wanted row and the links); `ChatDrawer::title` is ` chat · <channel id> ` and the words of the `Stand`, or for a mapped row of the owner's fill (`view_tests::every_outcome_has_a_state_a_next_action_and_words`, with each "asked again"); the words of a refusal code are wire's `ChatCode::text`, never the window's copy; a target refused for good (`stale_row`, `stale_mapping`, `unmapped`) shows that text and is asked again only at a row or link change; a refusal that is neither the hub's nor the row's is asked again after `GAP_PACE`, its answer cleared meanwhile. The answer for the row
   still wanted decides its watch: `mapped` watches it (a second one is nothing, the owner takes the same target twice as
   nothing); anything else (`unmapped`, `invalid`, a refusal, an old daemon) ends the watch, so a channel the daemon no longer
   maps is not asked for again. An answer for a row no longer wanted is nothing. A row that changed or went ends the old watch at once, with the owner's `stop` and one `chat.unwatch`. A link coming
@@ -750,8 +750,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
 
 Limits: for admitted or never-answered watches, a link that drops more often than every 26 s never shows a gap (a refused watch is a gap at once); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) is pinned by no test, since the tests drive `ChatDrawer` and its parts and a `State` needs a window; `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
-suite); `Limited`'s `assumed` flag is not kept, and the
-owner has no view.
+suite); `Limited`'s `assumed` flag is not kept; a Slack socket outage shows in the title only when it costs a snapshot (a gap), since the daemon never says that a gap closed.
 
 ## Selection share
 `SelectionShare` (`preview/share.rs`) keeps the daemon's published selection for a row equal to what the view shows selected: the preview's text selection or the row's drawing.

@@ -20,7 +20,7 @@ const PACE: Duration = Duration::from_secs(5);
 /// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes at 21 s).
 const WINDOW: Duration = Duration::from_secs(20);
 /// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot.
-const GAP_PACE: Duration = Duration::from_secs(60);
+pub(super) const GAP_PACE: Duration = Duration::from_secs(60);
 /// The daemon's model keeps its newest 100 messages per channel (sot-chat's `watch::MAX_KEPT`).
 const KEPT: usize = 100;
 
@@ -72,7 +72,7 @@ struct Watch {
 }
 
 /// Refusals that a later ask cannot clear: the mapping is read at daemon start, and a listing change follows a stale row.
-fn dead(code: ChatCode) -> bool {
+pub(super) fn dead(code: ChatCode) -> bool {
     matches!(code, ChatCode::StaleRow | ChatCode::StaleMapping | ChatCode::Unmapped)
 }
 
@@ -156,6 +156,11 @@ impl ChatOwner {
     /// or unsupported.
     pub(super) fn no_messages(&self) -> bool {
         self.fill() == Some(Fill::Complete) && self.watch.as_ref().is_some_and(|w| w.records.is_empty())
+    }
+
+    /// The watched channel's id.
+    pub(super) fn channel(&self) -> Option<&str> {
+        self.watch.as_ref().map(|w| w.target.channel.as_str())
     }
 
     pub(super) fn fill(&self) -> Option<Fill> {

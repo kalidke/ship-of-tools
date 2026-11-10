@@ -6,8 +6,11 @@ use crate::ui::render::quad::ScreenRect;
 use cosmic_text::FontSystem;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::chat::ChatRecord;
-use sot_protocol::ops::{ChatWatchRes, ChatWatchState};
-use std::time::Instant;
+use super::drawer::ChatDrawer;
+use super::row_channel_tests::{answer, mapped};
+use crate::ui::ResultRowIdentity;
+use sot_protocol::ops::{ChatCode, ChatWatchRes, ChatWatchState};
+use std::time::{Duration, Instant};
 
 fn rec_at(ts: &str, text: &str) -> ChatRecord {
     serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "ts": ts, "thread_ts": ts,
@@ -138,4 +141,126 @@ fn no_messages_shows_only_for_a_channel_read_whole_and_empty() {
     let mut offline = complete_with(now, &[]);
     offline.on_connection(&"h".to_string(), false, now);
     assert!(!offline.no_messages(), "after the link went, the snapshot is owed");
+}
+
+fn refused(row: &str, code: ChatCode) -> ChatEvt {
+    ChatEvt::Resolved { row: row.to_string(), reply: ChatReply::Refused(code) }
+}
+
+fn row_target() -> sot_protocol::ops::ChatTarget {
+    serde_json::from_value(serde_json::json!({ "row": "R", "workspace": "T1", "channel": "C1" })).unwrap()
+}
+
+fn shown(row: &str) -> Option<ResultRowIdentity> {
+    Some(ResultRowIdentity { host: "a".to_string(), workspace_id: row.to_string() })
+}
+
+/// Resolves `R` (shown, connected) at `t0`, delivers `evt`, and returns the drawer with the instant of the answer.
+fn answered_with(evt: impl FnOnce(&str) -> ChatEvt) -> (ChatDrawer, Instant) {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.on_connection(&"a".to_string(), true, t0);
+    d.tick(shown("R"), t0);
+    assert_eq!(d.title(), " chat · reading… ");
+    d.tick(shown("R"), t0 + Duration::from_millis(200));
+    d.on_evt(&"a".to_string(), evt("R"), t0 + Duration::from_millis(210));
+    (d, t0 + Duration::from_millis(210))
+}
+
+/// Whether a frame at `at` asks again, for the row `R` of host `a`.
+fn asks_at(d: &mut ChatDrawer, at: Instant) -> bool {
+    d.tick(shown("R"), at).0.iter().any(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. }))
+}
+
+/// The title of a mapped row whose watch is refused with `code` after the daemon's window.
+fn gap_title(code: ChatCode) -> String {
+    let (mut d, at) = answered_with(mapped);
+    let reply = ChatReply::Refused(code);
+    d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at + Duration::from_secs(25));
+    d.title()
+}
+
+#[test]
+fn every_outcome_has_a_state_a_next_action_and_words() {
+    let pace = Duration::from_secs(60);
+    let link = |d: &mut ChatDrawer, at: Instant| {
+        d.on_connection(&"a".to_string(), false, at);
+        d.on_connection(&"a".to_string(), true, at + Duration::from_millis(1));
+        let asked = asks_at(d, at + Duration::from_millis(2));
+        assert_eq!(d.title(), " chat · reading… ", "the old answer is forgotten");
+        asked
+    };
+
+    // No listing for the row: it is read again every frame.
+    let mut d = ChatDrawer::default();
+    d.tick(None, Instant::now());
+    assert_eq!(d.title(), " chat · waiting for this row's listing ");
+
+    // The host is not connected: asked at `Connected`.
+    let t0 = Instant::now();
+    d.tick(shown("R"), t0);
+    assert_eq!(d.title(), " chat · not connected ");
+    d.on_connection(&"a".to_string(), true, t0);
+    assert!(asks_at(&mut d, t0 + Duration::from_millis(200)));
+
+    // Unmapped, no usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame.
+    for (evt, words) in [
+        (answer("R", serde_json::json!({ "state": "unmapped" })), "the row's folder maps to no channel"),
+        (answer("R", serde_json::json!({ "state": "something_new" })), "the hub has no usable chat configuration: its daemon log says why"),
+        (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "this daemon has no chat: update it"),
+        (refused("R", ChatCode::Unavailable), "the chat runs on the hub, not on a"),
+    ] {
+        let (mut d, at) = answered_with(|_| evt);
+        assert_eq!(d.title(), format!(" chat · {words} "));
+        assert!(!asks_at(&mut d, at + pace * 5), "{words}: not on a frame");
+        assert!(link(&mut d, at + pace * 6), "{words}: at a link change");
+    }
+
+    // A new row does not inherit the old row's answer, and a late answer for the old row changes nothing.
+    let (mut d, at) = answered_with(|r| answer(r, serde_json::json!({ "state": "unmapped" })));
+    d.tick(shown("S"), at + Duration::from_secs(1));
+    assert_eq!(d.title(), " chat · reading… ");
+    d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(2));
+    assert_eq!(d.title(), " chat · reading… ", "an answer for a row no longer shown is nothing");
+
+    // A replaced row: the listing's new id is another row, and is asked.
+    let (mut d, at) = answered_with(|r| refused(r, ChatCode::StaleRow));
+    assert_eq!(d.title(), " chat · the row is gone or was replaced ");
+    assert!(!asks_at(&mut d, at + pace * 5));
+    d.tick(shown("R2"), at + pace * 6);
+    assert!(d.tick(shown("R2"), at + pace * 6 + Duration::from_millis(200)).0.iter().any(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. })));
+
+    // Any other refusal: asked after the pace, not before; once, with its answer cleared meanwhile.
+    let (mut d, at) = answered_with(|r| refused(r, ChatCode::TooManyWatches));
+    assert_eq!(d.title(), " chat · the hub could not answer: too many channels are watched ");
+    assert!(!asks_at(&mut d, at + pace - Duration::from_secs(1)), "too soon");
+    assert!(asks_at(&mut d, at + pace), "after the pace");
+    assert!(!asks_at(&mut d, at + pace + Duration::from_millis(16)), "one resolve, not one a frame");
+    assert_eq!(d.title(), " chat · reading… ");
+
+    // Mapped: reading, then nothing after the channel once the snapshot is whole.
+    let (mut d, at) = answered_with(mapped);
+    assert_eq!(d.title(), " chat · C1 reading… ");
+    let reply = ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
+    let outs = d.on_evt(&"a".to_string(), ChatEvt::Watched { target: row_target(), reply }, at);
+    let page = serde_json::from_value(serde_json::json!({ "records": [], "next": null })).unwrap();
+    d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
+    assert_eq!(d.title(), " chat · C1 ");
+
+    // A gap names its reason; a target refused for good shows its code's words, and is not asked again.
+    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the hub's chat service is not running: its daemon log says why ");
+    assert_eq!(gap_title(ChatCode::Busy), " chat · C1 not up to date: the chat service is busy ");
+    for code in [ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::Unmapped] {
+        assert_eq!(gap_title(code), format!(" chat · C1 {} ", code.text()));
+    }
+    let (mut d, at) = answered_with(mapped);
+    (0..40).for_each(|s| drop(d.tick(shown("R"), at + Duration::from_secs(s))));
+    assert_eq!(d.title(), " chat · C1 not up to date: no snapshot ");
+}
+
+fn history_req(outs: &[Out]) -> sot_protocol::ops::ChatHistoryReq {
+    match outs {
+        [(_, OutgoingReq::ChatHistory { req })] => req.clone(),
+        _ => panic!("one read expected"),
+    }
 }

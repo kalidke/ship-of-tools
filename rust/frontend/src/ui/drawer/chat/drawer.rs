@@ -10,10 +10,9 @@ use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
-#[cfg(test)]
-use super::owner::Fill;
-use super::owner::{ChatOwner, Out};
-use super::row_channel::RowChannel;
+use super::owner::{dead, ChatOwner, Fill, Out};
+use super::row_channel::{RowChannel, Stand};
+use sot_protocol::ops::ChatCode;
 use super::view::ChatView;
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
@@ -102,13 +101,16 @@ impl ChatDrawer {
         match evt {
             // The wanted row's answer decides its watch: `mapped` watches, anything else (unmapped, invalid, refused, an
             // old daemon) ends it. An answer for a row no longer wanted is nothing.
-            ChatEvt::Resolved { row, reply } if self.rows.wants(host, &row) => match reply {
-                ChatReply::Done(ChatResolveRes::Mapped { workspace, channel, .. }) => {
-                    let target = ChatTarget { row, workspace, channel };
-                    self.owner_outs(|o| o.watch(host.clone(), target, now))
+            ChatEvt::Resolved { row, reply } if self.rows.wants(host, &row) => {
+                self.rows.answered(&reply, now);
+                match reply {
+                    ChatReply::Done(ChatResolveRes::Mapped { workspace, channel, .. }) => {
+                        let target = ChatTarget { row, workspace, channel };
+                        self.owner_outs(|o| o.watch(host.clone(), target, now))
+                    }
+                    _ => self.owner_outs(ChatOwner::stop),
                 }
-                _ => self.owner_outs(ChatOwner::stop),
-            },
+            }
             ChatEvt::Resolved { .. } => Vec::new(),
             ChatEvt::History { req, reply } => {
                 let orphan = self.flight.answered(host, &req);
@@ -119,6 +121,22 @@ impl ChatDrawer {
             }
             evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
         }
+    }
+
+    /// The title: the channel, then the words of the outcome (the row's, or for a mapped row the fill's).
+    pub(in crate::ui) fn title(&self) -> String {
+        let host = self.rows.host();
+        let words = match (self.rows.stand(), self.owner.fill()) {
+            (Stand::Mapped, Some(Fill::Needed | Fill::Reading)) => Stand::Resolving.words(host),
+            (Stand::Mapped, Some(Fill::Complete)) => String::new(),
+            (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => "the hub's chat service is not running: its daemon log says why".into(),
+            // A target refused for good is asked again only at a row or link change.
+            (Stand::Mapped, Some(Fill::Gap(Some(code)))) if dead(code) => code.text().into(),
+            (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no snapshot", ChatCode::text)),
+            (stand, _) => stand.words(host),
+        };
+        let channel = self.owner.channel().map(|c| format!("{c} ")).unwrap_or_default();
+        format!(" chat · {channel}{}", if words.is_empty() { String::new() } else { format!("{words} ") })
     }
 
     /// Whether the drawer says `no messages`.

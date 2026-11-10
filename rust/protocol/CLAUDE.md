@@ -106,7 +106,7 @@ name is in this crate's one op table.
     a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
-    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`), never
+    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows), never
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
