@@ -394,7 +394,7 @@ fi
 if [ "$mail_pending" -gt 0 ]; then
     # ONE block per pending batch, bounded by a tick file keyed by session.
     mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
-    mail_mark="$mail_total"
+    mail_mark="$mail_total:$mail_pending"
     if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_mark" ]; then
         mkdir -p "$HOME_DIR/state" 2>/dev/null || true
         # FAIL OPEN when the tick cannot be recorded. With no tick there is

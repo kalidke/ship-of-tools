@@ -263,6 +263,7 @@ check "a marker present only in the Stop payload still stamps, no nudge" case_ma
 export CLAUDE_CODE_SESSION_ID=mail-turn
 check "pending directed mail blocks the stop, naming comm-poll" case_pending_mail_blocks_naming_comm_poll
 check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
+check "a partial poll leaves the turn blocked until the rest is read" case_a_partial_poll_leaves_the_turn_blocked_until_the_rest_is_read
 check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
 check "a self-echo frame never blocks the stop" case_self_echo_never_blocks
 check "H1: a line addressed to another handle never blocks the stop" case_a_line_to_another_handle_never_blocks
