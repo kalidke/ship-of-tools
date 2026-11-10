@@ -62,6 +62,12 @@ The title does not show the state of the Slack connection. A socket outage shows
 `not up to date`. The drawer keeps the records it holds until a new snapshot replaces them. `no messages` appears only
 for a channel that was read whole and holds none.
 
+## When the window's link drops
+
+The records the drawer holds stay on screen and the title says `not connected`. When the link to the computer comes back,
+the window watches the channel again and reads a new snapshot, which replaces the records; a lost chat feed on a link that
+stays up does the same. A draft is kept through both.
+
 ## The draft
 
 With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then where it goes (`to <channel>`, or `reply in thread of` the parent's time for a draft begun in a thread, and for the next one while a thread is open) and, if the
