@@ -32,6 +32,11 @@ mod row_channel_tests;
 mod thread_tests;
 #[cfg(test)]
 mod view_tests;
+/// The chat's native State fixture: a `State` exists only inside a native window, so it runs in the window_minimized
+/// target's fixtures child (`ui/app/native_children.rs`).
+#[cfg(all(test, feature = "test-window-progress"))]
+#[path = "native_fixture_tests.rs"]
+mod native_fixture;
 
 impl State {
     /// Sends what the owner asked for; a request that cannot be queued is dropped with a warning (the owner's pace, or
