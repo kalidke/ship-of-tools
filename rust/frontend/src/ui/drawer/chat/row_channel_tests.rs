@@ -153,13 +153,26 @@ fn answered(req: &ChatHistoryReq) -> ChatEvt {
     ChatEvt::History { req: req.clone(), reply: page() }
 }
 
-/// R shown from `from` ms, resolved, mapped to `channel` and complete: the snapshot read in flight.
-fn reading(d: &mut ChatDrawer, t0: Instant, from: u64, channel: &str) -> ChatHistoryReq {
+fn host_b() -> HostKey {
+    "b".to_string()
+}
+
+fn wanted_on(host: HostKey, row: &str) -> Option<ResultRowIdentity> {
+    Some(ResultRowIdentity { host, workspace_id: row.to_string() })
+}
+
+/// Row `row` shown on `host` from `from` ms, resolved, mapped to `channel` and complete: the snapshot read in flight.
+fn reading_on(d: &mut ChatDrawer, host: &HostKey, t0: Instant, from: u64, row: &str, channel: &str) -> ChatHistoryReq {
     let at = |ms: u64| t0 + Duration::from_millis(ms);
-    d.tick(wanted("R"), at(from));
-    d.tick(wanted("R"), at(from + 150));
-    d.on_evt(&host(), mapped_to("R", channel), at(from + 160));
-    history(&d.on_evt(&host(), complete_to("R", channel), at(from + 170)))
+    d.tick(wanted_on(host.clone(), row), at(from));
+    d.tick(wanted_on(host.clone(), row), at(from + 150));
+    d.on_evt(host, mapped_to(row, channel), at(from + 160));
+    history(&d.on_evt(host, complete_to(row, channel), at(from + 170)))
+}
+
+/// R shown on the first host from `from` ms: the snapshot read in flight.
+fn reading(d: &mut ChatDrawer, t0: Instant, from: u64, channel: &str) -> ChatHistoryReq {
+    reading_on(d, &host(), t0, from, "R", channel)
 }
 
 /// A link change clears the host's reads in flight: fe-net ends a read with the connection and sends no reply, so an entry
@@ -237,4 +250,51 @@ fn a_frame_during_the_read_keeps_it() {
     d.tick(wanted("R"), at(186));
     assert!(d.on_evt(&host(), answered(&read), at(200)).is_empty());
     assert_eq!(d.fill(), Some(Fill::Complete), "the read's reply fills after a frame");
+}
+
+/// Another host's link change leaves this host's reads in flight: the orphan's reply is still dropped, and the held read
+/// goes after it.
+#[test]
+fn another_hosts_link_change_keeps_this_hosts_reads_in_flight() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.on_connection(&host_b(), true, t0);
+    let old = reading(&mut d, t0, 0, "C1");
+    d.tick(None, at(200));
+    d.tick(wanted("R"), at(300));
+    d.tick(wanted("R"), at(450));
+    d.on_evt(&host(), mapped("R"), at(460));
+    assert!(d.on_evt(&host(), complete("R"), at(470)).is_empty(), "held behind the orphan");
+    d.on_connection(&host_b(), false, at(500));
+    d.on_connection(&host_b(), true, at(510));
+    let sent = d.on_evt(&host(), answered(&old), at(520));
+    assert_eq!(d.fill(), Some(Fill::Reading), "the old reply installed nothing");
+    assert_eq!(history(&sent), old, "then the held read goes");
+}
+
+/// A link change cancels that host's held read: it never goes out later, when another host's reply releases the held ones,
+/// and a return to the row reads at once.
+#[test]
+fn a_link_change_cancels_that_hosts_held_read() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.on_connection(&host_b(), true, t0);
+    let old = reading(&mut d, t0, 0, "C1");
+    d.tick(None, at(200));
+    d.tick(wanted("R"), at(300));
+    d.tick(wanted("R"), at(450));
+    d.on_evt(&host(), mapped("R"), at(460));
+    assert!(d.on_evt(&host(), complete("R"), at(470)).is_empty(), "held behind the orphan");
+    d.on_connection(&host(), false, at(600));
+    d.on_connection(&host(), true, at(610));
+    let b_read = reading_on(&mut d, &host_b(), t0, 700, "S", "C1");
+    assert!(d.on_evt(&host_b(), answered(&b_read), at(880)).is_empty(), "no stray read of the old watch goes out");
+    d.tick(wanted("R"), at(900));
+    d.tick(wanted("R"), at(1050));
+    d.on_evt(&host(), mapped("R"), at(1060));
+    assert_eq!(history(&d.on_evt(&host(), complete("R"), at(1070))), old, "the re-watch's read goes at once");
 }
