@@ -371,6 +371,14 @@ owned by `docs/CLAUDE.md`.
 - **COMM-LIST-WINDOW-NO-SESSIONS** [session] On a Windows window computer, `comm-list.sh`'s last line said the window's
   own handle "declares no sessions" while the same listing showed that computer's rows, so one of the two reads the
   wrong registry. Seen by a session operating the product there under 0.7.1-rc.2.
+- **COMM-GUARD-RACES-ENV** [note] The comm-home guard (`rust/backend/src/comm/mod.rs`) catches a test that resolves
+  the comm folder from the process environment only when no concurrent guarded test holds `SOT_COMM_HOME` at that
+  moment: guarded tests set it under the environment lock and remove it on drop (`agents/support_tests.rs`), so an
+  unguarded reader passes while one does and aborts through `HOME` when none does. On 2026-11-10 such a test passed
+  the scoped local gate on an idle server and aborted the unscoped gate and the hosted runs under load (the same job,
+  filters and home; reproduced: alone it aborts 3 of 3, its shard at 64 threads passes 4 of 4 and at 2 threads aborts
+  3 of 3). Decided fix: under test, a resolution from the process environment aborts unless the thread holds the
+  environment lock, so the class is caught on every run, not by interleaving.
 
 ## agents
 
@@ -741,12 +749,6 @@ owned by `docs/CLAUDE.md`.
   a 120 second bound; on 2026-11-10 the mirror served one 17.5 MB package too slowly, the step timed out (exit 124)
   before any build or test, and a re-run of the job passed; the same stall ended a second run that morning. A cached
   package set, or the bound widened only for the download, would keep a mirror stall from reading as a red run.
-- **GATE-SCOPED-MISSES-SHARED-CALLEE** [note] A change to the comm-home resolver, which every daemon module's tests
-  reach, passed the local gate scoped to its base (`ALLDONE SCOPED`, the backend's tests among its jobs) while the
-  unscoped gate, which runs the daemon's test binary split per test, and the hosted runs on all three systems aborted
-  on tests in another module that the change's guard refused (2026-11-10). How a scoped run selects the backend's tests
-  is not yet read (`scripts/tests/rc-gate.sh`); until it is, a daemon change to code every module calls runs the
-  unscoped gate before it lands.
 
 ## chat
 
@@ -864,6 +866,8 @@ owned by `docs/CLAUDE.md`.
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
 - **TESTS-REACH-LIVE-COMM-HOME** (messaging) closed by the landing that fixes it, 2026-11-10: four destroy tests set no `SOT_COMM_HOME`, so a test run started from a session pruned, and took the registry lock of, that session's live comm folder; under test the one resolver now refuses a comm folder not beneath the temporary folder, so a test that forgets aborts the run with its name; every fixture that inherited the process environment's folder (the destroy, reauth, create-rollback and agent-environment fixtures) is isolated, and three argv tests now read no environment; a second landing isolated the four tests that resolved the folder through `HOME` or `USERPROFILE` with `SOT_COMM_HOME` unset (the gate's and the hosted runners' setting), one on every platform and three Windows argv tests.
+- **GATE-SCOPED-MISSES-SHARED-CALLEE** (distribution) closed as not a gate defect, 2026-11-10: the scoped gate ran the
+  same daemon test job, filters and home as the unscoped one; the test it passed was a race (COMM-GUARD-RACES-ENV).
 - **BENEATH-TWO-WRITERS-WINDOWS** (platform) closed by the landing that fixes it, 2026-11-10: on Windows a write beneath a root kept its renamed file's handle, which shares no deletion, open through the folder's sync, so a second writer's rename over the same name was refused (access denied) for as long as that sync ran and failed once it outlasted the retry window, as `two_writers_of_one_name_each_publish_a_whole_file` did on a hosted run; the handle now closes at the rename, before the folder's sync.
 - **CHAT-GAP-ASKS-DEAD-TARGET** (fe-ui) closed by the landing that fixes it, 2026-11-09: the chat owner keeps the daemon's refusal in its gap (`Gap(Some(code))`), asks `stale_row`, `stale_mapping` and `unmapped` no more until a row or link change, and shows a gap, for refused snapshot reads too with the read's code, only after the daemon's slowest snapshot; `too_many_watches` and `unavailable` keep the once-a-minute ask on purpose, since each can clear.
 - **MONITOR-TENANT-REACHES-REPL** (fe-ui) closed by the landing that fixes it, 2026-11-09: `help::Pane::of_drawer` is the one exhaustive map from tenant to pane, and in a tenant other than the REPL (Terminal, Monitor, Help, Chat) typing, paste, the line-scroll chords and the wheel no longer reach the REPL; `help::DrawerInput::of` is the one decision their handlers match.

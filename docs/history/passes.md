@@ -1747,5 +1747,6 @@ A landing's record goes here, with its measured times; the package page holds on
   running each of the 1,526 unit tests in its own process with the guard printing instead of aborting, under both
   settings) and three on Windows (found by reading) are isolated; about 5 test lines. Main was red from 07:14 to this
   landing. Where the minutes went: the build (15 minutes); the unscoped gate (3 minutes, `ALLDONE`), run instead of the
-  scoped one because the scoped gate had passed the guard (GATE-SCOPED-MISSES-SHARED-CALLEE noted); no review (test
+  scoped one because the scoped gate had passed the guard (GATE-SCOPED-MISSES-SHARED-CALLEE noted, then closed: a
+  diagnosis found the scoped gate ran the same job and the test was a race, COMM-GUARD-RACES-ENV); no review (test
   isolation only, read by the session).
