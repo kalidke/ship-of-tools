@@ -194,8 +194,8 @@ of each.
     GitHub ends the poll at the code's expiry, by elapsed time").
 13. **Where the tools install is fixed by one list.** Every code file directly in each folder `comm/bin-folders.txt`
     lists (`agents`, `agents/sot-fe`, `agents/spawn`, `agents/worktree`) installs flat into the comm folder's `bin/`,
-    except that `sot-fe`'s four parts (`sot-fe-request.sh`, `sot-fe-repl.sh`, `sot-fe-row.sh`, `sot-fe-version.sh`) are
-    embedded in the installed `sot-fe` and are no files of their own (`src/comm_bin.jl`); nothing in `claude/` or
+    except that every file `sot-fe` sources by a part line (`src/comm_bin.jl`, whatever their number) is
+    embedded in the installed `sot-fe` and is no file of its own; nothing in `claude/` or
     `codex/` installs there (the launchers and the `PATH` wrappers reach `~/.local/bin` through the installer's own
     stage, `src/sources.jl`), and the wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
     `test/install_tests.jl` ("the agents tools install flat from the four listed folders"), over the installer's own
