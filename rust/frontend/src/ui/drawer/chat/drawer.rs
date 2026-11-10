@@ -61,7 +61,8 @@ impl Flight {
         }
     }
 
-    /// A link changed: nothing of it is in flight, and no reply will come.
+    /// A link changed: nothing of that host is in flight, and no reply will come. Another host's reads stay. A read of
+    /// that host still held is cancelled by `owner_outs`, which sees the owner drop it (a link change is a give-up).
     fn clear(&mut self, host: &HostKey) {
         self.reads.remove(host);
     }
@@ -122,9 +123,10 @@ impl ChatDrawer {
         self.owner.fill()
     }
 
-    /// Runs `f` on the owner. A read the owner no longer holds and that was not answered (its watch stopped or was
-    /// replaced) is given up before the outs are sent, so a read `f` itself asks for is never cancelled by the same call. The check compares reads by value, so an owner call must not give a read up and ask
-    /// for an equal one in the same call.
+    /// Runs `f` on the owner. A read the owner dropped (its watch stopped or replaced, or its link changed) is given up before
+    /// the outs are sent, so a read `f` itself asks for is never cancelled by the same call; a read answered is already out
+    /// of the set. The check compares reads by value, so an owner call must not give a read up and ask for an equal one in
+    /// the same call.
     fn owner_outs(&mut self, f: impl FnOnce(&mut ChatOwner) -> Vec<Out>) -> Vec<Out> {
         let before = self.owner.reading();
         let outs = f(&mut self.owner);
