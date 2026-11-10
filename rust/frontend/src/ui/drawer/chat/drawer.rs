@@ -115,13 +115,16 @@ impl ChatDrawer {
         }
         outs.extend(step.resolve);
         outs.extend(self.owner_outs(|o| o.tick(now)));
+        outs.extend(self.thread_outs(|t| t.tick(now)));
         (outs, step.settling)
     }
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
         self.flight.clear(host);
-        self.owner_outs(|o| o.on_connection(host, up, now))
+        let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
+        outs.extend(self.thread_outs(|t| t.on_connection(host, up)));
+        outs
     }
 
     pub(super) fn on_bus_lost(&mut self, host: &HostKey, bus: &str, now: Instant) -> Vec<Out> {
@@ -145,7 +148,11 @@ impl ChatDrawer {
             ChatEvt::Resolved { .. } => Vec::new(),
             ChatEvt::History { req, reply } => {
                 let orphan = self.flight.answered(host, &req);
-                let mut outs = if orphan { Vec::new() } else { self.owner_outs(|o| o.on_evt(host, ChatEvt::History { req, reply }, now)) };
+                let mut outs = match (orphan, req.thread.is_some()) {
+                    (true, _) => Vec::new(),
+                    (false, true) => self.thread_outs(|t| t.on_reply(host, &req, reply, now)),
+                    (false, false) => self.owner_outs(|o| o.on_evt(host, ChatEvt::History { req, reply }, now)),
+                };
                 let held = std::mem::take(&mut self.flight.held);
                 outs.extend(self.flight.send(held));
                 outs
@@ -203,7 +210,7 @@ impl ChatDrawer {
             (stand, _) => stand.words(host),
         };
         let channel = self.owner.channel().map(|c| format!("{c} ")).unwrap_or_default();
-        let thread = if self.thread.is_some() { "· thread " } else { "" };
+        let thread = self.thread.as_ref().map_or_else(String::new, |t| format!("· thread {}", t.words()));
         format!(" chat · {channel}{thread}{}", if words.is_empty() { String::new() } else { format!("{words} ") })
     }
 
@@ -239,19 +246,37 @@ impl ChatDrawer {
         self.view.latest();
     }
 
-    /// ArrowRight: opens the marked message's thread. The channel's view is parked in it, so its position and mark return at close.
-    /// Nothing while a thread is open or none is marked.
-    pub(in crate::ui) fn open_thread(&mut self) {
-        let (Some(mark), None) = (self.view.mark.clone(), &self.thread) else { return };
-        let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return };
-        self.thread = Some(Thread::new(parent.clone(), deleted, std::mem::take(&mut self.view)));
+    /// ArrowRight: opens the marked message's thread. The channel's view is parked in it, so its position and mark return at close;
+    /// the owner holds no anchor and asks for no page meanwhile. Nothing while a thread is open or none is marked.
+    pub(in crate::ui) fn open_thread(&mut self) -> Vec<Out> {
+        let Some(row) = self.rows.row().cloned() else { return Vec::new() };
+        let (Some(mark), Some(target), None) = (self.view.mark.clone(), self.watch_for(&row), &self.thread) else { return Vec::new() };
+        let Some((parent, deleted)) = self.owner.records().into_iter().find(|(r, _)| r.ts == mark) else { return Vec::new() };
+        self.thread = Some(Thread::new(row.host, target.clone(), parent.clone(), deleted, std::mem::take(&mut self.view)));
+        self.owner.anchored(None);
+        self.owner.reaches(false);
+        self.thread_outs(Thread::start)
     }
 
     /// Escape: closes the open thread; the channel's view returns, its mark on the parent or, if that gave way, passed on.
     pub(in crate::ui) fn close_thread(&mut self) -> bool {
         let Some(t) = self.thread.take() else { return false };
+        t.reading.iter().for_each(|req| self.flight.abandon(t.host(), req));
         self.view = t.parked;
+        self.owner.reserve(0);
         true
+    }
+
+    /// Runs `f` on the open thread, tells the owner how much of the bound it holds, and sends its reads through the set.
+    fn thread_outs(&mut self, f: impl FnOnce(&mut Thread) -> Vec<Out>) -> Vec<Out> {
+        let outs = self.thread.as_mut().map(f).unwrap_or_default();
+        self.owner.reserve(self.thread.as_ref().map_or(0, Thread::len));
+        self.flight.send(outs)
+    }
+
+    #[cfg(test)]
+    pub(super) fn thread_len(&self) -> usize {
+        self.thread.as_ref().map_or(0, Thread::len)
     }
 
     /// The chat is not shown: no record is prepared.

@@ -167,7 +167,7 @@ pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
         Some(Move::Scroll(up, step)) => state.chat.scroll(up, step),
         Some(Move::Latest) => state.chat.latest(),
         Some(Move::Mark(older)) => state.chat.mark(older),
-        Some(Move::Thread) => state.chat.open_thread(),
+        Some(Move::Thread) => state.with_chat(|c, _| c.open_thread()),
         None => return false,
     }
     state.window.request_redraw();
