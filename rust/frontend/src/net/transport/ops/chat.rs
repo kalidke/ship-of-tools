@@ -25,6 +25,8 @@ pub(crate) enum ChatEvt {
     History { req: ChatHistoryReq, reply: ChatReply<ChatHistoryRes> },
     /// Never `Refused`: a refusal is `Done(ChatPostRes::Refused)`, and anything that may have posted is `Done(Unknown)`.
     Posted { req: ChatPostReq, reply: ChatReply<ChatPostRes> },
+    /// Refused here, never written: the connection's daemon does not say its door posts plain text (T20), so the post was not made.
+    PostNotSent { req: ChatPostReq },
     Changed(ChatChangedEvt),
     Status(ChatStatusEvt),
     /// A pushed `chat.changed` or `chat.status` that did not parse: what it carried is lost, so the owner resyncs.

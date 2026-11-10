@@ -40,13 +40,16 @@ pub(super) enum Fill {
     Gap(Option<ChatCode>),
 }
 
-/// What the last post came to. `Unknown` means the post may exist: a post the owner never wrote is `Refused`.
+/// What the last post came to. `Unknown` means the post may exist: a post the owner never wrote is `Refused`,
+/// and one fe-net never wrote (the connection's daemon does not post plain text) is `Outdated`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PostShown {
     Posted(Ts),
     Refused(ChatCode),
     Limited(u64),
     Unknown,
+    /// Refused before it was written: the connection's daemon does not post plain text (T20).
+    Outdated,
 }
 
 struct Watch {
@@ -235,6 +238,12 @@ impl ChatOwner {
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),
             ChatEvt::Posted { req, reply } => {
                 self.on_posted(host, &req, reply);
+                Vec::new()
+            }
+            ChatEvt::PostNotSent { req } => {
+                if self.posting.take_if(|(h, r)| h == host && *r == req).is_some() {
+                    self.shown = Some(PostShown::Outdated);
+                }
                 Vec::new()
             }
             ChatEvt::Changed(c) => {

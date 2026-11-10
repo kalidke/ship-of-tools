@@ -188,7 +188,11 @@ where
                 None => closed = true,
                 Some(OutgoingReq::SelectionSet { req }) if req.drawing.is_some() && !session.takes_drawing => {
                     // This daemon's hello did not say it reads a drawing; it would read the request as a clear.
-                    emit_selection_unsupported(evt_tx, &host, req);
+                    answer_locally(evt_tx, &host, window, IncomingEvt::Selection { req, reply: SelectionReply::Unsupported });
+                }
+                Some(OutgoingReq::ChatPost { req }) if !session.posts_plain_text => {
+                    // This daemon's door sends the text as given, so `<!channel>` would ping; the post is never written.
+                    answer_locally(evt_tx, &host, window, IncomingEvt::Chat(ChatEvt::PostNotSent { req }));
                 }
                 Some(req) => {
                     let id = take_id(&mut next_id);
@@ -219,9 +223,11 @@ where
     }
 }
 
-/// A drawing this connection's daemon does not read, ended as an older daemon's unknown-op answer would end it.
-fn emit_selection_unsupported(evt_tx: &StdSender<(HostKey, IncomingEvt)>, host: &HostKey, req: sot_protocol::ops::SelectionSetReq) {
-    let _ = evt_tx.send((host.clone(), IncomingEvt::Selection { req, reply: SelectionReply::Unsupported }));
+/// A request this connection's daemon cannot take (a drawing it does not read, a post it would send unescaped), ended here
+/// by `evt` and never written; the window is woken to show it.
+fn answer_locally<Wn: Redraw>(evt_tx: &StdSender<(HostKey, IncomingEvt)>, host: &HostKey, window: &Wn, evt: IncomingEvt) {
+    let _ = evt_tx.send((host.clone(), evt));
+    window.request_redraw();
 }
 
 /// The disconnect for a daemon that has sent no byte for `silence`.

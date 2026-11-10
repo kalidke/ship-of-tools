@@ -311,18 +311,27 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
-/// The accepted hello sets the connection's `takes_drawing` from what the daemon said; a hello without the field, an
-/// older daemon's, leaves it false.
+/// The accepted hello sets the connection's `takes_drawing` and `posts_plain_text` each from what the daemon said; a hello
+/// without a field leaves it false. An earlier release's hello (a drawing taken, no word on plain text) tells the two
+/// apart: the window may send it a drawing and must not post to it.
 #[test]
-fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing() {
+fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plain_text() {
     let _env = crate::net::state::test_env::set_test_env();
-    let mut says = hello_ok();
-    says["takes_drawing"] = serde_json::json!(true);
-    for (reply, want) in [(says, true), (hello_ok(), false)] {
+    let with = |drawing: bool, plain: bool| {
+        let mut says = hello_ok();
+        if drawing {
+            says["takes_drawing"] = serde_json::json!(true);
+        }
+        if plain {
+            says["posts_plain_text"] = serde_json::json!(true);
+        }
+        says
+    };
+    for (reply, want) in [(with(true, true), (true, true)), (with(false, false), (false, false)), (with(true, false), (true, false)), (with(false, true), (false, true))] {
         let host: HostKey = "takes-drawing".to_string();
-        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want };
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want.0, posts_plain_text: !want.1 };
         accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
-        assert_eq!(session.takes_drawing, want);
+        assert_eq!((session.takes_drawing, session.posts_plain_text), want);
     }
 }
 
@@ -563,7 +572,9 @@ async fn fake_far_daemon(conn: tokio::io::DuplexStream) {
     let (rx, mut tx) = tokio::io::split(conn);
     let mut rx = codec::buffered(rx);
     let Ok((hello, _)) = codec::read_frame(&mut rx).await else { return };
-    if codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_ok()).with_rev(0), None).await.is_err() {
+    // It posts plain text, so the chat post this test sends is written.
+    let hello_res = serde_json::json!({ "session_id": "sess-1", "revision": 0, "snapshot_pending": false, "posts_plain_text": true });
+    if codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_res).with_rev(0), None).await.is_err() {
         return;
     }
     if hello.payload["role"] == sot_protocol::HANDOFF_ROLE {
