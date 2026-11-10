@@ -1,10 +1,12 @@
 use std::time::{Duration, Instant};
 
 use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTarget};
-use sot_protocol::chat::MAX_NAME;
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
+use super::{apply_name, name_step, NameStep};
+use crate::ui::persist::settings::Settings;
+use sot_protocol::chat::MAX_NAME;
 use super::drawer::ChatDrawer;
 use super::draft_edit;
 use super::row_channel_tests::{answer, mapped};
@@ -201,7 +203,6 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     assert_eq!(d.send(Some(&r), Some("Ada"), at).unwrap_err(), "nothing to post", "blank is nothing");
     d.edit(Some(&r), Edit::Backspace).unwrap();
     d.edit(Some(&r), Edit::Text("a < b")).unwrap();
-    assert!(d.send(Some(&r), None, at).unwrap_err().contains("[chat] name"));
     assert_eq!(d.send(None, Some("Ada"), at).unwrap_err(), "no row to write for");
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
@@ -328,6 +329,38 @@ fn the_name_prompt_edits_the_name_not_the_draft_and_escape_keeps_it() {
 }
 
 #[test]
+fn enter_with_no_name_opens_the_prompt_and_sends_nothing_until_the_next_enter() {
+    let r = row("R");
+    let (mut d, at) = watching();
+    // No draft: nothing to post, and no prompt.
+    assert_eq!(d.send(Some(&r), None, at).unwrap_err(), "nothing to post");
+    assert_eq!(d.asking(), None);
+
+    d.edit(Some(&r), Edit::Text("hello")).unwrap();
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty(), "no post is sent");
+    assert_eq!(d.asking(), Some(""));
+    d.edit_name(Edit::Text("Ad")).unwrap();
+    assert!(d.send(Some(&r), None, at).unwrap().is_empty());
+    assert_eq!(d.asking(), Some("Ad"), "Enter again keeps a name half typed");
+
+    // Saved (apply_name's part), the next Enter posts under the name.
+    d.cancel_name();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
+    assert_eq!(d.asking(), None);
+}
+
+#[test]
+fn enter_with_no_name_on_a_row_that_is_not_mapped_says_why_and_opens_no_prompt() {
+    let (mut d, at) = watching();
+    d.edit(Some(&row("R")), Edit::Text("hello")).unwrap();
+    d.on_connection(&"a".to_string(), false, at);
+    let words = d.send(Some(&row("R")), None, at).unwrap_err();
+    assert!(words.starts_with("not posted: ") && words.contains("not connected"), "{words}");
+    assert_eq!(d.asking(), None);
+}
+
+#[test]
 fn the_prompt_ends_where_the_view_it_asked_in_ends_and_keeps_the_draft() {
     // The same row and mapping: it stays, and Enter again does not empty a name half typed.
     let (mut d, at) = asking();
@@ -386,4 +419,79 @@ fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height()
     assert_eq!(compose_rows(&d.compose_text(false).unwrap(), 40, 10), ["Name for your chat posts: Ada"], "no block unfocused");
     assert_eq!(compose_rows(&d.compose_text(true).unwrap(), 40, 10), ["Name for your chat posts: Ada█"]);
     assert!(compose_rows(&d.compose_text(true).unwrap(), 40, 0).is_empty(), "never more rows than the height");
+}
+
+fn step(action: Option<Action>, key: Key, repeat: bool, mods: (bool, bool, bool)) -> Option<NameStep<'static>> {
+    // The keys here are characters or named keys: `Edit::Text` borrows its text from the key, so the table leaks it.
+    let key: &'static Key = Box::leak(Box::new(key));
+    name_step(action, key, repeat, mods)
+}
+
+#[test]
+fn name_step_says_what_each_key_is_to_the_prompt() {
+    let none = (false, false, false);
+    assert_eq!(step(Some(Action::ChatSend), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Save));
+    assert_eq!(step(Some(Action::ReturnNav), Key::Named(NamedKey::Escape), false, none), Some(NameStep::Cancel));
+    assert_eq!(step(Some(Action::Paste), ch("v"), false, (true, false, false)), Some(NameStep::Paste));
+    assert_eq!(step(Some(Action::ChatNewline), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Edit(Edit::Newline)));
+    assert_eq!(step(None, ch("a"), false, none), Some(NameStep::Edit(Edit::Text("a"))));
+    assert_eq!(step(None, Key::Named(NamedKey::Space), false, none), Some(NameStep::Edit(Edit::Space)));
+    assert_eq!(step(None, Key::Named(NamedKey::Backspace), false, none), Some(NameStep::Edit(Edit::Backspace)));
+    // A held Enter, Escape or paste is taken and does nothing.
+    for a in [Action::ChatSend, Action::ReturnNav, Action::Paste] {
+        assert_eq!(step(Some(a), ch("x"), true, none), Some(NameStep::Held));
+    }
+    // A reading key is not the prompt's, so it still scrolls, marks and opens a thread.
+    for a in [Action::ScrollPageUp, Action::ChatLatest, Action::ChatMarkOlder, Action::ChatThreadOpen] {
+        assert_eq!(step(Some(a), Key::Named(NamedKey::ArrowUp), false, none), None);
+    }
+}
+
+/// A folder under the temporary one, removed when the test ends, a failed assertion included.
+struct Folder(std::path::PathBuf);
+
+impl Folder {
+    fn new(name: &str) -> Folder {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Folder(dir)
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A settings file under a folder that goes with the test; the setting is as loaded from it.
+fn settings_in(dir: &std::path::Path) -> (Settings, std::path::PathBuf) {
+    let f = dir.join("settings.toml");
+    std::fs::write(&f, "[trust]\nroot_prefix = \"/w\"\n").unwrap();
+    (Settings { source: Some(f.clone()), ..Settings::default() }, f)
+}
+
+#[test]
+fn apply_name_saves_closes_the_prompt_and_the_next_enter_posts_under_it() {
+    let dir = Folder::new("sot-name-apply");
+    let env = sot_platform::host::env::Env::empty();
+    let (mut d, at) = asking();
+    let (mut settings, file) = settings_in(&dir.0);
+    // A refusal says why, leaves the prompt open, the file and the setting as they were.
+    assert!(apply_name(&mut d, &mut settings, &env).contains("empty"));
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (Some(""), None));
+    // A file the write cannot edit is refused too.
+    std::fs::write(&file, "[trust\n").unwrap();
+    d.edit_name(Edit::Text("Ada")).unwrap();
+    assert!(apply_name(&mut d, &mut settings, &env).contains("will not edit"));
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (Some("Ada"), None));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "[trust\n");
+    // A good file: saved, the prompt closed, the setting set, the draft kept, and the next Enter posts under the name.
+    std::fs::write(&file, "[trust]\nroot_prefix = \"/w\"\n").unwrap();
+    let words = apply_name(&mut d, &mut settings, &env);
+    assert!(words.starts_with("chat name saved to"), "{words}");
+    assert_eq!((d.asking(), settings.chat_name.as_deref()), (None, Some("Ada")));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "[trust]\nroot_prefix = \"/w\"\n\n[chat]\nname = \"Ada\"\n");
+    let req = posted(d.send(Some(&row("R")), settings.chat_name.as_deref(), at).unwrap());
+    assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
 }

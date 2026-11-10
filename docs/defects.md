@@ -893,6 +893,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-NAME-ASKED-ONCE** (fe-ui) closed by the landing that fixes it, 2026-11-10: Enter in the Chat drawer with a draft and no `[chat] name` refused to post and sent the person to a hand edit of `settings.toml` and a restart; the drawer's foot now asks for the name once (`Name for your chat posts:`), checks it (`check_chat_name`), writes it durably into the settings file the window loaded, or the per-user one, and uses it at once, with the draft kept.
 - **WINDOWS-SETTINGS-NO-DURABLE-HOME** (fe-ui) closed by the landing that fixes it, 2026-11-10: a Windows window read no settings file (the launcher's `SOT_SETTINGS` default named a file inside the release checkout, which an update deletes, and `$HOME` is unset there), so Enter in the Chat drawer never posted; the window's per-user place is now platform's config folder (`sot_config_dir_in`) for `settings.toml` and `keybindings.toml`, the launcher sets no `SOT_SETTINGS`, and the window ignores the daemon's `[trust]` section.
 - **PREVIEW-PDF-STALE** (fe-ui) closed by the landing that fixes it, 2026-11-10: a PDF an agent rebuilt and badged as
   `show-result "$PWD/../<file>"` from its build folder kept showing the old version; the window took the path as sent,

@@ -192,15 +192,24 @@ impl ChatDrawer {
     }
 
     /// Enter: posts `row`'s draft once, to the channel and thread it was begun in, under `name` (`[chat] name`, `None` when unset or
-    /// blank). It needs a draft with something in it and the name set, no post waiting and no `limited` wait running; the
-    /// draft stays until a reply proves the post.
+    /// blank). It needs a draft with something in it, no post waiting and no `limited` wait running; with no name it asks for
+    /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to write for".into()) };
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());
         }
         let Some(draft) = self.compose.draft(row).filter(|d| !d.text.trim().is_empty()) else { return Err("nothing to post".into()) };
-        let Some(name) = name else { return Err("not posted: set [chat] name in settings.toml".into()) };
+        // No name set: the foot asks for one, the draft stays, and nothing is sent; the next Enter posts it.
+        let Some(name) = name else {
+            // The prompt is for a row whose channel is mapped (`tick` ends it anywhere else): any other stand says its own words.
+            let stand = self.rows.stand();
+            if stand != Stand::Mapped {
+                return Err(format!("not posted: {}", stand.words(self.rows.host())));
+            }
+            self.ask_name();
+            return Ok(Vec::new());
+        };
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }

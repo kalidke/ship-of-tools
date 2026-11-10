@@ -12,6 +12,10 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
     // theirs can reach the REPL's draft or scrollback or the chat's. The Terminal's keys go to its pty, paste first.
     match help::DrawerInput::of(state.layout_help.drawer()) {
         help::DrawerInput::Chat => {
+            // The name prompt, when the foot asks, takes the keys before the reading keys and Escape.
+            if drawer::chat::name_key(state, &key, &label) {
+                return Break(());
+            }
             if drawer::chat::chat_apply(state, drawer::chat::chat_move(action)) {
                 return Break(());
             }
