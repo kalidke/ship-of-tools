@@ -131,8 +131,9 @@ and the POSIX `cksum` of the last one without its newline and NUL bytes. A curso
 (a failed append cut it back after a reader counted it) steps back one line. A count past the end is 0, but a hashed
 count one past it is the end. A count without a hash, and the old timestamp form (the lines before the first one
 stamped later), are read as before. Only `sotd comm poll` writes a cursor, after it has shown the batch, from the bytes
-it read; a reader on a box that appends itself counts and reads under a shared lock, bounded at
-`SOT_INBOX_READ_WAIT_SECS`, 3 s (a held lock is "try again", exit 75).
+it read, and only over the lines it printed: one poll prints at most 16,000 bytes of messages (a longer line alone,
+whole), then says how many more remain and that another poll shows them. A reader on a box that appends itself counts and reads under a shared
+lock, bounded at `SOT_INBOX_READ_WAIT_SECS`, 3 s (a held lock is "try again", exit 75).
 
 ## The self file
 
@@ -188,7 +189,7 @@ route is tried.
 The daemon running a row types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, and Enter, into a free
 prompt of an idle Claude Code row with unread mail, and never anywhere else; the contract says what a free prompt is
 and what a wake never touches. A Codex row has no wake (no Codex screen has been read). The Stop hook holds a busy turn
-until its mail is read, once per batch, through `sotd comm unread <h>`.
+until its mail is read, once per remainder (the messaging contract's tick rule), through `sotd comm unread <h>`.
 
 ## Upgrading to 0.7.0
 

@@ -46,7 +46,7 @@ check "Codex hook under a CRLF jq stamps no CR" case_codex_hook_input_and_stamps
 # The inbox IS the delivery path, so a turn must not end while directed mail
 # sits unread: the hook reads this handle's own inbox and blocks with "run
 # comm-poll.sh". Three facts make that safe to do on every Stop -- it fires,
-# it fires once per pending batch, and a broadcast never fires it.
+# it fires once per remainder (the messaging contract's tick rule), and a broadcast never fires it.
 _mail_reset() {
     mkdir -p "$SOT_COMM_HOME/inbox" "$SOT_COMM_HOME/read" "$SOT_COMM_HOME/state"
     : > "$SOT_COMM_HOME/inbox/$NAME.jsonl"
@@ -69,6 +69,27 @@ case_second_stop_in_the_same_turn_does_not_block_again() {
     [ -n "$first" ] || { echo "    the first stop did not block at all"; return 1; }
     second="$(IT 'all done.')"
     [ -z "$second" ] || { echo "    blocked twice for the same pending mail: '$second'"; return 1; }
+}
+# A bounded poll prints part of a batch and moves the cursor over that part alone: the lines left over are announced once
+# more, and a turn ends only when the poll has read them all.
+case_a_partial_poll_leaves_the_turn_blocked_until_the_rest_is_read() {
+    seed idle; _mail_reset; _mail_line "$NAME"; _mail_line "$NAME"; _mail_line "$NAME"
+    local out
+    [ -n "$(IT 'all done.')" ] || { echo "    the first stop did not block"; return 1; }
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    out="$(IT 'all done.')"
+    [ -n "$out" ] || { echo "    two lines left unread after a partial poll, and the stop did not block"; return 1; }
+    [ -z "$(IT 'all done.')" ] || { echo "    blocked twice for the same remainder"; return 1; }
+    printf '%s' "3" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    blocked with everything read: '$out'"; return 1; }
+}
+case_new_mail_after_a_full_read_is_announced_with_the_same_unread_count() {
+    seed idle; _mail_reset; _mail_line "$NAME"
+    [ -n "$(IT 'all done.')" ] || { echo "    the first stop did not block"; return 1; }
+    printf '%s' "1" > "$SOT_COMM_HOME/read/$NAME.cursor"
+    _mail_line "$NAME"
+    [ -n "$(IT 'all done.')" ] || { echo "    new mail with the same unread count was not announced"; return 1; }
 }
 case_broadcast_only_inbox_never_blocks() {
     seed idle; _mail_reset; _mail_line ""

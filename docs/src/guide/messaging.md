@@ -31,7 +31,7 @@ comm-send.sh @other-session "message"        # one result: filed, or FAILED with
 comm-send.sh --broadcast "message"           # filed to every live session, one result each
 comm-send.sh @other-session --file notes.md  # the body is the file's bytes: quotes and $( ) arrive as written
 comm-send.sh @other-session - < notes.md     # the body on stdin, the same way
-comm-poll.sh                                 # catch up on anything that arrived while you were away
+comm-poll.sh                                 # read what arrived while you were away (16,000 bytes at a time; run it again when it says more remain)
 ```
 
 Each script runs `sotd comm`. A send appends the message to the recipient's
@@ -44,7 +44,7 @@ session that was busy or away reads it with `comm-poll.sh` when it gets to it.
 An idle session does not have to be polling. When a message lands for a
 session at its prompt, it is typed into that session's row. A Claude Code
 session gets one short wake line and reads the messages itself with
-`comm-poll.sh`, so a burst of messages costs one wake. A Codex session is not
+`comm-poll.sh`, so a burst of messages costs one wake (and one poll for each 16,000 bytes of it). A Codex session is not
 typed into (no Codex screen has been captured yet), so it reads its mail when it
 next runs `comm-poll.sh`. The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident, and while
