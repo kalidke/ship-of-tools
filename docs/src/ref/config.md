@@ -79,7 +79,7 @@ out-of-range values warn and fall back to the default.
 |---------------|------|---------|---------|
 | `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
 | `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
-| `[chat] name` | string | *(unset)* | The author a chat post carries beside the app's name. Unset or blank, the Chat drawer does not post. |
+| `[chat] name` | string | *(unset)* | The author a chat post carries beside the app's name. Unset or blank, the Chat drawer does not post. A name is at most 160 bytes, holds no control character, and is refused with a double quote or a backslash (the window's reader does not unescape, so a quoted string is the one form both it and the daemon read the same). |
 | `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
 
 ### `[gpu]`
