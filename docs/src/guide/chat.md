@@ -55,6 +55,16 @@ The title does not show the state of the Slack connection. A socket outage shows
 `not up to date`. The drawer keeps the records it holds until a new snapshot replaces them. `no messages` appears only
 for a channel that was read whole and holds none.
 
+## The draft
+
+With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then `to <channel>` and, if the
+draft is longer, how many rows are not shown (a line wider than the drawer wraps, and each wrapped row counts). `Shift+Enter`
+(`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and the channel it goes to
+is the one shown when its first character was typed, even if you move the view afterwards. A draft stops at what a post
+can carry (8 KiB, counting `&`, `<` and `>` as five, four and four bytes); a key or paste past it is refused whole and
+the status line says so. Control characters other than tab are dropped. Nothing posts yet: `Enter` does nothing, and a
+draft is lost when its row goes or the window closes.
+
 ## Not yet
 
 Posting from the drawer, older pages of history, threads and sharing a selection with the agent are not built yet. Each

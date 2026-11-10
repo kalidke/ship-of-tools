@@ -89,6 +89,19 @@ fn paint_chrome_repl(
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
     chat_empty: bool,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize)) {
+    let (rows, scroll, area, window, ..) = paint_chrome_chat(size, status, tree, repl, chat_empty, None);
+    (rows, scroll, area, window)
+}
+
+/// `paint_chrome_repl` with the Chat drawer's compose text, and the drawer's rect and compose rows drawn besides.
+fn paint_chrome_chat(
+    size: (u16, u16),
+    status: &str,
+    tree: Vec<NavRow>,
+    repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
+    chat_empty: bool,
+    chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
+) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
     let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     let status = status.to_string();
@@ -130,6 +143,8 @@ fn paint_chrome_repl(
         drawer,
         chat_empty,
         chat_title: " chat · C1 reading… ",
+        chat_compose,
+        chat_foot: 0,
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,
@@ -168,7 +183,7 @@ fn paint_chrome_repl(
     let rows = (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
-    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window)
+    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window, view.repl_cells, view.chat_foot)
 }
 
 #[test]
@@ -292,6 +307,29 @@ fn the_chat_drawer_draws_no_messages_only_when_told_the_channel_is_empty() {
     assert!(drawn(DrawerContent::Chat, true));
     assert!(!drawn(DrawerContent::Chat, false));
     assert!(!drawn(DrawerContent::Repl, true), "only the chat drawer says it");
+}
+
+#[test]
+fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does() {
+    use crate::ui::drawer::chat::ComposeText;
+    let text = ComposeText { lines: vec!["hello".into(), "wo".into()], channel: "C1".into() };
+    let drawn = |drawer, short: u16| {
+        let (rows, _, _, _, cells, foot) =
+            paint_chrome_chat((120, 40 - short), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false, Some(&text));
+        (rows, cells, foot)
+    };
+    let (rows, cells, foot) = drawn(DrawerContent::Chat, 0);
+    assert_eq!(foot, 3);
+    let last = cells.bottom() as usize;
+    for (row, want) in [(last - 3, "> hello"), (last - 2, "  wo"), (last - 1, "to C1")] {
+        assert!(rows[row].contains(want), "{row}: {:?}", rows[row]);
+    }
+    assert!(!rows[last - 4].contains("hello"), "above the foot is the records' room");
+    for other in [DrawerContent::Repl, DrawerContent::Monitor, DrawerContent::Help, DrawerContent::Terminal] {
+        let (rows, _, foot) = drawn(other, 0);
+        assert_eq!(foot, 0, "{other:?}");
+        assert!(!rows.iter().any(|r| r.contains("> hello")), "{other:?}");
+    }
 }
 
 #[test]

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use sot_protocol::ops::ChatTarget;
 use winit::keyboard::{Key, NamedKey};
 
-use super::compose::{Compose, Edit};
+use super::compose::{compose_rows, Compose, Edit};
 use super::drawer::ChatDrawer;
 use super::draft_edit;
 use super::row_channel_tests::{answer, mapped};
@@ -132,4 +132,46 @@ fn the_wired_draft_is_the_shown_rows_and_begins_in_its_own_watch() {
     assert_eq!(d.draft(), None);
     d.edit(Some(&row("R")), Edit::Text("again")).unwrap();
     assert_eq!(d.draft(), Some(("again", "C2")), "a new draft begins in the channel now watched");
+}
+
+/// The shown row's compose rows at a drawer `width` wide and `height` tall.
+fn shown(d: &ChatDrawer, focused: bool, width: usize, height: usize) -> Vec<String> {
+    compose_rows(&d.compose_text(focused).expect("a channel is known"), width, height)
+}
+
+#[test]
+fn the_compose_rows_show_the_draft_wrapped_to_the_drawer_and_counted() {
+    // No channel known, no rows.
+    assert!(ChatDrawer::default().compose_text(true).is_none());
+
+    // The draft's own text keeps its rules (CR and tab), and its rows are what the drawer shows of them.
+    let (mut d, _) = watching();
+    d.edit(Some(&row("R")), Edit::Text("a\r\nb\0c\x07d")).unwrap();
+    d.edit(Some(&row("R")), Edit::Text("\r\te")).unwrap();
+    assert_eq!(d.draft(), Some(("a\nbcd\n\te", "C1")), "the text, not only its rows");
+    assert_eq!(shown(&d, false, 40, 10), ["> a", "  bcd", "   e", "to C1"]);
+    assert_eq!(shown(&d, true, 40, 10), ["> a", "  bcd", "   e█", "to C1"], "the cursor block ends the last row while focused");
+
+    // Two or more rows past three are counted, one is counted in the singular.
+    let (mut d, _) = watching();
+    d.edit(Some(&row("R")), Edit::Text("1\n2\n3\n4")).unwrap();
+    assert_eq!(shown(&d, false, 40, 10), ["> 2", "  3", "  4", "to C1 · 1 line not shown"]);
+    d.edit(Some(&row("R")), Edit::Text("\n5")).unwrap();
+    assert_eq!(shown(&d, false, 40, 10), ["> 3", "  4", "  5", "to C1 · 2 lines not shown"]);
+    d.edit(Some(&row("R")), Edit::Newline).unwrap();
+    assert_eq!(shown(&d, false, 40, 10)[3], "to C1 · 3 lines not shown", "a trailing LF is an empty row");
+
+    // A line wider than the drawer wraps, and its rows count toward the three and the count.
+    let (mut d, _) = watching();
+    d.edit(Some(&row("R")), Edit::Text("abcdefghijklmnopqrstuvwxy")).unwrap();
+    assert_eq!(shown(&d, false, 12, 10), ["> abcdefghij", "  klmnopqrst", "  uvwxy", "to C1"]);
+    d.edit(Some(&row("R")), Edit::Text("z012345678")).unwrap();
+    assert_eq!(shown(&d, false, 12, 10), ["> klmnopqrst", "  uvwxyz0123", "  45678", "to C1 · 1 line not shown"]);
+
+    // A short drawer keeps fewer draft rows, counts the ones it dropped, and the first row it shows keeps its `> `; the
+    // destination is the last row dropped.
+    assert_eq!(shown(&d, false, 12, 4), ["> klmnopqrst", "  uvwxyz0123", "  45678", "to C1 · 1 line not shown"]);
+    assert_eq!(shown(&d, false, 12, 3), ["> uvwxyz0123", "  45678", "to C1 · 2 lines not shown"]);
+    assert_eq!(shown(&d, false, 12, 2), ["> 45678", "to C1 · 3 lines not shown"]);
+    assert_eq!(shown(&d, false, 12, 1), ["to C1 · 4 lines not shown"]);
 }

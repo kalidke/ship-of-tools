@@ -69,7 +69,10 @@ impl State {
         repl_cells: ratatui::layout::Rect,
     ) {
         // The chat drawer's records are placed in the drawer's pixels and shaped, or dropped while it is not shown.
-        let chat_body = (self.layout_help.drawer() == DrawerContent::Chat).then(|| cells_to_px(repl_cells));
+        // The compose rows the chrome drew sit at its foot.
+        let foot = self.chat.foot();
+        let chat_body = (self.layout_help.drawer() == DrawerContent::Chat)
+            .then(|| cells_to_px(ratatui::layout::Rect { height: repl_cells.height.saturating_sub(foot), ..repl_cells }));
         match chat_body {
             Some(body) => {
                 let (chat, scale) = (&mut self.chat, (self.canvas.cell_h() / BASE_CELL_H));

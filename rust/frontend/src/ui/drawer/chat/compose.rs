@@ -6,7 +6,11 @@ use std::collections::HashMap;
 use sot_protocol::chat::post_text_fits;
 use sot_protocol::ops::ChatTarget;
 
+use crate::ui::chrome::{cell_lines, wrap_status};
 use crate::ui::ResultRowIdentity;
+
+/// The draft rows of the compose block; the `to <channel>` row follows them.
+const DRAFT_ROWS: usize = 3;
 
 pub(in crate::ui) enum Edit<'a> {
     /// Typed or pasted text.
@@ -70,8 +74,44 @@ impl Compose {
         self.drafts.retain(|row, _| !rows.contains(row));
     }
 
-    #[cfg_attr(not(test), allow(dead_code, reason = "the compose rows (B5k) read it"))]
     pub(super) fn draft(&self, row: &ResultRowIdentity) -> Option<&Draft> {
         self.drafts.get(row)
     }
+}
+
+/// What the compose rows are made of: the draft's lines (the cursor block ends the last while the drawer has focus) and
+/// the channel it goes to.
+pub(in crate::ui) struct ComposeText {
+    pub lines: Vec<String>,
+    pub channel: String,
+}
+
+impl ComposeText {
+    pub(super) fn of(draft: Option<&str>, channel: &str, focused: bool) -> Self {
+        let text = draft.unwrap_or("");
+        let mut lines = cell_lines(text);
+        if lines.is_empty() || text.ends_with('\n') {
+            lines.push(String::new());
+        }
+        if focused {
+            lines.last_mut().expect("a line").push('█');
+        }
+        ComposeText { lines, channel: channel.to_string() }
+    }
+}
+
+/// The compose rows for a drawer `width` cells wide and `height` rows tall: `> ` and the draft's last three rows, each
+/// line wrapped to the width, then `to <channel>` with how many rows are not shown. A drawer too short for three keeps
+/// one row fewer than its height, so the destination is the last row dropped and the count is true at every height.
+pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
+    let inner = width.saturating_sub(2).max(1);
+    let wrapped: Vec<String> = text.lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
+    let hidden = wrapped.len().saturating_sub(DRAFT_ROWS.min(height.saturating_sub(1)));
+    let mut out: Vec<String> = wrapped[hidden..].iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " })).collect();
+    out.push(match hidden {
+        0 => format!("to {}", text.channel),
+        1 => format!("to {} · 1 line not shown", text.channel),
+        n => format!("to {} · {n} lines not shown", text.channel),
+    });
+    out.split_off(out.len().saturating_sub(height))
 }
