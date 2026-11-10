@@ -1731,3 +1731,12 @@ A landing's record goes here, with its measured times; the package page holds on
   panic); one fix round (6 minutes: the guard aborts, which deleted the re-raising helper and its three call sites,
   read by the session); two scoped gates of 2 minutes. The cause: the brief sized the class by the diagnosis's four
   tests, and a guard that panics can be caught.
+- Every test that takes the comm registry lock holds its turn guard, 2026-11-10: builder launched 07:15, main 07:29
+  (aceaebe3a), 14 minutes, inside the half hour. The lock's in-process turn is shared by the whole test process and its
+  wait counts inside a test's bound, so other tests' holds spent a 1 second bound on a slow runner
+  (REGISTRY-TEMPFAIL-LOCK-TURN, Closed): every lock-taking test now holds the guard, for write when its assertion rests
+  on a bound under 10 seconds, and the shared test home waits the product's 10 seconds. No product lines; about 40
+  test and record lines. The diagnosis (58 minutes, before the builder) reproduced the hosted red on Linux by slowing
+  file syncs: red 10 of 10 at the base, green 9 of 9 with the fix. Where the minutes went: the build (10 minutes,
+  applying the diagnosis's diff by hand where the comm-home guard had moved code, the check red at main and green with
+  the fix); one scoped gate of 2 minutes; no review (test-only, the diagnosis's diff read by the session).
