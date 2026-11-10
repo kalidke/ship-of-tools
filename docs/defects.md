@@ -739,8 +739,14 @@ owned by `docs/CLAUDE.md`.
 - **HOSTED-RENDERER-APT-STALL** [note] The per-landing hosted run's step that installs the software renderer and the
   virtual display (`.github/workflows/rust.yml`, Linux shard `rest-0`) downloads its packages from Ubuntu's mirror under
   a 120 second bound; on 2026-11-10 the mirror served one 17.5 MB package too slowly, the step timed out (exit 124)
-  before any build or test, and a re-run of the job passed. A cached package set, or the bound widened only for the
-  download, would keep a mirror stall from reading as a red run.
+  before any build or test, and a re-run of the job passed; the same stall ended a second run that morning. A cached
+  package set, or the bound widened only for the download, would keep a mirror stall from reading as a red run.
+- **GATE-SCOPED-MISSES-SHARED-CALLEE** [note] A change to the comm-home resolver, which every daemon module's tests
+  reach, passed the local gate scoped to its base (`ALLDONE SCOPED`, the backend's tests among its jobs) while the
+  unscoped gate, which runs the daemon's test binary split per test, and the hosted runs on all three systems aborted
+  on tests in another module that the change's guard refused (2026-11-10). How a scoped run selects the backend's tests
+  is not yet read (`scripts/tests/rc-gate.sh`); until it is, a daemon change to code every module calls runs the
+  unscoped gate before it lands.
 
 ## chat
 

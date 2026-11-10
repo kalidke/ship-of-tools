@@ -1740,3 +1740,12 @@ A landing's record goes here, with its measured times; the package page holds on
   file syncs: red 10 of 10 at the base, green 9 of 9 with the fix. Where the minutes went: the build (10 minutes,
   applying the diagnosis's diff by hand where the comm-home guard had moved code, the check red at main and green with
   the fix); one scoped gate of 2 minutes; no review (test-only, the diagnosis's diff read by the session).
+- The comm-home guard's fix forward, 2026-11-10: builder launched 07:37, main 07:57 (eb2b76a19), 20 minutes, inside
+  the half hour. The guard's landing (07:14) turned main red on all three hosted systems and in the unscoped local
+  gate: its search for tests reaching the comm folder had set `HOME` inside the temporary folder, so tests that find
+  the folder through `HOME`, or `USERPROFILE` on Windows, were missed. One such test on Linux and macOS (found by
+  running each of the 1,526 unit tests in its own process with the guard printing instead of aborting, under both
+  settings) and three on Windows (found by reading) are isolated; about 5 test lines. Main was red from 07:14 to this
+  landing. Where the minutes went: the build (15 minutes); the unscoped gate (3 minutes, `ALLDONE`), run instead of the
+  scoped one because the scoped gate had passed the guard (GATE-SCOPED-MISSES-SHARED-CALLEE noted); no review (test
+  isolation only, read by the session).
