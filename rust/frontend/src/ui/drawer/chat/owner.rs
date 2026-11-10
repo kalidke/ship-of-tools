@@ -1,7 +1,6 @@
 //! The project chat's private owner: one watched channel's state, the one post in flight, and the reads that keep the
 //! watched state whole. It consumes fe-net's chat events and replies and returns the requests to send; it sends nothing
-//! itself and replays no mutation. Only `ChatDrawer` calls it; no drawer view reads it yet (the view is B5's).
-#![cfg_attr(not(test), allow(dead_code, reason = "the drawer's view, which reads the records and the post outcome, is a later landing"))]
+//! itself and replays no mutation. Only `ChatDrawer` calls it; the view reads its records.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -146,12 +145,26 @@ impl ChatOwner {
         self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
     }
 
+    /// The held records, oldest first.
+    pub(super) fn records(&self) -> Vec<&ChatRecord> {
+        let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values()).collect();
+        held.sort_by(|a, b| ts_order(&a.ts).cmp(&ts_order(&b.ts)));
+        held
+    }
+
+    /// The channel is known to be empty: the snapshot was read whole and holds no record. Not while it is read, offline, a gap
+    /// or unsupported.
+    pub(super) fn no_messages(&self) -> bool {
+        self.fill() == Some(Fill::Complete) && self.watch.as_ref().is_some_and(|w| w.records.is_empty())
+    }
+
     pub(super) fn fill(&self) -> Option<Fill> {
         self.watch.as_ref().map(|w| w.fill)
     }
 
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
+    #[cfg_attr(not(test), allow(dead_code, reason = "the post bar (B5m) sends"))]
     pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
         if self.posting.is_some() {
             return None;

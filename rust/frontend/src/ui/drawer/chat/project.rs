@@ -5,7 +5,7 @@ use chrono::{DateTime, FixedOffset};
 use sot_protocol::page_reply::unsafe_char;
 use sot_protocol::chat::{ChatRecord, Origin, TextSegment, text_segments};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Kind {
     /// The author name and time line; the flag is B5o's mark.
     Header(bool),
@@ -15,7 +15,7 @@ pub(super) enum Kind {
     Meta,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct Span {
     pub kind: Kind,
     pub text: String,

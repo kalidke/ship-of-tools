@@ -546,7 +546,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   They drive production continuations. Native window-close retains its scenarios and hosted gate requirement.
 - `LayoutHelp` privately owns drawer/maximize/wide flags, Help browsing, the first return origin and startup
   requests, including private nested storage. It returns owned effects, never takes State and lends only immutable
-  observations. The drawer has four tenants (Repl, Terminal, Monitor, Chat) besides Help; Chat shows nothing yet and
+  observations. The drawer has four tenants (Repl, Terminal, Monitor, Chat) besides Help; Chat shows the held records (`drawer/chat/`) and
   its keys reach no REPL handler (`input/CLAUDE.md`). Ordinary toggles alone abandon the origin and request Monitor sync, after focus and before binding
   feedback/redraw. Automatic REPL opening keeps setting/base-preset gates; demo opening ignores them; Terminal
   failure closes only selection. These paths preserve other layout/Help state and keep held subscriptions.
@@ -822,7 +822,14 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   the text goes through wire's `text_segments`, Slack's markup is its own `Markup` span shown decoded (entities read, nothing rendered), CR LF and CR become LF, tabs stay, any other C0 or C1
   control becomes U+FFFD, and a name or file name loses exactly the C0 and C1 controls and the characters `page_reply::unsafe_char` lists (line separators, direction and zero-width formatting characters, U+2060 to U+2069, U+FEFF, U+FFF9 to U+FFFB, U+FFFE and U+FFFF), so no body line can read as a header (the header ends its own line). The time is added to the stamp as integers (`HH:MM` for today's local date, else with the date; a stamp out of chrono's range shows as its own text, never a panic).
   Limits: one fixed offset serves every stamp, so a post from before a daylight saving change shows an hour off; a member whose name ends in `[drawer]` reads like the drawer's own post but for the span style; a name made only of removed characters shows empty (a file name so made shows `[a file]`); what stays in a name includes the soft hyphen, tag characters, U+180E and U+206A to U+206F, none of which breaks the header line.
-  No drawer view or key reads it yet (B5g).
+  `view.rs` is the view (`ChatView`, with `ChatDrawer::layout` and `areas`): `place` puts the records in the drawer's body, upward from the newest at the
+  bottom while following (`from` is `None`) and downward from `from` otherwise, and asks a record's height only when that record reaches the body. A record is shaped by
+  `set_buffer_rich_text` from `project`'s spans, each kind with its own style (`attrs`: the header's differs from the body's, so a body line that imitates a header looks like a body),
+  and its buffer is cached by those spans, the width and the text scale; the buffers in view are kept plus up to 64 others, the farthest from the position first. The records
+  that cross the body are prepared as clipped `ExtraArea`s appended to the frame's one `extras` vector, before its one `prepare_text`. `no messages` is drawn
+  only when the owner's fill is `Complete` and it holds no record (`ChromeView::chat_empty`, `ChatOwner::no_messages`; not while reading, offline, in a gap or unsupported:
+  `view_tests::no_messages_shows_only_for_a_channel_read_whole_and_empty`). The order is pinned by `view_tests::the_view_shows_records_oldest_to_newest_from_an_owner_whose_records_arrive_out_of_order`, the cache's farthest-first bound and the top clip by
+  `the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_shows`. Limits: nothing moves `from` yet, so the view always follows; a record taller than the body shows its end.
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,

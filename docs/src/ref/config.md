@@ -259,8 +259,8 @@ other one. No port, no forward — read the actual endpoints from
 The project chat's configuration, two TOML files in the config folder (`~/.config/sot` on Linux and macOS,
 `%LOCALAPPDATA%\sot\config` on Windows).
 
-*Status: the daemon reads both files and connects to Slack with the two tokens. No window shows a chat yet and no mail is
-delivered.*
+*Status: the daemon reads both files and connects to Slack with the two tokens. The Chat drawer shows the channel's held messages (see
+[The project chat](../guide/chat.md)); posting and mail are not built.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`. A computer with no `hosts.toml`, or another computer, runs no chat and

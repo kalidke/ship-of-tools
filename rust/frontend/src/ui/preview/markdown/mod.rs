@@ -51,7 +51,7 @@ use crate::ui::render::text::{set_buffer_rich_text, set_buffer_text};
 /// convert MathJax SVG ex-units into the same unscaled-pixel space the
 /// markdown walk uses, before passing them in via `MathMetricsMap`.
 pub const BODY_SIZE: f32 = 15.0;
-const BODY_LINE_H: f32 = 22.0;
+pub(in crate::ui) const BODY_LINE_H: f32 = 22.0;
 /// Line height for *code* previews (`.jl` token spans, plain source/log
 /// text), in unscaled pixels. Prose `BODY_LINE_H` (22px @ 15px font,
 /// ratio ~1.47) is intentionally airy for reading; code reads better
