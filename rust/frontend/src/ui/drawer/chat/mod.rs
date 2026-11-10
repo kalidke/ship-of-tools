@@ -7,14 +7,19 @@ use crate::net::dial::HostKey;
 use crate::net::transport::ChatEvt;
 use super::super::*;
 
+mod compose;
 mod drawer;
 mod owner;
 mod project;
 mod row_channel;
 mod view;
+#[cfg_attr(not(test), allow(unused_imports, reason = "the draft's wiring (B5k) uses it"))]
+pub(in crate::ui) use compose::Edit;
 pub(in crate::ui) use drawer::ChatDrawer;
 pub(in crate::ui) use view::Step;
 use owner::Out;
+#[cfg(test)]
+mod compose_tests;
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]
@@ -83,6 +88,19 @@ pub(in crate::ui) fn chat_move(drawer: DrawerContent, action: Option<Action>) ->
 /// The wheel moves one line in the Chat tenant only; `rows_above` is positive toward older records.
 pub(in crate::ui) fn chat_wheel(drawer: DrawerContent, rows_above: i32) -> Option<Move> {
     (drawer == DrawerContent::Chat && rows_above != 0).then_some(Move::Scroll(rows_above > 0, Step::Line))
+}
+
+/// The edit a key makes to the draft, when it makes one: a typed character or Space only where the chord types text
+/// (`chord_types_text`), Backspace, and `chat.newline`; a key that resolved to another action matches no arm.
+#[cfg_attr(not(test), allow(dead_code, reason = "the draft's wiring (B5k) calls it"))]
+pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, super_): (bool, bool, bool)) -> Option<Edit<'_>> {
+    match (action, key) {
+        (Some(Action::ChatNewline), _) => Some(Edit::Newline),
+        (None, Key::Named(NamedKey::Backspace)) => Some(Edit::Backspace),
+        (None, Key::Named(NamedKey::Space)) if chord_types_text(ctrl, alt, super_) => Some(Edit::Space),
+        (None, Key::Character(s)) if chord_types_text(ctrl, alt, super_) => Some(Edit::Typed(s.as_str())),
+        _ => None,
+    }
 }
 
 /// Applies a move; whether there was one.
