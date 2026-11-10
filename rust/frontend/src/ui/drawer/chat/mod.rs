@@ -14,6 +14,7 @@ mod drawer;
 mod owner;
 mod project;
 mod row_channel;
+mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use drawer::ChatDrawer;
@@ -25,6 +26,8 @@ mod compose_tests;
 mod project_tests;
 #[cfg(test)]
 mod row_channel_tests;
+#[cfg(test)]
+mod thread_tests;
 #[cfg(test)]
 mod view_tests;
 
@@ -104,6 +107,7 @@ pub(in crate::ui) enum Move {
     Scroll(bool, Step),
     Latest,
     Mark(bool),
+    Thread,
 }
 
 /// What a key does in the Chat tenant (`DrawerInput::Chat`): PageUp and PageDown move a third of the body, End returns
@@ -115,6 +119,7 @@ pub(in crate::ui) fn chat_move(action: Option<Action>) -> Option<Move> {
         Action::ChatLatest => Some(Move::Latest),
         Action::ChatMarkOlder => Some(Move::Mark(true)),
         Action::ChatMarkNewer => Some(Move::Mark(false)),
+        Action::ChatThreadOpen => Some(Move::Thread),
         _ => None,
     }
 }
@@ -162,6 +167,7 @@ pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
         Some(Move::Scroll(up, step)) => state.chat.scroll(up, step),
         Some(Move::Latest) => state.chat.latest(),
         Some(Move::Mark(older)) => state.chat.mark(older),
+        Some(Move::Thread) => state.chat.open_thread(),
         None => return false,
     }
     state.window.request_redraw();

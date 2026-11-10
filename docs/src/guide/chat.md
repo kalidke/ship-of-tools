@@ -6,6 +6,8 @@ a message that arrives takes the bottom line and lifts the rest. An empty channe
 
 ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view moves to show it; a scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
 
+ArrowRight (`chat.thread_open`) opens the marked message's thread, which shows the message alone for now (its replies are not read yet); Escape closes the thread and the mark is back on the message. Changing the row or hiding the drawer closes it too. A message typed while a thread is open is still posted to the channel (the line under the draft says where it goes); posting into a thread comes later.
+
 To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
 line. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
 and a message deleted at the reader's place stays there as `(message deleted)`; the next one takes the place only when a new snapshot or the trim drops it. `End` (`chat.latest`) returns to the newest and
@@ -84,5 +86,5 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 
 ## Not yet
 
-Older pages of history, threads and sharing a selection with the agent are not built yet. Each
+Older pages of history, a thread's replies and sharing a selection with the agent are not built yet. Each
 arrives with its own change, and this page says so when it does.
