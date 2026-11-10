@@ -550,9 +550,10 @@ mod startup_cleanup_tests {
     async fn a_same_label_create_during_the_startup_cleanup_is_never_the_cleanups_to_end() {
         let env_dir = tempfile::Builder::new().prefix("sot-createcl-").tempdir().unwrap();
         let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
-        // The Cleanup's end prunes the comm registry.
+        // The Cleanup's end prunes the comm registry, waiting 10 s for its turn, so it holds the turn shared.
         let _comm = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
         std::env::set_var("SOT_COMM_HOME", env_dir.path().join("comm"));
+        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
         let state_root = sot_platform::host::state_dir::sot_state_dir().expect("the pinned state root");
         std::fs::create_dir_all(&state_root).unwrap();
         let reg = Workspaces::new();

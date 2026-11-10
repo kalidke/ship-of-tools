@@ -24,6 +24,8 @@ use crate::rows::Workspace;
 // has real callers everywhere and needs no dead-code suppression.
 struct EnvGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
+    /// The registry turn shared: an end prunes the comm registry, waiting 10 s (`comm::registry::lock::TURN_TESTS`).
+    _turn: std::sync::RwLockReadGuard<'static, ()>,
     xdg_config_home: Option<std::ffi::OsString>,
     // Added alongside `seed_provably_unheld_state_dir` below (ADR
     // 0043 decision 33, Codex review, 2026-09-11): the tests that used
@@ -74,6 +76,7 @@ fn env_guarded() -> EnvGuard {
     let serial = crate::paths::ENV_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
     let comm = tempfile::tempdir().expect("comm tempdir");
     let guard = EnvGuard {
         xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
@@ -83,6 +86,7 @@ fn env_guarded() -> EnvGuard {
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         sot_runtime_dir: std::env::var_os("SOT_RUNTIME_DIR"),
         _serial: serial,
+        _turn: turn,
         _comm: comm,
     };
     std::env::set_var("SOT_COMM_HOME", guard._comm.path().join("comm"));

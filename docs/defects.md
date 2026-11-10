@@ -371,12 +371,6 @@ owned by `docs/CLAUDE.md`.
 - **COMM-LIST-WINDOW-NO-SESSIONS** [session] On a Windows window computer, `comm-list.sh`'s last line said the window's
   own handle "declares no sessions" while the same listing showed that computer's rows, so one of the two reads the
   wrong registry. Seen by a session operating the product there under 0.7.1-rc.2.
-- **REGISTRY-TEMPFAIL-LOCK-TURN** [note]
-  `comm::registry::registry::write_tests::edit_write_tests::a_failed_temp_write_writes_nothing` failed once on the hosted
-  Windows runner (`rust/backend/src/comm/registry/registry_write_tests.rs`) on a main commit that touched no comm code
-  (2026-11-10): its edit returned `Locked(... was not tried: another thread of this daemon held its turn past the
-  bound)` where `Unwritten` was expected, so another test thread held the in-process registry turn past its bound. The
-  test does not own that turn.
 
 ## agents
 
@@ -868,6 +862,7 @@ An item closes by moving here as one line: id, subsystem, the fixing commit or l
 - **CHAT-GAP-ASKS-DEAD-TARGET** (fe-ui) closed by the landing that fixes it, 2026-11-09: the chat owner keeps the daemon's refusal in its gap (`Gap(Some(code))`), asks `stale_row`, `stale_mapping` and `unmapped` no more until a row or link change, and shows a gap, for refused snapshot reads too with the read's code, only after the daemon's slowest snapshot; `too_many_watches` and `unavailable` keep the once-a-minute ask on purpose, since each can clear.
 - **MONITOR-TENANT-REACHES-REPL** (fe-ui) closed by the landing that fixes it, 2026-11-09: `help::Pane::of_drawer` is the one exhaustive map from tenant to pane, and in a tenant other than the REPL (Terminal, Monitor, Help, Chat) typing, paste, the line-scroll chords and the wheel no longer reach the REPL; `help::DrawerInput::of` is the one decision their handlers match.
 - **GATE-LEFTOVER-ESCAPED-HOLDER** (containment) closed by the landing that fixes it, 2026-11-09: `output_does_not_wait_for_an_escaped_pipe_holder` (`rust/containment/src/signal_output_bound_tests.rs`) passed and left its escaped `sleep 30` running, so a whole local gate whose `sot_containment` job started within 30 s of the end failed its census (`leftover <pid> sleep 30`); the escapee now holds the pipe only while the test's `keep` file exists, and the test removes the file and sees the escapee gone.
+- **REGISTRY-TEMPFAIL-LOCK-TURN** (messaging) closed by the landing that fixes it, 2026-11-10: the registry lock's turn is process-wide, so other tests' holds of it counted inside a test's 1 s bound (on a hosted Windows runner a write holds it about 0.3 s, and a panicking test holds it through its backtrace); every test that takes the lock, rows' included, now holds `registry::lock::TURN_TESTS`, alone when what it asserts rests on a bound under 10 s, and `TestHome`'s commands wait the default 10 s.
 - **SELECT-MARKDOWN** (fe-ui) closed by the landing that fixes it, 2026-11-09, before its window test: a selection in a rendered markdown preview is shared as the whole file lines its text was rendered from, with the file's text there; a rendered buffer with no map shares nothing.
 - **SELECTION-CODEX-HELD** (agents) closed by the landing that fixes it, 2026-11-09: `TAKES_SELECTION` leaves `codex` out, so a Codex row answers a selection `no_agent`, not `held`, until the Codex wiring is built.
 - **SCRATCH-PAD** (fe-ui) closed by the landing that fixes it, 2026-11-09: a drawable preview pane whose drawing the row's agent sees; the window draws and shares it, the daemon writes its picture.

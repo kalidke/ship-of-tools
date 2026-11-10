@@ -103,7 +103,7 @@ mod edit_write_tests {
 
     #[test]
     fn an_edit_writes_pretty_json_and_a_newline_and_no_temp() {
-        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let mut env = crate::comm::Env::empty();
         let (dir, registry_path, _) = seed(&mut env, "bytes");
 
@@ -122,7 +122,7 @@ mod edit_write_tests {
 
     #[test]
     fn a_failed_temp_write_writes_nothing() {
-        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let mut env = crate::comm::Env::empty();
         let (dir, registry_path, seeded) = seed(&mut env, "tmpfail");
         // On Unix a dangling symlink makes only the create fail (ENOENT): a
@@ -172,7 +172,7 @@ mod stamp_write_tests {
 
     #[test]
     fn it_stamps_listed_entries_only_and_creates_none() {
-        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let mut env = crate::comm::Env::empty();
         let (dir, registry_path) = seed(&mut env, "listed");
         assert!(stamp_last_seen_in(&env, &set(&["a", "b", "nobody"]), STAMP));
@@ -187,7 +187,7 @@ mod stamp_write_tests {
 
     #[test]
     fn with_nothing_to_change_it_writes_nothing() {
-        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let mut env = crate::comm::Env::empty();
         let (dir, registry_path) = seed(&mut env, "nothing");
         #[cfg(unix)]

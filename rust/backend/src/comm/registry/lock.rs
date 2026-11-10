@@ -34,8 +34,10 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// without this a marker one thread abandoned would read as live to them all.
 static TURN: Mutex<()> = Mutex::new(());
 
-/// The turn is process-wide, so a test that holds it for long (this module's) would starve every other test that
-/// takes the lock within its bound: those hold this for read, the module's own tests for write. It guards no variable.
+/// The turn is process-wide, so another test's hold of it counts inside a test's bound: on a slow runner a few other
+/// tests' writes, or a panicking test's backtrace, spend a 1 s bound. Every test that takes the lock holds this for its
+/// life: for write when what it asserts rests on a take or a refusal within a bound under 10 s, for read otherwise. It
+/// guards no variable.
 #[cfg(test)]
 pub(crate) static TURN_TESTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 

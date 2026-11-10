@@ -17,7 +17,7 @@ mod with_comm_registry_lock_panic_tests {
 
     #[test]
     fn a_panicking_closure_still_releases_the_lock() {
-        let _turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
+        let _turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let mut env = crate::comm::Env::empty();
         let dir = std::env::temp_dir().join(format!(
             "sot-comm-registry-lock-panic-test-{}-{}",
