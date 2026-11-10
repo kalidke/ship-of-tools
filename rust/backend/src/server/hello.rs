@@ -198,6 +198,8 @@ pub async fn handle_hello(
         repl_running,
         // This daemon's `selection.set` reads a drawing (wire guarantee 13).
         takes_drawing: true,
+        // Chat's door escapes a post's text (chat guarantee 12).
+        posts_plain_text: true,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

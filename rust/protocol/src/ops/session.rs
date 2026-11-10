@@ -165,6 +165,10 @@ pub struct HelloRes {
     /// when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takes_drawing: bool,
+    /// True when this daemon's chat door escapes a post's text (`chat.post` carries plain text). A daemon built before
+    /// the field sends the text as given, so a window posts to it only when this is true. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub posts_plain_text: bool,
 }
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the

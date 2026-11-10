@@ -63,6 +63,19 @@ mod hello_version_tests {
         assert_eq!(serde_json::to_value(&res).unwrap()["takes_drawing"], serde_json::json!(true));
     }
 
+    /// A hello reply says whether the daemon's chat door escapes a post's text (`posts_plain_text`), additive both
+    /// ways: the last release's reply reads as false, and false is not written.
+    #[test]
+    fn a_hello_reply_says_whether_the_daemon_posts_plain_text_and_stays_additive() {
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.0","proxy":true,"repl_running":[2]}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert!(!res.posts_plain_text, "an older daemon reads as not escaping");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("posts_plain_text"), None, "false is not written");
+        let says = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"posts_plain_text":true}"#;
+        let res: HelloRes = serde_json::from_str(says).expect("a reply with the field");
+        assert_eq!(serde_json::to_value(&res).unwrap()["posts_plain_text"], serde_json::json!(true));
+    }
+
     #[test]
     fn proxy_connect_req_round_trips_and_token_is_optional() {
         // ADR 0035 handshake shapes. `token` absent on the wire must parse

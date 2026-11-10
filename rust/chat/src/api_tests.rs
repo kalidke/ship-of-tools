@@ -954,3 +954,85 @@ async fn a_post_read_back_through_history_keeps_its_origin() {
     })
     .await;
 }
+
+/// The one door escapes every text: the fake receives Slack's text, a post reads back as escaped markup that
+/// `text_segments` decodes, and the bound is on the escaped form (8 KiB exactly is sent, one more `&` is refused unsent).
+#[tokio::test]
+async fn a_message_text_is_sent_escaped_and_bounded_escaped() {
+    bounded(async {
+        let stored: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let store = stored.clone();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            match seen.path().as_str() {
+                "/api/chat.postMessage" => {
+                    let body = seen.json().unwrap();
+                    let mut store = store.lock().unwrap();
+                    let ts = format!("1700000{:03}.000100", store.len() + 1);
+                    store.push(json!({
+                        "ts": ts, "bot_id": OWN_BOT, "user": OWN_USER, "text": body["text"],
+                        "username": body["username"], "metadata": body["metadata"],
+                    }));
+                    Reply::json(&json!({"ok": true, "ts": ts}))
+                }
+                "/api/conversations.history" => {
+                    let mut all = store.lock().unwrap().clone();
+                    all.reverse();
+                    Reply::json(&page(all, None))
+                }
+                _ => Reply::json(&json!({"ok": false, "error": "unexpected"})),
+            }
+        })
+        .await;
+        let api = ready(&fake).await;
+        let post = |text: String| {
+            let api = &api;
+            async move { api.post("C0CHAN", None, PostKind::Person, "Ada Test", &text).await }
+        };
+        let sent = |fake: &FakeSlack| -> Vec<Value> {
+            fake.seen().iter().filter(|s| s.path().as_str() == "/api/chat.postMessage").map(|s| s.json().unwrap()).collect()
+        };
+
+        // The fake receives Slack's text.
+        assert!(matches!(post("if a < b && c > d".into()).await, Ok(PostOutcome::Posted(_))));
+        assert_eq!(sent(&fake)[0]["text"], "if a &lt; b &amp;&amp; c &gt; d");
+
+        // A mention token typed by a person is text, not a ping.
+        assert!(matches!(post("<!channel> <@U0BOT>".into()).await, Ok(PostOutcome::Posted(_))));
+        assert_eq!(sent(&fake)[1]["text"], "&lt;!channel&gt; &lt;@U0BOT&gt;");
+
+        // Read back through history: escaped markup, and `text_segments` gives the typed text back.
+        let ts = match post("a < b & c".into()).await {
+            Ok(PostOutcome::Posted(ts)) => ts.as_str().to_string(),
+            other => panic!("{other:?}"),
+        };
+        let page = api.history(&query("C0CHAN", Bounds::default(), 5), None).await.unwrap();
+        let rec = page.records.iter().find(|r| r.ts.as_str() == ts).unwrap();
+        assert_eq!(rec.text, "a &lt; b &amp; c");
+        let back: String = sot_protocol::chat::text_segments(&rec.text)
+            .iter()
+            .map(|s| match s {
+                sot_protocol::chat::TextSegment::Text(t) => t.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(back, "a < b & c");
+
+        // The bound is on the escaped form: exactly 8 KiB is sent, one more `&` is refused and nothing is sent.
+        let exact = format!("{}aa", "&".repeat(1638));
+        assert_eq!(escape_len(&exact), MAX_TEXT);
+        assert!(matches!(post(exact).await, Ok(PostOutcome::Posted(_))));
+        let before = fake.seen().len();
+        let over = format!("{}aa", "&".repeat(1639));
+        assert_eq!(post(over).await.unwrap_err(), ApiError::BadRequest);
+        assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+fn escape_len(text: &str) -> usize {
+    sot_protocol::chat::escape_text(text).len()
+}
