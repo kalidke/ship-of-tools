@@ -61,6 +61,11 @@ owned by `docs/CLAUDE.md`.
 - **CHILD-RENAMES-NO-RETRY** [note] Three test children rename a file into place with `std::fs::rename`, which does not
   retry on Windows while a scanner holds the new file, as platform's renames do: `test_barrier.rs`, the capsule's
   `tests/supervisor/main.rs` and `contained_job.rs`. Route each through `publish_noreplace`.
+- **BENEATH-TWO-WRITERS-WINDOWS** [note] `host::beneath::tests::two_writers_of_one_name_each_publish_a_whole_file`
+  failed once on the hosted Windows runner ("a writer erred", `rust/platform/src/host/beneath_tests.rs`) on a main
+  commit that touched no platform code (2026-11-10), and passed on the runs before and after. One of two writers of one
+  name beneath a root returned an error where both should publish a whole file; whether the product or the test owns
+  the state is not yet known.
 
 ## wire
 
@@ -371,6 +376,12 @@ owned by `docs/CLAUDE.md`.
 - **COMM-LIST-WINDOW-NO-SESSIONS** [session] On a Windows window computer, `comm-list.sh`'s last line said the window's
   own handle "declares no sessions" while the same listing showed that computer's rows, so one of the two reads the
   wrong registry. Seen by a session operating the product there under 0.7.1-rc.2.
+- **REGISTRY-TEMPFAIL-LOCK-TURN** [note]
+  `comm::registry::registry::write_tests::edit_write_tests::a_failed_temp_write_writes_nothing` failed once on the hosted
+  Windows runner (`rust/backend/src/comm/registry/registry_write_tests.rs`) on a main commit that touched no comm code
+  (2026-11-10): its edit returned `Locked(... was not tried: another thread of this daemon held its turn past the
+  bound)` where `Unwritten` was expected, so another test thread held the in-process registry turn past its bound. The
+  test does not own that turn.
 
 ## agents
 
@@ -795,6 +806,11 @@ owned by `docs/CLAUDE.md`.
   to another channel keeps its position and mark by time against the other channel's records, which then pass on by
   the rule for a record no longer held (`rust/frontend/src/ui/drawer/chat/drawer.rs`, `ChatDrawer::tick`). It predates
   B5o for the position. Found by B5o's first review, reading code; never seen.
+- **CHAT-WITNESS-KEYS-COPIED** [note] The native witness's keys go through `witness_key`, which copies the Chat branch
+  of `drawer_pane_key`, `chat_key` and the Alt+Up branch of `scroll_line_chords`, because a winit `KeyEvent` cannot be
+  built outside the event loop; breaking any of the three leaves the witness green
+  (`rust/frontend/src/ui/drawer/chat/native_fixture_tests.rs`). A key press that carries its data instead of a
+  `KeyEvent`, as the reply bar's key does, would let the witness call them. Found by B5r's review; never seen.
 - **CHAT-THREAD-REREAD-CLEARS** [note] A thread read again (after the link returns, and after the person's own post
   in the open thread) clears its replies and shows the parent alone until the first page returns, so a
   reader inside the thread loses their place (`rust/frontend/src/ui/drawer/chat/thread.rs`). Merging the new walk into

@@ -197,8 +197,9 @@ Down mark one held message whose header is in view), and one thread view (ArrowR
 thread, read whole up to 156 messages, the channel's older ones giving way to it, never its newest 100; Escape closes
 it), and posting into a thread (a draft goes where it was begun, the thread read again after the person's own
 post), and selection and copy (a drag selects text inside one message, Primary+c copies it or the marked message's
-shown text, never shared with the agent); the native witness (the real window's chat under a virtual display) is
-next. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+shown text, never shared with the agent), and the native witness (the real window's chat through its State under a
+virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
+hub's chat configuration. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) and mail (B3 with P14, P13) wait for the

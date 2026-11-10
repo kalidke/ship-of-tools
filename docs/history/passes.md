@@ -1698,3 +1698,16 @@ A landing's record goes here, with its measured times; the package page holds on
   one fix round (5 minutes, read by the session); four scoped gates of 2 minutes. The causes: a step planned at 65
   product lines came to 122, and the thread view's parking of the channel's view, landed one step before, carried
   state the plan had not yet given it.
+- The project chat's B5r, the native witness, 2026-11-10: builder launched 04:52, main 05:19 (2405fbbf0), 27
+  minutes, inside the half hour. A fifteenth State fixture drives the real window's chat through its State: a row
+  listed and Chat shown, a mapped resolve, a watch, a snapshot and older pages to 200 messages, PageUp to the oldest and
+  back, the wheel through the window's own wheel code, Alt+Up, a resize of the canvas with 256 records of 8 KiB, the
+  mark, a thread opened, read and closed, a typed and pasted draft posted once, the link dropped and back and a lost
+  feed; it prints the frame times and asserts none (`chat-witness frames=431 max_ms=283.6 p95_ms=9.4
+  resize_ms=195.8`, under a virtual display on another computer, since the build computer lacks a library the window
+  needs). Its limits: the window's own resize event and the two key handlers are not run (CHAT-WITNESS-KEYS-COPIED
+  noted). No product lines; about 360 test lines. Where the minutes went: the build (12 minutes); one review (blockers
+  1, 9 minutes: the wheel step skipped the window's wheel code that another fixture already calls); one fix round (3
+  minutes, read by the session); two scoped gates of 2 minutes. Hosted runs on main tonight: two Windows reds in
+  other subsystems' tests, each passing on the runs around it (BENEATH-TWO-WRITERS-WINDOWS and
+  REGISTRY-TEMPFAIL-LOCK-TURN noted).
