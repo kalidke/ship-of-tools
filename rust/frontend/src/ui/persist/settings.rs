@@ -8,7 +8,7 @@
 // File discovery, in priority order:
 //   1. $SOT_SETTINGS  — explicit override path
 //   2. the nearest .sot/settings.toml in the cwd or an ancestor  — project-level
-//   3. $HOME/.config/sot/settings.toml  — user-level
+//   3. the per-user config folder (platform's sot_config_dir)  — user-level
 //
 // File format (aspect-ratio-keyed presets,
 // no in-session reflow):

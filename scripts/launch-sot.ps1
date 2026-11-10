@@ -918,14 +918,9 @@ $stagedDir = Join-Path $env:LOCALAPPDATA 'sot\bin'
 New-Item -ItemType Directory -Force -Path $stagedDir | Out-Null
 $stagedExe = Join-Path $stagedDir 'sot.exe'
 $env:SOT_REPO_DIR = $repo.Path
-# Point the frontend at the project settings file explicitly. The frontend
-# runs from the staged copy with an arbitrary cwd (e.g. System32 when the
-# supervisor was spawned via WMI), so cwd-relative discovery of
-# .sot\settings.toml is unreliable; $SOT_SETTINGS is the highest-
-# priority, absolute discovery path. Don't clobber a user-set override.
-if (-not $env:SOT_SETTINGS) {
-    $env:SOT_SETTINGS = Join-Path $repo '.sot\settings.toml'
-}
+# The frontend reads its settings from the per-user config folder
+# (%LOCALAPPDATA%\sot\config\settings.toml), which an update never touches.
+# $SOT_SETTINGS, when set, still overrides it.
 
 # ADR 0042 L2b codex follow-up (design 3): the ONE error dialog that
 # survives the default remote becoming nonfatal -- nothing at all could be

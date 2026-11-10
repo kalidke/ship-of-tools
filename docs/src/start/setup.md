@@ -120,7 +120,7 @@ preset = "auto"   # auto | ultrawide | laptop | portrait
 
 The frontend reads the first of `$SOT_SETTINGS`, a `.sot/settings.toml`
 found by walking up from the frontend's working directory, and
-`$HOME/.config/sot/settings.toml`; built-in defaults fill the rest. Keybindings live in a
+`settings.toml` in the per-user config folder (`$HOME/.config/sot`, `%LOCALAPPDATA%\sot\config` on Windows); built-in defaults fill the rest. Keybindings live in a
 sibling `.sot/keybindings.toml` with the same discovery order.
 
 The other sections are listed in [Configuration Files](../ref/config.md).

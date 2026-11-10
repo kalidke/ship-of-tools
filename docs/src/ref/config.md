@@ -27,7 +27,9 @@ Frontend settings.
 1. `$SOT_SETTINGS` — explicit path override.
 2. `.sot/settings.toml`, found by walking upward from the frontend's working
    directory (not the session's project).
-3. `$HOME/.config/sot/settings.toml` — per-user settings.
+3. `settings.toml` in the per-user config folder: `$XDG_CONFIG_HOME/sot`, else `$HOME/.config/sot` on Linux and
+   macOS, `%LOCALAPPDATA%\sot\config` on Windows (the folder the daemon reads too; the window ignores its
+   `[trust]` section).
 4. Built-in defaults.
 
 Any value that is missing or out of range silently falls back to its default —

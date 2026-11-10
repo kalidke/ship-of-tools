@@ -40,7 +40,7 @@ actions override the defaults; unlisted actions keep their defaults:
 
 1. `$SOT_KEYBINDINGS`.
 2. `.sot/keybindings.toml`, found by walking upward from the frontend's working directory.
-3. `$HOME/.config/sot/keybindings.toml`.
+3. `keybindings.toml` in the per-user config folder (`$XDG_CONFIG_HOME/sot`, else `$HOME/.config/sot`; `%LOCALAPPDATA%\sot\config` on Windows).
 4. Built-in defaults.
 
 Bindings load on frontend startup and again on a `reload_keybindings` command. Invalid entries log a warning and retain the
