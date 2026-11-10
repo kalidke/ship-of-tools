@@ -127,6 +127,7 @@ fn paint_chrome_repl(
         preview_name: &preview_name,
         pinned_preview_node_id: &pinned,
         drawer,
+        chat_empty: false,
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,

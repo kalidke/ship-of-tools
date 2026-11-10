@@ -1,7 +1,6 @@
 //! The project chat's private owner: one watched channel's state, the one post in flight, and the reads that keep the
 //! watched state whole. It consumes fe-net's chat events and replies and returns the requests to send; it sends nothing
-//! itself and replays no mutation. Only `ChatDrawer` calls it; no drawer view reads it yet (the view is B5's).
-#![cfg_attr(not(test), allow(dead_code, reason = "the drawer's view, which reads the records and the post outcome, is a later landing"))]
+//! itself and replays no mutation. Only `ChatDrawer` calls it; the view reads its records.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -120,6 +119,8 @@ pub(super) struct ChatOwner {
     watch: Option<Watch>,
     posting: Option<(HostKey, ChatPostReq)>,
     shown: Option<PostShown>,
+    /// Raised by each change to the watched records, so the window knows to draw again.
+    revision: u64,
 }
 
 impl ChatOwner {
@@ -131,6 +132,7 @@ impl ChatOwner {
         // The daemon's watch of a channel replaces the connection's earlier one, so the same channel needs no unwatch.
         let same = |w: &Watch| w.host == host && w.target.workspace == target.workspace && w.target.channel == target.channel;
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
+        self.revision += 1;
         self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records: HashMap::new(), floor: None, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
@@ -138,6 +140,7 @@ impl ChatOwner {
 
     /// End the watch at once, with one unwatch; its read in flight is given up (the drawer reads `reading` first).
     pub(super) fn stop(&mut self) -> Vec<Out> {
+        self.revision += 1;
         self.watch.take().map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect()
     }
 
@@ -146,12 +149,25 @@ impl ChatOwner {
         self.watch.as_ref().and_then(|w| w.reading.clone().map(|r| (w.host.clone(), r)))
     }
 
+    /// The held records, oldest first.
+    pub(super) fn records(&self) -> Vec<&ChatRecord> {
+        let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values()).collect();
+        held.sort_by(|a, b| ts_order(&a.ts).cmp(&ts_order(&b.ts)));
+        held
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[cfg_attr(not(test), allow(dead_code, reason = "the title's words (B5h) read the fill"))]
     pub(super) fn fill(&self) -> Option<Fill> {
         self.watch.as_ref().map(|w| w.fill)
     }
 
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
+    #[cfg_attr(not(test), allow(dead_code, reason = "the post bar (B5l) sends"))]
     pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
         if self.posting.is_some() {
             return None;
@@ -196,6 +212,9 @@ impl ChatOwner {
 
     pub(super) fn on_evt(&mut self, host: &HostKey, evt: ChatEvt, now: Instant) -> Vec<Out> {
         let mine = self.of(host).is_some();
+        if matches!(evt, ChatEvt::Changed(_) | ChatEvt::History { .. }) {
+            self.revision += 1;
+        }
         match evt {
             // The drawer (`ChatDrawer`) answers a resolve before the owner sees it.
             ChatEvt::Resolved { .. } => Vec::new(),

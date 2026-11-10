@@ -56,6 +56,7 @@ makedocs(;
         "Guides" => [
             "Running several agents" => "guide/agents.md",
             "Agents messaging each other" => "guide/messaging.md",
+            "The project chat" => "guide/chat.md",
             "Figures" => "guide/figures.md",
             "The REPL" => "guide/repl.md",
             "Previews" => "guide/previews.md",

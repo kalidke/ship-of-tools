@@ -8,11 +8,13 @@ use sot_protocol::ops::{ChatHistoryReq, ChatResolveRes, ChatTarget};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
+use crate::ui::render::quad::ScreenRect;
 
 #[cfg(test)]
 use super::owner::Fill;
 use super::owner::{ChatOwner, Out};
 use super::row_channel::RowChannel;
+use super::view::ChatView;
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -73,6 +75,7 @@ pub(in crate::ui) struct ChatDrawer {
     owner: ChatOwner,
     rows: RowChannel,
     flight: Flight,
+    view: ChatView,
 }
 
 impl ChatDrawer {
@@ -116,6 +119,29 @@ impl ChatDrawer {
             }
             evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
         }
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.owner.revision()
+    }
+
+    pub(in crate::ui) fn is_empty(&self) -> bool {
+        self.owner.records().is_empty()
+    }
+
+    /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it.
+    pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
+        let now = chrono::Local::now();
+        self.view.layout(fonts, &self.owner.records(), body, scale, now.timestamp(), *now.offset());
+    }
+
+    /// The chat is not shown: no record is prepared.
+    pub(in crate::ui) fn hide(&mut self) {
+        self.view.hide();
+    }
+
+    pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {
+        self.view.areas()
     }
 
     #[cfg(test)]

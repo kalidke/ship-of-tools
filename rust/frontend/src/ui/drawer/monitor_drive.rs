@@ -73,6 +73,14 @@ impl State {
         // (the pane's dirty mark) or the chart on screen was drawn for another size,
         // text scale or set of marks (`MonitorView::drawn`, `None` once the
         // drawer shows another tenant), mirroring the math-SVG rasterise path.
+        let chat_body = (self.layout_help.drawer() == DrawerContent::Chat).then(|| cells_to_px(repl_cells));
+        match chat_body {
+            Some(body) => {
+                let (chat, scale) = (&mut self.chat, (self.canvas.cell_h() / BASE_CELL_H));
+                self.canvas.shape(|fonts| chat.layout(fonts, body, scale));
+            }
+            None => self.chat.hide(),
+        }
         self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
         // Scale the chart's text + gutters to match the chrome's
         // effective text size (cell_h is BASE_CELL_H * scale), so the

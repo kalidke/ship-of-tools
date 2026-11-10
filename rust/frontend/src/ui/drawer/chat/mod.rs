@@ -9,21 +9,28 @@ use super::super::*;
 
 mod drawer;
 mod owner;
-#[allow(dead_code, reason = "B5g's view is its reader")]
 mod project;
 mod row_channel;
+mod view;
 pub(in crate::ui) use drawer::ChatDrawer;
 use owner::Out;
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]
 mod row_channel_tests;
+#[cfg(test)]
+mod view_tests;
 
 impl State {
     /// Sends what the owner asked for; a request that cannot be queued is dropped with a warning (the owner's pace, or
     /// the next connection, ask again).
     fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
-        for (host, req) in f(&mut self.chat, Instant::now()) {
+        let seen = self.chat.revision();
+        let outs = f(&mut self.chat, Instant::now());
+        if self.chat.revision() != seen {
+            self.pacer.mark_dirty();
+        }
+        for (host, req) in outs {
             if let Err(e) = self.send_to(&host, req) {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
             }
