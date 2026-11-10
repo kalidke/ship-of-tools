@@ -151,6 +151,7 @@ fn publish(
     rename_into(file, dir, last)?;
     *renamed = true;
     at(Step::Renamed)?;
+    std::thread::sleep(std::time::Duration::from_millis(1000)); // probe fault: a slow folder flush
     dir.sync_all()
 }
 

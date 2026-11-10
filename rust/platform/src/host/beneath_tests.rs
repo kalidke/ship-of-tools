@@ -551,6 +551,24 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
 }
 
 #[test]
+fn a_writer_of_one_name_publishes_while_another_syncs_its_folder() {
+    // The second write runs at the first's `Renamed` step, before its folder's sync: by then the first holds no handle on
+    // the name (Windows refuses a rename over a name held open without delete sharing).
+    let (_g, root, _outside) = setup();
+    let mut second = None;
+    write_beneath_at(&root, "f.txt", b"first", None, |s| {
+        if s == Step::Renamed {
+            second = Some(write_beneath(&root, "f.txt", b"second").map_err(|e| e.raw_os_error()));
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(second, Some(Ok(root.join("f.txt"))));
+    assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"second");
+    assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[test]
 fn a_folder_at_the_final_name_is_an_error_and_is_kept() {
     let (_g, root, _outside) = setup();
     std::fs::create_dir(root.join("f.txt")).unwrap();
