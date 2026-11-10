@@ -264,7 +264,7 @@ The project chat's configuration, two TOML files in the config folder (`~/.confi
 `%LOCALAPPDATA%\sot\config` on Windows).
 
 *Status: the daemon reads both files and connects to Slack with the two tokens. The Chat drawer shows the channel's held messages (see
-[The project chat](../guide/chat.md)); posting and mail are not built.*
+[The project chat](../guide/chat.md)), and a person's post goes out under `[chat] name` of `settings.toml`; mail is not built.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`. A computer with no `hosts.toml`, or another computer, runs no chat and

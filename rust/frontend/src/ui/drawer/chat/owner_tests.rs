@@ -185,6 +185,7 @@ fn a_post_not_sent_reads_as_outdated_and_frees_the_slot() {
     assert_eq!(o.shown, Some(PostShown::Outdated));
     assert!(o.posting.is_none());
     assert!(o.post(host(), post_req("two")).is_some());
+    assert!(o.shown.is_none(), "accepting a post clears the last outcome");
 }
 
 /// Every post reply reads as what it proves, and a reply for another request changes nothing.
@@ -193,7 +194,7 @@ fn a_posts_outcome_reads_as_the_reply_proves() {
     let cases: Vec<(ChatReply<ChatPostRes>, PostShown)> = vec![
         (ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") }), PostShown::Posted(ts("1700000000.000100"))),
         (ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), PostShown::Refused(ChatCode::Busy)),
-        (ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: true }), PostShown::Limited(30)),
+        (ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: true }), PostShown::Limited(30, true)),
         (ChatReply::Done(ChatPostRes::Unknown), PostShown::Unknown),
         (ChatReply::Unsupported, PostShown::Refused(ChatCode::Unavailable)),
     ];
