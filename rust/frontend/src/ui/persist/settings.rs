@@ -79,6 +79,10 @@
 //                                   # iGPU 3D continuously at idle in
 //                                   # fullscreen (measured on one laptop).
 //
+//   [chat]
+//   name = "Ada"                    # The author a chat post carries; unset,
+//                                   # the Chat drawer does not post.
+//
 // `columns` lists named slots in left-to-right order; `widths` is the
 // matching fractional split, one per column (a `widths` count that
 // differs from the columns warns and gives the columns an equal split;
@@ -352,6 +356,8 @@ pub struct Settings {
     /// (measured on one laptop). No VRR detection API is trusted here,
     /// so this is a setting, not a probe.
     pub fullscreen_vsync_pin: bool,
+    /// `[chat] name` — the author a chat post carries beside the app's name. `None` (unset or blank): the window does not post.
+    pub chat_name: Option<String>,
 }
 
 impl Default for Settings {
@@ -369,6 +375,7 @@ impl Default for Settings {
             nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
             fullscreen_vsync_pin: false,
+            chat_name: None,
         }
     }
 }
@@ -517,6 +524,7 @@ impl Settings {
                 // our own install writes is not reported as a typo at every
                 // start; there is nothing for the frontend to do with it.
                 ("trust", "root_prefix") => {}
+                ("chat", "name") => self.chat_name = Some(value.trim().to_string()).filter(|n| !n.is_empty()),
                 _ => {
                     tracing::warn!(line = lineno + 1, section = %section, key,
                         "unknown settings key; ignored");
