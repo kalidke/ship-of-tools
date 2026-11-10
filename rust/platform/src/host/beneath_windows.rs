@@ -73,16 +73,20 @@ fn utf8(name: &OsStr) -> io::Result<&str> {
 }
 
 /// Create the temporary file in `dir` exclusively, held with share-read alone so no other open can rename or delete it.
+/// Once renamed, that handle holds the final name without delete sharing, which refuses every other writer's rename over
+/// the name, so it is closed at the rename, before the folder's sync.
 fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let file = nt_open(dir, temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
         .map_err(status_error)?;
-    let mut renamed = false;
-    let result = publish(dir, &file, last, bytes, &mut renamed, at);
-    if !renamed {
+    if let Err(e) = write_and_rename(dir, &file, last, bytes, at) {
         // The handle names the temporary file alone; a failure here changes nothing.
         let _ = delete_on_close(&file);
+        return Err(e);
     }
-    result
+    drop(file);
+    at(Step::Renamed)?;
+    std::thread::sleep(std::time::Duration::from_millis(1000)); // probe fault: a slow folder flush
+    dir.sync_all()
 }
 
 /// Deletes the open `file` with POSIX semantics, which frees its name at once even while another program holds it open
@@ -135,24 +139,13 @@ fn walk(root: &Path, folders: &[&str], make: bool, at: &mut impl FnMut(Step) -> 
     Ok(dir)
 }
 
-/// Write, sync, rename within the folder, sync the folder.
-fn publish(
-    dir: &File,
-    mut file: &File,
-    last: &str,
-    bytes: &[u8],
-    renamed: &mut bool,
-    at: &mut impl FnMut(Step) -> io::Result<()>,
-) -> io::Result<()> {
+/// Write, sync, rename within the folder; nothing is renamed unless it answers `Ok`.
+fn write_and_rename(dir: &File, mut file: &File, last: &str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     at(Step::Temp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     at(Step::Written)?;
-    rename_into(file, dir, last)?;
-    *renamed = true;
-    at(Step::Renamed)?;
-    std::thread::sleep(std::time::Duration::from_millis(1000)); // probe fault: a slow folder flush
-    dir.sync_all()
+    rename_into(file, dir, last)
 }
 
 /// Renames the open `file` to `name` in `dir`, replacing an entry there; retried while a scanner holds the name. The
