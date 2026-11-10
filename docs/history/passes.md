@@ -1607,3 +1607,17 @@ A landing's record goes here, with its measured times; the package page holds on
   wire accepts, then a set beside the records whose drawer wiring was untested); three fix rounds of 9, 4 and 2
   minutes, the first waiting for B5i to land; four scoped gates of 2 minutes. The causes: a representation the plan
   left open and the builder chose from wire fields, and the slip.
+- The project chat's B5k, the draft, 2026-11-09, in four landings: builder launched 21:11; the move of
+  `chord_types_text` into `input/` (2e9ea678b) and the draft's own state (463b0e9f0) main 22:30, 79 minutes; the
+  wiring (7efcfd230) and the rows (c46aa3690) main 22:39, 88 minutes; past the half hour, a failure by this page's
+  standard. One draft per canonical row, holding only what wire's `post_text_fits` admits (a key or paste past it
+  refused whole), its destination fixed at the first character, CR LF and CR made LF and other controls dropped as the
+  drawer cannot show them, edited only in the Chat tenant (`DrawerInput::Chat`), drawn at the drawer's foot in at most
+  four wrapped rows with a true count of rows not shown at every height; a retired row drops its draft. About 210
+  product lines and 250 test lines over the four. Where the minutes went: the build (9 minutes, to about 207 product
+  lines past its 110-line stop, the test written after the code); two splits, into three and then four commits (13
+  minutes); a rebase onto B5j (3 minutes); four reviews in parallel (blockers 0, 0, 0, 1; 9 to 13 minutes, one by
+  reading only because the build computer's root disk was full of the evening's review builds); one fix round across the stack (24
+  minutes); a review of the whole stack (blockers 0; 8 minutes); a last fix of two commits (5 minutes); ten scoped
+  gates of 2 minutes. The causes: a builder that did not stop at its size bound, so the change was split after it was
+  built, and the full disk.
