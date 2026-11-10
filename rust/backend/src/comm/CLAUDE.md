@@ -96,6 +96,18 @@ Reading:
   shown and the POSIX `cksum` of the last one; a cursor whose last line no longer hashes so steps back one line, and the
   count-only and the old timestamp forms are read as before (`mail::cursor`). Every reader counts newline-terminated
   lines only, so a cut-back tail is never counted.
+- One poll prints at most `POLL_BUDGET`, 16,000 bytes of messages, under the 30,000 characters after which Claude Code
+  cuts a tool's output (bytes bound characters from above); a line cut off there would be marked read and never seen. It
+  always prints at least one line, so a line over the budget is printed alone and whole. The cursor moves only over
+  what was printed (lines it cannot show among them, which cost nothing), and when shown lines remain the poll ends with
+  `<n> more messages: run comm-poll.sh again`, a line that is not a message and is not counted. The Stop hook's tick (the one
+  owner of this rule) is keyed on the inbox total and the unread count together, so each remainder after a poll that
+  printed a directed line is announced once more, "once per remainder". A session that does not poll gets no second
+  block, and neither does one whose poll moved only over broadcast copies and own lines, which `unread` does not count:
+  with a directed line behind 16,000 bytes of those, one Stop can pass with it unread (rare; nothing is lost, the cursor
+  stands behind it, the poll's last line says more remain, and the wake repeats). One line over 30,000 characters is
+  still printed whole and cut by the harness. Tests: `poll_tests.rs`, and the hook's in
+  `comm/tests/test-status-floor.sh`.
 - A reader on a box that appends itself reads under a shared lock on `inbox/<h>.lock`, bounded at 3 s: a held lock is
   "try again" (poll exits 75 and moves nothing); any other lock fault is named and the read runs unlocked, covered by
   the cursor's hash.
@@ -175,7 +187,7 @@ Waking:
   `tests/comm_wake.rs::a_page_reply_and_a_wake_never_type_at_once` prove the guard; the latter suite also observes two
   concurrent replies and an unsent reply left untouched by later wakes. Unreadable Stop-mark bytes refuse a reply.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
-  end while unread mail waits, once per batch.
+  end while unread mail waits, once per remainder (Reading's tick rule).
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
   at its next turn, and after ten idle minutes a send to it fails as "no live session". No per-session watcher,
   listener, bridge or Monitor exists.

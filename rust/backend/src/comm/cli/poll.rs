@@ -7,6 +7,11 @@ use crate::comm::mail::cursor::{complete, counts, offset, write};
 use crate::comm::mail::inbox::{appends_here, lock_identity, read_lock, ReadLock};
 use crate::comm::registry::registry::{binding, touch, Binding};
 
+/// The most message bytes one poll prints, newlines included. Claude Code cuts a tool's output past 30,000 characters
+/// (bytes bound characters from above), and a line cut off there is marked read and never seen; the count line that
+/// ends a cut batch is not a message and is not counted.
+const POLL_BUDGET: usize = 16_000;
+
 /// A JSON value as `jq -r` prints it: a string raw, `null` and `false` as missing, anything else as JSON.
 fn raw(v: Option<&serde_json::Value>) -> Option<String> {
     match v? {
@@ -84,20 +89,30 @@ pub(crate) fn poll(env: &Env, _args: &[String]) -> Out {
     drop(lock);
     let lines: Vec<&[u8]> = complete(&bytes).split(|b| *b == b'\n').collect();
     let total = lines.len().saturating_sub(1) as u64;
-    let mut count = 0;
+    let mut printed = 0;
     if total > at.lines {
         let batch = &lines[at.lines as usize..total as usize];
-        for line in batch.iter().filter(|l| !l.is_empty()) {
-            if let Some(s) = shown(line) {
-                o.out(s);
-                count += 1;
+        let (mut last, mut left) = (0, 0);
+        for (i, line) in batch.iter().enumerate().filter(|(_, l)| !l.is_empty()) {
+            let Some(s) = shown(line) else { continue };
+            if left > 0 || (printed > 0 && printed + s.len() + 1 > POLL_BUDGET) {
+                left += 1;
+                continue;
             }
+            printed += s.len() + 1;
+            last = i + 1;
+            o.out(s);
         }
-        if let Err(e) = write(&ctx.comm_home, &me, total, batch.last().copied().unwrap_or_default()) {
+        if left > 0 {
+            o.out(format!("{left} more messages: run comm-poll.sh again"));
+        }
+        // The cursor stands on the last line printed when shown lines remain, else past the whole batch.
+        let end = if left > 0 { last } else { batch.len() };
+        if let Err(e) = write(&ctx.comm_home, &me, at.lines + end as u64, batch[end - 1]) {
             o.err(format!("comm-poll: the read cursor could not be written ({e}); these lines show again at the next poll"));
         }
     }
-    if count == 0 {
+    if printed == 0 {
         o.out("No new messages.");
     }
     let _ = touch(env, &ctx.registry(), &me);

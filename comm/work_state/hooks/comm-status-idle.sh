@@ -335,8 +335,9 @@ fi
 # every nudge below (mail outranks a report or a reminder): a marker turn with
 # unread mail blocks too, neither stamped from its marker nor floored, and the
 # turn end that finally passes stamps from the turn's last marker. It is
-# bounded to one block per pending batch by a tick file keyed like the
-# heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
+# bounded by a tick file keyed like the heartbeat's, so a model that refuses to poll is
+# nudged once, not in a loop; what the tick is keyed on is the messaging contract's rule
+# (rust/backend/src/comm/CLAUDE.md, Reading), pinned by test-status-floor.sh.
 #
 # What counts as mail is messaging's one rule, the wake's (`sotd comm unread`):
 # a JSON object whose `to` is a string equal to THIS handle
@@ -394,7 +395,7 @@ fi
 if [ "$mail_pending" -gt 0 ]; then
     # ONE block per pending batch, bounded by a tick file keyed by session.
     mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
-    mail_mark="$mail_total"
+    mail_mark="$mail_total:$mail_pending"
     if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_mark" ]; then
         mkdir -p "$HOME_DIR/state" 2>/dev/null || true
         # FAIL OPEN when the tick cannot be recorded. With no tick there is
