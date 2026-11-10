@@ -1632,3 +1632,15 @@ A landing's record goes here, with its measured times; the package page holds on
   round across the stack (14 minutes); a review of the whole stack (blockers 0; 5 minutes; three of part 3's rules
   alive, two of them double-post risks); a last fix of part 3 (3 minutes); seven scoped gates of 2 minutes. The cause:
   a step of about 145 product lines planned as 55, so it was split after it was built.
+- The project chat's B5n, older pages in the owner's one store, 2026-11-10, in two commits landed together: builder
+  launched 2026-11-09 23:45, main 00:51 (a2f29504f, 3ec55215d), 66 minutes, past the half hour, a failure by this
+  page's standard. The owner keeps up to 256 records above its floor, a hard ceiling of 276 while a reader stays on the
+  oldest, trimmed in one pass after every change; a replacing snapshot replaces all, or keeps the older records when it
+  overlaps; when the oldest held record is in view the drawer reads 20 older ones in a slot of its own, taken only while
+  the floor it was asked below still holds and only as many as fit; a refusal, Slack's plan hiding history and an empty
+  page each stop paging with words (CHAT-EMPTY-PAGE-NO-CURSOR noted). About 175 product lines and 365 test lines. Split
+  into the store and the paging before it was built. Where the minutes went: the build (13 minutes); three review
+  rounds (blockers 1 and 1 in parallel, then 0; 13 and 9 minutes: the store unbounded under a parked reader with a
+  quadratic trim, and a page taken after its floor moved); three fix rounds of 13, 8 and 3 minutes; six scoped gates
+  of 2 minutes. The causes: the plan's bound left open how a parked reader and the bound meet, and the paging rules
+  were checked when a page was asked for but not when it arrived.

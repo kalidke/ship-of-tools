@@ -778,6 +778,11 @@ owned by `docs/CLAUDE.md`.
   every snapshot record its model lacks, and a trim handled with a delete can name the trimmed record. Since the window
   keeps a delete as `(message deleted)`, such a message, which still exists, shows as deleted until the next snapshot.
   Needs a rare race. Found by B5j's reviews, reading code; never seen.
+- **CHAT-EMPTY-PAGE-NO-CURSOR** [note] The daemon drops joins, topic changes and other non-messages from a history
+  page, so a run of 20 of them reads as an empty page that still says older history exists. The window then has no
+  timestamp to page below and stops paging with `older messages could not be read`
+  (`rust/frontend/src/ui/drawer/chat/owner.rs`). Paging past it needs the daemon to report the oldest timestamp it
+  read (a field in wire's `ChatHistoryRes`). Found by B5n's review, reading code; never seen.
 
 ## records
 
