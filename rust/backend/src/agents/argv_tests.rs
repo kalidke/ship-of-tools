@@ -102,8 +102,9 @@ fn agent_argv_claude_matches_the_daemons_own_recipe() {
     // still pins the Windows capsule-spawn shape (`claude_recipe(&[],
     // None)` verbatim, no absolute-path resolution -- Windows relies
     // on the daemon's own `PATH`, `claude_argv`'s own doc).
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
     assert_eq!(
-        agent_argv("claude", None).unwrap(),
+        agent_argv_in(&env, "claude", None).unwrap(),
         vec!["claude", "--permission-mode", "auto", "/sot-session-start"]
     );
 }
@@ -124,7 +125,8 @@ fn agent_argv_claude_fails_closed_when_nothing_resolves() {
 #[test]
 #[cfg(windows)]
 fn agent_argv_none_is_the_bare_shell() {
-    assert_eq!(agent_argv("none", None).unwrap(), vec!["cmd.exe"]);
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
+    assert_eq!(agent_argv_in(&env, "none", None).unwrap(), vec!["cmd.exe"]);
 }
 
 #[test]
@@ -234,7 +236,8 @@ fn agent_argv_codex_fails_closed_when_nothing_resolves() {
 #[test]
 #[cfg(windows)]
 fn agent_argv_codex_is_refused_on_windows() {
-    let err = agent_argv("codex", None).unwrap_err();
+    let env = AgentEnv { path: None, home: None, shell: None, comm_home: None };
+    let err = agent_argv_in(&env, "codex", None).unwrap_err();
     assert!(err.contains("ccx"), "got: {err}");
 }
 

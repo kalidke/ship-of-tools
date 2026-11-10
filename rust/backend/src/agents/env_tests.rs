@@ -283,6 +283,7 @@ fn sotd_bin_value_gives_nothing_for_an_explicit_path_that_does_not_run() {
 /// every shell ladder reads as unset. An inherited value never reaches a leg whose start path was rejected.
 #[test]
 fn the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected() {
+    let _guard = self_file_env_guarded();
     assert_eq!(sotd_bin_pair(None), ("SOTD_BIN".to_string(), String::new()));
     assert_eq!(
         sotd_bin_pair(Some("/x/sotd")),
