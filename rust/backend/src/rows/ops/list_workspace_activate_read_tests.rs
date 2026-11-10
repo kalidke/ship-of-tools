@@ -7,6 +7,8 @@ use super::*;
 
 struct EnvGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
+    /// The registry turn alone: the read's clear waits 1 s (`comm::registry::lock::TURN_TESTS`).
+    _turn: std::sync::RwLockWriteGuard<'static, ()>,
     sot_comm_home: Option<std::ffi::OsString>,
     sot_self_host: Option<std::ffi::OsString>,
 }
@@ -28,10 +30,12 @@ fn guarded() -> EnvGuard {
     let serial = crate::paths::ENV_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
     EnvGuard {
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         sot_self_host: std::env::var_os("SOT_SELF_HOST"),
         _serial: serial,
+        _turn: turn,
     }
 }
 

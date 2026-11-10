@@ -174,14 +174,18 @@ async fn a_long_sweep_never_stacks_another_behind_it() {
     assert_eq!(*starts.borrow(), vec![0, 30, 35, 40]);
 }
 
-/// A comm home whose registry holds one row, `h`, with `entry`, named by `SOT_COMM_HOME` while the guard lives.
-fn home_with(entry: serde_json::Value) -> (std::sync::MutexGuard<'static, ()>, crate::paths::EnvGuard, tempfile::TempDir) {
+/// A comm home whose registry holds one row, `h`, with `entry`, named by `SOT_COMM_HOME` while the guard lives, and the
+/// registry turn shared: the tick's stamps wait 10 s (`comm::registry::lock::TURN_TESTS`).
+fn home_with(
+    entry: serde_json::Value,
+) -> ((std::sync::MutexGuard<'static, ()>, std::sync::RwLockReadGuard<'static, ()>), crate::paths::EnvGuard, tempfile::TempDir) {
     let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let turn = crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner());
     let env = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
     let dir = tempfile::tempdir().expect("tempdir");
     std::env::set_var("SOT_COMM_HOME", dir.path());
     std::fs::write(dir.path().join("registry.json"), json!({"agents": {"h": entry}}).to_string()).expect("registry");
-    (serial, env, dir)
+    ((serial, turn), env, dir)
 }
 
 fn row(home: &Path) -> serde_json::Value {

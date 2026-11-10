@@ -151,17 +151,20 @@ struct Home {
     _env: [crate::paths::EnvGuard; 2],
     dir: tempfile::TempDir,
     _serial: std::sync::MutexGuard<'static, ()>,
+    /// The registry turn alone: these writes wait 1 s (`comm::registry::lock::TURN_TESTS`).
+    _turn: std::sync::RwLockWriteGuard<'static, ()>,
 }
 
 impl Home {
     fn with(agents: Value) -> Home {
         let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let turn = crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner());
         let env = ["SOT_COMM_HOME", "SOT_SELF_HOST"].map(crate::paths::EnvGuard::capture);
         let dir = tempfile::tempdir().expect("tempdir");
         std::env::set_var("SOT_COMM_HOME", dir.path());
         std::env::set_var("SOT_SELF_HOST", "host-4");
         std::fs::write(dir.path().join("registry.json"), json!({ "agents": agents }).to_string()).expect("registry");
-        Home { _serial: serial, _env: env, dir }
+        Home { _serial: serial, _turn: turn, _env: env, dir }
     }
 
     fn bytes(&self) -> Vec<u8> {

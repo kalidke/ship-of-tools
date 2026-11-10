@@ -28,8 +28,9 @@ impl TestHome {
         TestHome::with(Turn::Shared(crate::comm::registry::lock::TURN_TESTS.read().unwrap_or_else(|e| e.into_inner())))
     }
 
-    /// A home whose test holds the process-wide registry turn alone: for a test that gives the lock no wait
-    /// (`SOT_LOCK_WAIT_SECS` of 0), which fails when any other thread of the process holds the turn at that instant.
+    /// A home whose test holds the process-wide registry turn alone: for a test whose assertion rests on a lock wait
+    /// under 10 s (a `SOT_LOCK_WAIT_SECS` under 10, the 1 s touch or Stop mark), which another test's hold of the turn
+    /// can spend (`registry::lock::TURN_TESTS`).
     pub(crate) fn exclusive() -> TestHome {
         TestHome::with(Turn::Alone(crate::comm::registry::lock::TURN_TESTS.write().unwrap_or_else(|e| e.into_inner())))
     }
@@ -44,16 +45,16 @@ impl TestHome {
             .with("SOT_SELF_HOST", "box1")
             .with("SOT_COMM_TEST_HOST", "box1")
             .with("SOT_SOCKET", dir.path().join("no-daemon.sock"))
-            .with("SOT_HOSTS", dir.path().join("hosts.toml"))
-            .with("SOT_LOCK_WAIT_SECS", "2");
+            .with("SOT_HOSTS", dir.path().join("hosts.toml"));
         crate::comm::home::ensure(&home, &env);
         TestHome { _turn: turn, _dir: dir, env, home, project }
     }
 
     /// `self` with `k` set in its environment.
     pub(crate) fn set(&mut self, k: &str, v: impl AsRef<std::ffi::OsStr>) {
-        let no_wait = k == "SOT_LOCK_WAIT_SECS" && v.as_ref() == "0";
-        assert!(!no_wait || matches!(self._turn, Turn::Alone(_)), "a lock with no wait needs TestHome::exclusive()");
+        let short = k == "SOT_LOCK_WAIT_SECS"
+            && v.as_ref().to_str().and_then(|s| s.trim().parse::<u64>().ok()).is_some_and(|s| s < 10);
+        assert!(!short || matches!(self._turn, Turn::Alone(_)), "a lock wait under 10 s needs TestHome::exclusive()");
         self.env = std::mem::take(&mut self.env).with(k, v);
     }
 
