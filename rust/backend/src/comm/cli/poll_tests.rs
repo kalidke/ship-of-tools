@@ -74,3 +74,64 @@ fn unread_counts_only_directed_mail_from_another_handle() {
     assert_eq!(unread(&t.env, &["me-box1".into()]).stdout, "3 1\n");
     assert_eq!(unread(&t.env, &["../x".into()]).code, 2, "a handle is an inbox file name and nothing else");
 }
+
+fn long(t: &TestHome, tag: &str, n: usize) {
+    file(t, &format!(r#"{{"from":"a","to":"me-box1","repo":"r","msg":"{tag}{}","ts":"t"}}"#, "x".repeat(n)));
+}
+
+/// Twenty 1,000-byte lines: one poll prints within the budget, says how many remain and stops the cursor at the last
+/// line it printed; the next poll prints the rest.
+#[test]
+fn a_poll_prints_a_bounded_batch_and_moves_the_cursor_only_over_what_it_printed() {
+    let t = reader();
+    for i in 0..20 {
+        long(&t, &format!("{i:02}"), 987);
+    }
+    let first = poll(&t.env, &[]);
+    let (body, tail) = first.stdout.rsplit_once("4 more").map(|(b, t)| (b, t)).expect("a remaining count");
+    assert!(body.len() <= 16_000, "{} bytes", body.len());
+    assert_eq!(tail, " messages: run comm-poll.sh again\n");
+    let printed = body.lines().count() as u64;
+    assert!(printed < 20 && printed > 10);
+    let cursor = std::fs::read_to_string(t.home.join("read/me-box1.cursor")).unwrap();
+    assert!(cursor.starts_with(&format!("{printed} ")), "{cursor}");
+    assert_eq!(unread(&t.env, &["me-box1".into()]).stdout, format!("20 {}\n", 20 - printed));
+    let rest = poll(&t.env, &[]).stdout;
+    assert_eq!(rest.lines().count() as u64, 20 - printed);
+    assert!(!rest.contains("more messages"));
+    assert!(rest.contains(&format!("{:02}x", 19)) && !rest.contains(&format!("{:02}x", printed - 1)));
+    assert_eq!(unread(&t.env, &["me-box1".into()]).stdout, "20 0\n");
+}
+
+/// A line over the budget is printed alone and whole; the line after it waits.
+#[test]
+fn a_line_over_the_budget_is_printed_alone_and_whole() {
+    let t = reader();
+    long(&t, "big", 20_000);
+    long(&t, "next", 10);
+    let o = poll(&t.env, &[]);
+    assert!(o.stdout.contains(&"x".repeat(20_000)), "whole");
+    assert!(o.stdout.ends_with("1 more messages: run comm-poll.sh again\n"), "{}", &o.stdout[o.stdout.len() - 80..]);
+    assert!(!o.stdout.contains("next"));
+    assert!(std::fs::read_to_string(t.home.join("read/me-box1.cursor")).unwrap().starts_with("1 "));
+    assert!(poll(&t.env, &[]).stdout.contains("next"));
+}
+
+/// Lines the poll cannot show cost nothing: one before the edge is passed with the batch, one after it is read at the
+/// next poll, which prints no more than the line that is left.
+#[test]
+fn unshowable_lines_cost_nothing_and_are_passed() {
+    let t = reader();
+    file(&t, "not json");
+    long(&t, "a", 15_000);
+    file(&t, "also not json");
+    long(&t, "b", 2_000);
+    file(&t, "last not json");
+    let o = poll(&t.env, &[]);
+    assert!(o.stdout.contains("ax") && !o.stdout.contains("bx"));
+    assert!(o.stdout.ends_with("1 more messages: run comm-poll.sh again\n"));
+    assert!(std::fs::read_to_string(t.home.join("read/me-box1.cursor")).unwrap().starts_with("2 "));
+    let o = poll(&t.env, &[]);
+    assert!(o.stdout.starts_with("[t] [a:r] b") && o.stdout.lines().count() == 1, "{}", o.stdout);
+    assert!(std::fs::read_to_string(t.home.join("read/me-box1.cursor")).unwrap().starts_with("5 "));
+}

@@ -96,6 +96,12 @@ Reading:
   shown and the POSIX `cksum` of the last one; a cursor whose last line no longer hashes so steps back one line, and the
   count-only and the old timestamp forms are read as before (`mail::cursor`). Every reader counts newline-terminated
   lines only, so a cut-back tail is never counted.
+- One poll prints at most `POLL_BUDGET`, 16,000 bytes of messages, under the 30,000 characters after which Claude Code
+  cuts a tool's output (bytes bound characters from above); a line cut off there would be marked read and never seen. It
+  always prints at least one line, so a line over the budget is printed alone and whole. The cursor moves only over
+  what was printed (lines it cannot show among them, which cost nothing), and when shown lines remain the poll ends with
+  `<n> more messages: run comm-poll.sh again`, a line that is not a message and is not counted. The unread count then
+  holds the turn's end until the rest is read. Tests: `poll_tests.rs`.
 - A reader on a box that appends itself reads under a shared lock on `inbox/<h>.lock`, bounded at 3 s: a held lock is
   "try again" (poll exits 75 and moves nothing); any other lock fault is named and the read runs unlocked, covered by
   the cursor's hash.
