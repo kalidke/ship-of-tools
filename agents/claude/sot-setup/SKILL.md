@@ -283,8 +283,8 @@ frontend = true
 ```
 Reachability (User, ProxyJump, HostName) stays in `~/.ssh/config`, never here.
 
-**settings.toml** (optional) — `$REPO/.sot/settings.toml` or
-`~/.config/sot/settings.toml`. The Terminal drawer runs a plain shell; the
+**settings.toml** (optional) — in the per-user config folder (the same folder as `hosts.toml` above; the order the
+window searches is `docs/src/ref/config.md`, "Discovery order"). The Terminal drawer runs a plain shell; the
 retired `[terminal] resume_command` (ADR 0041) is never written:
 ```toml
 [terminal]

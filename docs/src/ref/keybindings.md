@@ -35,13 +35,10 @@ files.run_current = "F8"
 preview.png.zoom_in = ["Shift+ArrowUp", "+", "="]
 ```
 
-The first existing configuration file is selected, in this order. Its listed
-actions override the defaults; unlisted actions keep their defaults:
-
-1. `$SOT_KEYBINDINGS`.
-2. `.sot/keybindings.toml`, found by walking upward from the frontend's working directory.
-3. `$HOME/.config/sot/keybindings.toml`.
-4. Built-in defaults.
+The first existing configuration file is selected, by `$SOT_KEYBINDINGS`, then `.sot/keybindings.toml`, then the
+per-user config folder: the order is the one in
+[Discovery order](config.md#Discovery-order). Its listed
+actions override the defaults; unlisted actions keep their defaults.
 
 Bindings load on frontend startup and again on a `reload_keybindings` command. Invalid entries log a warning and retain the
 previous binding. The active Help drawer and pane borders reflect that resolved
