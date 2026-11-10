@@ -9,9 +9,13 @@ use super::super::*;
 
 mod drawer;
 mod owner;
+#[allow(dead_code, reason = "B5g's view is its reader")]
+mod project;
 mod row_channel;
 pub(in crate::ui) use drawer::ChatDrawer;
 use owner::Out;
+#[cfg(test)]
+mod project_tests;
 #[cfg(test)]
 mod row_channel_tests;
 

@@ -818,7 +818,10 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `drawer/chat/`: `owner.rs` holds `ChatOwner`, the project chat's private owner (fields private, no open mutation; its tests are `owner_tests.rs`); `row_channel.rs` holds `RowChannel`, which
   resolves the wanted row; `drawer.rs` holds `ChatDrawer`, which owns both and the set of reads in flight, and is what State holds; `mod.rs` holds State's side
   only. State forwards chat events, `bus.lost` and each link's change to `ChatDrawer`, whose methods return the requests to
-  send. No drawer view or key reads it yet.
+  send. `project.rs` turns a record into kinded spans (`project`, pure; `project_tests::chat_markup_and_hostile_text_remain_literal`):
+  the text goes through wire's `text_segments`, Slack's markup is its own `Markup` span shown as sent, CR LF and CR become LF, tabs stay, any other C0 or C1
+  control becomes U+FFFD, and a name or file name loses controls and bidi or format characters, so no body line can read as a header (the header ends its own line).
+  No drawer view or key reads it yet (B5g).
 - `drawer/terminal/`: the Terminal tenant (local pty, vt100 helpers).
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
