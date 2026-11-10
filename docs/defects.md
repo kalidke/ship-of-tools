@@ -368,6 +368,9 @@ owned by `docs/CLAUDE.md`.
   `printf | grep -m1` under `set -o pipefail`, and when grep exits at its first match the writer can take SIGPIPE (141),
   so the substitution fails and the line reads empty. Replayed on the same output it failed once in five; a second run
   passed. Fix: a match that reads the whole input (`awk` printing the first match, or no `-m1`).
+- **COMM-LIST-WINDOW-NO-SESSIONS** [session] On a Windows window computer, `comm-list.sh`'s last line said the window's
+  own handle "declares no sessions" while the same listing showed that computer's rows, so one of the two reads the
+  wrong registry. Seen by a session operating the product there under 0.7.1-rc.2.
 
 ## agents
 
@@ -499,6 +502,10 @@ owned by `docs/CLAUDE.md`.
 - **REPL-FIGURE-SILENT** [note] The reply of `repl.execute` says nothing when a figure is not written; only the daemon log
   does (`rust/backend/src/sidecars/repl/execute.rs` `spill_exec_figures`), and the julia-repl skill tells the agent it gets
   the paths.
+- **KERNEL-THIRD-SPAWN-WINDOWS** [session] On a Windows window computer under 0.7.1-rc.1, three `julia.exe` kernels ran
+  under `sotd` with no REPL rows, spawned hours apart and then twice within five seconds, the third right after a
+  `markdown.tokenize` for the workspace `<default>`: a kernel kept past its row, or a second spawn for one request. Seen by
+  a session operating the product there; not yet reproduced; not seen under rc.2's first run.
 
 ## pages
 
