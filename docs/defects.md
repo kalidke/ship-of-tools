@@ -783,6 +783,18 @@ owned by `docs/CLAUDE.md`.
   timestamp to page below and stops paging with `older messages could not be read`
   (`rust/frontend/src/ui/drawer/chat/owner.rs`). Paging past it needs the daemon to report the oldest timestamp it
   read (a field in wire's `ChatHistoryRes`). Found by B5n's review, reading code; never seen.
+- **CHAT-MARK-SCROLL-SAME-FRAME** [note] Keys pressed before one frame apply the scroll first and the mark keys
+  after, so PageUp then ArrowUp within one frame shows the mark where it was, one message older, and the view returns
+  to it rather than staying where the page left it (`rust/frontend/src/ui/drawer/chat/view.rs`, `ChatView::layout`).
+  Folding scroll and mark keys from one ordered list would fix it. Found by B5o's second review, reading code and a
+  probe; never seen.
+- **CHAT-MARK-ZERO-BODY** [note] With a body of zero height a mark key sets a mark while no record is placed, so
+  "always in view" does not hold there (`ChatView::layout`). The compose rows likely leave at least one body row, so
+  this is probably unreachable. Found by B5o's first review, by a probe; never seen.
+- **CHAT-RERESOLVE-KEEPS-ANCHOR** [note] `ChatView::reset` runs only on a row change, so a row that resolves again
+  to another channel keeps its position and mark by time against the other channel's records, which then pass on by
+  the rule for a record no longer held (`rust/frontend/src/ui/drawer/chat/drawer.rs`, `ChatDrawer::tick`). It predates
+  B5o for the position. Found by B5o's first review, reading code; never seen.
 
 ## records
 

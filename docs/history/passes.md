@@ -1644,3 +1644,14 @@ A landing's record goes here, with its measured times; the package page holds on
   quadratic trim, and a page taken after its floor moved); three fix rounds of 13, 8 and 3 minutes; six scoped gates
   of 2 minutes. The causes: the plan's bound left open how a parked reader and the bound meet, and the paging rules
   were checked when a page was asked for but not when it arrived.
+- The project chat's B5o, the message mark, 2026-11-10: builder launched 00:58, main 01:42 (07965073d), 44 minutes,
+  past the half hour, a failure by this page's standard. ArrowUp and ArrowDown in the Chat drawer mark one held message,
+  folded one key at a time; a mark moved out of view moves the view to show it; a mark whose header leaves the body
+  moves to the nearest message whose header is inside, or to the first one shown when none is; a mark no longer held
+  passes to the nearest newer one; a row change clears it; the marked header is drawn in the focus color
+  (CHAT-MARK-SCROLL-SAME-FRAME, CHAT-MARK-ZERO-BODY and CHAT-RERESOLVE-KEEPS-ANCHOR noted). About 89 product lines and
+  225 test lines. Where the minutes went: the build (13 minutes); two review rounds (blockers 1 and 1; 11 and 9
+  minutes: the mark could sit on a sliver with its header off screen, then the builder's own fallback could still mark
+  a one-pixel header); two fix rounds of 5 and 2 minutes, the second read by the session in place of a third review;
+  three scoped gates of 1 to 2 minutes. The cause: the brief left the builder to define "in view", the one term the guarantee turns on, so each
+  review found a definition that let the mark leave the person's sight.
