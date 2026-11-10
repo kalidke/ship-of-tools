@@ -91,13 +91,6 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
     Break(())
 }
 
-/// Whether a chord that resolved to no editor action types its character. A Command chord on macOS and a Ctrl chord
-/// do not: winit's `logical_key` can carry the bare letter under Ctrl, so Ctrl+Q (the window's quit, reaching here
-/// because the editor has the keys first) would type a "q". Ctrl with Alt is AltGr on Windows, which types.
-pub(super) fn chord_types_text(ctrl: bool, alt: bool, super_: bool) -> bool {
-    !(cfg!(target_os = "macos") && super_) && !(ctrl && !alt)
-}
-
 pub(in crate::ui) fn enter_editor(state: &mut State) {
     // Concept-annotation edit takes priority when one
     // is loaded for the cursored node (content is

@@ -1,4 +1,4 @@
-use super::chord_types_text;
+use crate::ui::input::chord_types_text;
 
 /// Ctrl+Q reaches the editor (it has the keys first), and winit can name its key by the bare letter.
 #[test]

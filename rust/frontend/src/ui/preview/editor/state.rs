@@ -537,7 +537,7 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
             // and `key_to_pty_bytes`: a chord that
             // resolved to no editor action must not
             // insert text either.
-            let types = super::keys::chord_types_text(ctrl, alt, super_);
+            let types = crate::ui::input::chord_types_text(ctrl, alt, super_);
             for c in s.chars() {
                 if types && !c.is_control() {
                     edit.buf.insert_char(c);
