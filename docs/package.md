@@ -173,7 +173,8 @@ earlier text of the sections above and the integration-test assignment by pass.
 
 ## State
 
-v0.7.0 is published (2026-11-05), and a plain install moves a computer to it. v0.7.1-rc.3 (2026-11-10) is an
+v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.3 (2026-11-10) is an
 unpublished draft, installed by archive on the hub and two window computers for a person's first use of the project
 chat's drawer (rc.1 and rc.2, the day before, carried selection and drawing); `main` carries 0.7.1-rc.4-dev, and the
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
@@ -200,8 +201,8 @@ post), and selection and copy (a drag selects text inside one message, Primary+c
 shown text, never shared with the agent), and the native witness (the real window's chat through its State under a
 virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
 hub's chat configuration. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
-bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection have
-landed. Also in progress: an SVG file previewed as its picture, by drawing a file's SVG in a bounded child process; its
+bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection, and
+an author's messages grouped under one header with a tile in a gutter, have landed. Also in progress: an SVG file previewed as its picture, by drawing a file's SVG in a bounded child process; its
 first landing, an SVG's image read only from embedded data (never a file or a URL), is on main. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection

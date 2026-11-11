@@ -1873,3 +1873,22 @@ A landing's record goes here, with its measured times; the package page holds on
   called the lighter band darker; the run finder moved without a test; the frame's order of layout and rectangles was
   untested, so the layout now returns the frame's rectangles and no order remains; the badge's line height unpinned);
   two amend rounds; one rebase by the session; two scoped gates.
+- The chat drawer's look, L2: message groups, the gutter and the group's tile, 2026-11-11: builder launched about
+  09:08, main 10:04 (7500bbf6e), 56 minutes, a miss. About 171 product lines added and 62 deleted. Where the minutes
+  went: a scoped gate red on one host and green on another, a test whose expected eviction sat at a font's wrap point
+  (fixed by visiting every scroll position and widening the test's body by the gutter); review round 1 (no blockers;
+  33 mutants of the grouping and lead rules killed; the tile's scale, color and fit unpinned; a header-only record's
+  tile ran into the next; a page joining above moves every record below it); three amends; two rebases by the
+  session; three scoped gates.
+- One update runbook for an agent, in `docs/`, 2026-11-11: asked for about 07:40 (a one-line message that
+  sends any computer's agent to it, which "needs to work and be foolproof"), main 10:34 (808f2c6d1), a records landing
+  of about 180 runbook lines. Where the time went: each round of real runs found a way an update would fail for a
+  person, and each fix needed another run. Five hosted probes on macOS and Windows and container runs on Linux, from
+  every 0.6 and 0.7 start tried: GitHub's listing refused anonymous calls from a shared address (the newest release is
+  now read from the latest-release redirect), the installer enrolled the folder it was run from (the command moves
+  home first), Git Bash had no form. Runs of an agent inside a real 0.6.6 row found that the update ends that agent
+  mid-run while finishing, that its row starts a new conversation, and that with a live REPL the installer asked on the
+  row's terminal and waited forever (the command now gives it none; INSTALLER-ASKS-A-ROWS-TERMINAL). Three review
+  rounds (blockers: ending every agent without asking; the in-row path unrun; a shared home skipping the question; an
+  older skill triggered by the message's words; the terminal hang; a contract naming a test that does not exist). One
+  miss of the session's own: a probe script was edited while a run read it, which lost one case's mail check.
