@@ -580,6 +580,8 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **SVG-IMAGE-HREF-READS-LOCAL-FILES** [session] An `<image href>` in an SVG goes to usvg's default resolver, which reads any path that exists on the window's computer: a FIFO hangs the thread, a local file is drawn into the picture, `/dev/zero` exhausts memory, and one embedded raster repeated by `<use>` is decoded again for each use, so a file of a few hundred uses holds the thread for minutes, and usvg parses SVG data inside an `<image>` itself, past the XML scan, so one nested 20000 deep overflows the stack (known by a review's probes; reachable through a markdown figure and the SVG file preview). Fix: a resolver that reads no file, refuses nested SVG data and sums the pixels of embedded images over a document.
+- **SVG-REFERENCE-CHAIN-OVERFLOWS-STACK** [session] A chain of references (`clip-path`, `mask`, a `pattern` fill, `use`, `filter`, `marker`), each link its own element, recurses usvg's converter and resvg's renderer with no XML nesting, so 20000 links (about 200 KB) overflow the stack and abort the window; Windows' main thread has 1 MiB, and a release build overflows it at about 900 levels of plain nesting (known by a review's probes; reachable through a markdown figure and the SVG file preview). Fix: draw on a thread of a stated stack size and refuse a document whose longest chain, measured before usvg converts it, is past a bound set from a measurement on that stack.
 - **PDF-TEXT-SELECTION** [feature] Text the person selects in a PDF preview is shared with the row's agent, as a text
   preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
   so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
@@ -934,6 +936,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SVG-NESTING-OVERFLOWS-STACK** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG preview: an SVG nested 20000 elements deep (a 140 KB file) overflowed the stack in roxmltree's recursive parse, before usvg's own depth check of 1024, and aborted the window, and so did one whose DOCTYPE a loose scan left early (an `<!ELEMENT x ]>` or a processing instruction holding `]>`, which roxmltree does not read as the end) before an entity holding 20000 nested elements; reachable before the SVG preview through a markdown figure naming the file. `svg_tree`, the one way into usvg, now scans the bytes first (`check_xml_shape`): nesting past 1024 is refused, and a DOCTYPE is taken only as an external ID, comments and `<!ENTITY name "value">` with no `<` in the value, read as roxmltree reads it (`skip_doctype`).
 - **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
   contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the
   newest release and never passes through 0.7.0, so the deletion would leave a 0.6 terminal and its agent alive beside
