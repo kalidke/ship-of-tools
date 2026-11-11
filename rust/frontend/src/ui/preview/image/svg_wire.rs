@@ -12,9 +12,9 @@ pub(crate) const REPLY_PIXELS: u8 = b'R';
 pub(crate) const REPLY_ERROR: u8 = b'E';
 pub(crate) const ERROR_BYTES: usize = 1024;
 
-/// The child ended at its heap cap, at its CPU limit, in a crash (an abort or a stack overflow), or because its request
-/// or its bounds could not be had. Each is an exit with a code, never a signal and never a core (except a crash on Windows, which ends
-/// with the OS's own status).
+/// The child ended at its heap cap, at its CPU limit, in a crash, or because its request or its bounds could not be had.
+/// Each is an exit with a code, never a signal and never a core, except on Windows: there only a panic on the draw
+/// thread ends with `EXIT_CRASH`, and an abort or a stack overflow ends with the OS's own crash status.
 pub(crate) const EXIT_HEAP: i32 = 71;
 // Windows has no CPU bound here, so no code for one.
 #[cfg(unix)]

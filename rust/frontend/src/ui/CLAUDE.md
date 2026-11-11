@@ -669,8 +669,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling`, `an_embedded_png_image_still_draws`.
 - The drawing child, `sot --draw-svg <heap bytes> <cpu seconds> --version` (preview/image/svg_child.rs, whose numbers
   are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
-  or spin only a process the window can lose. It has no caller yet (the runner, the worker and the callers are later
-  landings). The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
+  or spin only a process the window can lose. It has no caller yet: the runner that starts it, and every caller, are unbuilt. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
   and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
   it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), crashes as
   exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
@@ -685,34 +684,30 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   where it is shown. The child's own code writes nothing else to stdout and stderr is the window's to close, but usvg
   prints a fixed warning line for some color-font text (usvg-0.44.0 text/colr.rs:185 and :285), which would arrive
   between two replies: a known writer until a platform primitive gives the reply a private descriptor and points
-  stdout at the null device (a separate landing, before the child has a caller). Jobs draw on one thread of 32 MiB
+  stdout at the null device (to be added to platform before anything calls the child). Jobs draw on one thread of 32 MiB
   (`SVG_STACK`, the same on every system; Windows gives a main thread 1 MiB); a panic there ends the child with 73 at
-  once. The child exits 0, or: 71 at its heap cap, 72 at its CPU bound, 73 in a crash (an abort, Rust's stack-overflow
-  report, a panic on the draw thread), 74 when its arguments, its request or its bounds cannot be had (no reply is
-  written), or when a reply cannot be written or the draw thread cannot start (a reply may then be partial). Windows has
-  no code for a crash or a CPU bound: the OS's own crash status stands, and the parent's wall clock is the only time
-  bound. Limits: a crash by `SIGSEGV` outside a stack overflow, `SIGBUS` or `SIGILL` ends by signal, and with a core
-  limit above zero leaves a core holding the file's bytes in the window's working folder; the heap cap counts requested
+  once. The child exits 0, or: 71 at its heap cap, 72 at its CPU bound (Unix), 73 in a crash (on Unix an abort, Rust's
+  stack-overflow report or a panic on the draw thread; on Windows only a panic on the draw thread), 74 when its
+  arguments, its request or its bounds cannot be had (no reply is written), when the draw thread cannot start (none
+  either), or when a reply cannot be written (the replies before it are whole). On Windows an abort or a stack overflow
+  ends with the OS's own crash status, and there is no CPU bound: the parent's wall clock is the only time bound.
+  Limits: a crash by `SIGSEGV` outside a stack overflow, `SIGBUS` or `SIGILL` ends by signal, and with a core limit
+  above zero and a plain core pattern can leave a core holding the file's bytes in the window's working folder; the heap cap counts requested
   bytes, so memory the file can reach without the allocator (fonts and the stack are fixed mappings) is not counted;
   nothing is enforced on what the child may open beyond what the code does (an `<image>` reads nothing, the child
-  starts no process). `SVG_HEAP`, the number landing 3's runner passes, is 2 GiB: twice the allocator's high-water mark
-  of the dearest of three drawings at 16 Mpx (581 MB, in a release build; the commit message has the three).
-  Tests (`rust/frontend/tests/svg_child.rs`, each spawning the built binary under a cleared environment with `HOME`,
-  stderr null, and on Unix a core limit and a scratch folder): `a_plain_svg_comes_back_as_its_pixels`,
+  starts no process).
+  Tests (`rust/frontend/tests/svg_child.rs`, each spawning the built binary under a cleared environment, stderr
+  null, a scratch folder as working folder and `HOME`, and on Unix a core limit): `a_plain_svg_comes_back_as_its_pixels`,
   `every_job_of_a_request_is_drawn_in_order_and_an_error_does_not_end_the_child`,
-  `replies_before_a_crash_arrive_whole`, `an_error_text_is_one_line_of_at_most_a_kilobyte`,
+  `replies_before_a_crash_arrive_whole`, `an_error_text_is_cut_at_a_kilobyte`,
   `a_request_that_is_no_request_is_refused_with_its_code`, `an_input_past_the_heap_ends_with_its_code`,
   `a_draw_past_its_heap_ends_with_its_code`, `an_entity_expansion_past_its_heap_ends_with_its_code`,
   `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
-  (Unix), and in svg_child_tests.rs `an_error_is_its_first_line` and
-  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Hosted run 43092941740 (debug builds, the first eight
-  tests alone and in order): on macOS 15 all eight pass, so a child that closed every inherited descriptor first still
-  draws with the system frameworks loaded (the 2a review's S3), the CPU bound is enforced (P7), and `DiagnosticReports`
-  held the same files before and after the run (no control that aborts without the handler was run, so the exit code 73,
-  not the listing, is the evidence). On Windows the seven pass; the cycle's stack overflow ended the child in 0.1 s with
-  the OS status 0xc00000fd and `%LOCALAPPDATA%\CrashDumps` was never created. P8 stays open: a hosted runner cannot show
-  a dialog, the Windows Error Reporting archive path did not resolve in the run's shell, and no lab computer was used,
-  so "no dialog and no dump" is unseen; it is a condition of landing 6, the first caller a person sees.
+  (Unix), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
+  assertions exists), and in svg_child_tests.rs `an_error_is_its_first_line` and
+  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
+  crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
+  can show neither); until then that is unknown.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

@@ -272,7 +272,7 @@ fn replies_before_a_crash_arrive_whole() {
 }
 
 #[test]
-fn an_error_text_is_one_line_of_at_most_a_kilobyte() {
+fn an_error_text_is_cut_at_a_kilobyte() {
     // An unknown entity named by 3000 characters: the parser's message carries the name.
     let svg = format!("{SVG_OPEN}<rect width=\"10\" height=\"10\" id=\"&{};\"/></svg>", "A".repeat(3000));
     let ran = run(ROOMY, 30, request(&[(2, 2, svg.as_bytes())]));
@@ -280,11 +280,10 @@ fn an_error_text_is_one_line_of_at_most_a_kilobyte() {
     let replies = replies(&ran.out);
     let [Reply::Error(text)] = &replies[..] else { panic!("one error: {replies:?}") };
     assert_eq!(text.len(), ERROR_BYTES, "cut at the limit");
-    assert!(!text.contains('\n'));
 }
 
 /// 100 million octaves of noise: a few hundred bytes that spin for weeks.
-#[cfg(unix)]
+#[cfg(any(unix, debug_assertions))]
 const SPIN: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><filter id="f">
 <feTurbulence baseFrequency="0.05" numOctaves="100000000"/></filter><rect width="100" height="100" filter="url(#f)"/></svg>"##;
 
@@ -296,4 +295,15 @@ fn a_child_past_its_cpu_bound_ends_itself() {
     let ran = run_within(Duration::from_secs(10), ROOMY, 1, request(&[(100, 100, SPIN.as_bytes())]));
     assert_eq!(ran.status.code(), Some(EXIT_CPU), "the CPU bound is an exit with its code, not SIGXCPU");
     assert!(ran.lived < Duration::from_secs(10), "{:?}", ran.lived);
+}
+
+/// A panic on the draw thread is `EXIT_CRASH` on every system, not the abort's status (on Windows a fast-fail). Only a
+/// debug build has a file known to panic: resvg's `debug_assert!(val.is_finite())` stops `SPIN` after about 6 s. On
+/// Unix an abort would give the same code, so this is red there only for another code; on Windows it is red for `abort`.
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_on_the_draw_thread_is_the_crash_code() {
+    let ran = run_within(Duration::from_secs(30), ROOMY, 60, request(&[(100, 100, SPIN.as_bytes())]));
+    assert_eq!(ran.status.code(), Some(EXIT_CRASH));
+    assert_eq!(replies(&ran.out).len(), 0, "nothing was answered before the panic");
 }

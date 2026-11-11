@@ -119,7 +119,8 @@ fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {
             out.write_all(pixmap.data())
         }
         Err(error) => {
-            let text = first_line(&format!("{error:#}"), ERROR_BYTES).to_owned();
+            let text = format!("{error:#}");
+            let text = first_line(&text, ERROR_BYTES);
             out.write_all(&[REPLY_ERROR])?;
             out.write_all(&(text.len() as u16).to_le_bytes())?;
             out.write_all(text.as_bytes())
