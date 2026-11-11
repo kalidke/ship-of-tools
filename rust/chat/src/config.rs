@@ -5,6 +5,7 @@
 //! not the hub never opens that file.
 
 use crate::http::Secret;
+use crate::normalize::ts_key;
 use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use std::fmt;
@@ -35,6 +36,10 @@ pub fn read_file(path: &Path) -> io::Result<String> {
     sot_platform::host::read_regular(path, MAX_FILE)
 }
 
+/// The most mappings a delivering file (one whose hub `mail_after` is set) may hold: the watch model's channel bound,
+/// so every delivering channel can be held.
+pub(crate) const MAX_DELIVERING: usize = crate::watch::MAX_CHANNELS;
+
 /// A file's text, or why not: absent, too large or not text (`Malformed`), or unreadable.
 fn text(read: Reader, path: &Path) -> Result<String, ConfigError> {
     read(path).map_err(|e| match e.kind() {
@@ -60,7 +65,7 @@ pub enum ConfigError {
     Unreadable,
     Malformed(Option<usize>),
     BadId,
-    BadMailAfter,
+    BadMailAfter(Option<usize>),
     BadToken,
     SecondWorkspace,
     DuplicateChannel,
@@ -69,6 +74,8 @@ pub enum ConfigError {
     FolderRepeated(usize),
     ChannelRepeated(usize),
     ChannelNotListed(usize),
+    TooManyDelivering,
+    MappingWithoutFloor(usize),
 }
 
 impl ConfigError {
@@ -78,7 +85,7 @@ impl ConfigError {
             ConfigError::Unreadable => "a chat file exists but cannot be read: it must be a regular file this account can read",
             ConfigError::Malformed(_) => "a chat file is not valid: it must be text of at most 64 KiB, hold only the documented keys, each of the documented type",
             ConfigError::BadId => "a workspace or channel id is not a Slack id (capital letters and digits)",
-            ConfigError::BadMailAfter => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
+            ConfigError::BadMailAfter(_) => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
             ConfigError::BadToken => "a token in chat-secrets.toml is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
@@ -87,18 +94,21 @@ impl ConfigError {
             ConfigError::FolderRepeated(_) => "two mappings name one folder (an alias of it, or the same pair twice)",
             ConfigError::ChannelRepeated(_) => "two folders map to one channel: a channel belongs to one folder",
             ConfigError::ChannelNotListed(_) => "a mapping names a channel that chat.toml's channels does not list",
+            ConfigError::TooManyDelivering => "mail is on (mail_after is set), so at most 32 mappings are allowed",
+            ConfigError::MappingWithoutFloor(_) => "mail is on (mail_after is set), so each mapping needs its own mail_after: the time the mapping was added",
         }
     }
 
     /// The mapping's ordinal or the parse failure's line, when there is one.
     pub fn at(self) -> Option<usize> {
         match self {
-            ConfigError::Malformed(at) => at,
+            ConfigError::Malformed(at) | ConfigError::BadMailAfter(at) => at,
             ConfigError::UnknownFolder(n)
             | ConfigError::InertAnchor(n)
             | ConfigError::FolderRepeated(n)
             | ConfigError::ChannelRepeated(n)
-            | ConfigError::ChannelNotListed(n) => Some(n),
+            | ConfigError::ChannelNotListed(n)
+            | ConfigError::MappingWithoutFloor(n) => Some(n),
             _ => None,
         }
     }
@@ -165,8 +175,8 @@ fn workspace(t: &toml::Table) -> Result<String, ConfigError> {
 #[derive(Debug)]
 pub struct Config {
     workspace: String,
-    /// Canonical folder and channel, one-to-one.
-    mappings: Vec<(String, String)>,
+    /// Canonical folder, channel and the mapping's own `mail_after`, folders and channels one-to-one.
+    mappings: Vec<(String, String, Option<Ts>)>,
     mail_after: Option<Ts>,
 }
 
@@ -179,6 +189,27 @@ impl Config {
     /// The one configured workspace id.
     pub fn workspace(&self) -> &str {
         &self.workspace
+    }
+
+    /// The admitted mappings, each as its canonical folder and its channel.
+    pub fn mappings(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.mappings.iter().map(|(f, c, _)| (f.as_str(), c.as_str()))
+    }
+
+    /// The hub's `mail_after`: set, the file is delivering.
+    pub fn mail_after(&self) -> Option<&Ts> {
+        self.mail_after.as_ref()
+    }
+
+    /// The channel's floor: the later of its mapping's `mail_after` and the hub's; `None` while the hub's is unset
+    /// (and for a channel no mapping holds).
+    pub fn floor(&self, channel: &str) -> Option<Ts> {
+        let hub = self.mail_after.as_ref()?;
+        let own = self.mappings.iter().find(|(_, c, _)| c == channel)?.2.as_ref();
+        Some(match own {
+            Some(t) if ts_key(t) > ts_key(hub) => t.clone(),
+            _ => hub.clone(),
+        })
     }
 
     pub fn parse(text: &str, rows: Rows) -> Result<Config, ConfigError> {
@@ -201,10 +232,10 @@ impl Config {
             None => None,
             Some(v) => Some(
                 Ts::parse(v.as_str().ok_or(ConfigError::Malformed(None))?)
-                    .map_err(|_| ConfigError::BadMailAfter)?,
+                    .map_err(|_| ConfigError::BadMailAfter(None))?,
             ),
         };
-        let mut mappings: Vec<(String, String)> = Vec::new();
+        let mut mappings: Vec<(String, String, Option<Ts>)> = Vec::new();
         let entries = match t.get("mapping") {
             None => &[],
             Some(v) => v.as_array().ok_or(ConfigError::Malformed(None))?.as_slice(),
@@ -212,7 +243,7 @@ impl Config {
         for (i, m) in entries.iter().enumerate() {
             let at = i + 1;
             let m = m.as_table().ok_or(ConfigError::Malformed(None))?;
-            only(m, &["folder", "channel", "workspace"])?;
+            only(m, &["folder", "channel", "workspace", "mail_after"])?;
             if let Some(w) = m.get("workspace") {
                 if id(w)? != workspace {
                     return Err(ConfigError::SecondWorkspace);
@@ -223,6 +254,16 @@ impl Config {
                 .and_then(toml::Value::as_str)
                 .ok_or(ConfigError::Malformed(None))?;
             let channel = id(m.get("channel").ok_or(ConfigError::Malformed(None))?)?;
+            let own = match m.get("mail_after") {
+                None => None,
+                Some(v) => Some(
+                    Ts::parse(v.as_str().ok_or(ConfigError::Malformed(None))?)
+                        .map_err(|_| ConfigError::BadMailAfter(Some(at)))?,
+                ),
+            };
+            if mail_after.is_some() && own.is_none() {
+                return Err(ConfigError::MappingWithoutFloor(at));
+            }
             // M1: canonical folders and channels are one-to-one, the inert anchor takes none, each channel is listed.
             let f = rows(folder).ok_or(ConfigError::UnknownFolder(at))?;
             if f.inert {
@@ -231,13 +272,16 @@ impl Config {
             if !channels.contains(&channel) {
                 return Err(ConfigError::ChannelNotListed(at));
             }
-            if mappings.iter().any(|(f2, _)| *f2 == f.canonical) {
+            if mappings.iter().any(|(f2, _, _)| *f2 == f.canonical) {
                 return Err(ConfigError::FolderRepeated(at));
             }
-            if mappings.iter().any(|(_, c2)| *c2 == channel) {
+            if mappings.iter().any(|(_, c2, _)| *c2 == channel) {
                 return Err(ConfigError::ChannelRepeated(at));
             }
-            mappings.push((f.canonical, channel));
+            mappings.push((f.canonical, channel, own));
+        }
+        if mail_after.is_some() && mappings.len() > MAX_DELIVERING {
+            return Err(ConfigError::TooManyDelivering);
         }
         Ok(Config {
             workspace,
@@ -247,7 +291,7 @@ impl Config {
     }
 }
 
-/// What a folder's configuration says. Nothing is delivered unless it is `Mapped` with a `mail_after`. `NotHub` is the
+/// What a folder's configuration says. `mail_after` is the channel's floor (`Config::floor`). Nothing is delivered unless it is `Mapped` with a `mail_after`. `NotHub` is the
 /// daemon's own answer when it is not the configured hub: it read no chat file, so it knows nothing of the folder.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Resolution {
@@ -300,12 +344,12 @@ impl fmt::Display for Resolution {
 pub fn resolve(config: &Result<Config, ConfigError>, folder: &str) -> Resolution {
     match config {
         Err(e) => Resolution::Invalid(*e),
-        Ok(c) => match c.mappings.iter().find(|(f, _)| f == folder) {
+        Ok(c) => match c.mappings.iter().find(|(f, _, _)| f == folder) {
             None => Resolution::Unmapped,
-            Some((_, ch)) => Resolution::Mapped {
+            Some((_, ch, _)) => Resolution::Mapped {
                 workspace: c.workspace.clone(),
                 channel: ch.clone(),
-                mail_after: c.mail_after.clone(),
+                mail_after: c.floor(ch),
             },
         },
     }

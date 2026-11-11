@@ -187,7 +187,8 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     let home = Home::new(Some(SELF));
     let folders: Vec<_> = (0..n).map(|i| home.folder(&format!("r{i}"))).collect();
     let channels: Vec<String> = (0..n).map(|i| format!("\"C{i:04}\"")).collect();
-    let mut text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\nmail_after = \"1.000000\"\n", channels.join(", "));
+    // 33 mappings is more than a delivering file may hold, so this file has no hub `mail_after`.
+    let mut text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\n", channels.join(", "));
     for (i, f) in folders.iter().enumerate() {
         text += &format!("[[mapping]]\nfolder = '{}'\nchannel = \"C{i:04}\"\n", f.to_string_lossy());
     }
