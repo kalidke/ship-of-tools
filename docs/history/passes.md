@@ -1925,3 +1925,11 @@ A landing's record goes here, with its measured times; the package page holds on
   round 1 (no blockers: a reply still in the buffer was lost when a later job crashed; the error text's bounds had no
   test; SVG's library can print a warning line to standard output, which a later platform landing closes); round 2
   (no blockers: the draw thread's panic arm unpinned; the record's Windows wording); two fix commits and three gates.
+- A row left before its preview came back, PREVIEW-NOT-FOLLOWING-ROW, 2026-11-11: seen by the maintainer and, the same
+  hour, by another session's row showing a file of another project; diagnosis launched about 14:50, main 15:49
+  (c84ffa166, e2b9abd1a), 59 minutes, a miss; from the fix's commit to main 23 minutes. About 20 product lines and 140
+  test lines. Where the minutes went: the diagnosis (35 minutes; from the daemon's log, the row was left 0.34 s after it
+  asked while the daemon took up to 13 s per preview during a sweep of rows, and was entered 119 times the next day
+  without asking again), its diff applied as written; review round 1 (no blockers: the fixture pinned only the side
+  that asks again, so a fix that fetched on every visit would pass; two clears where one serves); one fix commit and
+  two gates.
