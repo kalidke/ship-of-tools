@@ -123,7 +123,7 @@ of each.
     biased toward the departure, so a connection ready at the same moment can be accepted just after the decision.
     A service that runs in the daemon and listens itself (the project chat) registers with lifecycle's
     `retire::participants()` and is retired by the terminal (lifecycle's guarantee 6); the server's accept loop is not
-    one of them and its behavior here is unchanged. `run` builds the chat once (`chat::Chat::begin`, after the rows
+    one of them and its behavior here is unchanged. `run` builds the chat once (`chat::Chat::boot`, after the rows
     exist and before the listener) and puts it in `Services` as `chat`. Hello comes first for every kind (`tests/admission.rs` `every_connection_kind_needs_an_accepted_hello` covers the
     chat names in `op::ALL`). The chat's admission and construction are `rust/chat/CLAUDE.md` guarantee 21's.
 12. **A control session's hello reply names its window's REPL runs still running.** `HelloRes::repl_running`, read from

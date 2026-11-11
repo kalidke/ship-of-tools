@@ -196,7 +196,7 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     let rows = Workspaces::new();
     let ids: Vec<(String, std::path::PathBuf)> = folders.iter().enumerate().map(|(i, f)| (rows.insert(row(&format!("r{i}"), f)).workspace_id.clone(), f.clone())).collect();
     let spare = rows.insert(row("spare", &home.folder("spare"))).workspace_id.clone();
-    let chat = Chat::begin(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
+    let chat = Chat::begin_unowned(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
     running(&chat).await;
     assert_eq!(chat.status(), Status::Running);
     // The socket's hello owes every complete watch a snapshot again, and owed snapshots are asked for by a watch, so a
@@ -706,4 +706,60 @@ async fn a_hello_during_a_snapshot_refuses_it_and_tells_the_watch() {
     assert!(ok_watch(&a.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
     eventually("the gap cleared", || matches!(service.status(), ServiceStatus::Running { gap: false, .. })).await;
+}
+
+/// The daemon's path: `start_owner` is called while the service is still starting, and the owner then runs with no
+/// connection, applying nothing and reading no history.
+#[tokio::test(flavor = "current_thread")]
+async fn the_owner_runs_from_the_services_start_with_no_watch() {
+    let (fake, lv) = live().await;
+    let rig = super::chat_ops_tests::rig_booting(&fake).await;
+    assert_eq!(rig.services.chat.status(), Status::Starting, "the owner's task is begun before the start ends");
+    let hub = rig.services.chat.hub().clone();
+    eventually("the owner with no connection", || hub.running()).await;
+    // A watch begun before the socket's hello would leave its channel owing a resync (see `many`).
+    after_hello(&rig.services.chat, &rig.rows, &alpha_target(&rig)).await;
+    assert!(hub.slots().is_empty());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(lv.histories.load(Ordering::SeqCst), 0, "an owner with nothing watched reads no history");
+    // A watch that comes after finds the one owner and is served by it.
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+}
+
+/// The capture is `test_log`'s, which no sibling's first reach of the call site can switch off.
+#[tokio::test(flavor = "current_thread")]
+async fn the_running_state_is_logged_once() {
+    let (fake, _lv) = live().await;
+    let log = sot_platform::test_log::capture();
+    let rig = rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    eventually("the owner", || hub.running()).await;
+    // A watch that comes after starts nothing and logs nothing more.
+    after_hello(&rig.services.chat, &rig.rows, &alpha_target(&rig)).await;
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    let text = log.text();
+    assert_eq!(text.matches("the chat service is running").count(), 1, "{text}");
+}
+
+/// The boot's wait ends with the chat when the chat is retired while starting.
+#[tokio::test(flavor = "current_thread")]
+async fn the_boots_wait_ends_when_the_chat_is_retired_while_starting() {
+    let home = Home::new(Some(SELF));
+    let folder = home.folder("a");
+    home.chat_toml(&[folder.to_string_lossy().into_owned()]);
+    home.secrets();
+    let rows = Workspaces::new();
+    rows.insert(row("alpha", &folder));
+    let never: crate::chat::Starter<sot_chat::service::Service> = Box::new(|_, _, _| Box::pin(std::future::pending()));
+    let chat = Chat::begin_unowned(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), never);
+    let task = chat.start_owner(rows.clone());
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished(), "the wait holds while the chat starts");
+    Participant::request_stop(&*chat);
+    bounded("the boot's wait to end", task).await.unwrap();
+    assert!(!chat.hub().running());
 }

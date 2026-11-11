@@ -784,9 +784,6 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-REFUSAL-NAMES-NO-FILE** [session] The daemon's `project chat` log line gives the same words for a refused
   `chat.toml` and a refused `chat-secrets.toml` (`ConfigError`'s explanation, `chat.rs` `Status`'s display) and, for a
   key the file must not hold, no line, so a person cannot tell which file to fix. Fix: name the file.
-- **CHAT-START-NOT-LOGGED** [session] A chat start that succeeds logs only `the chat service is starting`; nothing says
-  it is running, so the log alone cannot confirm the chat is up (2026-11-10, read only by a window's first use). Fix:
-  log the running state once.
 - **CHAT-PUBLISH-SKIPS-A-RESTART** [note] The daemon's chat owner task (`Own::sync`, `rust/backend/src/chat/watch.rs`)
   can take a new socket gap inside one channel's begin and then begin a later channel that has just left complete, in
   the same pass; `publish` then sees that channel pending, not needed, and sends no `chat.status`, so a window holding it
@@ -900,6 +897,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-START-NOT-LOGGED** (chat) closed by the landing that fixes it, 2026-11-10: a chat start that succeeded logged only `the chat service is starting`; the daemon's boot now starts the chat's owner when the service runs and logs `the chat service is running` once.
 - **CHAT-NAME-ASKED-ONCE** (fe-ui) closed by the landing that fixes it, 2026-11-10: Enter in the Chat drawer with a draft and no `[chat] name` refused to post and sent the person to a hand edit of `settings.toml` and a restart; the drawer's foot now asks for the name once (`Name for your chat posts:`), checks it (`check_chat_name`), writes it durably into the settings file the window loaded, or the per-user one, and uses it at once, with the draft kept.
 - **WINDOWS-SETTINGS-NO-DURABLE-HOME** (fe-ui) closed by the landing that fixes it, 2026-11-10: a Windows window read no settings file (the launcher's `SOT_SETTINGS` default named a file inside the release checkout, which an update deletes, and `$HOME` is unset there), so Enter in the Chat drawer never posted; the window's per-user place is now platform's config folder (`sot_config_dir_in`) for `settings.toml` and `keybindings.toml`, the launcher sets no `SOT_SETTINGS`, and the window ignores the daemon's `[trust]` section.
 - **PREVIEW-PDF-STALE** (fe-ui) closed by the landing that fixes it, 2026-11-10: a PDF an agent rebuilt and badged as

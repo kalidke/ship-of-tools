@@ -14,6 +14,7 @@ use sot_chat::service::Service;
 use sot_platform::host::env::Env;
 use sot_protocol::ops::{ChatCode, ChatTarget};
 use tokio::runtime::Handle;
+use tokio::sync::Notify;
 use tokio::task::AbortHandle;
 
 pub(crate) mod ops;
@@ -96,9 +97,15 @@ enum Phase<L> {
 struct Shared<L> {
     phase: Mutex<Phase<L>>,
     off: Condvar,
+    /// Woken when a start ends, in `Running` or in `Off`.
+    started: Notify,
 }
 
 impl<L> Shared<L> {
+    fn new() -> Arc<Self> {
+        Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new(), started: Notify::new() })
+    }
+
     fn lock(&self) -> MutexGuard<'_, Phase<L>> {
         self.phase.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -106,6 +113,7 @@ impl<L> Shared<L> {
     fn set_off(&self, status: Status) {
         *self.lock() = Phase::Off(status);
         self.off.notify_all();
+        self.started.notify_waiters();
     }
 }
 
@@ -175,8 +183,8 @@ impl<L: Listener> Chat<L> {
     /// own, so boot never waits on Slack. A missing `chat.toml` leaves the chat off and writes nothing. Rows made later
     /// are not seen: a mapping to a folder no row had at this call is refused as `UnknownFolder` until the daemon
     /// restarts. Must run inside the daemon's runtime.
-    pub(crate) fn begin(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
-        let shared = Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new() });
+    fn begin(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
+        let shared = Shared::new();
         let chat = |config, status| {
             *shared.lock() = Phase::Off(status);
             Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()), hub: watch::Hub::new() })
@@ -217,7 +225,10 @@ impl<L: Listener> Chat<L> {
             let shared = &task_chat.shared;
             let mut phase = shared.lock();
             match (made, matches!(*phase, Phase::Starting(_))) {
-                (Ok(l), true) => *phase = Phase::Running(l),
+                (Ok(l), true) => {
+                    *phase = Phase::Running(l);
+                    shared.started.notify_waiters();
+                }
                 // Retired while the start was under way: the service it made ends at once.
                 (Ok(l), false) => {
                     tokio::spawn(async move { l.stop(STOP_WITHIN).await });
@@ -235,10 +246,17 @@ impl<L: Listener> Chat<L> {
         this
     }
 
+    /// `begin` alone, for a test that wants no boot task: the owner then starts with a first watch. `server::run`
+    /// builds its chat only through [`Chat::boot`].
+    #[cfg(test)]
+    pub(crate) fn begin_unowned(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
+        Chat::begin(env, rows, read, registry, start)
+    }
+
     /// A chat that is not the hub, for a test's services.
     #[cfg(test)]
     pub(crate) fn off() -> Arc<Chat<L>> {
-        let shared = Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new() });
+        let shared = Shared::new();
         Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok(), hub: watch::Hub::new() })
     }
 
@@ -260,6 +278,22 @@ impl<L: Listener> Chat<L> {
         match &*self.shared.lock() {
             Phase::Running(l) => Some(l.clone()),
             _ => None,
+        }
+    }
+
+    /// The running service once the start has ended: `None` when it ended any other way (never the hub, refused,
+    /// failed, retired).
+    async fn running(&self) -> Option<Arc<L>> {
+        loop {
+            let changed = self.shared.started.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match &*self.shared.lock() {
+                Phase::Starting(_) => {}
+                Phase::Running(l) => return Some(l.clone()),
+                _ => return None,
+            }
+            changed.await;
         }
     }
 
@@ -316,6 +350,30 @@ impl<L: Listener> Chat<L> {
     /// row, and refusing it for a stale one would leave the watch holding one of the bounded slots.
     pub(crate) fn admit_unwatch(&self) -> Result<(), ChatCode> {
         self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
+    }
+}
+
+impl Chat<Service> {
+    /// The boot's one task: when the service is running, log it once and start the hub's owner, which serves the
+    /// socket with no window open. `ensure_owner` stays the one start; a watch that comes first starts it too.
+    pub(crate) fn start_owner(self: &Arc<Self>, rows: Workspaces) -> tokio::task::JoinHandle<()> {
+        let chat = self.clone();
+        tokio::spawn(async move {
+            let Some(service) = chat.running().await else { return };
+            tracing::info!(status = %Status::Running, "project chat");
+            if let Err(code) = chat.hub.ensure_owner(&service, &chat, &rows) {
+                tracing::warn!(?code, "project chat owner did not start");
+            }
+        })
+    }
+
+    /// The daemon's chat as the boot makes it, and as the tests' rig makes it: begin, the boot's log line, and the
+    /// owner's task, started while the chat is still `Starting`. Must run inside the daemon's runtime.
+    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>) -> Arc<Chat> {
+        let chat = Chat::begin(env, &row_facts(rows), read, registry, start);
+        tracing::info!(status = %chat.status(), "project chat");
+        drop(chat.start_owner(rows.clone()));
+        chat
     }
 }
 
