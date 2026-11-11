@@ -253,7 +253,34 @@ fn a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller() {
     } else {
         assert_eq!(ran.status.code(), Some(EXIT_CRASH), "an abort is an exit with the crash code, not SIGABRT");
     }
-    assert!(ran.out.is_empty() || ran.out == MAGIC, "no picture came back from a crashed draw");
+    assert_eq!(ran.out, MAGIC, "the magic was delivered and no picture came back from a crashed draw");
+}
+
+#[test]
+fn replies_before_a_crash_arrive_whole() {
+    // The child ends by `_exit`, which flushes nothing: each reply has to leave the child as it is finished, and the
+    // small ones are the ones a line buffer would keep.
+    let red = rect("red");
+    let ran = run(ROOMY, 30, request(&[(6, 6, b"this is no SVG"), (1, 1, red.as_bytes()), (100, 100, CYCLE.as_bytes())]));
+    if !cfg!(windows) {
+        assert_eq!(ran.status.code(), Some(EXIT_CRASH));
+    }
+    let replies = replies(&ran.out);
+    assert_eq!(replies.len(), 2, "the two jobs before the crash were answered");
+    assert!(matches!(&replies[0], Reply::Error(text) if text.starts_with("svg parse failed")));
+    assert_eq!(pixel(&replies[1], 0, 0), [255, 0, 0, 255]);
+}
+
+#[test]
+fn an_error_text_is_one_line_of_at_most_a_kilobyte() {
+    // An unknown entity named by 3000 characters: the parser's message carries the name.
+    let svg = format!("{SVG_OPEN}<rect width=\"10\" height=\"10\" id=\"&{};\"/></svg>", "A".repeat(3000));
+    let ran = run(ROOMY, 30, request(&[(2, 2, svg.as_bytes())]));
+    assert_eq!(ran.status.code(), Some(0));
+    let replies = replies(&ran.out);
+    let [Reply::Error(text)] = &replies[..] else { panic!("one error: {replies:?}") };
+    assert_eq!(text.len(), ERROR_BYTES, "cut at the limit");
+    assert!(!text.contains('\n'));
 }
 
 /// 100 million octaves of noise: a few hundred bytes that spin for weeks.
@@ -261,6 +288,8 @@ fn a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller() {
 const SPIN: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><filter id="f">
 <feTurbulence baseFrequency="0.05" numOctaves="100000000"/></filter><rect width="100" height="100" filter="url(#f)"/></svg>"##;
 
+/// In a debug build, without the bound, this file ends by itself after about 6 s: resvg's `debug_assert!(val.is_finite())`
+/// (filter/mod.rs:245) panics, and a panic on the draw thread is `EXIT_CRASH`, not `EXIT_CPU`.
 #[cfg(unix)]
 #[test]
 fn a_child_past_its_cpu_bound_ends_itself() {

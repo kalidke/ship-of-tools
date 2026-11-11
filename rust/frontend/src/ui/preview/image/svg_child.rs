@@ -5,8 +5,11 @@
 //!
 //! The child bounds itself before it reads a byte (`bound_self`), reads one request from stdin (`svg_wire`: the magic,
 //! a u32 job count, then per job an ask and a u64 length with that many bytes of SVG, at most `PREVIEW_BINARY_CAP` in
-//! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to stdout, which holds
-//! nothing else; stderr is the window's to close. It ends with exit 0, or by a bound's code (`svg_wire`).
+//! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to stdout, each flushed
+//! as it is whole, so a later job that crashes the child costs only itself. The child's own code writes nothing else
+//! there; usvg prints a fixed warning line for some color-font text (usvg-0.44.0 text/colr.rs:185, :285), a known
+//! writer until a platform primitive gives the reply a private descriptor. Stderr is the window's to close. It ends
+//! with exit 0, or by a bound's code (`svg_wire`).
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -91,18 +94,20 @@ fn read_request(mut from: impl Read) -> io::Result<Vec<Job>> {
     Ok(jobs)
 }
 
-/// Every job drawn in order on a thread of `SVG_STACK`, one reply each. A panic on that thread is an abort, which
-/// `bound_self` made an exit.
+/// Every job drawn in order on a thread of `SVG_STACK`, one reply each, flushed as it is whole (the child ends by
+/// `_exit`, which flushes nothing). A panic on that thread ends the child with `EXIT_CRASH` at once, on every system.
 fn draw_all(jobs: Vec<Job>) -> io::Result<()> {
     let thread = std::thread::Builder::new().name("svg".into()).stack_size(SVG_STACK).spawn(move || {
         let mut out = io::stdout().lock();
         out.write_all(&MAGIC)?;
+        out.flush()?;
         for job in &jobs {
             reply(&mut out, job)?;
+            out.flush()?;
         }
-        out.flush()
+        Ok(())
     });
-    thread?.join().unwrap_or_else(|_| std::process::abort())
+    thread?.join().unwrap_or_else(|_| exit_now(EXIT_CRASH))
 }
 
 fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {
@@ -114,14 +119,24 @@ fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {
             out.write_all(pixmap.data())
         }
         Err(error) => {
-            let text = format!("{error:#}");
-            let mut end = text.lines().next().unwrap_or("").len().min(ERROR_BYTES);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
+            let text = first_line(&format!("{error:#}"), ERROR_BYTES).to_owned();
             out.write_all(&[REPLY_ERROR])?;
-            out.write_all(&(end as u16).to_le_bytes())?;
-            out.write_all(&text.as_bytes()[..end])
+            out.write_all(&(text.len() as u16).to_le_bytes())?;
+            out.write_all(text.as_bytes())
         }
     }
 }
+
+/// `text`'s first line, cut to at most `limit` bytes at a character boundary.
+fn first_line(text: &str, limit: usize) -> &str {
+    let line = text.lines().next().unwrap_or("");
+    let mut end = line.len().min(limit);
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
+#[cfg(test)]
+#[path = "svg_child_tests.rs"]
+mod tests;
