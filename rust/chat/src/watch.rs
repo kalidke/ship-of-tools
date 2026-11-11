@@ -3,7 +3,7 @@
 //! reads the socket and the API and tells it what happened. Registration (`watch`) precedes the snapshot (`begin`);
 //! while a snapshot is pending, live changes go into a bounded overlay applied after it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +64,15 @@ pub enum Loaded {
     Stale,
 }
 
+/// What the socket gave a delivering channel since the last `take_arrived`, with the gap number the model knew.
+#[derive(Debug, PartialEq)]
+pub struct Arrived {
+    /// Every new record taken, root or reply, any origin, in take order (not `ts` order).
+    pub records: Vec<ChatRecord>,
+    /// The highest gap number seen; it only rises, and `reconcile` clearing the gap does not lower it.
+    pub gap: u64,
+}
+
 enum Change {
     Put { record: ChatRecord, edited: bool },
     Delete(Key),
@@ -122,16 +131,20 @@ pub struct Watches {
     seen: u64,
     tickets: u64,
     channels: HashMap<String, Channel>,
+    /// Channels whose every new record is handed over, apart from `channels`: none is a watch, so none keeps
+    /// `reconcile` from clearing the gap.
+    delivering: HashSet<String>,
+    arrived: Vec<ChatRecord>,
 }
 
 impl Watches {
     pub(crate) fn claimed(claim: Arc<AtomicU8>) -> Watches {
-        Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+        Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new(), delivering: HashSet::new(), arrived: Vec::new() }
     }
 
     #[cfg(test)]
     pub(crate) fn new() -> Watches {
-        Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+        Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new(), delivering: HashSet::new(), arrived: Vec::new() }
     }
 
     pub(crate) fn claims(&self, claim: &Arc<AtomicU8>) -> bool {
@@ -151,6 +164,20 @@ impl Watches {
             self.channels.insert(channel.into(), ch);
         }
         Ok(())
+    }
+
+    /// Hand over every new record of a channel from here on. The configuration bounds the set to `MAX_CHANNELS`
+    /// (`config::MAX_DELIVERING`); this asserts it in debug builds only.
+    pub fn deliver(&mut self, channel: &str) {
+        debug_assert!(self.delivering.contains(channel) || self.delivering.len() < MAX_CHANNELS);
+        self.delivering.insert(channel.into());
+    }
+
+    /// The new records of delivering channels taken since the last call, each once; nothing once the service has
+    /// stopped. The caller takes them in the call that pumped, so they never outgrow one take.
+    pub fn take_arrived(&mut self) -> Arrived {
+        let records = std::mem::take(&mut self.arrived);
+        Arrived { records: if self.ended() { Vec::new() } else { records }, gap: self.seen }
     }
 
     /// Forget a channel, whatever it was doing; an answer to its pending snapshot is `Stale`.
@@ -231,6 +258,11 @@ impl Watches {
     pub(crate) fn apply_taken(&mut self, taken: Taken) {
         self.sync(taken.gap);
         for event in &taken.events {
+            if let Normalized::New(r) = event {
+                if self.delivering.contains(&r.channel) {
+                    self.arrived.push(r.clone());
+                }
+            }
             self.apply(event);
         }
     }

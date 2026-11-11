@@ -12,7 +12,7 @@ use crate::normalize::{ts_key, Normalized};
 use crate::service::Service;
 use crate::socket::{Gap, GapCause, Taken};
 use crate::watch::{
-    Loaded, State, Wake, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
+    Arrived, Loaded, State, Wake, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
 };
 
 const C: &str = "C0AAAA";
@@ -580,4 +580,73 @@ fn many_threads_asking_at_once_get_one_watches() {
         assert_eq!(got.load(std::sync::atomic::Ordering::SeqCst), 1, "not exactly one Watches");
         held.lock().unwrap().clear();
     }
+}
+
+fn texts_of(a: &Arrived) -> Vec<String> {
+    a.records.iter().map(|r| r.text.clone()).collect()
+}
+
+#[tokio::test]
+async fn every_new_message_of_a_delivering_channel_is_handed_over_once_in_order() {
+    let other = "C0BBBB";
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.deliver(C);
+    let mut reply = rec_in(C, "5.000000", "2.000000", "reply");
+    reply.origin = Origin::Member;
+    let mut broadcast = rec_in(C, "4.000000", "2.000000", "broadcast");
+    broadcast.origin = Origin::Bot;
+    let mut row = rec("3.000000", "row");
+    row.origin = Origin::Row;
+    // Take order is not ts order, and an edit, a delete and another channel's message are not handed over.
+    service.feed(new("9.000000", "late"));
+    service.feed(Normalized::New(reply));
+    service.feed(edited("9.000000", "edit"));
+    service.feed(Normalized::New(rec_in(other, "6.000000", "6.000000", "elsewhere")));
+    service.feed(deleted("9.000000"));
+    service.feed(Normalized::New(broadcast));
+    service.feed(Normalized::New(row));
+    w.pump(&service);
+    let a = w.take_arrived();
+    assert_eq!(texts_of(&a), ["late", "reply", "broadcast", "row"], "pump's handover");
+    assert!(w.take_arrived().records.is_empty(), "a record handed over twice");
+    // Through `begin` of a watch too, while the delivering channel stays no watch.
+    w.watch(other).unwrap();
+    service.feed(new("10.000000", "begun"));
+    assert!(w.begin(other, &service).is_some());
+    assert_eq!(texts_of(&w.take_arrived()), ["begun"], "begin's handover");
+    assert_eq!(w.state(C), None, "a delivering channel became a watch");
+}
+
+#[tokio::test]
+async fn a_delivering_channel_holds_no_part_of_the_gap() {
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.deliver("C0BBBB");
+    w.watch(C).unwrap();
+    service.lose(GapCause::Reconnect);
+    w.pump(&service);
+    let first = w.take_arrived().gap;
+    assert!(first > 0, "the gap number was not read");
+    let t = w.begin(C, &service).unwrap();
+    assert_eq!(w.loaded(C, t, Vec::new(), &service), Loaded::Complete);
+    assert!(w.reconcile(&service), "a delivering channel kept the gap");
+    assert_eq!(w.take_arrived().gap, first, "clearing the gap lowered the number");
+    service.lose(GapCause::Reconnect);
+    w.pump(&service);
+    assert!(w.take_arrived().gap > first, "the gap number did not rise");
+}
+
+#[tokio::test]
+async fn a_stopped_service_hands_over_nothing() {
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.deliver(C);
+    service.feed(new("1.000000", "before"));
+    w.pump(&service);
+    service.stop(Duration::from_millis(10)).await;
+    assert!(w.take_arrived().records.is_empty(), "a stopped service handed a record over");
+    service.feed(new("2.000000", "after"));
+    w.pump(&service);
+    assert!(w.take_arrived().records.is_empty(), "a record arrived after the stop");
 }

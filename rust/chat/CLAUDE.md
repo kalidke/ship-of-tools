@@ -297,7 +297,10 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    one (unwatched, watched again, begun again) is `Stale` and changes nothing. The socket's gap is cleared
    (`reconcile(&service)`) only when every watch that exists is `Complete`, hence resynced from a
    snapshot begun after that gap was read, and the socket refuses it when anything was lost since; with nothing watched
-   it clears at once. The set is the watches today, and B3's mail joins it. One total order on timestamps
+   it clears at once. A delivering channel (`deliver`, at most 32, the configuration's rule and asserted in debug builds
+   only) is no watch and never keeps the gap: every `New` record of it taken from the socket, root or reply, any
+   origin, reaches `take_arrived` once, in take order (not `ts` order), with the highest gap number seen, which only rises;
+   a stopped service hands nothing over. One total order on timestamps
    (`normalize::ts_key`, also `Bounds`'): numeric on the validated form, so `9.000000` precedes `10.000000` and
    `007.000000` is `7.000000`, one message. Bounds: 32 channels, 100 messages a channel (the oldest leave), 128 overlay
    changes, a channel id of at most 64 characters; the worst case is 32 x (100 + 128) x 32 KiB, about 228 MiB. Limits:
