@@ -1,0 +1,40 @@
+name: probe
+# Scratch workflow for tmp/ branches, which are never merged: the fixed cost of one SVG child.
+on:
+  push:
+    branches: ["tmp/**"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 3
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 3
+      - name: Build the window binary and the probe
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          (cd rust && cargo build --release --locked -p sot-frontend --bin sot)
+          (cd dev/svg-m0 && cargo build --release --locked)
+      - name: Measure
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          EXE=""; case "$RUNNER_OS" in Windows) EXE=.exe;; esac
+          P="$PWD/dev/svg-m0/target/release/svg-m0$EXE"
+          SOT="$PWD/rust/target/release/sot$EXE"
+          ls -l "$SOT"
+          for round in cold warm; do
+            echo "== $round"
+            "$P" bench "sot --version" 20 300 "$SOT" --version
+            "$P" bench "fonts load" 20 300 "$P" fonts
+            "$P" bench "empty" 20 300 "$P" empty
+          done

@@ -1,0 +1,10 @@
+[package]
+name = "svg-m0"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+fontdb = "=0.22.0"
