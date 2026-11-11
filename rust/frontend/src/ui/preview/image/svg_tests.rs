@@ -148,3 +148,105 @@ fn svg_text_after_a_paragraph_separator_is_drawn() {
     let got: Vec<(&str, usize)> = cases.iter().map(|&text| (text, drawn(text))).collect();
     assert_eq!(got, cases.map(|text| (text, whole)));
 }
+
+/// A 4x4 green PNG.
+fn green_png() -> Vec<u8> {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 255, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode a PNG");
+    png
+}
+
+/// The center pixel of `svg` drawn at 100x100.
+fn center(svg: String) -> [u8; 4] {
+    let tree = svg_tree(svg.as_bytes()).expect("the SVG parses");
+    let mut pixmap = Pixmap::new(100, 100).expect("a pixmap");
+    let size = tree.size();
+    resvg::render(&tree, Transform::from_scale(100.0 / size.width(), 100.0 / size.height()), &mut pixmap.as_mut());
+    pixmap.data()[(50 * 100 + 50) * 4..][..4].try_into().expect("a pixel")
+}
+
+fn image_svg(href: &str) -> String {
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="{href}"/></svg>"#)
+}
+
+/// A temporary folder removed when it drops, so a failing test leaves nothing behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sot-svg-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp folder");
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A file named by an `<image>` href, plainly or as `file://`, is not read: nothing is drawn.
+#[test]
+fn an_image_href_naming_a_local_file_draws_nothing() {
+    let dir = Scratch::new("href-file");
+    let local = dir.0.join("local.png");
+    std::fs::write(&local, green_png()).expect("write a PNG");
+    let path = local.to_string_lossy().into_owned();
+    assert_eq!(center(image_svg(&path)), [0, 0, 0, 0], "a file named by an href was drawn");
+    assert_eq!(center(image_svg(&format!("file://{path}"))), [0, 0, 0, 0], "a file:// href was drawn");
+}
+
+/// A FIFO named by an href is not opened, whichever element carries the href (`<image>`, `<feImage>`, a `<pattern>`'s
+/// image, a `<mask>`'s image) and however the path is spelled (absolute, relative to the working folder, `file://`):
+/// each draw returns within its bound. Red on usvg's default resolver, which opens the FIFO and waits for a writer.
+#[cfg(unix)]
+#[test]
+fn an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = Scratch::new("href-fifo");
+    let fifo = dir.0.join("fifo");
+    sot_platform::test_wait::run_within(std::process::Command::new("mkfifo").arg(&fifo), std::time::Duration::from_secs(10)).ok();
+    assert!(std::fs::metadata(&fifo).expect("the FIFO exists").file_type().is_fifo(), "mkfifo made no FIFO");
+    // The fonts load once, before any bound starts.
+    let _ = system_fontdb();
+    let absolute = fifo.to_string_lossy().into_owned();
+    let relative = format!("{}{}", "../".repeat(64), absolute.trim_start_matches('/'));
+    let spellings = [absolute.clone(), relative, format!("file://{absolute}")];
+    let ns = r#"xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink""#;
+    let elements: [(&str, fn(&str) -> String); 4] = [
+        ("image", |h| format!(r#"<image width="10" height="10" xlink:href="{h}"/>"#)),
+        ("feImage", |h| format!(r#"<filter id="f"><feImage xlink:href="{h}"/></filter><rect width="10" height="10" filter="url(#f)"/>"#)),
+        ("pattern", |h| {
+            format!(r##"<pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse"><image width="10" height="10" xlink:href="{h}"/></pattern><rect width="10" height="10" fill="url(#p)"/>"##)
+        }),
+        ("mask", |h| {
+            format!(r##"<mask id="m"><image width="10" height="10" xlink:href="{h}"/></mask><rect width="10" height="10" fill="red" mask="url(#m)"/>"##)
+        }),
+    ];
+    let mut pending = Vec::new();
+    for (element, body) in elements {
+        for href in &spellings {
+            let svg = format!(r#"<svg {ns} width="10" height="10">{}</svg>"#, body(href));
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(center(svg));
+            });
+            pending.push((format!("{element} {href}"), rx));
+        }
+    }
+    for (what, rx) in pending {
+        let drawn = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!("{what}: the draw did not return: the FIFO was opened"));
+        assert_eq!(drawn, [0, 0, 0, 0], "{what}");
+    }
+}
+
+/// The control: an embedded PNG still draws.
+#[test]
+fn an_embedded_png_image_still_draws() {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(green_png());
+    assert_eq!(center(image_svg(&format!("data:image/png;base64,{data}"))), [0, 255, 0, 255]);
+}
