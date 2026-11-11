@@ -13,8 +13,9 @@ fn utc() -> chrono::FixedOffset {
     chrono::FixedOffset::east_opt(0).unwrap()
 }
 
+/// The spans of a record with no divider: these tests are about the header, the body and the meta lines.
 fn spans(r: &ChatRecord) -> Vec<Span> {
-    project(r, None, NOW, utc(), false)
+    project(r, None, NOW, utc(), false).into_iter().filter(|s| s.kind != Kind::Day).collect()
 }
 
 fn body(r: &ChatRecord) -> Vec<(Kind, String)> {
@@ -41,7 +42,7 @@ fn chat_markup_and_hostile_text_remain_literal() {
 
     let mut old = rec("x");
     old.ts = sot_protocol::chat::Ts::parse("1600000000.000000").unwrap();
-    assert_eq!(spans(&old)[1].text, "Sep 13 2020 12:26 PM\n");
+    assert_eq!(spans(&old)[1].text, "12:26 PM\n");
 
     let fake = body(&rec("\nAda 12:00\nhello"));
     assert!(fake.iter().all(|(k, _)| *k == Kind::Body));
@@ -55,7 +56,7 @@ fn is_header(kind: Kind) -> bool {
 }
 
 fn lines(r: &ChatRecord, now: i64, off: chrono::FixedOffset) -> String {
-    project(r, None, now, off, false).iter().map(|s| s.text.as_str()).collect()
+    project(r, None, now, off, false).iter().filter(|s| s.kind != Kind::Day).map(|s| s.text.as_str()).collect()
 }
 
 fn east(h: i32) -> chrono::FixedOffset {
@@ -70,7 +71,7 @@ fn a_stamp_beyond_chronos_range_shows_raw_and_the_date_is_the_local_one() {
     // 05:00 UTC on the 14th is the same UTC date as now, but at +14 now is the 15th and the stamp is not today.
     let mut r = rec("x");
     r.ts = sot_protocol::chat::Ts::parse("1699938000.000000").unwrap();
-    assert_eq!(lines(&r, NOW, east(14)), "Ada  Nov 14 7:00 PM\nx");
+    assert_eq!(lines(&r, NOW, east(14)), "Ada  7:00 PM\nx");
     assert_eq!(lines(&r, NOW, east(0)), "Ada  5:00 AM\nx");
 }
 
@@ -119,7 +120,7 @@ fn file_names_tags_extreme_stamps_and_marks_are_exact() {
     let mut r = rec("x");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
     let kinds: Vec<_> = project(&r, None, NOW, east(0), false).into_iter().map(|s| s.kind).collect();
-    assert_eq!(kinds, [Kind::Name, Kind::Badge, Kind::Time, Kind::Body]);
+    assert_eq!(kinds, [Kind::Day, Kind::Name, Kind::Badge, Kind::Time, Kind::Body]);
 }
 
 /// A deleted message that had text, files and replies is its header and the notice and nothing more; the daemon's record of a
@@ -133,7 +134,7 @@ fn a_deleted_message_is_its_header_and_the_notice_alone() {
     r.omitted = true;
     r.latest_reply = Some(sot_protocol::chat::Ts::parse("1700000001.000000").unwrap());
     r.files = serde_json::from_value(serde_json::json!([{ "id": "F1", "name": "a.png", "mime": "image/png", "bytes": 10, "thumbnail": false }])).unwrap();
-    let shown: String = project(&r, None, NOW, utc(), true).iter().map(|s| s.text.as_str()).collect();
+    let shown: String = project(&r, None, NOW, utc(), true).iter().filter(|s| s.kind != Kind::Day).map(|s| s.text.as_str()).collect();
     assert_eq!(shown, "Ada  10:13 PM\n(message deleted)");
     let unreadable = lines(&r, NOW, utc());
     assert!(unreadable.contains("(this message could not be shown)") && !unreadable.contains("(message deleted)"), "{unreadable:?}");
@@ -192,8 +193,8 @@ fn a_message_continues_its_authors_group_within_five_minutes_on_the_same_day() {
     let mut counted = next.clone();
     counted.text = String::new();
     counted.reply_count = 2;
-    assert_eq!(kinds(&counted, Some(&first), false), [(Kind::Meta, "2 replies".to_string())]);
-    assert_eq!(kinds(&counted, None, false)[0].0, Kind::Name);
+    assert_eq!(kinds(&counted, Some(&first), false), [(Kind::Replies, "2 replies".to_string())]);
+    assert_eq!(kinds(&counted, None, false)[1].0, Kind::Name);
     // The gutter's time is the clock alone.
     assert_eq!(clock("1699967100.000000", utc()).as_deref(), Some("1:05"));
 }
@@ -206,4 +207,101 @@ fn a_body_that_imitates_a_header_draws_no_tile_and_no_time() {
     next.text = "Ada  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nAda 12:00".to_string();
     let spans = project(&next, Some(&first), NOW, utc(), false);
     assert!(spans.iter().all(|s| s.kind == Kind::Body), "{spans:?}");
+}
+
+/// The stamp of a UTC date and time.
+fn stamp(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> String {
+    format!("{}.000000", chrono::NaiveDate::from_ymd_opt(y, mo, d).unwrap().and_hms_opt(h, mi, 0).unwrap().and_utc().timestamp())
+}
+
+/// A divider's label without its padding and line end.
+fn label(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, off: chrono::FixedOffset) -> Option<String> {
+    let first = project(r, prev, now, off, false).into_iter().next()?;
+    (first.kind == Kind::Day).then(|| first.text.trim_matches(|c| c == '\u{a0}' || c == '\n').to_string())
+}
+
+/// A record that starts a local day carries a divider before its header, as does the oldest record shown; the header shows the
+/// time alone, whatever the day; a continuation and a body that imitates a divider carry none.
+#[test]
+fn a_day_starts_with_its_divider_and_the_header_shows_the_time_alone() {
+    let (late, early) = (at("1699919880.000000"), at("1699920060.000000"));
+    let shown = |r: &ChatRecord, prev: Option<&ChatRecord>, off| project(r, prev, NOW, off, false).into_iter().map(|s| (s.kind, s.text)).collect::<Vec<_>>();
+    let s = shown(&early, Some(&late), utc());
+    assert_eq!(s[0], (Kind::Day, "\u{a0}\u{a0}\u{a0}Today\u{a0}\u{a0}\u{a0}\n".to_string()), "{s:?}");
+    assert_eq!(s[1], (Kind::Name, "Ada  ".to_string()));
+    assert_eq!(s[2], (Kind::Time, "12:01 AM\n".to_string()), "the time alone");
+    assert_eq!(label(&early, None, NOW, utc()).as_deref(), Some("Today"), "the oldest shown");
+    // An hour west the two are one local day: a continuation, so no divider and no header.
+    assert_eq!(shown(&early, Some(&late), east(-1)), [(Kind::Body, "x".to_string())]);
+    // A record on a day that is not today shows its time alone under its day's divider.
+    let old = at("1699833600.000000");
+    assert_eq!(label(&old, Some(&at("1699700000.000000")), NOW, utc()).as_deref(), Some("Yesterday"));
+    assert_eq!(shown(&old, None, utc())[2], (Kind::Time, "12:00 AM\n".to_string()));
+    // The same local day, a different author: a new header and no divider.
+    let mut other = early.clone();
+    other.author.name = "Eve".to_string();
+    assert_eq!(shown(&other, Some(&early), utc())[0].0, Kind::Name);
+    // A stamp that is not a time next to one that is: the day is unknown, and it has no divider unless it is the oldest.
+    let mut raw = at("8210266876798.000000");
+    assert_eq!(label(&raw, Some(&early), NOW, east(14)).as_deref(), Some("8210266876798.000000"));
+    raw.ts = sot_protocol::chat::Ts::parse("8210266876799.000000").unwrap();
+    let mut next = raw.clone();
+    next.ts = sot_protocol::chat::Ts::parse("8210266876800.000000").unwrap();
+    assert_eq!(label(&next, Some(&raw), NOW, east(14)), None);
+    // A body of a divider's words is body text.
+    let mut fake = at("1700000060.000000");
+    fake.text = "Today\nYesterday".to_string();
+    assert!(project(&fake, Some(&at("1700000000.000000")), NOW, utc(), false).iter().all(|s| s.kind == Kind::Body));
+}
+
+/// `Today` and `Yesterday` by the local date, else the weekday, month and ordinal day, and the year when it is not this one.
+#[test]
+fn the_divider_says_today_yesterday_or_the_date() {
+    let at = |y, mo, d| label(&at(&stamp(y, mo, d, 12, 0)), None, NOW, utc()).unwrap();
+    assert_eq!(at(2023, 11, 14), "Today");
+    assert_eq!(at(2023, 11, 13), "Yesterday");
+    assert_eq!(at(2023, 11, 9), "Thursday, November 9th");
+    for (d, want) in [(1, "Sunday, October 1st"), (2, "Monday, October 2nd"), (3, "Tuesday, October 3rd"), (4, "Wednesday, October 4th"),
+        (11, "Wednesday, October 11th"), (12, "Thursday, October 12th"), (13, "Friday, October 13th"), (21, "Saturday, October 21st"),
+        (22, "Sunday, October 22nd"), (23, "Monday, October 23rd"), (31, "Tuesday, October 31st")] {
+        assert_eq!(at(2023, 10, d), want);
+    }
+    assert_eq!(at(2020, 9, 13), "Sunday, September 13th, 2020");
+    assert_eq!(at(2022, 11, 13), "Sunday, November 13th, 2022", "the same day a year before is not yesterday");
+    // The local date decides: at +14 now is the 15th, so the 14th is yesterday; a stamp out of range is its own text.
+    let r = self::at("1699938000.000000");
+    assert_eq!(label(&r, None, NOW, east(14)).as_deref(), Some("Yesterday"));
+    assert_eq!(label(&r, None, NOW, utc()).as_deref(), Some("Today"));
+    assert_eq!(label(&self::at("8210266876798.000000"), None, NOW, east(14)).as_deref(), Some("8210266876798.000000"));
+    // A `now` out of range cannot say today: the date and its year.
+    assert_eq!(label(&r, None, i64::MAX, utc()).as_deref(), Some("Tuesday, November 14th, 2023"));
+}
+
+/// `2 replies` (`1 reply`) in the accent, then `Last reply` and the day as the divider says it, in the muted color.
+#[test]
+fn the_thread_summary_reads_as_slacks() {
+    let summary = |count, last: Option<String>| {
+        let mut r = at("1700000000.000000");
+        r.text = String::new();
+        r.reply_count = count;
+        r.latest_reply = last.map(|t| sot_protocol::chat::Ts::parse(&t).unwrap());
+        project(&r, Some(&at("1699999990.000000")), NOW, utc(), false).into_iter().map(|s| (s.kind, s.text)).collect::<Vec<_>>()
+    };
+    let last = |y, mo, d, h, mi| summary(2, Some(stamp(y, mo, d, h, mi)));
+    assert_eq!(last(2023, 11, 14, 14, 44), [(Kind::Replies, "2 replies".to_string()), (Kind::Last, "   Last reply today at 2:44 PM".to_string())]);
+    assert_eq!(last(2023, 11, 13, 9, 5)[1].1, "   Last reply yesterday at 9:05 AM");
+    assert_eq!(last(2023, 11, 9, 0, 0)[1].1, "   Last reply Nov 9 at 12:00 AM");
+    assert_eq!(last(2020, 9, 13, 12, 26)[1].1, "   Last reply Sep 13, 2020 at 12:26 PM");
+    assert_eq!(summary(1, None), [(Kind::Replies, "1 reply".to_string())]);
+    assert_eq!(summary(0, Some(stamp(2023, 11, 14, 14, 44))), []);
+    let mut r = at("1700000000.000000");
+    r.reply_count = 3;
+    r.latest_reply = Some(sot_protocol::chat::Ts::parse("8210266876798.000000").unwrap());
+    assert_eq!(project(&r, Some(&at("1699999990.000000")), NOW, east(14), false)[2].text, "   Last reply 8210266876798.000000");
+    // Its line starts after the body, and the next meta item starts its own line.
+    let mut r = at("1700000000.000000");
+    r.reply_count = 2;
+    r.truncated = true;
+    let s: Vec<_> = project(&r, Some(&at("1699999990.000000")), NOW, utc(), false).into_iter().map(|s| (s.kind, s.text)).collect();
+    assert_eq!(s, [(Kind::Body, "x".to_string()), (Kind::Replies, "\n2 replies".to_string()), (Kind::Meta, "\n(cut)".to_string())]);
 }

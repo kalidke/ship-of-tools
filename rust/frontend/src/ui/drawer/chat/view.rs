@@ -36,6 +36,13 @@ const BADGE_TOP: f32 = 0.2;
 const BADGE_HEIGHT: f32 = 0.6;
 /// The glyph flag `Attrs::metadata` carries on a badge's text, which the badge's rectangle is drawn behind.
 const BADGE: usize = 0x01;
+/// The same for a day divider's label, which its pill is drawn around.
+const DAY: usize = 0x02;
+/// A divider's line, in pixels at text scale 1: its height, and the label's size (of the body's 15). The pill is a body line
+/// tall and centered in it, and the rule runs from the tile's left edge to the pill and from it to the same distance from the
+/// right edge.
+const DAY_PX: f32 = 30.0;
+const DAY_SIZE: f32 = 13.0;
 /// The gutter left of every record holds a group's tile and a marked continuation's time. These are in pixels at text
 /// scale 1: the gutter's width, the tile's side and its place in the gutter, and the time's size (of the body's 15) and its
 /// gap to the gutter's right edge.
@@ -136,7 +143,10 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
     let small = |size: f32| Metrics::new(BODY_SIZE * scale * size / 15.0, BODY_LINE_H * scale);
     match kind {
         Kind::Name => a.weight(Weight::BOLD),
+        Kind::Day => a.weight(Weight::BOLD).metrics(Metrics::new(BODY_SIZE * scale * DAY_SIZE / 15.0, DAY_PX * scale)).metadata(DAY),
         Kind::Time => a.color(rgb(MUTED)).metrics(small(12.0)),
+        Kind::Replies => a.weight(Weight::BOLD).color(rgb(SKY)).metrics(small(DAY_SIZE)),
+        Kind::Last => a.color(rgb(MUTED)).metrics(small(DAY_SIZE)),
         Kind::Badge => a.weight(Weight::BOLD).color(rgb(MUTED)).metrics(small(10.0)).metadata(BADGE),
         Kind::Body => a,
         Kind::Markup => a.color(rgb(SKY)),
@@ -154,8 +164,10 @@ pub(in crate::ui) struct ChatHit(Option<((Ts, Key), Cursor)>);
 struct Shaped {
     buffer: Buffer,
     height: f32,
-    /// The lines before the body: 1 for a header, 0 for a continuation. Only lines from here on select or copy.
+    /// The lines before the body: a divider's, if any, and a header's, if any. Only lines from here on select or copy.
     lead: usize,
+    /// The divider's height (0 without one; one line, more where a narrow drawer wraps its label), at the top of the record: the band, the bar and the tile start below it.
+    day: f32,
     /// The record index it last served, for the eviction's distance.
     at: usize,
 }
@@ -237,8 +249,9 @@ impl ChatView {
         } else {
             from
         };
+        // A record's band starts below its divider, so its first line is the one that must fit.
         let line = BODY_LINE_H * scale;
-        let mut seen: Vec<usize> = spots.iter().filter(|p| p.top >= 0.0 && p.top + line <= body.h).map(|p| p.index).collect();
+        let mut seen: Vec<usize> = spots.iter().filter(|p| p.top >= 0.0 && p.top + cache[&used[&p.index]].day + line <= body.h).map(|p| p.index).collect();
         if seen.is_empty() {
             seen = spots.first().map(|p| p.index).into_iter().collect();
         }
@@ -433,8 +446,10 @@ impl ChatView {
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
         let text = text_rect(body, self.scale);
         for (key, top, ts, tile) in &self.placed {
-            let at = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: self.cache[key].height };
+            let shaped = &self.cache[key];
             let scale = f32::from_bits(key.2);
+            let all = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: shaped.height };
+            let at = ScreenRect { y: all.y + shaped.day, h: all.h - shaped.day, ..all };
             if self.mark.as_ref() == Some(ts) {
                 out.extend(quad(at, BAND));
                 out.extend(quad(ScreenRect { w: MARK_BAR_PX * scale, ..at }, SKY));
@@ -442,9 +457,20 @@ impl ChatView {
             if let Some(color) = tile {
                 out.extend(quad(ScreenRect { x: body.x + TILE_LEFT_PX * scale, y: at.y + TILE_TOP_PX * scale, w: TILE_PX * scale, h: TILE_PX * scale }, *color));
             }
+            // A divider's pill is its label's run with its padding, a body line tall: a border and the ground inside it, and the
+            // rule runs to each side of it.
+            for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & DAY != 0) {
+                let line = BODY_LINE_H * scale;
+                let pill = ScreenRect { x: text.x + x, y: all.y + y + (h - line) / 2.0, w, h: line };
+                let rule = |from: f32, to: f32| ScreenRect { x: from, y: pill.y + line / 2.0 - scale / 2.0, w: to - from, h: scale };
+                out.extend(quad(rule(body.x + TILE_LEFT_PX * scale, pill.x), LOW));
+                out.extend(quad(rule(pill.x + w, body.x + body.w - TILE_LEFT_PX * scale), LOW));
+                out.extend(quad(pill, LOW));
+                out.extend(quad(ScreenRect { x: pill.x + scale, y: pill.y + scale, w: w - 2.0 * scale, h: line - 2.0 * scale }, BG));
+            }
             // A badge's rectangle is its run of glyphs, which include its padding (`project`), so a wrapped line never cuts it.
-            for (x, y, w, h) in flagged_runs(&self.cache[key].buffer, |m| m & BADGE != 0) {
-                out.extend(quad(ScreenRect { x: text.x + x, y: at.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
+            for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & BADGE != 0) {
+                out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
             }
         }
         out.extend(self.selection_rects().into_iter().filter_map(|r| quad(r, SELECTION)));
@@ -507,12 +533,18 @@ fn shape(fonts: &mut FontSystem, spans: &[Span], width: f32, scale: f32) -> Shap
     buffer.set_size(fonts, Some(width), None);
     let default = Attrs::new().family(Family::SansSerif);
     set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), attrs(s.kind, scale))), default, Shaping::Advanced);
+    if spans.first().is_some_and(|s| s.kind == Kind::Day) {
+        buffer.lines[0].set_align(Some(Align::Center));
+    }
     buffer.shape_until_scroll(fonts, false);
-    let lead = usize::from(spans.first().is_some_and(|s| s.kind == Kind::Name));
+    let day = spans.first().is_some_and(|s| s.kind == Kind::Day);
+    let lead = usize::from(day) + usize::from(spans.get(usize::from(day)).is_some_and(|s| s.kind == Kind::Name));
+    // The divider's height is what its line takes where it is shaped: a narrow drawer wraps the label into more than one.
+    let day = if day { buffer.layout_runs().filter(|r| r.line_i == 0).map(|r| r.line_height).sum() } else { 0.0 };
     // A group's first record is at least as tall as its tile, so a header alone (empty text) does not run it into the next.
-    let tile = if lead > 0 { (TILE_TOP_PX + TILE_PX) * scale } else { 0.0 };
+    let tile = if lead > 0 { day + (TILE_TOP_PX + TILE_PX) * scale } else { 0.0 };
     let height = buffer.layout_runs().map(|r| r.line_height).sum::<f32>().max(tile);
-    Shaped { buffer, height, lead, at: 0 }
+    Shaped { buffer, height, lead, day, at: 0 }
 }
 
 /// A continuation's time, small and muted, right-aligned in the gutter.

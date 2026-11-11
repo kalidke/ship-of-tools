@@ -25,18 +25,26 @@ Chat drawer is hidden.
 
 The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each group of messages starts
 with a header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
-(`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`; `Nov 9 2:14 PM` for an
-earlier day, with the year for another year). The badge comes from where Slack says the post came from, never from the
+(`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`, whatever the day). The badge comes from where Slack says the post came from, never from the
 text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed.
+
+The first message of each local day, and the oldest message held, has a day divider above its header: the day's name
+(`Today`, `Yesterday`, or `Monday, November 9th`, with the year after it for another year) centered in a small outlined box with a
+thin line running out to each side. The divider is not text: a press or a drag never selects it, and a copy never includes it.
+The day is your local day, found with one fixed offset from UTC for every message, so near a daylight saving change `Today` or
+`Yesterday` can begin an hour from where your clock puts it.
+
+A message that has replies has a line in Slack's style: `2 replies` (`1 reply`) in blue and, when the daemon knows it, the
+last reply in gray (`Last reply today at 2:44 PM`, `yesterday at …`, `Nov 9 at …`, with the year for another year).
 
 Messages from one author in a row share one header, as in Slack: a message with the same author and origin as the one before
 it, on the same local day and less than five minutes after it, has no header of its own and its text follows the last one's. The
 first message of each group has a small colored square in the margin at the left, a color chosen from eight by the author (so two authors can
 share one); the text of every message starts right of that margin. Mark a message that has no header and its time (`2:01`, without AM or PM) shows in the margin beside it.
 The five minutes are Slack's rule as remembered, and have not been checked against the desktop app. A page of older messages
-that arrives above the top message can take that message's header off, which moves that message and every message below it up one
-line. The reverse also happens: the oldest message held always shows a header, so when the oldest messages go (past 276), the one
-that becomes the oldest gains a header, and the messages below it move down a line.
+that arrives above the top message can take that message's header and day divider off, which moves that message and every message
+below it up by their height. The reverse also happens: the oldest message held always shows a header and a divider, so when the
+oldest messages go (past 276), the one that becomes the oldest gains both, and the messages below it move down.
 
 ## Which channel
 

@@ -342,7 +342,7 @@ mod tests {
         let (rec, body) = (chat_record(), CHAT_BODY);
         let mut fonts = glyphon::FontSystem::new();
         probe.chat.layout(&mut fonts, &[(&rec, false)], body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
-        let (chat_at, header) = (probe.chat.point_at(&rec.ts, 1, 3).unwrap(), probe.chat.point_at(&rec.ts, 0, 0).unwrap());
+        let (chat_at, header) = (probe.chat.point_at(&rec.ts, 2, 3).unwrap(), probe.chat.point_at(&rec.ts, 1, 0).unwrap());
         probe.focus = PaneFocus::NavTree;
         probe.at = chat_at;
         probe.text_shown = false;
@@ -391,7 +391,7 @@ mod tests {
         };
         let (rec, mut fonts) = (chat_record(), glyphon::FontSystem::new());
         probe.chat.layout(&mut fonts, &[(&rec, false)], CHAT_BODY, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
-        let chat_at = probe.chat.point_at(&rec.ts, 1, 3).unwrap();
+        let chat_at = probe.chat.point_at(&rec.ts, 2, 3).unwrap();
         let hit = probe.chat.hit(chat_at);
         probe.chat.press(hit);
         probe.chat.extend_drag((CHAT_BODY.x + CHAT_BODY.w - 1.0, chat_at.1));

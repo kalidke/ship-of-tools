@@ -437,7 +437,7 @@ impl ChatDrawer {
     }
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
-    /// (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time as its header shows it), else where the next
+    /// (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`), else where the next
     /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let now = chrono::Local::now();

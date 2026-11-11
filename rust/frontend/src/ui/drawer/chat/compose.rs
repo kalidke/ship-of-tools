@@ -89,7 +89,7 @@ impl Compose {
 }
 
 /// What the compose rows are made of: the draft's lines (the cursor block ends the last while the drawer has focus) and
-/// where it goes (`to <channel>`, or `reply in thread of h:mm AM`).
+/// where it goes (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time with its date before it for another day).
 pub(in crate::ui) enum ComposeText {
     Draft { lines: Vec<String>, to: String },
     /// The foot asks for the posting name: the name typed, with the cursor block while focused.
