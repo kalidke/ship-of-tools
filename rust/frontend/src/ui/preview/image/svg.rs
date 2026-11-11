@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg::{fontdb, Options, Tree};
+use resvg::usvg::{fontdb, ImageHrefResolver, ImageKind, Options, Tree};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
@@ -88,29 +88,28 @@ pub fn quad_from_svg_bytes(
     target_w: u32,
     target_h: u32,
 ) -> Result<Quad> {
-    let tree = svg_tree(bytes)?;
+    let pixmap = draw(&svg_tree(bytes)?, target_w, target_h)?;
+    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pixmap.width(), pixmap.height())
+}
 
-    let svg_size = tree.size();
-    let sx = target_w as f32 / svg_size.width().max(0.001);
-    let sy = target_h as f32 / svg_size.height().max(0.001);
-
-    let pw = target_w.max(1);
-    let ph = target_h.max(1);
-
-    let mut pixmap = Pixmap::new(pw, ph)
-        .ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {}x{}", pw, ph))?;
-
-    resvg::render(&tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
-
-    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
+/// `tree` drawn into a `w` by `h` pixmap (a side under one pixel is one), stretched to fill it.
+fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
+    let (w, h) = (w.max(1), h.max(1));
+    let size = tree.size();
+    let mut pixmap = Pixmap::new(w, h).ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {w}x{h}"))?;
+    let (sx, sy) = (w as f32 / size.width().max(0.001), h as f32 / size.height().max(0.001));
+    resvg::render(tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+    Ok(pixmap)
 }
 
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
-/// separator (`one_paragraph_svg`) and an XML shape the parser cannot be crashed by (`check_xml_shape`). An `.svgz`
-/// (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself, past all of it.
+/// separator (`one_paragraph_svg`), an XML shape the parser cannot be crashed by (`check_xml_shape`) and no file read
+/// for an `<image>` (`embedded_images_only`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it
+/// itself, past all of it.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
+        image_href_resolver: embedded_images_only(),
         ..Options::default()
     };
     let bytes = unpack_svgz(bytes, PREVIEW_BINARY_CAP)?;
@@ -138,6 +137,39 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
 /// usvg's own bound on element nesting, which it checks only after roxmltree has parsed the document, and roxmltree
 /// recurses once per element: a 20000-deep file aborts the process first. A scan before the parse loses nothing drawable.
 const SVG_MAX_DEPTH: usize = 1024;
+
+/// The decoded pixels the embedded images of one document may add up to: 64 Mpx, a 4K screen's eight. usvg asks the
+/// resolver once for each `<image>` it converts and for each `<use>` of one, and resvg decodes again for each, so
+/// without a sum an 8-pixel-wide file repeating one embedded raster holds the window's thread for minutes.
+const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
+/// The only `<image>` sources the window draws: embedded (`data:`) PNG, JPEG, GIF and WebP, in a document's
+/// `MAX_IMAGE_PIXELS`, each by the size its header declares. A path or URL names a file on the window's computer
+/// (usvg's default reads any path that exists: a FIFO hangs the thread, `/dev/zero` fills memory) and is refused; so is
+/// nested SVG data, which usvg parses past `check_xml_shape`, and data with no image type or `text/plain`, which
+/// usvg's default sniffs.
+fn embedded_images_only() -> ImageHrefResolver<'static> {
+    let spent = std::sync::atomic::AtomicU64::new(0);
+    ImageHrefResolver {
+        resolve_data: Box::new(move |mime, data, _| {
+            let kind: fn(Arc<Vec<u8>>) -> ImageKind = match mime {
+                "image/jpg" | "image/jpeg" => ImageKind::JPEG,
+                "image/png" => ImageKind::PNG,
+                "image/gif" => ImageKind::GIF,
+                "image/webp" => ImageKind::WEBP,
+                _ => return None,
+            };
+            let (w, h) = {
+                let decoder = image::ImageReader::new(std::io::Cursor::new(&data[..])).with_guessed_format().ok()?.into_decoder().ok()?;
+                image::ImageDecoder::dimensions(&decoder)
+            };
+            let pixels = u64::from(w) * u64::from(h);
+            let total = spent.fetch_add(pixels, std::sync::atomic::Ordering::Relaxed) + pixels;
+            (total <= MAX_IMAGE_PIXELS).then(|| kind(data))
+        }),
+        resolve_string: Box::new(|_, _| None),
+    }
+}
 
 /// Refuses XML nested deeper than `SVG_MAX_DEPTH` elements, or whose DOCTYPE is more than roxmltree reads in one:
 /// `skip_doctype`. One pass over the bytes, no recursion: a tag ends at the `>` outside its quoted attribute values, and
