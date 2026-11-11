@@ -3,8 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23), and has no delivery. Its file calls are `config`'s two reads (guarantee 21) and the one lock file `service` takes through platform (guarantee 22); it reads no token from the environment.
+listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23), and has no delivery. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -333,6 +333,22 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    a file name or a MIME type is shown as the escape leaves it, so a hostile name is readable only as `<U+XXXX>` marks
    inside its quotes; nothing here logs, files, or reads a clock.
 
+25. **A delivering channel's boundary is one small file, its filed set is in memory, and the boundary is never taken from a
+   filing.** `state::path(dir, workspace, channel)` names `delivery-<workspace>-<channel>` in the caller's folder from two
+   `is_slack_id` ids alone (any other id is `BadId`, so no raw configuration string reaches a path). The file is one `Ts`
+   and its line end (`encode`, `decode`: a second line, an empty or non-`Ts` line is `Unreadable`), written whole by
+   `state::write` through platform's `write_durable` (no temporary file of this crate's) and read by `State::load`
+   through `read_regular` at no more than 4 KiB. `load` answers the later of the file's boundary and the channel's
+   `floor` (passed in; `ts_key` order), a missing file is the floor, and any other failure to read (a refused file, a
+   directory, a FIFO, over 4 KiB, not UTF-8, not one `Ts`) is `Unreadable`, never read as missing, so the caller stops
+   that channel. `State::commit(to)` never lowers the boundary and drops every filing at or below it. The filed set is
+   held in memory only: `merge` takes the filings the caller read back from the inboxes (`filed_of`) that name this
+   workspace and channel and lie above the boundary, then keeps the newest `MAX_FILED` (100,000) and says how many it
+   dropped; `insert` (a filing that returned `filed`) is soft, so a pass's candidates may take the set past the bound
+   until a commit. No filing moves the boundary. Limits: `load`, `write` and `merge` do no logging, and the folder, the
+   inbox reads and the clock are the caller's; a write that fails leaves the in-memory boundary where `commit` put it, so
+   the caller writes `boundary()` again; `read_regular` ends a FIFO's wait only, as its guarantee says.
+
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
 
@@ -342,7 +358,7 @@ never holds another form.
 `MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack
 and its websocket peer (`ws.rs`).
 
 ## Calls in
@@ -351,7 +367,7 @@ webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the librar
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 
 ## Does not
-Open a socket except through `Http::websocket`, call a file method outside `config.rs`, hold a credential at rest, read a token from the environment, file mail, or resolve a row (it maps folders to channels from supplied facts). Define the
+Open a socket except through `Http::websocket`, call a file method outside `config.rs` and `state.rs`, hold a credential at rest, read a token from the environment, file mail, or resolve a row (it maps folders to channels from supplied facts). Define the
 record's representation (wire's). Offer another way to the network, a retry helper or a generic outbound HTTP type.
 
 ## Dependencies (the web stack)
@@ -418,6 +434,7 @@ Paths are under `rust/chat/src/`.
 | 22 | one listener (C14's running half) | `service_tests.rs`: `duplicate_workspace_or_app_has_one_listener` (a second service in this process: `Held`, no call, no socket; start after stop), `a_token_for_another_workspace_is_refused_before_serving`, `stop_is_bounded_final_and_repeatable_and_the_lock_waits_for_the_listener` (a peer that ignores close; the lock held while stopping, free after), `a_handle_kept_across_stop_is_refused_by_every_call`, `the_lock_is_dropped_with_the_task_before_stop_returns` (the abort is awaited), `a_lock_that_cannot_be_made_is_not_held_and_the_codes_are_fixed`, `a_second_concurrent_stop_returns_at_once_and_the_status_reaches_stopped`, `a_stop_before_the_socket_connected_returns`, `a_dropped_service_releases_the_lock_only_with_its_listener`, `a_killed_holder_leaves_the_workspace_free` (a second process; SIGKILL), `a_child_started_by_the_daemon_does_not_keep_the_lock` (Unix only; relies on platform's close-on-exec, which no chat mutation reaches) |
 | 23 | watching (M5) | `watch_tests.rs`: `watch_snapshot_overlap_and_lag_resynchronize` (live edit, delete and add during a snapshot; a new message never replaces; the overlay at its bound and one past it), `a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_then` (a gap pending, a second gap during a resync, a refused clear, the value given), `a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync`, `events_nobody_keeps_and_answers_nobody_wants` (an unwatched channel, replies, an unwatch and a re-watch during a snapshot, a failed snapshot, an old page's edit and an unheld delete), `syncing_a_gap_already_known_keeps_a_complete_watch`, `a_snapshot_replaces_what_is_held_and_a_queued_event_never_wins_over_it`, `a_burst_after_the_events_were_taken_refuses_the_snapshot`, `a_gap_read_before_a_newer_one_was_seen_cannot_roll_the_model_back`, `no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost_event` (all 4,200 orders of a snapshot task (begin, fetch, read the gap, answer), a pump task (two pumps, a reconcile, then one more pump when `wait` says look) and the source, two starts, delivered or lost third edit, so 16,800 runs, each through a `Service` over a socket with no task, so the product's own take and wake run: a complete channel is never stale, a gap is never cleared over a stale model), `begin_applies_the_events_it_is_given_to_every_channel_whether_or_not_it_begins`, `a_snapshot_keeps_only_this_channels_top_level_messages`, `timestamps_order_numerically_on_validated_values`, `the_watch_is_bounded_in_channels_ids_and_messages`; `socket_tests.rs`: `take_hands_over_every_pending_event_and_the_gap_and_frees_the_budget`, `wait_wakes_on_a_gap_and_on_an_event_and_takes_nothing` (the event arrives while the wait waits); `service_tests.rs`: `the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing`, `a_stop_makes_every_watch_owed_a_snapshot_and_a_stranger_clears_nothing`, `a_wait_woken_while_the_stop_is_under_way_answers_false`, `a_dropped_service_ends_its_watch`, `a_stop_under_way_already_ends_the_watch` (a cancelled stop leaves `Stopping`), `loaded_reads_its_own_services_gap_and_a_stop_ends_what_was_pending_and_the_claim`, `a_pump_loop_beside_a_latched_gap_sees_it`, `wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the_stop`, `a_wait_in_flight_ends_at_the_stop`; `watch_tests.rs` also: `pump_and_begin_apply_the_services_events_in_the_call_that_takes_them`, `a_service_has_one_watches_and_no_other_reads_its_events` (a stranger's take, answer and wait), `many_threads_asking_at_once_get_one_watches` (8 threads, 3,000 rounds) |
 | 24 | mail body, reader, origin | `mail_tests.rs`: `hostile_chat_is_one_marked_mail_record`, `a_mail_body_is_bounded_and_says_it_was_cut`, `an_omitted_record_is_its_header_and_a_cut_ts_line`, `filed_of_reads_only_what_body_writes`, `origin_filter_delivers_people_without_row_loops` |
+| 25 | boundary file, filed set | `state_tests.rs`: `the_boundary_is_the_later_of_the_file_and_the_floor_and_a_commit_never_lowers_it`, `an_unreadable_state_file_stops_its_channel` (not a `Ts`, a second line, over 4 KiB, not UTF-8, a directory, on Unix a FIFO), `a_missing_file_is_the_floor` (no filing moves it), `the_merge_takes_only_this_channels_filings_above_the_boundary`, `the_filed_set_keeps_its_newest_100000`, `the_file_is_named_from_validated_ids_alone` |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
@@ -428,6 +445,7 @@ Paths are under `rust/chat/src/`.
 - `src/service.rs`: the service; `src/service_tests.rs`: its tests.
 - `src/watch.rs`: the watch model; `src/watch_tests.rs`: its tests.
 - `src/mail.rs`: the mail body, its reader and what is mail; `src/mail_tests.rs`: its tests.
+- `src/state.rs`: a delivering channel's boundary file and filed set; `src/state_tests.rs`: its tests.
 - `src/fake_slack/`: the fake (tests and the `test-support` feature), its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
