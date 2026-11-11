@@ -83,6 +83,7 @@ pub(super) struct Rig {
 pub(super) fn starter(fake: &FakeSlack) -> crate::chat::Starter<Service> {
     let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
     Box::new(move |config, credentials, dir| {
+        let (http, base) = (http.clone(), base.clone());
         Box::pin(async move { Service::start_at(config, credentials, http, dir, base).await.map(Arc::new).map_err(|e| e.code()) })
     })
 }
@@ -102,7 +103,7 @@ pub(super) async fn rig_booting(fake: &FakeSlack) -> Rig {
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
     let beta = rows.insert(row("beta", &folders[1])).workspace_id.clone();
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake));
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), crate::chat::HUB_CHECK);
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;

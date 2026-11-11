@@ -238,7 +238,7 @@ The install (0.7.0):
   linked box on the two versions carry mail both ways. While the install publishes the new files (seconds), an old
   script that loads the new library, or the reverse, can fail; it prints `FAILED` or an error, never `filed`.
 
-Owns: the comm folder (`~/.sot-comm`, or `$SOT_COMM_HOME`): `inbox/`, `read/`, `self/`, `registry.json` with its lock
+Owns: the comm folder (`~/.sot-comm`, or `$SOT_COMM_HOME`): `inbox/`, `read/`, `self/`, `chat/` (the chat listener's lock folder, 0700, made by `home::chat_dir`; one lock per comm folder), `registry.json` with its lock
 and markers, `inbox-lock-manager`, and in `state/` the end-of-turn check's tick files; the address-book fields of a
 registry entry (`host`, `workspace_id`, `repo`, `root`, `expertise`, `status`, `joined`, `last_seen`, `stop_at`); the
 op `comm.file`; `agent.send` until the frontend pass (the window's notification op, kept beside `comm.file` only
@@ -259,7 +259,7 @@ worktree status and sync scripts, `comm-status.sh`, the turn auditor and both ho
 `sot_require_routable_identity` (`sot-nav.sh`, the bootstrap, the comm matrix). `sot_canonical_path`, which runs no
 sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
-`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), and the chat's rebuild of which channel posts were filed (`lines_from`; not yet built).
+`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), the chat's rebuild of which channel posts were filed (`lines_from`; not yet built), and the chat's lock folder (`home::chat_dir`, which makes the comm folder whole and then `chat/` private, so chat never creates the comm folder itself).
 
 Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); the package page's target puts the
 wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist

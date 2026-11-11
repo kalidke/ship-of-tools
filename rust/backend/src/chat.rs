@@ -39,10 +39,14 @@ impl Listener for Service {
     }
 }
 
-/// How a start is made: from the admitted configuration and credentials and the lock folder. The product's is
-/// [`start_service`].
+/// How long a start refused `held` waits to try again, and how often a running chat asks whether another computer
+/// became the hub.
+pub(crate) const HUB_CHECK: Duration = Duration::from_secs(60);
+
+/// How a start is made: from the admitted configuration and credentials and the lock folder, once per try (a start
+/// refused `held` is tried again). The product's is [`start_service`].
 pub(crate) type Starter<L> = Box<
-    dyn for<'a> FnOnce(&'a Config, Credentials, &'a Path) -> Pin<Box<dyn Future<Output = Result<Arc<L>, &'static str>> + Send + 'a>>
+    dyn for<'a> FnMut(&'a Config, Credentials, &'a Path) -> Pin<Box<dyn Future<Output = Result<Arc<L>, &'static str>> + Send + 'a>>
         + Send,
 >;
 
@@ -117,6 +121,24 @@ impl<L> Shared<L> {
     }
 }
 
+/// A running chat's watch on the hub fact: each `check`, while the chat runs, it asks the topology and, when another
+/// computer is named the hub, stops the service (freeing the lock) and leaves the status `NotHub`. It holds the chat
+/// only between asks, so a dropped chat ends it.
+async fn step_down_when_another_hub<L: Listener>(chat: std::sync::Weak<Chat<L>>, env: Env, check: Duration) {
+    loop {
+        tokio::time::sleep(check).await;
+        let Some(chat) = chat.upgrade() else { return };
+        if !matches!(*chat.shared.lock(), Phase::Running(_)) {
+            return;
+        }
+        let e = env.clone();
+        if tokio::task::spawn_blocking(move || names_another_hub(&e)).await.unwrap_or(false) {
+            chat.stop_as(Status::NotHub);
+            return;
+        }
+    }
+}
+
 /// One row's folder as this daemon knows it: its canonical spelling and whether it is the inert anchor.
 pub(crate) struct RowFact {
     pub(crate) canonical: PathBuf,
@@ -165,8 +187,21 @@ pub(crate) fn is_hub(env: &Env) -> bool {
     matches!(sot_topology::load_in(env), Ok(Some((_, t))) if !me.is_empty() && t.hub == me)
 }
 
-/// The daemon's chat. Decided once, at construction: a daemon that is not the hub holds no configuration and no
-/// service, and never reads a chat file again.
+/// Whether `topology` names a computer other than `me` as the hub: only a topology that parses, and a self-name that is
+/// not empty. A missing or unparsable topology and a computer with no name name no one else.
+fn names_other_hub(topology: &Result<Option<(PathBuf, sot_topology::Topology)>, String>, me: &str) -> bool {
+    matches!(topology, Ok(Some((_, t))) if !me.is_empty() && t.hub != me)
+}
+
+/// [`names_other_hub`] for topology's current load: the one answer a running chat steps down on, and each filing asks
+/// first (D25's window).
+pub(crate) fn names_another_hub(env: &Env) -> bool {
+    names_other_hub(&sot_topology::load_in(env), &crate::comm::mail::filer::comm_self_host_in(env))
+}
+
+/// The daemon's chat. Decided at construction: a daemon that is not the hub holds no configuration and no service,
+/// and never reads a chat file again. Once it runs, it asks the topology each [`HUB_CHECK`] and steps down when
+/// another computer is named the hub.
 pub(crate) struct Chat<L: Listener = Service> {
     /// `None` on a daemon that is not the hub.
     config: Option<Result<Config, ConfigError>>,
@@ -179,11 +214,12 @@ pub(crate) struct Chat<L: Listener = Service> {
 
 impl<L: Listener> Chat<L> {
     /// Admit, then start. In order: the hub fact; `chat.toml` against `rows`; `chat-secrets.toml` (the only open of it
-    /// in the daemon, through `read`); the lock folder; registration with `registry`; then `start` on a task of its
+    /// in the daemon, through `read`); the lock folder (the comm folder's `chat/`); registration with `registry`; then `start` on a task of its
     /// own, so boot never waits on Slack. A missing `chat.toml` leaves the chat off and writes nothing. Rows made later
     /// are not seen: a mapping to a folder no row had at this call is refused as `UnknownFolder` until the daemon
-    /// restarts. Must run inside the daemon's runtime.
-    fn begin(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
+    /// restarts. `check` is the pace of the retry of a start refused `held` and of the hub fact's asks (`HUB_CHECK`; the
+    /// tests shorten it). Must run inside the daemon's runtime.
+    fn begin(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
         let shared = Shared::new();
         let chat = |config, status| {
             *shared.lock() = Phase::Off(status);
@@ -206,39 +242,72 @@ impl<L: Listener> Chat<L> {
                 Err(e) => return chat(Some(config), Status::Secrets(e)),
             },
         };
-        let locks = sot_platform::host::state_dir::daemon_state_dir_in(env).join("chat");
-        if sot_platform::host::paths::ensure_private_dir(&locks).is_err() {
-            return chat(Some(config), Status::Failed("lock"));
-        }
+        // The comm folder's, not this daemon's: every daemon that files into these inboxes takes the same lock.
+        let Some(locks) = crate::comm::home::chat_dir(env) else { return chat(Some(config), Status::Failed("lock")) };
         let this = chat(Some(config), Status::Stopped);
         // The phase lock is taken before the registration and held until `Starting` is in place: a retirement that
         // reaches `request_stop` in between waits for it, and so finds the start and aborts it. The start task's own
         // completion takes the same lock.
-        let (task_chat, shared) = (this.clone(), this.shared.clone());
+        let (task_chat, shared, env) = (this.clone(), this.shared.clone(), env.clone());
         let mut phase = shared.lock();
         if !registry.register(this.clone()) {
             return this;
         }
         let task = Handle::current().spawn(async move {
             let Some(Ok(config)) = &task_chat.config else { return };
-            let made = start(config, credentials, &locks).await;
-            let shared = &task_chat.shared;
-            let mut phase = shared.lock();
-            match (made, matches!(*phase, Phase::Starting(_))) {
-                (Ok(l), true) => {
-                    *phase = Phase::Running(l);
-                    shared.started.notify_waiters();
+            let mut start = start;
+            let mut held = false;
+            // A start refused `held` is tried again each `check` until a readable topology names another computer the
+            // hub (a missing or unparsable one, as an edit in progress leaves, ends nothing), the phase staying
+            // `Starting` so `running` keeps waiting. The credentials are cloned per try and never formatted.
+            let made = loop {
+                let tokens = Credentials { bot: credentials.bot.clone(), app: credentials.app.clone() };
+                match start(config, tokens, &locks).await {
+                    Err("held") => {
+                        if !std::mem::replace(&mut held, true) {
+                            tracing::warn!("project chat is held by another daemon on this comm folder; trying again");
+                        }
+                        tokio::time::sleep(check).await;
+                        let e = env.clone();
+                        if tokio::task::spawn_blocking(move || names_another_hub(&e)).await.unwrap_or(false) {
+                            break Err(Status::NotHub);
+                        }
+                    }
+                    other => break other.map_err(Status::Failed),
                 }
-                // Retired while the start was under way: the service it made ends at once.
-                (Ok(l), false) => {
-                    tokio::spawn(async move { l.stop(STOP_WITHIN).await });
+            };
+            // No more tries: what the starter and the tokens hold goes now, not with the chat.
+            drop((start, credentials));
+            let running = {
+                let shared = &task_chat.shared;
+                let mut phase = shared.lock();
+                match (made, matches!(*phase, Phase::Starting(_))) {
+                    (Ok(l), true) => {
+                        *phase = Phase::Running(l);
+                        shared.started.notify_waiters();
+                        true
+                    }
+                    // Retired while the start was under way: the service it made ends at once.
+                    (Ok(l), false) => {
+                        tokio::spawn(async move { l.stop(STOP_WITHIN).await });
+                        false
+                    }
+                    (Err(status), true) => {
+                        drop(phase);
+                        match status {
+                            Status::Failed(code) => tracing::warn!(code, "project chat did not start"),
+                            _ => tracing::warn!("project chat is off: the topology names another computer as the hub"),
+                        }
+                        shared.set_off(status);
+                        false
+                    }
+                    (Err(_), false) => false,
                 }
-                (Err(code), true) => {
-                    drop(phase);
-                    tracing::warn!(code, "project chat did not start");
-                    shared.set_off(Status::Failed(code));
-                }
-                (Err(_), false) => {}
+            };
+            if running {
+                let weak = Arc::downgrade(&task_chat);
+                drop(task_chat);
+                step_down_when_another_hub(weak, env, check).await;
             }
         });
         *phase = Phase::Starting(task.abort_handle());
@@ -250,7 +319,7 @@ impl<L: Listener> Chat<L> {
     /// builds its chat only through [`Chat::boot`].
     #[cfg(test)]
     pub(crate) fn begin_unowned(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
-        Chat::begin(env, rows, read, registry, start)
+        Chat::begin(env, rows, read, registry, start, HUB_CHECK)
     }
 
     /// A chat that is not the hub, for a test's services.
@@ -351,6 +420,31 @@ impl<L: Listener> Chat<L> {
     pub(crate) fn admit_unwatch(&self) -> Result<(), ChatCode> {
         self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
     }
+
+    /// End the start or the service, the chat then `Off(ended)`: `Stopped` for a retirement, `NotHub` for a step-down.
+    fn stop_as(&self, ended: Status) {
+        let mut phase = self.shared.lock();
+        match std::mem::replace(&mut *phase, Phase::Stopping) {
+            Phase::Starting(task) => {
+                task.abort();
+                drop(phase);
+                self.shared.set_off(ended);
+            }
+            Phase::Running(l) => {
+                drop(phase);
+                let shared = self.shared.clone();
+                let stop = async move {
+                    l.stop(STOP_WITHIN).await;
+                    shared.set_off(ended);
+                };
+                match &self.handle {
+                    Some(h) => drop(h.spawn(stop)),
+                    None => unreachable!("a running service was started on a runtime"),
+                }
+            }
+            other => *phase = other,
+        }
+    }
 }
 
 impl Chat<Service> {
@@ -368,9 +462,10 @@ impl Chat<Service> {
     }
 
     /// The daemon's chat as the boot makes it, and as the tests' rig makes it: begin, the boot's log line, and the
-    /// owner's task, started while the chat is still `Starting`. Must run inside the daemon's runtime.
-    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>) -> Arc<Chat> {
-        let chat = Chat::begin(env, &row_facts(rows), read, registry, start);
+    /// owner's task, started while the chat is still `Starting`. `check` is [`Chat::begin`]'s. Must run inside the daemon's
+    /// runtime.
+    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, check: Duration) -> Arc<Chat> {
+        let chat = Chat::begin(env, &row_facts(rows), read, registry, start, check);
         tracing::info!(status = %chat.status(), "project chat");
         drop(chat.start_owner(rows.clone()));
         chat
@@ -386,27 +481,7 @@ impl<L: Listener> Participant for Chat<L> {
     fn close_admission(&self) {}
 
     fn request_stop(&self) {
-        let mut phase = self.shared.lock();
-        match std::mem::replace(&mut *phase, Phase::Stopping) {
-            Phase::Starting(task) => {
-                task.abort();
-                drop(phase);
-                self.shared.set_off(Status::Stopped);
-            }
-            Phase::Running(l) => {
-                drop(phase);
-                let shared = self.shared.clone();
-                let stop = async move {
-                    l.stop(STOP_WITHIN).await;
-                    shared.set_off(Status::Stopped);
-                };
-                match &self.handle {
-                    Some(h) => drop(h.spawn(stop)),
-                    None => unreachable!("a running service was started on a runtime"),
-                }
-            }
-            other => *phase = other,
-        }
+        self.stop_as(Status::Stopped);
     }
 
     fn wait_retired(&self, within: Duration) -> bool {

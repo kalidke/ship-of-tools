@@ -46,3 +46,21 @@ fn an_open_folder_an_older_release_left_is_closed_but_never_a_checkout() {
     assert!(tighten(&repo, &crate::comm::Env::empty())[0].contains("a git checkout"));
     assert_eq!(mode(&repo), 0o755);
 }
+
+#[cfg(unix)]
+#[test]
+fn the_chat_lock_folder_is_private_in_a_comm_folder_made_whole() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let comm = d.path().join("comm");
+    let env = crate::comm::Env::empty().with("SOT_COMM_HOME", &comm);
+    let dir = chat_dir(&env).unwrap();
+    assert_eq!(dir, comm.join("chat"));
+    assert!(is_whole(&comm));
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    // A file where the folder belongs is no lock folder, and no comm folder is none.
+    std::fs::remove_dir(&dir).unwrap();
+    std::fs::write(&dir, "x").unwrap();
+    assert_eq!(chat_dir(&env), None);
+    assert_eq!(chat_dir(&crate::comm::Env::empty()), None);
+}

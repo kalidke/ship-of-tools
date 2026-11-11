@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use sot_chat::config::{CONFIG_FILE, SECRETS_FILE};
 
 use crate::lifecycle::retire::retire;
+use sot_chat::service::Service;
 
 pub(crate) const SELF: &str = "hub-box";
 const BOT: &str = "xoxb-1111-2222-aaaa";
@@ -27,6 +28,7 @@ impl Home {
             .with("HOME", root.join("home"))
             .with("XDG_CONFIG_HOME", root.join("config"))
             .with("XDG_STATE_HOME", root.join("state"))
+            .with("SOT_COMM_HOME", root.join("comm"))
             .with("LOCALAPPDATA", root.join("local"))
             .with("SOT_SELF_HOST", SELF);
         let home = Home { dir, env };
@@ -41,6 +43,11 @@ impl Home {
     pub(crate) fn list(&self, hub: &str) {
         let me = if hub == SELF { String::new() } else { format!("[host.{SELF}]\ndaemon = true\n") };
         self.write("hosts.toml", &format!("hub = \"{hub}\"\n[host.{hub}]\ndaemon = true\n{me}"));
+    }
+
+    /// The comm folder this home's daemon files into, under the temporary folder.
+    pub(crate) fn comm(&self) -> PathBuf {
+        crate::comm::home::comm_home(&self.env).unwrap()
     }
 
     pub(crate) fn config(&self) -> PathBuf {
@@ -120,7 +127,10 @@ fn fact(canonical: &Path, inert: bool) -> RowFact {
 
 fn gives(listener: &Arc<Fake>) -> Starter<Fake> {
     let listener = listener.clone();
-    Box::new(move |_, _, _| Box::pin(async move { Ok(listener) }))
+    Box::new(move |_, _, _| {
+        let listener = listener.clone();
+        Box::pin(async move { Ok(listener) })
+    })
 }
 
 fn refuses(code: &'static str) -> Starter<Fake> {
@@ -142,11 +152,11 @@ fn never(called: &Arc<AtomicBool>) -> Starter<Fake> {
 }
 
 fn begin(home: &Home, rows: &[RowFact], seen: &Observed, registry: &Registry, start: Starter<Fake>) -> Arc<Chat<Fake>> {
-    Chat::begin(&home.env, rows, &|p| seen.read(p), registry, start)
+    Chat::begin(&home.env, rows, &|p| seen.read(p), registry, start, HUB_CHECK)
 }
 
 /// Yield until the start task has finished (no timer: it ends once its starter does).
-async fn settled(chat: &Chat<Fake>) -> Status {
+async fn settled<L: Listener>(chat: &Chat<L>) -> Status {
     loop {
         match chat.status() {
             Status::Starting => tokio::task::yield_now().await,
@@ -214,7 +224,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
     assert!(chat.status().to_string().contains("not configured"));
     assert_eq!(seen.opened(), vec![home.config().join(CONFIG_FILE)]);
     assert_eq!(before(&home), 2, "hosts.toml and the secrets, and nothing written");
-    assert!(!sot_platform::host::state_dir::daemon_state_dir_in(&home.env).join("chat").exists());
+    assert!(!home.comm().exists(), "chat made the comm folder before it had a configuration");
 
     // A malformed chat.toml: no delivery, and the secrets stay unopened.
     home.write(CONFIG_FILE, "workspace = [[[");
@@ -391,14 +401,14 @@ async fn a_start_that_fails_leaves_the_chat_off_with_its_code_and_a_private_lock
     let home = Home::new(Some(SELF));
     let row = home.configured();
     let registry = Registry::new();
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, refuses("held"));
-    assert_eq!(settled(&chat).await, Status::Failed("held"));
-    assert!(chat.status().to_string().contains("held"));
+    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, refuses("down"));
+    assert_eq!(settled(&chat).await, Status::Failed("down"));
+    assert!(chat.status().to_string().contains("down"));
     assert!(chat.service().is_none());
     assert!(chat.wait_retired(Duration::ZERO));
     assert!(retire(&registry, LONG).incomplete.is_empty());
 
-    // The lock folder the starter gets is the daemon's state folder's `chat`, made private.
+    // The lock folder the starter gets is the comm folder's `chat`, made private, and not the daemon's state folder's.
     let seen = Arc::new(std::sync::Mutex::new(None));
     let record = seen.clone();
     let start: Starter<Fake> = Box::new(move |_, _, dir| {
@@ -408,8 +418,9 @@ async fn a_start_that_fails_leaves_the_chat_off_with_its_code_and_a_private_lock
     let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &Registry::new(), start);
     settled(&chat).await;
     let dir = seen.lock().unwrap().clone().unwrap();
-    assert_eq!(dir, sot_platform::host::state_dir::daemon_state_dir_in(&home.env).join("chat"));
+    assert_eq!(dir, home.comm().join("chat"));
     assert!(sot_platform::host::state_dir::is_private_dir(&dir));
+    assert!(!sot_platform::host::state_dir::daemon_state_dir_in(&home.env).join("chat").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -444,6 +455,7 @@ async fn a_dropped_chat_lets_its_listener_go_and_a_start_after_a_stop_is_a_new_c
 /// A starter that holds `guard` while it waits for ever.
 fn holding(guard: Arc<()>) -> Starter<Fake> {
     Box::new(move |_, _, _| {
+        let guard = guard.clone();
         Box::pin(async move {
             let _held = guard;
             std::future::pending().await
@@ -481,6 +493,7 @@ async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
     let (reg, made) = (registry.clone(), listener.clone());
     // The retirement runs inside the start, just before it returns its service.
     let start: Starter<Fake> = Box::new(move |_, _, _| {
+        let (reg, made) = (reg.clone(), made.clone());
         Box::pin(async move {
             assert!(retire(&reg, LONG).incomplete.is_empty());
             Ok(made)
@@ -504,9 +517,8 @@ async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
     let home = Home::new(Some(SELF));
     let row = home.configured();
     // A file where the folder belongs.
-    let state = sot_platform::host::state_dir::daemon_state_dir_in(&home.env);
-    std::fs::create_dir_all(&state).unwrap();
-    std::fs::write(state.join("chat"), "not a folder").unwrap();
+    std::fs::create_dir_all(home.comm()).unwrap();
+    std::fs::write(home.comm().join("chat"), "not a folder").unwrap();
     let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
     let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, never(&called));
     assert_eq!(chat.status(), Status::Failed("lock"));
@@ -533,6 +545,173 @@ async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_
     let done = retiring.lock().unwrap().take().unwrap().join().unwrap();
     assert!(done.incomplete.is_empty(), "{done:?}");
     assert_eq!(chat.status(), Status::Stopped, "a start began after its retirement was reported complete");
+}
+
+// ---- P18: one listener per comm folder ----
+
+/// How often the tests' chats retry and ask the hub fact.
+const FAST: Duration = Duration::from_millis(10);
+
+/// Yield and sleep until `ready`, failing at a 10 s bound.
+async fn until(what: &str, mut ready: impl FnMut() -> bool) {
+    let waiting = async {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), waiting).await.unwrap_or_else(|_| panic!("never: {what}"));
+}
+
+/// A fake Slack that names the workspace and refuses every socket ticket, so a service runs with no live socket.
+async fn slack() -> sot_chat::fake_slack::FakeSlack {
+    use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
+    FakeSlack::start(Identity::Trusted, |seen, _| {
+        if seen.path().ends_with("/auth.test") {
+            Reply::json(&serde_json::json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
+        } else {
+            Reply::json(&serde_json::json!({"ok": false, "error": "invalid_auth"}))
+        }
+    })
+    .await
+}
+
+fn identity_reads(fake: &sot_chat::fake_slack::FakeSlack) -> usize {
+    fake.seen().iter().filter(|s| s.path().ends_with("/auth.test")).count()
+}
+
+/// The product's service against `fake`, counting each try.
+fn counting(fake: &sot_chat::fake_slack::FakeSlack, tries: &Arc<AtomicUsize>) -> Starter<Service> {
+    let (http, base, tries) = (fake.http(), fake.url("slack.com", "/api/"), tries.clone());
+    Box::new(move |config, credentials, dir| {
+        tries.fetch_add(1, Ordering::SeqCst);
+        let (http, base) = (http.clone(), base.clone());
+        Box::pin(async move { Service::start_at(config, credentials, http, dir, base).await.map(Arc::new).map_err(|e| e.code()) })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_daemons_on_one_comm_folder_run_one_listener() {
+    // Two daemons, each with a state folder of its own, one comm folder: the second is held, calls Slack for nothing,
+    // and listens once the first lets go.
+    let fake = slack().await;
+    let one = Home::new(Some(SELF));
+    let mut two = Home::new(Some(SELF));
+    two.env = two.env.with("SOT_COMM_HOME", one.comm());
+    let (rows, tries) = ([one.configured(), two.configured()], [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))]);
+    let registries = [Registry::new(), Registry::new()];
+    let start = |home: &Home, i: usize| {
+        let read = |p: &Path| config::read_file(p);
+        Chat::<Service>::begin(&home.env, &[fact(&rows[i], false)], &read, &registries[i], counting(&fake, &tries[i]), FAST)
+    };
+    let first = start(&one, 0);
+    assert_eq!(settled(&first).await, Status::Running);
+    let second = start(&two, 1);
+    until("the second daemon's retry or its end", || tries[1].load(Ordering::SeqCst) >= 2 || second.status() != Status::Starting).await;
+    assert_eq!(second.status(), Status::Starting, "held, not failed");
+    assert_eq!(identity_reads(&fake), 1, "a second listener read the bot's identity");
+
+    first.request_stop();
+    assert!(first.wait_retired(LONG));
+    until("the second daemon takes the lock", || second.status() == Status::Running).await;
+    assert_eq!(identity_reads(&fake), 2);
+    assert!(retire(&registries[1], LONG).incomplete.is_empty());
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_start_starts_once_the_holder_lets_go() {
+    let fake = slack().await;
+    let home = Home::new(Some(SELF));
+    let folder = home.configured();
+    let rows = Workspaces::new();
+    rows.insert(row("alpha", &folder));
+    // Another holder of the workspace's lock, as a second computer's daemon would be.
+    let lock = sot_platform::host::lock_supervisor(&crate::comm::home::chat_dir(&home.env).unwrap().join("chat-T0AAAA.lock")).unwrap();
+    let (registry, tries) = (Registry::new(), Arc::new(AtomicUsize::new(0)));
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), FAST);
+    until("a retry or the start's end", || tries.load(Ordering::SeqCst) >= 3 || chat.status() != Status::Starting).await;
+    assert_eq!(chat.status(), Status::Starting, "a held start is not final, and stays starting");
+    assert!(!chat.hub().running());
+    drop(lock);
+    until("the owner starts when the lock comes", || chat.status() == Status::Running && chat.hub().running()).await;
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    fake.shutdown().await;
+
+    // A held start ends with its retirement, and with the topology naming another computer the hub.
+    let (registry, held) = (Registry::new(), Home::new(Some(SELF)));
+    let row = held.configured();
+    let retired = Chat::<Fake>::begin(&held.env, &[fact(&row, false)], &|p| config::read_file(p), &registry, refuses("held"), FAST);
+    tokio::time::sleep(5 * FAST).await;
+    assert_eq!(retired.status(), Status::Starting);
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    assert_eq!(retired.status(), Status::Stopped);
+    let moved = Chat::<Fake>::begin(&held.env, &[fact(&row, false)], &|p| config::read_file(p), &Registry::new(), refuses("held"), FAST);
+    held.list("elsewhere");
+    until("the held start gives up", || moved.status() == Status::NotHub).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_start_survives_a_topology_that_does_not_parse() {
+    // A hosts.toml being edited (unparsable, or briefly gone) is not another computer named the hub: the held start
+    // keeps trying and starts when the lock comes.
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    let (listener, free, tries) = (Arc::new(Fake::default()), Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let (made, open, count) = (listener.clone(), free.clone(), tries.clone());
+    let start: Starter<Fake> = Box::new(move |_, _, _| {
+        count.fetch_add(1, Ordering::SeqCst);
+        let (made, open) = (made.clone(), open.load(Ordering::SeqCst));
+        Box::pin(async move { if open { Ok(made) } else { Err("held") } })
+    });
+    let chat = Chat::begin(&home.env, &[fact(&row, false)], &|p| config::read_file(p), &Registry::new(), start, FAST);
+    for what in ["unparsable", "missing"] {
+        match what {
+            "unparsable" => home.write("hosts.toml", "hub = \n[[["),
+            _ => std::fs::remove_file(home.config().join("hosts.toml")).unwrap(),
+        }
+        let seen = tries.load(Ordering::SeqCst);
+        until("more tries or the start's end", || tries.load(Ordering::SeqCst) >= seen + 3 || chat.status() != Status::Starting).await;
+        assert_eq!(chat.status(), Status::Starting, "{what}");
+    }
+    home.list(SELF);
+    free.store(true, Ordering::SeqCst);
+    until("the start", || chat.status() == Status::Running).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chat_whose_topology_names_another_hub_steps_down_and_a_broken_topology_changes_nothing() {
+    // The predicate: only a topology that parses and a name that is not empty.
+    let home = Home::new(Some("elsewhere"));
+    let elsewhere = sot_topology::load_in(&home.env);
+    assert!(names_other_hub(&elsewhere, SELF));
+    assert!(!names_other_hub(&elsewhere, "elsewhere"), "this computer is the hub");
+    assert!(!names_other_hub(&elsewhere, ""), "an empty self-name is not another computer naming the hub");
+    assert!(!names_other_hub(&Ok(None), SELF) && !names_other_hub(&Err("unreadable".into()), SELF));
+    assert!(names_another_hub(&home.env));
+
+    let home = Home::new(Some(SELF));
+    let row = home.configured();
+    let (registry, listener) = (Registry::new(), Arc::new(Fake::default()));
+    let chat = Chat::begin(&home.env, &[fact(&row, false)], &|p| config::read_file(p), &registry, gives(&listener), FAST);
+    assert_eq!(settled(&chat).await, Status::Running);
+    // A topology that does not parse, one that is gone, and one naming this computer: the chat runs on through many asks.
+    for what in ["unparsable", "missing", "this computer"] {
+        match what {
+            "unparsable" => home.write("hosts.toml", "hub = \n[[["),
+            "missing" => std::fs::remove_file(home.config().join("hosts.toml")).unwrap(),
+            _ => home.list(SELF),
+        }
+        tokio::time::sleep(15 * FAST).await;
+        assert_eq!(chat.status(), Status::Running, "{what}");
+        assert_eq!(listener.stops.load(Ordering::SeqCst), 0, "{what}");
+    }
+    // Another computer named the hub: the service stops, which frees its lock, and the status says why.
+    home.list("elsewhere");
+    until("the step-down", || chat.status() == Status::NotHub).await;
+    assert_eq!(listener.stops.load(Ordering::SeqCst), 1);
+    assert!(chat.service().is_none());
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    assert_eq!(listener.stops.load(Ordering::SeqCst), 1, "a retirement after the step-down stops nothing again");
 }
 
 // ---- M3: the adapter every chat action passes ----

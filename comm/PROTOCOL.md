@@ -24,6 +24,7 @@ shell scripts during an install, so a box on either version shares one comm fold
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
   inbox/<name>.lock        # that inbox's lock file
   read/<name>.cursor       # per-recipient read cursor
+  chat/chat-<workspace>.lock  # the chat listener's kernel lock, one per comm folder (the hub daemon's; holds no data)
   self/<host>__<row>.txt   # a session's handle between commands (below)
   state/                   # per-session scratch of the hooks: the end-of-turn check's tick files and
                            # feedback record, rows' turn marks. Bounded per-session litter; nothing sweeps it.
