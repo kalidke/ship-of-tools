@@ -239,7 +239,10 @@ Guarantees, each with the mechanism it rests on. Install:
   converge), and stopped, whatever its version, only where the run's role has no daemon here (Unix: the retire of an
   active `sotd.service`) or an update applies at the desk (Windows); each only once its live work (`sotd update repls`:
   REPL rows and the Pluto server; a daemon that cannot say is judged by its own child processes, by parent id) is
-  answered: yes at a console, or `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. A restart
+  answered: yes at a console, or `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. The Unix
+  console is `/dev/tty`, or the file `SOT_INSTALL_TTY` names; a caller with no person at the console (an agent,
+  `docs/UPDATE-AGENT.md`) sets `SOT_INSTALL_TTY=/dev/null` so the question reads end of file and the run stops with its
+  `daemon:` line; no test pins the variable yet (INSTALLER-ASKS-A-ROWS-TERMINAL). A restart
   must answer as the target within its bound by the clock. A daemon that runs and cannot be told its version is never
   read as none. The state-folder correction below is the one additional restart: rows outlive it, and no row could
   have started on the unqualified root, so it asks nothing.
