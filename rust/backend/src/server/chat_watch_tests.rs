@@ -187,9 +187,11 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     let home = Home::new(Some(SELF));
     let folders: Vec<_> = (0..n).map(|i| home.folder(&format!("r{i}"))).collect();
     let channels: Vec<String> = (0..n).map(|i| format!("\"C{i:04}\"")).collect();
-    let mut text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\nmail_after = \"1.000000\"\n", channels.join(", "));
+    // A delivering file holds at most 32 mappings, so the rows past that bound make the file one that does not deliver.
+    let hub_floor = if n <= sot_chat::config::MAX_DELIVERING { "mail_after = \"1.000000\"\n" } else { "" };
+    let mut text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\n{hub_floor}", channels.join(", "));
     for (i, f) in folders.iter().enumerate() {
-        text += &format!("[[mapping]]\nfolder = '{}'\nchannel = \"C{i:04}\"\n", f.to_string_lossy());
+        text += &format!("[[mapping]]\nfolder = '{}'\nchannel = \"C{i:04}\"\nmail_after = \"1.000000\"\n", f.to_string_lossy());
     }
     home.write(CONFIG_FILE, &text);
     home.secrets();

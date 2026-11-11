@@ -87,7 +87,7 @@ fn mapping_refuses_aliases_duplicates_and_inert_anchor() {
 #[test]
 fn resolve_explains_unmapped_invalid_and_disabled_delivery() {
     let on = Ok(parse(&chat(
-        &("mail_after = \"1730000000.000000\"\n".to_string() + &mapping("/work/a", "C0AAAA")),
+        &("mail_after = \"1730000000.000000\"\n".to_string() + &mapping_from("/work/a", "C0AAAA", "1730000000.000000")),
     ))
     .unwrap());
     let off = Ok(parse(&chat(&mapping("/work/a", "C0AAAA"))).unwrap());
@@ -151,9 +151,67 @@ fn index(e: ConfigError) -> usize {
         E::FolderRepeated(_) => 10,
         E::ChannelRepeated(_) => 11,
         E::ChannelNotListed(_) => 12,
+        E::TooManyDelivering => 13,
+        E::MappingWithoutFloor(_) => 14,
     }
 }
-const VARIANTS: usize = 13;
+const VARIANTS: usize = 15;
+
+fn mapping_from(folder: &str, channel: &str, from: &str) -> String {
+    format!("{}mail_after = \"{from}\"\n", mapping(folder, channel))
+}
+
+/// Any folder is a row, canonical as spelled.
+fn many_rows(folder: &str) -> Option<Folder> {
+    Some(Folder { canonical: folder.to_string(), inert: false })
+}
+
+/// A file of `n` mappings, each channel listed; the hub's `mail_after` first, each mapping with its own.
+fn delivering(n: usize) -> String {
+    let ids: Vec<String> = (0..n).map(|i| format!("C{i:04}")).collect();
+    let listed: Vec<String> = ids.iter().map(|c| format!("\"{c}\"")).collect();
+    let mut text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\nmail_after = \"5.000000\"\n", listed.join(", "));
+    for (i, c) in ids.iter().enumerate() {
+        text += &mapping_from(&format!("/work/f{i}"), c, "6.000000");
+    }
+    text
+}
+
+#[test]
+fn a_delivering_file_has_at_most_32_mappings_and_a_file_not_delivering_has_no_bound() {
+    assert_eq!(Config::parse(&delivering(32), &many_rows).map(|c| c.mappings().count()), Ok(32));
+    assert_eq!(Config::parse(&delivering(33), &many_rows).map(drop), Err(E::TooManyDelivering));
+    // Without the hub's `mail_after` nothing delivers, so 33 mappings (none with a floor) load.
+    let plain: String = delivering(33).lines().filter(|l| !l.starts_with("mail_after = \"5")).collect::<Vec<_>>().join("\n") + "\n";
+    assert_eq!(Config::parse(&plain, &many_rows).map(|c| c.mappings().count()), Ok(33));
+}
+
+#[test]
+fn a_delivering_file_refuses_a_mapping_without_its_own_floor() {
+    let hub = "mail_after = \"5.000000\"\n";
+    let text = chat(&(hub.to_string() + &mapping("/work/a", "C0AAAA")));
+    assert_eq!(parse(&text).map(drop), Err(E::MappingWithoutFloor(1)));
+    // The same file without the hub's `mail_after` loads, and has no floor.
+    let c = parse(&chat(&mapping("/work/a", "C0AAAA"))).unwrap();
+    assert_eq!(c.floor("C0AAAA"), None);
+    assert_eq!(c.mail_after(), None);
+    // A mapping's value that is not a timestamp is refused, with or without the hub's.
+    for text in [chat(&mapping_from("/work/a", "C0AAAA", "soon")), chat(&(hub.to_string() + &mapping_from("/work/a", "C0AAAA", "soon")))] {
+        assert_eq!(parse(&text).map(drop), Err(E::BadMailAfter));
+    }
+}
+
+#[test]
+fn a_mappings_own_mail_after_raises_only_its_channels_floor() {
+    let text = chat(&(String::from("mail_after = \"5.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "9.000000") + &mapping_from("/work/b", "C0BBBB", "2.000000")));
+    let c = parse(&text).unwrap();
+    let ts = |s: &str| Some(sot_protocol::chat::Ts::parse(s).unwrap());
+    assert_eq!(c.floor("C0AAAA"), ts("9.000000"));
+    assert_eq!(c.floor("C0BBBB"), ts("5.000000"));
+    assert_eq!(c.floor("C0CCCC"), None);
+    assert_eq!(c.mail_after(), ts("5.000000").as_ref());
+    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/a", "C0AAAA"), ("/work/b", "C0BBBB")]);
+}
 
 #[test]
 fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
@@ -239,6 +297,16 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
             "unlisted channel",
             parse(&chat(&m("/work/a", "C0CCCC"))).map(drop),
             Err(E::ChannelNotListed(1)),
+        ),
+        (
+            "a delivering file with 33 mappings",
+            Config::parse(&delivering(33), &many_rows).map(drop),
+            Err(E::TooManyDelivering),
+        ),
+        (
+            "a delivering file's mapping without its own floor",
+            parse(&chat(&(String::from("mail_after = \"5.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "6.000000") + &m("/work/b", "C0BBBB")))).map(drop),
+            Err(E::MappingWithoutFloor(2)),
         ),
         (
             "bot token as the app token",
@@ -347,6 +415,8 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         E::FolderRepeated(2),
         E::ChannelRepeated(2),
         E::ChannelNotListed(2),
+        E::TooManyDelivering,
+        E::MappingWithoutFloor(2),
     ];
     assert_eq!(codes.len(), VARIANTS);
     for (i, a) in codes.iter().enumerate() {

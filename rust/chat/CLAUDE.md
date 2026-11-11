@@ -168,7 +168,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    are guarantee 22; its load half is guarantee 21.
 
 21. **The configuration is read one way, refused with a stated reason, and shows no token.** `chat.toml` (the one
-   workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`) and
+   workspace id, `channels`, `[[mapping]]` entries of `folder` and `channel`, an optional `mail_after` that is a `Ts`; once it is set the file is delivering: more than 32 mappings is `TooManyDelivering`, a mapping without its own `mail_after` (a `Ts`, as the hub's) is `MappingWithoutFloor(ordinal)`, and `Config::floor(channel)` is the later of the mapping's and the hub's, `None` while the hub's is unset) and
    `chat-secrets.toml` (`workspace`, `bot_token`, `app_token`) are in platform's config folder (`config_dir`); only the
    named keys are accepted. Each file is read by `read_file` alone, which reads through platform's `read_regular`: a regular file (checked on the open handle; on Unix the open is non-blocking, so a planted FIFO returns at once, and a device or
    directory is refused; Windows applies no such flag and has no such test) of at most 64 KiB (`MAX_FILE`), text,

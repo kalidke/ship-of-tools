@@ -298,8 +298,8 @@ Each file is a regular file of at most 64 KiB, and only the keys below are accep
 |-----|------|----------|---------|
 | `workspace` | Slack id (a capital letter, then capitals and digits, 32 at most), not a name | yes | The one Slack workspace; it must equal `chat-secrets.toml`'s. A list or table naming a second one is refused. |
 | `channels` | list of Slack ids | yes | The channels the chat may use. A repeated channel is refused. |
-| `[[mapping]]` | table | one per project | `folder`, an absolute path of a folder a row had when the daemon started (not the window's default row, which runs no agent), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may also repeat `workspace`, which must match. Two entries for one folder, or one channel for two folders, are refused. |
-| `mail_after` | Slack timestamp (`<seconds>.<six digits>`), a quoted string | no | Read and checked; nothing uses it yet. *Mail delivery is unbuilt.* |
+| `[[mapping]]` | table | one per project | `folder`, an absolute path of a folder a row had when the daemon started (not the window's default row, which runs no agent), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may also repeat `workspace`, which must match, and may carry its own `mail_after` (below). Two entries for one folder, or one channel for two folders, are refused. |
+| `mail_after` | Slack timestamp (`<seconds>.<six digits>`), a quoted string | no | Read and checked; nothing uses it yet. *Mail delivery is unbuilt.* Setting it makes the file delivering: then at most 32 mappings are allowed, and each mapping needs its own `mail_after`, set to the time you add the mapping, so a channel added later never has its backlog turned into mail. A channel's floor is the later of its mapping's value and this one. |
 
 `chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`) and `app_token` (it starts `xapp-`), each token
 letters, digits and hyphens up to 512 bytes. Keep the file private to your account; the

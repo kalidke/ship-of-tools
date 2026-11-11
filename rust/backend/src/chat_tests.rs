@@ -61,7 +61,7 @@ impl Home {
     pub(crate) fn chat_toml(&self, folders: &[String]) {
         let mut text = String::from("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\nmail_after = \"1.000000\"\n");
         for (f, c) in folders.iter().zip(["C0AAAA", "C0BBBB"]) {
-            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\n");
+            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\nmail_after = \"1.000000\"\n");
         }
         self.write(CONFIG_FILE, &text);
     }
