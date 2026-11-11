@@ -20,6 +20,14 @@ fn raster_preview_mimes_route_jpeg_and_kin_not_svg() {
     assert!(!is_raster_preview_mime("application/json"));
 }
 
+#[test]
+fn an_svg_preview_routes_to_the_picture_path_not_the_raster_decoder_or_the_text() {
+    assert!(is_svg_preview_mime("image/svg+xml"));
+    for m in ["image/png", "text/plain; charset=utf-8", "text/html", "application/json"] {
+        assert!(!is_svg_preview_mime(m), "{m} is not an SVG");
+    }
+}
+
 // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
 // the node the INSTALLED preview reply answered — never the most
 // recently REQUESTED one (which can outrun its own reply), and never
@@ -242,4 +250,25 @@ fn preview_scroll_target_measures_only_the_buffer_on_screen() {
 fn a_refused_preview_says_so_in_the_pane_title() {
     assert_eq!(pane_name("a.pdf", Some((2, 5)), false), "a.pdf · p 2/5 · n/p");
     assert_eq!(pane_name("a.pdf", None, true), "a.pdf · REFUSED, view not updated");
+}
+
+impl State {
+    /// An SVG file's preview is installed as the raster, filling the pane on its limiting side at the SVG's aspect, and
+    /// one that will not parse leaves no raster, shows its text and says why on the status line.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn an_svg_preview_is_a_raster_and_a_broken_one_is_its_text(&mut self) -> anyhow::Result<()> {
+        let pane = self.preview_fit_px();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100"/></svg>"#;
+        self.render_preview_source("image/svg+xml", svg);
+        let (w, h) = self.raster.quad_size().ok_or_else(|| anyhow::anyhow!("an SVG preview installed no raster"))?;
+        let near = |a: u32, b: u32| a.abs_diff(b) <= 1;
+        anyhow::ensure!(near(w, 2 * h), "the raster {w}x{h} lost the SVG's 2:1 aspect");
+        if let (Some(pw), Some(ph)) = pane {
+            anyhow::ensure!(near(w, pw.min(2 * ph)), "the raster {w}x{h} does not fill the {pw}x{ph} pane on its limiting side");
+        }
+        self.render_preview_source("image/svg+xml", b"<svg><not closed");
+        anyhow::ensure!(!self.raster.is_shown(), "a broken SVG kept the last raster");
+        anyhow::ensure!(self.status.text().starts_with("svg not drawn: "), "the status line says `{}`", self.status.text());
+        Ok(())
+    }
 }

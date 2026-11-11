@@ -15,6 +15,13 @@ impl State {
         .any(|e| lower.ends_with(e))
     }
 
+    /// True if a `files:` node id names a figure the pane draws as a picture and a drawing can lie over: an image node
+    /// or an SVG. An SVG is not an image node: `image.crop` cannot decode it, the scale and caption describe a
+    /// raster's pixels, and the view carry keys on the ROI an image node has.
+    pub(in crate::ui) fn is_figure_node_id(node_id: &str) -> bool {
+        Self::is_image_node_id(node_id) || node_id.to_ascii_lowercase().ends_with(".svg")
+    }
+
     /// ADR 0022: capture the current image-preview ROI. Fires `image.crop`
     /// against the active workspace; the `ImageCropped` reply pastes a
     /// "look at this" line into the LLM pane AND moves focus there, so the
@@ -23,7 +30,7 @@ impl State {
     /// move on any failure path, so a no-op leaves you on the image.
     pub(in crate::ui) fn capture_roi(&mut self) {
         let Some(roi) = self.raster.roi().cloned() else {
-            self.status.set("capture: no image ROI in preview (zoom an image first)".to_string());
+            self.status.set(no_roi_line(self.raster.node()));
             self.window.request_redraw();
             return;
         };
@@ -108,6 +115,17 @@ impl State {
         }) {
             tracing::warn!(error = %e, "preview_roi_applied: transport closed — echo dropped");
         }
+    }
+}
+
+/// Why a capture has no ROI to cut. A shown SVG gets its own line: the daemon crops raster files, so no crop of an
+/// SVG is offered, and the generic hint to zoom would never help.
+fn no_roi_line(shown: Option<&str>) -> String {
+    match shown {
+        Some(node) if node.to_ascii_lowercase().ends_with(".svg") => {
+            "capture: an SVG cannot be cropped (the daemon crops raster files)".to_string()
+        }
+        _ => "capture: no image ROI in preview (zoom an image first)".to_string(),
     }
 }
 

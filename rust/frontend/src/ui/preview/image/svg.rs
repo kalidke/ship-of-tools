@@ -105,6 +105,48 @@ pub fn quad_from_svg_bytes(
     Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
 }
 
+/// The raster size of an SVG `svg` units across, drawn to fill a `pane` (physical pixels) on its limiting side with its
+/// own aspect ratio, no side under one pixel or over `cap` (the GPU's texture limit). Without a pane (before the first
+/// layout) the SVG's own size.
+pub fn svg_fit_dims((sw, sh): (f32, f32), pane: Option<(u32, u32)>, cap: u32) -> (u32, u32) {
+    let (sw, sh) = (sw.max(0.001), sh.max(0.001));
+    let (pw, ph) = pane.map_or((sw, sh), |(w, h)| (w as f32, h as f32));
+    let fit = (pw / sw).min(ph / sh);
+    let capped = fit.min(cap as f32 / sw.max(sh));
+    let side = |units: f32| ((units * capped).round() as u32).clamp(1, cap.max(1));
+    (side(sw), side(sh))
+}
+
+/// An SVG drawn to fill `pane` (`svg_fit_dims`) as RGBA8 bytes and their width and height, for the preview pane's
+/// picture. The tree is the window's one (`svg_tree`).
+pub fn rasterize_fit(bytes: &[u8], pane: Option<(u32, u32)>, cap: u32) -> Result<(Vec<u8>, u32, u32)> {
+    let tree = svg_tree(bytes)?;
+    let size = tree.size();
+    let (w, h) = svg_fit_dims((size.width(), size.height()), pane, cap);
+    let mut pixmap = Pixmap::new(w, h).ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {w}x{h}"))?;
+    let (sx, sy) = (w as f32 / size.width().max(0.001), h as f32 / size.height().max(0.001));
+    resvg::render(&tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+    Ok((pixmap.take(), w, h))
+}
+
+/// The preview pane's picture of an SVG file as a quad and its size, filtered Linear (a vector's edges want smoothing,
+/// not pixel blocks).
+pub fn quad_fit_from_svg_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &QuadPipeline,
+    bytes: &[u8],
+    pane: Option<(u32, u32)>,
+) -> Result<(Quad, u32, u32)> {
+    let (rgba, w, h) = rasterize_fit(bytes, pane, device.limits().max_texture_dimension_2d)?;
+    Ok((Quad::from_rgba8(device, queue, pipeline, &rgba, w, h)?, w, h))
+}
+
+/// The status line for an SVG the pane could not draw (its text is shown instead).
+pub fn svg_not_drawn(why: &anyhow::Error) -> String {
+    format!("svg not drawn: {}", format!("{why:#}").lines().next().unwrap_or_default())
+}
+
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
 /// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
 /// past both rules.

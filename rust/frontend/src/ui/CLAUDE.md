@@ -283,6 +283,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
   outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+  An SVG file (`image/svg+xml`, `is_svg_preview_mime`) is drawn by `State::install_svg_preview` into the same
+  `RasterView`: `rasterize_fit` (preview/image/svg.rs) draws it at the pane's size in physical pixels on its limiting
+  side, the SVG's aspect, no side past the texture limit (`svg_fit_dims`), filtered Linear, with no view carry. An SVG
+  is a figure node (`is_figure_node_id`: a drawing lies over it) but not an image node (`is_image_node_id`), so it has
+  no ROI, crop (`c` says an SVG cannot be cropped), scale bar or caption; the daemon cannot read it as an image, so a
+  drawing over it is refused on sharing as for any file it cannot decode. One that will not parse or draw is shown as
+  its text and the status line says `svg not drawn: <reason>`. Limits: a zoom past fit enlarges the raster's pixels (no
+  re-raster at zoom), a pane resized after the draw scales the picture until the preview is next rendered, and
+  `.svgz` is not served as `image/svg+xml` by the daemon (`mime_for_path`), so it is not drawn. Tests:
+  `an_svg_preview_routes_to_the_picture_path_not_the_raster_decoder_or_the_text`,
+  `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit`,
+  `an_svg_that_will_not_parse_says_why_for_the_status_line`, the native fixture
+  `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text`.
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint

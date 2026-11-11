@@ -208,7 +208,7 @@ impl InkLayer {
         if self.drawing.canvas && !editing && !refused {
             return Some(InkBase::Canvas);
         }
-        let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
+        let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_figure_node_id(n))?;
         Some(InkBase::Figure { node_id: node_id.to_string() })
     }
 

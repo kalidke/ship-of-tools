@@ -177,6 +177,12 @@ pub(in crate::ui) fn is_raster_preview_mime(mime: &str) -> bool {
     )
 }
 
+/// The mime of an SVG file, which the pane draws as a picture (`State::install_svg_preview`) and shows as its text
+/// when it will not draw.
+pub(in crate::ui) fn is_svg_preview_mime(mime: &str) -> bool {
+    mime == "image/svg+xml"
+}
+
 impl State {
     /// C2 pin-and-leave toggle. If a preview is pinned, `p` (from any row)
     /// UNPINS it and jumps the cursor to the formerly-pinned row, so the user
@@ -254,6 +260,17 @@ impl State {
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         self.shaped.clear_selection();
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        if is_svg_preview_mime(mime) {
+            match self.install_svg_preview(bytes) {
+                Ok(()) => return,
+                // The pane stays useful: the SVG's text is shown below, as any text file's, and the reason is said.
+                Err(why) => {
+                    tracing::warn!(error = %why, "svg preview not drawn");
+                    self.status.set(crate::ui::preview::image::svg::svg_not_drawn(&why));
+                    self.window.request_redraw();
+                }
+            }
+        }
         if is_raster_preview_mime(mime) {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
@@ -404,6 +421,26 @@ impl State {
                 "preview blob is not UTF-8 and not an image — skipping"
             );
         }
+    }
+
+    /// Draw an SVG file as the pane's picture: rasterized to fill the pane at its size in physical pixels (the texture
+    /// limit caps it) and installed in the same `RasterView` as a PNG, so zoom, pan and a drawing over it work as on a
+    /// raster. The view starts at fit with no carry (`reset_view(None)`): the carry keys on the ROI of an image node.
+    fn install_svg_preview(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let pane = match self.preview_fit_px() {
+            (Some(w), Some(h)) => Some((w, h)),
+            _ => None,
+        };
+        let (quad, w, h) = crate::ui::preview::image::svg::quad_fit_from_svg_bytes(
+            self.gpu.device(),
+            self.gpu.queue(),
+            self.brushes.pipeline(),
+            bytes,
+            pane,
+        )?;
+        self.raster.install(quad, (w, h), self.preview_source.node_id());
+        self.raster.reset_view(None);
+        Ok(())
     }
 
     /// Rebuild the refused-hello overlay buffer (ADR 0030 protocol mismatch, ADR 0049 account refusals) from

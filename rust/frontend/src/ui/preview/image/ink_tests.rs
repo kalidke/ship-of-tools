@@ -574,6 +574,9 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refu
     assert_eq!(shown(None, false, false), None);
     assert_eq!(shown(Some("files:doc.pdf"), false, false), None);
     assert_eq!(shown(Some("files:src/lib.jl"), false, false), None);
+    // an SVG file's picture is a base like a raster's
+    assert_eq!(shown(Some("files:a.svg"), false, false), Some(fig("a.svg")));
+    assert_eq!(shown(Some("files:a.svg"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), false, true), None);
 }
