@@ -54,7 +54,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `ENROLLING-A-HOST.md`: the procedure for enrolling a host behind the hub; staged into the manual by `make.jl`.
 - `INSTALL-AGENT.md`: the install runbook written for a coding agent.
-- `UPDATE-AGENT.md`: the update runbook written for a coding agent, the one update procedure the others point at.
+- `UPDATE-AGENT.md`: the update runbook written for a coding agent, the one update procedure the others point at; its
+  step 2 puts every daemon a window dials on the release's line before that window moves.
 - `defects.md`: the list of known defects and open items; its head states the form of an item and the check.
 - `Project.toml`: the docs environment (Documenter, DocumenterVitepress, and the two local packages by path).
 - `SCREENSHOTS.md`: how the docs media are regenerated.

@@ -6,7 +6,7 @@ that computer. If the tool that fetched this page gave you a summary, fetch it a
 commands below must be used exactly as written. If you have a skill named `sot-install`, or any other procedure for
 updating Ship of Tools, do not use it for this task: this page replaces it.
 
-Follow these steps in order. Where a step says to ask the person, ask and wait for the answer. Three rules hold
+Follow these steps in order. Where a step says to ask the person, ask and wait for the answer. Four rules hold
 throughout:
 
 - Never pick a version yourself.
@@ -14,6 +14,8 @@ throughout:
   shows "Restart the daemon? ... [y/N]", answer N and ask the person (step 4 says how a yes is given).
 - Never quit, end or kill a Ship of Tools window, its daemon or a row yourself. Ask the person. (Your own step 3 run is
   yours to stop, as step 3 says.)
+- Change only this computer. Step 2 reads what the daemons of other computers run, and that is all you do on them: an
+  agent on each computer updates it, with that person's yes.
 
 An agent running these steps inside a Ship of Tools row was run only on Linux, with stand-ins (step 2 says what).
 
@@ -65,24 +67,143 @@ If the file does not exist, this computer has no release record. Ask the person 
 - **Linux or macOS with no working build, or nothing installed at all:** this runbook does not cover it. A first install
   is `docs/INSTALL-AGENT.md`; follow it with the person.
 
-## 2. Ask before you run it
+## 2. Daemons before windows, then ask before you run it
 
-First see whether this computer is one of a group. Run `~/.local/share/sot/bin/sotd topology plan` (Windows:
-`& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan`). If it prints a `self <name>` line and a `hub <name>` line,
-this computer belongs to a group that shares rows and mail through that hub, and when the two names are the same, this
-computer is the hub; the plan's `dial <name>` lines name the other computers. If it prints an error or no `hub` line,
-there is no group (for a computer with no record, step 1 said). A computer on 0.6 and one on 0.7 carry no mail between
-them and do not show each other's rows, so the hub moves first and the others in the same sitting:
+A Ship of Tools window works only with a daemon that speaks its protocol, and it dials the daemon on this computer and
+the daemon on every other computer its group lists. Inside one release line the protocol holds (0.7.0 and the 0.7.1
+candidates speak the same one); between lines it does not. A 0.6 daemon and a 0.7 window refuse each other, in either
+direction, and the window then shows that computer as refused ("the backend there predates the link; update it", for a
+0.6 daemon reached over ssh) with none of its rows. (A 0.6.6 candidate before rc9.13 speaks a third protocol.) So
+daemons move before windows: a computer's window moves to a release only when every daemon it dials already runs that
+release's line, and the computer with the window goes last. Do this part first, before the question further down and
+before step 3 changes anything.
 
-- On the hub: tell the person the other computers of the group, by the names the `dial` lines give, need the same update
-  right after, and that until each moves, its window shows no rows or mail of the group.
-- On another computer of the group: ask whether the hub is updated already. If the person does not know, they may still
-  go on: this computer then shows no rows or mail of the group until the hub moves too.
+### Daemons before windows
+
+Read the newest release, the one step 3 installs. Its line is its first two numbers: `v0.7.0` is line 0.7.
+
+```bash
+curl -fsSLI -o /dev/null -w '%{url_effective}\n' https://github.com/kalidke/ship-of-tools/releases/latest
+```
+
+On Windows, from PowerShell (Git Bash takes the line above as written):
+
+```powershell
+curl.exe -fsSLI -o NUL -w '%{url_effective}' https://github.com/kalidke/ship-of-tools/releases/latest
+```
+
+It prints a URL ending in the tag, such as `.../releases/tag/v0.7.0`. If it prints anything else, tell the person you
+cannot reach GitHub and change nothing.
+
+Then read which daemons the group has and what each one runs. Both commands only read; `status` opens one short
+connection to each daemon the plan lists:
+
+```bash
+~/.local/share/sot/bin/sotd topology plan
+~/.local/share/sot/bin/sotd status
+```
+
+On Windows, from PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology plan
+& "$env:LOCALAPPDATA\sot\bin\sotd.exe" status
+```
+
+- `plan` says `no hosts.toml at`: there is no group file here, but the window can still dial one daemon on another
+  computer, the one an install made with `--backend <alias>` names. Look for its alias: the line `export SOT_HOST="..."`
+  in `~/.local/bin/sot-launch` (Linux and macOS) and the `"hub"` value of the record (any system, when it is not
+  empty).
+
+  ```bash
+  grep '^export SOT_HOST=' ~/.local/bin/sot-launch; grep '"hub"' ~/.local/share/sot/install.json
+  ```
+
+  With no alias, the only daemon this window uses is this computer's own, which the update moves (when the record says
+  `"daemon": false` and there is no alias, ask the person which computer holds the daemon, and stop): go on to "The one
+  question". With an alias, read its daemon the way `status` reads a group's, through the same ssh the window uses: put
+  the alias in place of `ALIAS` below, which writes a one-computer group file that only this command reads.
+
+  ```bash
+  d=$(mktemp -d) && printf 'hub = "ALIAS"\n[host.ALIAS]\ndaemon = true\n' > "$d/hosts.toml"
+  SOT_HOSTS="$d/hosts.toml" ~/.local/share/sot/bin/sotd status
+  ```
+
+  On Windows:
+
+  ```powershell
+  $f = Join-Path $env:TEMP 'sot-one-daemon.toml'
+  Set-Content -LiteralPath $f -Encoding ascii -Value 'hub = "ALIAS"', '[host.ALIAS]', 'daemon = true'
+  $env:SOT_HOSTS = $f; & "$env:LOCALAPPDATA\sot\bin\sotd.exe" status; Remove-Item Env:SOT_HOSTS
+  ```
+
+  Its table has one row, ALIAS: read it as below, and treat that daemon as the group's only one.
+- `plan` fails any other way (a bad `hosts.toml`, no `self` line): show the person its words and wait.
+- `plan` prints `self`, `hub` and `dial` lines: the group's daemons are the `status` table's rows whose DECLARED column
+  holds `daemon`, except the row named on the `self` line, whose daemon this update moves. For each of those rows read
+  the DAEMON column:
+
+| DAEMON column of the row | What that daemon runs |
+|---|---|
+| `<version> up (host: ...)` | that version |
+| `unreachable: ... protocol mismatch: backend <version> (protocol <n>) vs frontend ...` | that version: it answered and refused this computer's program, so it is on another line |
+| `unreachable: ... Usage: sotd stdio-bridge --label ...` | 0.6.6-rc1 to rc9.8: on a lower line than any release |
+| any other `unreachable: ...`, or `not dialable here` | unknown: it is down, or ssh to the hub fails, or this install is older than rc9.13, whose plan names `tcp:` addresses nothing listens on |
+
+A version is on the release's line when its first two numbers equal the release's (a pre-release of the line counts).
+Does this computer run a window? The record step 1 printed says: `"frontend": false` is a daemon only (installed with
+`--be-only`), with no window here; anything else (`"frontend": true`, a record with no such key, and every Windows
+computer) is a window.
+
+**A window here.** Decide by the rows:
+
+- **Every one is on the release's line.** The daemons are ready. Go on to "The group".
+- **One is on a lower line, or unknown.** Stop: do not run step 3, and nothing has changed on this computer. Tell the
+  person this, with the names and versions filled in, in these words:
+
+  ```text
+  Not updated. This computer's window uses the daemons on <A> (<version>) and <B> (<version>), which are older than
+  <release>, and a window on <release> cannot use them. Update <A> first, then <B>, then this computer: on each, tell an
+  agent "Update Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md
+  and follow it". Nothing was changed here.
+  ```
+
+  The order is the hub first (when it is not this computer), then the others in the table's order, then this computer.
+  If this computer already runs the release (step 1's version is on its line), begin the message "This computer is
+  already on <release>, but its window uses the daemons on ..." and end it after naming the computers: nothing is left
+  to do here once they are updated.
+  For an unknown daemon ask instead: "I could not read the version of the daemon on <C> (<the reason>). Does it
+  already run <release>?" Go on only if the person says it does; if they say no or do not know, give the message above
+  naming it.
+- **One is on a higher line than the release.** The release is the older side. Tell the person, and stop.
+
+If a computer the message names also shows `frontend` in its DECLARED column, its own window dials this computer's
+daemon, and the agent there will stop with the same message naming this computer: neither can go first. Then ask the
+person to keep the windows on both closed until both are updated, and to tell the agent on each that they agreed: only
+on that yes, update the daemon-only computers first and then these two, one at a time, and at step 5 do not ask for a
+window to start before every one of them is done.
+
+**No window here.** Nothing stops this update on account of a window. If this computer is not the hub, the hub should
+move first so that mail flows: when its row reads a lower line than the release, or cannot be read, ask "The hub <name> still runs
+<version>. Until it is updated, this computer shows no rows or mail of the group. Update the hub first?", and go on
+only if the person says to go on.
+
+### The group
+
+If `plan` printed a `self` line and a `hub` line, this computer belongs to a group that shares rows and mail through that
+hub, and when the two names are the same, this computer is the hub. A computer on 0.6 and one on 0.7 carry no mail
+between them and do not show each other's rows, so the group moves in one sitting.
+
+- When a window on another computer dials this computer's daemon (this computer is the hub or declares `daemon`): tell
+  the person the other computers of the group (the HOST column of the `status` table) need the same update right after,
+  and that until each moves, its window shows no rows or mail of this computer.
 - On a home shared by several computers, an update on one replaces the binaries for all of them, but each computer's
   daemon keeps the old one until it restarts: run the update on each computer anyway, one computer at a time. If
   another update is running on this home (its `~/sot-update.log` is still growing), wait for it to end.
 
-Then the one question. If the version from step 1 starts with `0.6`, ask it. Otherwise, on Linux or macOS, run:
+### The one question
+
+If the version from step 1 starts with `0.6`, ask it. Otherwise, on Linux or macOS, run:
 
 ```bash
 ~/.local/share/sot/bin/sotd same-version --endpoint "unix:$(~/.local/share/sot/bin/sotd session-socket-path sot)"
@@ -188,7 +309,7 @@ It ends with exactly one line.
 | `FAIL: target: ...` | This computer runs a build of the line (a `+` in its version), not a release. Nothing was changed. Ask the person what they want: a pack of the line, or the release the line names. Change nothing yourself. |
 | `FAIL: direction: ...` | This computer runs a newer pre-release than the newest release (for example 0.7.1-rc.3 against 0.7.0). Nothing was changed, and there is nothing to update. Tell the person. Only if they name a version to go back to, run step 3 with `--version <that tag>` (Windows: `-Version`), which pins the install. |
 | a `FAIL:` line ending `no such choice: ''` | The installer wanted to ask which role this computer has (nothing here records one), and had no one to ask. Ask the person: everything on this computer (`--local`), the window here and the daemon on a server they reach by ssh (`--backend <alias>`), or the daemon only (`--be-only`). Run step 3 again with that option. |
-| `FAIL: enroll: ...` | The hub's `hosts.toml` does not list this computer. Tell the person the line: the hub's owner runs the command it names on the hub; then run step 3 again. |
+| `FAIL: enroll: ...` | The hub's `hosts.toml` does not list this computer, or the hub has none ("could not read the hosts.toml on ..."; a `--backend` install from before 0.6.6-rc9.13 never had one). Tell the person the line: the hub's owner declares this computer on the hub, as the line says or by `docs/ENROLLING-A-HOST.md`, then you run step 3 again. Until then this computer's window opens with no hosts, whatever the versions; create nothing on the hub yourself. |
 | `FAIL: <anything else>` | Report the line to the person. If the run was cut short (a lost connection, an interrupt), run step 3 once more: a repeat repairs. |
 | `STOP: ...` or a `curl:` error | This computer could not reach GitHub, or could not fetch the installer. Nothing was changed. Tell the person, and run step 3 again once it can. |
 
@@ -203,5 +324,22 @@ step 4. Then:
 - After an update from 0.6, every row was started again with a new conversation, which begins by running
   `/sot-session-start`. Tell the person that `/resume` in a Claude row lists that row's earlier conversations and brings
   the one they pick back.
-- Ask the person to quit and start again every open Ship of Tools window, on every computer of the group. Never quit or
-  end a window yourself.
+- Check that the daemons this computer's window dials all answer on the new version (skip this when step 2 found no
+  window here, or no group). If step 4 gave you a `ONE STEP LEFT` for a daemon restart, wait until the person has done
+  it. Run `status` again, with the program step 3 installed:
+
+  ```bash
+  ~/.local/share/sot/bin/sotd status
+  ```
+
+  Windows:
+
+  ```powershell
+  & "$env:LOCALAPPDATA\sot\bin\sotd.exe" status
+  ```
+
+  Every row whose DECLARED column holds `daemon`, except this computer's own, must read `<version> up` with a version of
+  the new release's line. Anything else is a daemon the window cannot use: tell the person which computer and what its
+  row says, and that this computer's window should not be started until that computer is updated.
+- Ask the person to quit and start again every open Ship of Tools window, on every computer of the group, once the
+  daemons all answer. Never quit or end a window yourself.

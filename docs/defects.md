@@ -309,7 +309,7 @@ owned by `docs/CLAUDE.md`.
   0.6.6's scripts send protocol 3. Seen with the published 0.6.6 and 0.7.0 daemons through `comm/tests/interop-066.sh`
   part 2, in both pairings: the link drops every 30 s and a send answers `FAILED`, never `filed`; part 1 (one shared
   folder) passes. The contract said they carried mail both ways; it now says what holds, and the manual's updating
-  page and `docs/UPDATE-AGENT.md` say that linked computers move in one sitting, hub first. Fix still owed: delete
+  page and `docs/UPDATE-AGENT.md` say that linked computers move in one sitting, daemons before windows. Fix still owed: delete
   part 2 of the test (the gate that refuses is right and stays).
 - **WAKE-EATS-UNSENT-PROMPT** [person] A mail wake typed into a row whose prompt held a person's unsent line
   replaced that line, so the instruction never reached the session; seen again on the 0.6.6 daemon, where a typed answer
@@ -737,6 +737,24 @@ owned by `docs/CLAUDE.md`.
   ended `PASS`. Still in no gate, and not run: a row under a real systemd unit, a row on Windows or macOS, a window's
   lease, a Windows install older than rc9.14, a glibc 2.31 host, and `comm/tests/interop-066.sh`. Fix: a leg from the
   last 0.6.6 candidate, and part 1 of the interop script in the local gate while a 0.6 computer exists.
+- **UPDATE-ORDER-UNRUN** [note] `docs/UPDATE-AGENT.md` step 2 ("Daemons before windows") and the check in step 5 were run
+  in Linux test containers with a stand-in `ssh` and a stand-in service manager (several computers, each a scratch home
+  with its own host name), and their commands on hosted macOS and Windows runners against a 0.6.6 daemon on the same
+  computer, read by 0.6.6's and by 0.7.0's `sotd`. Not run: reading a far daemon through a real ssh login from macOS or
+  Windows, a window computer on a home several computers share, and a 0.6.6 install older than rc9.13, whose plan names
+  `tcp:` addresses nothing listens on, so every daemon reads as unknown and the runbook asks the person (run on Linux
+  with 0.6.6-rc1). The runbook never updates another computer: it stops and names the order.
+- **BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML** [session] A `--backend <alias>` laptop installed before 0.6.6-rc9.13 (the window
+  dials `SOT_HOST` through a tunnel) has no `hosts.toml`, and neither has its server. 0.7's installer on the laptop ends
+  `FAIL: enroll: could not read the hosts.toml on '<alias>'`, and the 0.7 window dials only the plan's hosts, so even with
+  both computers on 0.7 the window opens with no host until the server declares a group (`sotd topology set add ...` needs
+  a file to edit; `docs/ENROLLING-A-HOST.md`). Seen in test containers (0.6.6-rc1 pair, both orders, every rerun); the
+  runbook's `FAIL: enroll` row now says so and tells the agent to create nothing on the hub. Fix: the installer on the
+  server (or `sotd topology set add` on a hub with no file) writes the one-hub file, which is a design for review.
+- **UPDATE-OTHER-COMPUTERS-BY-SSH** [feature] When step 2 of the update runbook finds older daemons on other computers it
+  stops and names them, and an agent on each computer runs the same runbook. Updating them from the one run, over ssh
+  with each person's yes, is not built: it needs a proof per system (a Windows daemon over ssh has none) and ends the
+  agents running on those computers.
 - **INSTALLER-ASKS-A-ROWS-TERMINAL** [session] On Unix the installer asks "Restart the daemon? ... [y/N]" on `/dev/tty`
   (`rust/backend/src/install/daemon.rs`, `read_answer`; `SOT_INSTALL_TTY` names another file), which inside a Ship of
   Tools row is the row's terminal, not a person at a console. Seen in a test run: an agent in a 0.6.6 row ran the update
@@ -985,6 +1003,17 @@ owned by `docs/CLAUDE.md`.
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
 - **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
+- **UPDATE-WINDOW-BEFORE-ITS-DAEMONS** (distribution) closed by this records commit, 2026-11-11, seen by a person using
+  the runbook: it updated only the computer its agent ran on, so a window moved to 0.7.0 while the daemons it dials (the
+  hub and the group's other computers) still ran 0.6.6, and the window refused them ("the backend there predates the link; update it") with none
+  of their rows; step 2 told a person on a computer other than the hub that they "may still go on" when nobody knew
+  whether the hub had moved. Reproduced in Linux test containers (the old text left a window computer unable to use a
+  0.6.6 hub and server). Step 2 now reads the newest release and every daemon the window dials (`sotd topology plan`,
+  `sotd status`) before step 3, stops with nothing changed and names the computers to update first (the hub, the others,
+  then this one) when one is on another line or cannot be read, and step 5 reads them again before it asks for a window
+  to start. With no `hosts.toml` it reads the one daemon a `--backend` install names, through the same ssh, and a rerun of
+  the message from any state the old text left (window on 0.7 and daemon on 0.6, either computer; daemon on 0.7 and window
+  on 0.6; both on 0.7) ends in a usable pair or a repair that changes nothing. What was not run is UPDATE-ORDER-UNRUN.
 - **SVG-IMAGE-HREF-READS-LOCAL-FILES** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG draw: an `<image href>` in an SVG went to usvg's default resolver, which read any path that exists on the window's computer, so a FIFO hung the window's thread and a local PNG was drawn into the picture of a file served by a daemon; reachable through a markdown figure (known by reading). `svg_tree`'s resolver (`embedded_images_only`) now draws an image only from embedded `data:` data; a path or URL reads nothing.
 - **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
   contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the

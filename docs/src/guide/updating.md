@@ -101,9 +101,25 @@ it at the next launch, below.
   with `/resume`, it runs the same command again, which finishes the update and ends `PASS`. That was run once on Linux,
   in a test container with a stand-in for the service manager and a stand-in agent in a real 0.6.6 row, which has no row
   scope for the retire to end; a row on Windows or macOS has not been run.
-- A hub and the computers linked to it move in one sitting, hub first. A computer on 0.6 and one on 0.7 carry no mail
-  between them, and a window does not use a daemon on the other line: a 0.6 window against a 0.7 daemon says which side
-  speaks which protocol. Computers that share one comm folder keep their mail across the line.
+- Daemons move before windows. A window works only with a daemon of its own release line: a 0.7 window and a 0.6 daemon
+  refuse each other, in either direction, and the window shows that computer as refused (for a 0.6 daemon reached over
+  ssh, "the backend there predates the link; update it") with none of its rows; 0.7.0 and the 0.7.1 candidates work
+  together. So on a computer with a window the runbook reads the newest release and every daemon that window dials
+  before it changes anything: the daemons of a group (`sotd topology plan` and `sotd status`), or, with no `hosts.toml`,
+  the one daemon a `--backend` install names (the alias in `~/.local/bin/sot-launch` or the record's `hub`), read through
+  the same ssh the window uses. When one is on another line, or cannot be read, it stops with nothing changed and names
+  the computers to update first (the hub, then the others, then this one); it never updates another computer itself,
+  because an agent on each does that with that person's yes. After the update it reads the daemons again, and asks for
+  the windows to be started only when every one answers on the new line. A computer with no window is not held by this.
+  Two computers that each run a window and a daemon the other's window dials cannot both go first: the person keeps
+  both windows closed until both are updated.
+- The same message can be sent again from any state an earlier run left: a window computer already on 0.7 whose daemon
+  still runs 0.6 stops and names the daemon's computer (a repair there changes nothing); the daemon's computer updates
+  and ends `PASS`; a 0.7 daemon with a 0.6 window lets the window's computer update; both on 0.7 is a repair that changes
+  nothing. A `--backend` laptop with no `hosts.toml` on its hub still needs the hub to declare it before its window shows
+  any host (`docs/ENROLLING-A-HOST.md`); the runbook reports that `FAIL: enroll` and creates nothing on the hub.
+- A hub and the computers linked to it move in one sitting. A computer on 0.6 and one on 0.7 carry no mail between them.
+  Computers that share one comm folder keep their mail across the line.
 - The move is one way. A rollback to 0.6 restores the binaries, links, unit and record, not the agent comm and not the
   rows 0.7 already started again.
 
