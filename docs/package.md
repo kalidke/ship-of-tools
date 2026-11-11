@@ -228,8 +228,9 @@ strokes, undo, clear and the right-button erase), its raster, drawn over the fig
 mouse, keys and status lines, each row keeps its own drawing across a row switch, and a blank canvas (Shift+D) takes the
 pane over the preview without touching it; the daemon's hello says it takes a drawing, and the window's network side
 sends one only on a connection whose hello did; and the window shares the drawing with the row's agent and withdraws it,
-each reply on the status line, which builds the drawing for Claude rows; the done test through a window and Codex rows
-are unbuilt. Also in
+each reply on the status line, which builds the drawing for Claude rows; a person has used it through a window (on a
+picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate), and Codex rows and PDF pages are
+unbuilt. Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the

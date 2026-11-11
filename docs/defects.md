@@ -590,6 +590,10 @@ owned by `docs/CLAUDE.md`.
   preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
   so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
   the selection's page and text on the existing share. The maintainer asked whether it is listed (2026-11-10).
+- **DRAW-ON-PDF-PAGES** [feature] The person's drawing, shared with the agent, on a PDF page as on a picture. The
+  maintainer, 2026-11-11, after using the drawing on a picture, a blank canvas and a markdown file: "Would like to have
+  on pdfs as well, but not if it delays 71 significantly." A PDF page is not a drawing base today: the window would
+  take a shown page as one, keyed by its page, and the daemon would draw the ink over the page it renders.
 - **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
   mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line
   above a paragraph to the one below shares the paragraph), the preview pane's `maps_source` true in
