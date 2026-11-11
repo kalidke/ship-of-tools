@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 
 use chrono::FixedOffset;
-use cosmic_text::{Attrs, Buffer, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
-use sot_protocol::chat::{ChatRecord, Ts};
+use cosmic_text::{Align, Attrs, Buffer, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
+use sot_protocol::chat::{ChatAuthor, ChatRecord, Ts};
 
 use super::owner::ts_order;
-use super::project::{project, Kind, Span};
+use super::project::{clock, project, Kind, Span};
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
 use crate::ui::render::cells::CellQuad;
@@ -36,6 +36,31 @@ const BADGE_TOP: f32 = 0.2;
 const BADGE_HEIGHT: f32 = 0.6;
 /// The glyph flag `Attrs::metadata` carries on a badge's text, which the badge's rectangle is drawn behind.
 const BADGE: usize = 0x01;
+/// The gutter left of every record holds a group's tile and a marked continuation's time. These are in pixels at text
+/// scale 1: the gutter's width, the tile's side and its place in the gutter, and the time's size (of the body's 15) and its
+/// gap to the gutter's right edge.
+pub(super) const GUTTER_PX: f32 = 52.0;
+const TILE_PX: f32 = 34.0;
+const TILE_LEFT_PX: f32 = 8.0;
+const TILE_TOP_PX: f32 = 2.0;
+const STAMP_SIZE: f32 = 11.0;
+const STAMP_GAP_PX: f32 = 8.0;
+/// The tile colors, chosen by a hash of the author's id and name.
+pub(super) const TILES: [(u8, u8, u8); 8] =
+    [(0x2D, 0x9E, 0xE0), (0xE0, 0xA0, 0x2D), (0x3F, 0xA3, 0x6B), (0xC9, 0x50, 0x7B), (0x8A, 0x63, 0xD2), (0xD9, 0x69, 0x3B), (0x2F, 0xA8, 0xA8), (0x7A, 0x8B, 0x3A)];
+
+/// The author's tile: FNV-1a over the id and the name, so one author keeps one color from run to run.
+fn tile_color(a: &ChatAuthor) -> (u8, u8, u8) {
+    let hash = a.id.bytes().chain([0xff]).chain(a.name.bytes()).fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    TILES[(hash % TILES.len() as u64) as usize]
+}
+
+/// Where a record's text sits in `body`: right of the gutter. The buffers are shaped at its width, and the areas, the
+/// selection's lend, the press and the glyphs' places all start from it.
+fn text_rect(body: ScreenRect, scale: f32) -> ScreenRect {
+    let gutter = (GUTTER_PX * scale).min(body.w);
+    ScreenRect { x: body.x + gutter, w: body.w - gutter, ..body }
+}
 
 fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::rgb(r, g, b)
@@ -129,6 +154,8 @@ pub(in crate::ui) struct ChatHit(Option<((Ts, Key), Cursor)>);
 struct Shaped {
     buffer: Buffer,
     height: f32,
+    /// The lines before the body: 1 for a header, 0 for a continuation. Only lines from here on select or copy.
+    lead: usize,
     /// The record index it last served, for the eviction's distance.
     at: usize,
 }
@@ -141,8 +168,14 @@ pub(in crate::ui) struct ChatView {
     /// the frame that spends them, so a key before the first frame is kept and a resize or scale change does not matter.
     pending: (f32, f32),
     cache: HashMap<Key, Shaped>,
-    placed: Vec<(Key, f32, Ts)>,
+    /// The records that reach the body, in order: buffer key, top, time, and the group's tile color when it starts one.
+    placed: Vec<(Key, f32, Ts, Option<(u8, u8, u8)>)>,
     body: Option<ScreenRect>,
+    /// The text scale of the last layout.
+    scale: f32,
+    /// A marked continuation's time for the gutter: its text, the scale (bits) and its buffer, shaped again only when either
+    /// changes.
+    stamp: Option<(String, u32, Buffer)>,
     /// The oldest held record reaches the body: older history is wanted.
     pub(super) at_oldest: bool,
     /// The marked record (by its time), always a held record in view; `None` until a key marks.
@@ -158,13 +191,13 @@ pub(in crate::ui) struct ChatView {
 impl ChatView {
     /// Places the records in `body` and shapes those that reach it; the rest of the cache is trimmed.
     pub(in crate::ui) fn layout(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
-        let width = body.w.max(1.0);
+        let width = text_rect(body, scale).w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
         // The mark passes on like the anchor: to the nearest newer held record, or to none.
         let held_mark = self.mark.as_ref().map(|ts| find(records, ts)).filter(|i| *i < records.len());
         let mut height = |at: usize| {
-            let key = (project(records[at].0, now, offset, records[at].1), width.to_bits(), scale.to_bits());
+            let key = (project(records[at].0, at.checked_sub(1).map(|i| records[i].0), now, offset, records[at].1), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
@@ -183,8 +216,8 @@ impl ChatView {
         self.pending = (0.0, 0.0);
         let mut spots = place(count, body.h, from, &mut height);
         // The mark: keys move it, one at a time, and the view shows it (a record above the body has its top at the body's
-        // top, one below its bottom at the foot, one taller than the body its top). Then the mark is in view: its header
-        // row is inside the body, else it goes to the nearest record whose is; when none is, to the first placed
+        // top, one below its bottom at the foot, one taller than the body its top). Then the mark is in view: its first
+        // line is inside the body, else it goes to the nearest record whose is; when none is, to the first placed
         // record, which crosses the top and so covers all of the body but one line.
         let mut mark = held_mark;
         let keys = std::mem::take(&mut self.mark_keys);
@@ -215,8 +248,30 @@ impl ChatView {
         self.mark = mark.map(|i| records[i].0.ts.clone());
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
         self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
-        self.placed = spots.iter().map(|p| (used.remove(&p.index).expect("asked"), p.top, records[p.index].0.ts.clone())).collect();
+        self.placed = spots
+            .iter()
+            .map(|p| {
+                let key = used.remove(&p.index).expect("asked");
+                let tile = (cache[&key].lead > 0).then(|| tile_color(&records[p.index].0.author));
+                (key, p.top, records[p.index].0.ts.clone(), tile)
+            })
+            .collect();
+        // A marked continuation shows its time in the gutter.
+        let time = self.mark.as_ref().and_then(|ts| {
+            let (key, ..) = self.placed.iter().find(|p| &p.2 == ts)?;
+            if cache[key].lead > 0 { return None; }
+            clock(records[find(records, ts)].0.ts.as_str(), offset)
+        });
+        self.stamp = match (time, self.stamp.take()) {
+            (None, _) => None,
+            (Some(t), Some((old, bits, b))) if old == t && bits == scale.to_bits() => Some((old, bits, b)),
+            (Some(t), _) => {
+                let b = shape_stamp(fonts, &t, scale);
+                Some((t, scale.to_bits(), b))
+            }
+        };
         self.body = Some(body);
+        self.scale = scale;
         let centre = from.map_or(count, |f| f.0);
         let mut others: Vec<_> =
             self.cache.iter().filter(|(k, _)| !self.placed.iter().any(|(u, ..)| u == *k)).map(|(k, s)| (s.at.abs_diff(centre), k.clone())).collect();
@@ -229,7 +284,7 @@ impl ChatView {
         let live = self.selected.as_ref().is_none_or(|(ts, key)| {
             let i = find(records, ts);
             i < records.len() && records[i].0.ts == *ts && self.cache.contains_key(key)
-                && key.0 == project(records[i].0, now, offset, records[i].1) && key.1 == width.to_bits() && key.2 == scale.to_bits()
+                && key.0 == project(records[i].0, i.checked_sub(1).map(|j| records[j].0), now, offset, records[i].1) && key.1 == width.to_bits() && key.2 == scale.to_bits()
         });
         if !live {
             self.clear_selection();
@@ -239,9 +294,10 @@ impl ChatView {
     /// `shaped` as the selection lends it: placed at `top`, or nowhere (an empty rect) when it is not in the body.
     fn lend<'a>(&self, shaped: &'a Shaped, top: Option<f32>) -> FlowedText<'a> {
         let body = self.body.unwrap_or(ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        let text = text_rect(body, self.scale);
         let y = body.y + top.unwrap_or(-1e9);
         let (from, to) = (y.max(body.y), (y + shaped.height).min(body.y + body.h));
-        let rect = ScreenRect { x: body.x, y: from, w: body.w, h: (to - from).max(0.0) };
+        let rect = ScreenRect { x: text.x, y: from, w: text.w, h: (to - from).max(0.0) };
         FlowedText { buffer: &shaped.buffer, rect, origin_y: y, clip_bottom: to, reserved: None }
     }
 
@@ -251,13 +307,13 @@ impl ChatView {
         Some(self.lend(self.cache.get(key)?, self.placed.iter().find(|p| p.2 == *ts).map(|p| p.1)))
     }
 
-    /// A press in the body focuses the drawer; one on a body line (never a header or between records) also names the
+    /// A press in the body focuses the drawer; one on a body line (never a header, the gutter or between records) also names the
     /// record and position.
     pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
         let body = self.body?;
         (at.0 >= body.x && at.0 < body.x + body.w && at.1 >= body.y && at.1 < body.y + body.h).then_some(())?;
-        let line = self.placed.iter().find(|(k, top, _)| at.1 >= body.y + top && at.1 < body.y + top + self.cache[k].height).and_then(|(key, top, ts)| {
-            let cursor = FlowedSelection::hit(&self.lend(&self.cache[key], Some(*top)), at, true).filter(|c| c.line > 0)?;
+        let line = self.placed.iter().find(|(k, top, ..)| at.1 >= body.y + top && at.1 < body.y + top + self.cache[k].height).and_then(|(key, top, ts, _)| {
+            let cursor = FlowedSelection::hit(&self.lend(&self.cache[key], Some(*top)), at, true).filter(|c| c.line >= self.cache[key].lead)?;
             Some(((ts.clone(), key.clone()), cursor))
         });
         Some(ChatHit(line))
@@ -273,7 +329,8 @@ impl ChatView {
 
     /// The drag's end follows the pointer, clamped to the record's body.
     pub(in crate::ui) fn extend_drag(&mut self, at: (f32, f32)) -> bool {
-        let end = self.lent().and_then(|t| FlowedSelection::hit(&t, at, false)).map(|c| if c.line == 0 { Cursor::new(1, 0) } else { c });
+        let lead = self.selected.as_ref().and_then(|(_, key)| self.cache.get(key)).map_or(0, |s| s.lead);
+        let end = self.lent().and_then(|t| FlowedSelection::hit(&t, at, false)).map(|c| if c.line < lead { Cursor::new(lead, 0) } else { c });
         self.selection.extend_drag(end)
     }
 
@@ -291,11 +348,11 @@ impl ChatView {
         self.selection.text(&self.lent()?)
     }
 
-    /// The marked record's shown text: its buffer after the header line.
+    /// The marked record's shown text: its buffer after its lead (the header line, if it has one).
     pub(in crate::ui) fn marked_text(&self) -> Option<String> {
         let ts = self.mark.as_ref()?;
         let key = &self.placed.iter().find(|p| &p.2 == ts)?.0;
-        let text = self.cache[key].buffer.lines.iter().skip(1).map(|l| l.text()).collect::<Vec<_>>().join("\n");
+        let text = self.cache[key].buffer.lines.iter().skip(self.cache[key].lead).map(|l| l.text()).collect::<Vec<_>>().join("\n");
         (!text.is_empty()).then_some(text)
     }
 
@@ -341,23 +398,25 @@ impl ChatView {
         self.body = None;
     }
 
-    /// The placed records as areas clipped to the body.
+    /// The placed records as areas clipped to the body, and a marked continuation's time in its gutter.
     pub(super) fn areas(&self) -> Vec<ExtraArea<'_>> {
         let Some(body) = self.body else { return Vec::new() };
-        self.placed
-            .iter()
-            .map(|(key, top, _)| ExtraArea {
-                buffer: &self.cache[key].buffer,
-                x: body.x,
-                y: body.y + top - EXTRA_TOP_PAD_PX,
-                right: body.x + body.w,
-                bottom: body.y + body.h,
-                clip_left: Some(body.x),
-                clip_top: Some(body.y),
-                color: TEXT,
-                scroll_y_px: 0.0,
-            })
-            .collect()
+        let text = text_rect(body, self.scale);
+        let area = |buffer, x, top: f32, color| ExtraArea {
+            buffer,
+            x,
+            y: body.y + top - EXTRA_TOP_PAD_PX,
+            right: body.x + body.w,
+            bottom: body.y + body.h,
+            clip_left: Some(body.x),
+            clip_top: Some(body.y),
+            color,
+            scroll_y_px: 0.0,
+        };
+        let mut out: Vec<_> = self.placed.iter().map(|(key, top, ..)| area(&self.cache[key].buffer, text.x, *top, TEXT)).collect();
+        let marked = self.mark.as_ref().and_then(|ts| self.placed.iter().find(|p| &p.2 == ts));
+        out.extend(self.stamp.as_ref().zip(marked).map(|((_, _, buffer), p)| area(buffer, body.x, p.1, MUTED)));
+        out
     }
 
     /// The frame's rectangles in painting order: the background of the drawer's `inside` (the body and the compose foot),
@@ -372,15 +431,20 @@ impl ChatView {
             (right > left && bottom > top).then_some(CellQuad { x: left, y: top, w: right - left, h: bottom - top, color })
         };
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
-        for (key, top, ts) in &self.placed {
+        let text = text_rect(body, self.scale);
+        for (key, top, ts, tile) in &self.placed {
             let at = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: self.cache[key].height };
+            let scale = f32::from_bits(key.2);
             if self.mark.as_ref() == Some(ts) {
                 out.extend(quad(at, BAND));
-                out.extend(quad(ScreenRect { w: MARK_BAR_PX * f32::from_bits(key.2), ..at }, SKY));
+                out.extend(quad(ScreenRect { w: MARK_BAR_PX * scale, ..at }, SKY));
+            }
+            if let Some(color) = tile {
+                out.extend(quad(ScreenRect { x: body.x + TILE_LEFT_PX * scale, y: at.y + TILE_TOP_PX * scale, w: TILE_PX * scale, h: TILE_PX * scale }, *color));
             }
             // A badge's rectangle is its run of glyphs, which include its padding (`project`), so a wrapped line never cuts it.
             for (x, y, w, h) in flagged_runs(&self.cache[key].buffer, |m| m & BADGE != 0) {
-                out.extend(quad(ScreenRect { x: body.x + x, y: at.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
+                out.extend(quad(ScreenRect { x: text.x + x, y: at.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
             }
         }
         out.extend(self.selection_rects().into_iter().filter_map(|r| quad(r, SELECTION)));
@@ -391,10 +455,10 @@ impl ChatView {
     #[cfg(test)]
     pub(in crate::ui) fn point_at(&self, ts: &Ts, line: usize, byte: usize) -> Option<(f32, f32)> {
         let body = self.body?;
-        let (key, top, _) = self.placed.iter().find(|p| &p.2 == ts)?;
+        let (key, top, ..) = self.placed.iter().find(|p| &p.2 == ts)?;
         self.cache[key].buffer.layout_runs().filter(|r| r.line_i == line).find_map(|run| {
             let g = run.glyphs.iter().find(|g| g.start == byte)?;
-            Some((body.x + g.x + g.w * 0.15, body.y + top + run.line_top + run.line_height * 0.5))
+            Some((text_rect(body, self.scale).x + g.x + g.w * 0.15, body.y + top + run.line_top + run.line_height * 0.5))
         })
     }
 
@@ -412,7 +476,7 @@ impl ChatView {
     /// The placed records' tops, in placement order.
     #[cfg(test)]
     pub(super) fn placed_tops(&self) -> Vec<f32> {
-        self.placed.iter().map(|(_, top, _)| *top).collect()
+        self.placed.iter().map(|(_, top, ..)| *top).collect()
     }
 
     /// The placed records' buffers, in placement order.
@@ -445,5 +509,20 @@ fn shape(fonts: &mut FontSystem, spans: &[Span], width: f32, scale: f32) -> Shap
     set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), attrs(s.kind, scale))), default, Shaping::Advanced);
     buffer.shape_until_scroll(fonts, false);
     let height = buffer.layout_runs().map(|r| r.line_height).sum();
-    Shaped { buffer, height, at: 0 }
+    let lead = usize::from(spans.first().is_some_and(|s| s.kind == Kind::Name));
+    Shaped { buffer, height, lead, at: 0 }
+}
+
+/// A continuation's time, small and muted, right-aligned in the gutter.
+fn shape_stamp(fonts: &mut FontSystem, text: &str, scale: f32) -> Buffer {
+    let mut buffer = Buffer::new(fonts, Metrics::new(BODY_SIZE * scale, BODY_LINE_H * scale));
+    buffer.set_size(fonts, Some((GUTTER_PX - STAMP_GAP_PX) * scale), None);
+    let default = Attrs::new().family(Family::SansSerif);
+    let small = Metrics::new(BODY_SIZE * scale * STAMP_SIZE / 15.0, BODY_LINE_H * scale);
+    set_buffer_rich_text(&mut buffer, fonts, [(text, default.color(rgb(MUTED)).metrics(small))], default, Shaping::Advanced);
+    for line in buffer.lines.iter_mut() {
+        line.set_align(Some(Align::Right));
+    }
+    buffer.shape_until_scroll(fonts, false);
+    buffer
 }

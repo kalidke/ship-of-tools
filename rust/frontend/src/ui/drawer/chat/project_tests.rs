@@ -14,7 +14,7 @@ fn utc() -> chrono::FixedOffset {
 }
 
 fn spans(r: &ChatRecord) -> Vec<Span> {
-    project(r, NOW, utc(), false)
+    project(r, None, NOW, utc(), false)
 }
 
 fn body(r: &ChatRecord) -> Vec<(Kind, String)> {
@@ -55,7 +55,7 @@ fn is_header(kind: Kind) -> bool {
 }
 
 fn lines(r: &ChatRecord, now: i64, off: chrono::FixedOffset) -> String {
-    project(r, now, off, false).iter().map(|s| s.text.as_str()).collect()
+    project(r, None, now, off, false).iter().map(|s| s.text.as_str()).collect()
 }
 
 fn east(h: i32) -> chrono::FixedOffset {
@@ -118,7 +118,7 @@ fn file_names_tags_extreme_stamps_and_marks_are_exact() {
     assert_eq!(lines(&r, i64::MAX, east(14)), "Ada  9223372036854775807.000000\nx");
     let mut r = rec("x");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
-    let kinds: Vec<_> = project(&r, NOW, east(0), false).into_iter().map(|s| s.kind).collect();
+    let kinds: Vec<_> = project(&r, None, NOW, east(0), false).into_iter().map(|s| s.kind).collect();
     assert_eq!(kinds, [Kind::Name, Kind::Badge, Kind::Time, Kind::Body]);
 }
 
@@ -133,7 +133,7 @@ fn a_deleted_message_is_its_header_and_the_notice_alone() {
     r.omitted = true;
     r.latest_reply = Some(sot_protocol::chat::Ts::parse("1700000001.000000").unwrap());
     r.files = serde_json::from_value(serde_json::json!([{ "id": "F1", "name": "a.png", "mime": "image/png", "bytes": 10, "thumbnail": false }])).unwrap();
-    let shown: String = project(&r, NOW, utc(), true).iter().map(|s| s.text.as_str()).collect();
+    let shown: String = project(&r, None, NOW, utc(), true).iter().map(|s| s.text.as_str()).collect();
     assert_eq!(shown, "Ada  10:13 PM\n(message deleted)");
     let unreadable = lines(&r, NOW, utc());
     assert!(unreadable.contains("(this message could not be shown)") && !unreadable.contains("(message deleted)"), "{unreadable:?}");
@@ -152,4 +152,58 @@ fn a_time_is_twelve_hour_as_slack_shows_it() {
     assert_eq!(at(1_600_000_000, NOW, utc()), "Sep 13 2020 12:26 PM");
     // The fixed offset moves the day as well as the hour.
     assert_eq!(at(1_699_922_820, NOW, east(-1)), "Nov 13 11:47 PM");
+}
+
+/// `rec`'s record at `secs` seconds.
+fn at(secs: &str) -> ChatRecord {
+    let mut r = rec("x");
+    r.ts = sot_protocol::chat::Ts::parse(secs).unwrap();
+    r
+}
+
+/// A record continues its author's group within `GROUP_GAP` (300 s) on one local day, and in no other case.
+#[test]
+fn a_message_continues_its_authors_group_within_five_minutes_on_the_same_day() {
+    let first = at("1700000000.000000");
+    let after = |secs: &str| continues(&at(secs), Some(&first), utc());
+    assert!(after("1700000299.000000"), "299 s groups");
+    assert!(after("1700000299.900000"), "299.9 s groups");
+    assert!(!after("1700000300.000000"), "300 s does not");
+    assert!(!continues(&first, None, utc()), "no record before");
+    let next = at("1700000060.000000");
+    let mut other = next.clone();
+    other.author.name = "Eve".to_string();
+    assert!(!continues(&other, Some(&first), utc()), "another name with the same id");
+    let mut other = next.clone();
+    other.author.id = "U2".to_string();
+    assert!(!continues(&other, Some(&first), utc()), "another id with the same name");
+    let mut other = next.clone();
+    other.origin = serde_json::from_value(serde_json::json!("drawer")).unwrap();
+    assert!(!continues(&other, Some(&first), utc()), "another origin");
+    assert!(continues(&next, Some(&first), utc()));
+    // 23:58 and 00:01 UTC are two days; an hour west they are one.
+    let (late, early) = (at("1699919880.000000"), at("1699920060.000000"));
+    assert!(!continues(&early, Some(&late), utc()), "another local day");
+    assert!(continues(&early, Some(&late), east(-1)), "the same local day an hour west");
+    // A continuation has no header, a tombstone groups like any record, and no meta item starts with a blank line.
+    let kinds = |r: &ChatRecord, prev: Option<&ChatRecord>, deleted| project(r, prev, NOW, utc(), deleted).into_iter().map(|s| (s.kind, s.text)).collect::<Vec<_>>();
+    assert_eq!(kinds(&next, Some(&first), false), [(Kind::Body, "x".to_string())]);
+    assert_eq!(kinds(&next, Some(&first), true), [(Kind::Meta, "(message deleted)".to_string())]);
+    let mut counted = next.clone();
+    counted.text = String::new();
+    counted.reply_count = 2;
+    assert_eq!(kinds(&counted, Some(&first), false), [(Kind::Meta, "2 replies".to_string())]);
+    assert_eq!(kinds(&counted, None, false)[0].0, Kind::Name);
+    // The gutter's time is the clock alone.
+    assert_eq!(clock("1699967100.000000", utc()).as_deref(), Some("1:05"));
+}
+
+/// A continuation whose text is a header's words is body text only: no span has the name's, the time's or the badge's kind.
+#[test]
+fn a_body_that_imitates_a_header_draws_no_tile_and_no_time() {
+    let first = at("1700000000.000000");
+    let mut next = at("1700000060.000000");
+    next.text = "Ada  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nAda 12:00".to_string();
+    let spans = project(&next, Some(&first), NOW, utc(), false);
+    assert!(spans.iter().all(|s| s.kind == Kind::Body), "{spans:?}");
 }

@@ -28,20 +28,46 @@ pub(super) struct Span {
     pub text: String,
 }
 
-/// The header is `name badge time` and ends its line; the body follows, then each meta item on its own line. A deleted
-/// message (the owner knows it) is its header and `(message deleted)` alone.
-pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, deleted: bool) -> Vec<Span> {
+/// A record continues the one before it, and draws no header, when both have one author id, name and origin, fall on one
+/// local day and are less than `GROUP_GAP` apart. The gap is Slack's grouping rule as remembered: no published source states
+/// it (look plan, premise PA), so it is this one constant.
+const GROUP_GAP: f64 = 300.0;
+
+/// The stamp's seconds, with its fraction.
+fn seconds(ts: &str) -> Option<f64> {
+    ts.parse::<f64>().ok().filter(|s| s.is_finite() && *s >= 0.0 && *s < 1e15)
+}
+
+/// The local day of a stamp's seconds under `offset`.
+fn local_day(secs: f64, offset: FixedOffset) -> i64 {
+    (secs.floor() as i64 + i64::from(offset.local_minus_utc())).div_euclid(86_400)
+}
+
+/// Whether `r` continues `prev`'s group.
+pub(super) fn continues(r: &ChatRecord, prev: Option<&ChatRecord>, offset: FixedOffset) -> bool {
+    let Some(p) = prev else { return false };
+    let (Some(at), Some(before)) = (seconds(r.ts.as_str()), seconds(p.ts.as_str())) else { return false };
+    r.author == p.author && r.origin == p.origin && local_day(at, offset) == local_day(before, offset) && (at - before).abs() < GROUP_GAP
+}
+
+/// The header is `name badge time` and ends its line, unless `prev` (the record before it, if one is held) makes this a
+/// continuation, which has none; the body follows, then each meta item on its own line. A deleted message (the owner
+/// knows it) is its header, if any, and `(message deleted)` alone.
+pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offset: FixedOffset, deleted: bool) -> Vec<Span> {
     let span = |kind, text: String| Span { kind, text };
-    let mut out = vec![span(Kind::Name, format!("{}  ", header_text(&r.author.name)))];
-    let badge = match r.origin {
-        Origin::Drawer => Some("DRAWER"),
-        Origin::Row => Some("ROW"),
-        Origin::Bot => Some("APP"),
-        Origin::Member | Origin::Other => None,
-    };
-    out.extend(badge.map(|t| span(Kind::Badge, format!("{BADGE_PAD}{t}{BADGE_PAD}"))));
-    let gap = if badge.is_some() { "  " } else { "" };
-    out.push(span(Kind::Time, format!("{gap}{}\n", when(r.ts.as_str(), now, offset))));
+    let mut out = Vec::new();
+    if !continues(r, prev, offset) {
+        out.push(span(Kind::Name, format!("{}  ", header_text(&r.author.name))));
+        let badge = match r.origin {
+            Origin::Drawer => Some("DRAWER"),
+            Origin::Row => Some("ROW"),
+            Origin::Bot => Some("APP"),
+            Origin::Member | Origin::Other => None,
+        };
+        out.extend(badge.map(|t| span(Kind::Badge, format!("{BADGE_PAD}{t}{BADGE_PAD}"))));
+        let gap = if badge.is_some() { "  " } else { "" };
+        out.push(span(Kind::Time, format!("{gap}{}\n", when(r.ts.as_str(), now, offset))));
+    }
     if deleted {
         out.push(span(Kind::Meta, "(message deleted)".to_string()));
         return out;
@@ -76,8 +102,9 @@ pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, deleted: bo
     if r.omitted {
         meta.push("(this message could not be shown)".to_string());
     }
-    // A meta item starts with a line end unless the text before it already ended one (the header, or a body that did).
-    let lead = if out.last().is_some_and(|l| l.text.ends_with('\n')) { "" } else { "\n" };
+    // A meta item starts with a line end unless nothing is before it or the text before it already ended one (the header, or
+    // a body that did).
+    let lead = if out.last().is_none_or(|l| l.text.ends_with('\n')) { "" } else { "\n" };
     for (i, m) in meta.into_iter().enumerate() {
         out.push(span(Kind::Meta, format!("{}{m}", if i == 0 { lead } else { "\n" })));
     }
@@ -110,6 +137,12 @@ pub(super) fn when(ts: &str, now: i64, offset: FixedOffset) -> String {
         (Some(t), _) => t.format("%b %-d %Y %-I:%M %p").to_string(),
         _ => ts.to_string(),
     }
+}
+
+/// `h:mm` of a stamp under `offset`, for a marked continuation's place in the gutter; `None` for a stamp that is not a time.
+pub(super) fn clock(ts: &str, offset: FixedOffset) -> Option<String> {
+    let secs = ts.split_once('.')?.0.parse::<i64>().ok()?.checked_add(i64::from(offset.local_minus_utc()))?;
+    Some(DateTime::from_timestamp(secs, 0)?.naive_utc().format("%-I:%M").to_string())
 }
 
 fn size(n: u64) -> String {

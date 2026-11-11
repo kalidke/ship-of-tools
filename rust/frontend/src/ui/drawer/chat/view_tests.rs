@@ -15,9 +15,10 @@ use crate::ui::preview::markdown::BODY_LINE_H;
 use sot_protocol::ops::{ChatCode, ChatWatchRes, ChatWatchState};
 use std::time::{Duration, Instant};
 
+/// A record by its own author (the id follows the stamp), so records seconds apart each start a group.
 fn rec_at(ts: &str, text: &str) -> ChatRecord {
     serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "ts": ts, "thread_ts": ts,
-        "author": { "id": "U1", "name": "Ada" }, "origin": "member", "text": text, "reply_count": 0, "files": [] })).unwrap()
+        "author": { "id": format!("U{ts}"), "name": "Ada" }, "origin": "member", "text": text, "reply_count": 0, "files": [] })).unwrap()
 }
 
 fn rec(n: usize) -> ChatRecord {
@@ -95,7 +96,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(areas.iter().any(|a| a.y + EXTRA_TOP_PAD_PX < body.y), "one record crosses the top");
     // Scrolling through the history keeps up to 64 others, the nearest to the position: the last positions' records stay and
     // the first positions' are gone.
-    let spans = |i: usize| project(records[i], 1_700_000_000, offset, false);
+    let spans = |i: usize| project(records[i], i.checked_sub(1).map(|j| records[j]), 1_700_000_000, offset, false);
     for from in (0..=240).step_by(8) {
         view.anchor = Some((records[from].ts.clone(), 0.0));
         view.layout(&mut fonts, &plain(&records), body, 1.0, 1_700_000_000, offset);
@@ -116,7 +117,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
             assert_ne!(attrs(*a, 1.0), attrs(*b, 1.0), "{a:?} {b:?}");
         }
     }
-    let spans = project(&rec(1), 1_700_000_000, offset, false);
+    let spans = project(&rec(1), None, 1_700_000_000, offset, false);
     assert_eq!(spans[0].kind, Kind::Name);
 }
 
@@ -527,7 +528,7 @@ fn the_readers_anchor_reaches_the_owner_each_frame() {
     assert!(super::owner::ts_order(&second) < super::owner::ts_order(&first), "the owner follows the reader up: {first:?} then {second:?}");
 }
 
-/// The message mark: a held record, and in view (its header row inside the body).
+/// The message mark: a held record, and in view (its first line inside the body).
 #[test]
 fn the_mark_is_a_held_record_and_in_view() {
     let mut fonts = FontSystem::new();
@@ -675,9 +676,9 @@ fn lay_px(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], h: f
     view.placed_marks().iter().position(|m| *m).map(|i| view.placed_tops()[i])
 }
 
-/// "In view" is the header row inside the body: records of 44 px in a body of 100 px leave slivers at the top.
+/// "In view" is the first line inside the body: records of 44 px in a body of 100 px leave slivers at the top.
 #[test]
-fn the_marks_header_is_inside_the_body() {
+fn the_marks_first_line_is_inside_the_body() {
     let mut fonts = FontSystem::new();
     let mut held: Vec<ChatRecord> = (0..20).map(rec).collect();
     let mut view = ChatView::default();
@@ -990,7 +991,8 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
     for scale in [1.0_f32, 1.5] {
         for w in (90..=320).step_by(3) {
             let mut view = ChatView::default();
-            view.layout(&mut fonts, &plain(&records), ScreenRect { w: w as f32, ..body_of_drawer() }, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+            // `w` is the text's width, right of the gutter.
+            view.layout(&mut fonts, &plain(&records), ScreenRect { w: w as f32 + GUTTER_PX * scale, ..body_of_drawer() }, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
             for run in view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 0) {
                 assert!(near(run.line_height, BODY_LINE_H * scale), "width {w}, scale {scale}: a header line is {} tall", run.line_height);
             }
@@ -1087,7 +1089,7 @@ fn a_badge_keeps_its_rectangle_and_its_padding_where_a_wrap_cuts_the_header() {
     let (mut ends_a_line, mut starts_a_line) = (false, false);
     for scale in [1.0_f32, 1.5] {
         for w in (90..=320).step_by(3) {
-            let body = ScreenRect { w: w as f32, ..body_of_drawer() };
+            let body = ScreenRect { w: w as f32 + GUTTER_PX * scale, ..body_of_drawer() };
             let mut view = ChatView::default();
             view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
             let quads = view.backs(DRAWER);
@@ -1104,7 +1106,7 @@ fn a_badge_keeps_its_rectangle_and_its_padding_where_a_wrap_cuts_the_header() {
                 assert!((8..=10).contains(&g.len()), "width {w}: {} glyphs", g.len());
                 assert!(g[0].w + g[1].w >= 4.0 * scale, "width {w}: the left padding is {:?}", [g[0].w, g[1].w]);
                 let last = g[g.len() - 1];
-                assert!(drawn.iter().any(|q| near(q.x, body.x + g[0].x) && near(q.w, last.x + last.w - g[0].x)), "width {w}: no rectangle for the run at {}", g[0].x);
+                assert!(drawn.iter().any(|q| near(q.x, body.x + GUTTER_PX * scale + g[0].x) && near(q.w, last.x + last.w - g[0].x)), "width {w}: no rectangle for the run at {}", g[0].x);
                 ends_a_line |= run.glyphs.last().is_some_and(|l| l.metadata & flag != 0);
                 starts_a_line |= run.glyphs.first().is_some_and(|f| f.metadata & flag != 0);
             }
@@ -1163,4 +1165,111 @@ fn every_rect_is_inside_the_body_and_the_background_covers_the_drawer() {
     }
     view.hide();
     assert!(view.backs(DRAWER).is_empty());
+}
+
+/// `rec_by`'s record: Ada, a member, `secs` seconds after 22:15:00 UTC on the day of `NOW` (1700000100).
+fn by_ada(secs: i64, text: &str) -> ChatRecord {
+    rec_by(&format!("{}.000100", 1_700_000_100 + secs), "Ada", "member", text)
+}
+
+/// The press and the drag at buffer `(line, byte)` of `ts`, and what they select.
+fn selects(view: &mut ChatView, ts: &sot_protocol::chat::Ts, line: usize) -> Option<String> {
+    let hit = view.hit(view.point_at(ts, line, 0).unwrap());
+    view.press(hit);
+    view.extend_drag(view.point_at(ts, line, 4).unwrap());
+    view.release();
+    view.selected_text()
+}
+
+/// A continuation's first line is body and selects; a header never does, and nor does the gutter.
+#[test]
+fn a_continuations_first_line_selects_and_a_header_never_does() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha line"), by_ada(30, "gamma line")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    let buffers = view.placed_buffers();
+    assert_eq!((buffers[0].lines.len(), buffers[1].lines.len()), (2, 1), "a header and a body line, then a body line alone");
+    assert_eq!(selects(&mut view, &held[1].ts, 0).as_deref(), Some("gamm"));
+    // The header's glyphs select nothing; the body line below them does.
+    assert_eq!(selects(&mut view, &held[0].ts, 0), None);
+    assert_eq!(selects(&mut view, &held[0].ts, 1).as_deref(), Some("alph"));
+    // A press in the gutter beside a continuation selects nothing.
+    let (x, y) = (view.point_at(&held[1].ts, 0, 0).unwrap().0 - GUTTER_PX / 2.0, view.point_at(&held[1].ts, 0, 0).unwrap().1);
+    let hit = view.hit((x, y));
+    assert!(view.press(hit), "the press ended the old selection");
+    assert_eq!(view.selected_text(), None);
+    // A drag from a continuation up to its own first line stays on it; the text is placed right of the gutter.
+    assert!(view.areas().iter().all(|a| a.x >= body_of_drawer().x + GUTTER_PX - 0.01));
+}
+
+/// A marked continuation shows its time, `h:mm`, small and muted, right-aligned in the gutter; a marked header and an
+/// unmarked continuation show none, and the time follows the scale.
+#[test]
+fn the_marked_continuation_shows_its_time_in_the_gutter() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha"), by_ada(30, "gamma")];
+    let body = body_of_drawer();
+    for scale in [1.0_f32, 2.0] {
+        let records: Vec<&ChatRecord> = held.iter().collect();
+        let mut view = ChatView::default();
+        let mut lay = |view: &mut ChatView| view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        lay(&mut view);
+        assert_eq!(view.areas().len(), 2, "no mark, no time");
+        // With no mark a key marks the newest.
+        view.mark(false);
+        lay(&mut view);
+        let areas = view.areas();
+        assert_eq!((view.mark.as_ref(), areas.len()), (Some(&held[1].ts), 3));
+        let stamp = &areas[2];
+        let run = stamp.buffer.layout_runs().next().unwrap();
+        let text: String = run.text.to_string();
+        assert_eq!(text, "10:15", "22:15:30 under a zero offset");
+        let (first, last) = (run.glyphs.first().unwrap(), run.glyphs.last().unwrap());
+        assert!(near(first.font_size, 11.0 * scale) && first.color_opt == Some(cosmic_text::Color::rgb(0x9A, 0x9C, 0x9E)), "{} {:?}", first.font_size, first.color_opt);
+        assert!(near(stamp.x, body.x) && near(stamp.y + EXTRA_TOP_PAD_PX, body.y + view.placed_tops()[1]), "in the gutter at the record's first line");
+        let right = stamp.x + last.x + last.w;
+        assert!(right <= body.x + (GUTTER_PX - 4.0) * scale && right >= body.x + (GUTTER_PX - 12.0) * scale, "right-aligned near the gutter's edge: {right}");
+        // Moving the mark to the header takes the time away: a marked header shows none.
+        view.mark(true);
+        lay(&mut view);
+        assert_eq!((view.mark.as_ref(), view.areas().len()), (Some(&held[0].ts), 2));
+    }
+}
+
+/// The marked message's copy skips only the lead: a header's line, and nothing of a continuation.
+#[test]
+fn the_marked_text_skips_only_the_lead() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha\nbeta"), by_ada(30, "gamma\ndelta")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    view.mark(false);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.marked_text().as_deref(), Some("gamma\ndelta"), "a continuation has no lead");
+    view.mark(true);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.marked_text().as_deref(), Some("alpha\nbeta"), "a header's line is skipped");
+}
+
+/// A tile is one square in the gutter for each group's first record, colored from the author alone, and no text draws one.
+#[test]
+fn a_tile_starts_each_group_and_no_text_draws_one() {
+    let mut fonts = FontSystem::new();
+    let mut eve = rec_by("1700000200.000100", "Eve", "member", "own group");
+    eve.author.id = "U2".to_string();
+    let held = [by_ada(0, "first"), by_ada(30, "Ada  10:15 PM\nlooks like a header"), eve];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    let quads = view.backs(DRAWER);
+    let tiles: Vec<_> = quads.iter().filter(|q| TILES.contains(&q.color)).collect();
+    assert_eq!(tiles.len(), 2, "one a group: {tiles:?}");
+    let body = body_of_drawer();
+    for (t, top) in tiles.iter().zip([view.placed_tops()[0], view.placed_tops()[2]]) {
+        assert!(near(t.x, body.x + 8.0) && near(t.w, 34.0) && near(t.h, 34.0) && near(t.y, body.y + top + 2.0), "{t:?}");
+    }
+    // The same author keeps the color, and one that drew none of its own leaves none.
+    let mut again = ChatView::default();
+    lay_drawer(&mut again, &mut fonts, &held[..1]);
+    assert_eq!(again.backs(DRAWER).iter().find(|q| TILES.contains(&q.color)).map(|q| q.color), Some(tiles[0].color));
 }
