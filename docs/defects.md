@@ -304,6 +304,13 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **HUB-LINK-CROSS-LINE-MAIL** [session] A hub and a linked computer on 0.6.6 and on 0.7 carry no mail between them:
+  the link's hello passes the one protocol gate (`server/hello.rs` `protocol_gate`), 0.6.6 is 3 and 0.7 is 4, and
+  0.6.6's scripts send protocol 3. Seen with the published 0.6.6 and 0.7.0 daemons through `comm/tests/interop-066.sh`
+  part 2, in both pairings: the link drops every 30 s and a send answers `FAILED`, never `filed`; part 1 (one shared
+  folder) passes. The contract said they carried mail both ways; it now says what holds. Fix still owed: say in the
+  manual's updating page that linked computers move in one sitting, and delete part 2 of the test (the gate that
+  refuses is right and stays).
 - **WAKE-EATS-UNSENT-PROMPT** [person] A mail wake typed into a row whose prompt held a person's unsent line
   replaced that line, so the instruction never reached the session; seen again on the 0.6.6 daemon, where a typed answer
   to a permission question was gone. The wake promises a free prompt only. Main has a test that a row holding unsent
@@ -549,6 +556,10 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-net
 
+- **MISMATCH-ADVICE-IS-A-DEVELOPERS** [note] The protocol-mismatch overlay ends "dev: git pull + rebuild + relaunch"
+  (`net/transport/hello.rs`, `protocol_mismatch_message`). On an installed release the remedy is the installer on the
+  computer that is behind, and this is what every 0.6 window shows the day its hub moves to 0.7. Fix: one sentence that
+  names the side to update and how.
 - **REDIAL-LATE-ACCEPT** [note] A run accepted after a redial's hello, during a REPL start (up to about 15 s), is not
   named by that hello; the limit is recorded.
 - **SSH-MUX** [feature] One ssh connection per computer carrying every pane: a window on another box opens two
@@ -680,6 +691,25 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
+- **INSTALLER-NEWEST-TAKES-A-DRAFT** [note] `newest_release` (`scripts/install.sh`, `scripts/install.ps1`, and 0.6.6's
+  prelude) takes the first entry of GitHub's release list and sends `GITHUB_TOKEN` or `GH_TOKEN` when set. With push
+  access the list holds drafts, and its first entry is one: seen, the first entry was the draft `v0.7.1-rc.3`, where an
+  anonymous call gave `v0.7.0`, and a draft's files answer 404 by tag. So a no-argument update of a candidate install in
+  such a shell would end `FAIL: SHA256SUMS not found`, writing nothing (the end-to-end run was not made). It is also a
+  second rule for one concept: the updater takes the highest published version, the prelude the first listed, and
+  GitHub lists by creation. Fix: one owner; at the least the prelude skips drafts. Until then name the version.
+- **UPDATE-FROM-06-UNTESTED** [note] The release run's update legs start from `v0.6.6` (0.7.0's run, all three
+  platforms green) and from the release before, but none starts from a `0.6.6-rcN` candidate, from a computer with a
+  live daemon, unit or row, or installs on a glibc 2.31 host, and `comm/tests/interop-066.sh` is in no gate. Fix: a leg
+  from the last 0.6.6 candidate, and part 1 of the interop script in the local gate while a 0.6 computer exists.
+- **ROLLBACK-ACROSS-A-LINE** [note] The installer's rollback (`sot-apply.sh --rollback`) restores binaries, links, unit,
+  wrapper and record, not comm and not rows. From 0.7 back to 0.6.6 the comm wrappers call `sotd comm`, which 0.6.6
+  refuses, until the next launch; rows 0.7 retired stay ended, and 0.7 supervisors run on unseen by the 0.6.6 daemon,
+  so a start there could run a second agent in the folder. Fix: refuse a rollback across a protocol change, or say in
+  the manual that the move to 0.7 is one-way.
+- **UPDATER-LISTS-TWENTY** [note] The updater reads one page of 20 releases (`rust/updater/src/fetch/mod.rs`). A stable
+  install is offered nothing once 20 pre-releases are published after the newest stable; it holds today because
+  candidates stay drafts. Fix: read GitHub's latest release for the stable channel if candidates are ever published.
 - **INSTALL-OBSERVE-071** [note] For 0.7.1. The branch `pass/install-observe` holds the observation rebuild (`Fact<T>`, the
   Machine seam and fake-machine phase tables, the decision table, a verdict that drops no reason, every question bounded)
   and our four subcommands answering the installer as one JSON value of a shared serde type. Three blockers remain: the
@@ -904,6 +934,10 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
+  contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the
+  newest release and never passes through 0.7.0, so the deletion would leave a 0.6 terminal and its agent alive beside
+  a second agent; the contract now keeps it until the installer refuses an install over 0.6 below 0.7.0.
 - **CHAT-START-NOT-LOGGED** (chat) closed by the landing that fixes it, 2026-11-10: a chat start that succeeded logged only `the chat service is starting`; the daemon's boot now starts the chat's owner when the service runs and logs `the chat service is running` once.
 - **SLACK-REPLIES-CURSOR-DROPS** (chat) closed by the landing that fixes it, 2026-11-10, known from a live measurement: Slack's `conversations.replies` cursor under a lower bound (`oldest`) alone drops one reply at every page boundary and never returns it, and its last page can hold the parent only with `has_more: false`, so a walk by that cursor looks complete and is not; `Api::history` (`rust/chat/src/api.rs`) now refuses such a continuation as `bad_request`, unsent, so no caller can reach it (the form's first page, and a continuation under an upper bound or no bound, are sent as before), and delivery's reads use `Api::scan`, which never sends a cursor (rule in `rust/chat/CLAUDE.md`, guarantee 11).
 - **CHAT-NAME-ASKED-ONCE** (fe-ui) closed by the landing that fixes it, 2026-11-10: Enter in the Chat drawer with a draft and no `[chat] name` refused to post and sent the person to a hand edit of `settings.toml` and a restart; the drawer's foot now asks for the name once (`Name for your chat posts:`), checks it (`check_chat_name`), writes it durably into the settings file the window loaded, or the per-user one, and uses it at once, with the draft kept.

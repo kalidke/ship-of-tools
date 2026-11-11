@@ -114,8 +114,9 @@ Supervisor:
   guard. Limits: a supervisor whose death is not confirmed within `Watch::end`'s 5 s (a slow teardown, a listener lost
   for good) is left to the redial, whose failed dials establish no exit, so it reads `unreachable` or keeps its rest
   until it is selected; a row whose recipe cannot be built is logged and left as such.
-- A row a 0.6 release left is retired before it is started or ended (`spawn/retire_06.rs`, deleted in the release after
-  0.7.0). A 0.6 `stop` ends only the supervisor: its terminal (`sot-capsule run`) and the agent under it live on, so a
+- A row a 0.6 release left is retired before it is started or ended (`spawn/retire_06.rs`, kept until the installer
+  refuses an install over 0.6 below 0.7.0, since a 0.6 computer updates straight to the newest release and never passes
+  through 0.7.0). A 0.6 `stop` ends only the supervisor: its terminal (`sot-capsule run`) and the agent under it live on, so a
   start over such a folder would run a second agent beside the old one. The folder is known by its layout (an entry
   named `voyages`, `drawer.voyage`, `supervisor-journal` or `rollout-evidence.json`, or `drawer.voyage.` and more; a
   0.7 folder costs one directory read), and one function, called by the launch (`spawn_detached_supervisor`, before

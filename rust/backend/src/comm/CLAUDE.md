@@ -234,8 +234,10 @@ The registry:
 The install (0.7.0):
 - The formats do not change: the inbox line, the cursor, the registry and its fields, the registry lock's record, the
   inbox lock and `inbox-lock-manager`, the self file and `comm.file` on the wire are what 0.6.6 reads and writes. So a
-  session on the 0.6.6 scripts and one on `sotd comm` share one comm folder and send to each other, and a hub and a
-  linked box on the two versions carry mail both ways. While the install publishes the new files (seconds), an old
+  session on the 0.6.6 scripts and one on `sotd comm` share one comm folder and send to each other. A hub and a linked
+  box on the two versions carry no mail between them: the link's hello is refused for its protocol (0.6.6 is 3, 0.7 is
+  4), and a send across it answers `FAILED`, never `filed` (docs/defects.md: HUB-LINK-CROSS-LINE-MAIL), so linked
+  computers move to 0.7 in one sitting. While the install publishes the new files (seconds), an old
   script that loads the new library, or the reverse, can fail; it prints `FAILED` or an error, never `filed`.
 
 Owns: the comm folder (`~/.sot-comm`, or `$SOT_COMM_HOME`): `inbox/`, `read/`, `self/`, `chat/` (the chat listener's lock folder, 0700, made by `home::chat_dir`; one lock per comm folder), `registry.json` with its lock
