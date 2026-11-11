@@ -4,7 +4,7 @@ The project chat's policy. This stage holds normalization (Slack's raw message J
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
 listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23), and has no delivery. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
+bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and has no delivery. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -297,7 +297,13 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    one (unwatched, watched again, begun again) is `Stale` and changes nothing. The socket's gap is cleared
    (`reconcile(&service)`) only when every watch that exists is `Complete`, hence resynced from a
    snapshot begun after that gap was read, and the socket refuses it when anything was lost since; with nothing watched
-   it clears at once. The set is the watches today, and B3's mail joins it. One total order on timestamps
+   it clears at once. A delivering channel (`deliver`, which refuses an invalid id as `watch`
+   does) is no watch and never keeps the gap. Every `New` record of one taken from the socket, root or reply, any
+   origin, is handed back by the `pump` or `begin` that took it (`Arrived`, `#[must_use]`), once for each time the socket
+   gives it, in take order (not `ts` order), with the highest gap number seen, which only rises; the model keeps no
+   handover, so none outgrows one take (the socket's own 256 events), and a stopped service hands nothing over because
+   `Service::take` returns nothing once a stop has begun. The set's 32 is the configuration's refusal alone
+   (`TooManyDelivering`); the model holds a set of ids and enforces no bound. One total order on timestamps
    (`normalize::ts_key`, also `Bounds`'): numeric on the validated form, so `9.000000` precedes `10.000000` and
    `007.000000` is `7.000000`, one message. Bounds: 32 channels, 100 messages a channel (the oldest leave), 128 overlay
    changes, a channel id of at most 64 characters; the worst case is 32 x (100 + 128) x 32 KiB, about 228 MiB. Limits:

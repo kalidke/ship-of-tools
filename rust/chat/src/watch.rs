@@ -3,7 +3,7 @@
 //! reads the socket and the API and tells it what happened. Registration (`watch`) precedes the snapshot (`begin`);
 //! while a snapshot is pending, live changes go into a bounded overlay applied after it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +64,14 @@ pub enum Loaded {
     Stale,
 }
 
+/// What one take of the socket gave the delivering channels, with the gap number the model knew.
+pub struct Arrived {
+    /// Every new record taken, root or reply, any origin, in take order (not `ts` order).
+    pub records: Vec<ChatRecord>,
+    /// The highest gap number seen; it only rises, and `reconcile` clearing the gap does not lower it.
+    pub gap: u64,
+}
+
 enum Change {
     Put { record: ChatRecord, edited: bool },
     Delete(Key),
@@ -122,16 +130,19 @@ pub struct Watches {
     seen: u64,
     tickets: u64,
     channels: HashMap<String, Channel>,
+    /// Channels whose every new record is handed over, apart from `channels`: none is a watch, so none keeps
+    /// `reconcile` from clearing the gap.
+    delivering: HashSet<String>,
 }
 
 impl Watches {
     pub(crate) fn claimed(claim: Arc<AtomicU8>) -> Watches {
-        Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+        Watches { claim: Some(claim), gap: None, seen: 0, tickets: 0, channels: HashMap::new(), delivering: HashSet::new() }
     }
 
     #[cfg(test)]
     pub(crate) fn new() -> Watches {
-        Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new() }
+        Watches { claim: None, gap: None, seen: 0, tickets: 0, channels: HashMap::new(), delivering: HashSet::new() }
     }
 
     pub(crate) fn claims(&self, claim: &Arc<AtomicU8>) -> bool {
@@ -150,6 +161,17 @@ impl Watches {
             let ch = Channel { phase: Phase::Needed, messages: BTreeMap::new() };
             self.channels.insert(channel.into(), ch);
         }
+        Ok(())
+    }
+
+    /// Hand over every new record of a channel from here on, through the `Arrived` of each `pump` and `begin`. Its
+    /// bound (`MAX_CHANNELS`) is the configuration's refusal alone (`config::MAX_DELIVERING`); an id that is no
+    /// channel's is refused as `watch` does. The channel is no watch: it never keeps `reconcile` from clearing the gap.
+    pub fn deliver(&mut self, channel: &str) -> Result<(), WatchError> {
+        if !valid_id(channel) {
+            return Err(WatchError::Invalid);
+        }
+        self.delivering.insert(channel.into());
         Ok(())
     }
 
@@ -196,19 +218,24 @@ impl Watches {
     /// Begin a channel's snapshot, after the channel was registered. The service's pending events and gap are taken
     /// here and applied before the channel goes pending, so an event queued before the snapshot never wins over it and
     /// no order is left to the caller. The ticket goes back with the answer; `None` when the channel is
-    /// unwatched or its snapshot is already pending or done (the events are applied either way).
-    pub fn begin(&mut self, channel: &str, service: &Service) -> Option<u64> {
+    /// unwatched or its snapshot is already pending or done (the events are applied either way). The delivering
+    /// channels' new records among the events come back in the same call, so the handover never outgrows one take.
+    #[must_use]
+    pub fn begin(&mut self, channel: &str, service: &Service) -> (Option<u64>, Arrived) {
         if self.ended() {
-            return None;
+            return (None, Arrived { records: Vec::new(), gap: self.seen });
         }
-        self.begin_taken(channel, service.take(self))
+        let arrived = self.apply_taken(service.take(self));
+        (self.start(channel), arrived)
     }
 
     /// The events pending in the socket, applied and the gap synced: what a caller does whenever `wait` says look,
     /// a snapshot pending or not. The take happens under this exclusive borrow, so no caller holds a taken event across a lock or an await while another
-    /// applies newer ones.
-    pub fn pump(&mut self, service: &Service) {
-        self.apply_taken(service.take(self));
+    /// applies newer ones. The delivering channels' new records among them are handed back, each once, in take order
+    /// (not `ts` order); a stopped service takes nothing, so hands nothing over.
+    #[must_use]
+    pub fn pump(&mut self, service: &Service) -> Arrived {
+        self.apply_taken(service.take(self))
     }
 
     /// Wait at most `within` for something to take: an event queued or a gap latched, or anything still queued.
@@ -228,15 +255,28 @@ impl Watches {
         }
     }
 
-    pub(crate) fn apply_taken(&mut self, taken: Taken) {
+    pub(crate) fn apply_taken(&mut self, taken: Taken) -> Arrived {
         self.sync(taken.gap);
+        let mut records = Vec::new();
         for event in &taken.events {
+            // Before `apply`'s top-level filter: a reply, a broadcast and a row's post are handed over too.
+            if let Normalized::New(r) = event {
+                if self.delivering.contains(&r.channel) {
+                    records.push(r.clone());
+                }
+            }
             self.apply(event);
         }
+        Arrived { records, gap: self.seen }
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_taken(&mut self, channel: &str, taken: Taken) -> Option<u64> {
-        self.apply_taken(taken);
+        let _ = self.apply_taken(taken);
+        self.start(channel)
+    }
+
+    fn start(&mut self, channel: &str) -> Option<u64> {
         let read = self.gap;
         let c = self.channels.get_mut(channel).filter(|c| matches!(c.phase, Phase::Needed))?;
         self.tickets += 1;

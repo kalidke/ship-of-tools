@@ -307,7 +307,8 @@ impl Own {
                     Wake::Stopped => break,
                     Wake::Look => {
                         let service = self.service.clone();
-                        self.step(&mut watches, None, |w| w.pump(&service));
+                        // No channel delivers until B3i2: the handover is empty, and dropped here.
+                        let _ = self.step(&mut watches, None, |w| w.pump(&service));
                     }
                     Wake::Idle => {}
                 },
@@ -361,7 +362,8 @@ impl Own {
                 continue;
             }
             let service = self.service.clone();
-            let Some(ticket) = self.step(watches, None, |w| w.begin(&channel, &service)) else { continue };
+            // No channel delivers until B3i2: the handover is empty, and dropped here.
+            let (Some(ticket), _) = self.step(watches, None, |w| w.begin(&channel, &service)) else { continue };
             let targets: Vec<(u64, ChatTarget)> = lock(&self.hub.table).slots.iter().filter(|(_, t)| t.channel.as_str() == channel).cloned().collect();
             let (chat, rows, done) = (self.chat.clone(), self.rows.clone(), done.clone());
             let key = Arc::as_ptr(&self.hub) as usize;

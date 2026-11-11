@@ -12,7 +12,7 @@ use crate::normalize::{ts_key, Normalized};
 use crate::service::Service;
 use crate::socket::{Gap, GapCause, Taken};
 use crate::watch::{
-    Loaded, State, Wake, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
+    Arrived, Loaded, State, Wake, WatchError, Watches, MAX_CHANNELS, MAX_KEPT, MAX_OVERLAY,
 };
 
 const C: &str = "C0AAAA";
@@ -389,7 +389,7 @@ impl World {
     async fn step(&mut self, op: Op) {
         match op {
             Op::Begin => {
-                self.ticket = self.w.begin(C, &self.service);
+                self.ticket = self.w.begin(C, &self.service).0;
                 settle(&mut self.w, &self.service).await;
             }
             Op::Fetch => self.page = Some(self.text.clone()),
@@ -400,7 +400,7 @@ impl World {
                 }
             }
             Op::Pump => {
-                self.w.pump(&self.service);
+                let _ = self.w.pump(&self.service);
                 settle(&mut self.w, &self.service).await;
             }
             Op::Reconcile => {
@@ -466,9 +466,9 @@ async fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_
                 service.lose(GapCause::Reconnect);
                 let mut w = service.watches().unwrap();
                 w.watch(C).unwrap();
-                w.pump(&service);
+                let _ = w.pump(&service);
                 if held_at_start {
-                    let t = w.begin(C, &service).unwrap();
+                    let t = w.begin(C, &service).0.unwrap();
                     w.loaded(C, t, vec![rec("1.000000", "v0")], &service);
                     assert!(w.reconcile(&service));
                 }
@@ -493,7 +493,7 @@ async fn no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_
                 }
                 // The pump runs once more only when the wake says look: a quiet channel is never healed by luck.
                 if settle(&mut m.w, &m.service).await {
-                    m.w.pump(&m.service);
+                    let _ = m.w.pump(&m.service);
                 }
                 if m.w.state(C) == Some(State::Complete) {
                     assert_eq!(m.held(), Some(m.text.clone()), "complete and stale: {what}");
@@ -509,18 +509,18 @@ async fn pump_and_begin_apply_the_services_events_in_the_call_that_takes_them() 
     let service = Service::inert(test_api());
     let mut w = service.watches().unwrap();
     w.watch(C).unwrap();
-    let t = w.begin(C, &service).unwrap();
+    let t = w.begin(C, &service).0.unwrap();
     assert_eq!(w.loaded(C, t, vec![rec("1.000000", "a")], &service), Loaded::Complete);
     // A queued edit reaches the model through `pump`, and leaves the socket.
     service.feed(edited("1.000000", "pumped"));
-    w.pump(&service);
+    let _ = w.pump(&service);
     assert_eq!(texts(&w, C), ["pumped"], "pump dropped the service's events");
-    w.pump(&service);
+    let _ = w.pump(&service);
     assert_eq!(texts(&w, C), ["pumped"]);
     // And through `begin` of another channel.
     w.watch(other).unwrap();
     service.feed(edited("1.000000", "begun"));
-    assert!(w.begin(other, &service).is_some());
+    assert!(w.begin(other, &service).0.is_some());
     assert_eq!(texts(&w, C), ["begun"], "begin dropped the service's events");
 }
 
@@ -531,26 +531,26 @@ async fn a_service_has_one_watches_and_no_other_reads_its_events() {
     let mut first = service.watches().expect("the first");
     assert!(service.watches().is_none(), "a second Watches for one service");
     first.watch(C).unwrap();
-    let t = first.begin(C, &service).unwrap();
+    let t = first.begin(C, &service).0.unwrap();
     first.loaded(C, t, vec![rec("1.000000", "a")], &service);
     // A Watches of another service takes nothing from this one.
     let elsewhere = Service::inert(api);
     let mut stranger = elsewhere.watches().unwrap();
     service.feed(edited("1.000000", "edit"));
-    stranger.pump(&service);
-    first.pump(&service);
+    let _ = stranger.pump(&service);
+    let _ = first.pump(&service);
     assert_eq!(texts(&first, C), ["edit"], "a Watches of another service took the events");
     // Nor is another service's gap its to read or clear.
     service.lose(GapCause::Reconnect);
     stranger.watch(C).unwrap();
-    let ticket = stranger.begin(C, &elsewhere).unwrap();
+    let ticket = stranger.begin(C, &elsewhere).0.unwrap();
     assert_eq!(stranger.loaded(C, ticket, Vec::new(), &service), Loaded::Stale, "a stranger answered with another service's gap");
     assert_eq!(stranger.state(C), Some(State::Pending));
     // Gap numbers are process-wide, so a number of its own service's is not this service's.
     let other = Service::inert(test_api());
     other.lose(GapCause::Reconnect);
     let mut empty = other.watches().unwrap();
-    empty.pump(&other);
+    let _ = empty.pump(&other);
     assert!(!empty.reconcile(&service), "a stranger cleared another service's gap");
     assert!(service.gap().is_some());
     // The claim goes with the Watches.
@@ -580,4 +580,65 @@ fn many_threads_asking_at_once_get_one_watches() {
         assert_eq!(got.load(std::sync::atomic::Ordering::SeqCst), 1, "not exactly one Watches");
         held.lock().unwrap().clear();
     }
+}
+
+fn texts_of(a: &Arrived) -> Vec<String> {
+    a.records.iter().map(|r| r.text.clone()).collect()
+}
+
+#[tokio::test]
+async fn every_new_message_of_a_delivering_channel_is_handed_over_once_in_order() {
+    let other = "C0BBBB";
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.deliver(C).unwrap();
+    let mut reply = rec_in(C, "5.000000", "2.000000", "reply");
+    reply.origin = Origin::Member;
+    let mut broadcast = rec_in(C, "4.000000", "2.000000", "broadcast");
+    broadcast.origin = Origin::Bot;
+    let mut row = rec("3.000000", "row");
+    row.origin = Origin::Row;
+    // Take order is not ts order, and an edit, a delete and another channel's message are not handed over.
+    service.feed(new("9.000000", "late"));
+    service.feed(Normalized::New(reply));
+    service.feed(edited("9.000000", "edit"));
+    service.feed(Normalized::New(rec_in(other, "6.000000", "6.000000", "elsewhere")));
+    service.feed(deleted("9.000000"));
+    service.feed(Normalized::New(broadcast));
+    service.feed(Normalized::New(row));
+    assert_eq!(texts_of(&w.pump(&service)), ["late", "reply", "broadcast", "row"], "pump's handover");
+    assert!(w.pump(&service).records.is_empty(), "a record handed over twice");
+    // Through `begin` too; a channel only watched is no delivering channel, and a delivering one is no watch.
+    w.watch(other).unwrap();
+    service.feed(Normalized::New(rec_in(other, "11.000000", "11.000000", "watched only")));
+    service.feed(new("10.000000", "begun"));
+    let (ticket, arrived) = w.begin(other, &service);
+    assert!(ticket.is_some());
+    assert_eq!(texts_of(&arrived), ["begun"], "begin's handover");
+    assert_eq!(w.state(C), None, "a delivering channel became a watch");
+}
+
+#[tokio::test]
+async fn a_delivering_channel_holds_no_part_of_the_gap() {
+    let service = Service::inert(test_api());
+    let mut w = service.watches().unwrap();
+    w.deliver("C0BBBB").unwrap();
+    w.watch(C).unwrap();
+    service.lose(GapCause::Reconnect);
+    let first = w.pump(&service).gap;
+    assert!(first > 0, "the gap number was not read");
+    let (t, _) = w.begin(C, &service);
+    assert_eq!(w.loaded(C, t.unwrap(), Vec::new(), &service), Loaded::Complete);
+    assert!(w.reconcile(&service), "a delivering channel kept the gap");
+    assert_eq!(w.pump(&service).gap, first, "clearing the gap lowered the number");
+    service.lose(GapCause::Reconnect);
+    assert!(w.pump(&service).gap > first, "the gap number did not rise");
+}
+
+#[test]
+fn a_delivering_channel_is_a_channel_id() {
+    let mut w = Watches::new();
+    assert_eq!(w.deliver("not a channel"), Err(WatchError::Invalid));
+    assert_eq!(w.deliver(""), Err(WatchError::Invalid));
+    assert_eq!(w.deliver(C), Ok(()));
 }
