@@ -148,3 +148,78 @@ fn svg_text_after_a_paragraph_separator_is_drawn() {
     let got: Vec<(&str, usize)> = cases.iter().map(|&text| (text, drawn(text))).collect();
     assert_eq!(got, cases.map(|text| (text, whole)));
 }
+
+const SVG_NS: &str = r#"xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink""#;
+
+/// `f` on a thread with the stack of the Linux main thread, where the window parses: a parser that recurses once per
+/// element overflows it on the inputs below.
+fn on_a_main_sized_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new().stack_size(8 << 20).spawn(f).expect("spawn").join().expect("the parse panicked")
+}
+
+fn nested(open: &str, close: &str, depth: usize) -> String {
+    format!("<svg {SVG_NS} width=\"10\" height=\"10\">{}{}</svg>", open.repeat(depth), close.repeat(depth))
+}
+
+/// A document nested past usvg's own limit is refused before roxmltree recurses into it: 20000 levels, written so a
+/// scanner that counts `/>` inside an attribute value as a close sees none, through an entity
+/// that holds markup, and through one that follows a `]>` inside an `<!ELEMENT` or a processing instruction (roxmltree
+/// does not end the DOCTYPE there), each end in an error or a refusal and never in a stack overflow. Each runs in a child
+/// process, where the unguarded parse aborts the process (a red is the child's abort, which fails
+/// this test, not the binary).
+#[test]
+fn a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it() {
+    if !sot_platform::test_isolated::run_isolated("ui::preview::image::svg::tests::a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it") {
+        return;
+    }
+    let plain = nested("<g>", "</g>", 20_000);
+    let quoted = nested(r#"<g a="/>">"#, "</g>", 20_000);
+    let entity = format!(
+        r#"<!DOCTYPE svg [<!ENTITY a "{}{}">]><svg {SVG_NS} width="10" height="10">&a;</svg>"#,
+        "<g>".repeat(100),
+        "</g>".repeat(100)
+    );
+    let deep_entity = |decl: &str| {
+        format!(
+            r#"<!DOCTYPE svg [{decl}<!ENTITY a "{}{}">]><svg {SVG_NS} width="10" height="10">&a;</svg>"#,
+            "<g>".repeat(20_000),
+            "</g>".repeat(20_000)
+        )
+    };
+    let (element, pi) = (deep_entity("<!ELEMENT x ]>"), deep_entity("<?x ]>?>"));
+    for (name, svg) in [("plain", plain), ("quoted", quoted), ("entity", entity), ("element", element), ("pi", pi)] {
+        let got = on_a_main_sized_stack(move || svg_tree(svg.as_bytes()).map(|_| ()).map_err(|why| format!("{why:#}")));
+        match (name, got) {
+            (_, Err(why)) => assert!(why.contains("nested") || why.contains("DOCTYPE"), "{name}: {why}"),
+            (_, Ok(())) => panic!("{name}: parsed"),
+        }
+    }
+}
+
+/// The limit is usvg's: 1024 elements deep (the root among them) is taken, 1025 refused.
+#[test]
+fn the_nesting_limit_is_pinned_at_1024() {
+    assert!(check_xml_shape(nested("<g>", "</g>", 1023).as_bytes()).is_ok());
+    let why = format!("{:#}", check_xml_shape(nested("<g>", "</g>", 1024).as_bytes()).expect_err("1025 deep"));
+    assert!(why.contains("nested deeper than 1024"), "{why}");
+}
+
+/// A nesting an editor can write still draws, and one past the limit is refused with its reason.
+#[test]
+fn nesting_within_the_limit_draws_and_past_it_is_refused() {
+    let ok = on_a_main_sized_stack(|| svg_tree(nested("<g>", "</g>", 500).as_bytes()).map(|_| ()).map_err(|why| format!("{why:#}")));
+    assert_eq!(ok, Ok(()));
+    let deep = nested("<g>", "</g>", 1100);
+    let why = on_a_main_sized_stack(move || svg_tree(deep.as_bytes()).err().map(|why| format!("{why:#}")).unwrap_or_default());
+    assert!(why.contains("nested deeper than 1024"), "{why}");
+    // An Illustrator-style DOCTYPE entity of a URL is no markup and parses; comments, CDATA and a PI hold no element.
+    let doc = format!(
+        r#"<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [<!ENTITY ns "http://ns.adobe.com/Extensibility/1.0/">]><!-- <g><g> --><svg {SVG_NS} width="10" height="10"><![CDATA[<g><g>]]><g a="x>y"/></svg>"#
+    );
+    svg_tree(doc.as_bytes()).expect("a plain document parses");
+    // The other shapes a DOCTYPE takes: no external ID, either quote, spaces before the close.
+    for doctype in [r#"<!DOCTYPE svg>"#, r#"<!DOCTYPE svg SYSTEM "a.dtd">"#, "<!DOCTYPE svg [ <!ENTITY a 'b' > <!-- c --> ]  >"] {
+        svg_tree(format!(r#"{doctype}<svg {SVG_NS} width="10" height="10"/>"#).as_bytes()).unwrap_or_else(|why| panic!("{doctype}: {why:#}"));
+    }
+}
+

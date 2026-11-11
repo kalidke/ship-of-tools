@@ -105,9 +105,9 @@ pub fn quad_from_svg_bytes(
     Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
 }
 
-/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
-/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
-/// past both rules.
+/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
+/// separator (`one_paragraph_svg`) and an XML shape the parser cannot be crashed by (`check_xml_shape`). An `.svgz`
+/// (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself, past all of it.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
@@ -128,9 +128,121 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     } else {
         bytes
     };
+    let bytes = one_paragraph_svg(bytes);
+    check_xml_shape(&bytes)?;
     #[allow(clippy::disallowed_methods, reason = "text into the shaper: an SVG's one way into usvg, through one_paragraph_svg")]
-    let tree = Tree::from_data(&one_paragraph_svg(bytes), &opts);
+    let tree = Tree::from_data(&bytes, &opts);
     tree.context("svg parse failed")
+}
+
+/// usvg's own bound on element nesting, which it checks only after roxmltree has parsed the document, and roxmltree
+/// recurses once per element: a 20000-deep file aborts the process first. A scan before the parse loses nothing drawable.
+const SVG_MAX_DEPTH: usize = 1024;
+
+/// Refuses XML nested deeper than `SVG_MAX_DEPTH` elements, or whose DOCTYPE is more than roxmltree reads in one:
+/// `skip_doctype`. One pass over the bytes, no recursion: a tag ends at the `>` outside its quoted attribute values, and
+/// comments, CDATA, processing instructions and the DOCTYPE are skipped whole. A document it passes may still be
+/// malformed; the parser says so.
+fn check_xml_shape(xml: &[u8]) -> Result<()> {
+    let (mut at, mut depth) = (0, 0usize);
+    while let Some(lt) = xml[at..].iter().position(|&b| b == b'<') {
+        at += lt;
+        let rest = &xml[at..];
+        if rest.starts_with(b"<!--") {
+            at += 4 + find(&rest[4..], b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            at += 9 + find(&rest[9..], b"]]>");
+        } else if rest.starts_with(b"<?") {
+            at += 2 + find(&rest[2..], b"?>");
+        } else if rest.starts_with(b"<!DOCTYPE") {
+            at += skip_doctype(rest)?;
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            at += 2 + find(&rest[2..], b">") - 1;
+        } else {
+            let (mut quote, mut i) = (0u8, 1);
+            while i < rest.len() {
+                match (quote, rest[i]) {
+                    (0, q @ (b'"' | b'\'')) => quote = q,
+                    (q, b) if q != 0 && b == q => quote = 0,
+                    (0, b'>') => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if i > 1 && rest[i - 1] != b'/' {
+                depth += 1;
+                anyhow::ensure!(depth <= SVG_MAX_DEPTH, "svg is nested deeper than {SVG_MAX_DEPTH} elements");
+            }
+            at += i + 1;
+        }
+        if at >= xml.len() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// How far past `needle`'s end it first occurs in `from`, else `from`'s length.
+fn find(from: &[u8], needle: &[u8]) -> usize {
+    from.windows(needle.len()).position(|w| w == needle).map_or(from.len(), |at| at + needle.len())
+}
+
+/// The length of the DOCTYPE at the start of `x`, read as roxmltree reads it (tokenizer.rs `parse_doctype`), and refused
+/// where it reads anything else: it ends an `<!ELEMENT`, `<!ATTLIST` or `<!NOTATION` at the first `>` and a processing
+/// instruction at `?>`, so a scan that models those loosely leaves the DOCTYPE early and takes the next `<!ENTITY` for
+/// an element. Taken: the external ID, then comments and `<!ENTITY name "value">` (either quote) whose value holds no
+/// `<`, since roxmltree expands a value as content, then `]` and `>`.
+fn skip_doctype(x: &[u8]) -> Result<usize> {
+    let bad = || anyhow::anyhow!("svg has a DOCTYPE this reader does not take");
+    let space = |i: usize| matches!(x.get(i), Some(b' ' | b'\t' | b'\n' | b'\r'));
+    let skip = |mut i: usize| { while space(i) { i += 1; } i };
+    let need = |i: usize| if space(i) { Ok(skip(i)) } else { Err(bad()) };
+    let name = |i: usize| {
+        let n = x[i..].iter().take_while(|b| b.is_ascii_alphanumeric() || b"_-.:".contains(b)).count();
+        if n > 0 { Ok(i + n) } else { Err(bad()) }
+    };
+    // A quoted literal at `i`: its quote, and the index just past its closing quote.
+    let quoted = |i: usize| match x.get(i) {
+        Some(&q @ (b'"' | b'\'')) => x[i + 1..].iter().position(|&b| b == q).map(|n| (q, i + n + 2)).ok_or_else(bad),
+        _ => Err(bad()),
+    };
+    let mut i = name(need(9)?)?;
+    i = skip(i);
+    for keyword in [&b"SYSTEM"[..], b"PUBLIC"] {
+        if x[i..].starts_with(keyword) {
+            i = quoted(need(i + 6)?)?.1;
+            if keyword == b"PUBLIC" {
+                i = quoted(need(i)?)?.1;
+            }
+            break;
+        }
+    }
+    i = skip(i);
+    match x.get(i) {
+        Some(b'>') => return Ok(i + 1),
+        Some(b'[') => i += 1,
+        _ => return Err(bad()),
+    }
+    loop {
+        i = skip(i);
+        if x[i..].starts_with(b"<!ENTITY") {
+            i = name(need(i + 8)?)?;
+            let (_, end) = quoted(need(i)?)?;
+            anyhow::ensure!(!x[i..end].contains(&b'<'), "svg has a DOCTYPE entity that holds markup");
+            i = skip(end);
+            anyhow::ensure!(x.get(i) == Some(&b'>'), bad());
+            i += 1;
+        } else if x[i..].starts_with(b"<!--") {
+            i += 4 + find(&x[i + 4..], b"-->");
+        } else if x.get(i) == Some(&b']') {
+            i = skip(i + 1);
+            anyhow::ensure!(x.get(i) == Some(&b'>'), bad());
+            return Ok(i + 1);
+        } else {
+            return Err(bad());
+        }
+    }
 }
 
 /// An `.svgz`'s SVG, unpacked on the window's thread to at most `cap` bytes: the product passes `PREVIEW_BINARY_CAP`,
