@@ -23,7 +23,7 @@ bad() { say "FAILED: $*"; ok=0; }
 mkdir -p "$HOME/.config/sot" "$HOME/.local/bin" "$HOME/neutral"
 printf '# synthetic probe policy\nprobe-denied-publication\n' > "$HOME/.config/sot/publish-list.txt"
 printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/claude"; chmod +x "$HOME/.local/bin/claude"
-for f in daemons-1.sh daemons-2.sh step5-1.sh; do say "$f sha256: $(shasum -a 256 "$P/$f" | cut -c1-16)"; done
+for f in daemons-1.sh daemons-2.sh daemons-3.sh daemons-4.sh step5-1.sh; do say "$f sha256: $(shasum -a 256 "$P/$f" | cut -c1-16)"; done
 curl -fsSL -o "$OUT/start-install.sh" "https://raw.githubusercontent.com/$REPO/v0.6.6/scripts/install.sh" || exit 2
 case "$(uname -s)" in Darwin) ROLE="--local"; ASSET="sot-0.7.0-macos-aarch64.tar.gz" ;; *) ROLE="--local --no-service"; ASSET="sot-0.7.0-linux-x86_64.tar.gz" ;; esac
 # shellcheck disable=SC2086
@@ -55,5 +55,13 @@ say "0.7.0's sotd: $("$b" --version 2>&1 | head -1)"
 grep -Eq '^probehub hub,daemon unreachable: .*protocol mismatch: backend 0\.6\.6 \(protocol 3\) vs frontend 0\.7\.0 \(protocol 4\)' "$OUT/status070.out" || bad "0.7.0 does not read the 0.6.6 daemon as a mismatch naming 0.6.6"
 # step 5's block (the same status)
 ( cd "$HOME" && bash "$P/step5-1.sh" ) > "$OUT/step5.out" 2>&1; say "--- step 5's status"; cat "$OUT/step5.out" | tee -a "$S"
+# no group file: the window's one daemon on another computer, named by an alias (the --backend case). No ssh answers here, so
+# its row must read unreachable (unknown), and the blocks must run as written.
+unset SOT_HOSTS
+( cd "$HOME" && bash "$P/daemons-2.sh" ) > "$OUT/nohosts.out" 2>&1; say "--- step 2 with no hosts.toml"; cat "$OUT/nohosts.out" | tee -a "$S"
+grep -q 'no hosts.toml at' "$OUT/nohosts.out" || bad "plan does not say no hosts.toml"
+( cd "$HOME" && bash "$P/daemons-3.sh" ) > "$OUT/alias-grep.out" 2>&1; say "--- the alias lookup (a --local install names none): exit $?, $(wc -c < "$OUT/alias-grep.out" | tr -d ' ') bytes"
+( cd "$HOME" && sed 's/ALIAS/probealias/g' "$P/daemons-4.sh" | bash ) > "$OUT/alias-status.out" 2>&1; say "--- status through a one-computer group file"; cat "$OUT/alias-status.out" | tee -a "$S"
+grep -Eq '^probealias hub,daemon unreachable: ssh:probealias' "$OUT/alias-status.out" || bad "the alias row does not read unreachable over ssh"
 kill "$(cat "$OUT/daemon.pid")" 2>/dev/null
 if [ "$ok" = 1 ]; then say "RESULT PASS"; exit 0; else say "RESULT FAIL"; exit 1; fi

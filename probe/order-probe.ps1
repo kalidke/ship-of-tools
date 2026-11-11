@@ -18,7 +18,7 @@ function Bad([string]$t) { Say "FAILED: $t"; $script:ok = $false }
 foreach ($n in @('GITHUB_TOKEN', 'GH_TOKEN', 'SOT_INSTALL_TAG', 'SOT_INSTALL_IMPLICIT')) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
 [IO.File]::WriteAllText((Join-Path $prefix 'config\publish-list.txt'), "# synthetic probe policy`nprobe-denied-publication`n")
 $probeDir = Join-Path $env:GITHUB_WORKSPACE 'probe'
-foreach ($f in @('daemons-1.ps1', 'daemons-2.ps1', 'step5-1.ps1', 'daemons-1.sh')) { Say "$f sha256: $((Get-FileHash -LiteralPath (Join-Path $probeDir $f) -Algorithm SHA256).Hash.Substring(0, 16).ToLower())" }
+foreach ($f in @('daemons-1.ps1', 'daemons-2.ps1', 'daemons-3.ps1', 'step5-1.ps1', 'daemons-1.sh')) { Say "$f sha256: $((Get-FileHash -LiteralPath (Join-Path $probeDir $f) -Algorithm SHA256).Hash.Substring(0, 16).ToLower())" }
 $bash = 'C:\Program Files\Git\bin\bash.exe'
 $sotd = Join-Path $prefix 'bin\sotd.exe'
 
@@ -75,6 +75,20 @@ if (-not ($s070 | Where-Object { $_ -match '^probehub hub,daemon unreachable: .*
 Say '--- step 5 status (PowerShell block)'
 Push-Location -LiteralPath $neutral
 try { @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $probeDir 'step5-1.ps1') 2>&1 | ForEach-Object { "$_" }) | ForEach-Object { Say $_ } } finally { Pop-Location }
+# no group file: the window's one daemon on another computer, named by an alias (a -Hub install records it). No ssh answers
+# here, so its row must read unreachable (unknown), and the blocks must run as written.
+Remove-Item Env:SOT_HOSTS -ErrorAction SilentlyContinue
+Push-Location -LiteralPath $neutral
+try {
+    $nh = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $probeDir 'daemons-2.ps1') 2>&1 | ForEach-Object { "$_" })
+    Say '--- step 2 with no hosts.toml'; $nh | ForEach-Object { Say $_ }
+    if (-not ($nh | Where-Object { $_ -match 'no hosts.toml at' })) { Bad 'plan does not say no hosts.toml' }
+    $alias = Join-Path $out 'daemons-3-probealias.ps1'
+    [IO.File]::WriteAllText($alias, ((Get-Content -Raw -LiteralPath (Join-Path $probeDir 'daemons-3.ps1')) -replace 'ALIAS', 'probealias'))
+    $as = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $alias 2>&1 | ForEach-Object { "$_" })
+    Say '--- status through a one-computer group file'; $as | ForEach-Object { Say $_ }
+    if (-not ($as | Where-Object { $_ -match '^probealias hub,daemon unreachable: ssh:probealias' })) { Bad 'the alias row does not read unreachable over ssh' }
+} finally { Pop-Location }
 cmd /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ld`" -Stop > `"$out\daemon-stop.out`" 2>&1 < NUL"
 Say "RESULT $(if ($script:ok) { 'PASS' } else { 'FAIL' })"
 if ($script:ok) { exit 0 } else { exit 1 }
