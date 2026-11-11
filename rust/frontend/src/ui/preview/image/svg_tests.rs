@@ -336,3 +336,79 @@ fn a_panic_on_the_svg_thread_is_an_error() {
     let why = on_svg_stack::<()>(|| panic!("boom")).expect_err("a panic");
     assert!(format!("{why:#}").contains("panicked"), "{why:#}");
 }
+/// A chain of `n` links of `kind` (`clip-path`, `mask` or a `pattern` fill), each link its own element at depth 3, and
+/// a rectangle that starts it.
+fn chain(kind: &str, n: usize) -> String {
+    let link = |k: usize| if k + 1 < n { format!(r#" {}="url(#c{})""#, if kind == "pattern" { "fill" } else { kind }, k + 1) } else { String::new() };
+    let body: String = (0..n)
+        .map(|k| match kind {
+            "clip-path" => format!(r#"<clipPath id="c{k}"><rect width="1" height="1"{}/></clipPath>"#, link(k)),
+            "mask" => format!(r#"<mask id="c{k}"><rect width="1" height="1" fill="white"{}/></mask>"#, link(k)),
+            _ => format!(r#"<pattern id="c{k}" width="1" height="1" patternUnits="userSpaceOnUse"><rect width="1" height="1"{}/></pattern>"#, link(k)),
+        })
+        .collect();
+    let start = if kind == "pattern" { r#"fill="url(#c0)""#.to_string() } else { format!(r#"{kind}="url(#c0)""#) };
+    format!(r#"<svg {SVG_NS} width="10" height="10"><defs>{body}</defs><rect width="10" height="10" {start}/></svg>"#)
+}
+
+/// The recursion cost of `svg`, or the refusal.
+fn cost_of(svg: &str) -> Result<()> {
+    on_svg_stack(|| {
+        let doc = roxmltree::Document::parse_with_options(svg, ParsingOptions { allow_dtd: true, ..ParsingOptions::default() })?;
+        check_reference_cost(&doc)
+    })
+}
+
+/// A chain of references nests the converter and the renderer with no XML nesting, so 20000 links of `clip-path`, of
+/// `mask` and of a `pattern` fill are refused, each in a child process where the unbounded draw aborts it (as the
+/// nesting test does), and a short chain still draws.
+#[test]
+fn a_long_chain_of_references_is_refused_and_a_short_one_draws() {
+    if !sot_platform::test_isolated::run_isolated("ui::preview::image::svg::tests::a_long_chain_of_references_is_refused_and_a_short_one_draws") {
+        return;
+    }
+    for kind in ["clip-path", "mask", "pattern"] {
+        let long = chain(kind, 20_000);
+        let why = format!("{:#}", on_svg_stack(|| svg_tree(long.as_bytes()).map(|_| ())).expect_err(kind));
+        assert!(why.contains("nests") && why.contains("past 4096"), "{kind}: {why}");
+        let short = chain(kind, 10);
+        on_svg_stack(|| svg_tree(short.as_bytes()).map(|_| ())).unwrap_or_else(|why| panic!("{kind}: {why:#}"));
+    }
+}
+
+/// The bound is pinned where the cost model puts it: a link costs the depth of the element that holds it below its
+/// owner plus `REF_COST`, so a `clip-path` link (its rectangle one below the `clipPath`) costs 5, the chain 5n + 2, and
+/// 4096 units are 818 links.
+#[test]
+fn the_reference_bound_is_pinned_at_4096_units() {
+    assert!(cost_of(&chain("clip-path", 818)).is_ok());
+    let why = format!("{:#}", cost_of(&chain("clip-path", 819)).expect_err("819 links"));
+    assert!(why.contains("past 4096"), "{why}");
+    // Nesting alone costs a unit a level, up to usvg's 1024.
+    assert!(cost_of(&nested("<g>", "</g>", 1023)).is_ok());
+}
+
+/// What a real file holds draws: a cycle of references (usvg breaks it), a stylesheet whose classes fill with 200
+/// gradients, and `<use>` of one symbol 3000 times, each costing its depth and no more; a stylesheet that chains
+/// 3000 clip paths does not.
+#[test]
+fn cycles_stylesheets_and_many_uses_are_not_taken_for_deep_chains() {
+    let cycle = format!(
+        r##"<svg {SVG_NS} width="10" height="10"><defs><clipPath id="a"><rect width="1" height="1" clip-path="url(#b)"/></clipPath><clipPath id="b"><rect width="1" height="1" clip-path="url(#a)"/></clipPath></defs><rect width="10" height="10" clip-path="url(#a)"/></svg>"##
+    );
+    on_svg_stack(|| svg_tree(cycle.as_bytes()).map(|_| ())).expect("a cycle of clip paths");
+    let gradients: String = (0..200).map(|k| format!(r##"<linearGradient id="g{k}"><stop offset="0"/></linearGradient>"##)).collect();
+    let classes: String = (0..200).map(|k| format!(".s{k}{{fill:url(#g{k})}}")).collect();
+    let rects: String = (0..200).map(|k| format!(r#"<rect class="s{k}" width="1" height="1"/>"#)).collect();
+    let sheet = format!(r#"<svg {SVG_NS} width="10" height="10"><style>{classes}</style><defs>{gradients}</defs>{rects}</svg>"#);
+    cost_of(&sheet).expect("a stylesheet of gradients");
+    // The same through `clip-path` classes is a chain a stylesheet can build, and is refused.
+    let clips: String = (0..3000).map(|k| format!(r#"<clipPath id="c{k}" class="s{k}"><rect width="1" height="1"/></clipPath>"#)).collect();
+    let rules: String = (0..3000).map(|k| format!(".s{k}{{clip-path:url(#c{})}}", k + 1)).collect();
+    let chained = format!(r#"<svg {SVG_NS} width="10" height="10"><style>{rules}</style><defs>{clips}</defs></svg>"#);
+    assert!(cost_of(&chained).is_err(), "a stylesheet's chain of 3000 clip paths");
+    let uses: String = (0..3000).map(|_| r##"<use xlink:href="#s"/>"##).collect();
+    let many = format!(r##"<svg {SVG_NS} width="10" height="10"><defs><g id="s"><rect width="1" height="1" clip-path="url(#c)"/></g><clipPath id="c"><rect width="1" height="1"/></clipPath></defs>{uses}</svg>"##);
+    cost_of(&many).expect("many uses");
+}
+
