@@ -289,10 +289,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   any DOCTYPE but an external ID, comments and `<!ENTITY name "value">` with no `<` in the value, read as roxmltree
   reads it (`skip_doctype`; a loose scan left the DOCTYPE at an `]>` inside an `<!ELEMENT` and took the entity for an
   element).
-  Not closed: a file's `<image>` (`SVG-IMAGE-HREF-READS-LOCAL-FILES`) and a chain of references
-  (`SVG-REFERENCE-CHAIN-OVERFLOWS-STACK`). Tests: `a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it` (a child process, on an 8 MiB stack;
+  Its `<image>` resolver (`embedded_images_only`) reads no file and no URL, and draws embedded PNG, JPEG, GIF and WebP
+  whose header-declared pixels add up, over the document, to at most `MAX_IMAGE_PIXELS` (64 Mpx; usvg asks for each
+  `<use>` of an image and resvg decodes each). Nested SVG data and a data URL with no image type or `text/plain` no
+  longer draw (usvg's default sniffed the type of the latter).
+  Not closed: a chain of references (`SVG-REFERENCE-CHAIN-OVERFLOWS-STACK`). Tests: `a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it` (a child process, on an 8 MiB stack;
   plain, quoted, embedded, entity, `<!ELEMENT` and processing-instruction cases), `the_nesting_limit_is_pinned_at_1024`,
-  `nesting_within_the_limit_draws_and_past_it_is_refused`.
+  `nesting_within_the_limit_draws_and_past_it_is_refused`, `an_image_href_naming_a_local_file_draws_nothing`,
+  `an_image_href_naming_a_fifo_returns_at_once`, `an_embedded_raster_draws_and_embedded_svg_does_not`,
+  `an_embedded_raster_repeated_past_the_pixel_budget_stops_drawing`.
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint

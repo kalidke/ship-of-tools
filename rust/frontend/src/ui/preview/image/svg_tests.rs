@@ -162,7 +162,7 @@ fn nested(open: &str, close: &str, depth: usize) -> String {
 }
 
 /// A document nested past usvg's own limit is refused before roxmltree recurses into it: 20000 levels, written so a
-/// scanner that counts `/>` inside an attribute value as a close sees none, through an entity
+/// scanner that counts `/>` inside an attribute value as a close sees none, inside an embedded SVG, through an entity
 /// that holds markup, and through one that follows a `]>` inside an `<!ELEMENT` or a processing instruction (roxmltree
 /// does not end the DOCTYPE there), each end in an error or a refusal and never in a stack overflow. Each runs in a child
 /// process, where the unguarded parse aborts the process (a red is the child's abort, which fails
@@ -174,6 +174,11 @@ fn a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it() {
     }
     let plain = nested("<g>", "</g>", 20_000);
     let quoted = nested(r#"<g a="/>">"#, "</g>", 20_000);
+    let embedded = {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&plain);
+        format!(r#"<svg {SVG_NS} width="10" height="10"><image width="10" height="10" xlink:href="data:image/svg+xml;base64,{data}"/></svg>"#)
+    };
     let entity = format!(
         r#"<!DOCTYPE svg [<!ENTITY a "{}{}">]><svg {SVG_NS} width="10" height="10">&a;</svg>"#,
         "<g>".repeat(100),
@@ -187,9 +192,10 @@ fn a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it() {
         )
     };
     let (element, pi) = (deep_entity("<!ELEMENT x ]>"), deep_entity("<?x ]>?>"));
-    for (name, svg) in [("plain", plain), ("quoted", quoted), ("entity", entity), ("element", element), ("pi", pi)] {
+    for (name, svg) in [("plain", plain), ("quoted", quoted), ("embedded", embedded), ("entity", entity), ("element", element), ("pi", pi)] {
         let got = on_a_main_sized_stack(move || svg_tree(svg.as_bytes()).map(|_| ()).map_err(|why| format!("{why:#}")));
         match (name, got) {
+            ("embedded", Ok(())) => {} // the nested SVG is refused (`embedded_images_only`), the outer one draws
             (_, Err(why)) => assert!(why.contains("nested") || why.contains("DOCTYPE"), "{name}: {why}"),
             (_, Ok(())) => panic!("{name}: parsed"),
         }
@@ -221,5 +227,94 @@ fn nesting_within_the_limit_draws_and_past_it_is_refused() {
     for doctype in [r#"<!DOCTYPE svg>"#, r#"<!DOCTYPE svg SYSTEM "a.dtd">"#, "<!DOCTYPE svg [ <!ENTITY a 'b' > <!-- c --> ]  >"] {
         svg_tree(format!(r#"{doctype}<svg {SVG_NS} width="10" height="10"/>"#).as_bytes()).unwrap_or_else(|why| panic!("{doctype}: {why:#}"));
     }
+}
+
+/// A 4x4 green PNG.
+fn green_png() -> Vec<u8> {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 255, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode a PNG");
+    png
+}
+
+/// The center pixel of `svg` drawn at 100x100.
+fn center(svg: String) -> [u8; 4] {
+    let pixmap = draw(&svg_tree(svg.as_bytes()).expect("the SVG parses"), 100, 100).expect("the SVG draws");
+    pixmap.data()[(50 * 100 + 50) * 4..][..4].try_into().expect("a pixel")
+}
+
+fn image_svg(href: &str) -> String {
+    format!(r#"<svg {SVG_NS} width="10" height="10"><image width="10" height="10" xlink:href="{href}"/></svg>"#)
+}
+
+/// A temporary folder removed when it drops, so a failing test leaves nothing behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sot-svg-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp folder");
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A file named by an `<image>` href is not read: nothing is drawn.
+#[test]
+fn an_image_href_naming_a_local_file_draws_nothing() {
+    let dir = Scratch::new("href-file");
+    let local = dir.0.join("local.png");
+    std::fs::write(&local, green_png()).expect("write a PNG");
+    assert_eq!(center(image_svg(&local.to_string_lossy())), [0, 0, 0, 0], "a file named by an href was drawn");
+}
+
+/// A FIFO named by an `<image>` href is not opened: the parse returns at once and draws nothing.
+#[cfg(unix)]
+#[test]
+fn an_image_href_naming_a_fifo_returns_at_once() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = Scratch::new("href-fifo");
+    let fifo = dir.0.join("fifo");
+    sot_platform::test_wait::run_within(std::process::Command::new("mkfifo").arg(&fifo), std::time::Duration::from_secs(10)).ok();
+    assert!(std::fs::metadata(&fifo).expect("the FIFO exists").file_type().is_fifo(), "mkfifo made no FIFO");
+    let href = fifo.to_string_lossy().into_owned();
+    let drawn = sot_platform::test_wait::within(std::time::Duration::from_secs(10), "an SVG whose image href is a FIFO", move || center(image_svg(&href)));
+    assert_eq!(drawn, [0, 0, 0, 0]);
+}
+
+/// One embedded raster repeated by `<use>` is bounded in all, not only each: usvg asks the resolver for each use and
+/// resvg decodes each, so 100 uses of a 1 Mpx image draw while the document's `MAX_IMAGE_PIXELS` last and no longer.
+#[test]
+fn an_embedded_raster_repeated_past_the_pixel_budget_stops_drawing() {
+    use base64::Engine;
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(1024, 1024, image::Rgba([0, 255, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode a PNG");
+    let data = base64::engine::general_purpose::STANDARD.encode(&png);
+    let uses: String = (0..100).map(|k| format!(r##"<use xlink:href="#i" x="{k}"/>"##)).collect();
+    let svg = format!(
+        r#"<svg {SVG_NS} width="100" height="1"><defs><image id="i" width="1" height="1" xlink:href="data:image/png;base64,{data}"/></defs>{uses}</svg>"#
+    );
+    let tree = svg_tree(svg.as_bytes()).expect("the SVG parses");
+    let pixmap = draw(&tree, 100, 1).expect("the SVG draws");
+    let drawn = pixmap.data().chunks(4).filter(|px| px[3] != 0).count() as u64;
+    assert_eq!(drawn, MAX_IMAGE_PIXELS / (1024 * 1024), "the instances drawn");
+}
+
+/// An `<image>` draws what its own data holds: an embedded PNG draws, and nested SVG data is refused.
+#[test]
+fn an_embedded_raster_draws_and_embedded_svg_does_not() {
+    use base64::Engine;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    assert_eq!(center(image_svg(&format!("data:image/png;base64,{}", b64(&green_png())))), [0, 255, 0, 255], "an embedded PNG");
+    let red = format!(r##"<svg {SVG_NS} width="4" height="4"><rect width="4" height="4" fill="#ff0000"/></svg>"##);
+    assert_eq!(center(image_svg(&format!("data:image/svg+xml;base64,{}", b64(red.as_bytes())))), [0, 0, 0, 0], "nested SVG data was drawn");
 }
 
