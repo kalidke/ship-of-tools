@@ -934,6 +934,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SVG-IMAGE-HREF-READS-LOCAL-FILES** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG preview: an `<image href>` in an SVG went to usvg's default resolver, which read any path that exists on the window's computer, so a FIFO hung the window's thread and a local PNG was drawn into the picture of a file served by a daemon; reachable through a markdown figure. `svg_tree`'s resolver (`embedded_images_only`) now draws an image only from embedded `data:` data; a path or URL reads nothing.
 - **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
   contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the
   newest release and never passes through 0.7.0, so the deletion would leave a 0.6 terminal and its agent alive beside

@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg::{fontdb, Options, Tree};
+use resvg::usvg::{fontdb, ImageHrefResolver, Options, Tree};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
@@ -105,12 +105,23 @@ pub fn quad_from_svg_bytes(
     Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
 }
 
-/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
-/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
-/// past both rules.
+/// An `<image>` is drawn only from embedded (`data:`) data, by usvg's own data resolver. A path or URL names a file on
+/// the window's computer (usvg's default reads any path that exists: a FIFO hangs the thread, and a local file would be
+/// drawn into the picture of a file another computer served) and reads nothing.
+fn embedded_images_only() -> ImageHrefResolver<'static> {
+    ImageHrefResolver {
+        resolve_data: ImageHrefResolver::default_data_resolver(),
+        resolve_string: Box::new(|_, _| None),
+    }
+}
+
+/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
+/// separator (`one_paragraph_svg`) and no file read for an `<image>` (`embedded_images_only`). An `.svgz` (gzip) is
+/// unpacked first (`unpack_svgz`): usvg would unpack it itself, past both rules.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
+        image_href_resolver: embedded_images_only(),
         ..Options::default()
     };
     let bytes = unpack_svgz(bytes, PREVIEW_BINARY_CAP)?;

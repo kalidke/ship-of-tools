@@ -661,7 +661,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   rule, each separator written as itself or as a character reference (`one_paragraph_svg`, preview/image/svg.rs), since
   usvg draws only a text chunk's first paragraph: `svg_tree` is usvg's one way in (an `.svgz` unpacked first), and the
   same clippy group refuses usvg's `Tree::from_data`, `from_str` and `from_xmltree` elsewhere; tests
-  `svg_text_after_a_paragraph_separator_is_drawn`, `svgz_text_after_a_paragraph_separator_is_drawn`.
+  `svg_text_after_a_paragraph_separator_is_drawn`, `svgz_text_after_a_paragraph_separator_is_drawn`. An SVG's
+  `<image>` is drawn only from embedded `data:` data (`embedded_images_only`); a path or URL reads nothing; tests
+  `an_image_href_naming_a_local_file_draws_nothing`, `an_image_href_naming_a_fifo_returns_and_draws_nothing`,
+  `an_embedded_png_image_still_draws`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

@@ -148,3 +148,79 @@ fn svg_text_after_a_paragraph_separator_is_drawn() {
     let got: Vec<(&str, usize)> = cases.iter().map(|&text| (text, drawn(text))).collect();
     assert_eq!(got, cases.map(|text| (text, whole)));
 }
+
+/// A 4x4 green PNG.
+fn green_png() -> Vec<u8> {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 255, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("encode a PNG");
+    png
+}
+
+/// The center pixel of `svg` drawn at 100x100.
+fn center(svg: String) -> [u8; 4] {
+    let tree = svg_tree(svg.as_bytes()).expect("the SVG parses");
+    let mut pixmap = Pixmap::new(100, 100).expect("a pixmap");
+    let size = tree.size();
+    resvg::render(&tree, Transform::from_scale(100.0 / size.width(), 100.0 / size.height()), &mut pixmap.as_mut());
+    pixmap.data()[(50 * 100 + 50) * 4..][..4].try_into().expect("a pixel")
+}
+
+fn image_svg(href: &str) -> String {
+    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="10" height="10"><image width="10" height="10" xlink:href="{href}"/></svg>"#)
+}
+
+/// A temporary folder removed when it drops, so a failing test leaves nothing behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sot-svg-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp folder");
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A file named by an `<image>` href, plainly or as `file://`, is not read: nothing is drawn.
+#[test]
+fn an_image_href_naming_a_local_file_draws_nothing() {
+    let dir = Scratch::new("href-file");
+    let local = dir.0.join("local.png");
+    std::fs::write(&local, green_png()).expect("write a PNG");
+    let path = local.to_string_lossy().into_owned();
+    assert_eq!(center(image_svg(&path)), [0, 0, 0, 0], "a file named by an href was drawn");
+    assert_eq!(center(image_svg(&format!("file://{path}"))), [0, 0, 0, 0], "a file:// href was drawn");
+}
+
+/// A FIFO named by an `<image>` href is not opened: the draw returns and draws nothing.
+#[cfg(unix)]
+#[test]
+fn an_image_href_naming_a_fifo_returns_and_draws_nothing() {
+    use std::os::unix::fs::FileTypeExt;
+    let dir = Scratch::new("href-fifo");
+    let fifo = dir.0.join("fifo");
+    sot_platform::test_wait::run_within(std::process::Command::new("mkfifo").arg(&fifo), std::time::Duration::from_secs(10)).ok();
+    assert!(std::fs::metadata(&fifo).expect("the FIFO exists").file_type().is_fifo(), "mkfifo made no FIFO");
+    let href = fifo.to_string_lossy().into_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(center(image_svg(&href)));
+    });
+    let drawn = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the draw did not return: the FIFO was opened");
+    assert_eq!(drawn, [0, 0, 0, 0]);
+}
+
+/// The control: an embedded PNG still draws.
+#[test]
+fn an_embedded_png_image_still_draws() {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(green_png());
+    assert_eq!(center(image_svg(&format!("data:image/png;base64,{data}"))), [0, 255, 0, 255]);
+}
