@@ -1892,3 +1892,11 @@ A landing's record goes here, with its measured times; the package page holds on
   rounds (blockers: ending every agent without asking; the in-row path unrun; a shared home skipping the question; an
   older skill triggered by the message's words; the terminal hang; a contract naming a test that does not exist). One
   miss of the session's own: a probe script was edited while a run read it, which lost one case's mail check.
+- The chat drawer's look, L3: day dividers, the time alone in the header and Slack's thread summary, 2026-11-11:
+  builder launched about 10:37, main 11:27 (4e3954a1e), 50 minutes, a miss. About 106 product lines added and 20
+  deleted (the plan said 80; the divider's lead line moved line indexes in existing tests). Where the minutes went: the
+  session moved to another account between the build and the review, which ended the builder, and its fix list first
+  reached the reviewer by the builder's old name; review round 1 (no blockers; 13 mutants killed; widths 30 to 700 px
+  at four scales and midnight in every half-hour offset held; a marked record could count as in view with no band
+  drawn below a divider); one amend by a new builder; two scoped gates. The divider is centered in the text's width,
+  half a gutter right of the drawer's middle, as recorded in the contract.
