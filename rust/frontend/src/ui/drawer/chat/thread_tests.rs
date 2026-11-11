@@ -508,7 +508,7 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     let (mut d, at) = channel(&held);
     open(&mut d, &mut fonts, &[true, true]);
     d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
-    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    assert!(to_line(&d).starts_with("reply in thread of Nov 1"), "{}", to_line(&d));
     d.close_thread();
     assert!(to_line(&d).starts_with("reply in thread of "), "the draft keeps its thread through the close");
     // A row switch away and back, and the watch ended, leave it as it was.
@@ -583,7 +583,7 @@ fn only_a_posted_reply_rereads_and_an_empty_draft_names_the_open_thread() {
     let (mut d, at) = channel(&held);
     assert_eq!(to_line(&d), "to CH1");
     let outs = open(&mut d, &mut fonts, &[true, true]);
-    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    assert!(to_line(&d).starts_with("reply in thread of Nov 1"), "{}", to_line(&d));
     on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
     let req = type_and_send(&mut d, "a reply", at);
     let refused = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy });

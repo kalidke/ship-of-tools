@@ -11,11 +11,34 @@ use super::owner::ts_order;
 use super::project::{project, Kind, Span};
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
+use crate::ui::render::cells::CellQuad;
 use crate::ui::render::quad::ScreenRect;
-use crate::ui::render::text::{set_buffer_rich_text, ExtraArea, EXTRA_TOP_PAD_PX};
+use crate::ui::render::text::{flagged_runs, set_buffer_rich_text, ExtraArea, EXTRA_TOP_PAD_PX};
 
 /// Buffers kept besides those in view.
 const SPARE: usize = 64;
+
+// The palette: Slack Kit's dark mode chart is the source of every value but the selection's tint, which is the chart's
+// Sky Blue at 30% over the background. Every rectangle is opaque on `BG`.
+const BG: (u8, u8, u8) = (0x1A, 0x1D, 0x21);
+const TEXT: (u8, u8, u8) = (0xD1, 0xD2, 0xD3);
+const MUTED: (u8, u8, u8) = (0x9A, 0x9C, 0x9E);
+/// The badge's fill.
+const LOW: (u8, u8, u8) = (0x32, 0x35, 0x38);
+/// The mark's band.
+const BAND: (u8, u8, u8) = (0x21, 0x24, 0x28);
+const SKY: (u8, u8, u8) = (0x1D, 0x9B, 0xD1);
+const SELECTION: (u8, u8, u8) = (0x1B, 0x43, 0x56);
+/// The mark's bar at the record's left edge, in pixels.
+const MARK_BAR_PX: f32 = 2.0;
+/// The badge's padding left and right of its text, in pixels.
+const BADGE_PAD_PX: f32 = 4.0;
+/// The glyph flag `Attrs::metadata` carries on a badge's text, which the badge's rectangle is drawn behind.
+pub(super) const BADGE: usize = 0x01;
+
+fn rgb((r, g, b): (u8, u8, u8)) -> Color {
+    Color::rgb(r, g, b)
+}
 
 /// A record's place: `top` is relative to the body's top and negative for the one that crosses it.
 #[derive(Debug, PartialEq)]
@@ -80,15 +103,18 @@ pub(in crate::ui) enum Step {
     Page,
 }
 
-/// Each span kind has a style of its own; the kind alone tells a header from a body line that imitates one.
-pub(super) fn attrs(kind: Kind) -> Attrs<'static> {
-    let a = Attrs::new().family(Family::SansSerif);
+/// Each span kind has a style of its own; the kind alone tells a header from a body line that imitates one. The time and
+/// the badge are smaller than the body, but keep its line height, so a header line is as tall as a body line.
+pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
+    let a = Attrs::new().family(Family::SansSerif).color(rgb(TEXT));
+    let small = |size: f32| Metrics::new(BODY_SIZE * scale * size / 15.0, BODY_LINE_H * scale);
     match kind {
-        Kind::Header(marked) => a.weight(Weight::BOLD).color(if marked { Color::rgb(255, 215, 120) } else { Color::rgb(130, 200, 255) }),
-        Kind::Origin => a.color(Color::rgb(200, 160, 255)),
+        Kind::Name => a.weight(Weight::BOLD),
+        Kind::Time => a.color(rgb(MUTED)).metrics(small(12.0)),
+        Kind::Badge => a.weight(Weight::BOLD).color(rgb(MUTED)).metrics(small(10.0)).metadata(BADGE),
         Kind::Body => a,
-        Kind::Markup => a.color(Color::rgb(120, 220, 170)),
-        Kind::Meta => a.style(Style::Italic).color(Color::rgb(150, 150, 150)),
+        Kind::Markup => a.color(rgb(SKY)),
+        Kind::Meta => a.style(Style::Italic).color(rgb(MUTED)),
     }
 }
 
@@ -136,9 +162,8 @@ impl ChatView {
         let mut used: HashMap<usize, Key> = HashMap::new();
         // The mark passes on like the anchor: to the nearest newer held record, or to none.
         let held_mark = self.mark.as_ref().map(|ts| find(records, ts)).filter(|i| *i < records.len());
-        let marked = std::cell::Cell::new(held_mark);
         let mut height = |at: usize| {
-            let key = (project(records[at].0, now, offset, marked.get() == Some(at), records[at].1), width.to_bits(), scale.to_bits());
+            let key = (project(records[at].0, now, offset, records[at].1), width.to_bits(), scale.to_bits());
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
@@ -186,12 +211,6 @@ impl ChatView {
         if let Some(i) = mark {
             mark = seen.iter().copied().min_by_key(|s| s.abs_diff(i)).or(mark);
         }
-        marked.set(mark);
-        if mark != held_mark {
-            for p in &spots {
-                height(p.index);
-            }
-        }
         self.mark = mark.map(|i| records[i].0.ts.clone());
         self.anchor = from.map(|(i, dy)| (records[i].0.ts.clone(), dy));
         self.at_oldest = spots.first().is_some_and(|p| p.index == 0);
@@ -204,12 +223,12 @@ impl ChatView {
         for (_, key) in others.into_iter().take(self.cache.len().saturating_sub(self.placed.len() + SPARE)) {
             self.cache.remove(&key);
         }
-        // A change to the selected record's buffer ends the selection: an edit, a delete, the mark's header, a record a
-        // snapshot dropped, a new width or scale, or a buffer the trim let go.
+        // A change to the selected record's buffer ends the selection: an edit, a delete, a record a snapshot dropped, a new
+        // width or scale, or a buffer the trim let go.
         let live = self.selected.as_ref().is_none_or(|(ts, key)| {
             let i = find(records, ts);
             i < records.len() && records[i].0.ts == *ts && self.cache.contains_key(key)
-                && key.0 == project(records[i].0, now, offset, mark == Some(i), records[i].1) && key.1 == width.to_bits() && key.2 == scale.to_bits()
+                && key.0 == project(records[i].0, now, offset, records[i].1) && key.1 == width.to_bits() && key.2 == scale.to_bits()
         });
         if !live {
             self.clear_selection();
@@ -285,7 +304,7 @@ impl ChatView {
     }
 
     /// The tint of the selection, one rectangle a visual line.
-    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+    pub(super) fn selection_rects(&self) -> Vec<ScreenRect> {
         self.lent().map_or_else(Vec::new, |t| self.selection.rects(&t))
     }
 
@@ -334,10 +353,37 @@ impl ChatView {
                 bottom: body.y + body.h,
                 clip_left: Some(body.x),
                 clip_top: Some(body.y),
-                color: (220, 220, 220),
+                color: TEXT,
                 scroll_y_px: 0.0,
             })
             .collect()
+    }
+
+    /// The frame's rectangles in painting order: the background of the drawer's `inside` (the body and the compose foot),
+    /// then each placed record's mark band and bar and badges, and last the selection's tint over every fill. All but the
+    /// background are clipped to the body. Nothing while the chat is hidden. They are rectangles of the cell backgrounds'
+    /// palette, which paints first in the pass, so the drawer's cells and the glyphs lie over them.
+    pub(super) fn backs(&self, inside: ScreenRect) -> Vec<CellQuad> {
+        let Some(body) = self.body else { return Vec::new() };
+        let quad = |r: ScreenRect, color| {
+            let (left, top) = (r.x.max(body.x), r.y.max(body.y));
+            let (right, bottom) = ((r.x + r.w).min(body.x + body.w), (r.y + r.h).min(body.y + body.h));
+            (right > left && bottom > top).then_some(CellQuad { x: left, y: top, w: right - left, h: bottom - top, color })
+        };
+        let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
+        for (key, top, ts) in &self.placed {
+            let at = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: self.cache[key].height };
+            if self.mark.as_ref() == Some(ts) {
+                out.extend(quad(at, BAND));
+                out.extend(quad(ScreenRect { w: MARK_BAR_PX, ..at }, SKY));
+            }
+            // A badge is as tall as its text and a little more, centered in the line.
+            for (x, y, w, h) in flagged_runs(&self.cache[key].buffer, |m| m & BADGE != 0) {
+                out.extend(quad(ScreenRect { x: body.x + x - BADGE_PAD_PX, y: at.y + y + h * 0.2, w: w + 2.0 * BADGE_PAD_PX, h: h * 0.6 }, LOW));
+            }
+        }
+        out.extend(self.selection_rects().into_iter().filter_map(|r| quad(r, SELECTION)));
+        out
     }
 
     /// Where the glyph of `ts`'s record at buffer `(line, byte)` sits on screen.
@@ -368,10 +414,16 @@ impl ChatView {
         self.placed.iter().map(|(_, top, _)| *top).collect()
     }
 
-    /// Whether each placed record's header is the marked one, in placement order.
+    /// The placed records' buffers, in placement order.
+    #[cfg(test)]
+    pub(super) fn placed_buffers(&self) -> Vec<&Buffer> {
+        self.placed.iter().map(|(k, ..)| &self.cache[k].buffer).collect()
+    }
+
+    /// Whether each placed record is the marked one, in placement order.
     #[cfg(test)]
     pub(super) fn placed_marks(&self) -> Vec<bool> {
-        self.placed.iter().map(|(k, ..)| k.0[0].kind == Kind::Header(true)).collect()
+        self.placed.iter().map(|p| self.mark.as_ref() == Some(&p.2)).collect()
     }
 
     #[cfg(test)]
@@ -389,7 +441,7 @@ fn shape(fonts: &mut FontSystem, spans: &[Span], width: f32, scale: f32) -> Shap
     let mut buffer = Buffer::new(fonts, Metrics::new(BODY_SIZE * scale, BODY_LINE_H * scale));
     buffer.set_size(fonts, Some(width), None);
     let default = Attrs::new().family(Family::SansSerif);
-    set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), attrs(s.kind))), default, Shaping::Advanced);
+    set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), attrs(s.kind, scale))), default, Shaping::Advanced);
     buffer.shape_until_scroll(fonts, false);
     let height = buffer.layout_runs().map(|r| r.line_height).sum();
     Shaped { buffer, height, at: 0 }

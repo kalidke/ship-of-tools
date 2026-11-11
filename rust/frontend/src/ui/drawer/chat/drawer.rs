@@ -384,7 +384,7 @@ impl ChatDrawer {
         self.view.hide();
     }
 
-    /// The selection's view calls: a press, the drag, the copy and the tint (`view::ChatView`).
+    /// The selection's view calls: a press, the drag and the copy (`view::ChatView`).
     pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
         self.view.hit(at)
     }
@@ -406,7 +406,13 @@ impl ChatDrawer {
         self.view.copy_text()
     }
 
-    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
+    /// The frame's rectangles, in painting order (`view::ChatView::backs`); `inside` is the drawer's pixels.
+    pub(in crate::ui) fn backs(&self, inside: ScreenRect) -> Vec<crate::ui::render::cells::CellQuad> {
+        self.view.backs(inside)
+    }
+
+    #[cfg(test)]
+    pub(super) fn selection_rects(&self) -> Vec<ScreenRect> {
         self.view.selection_rects()
     }
 
@@ -438,7 +444,7 @@ impl ChatDrawer {
     }
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
-    /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else where the next
+    /// (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time as its header shows it), else where the next
     /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         if let Some(name) = &self.asking {

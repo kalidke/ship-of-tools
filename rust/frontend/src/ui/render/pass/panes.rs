@@ -70,9 +70,7 @@ impl State {
         // sit on top. Per-row geometry: the first and last rows may
         // be partial (start_col..pane_cols and 0..=end_col); middle
         // rows are full-width.
-        // Both panes share one brush: batch their rectangles so a second paint does not overwrite its vertices.
         let mut row_rects = if show_md { self.shaped.selection_rects() } else { Vec::new() };
-        row_rects.extend(self.chat.selection_rects());
         if let Some(sel) = llm_selection {
             let (a, b) = sel;
             let (start, end) = if a <= b { (a, b) } else { (b, a) };

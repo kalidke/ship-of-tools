@@ -1,15 +1,18 @@
 //! A chat record as kinded spans: what its poster typed, Slack's markup shown as markup, and nothing in a message able
-//! to make a line read as another message's header. Pure; the view that shapes the spans styles each kind.
+//! to make a line read as another message's header or badge. Pure; the view that shapes the spans styles each kind.
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, Datelike, FixedOffset};
 use sot_protocol::page_reply::unsafe_char;
 use sot_protocol::chat::{ChatRecord, Origin, TextSegment, text_segments};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Kind {
-    /// The author name and time line; the flag is B5o's mark.
-    Header(bool),
-    Origin,
+    /// The header's author name.
+    Name,
+    /// The header's time.
+    Time,
+    /// The origin's word, from the record's origin alone.
+    Badge,
     Body,
     Markup,
     Meta,
@@ -21,19 +24,20 @@ pub(super) struct Span {
     pub text: String,
 }
 
-/// The header is `name [origin] time` and ends its line; the body follows, then each meta item on its own line. A deleted
+/// The header is `name badge time` and ends its line; the body follows, then each meta item on its own line. A deleted
 /// message (the owner knows it) is its header and `(message deleted)` alone.
-pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, marked: bool, deleted: bool) -> Vec<Span> {
+pub(super) fn project(r: &ChatRecord, now: i64, offset: FixedOffset, deleted: bool) -> Vec<Span> {
     let span = |kind, text: String| Span { kind, text };
-    let mut out = vec![span(Kind::Header(marked), format!("{} ", header_text(&r.author.name)))];
-    let tag = match r.origin {
-        Origin::Drawer => Some("[drawer] "),
-        Origin::Row => Some("[row] "),
-        Origin::Bot => Some("[bot] "),
+    let mut out = vec![span(Kind::Name, format!("{}  ", header_text(&r.author.name)))];
+    let badge = match r.origin {
+        Origin::Drawer => Some("DRAWER"),
+        Origin::Row => Some("ROW"),
+        Origin::Bot => Some("APP"),
         Origin::Member | Origin::Other => None,
     };
-    out.extend(tag.map(|t| span(Kind::Origin, t.to_string())));
-    out.push(span(Kind::Header(marked), format!("{}\n", when(r.ts.as_str(), now, offset))));
+    out.extend(badge.map(|t| span(Kind::Badge, t.to_string())));
+    let gap = if badge.is_some() { "  " } else { "" };
+    out.push(span(Kind::Time, format!("{gap}{}\n", when(r.ts.as_str(), now, offset))));
     if deleted {
         out.push(span(Kind::Meta, "(message deleted)".to_string()));
         return out;
@@ -89,16 +93,17 @@ fn literal(s: &str) -> String {
         .collect()
 }
 
-/// `HH:MM` today, `YYYY-MM-DD HH:MM` earlier, the stamp's own text when its seconds, moved by the offset, are not a
-/// time. The offset is added as integers, so no stamp reaches chrono's zone arithmetic.
+/// `h:mm AM` today, `Nov 9 2:14 PM` earlier (`Nov 9 2022 2:14 PM` in another year), the stamp's own text when its
+/// seconds, moved by the offset, are not a time. The offset is added as integers, so no stamp reaches chrono's zone arithmetic.
 pub(super) fn when(ts: &str, now: i64, offset: FixedOffset) -> String {
     let local = |secs: i64| {
         secs.checked_add(i64::from(offset.local_minus_utc())).and_then(|l| DateTime::from_timestamp(l, 0)).map(|t| t.naive_utc())
     };
     let at = ts.split_once('.').and_then(|(s, _)| s.parse::<i64>().ok()).and_then(local);
     match (at, local(now)) {
-        (Some(t), Some(n)) if t.date() == n.date() => t.format("%H:%M").to_string(),
-        (Some(t), _) => t.format("%Y-%m-%d %H:%M").to_string(),
+        (Some(t), Some(n)) if t.date() == n.date() => t.format("%-I:%M %p").to_string(),
+        (Some(t), Some(n)) if t.year() == n.year() => t.format("%b %-d %-I:%M %p").to_string(),
+        (Some(t), _) => t.format("%b %-d %Y %-I:%M %p").to_string(),
         _ => ts.to_string(),
     }
 }

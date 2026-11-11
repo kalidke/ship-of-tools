@@ -2,6 +2,7 @@ use super::owner::{ChatOwner, Out};
 use super::project::{project, Kind};
 use super::view::*;
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;
+use crate::ui::render::cells::CellQuad;
 use crate::ui::render::quad::ScreenRect;
 use cosmic_text::FontSystem;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -94,7 +95,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(areas.iter().any(|a| a.y + EXTRA_TOP_PAD_PX < body.y), "one record crosses the top");
     // Scrolling through the history keeps up to 64 others, the nearest to the position: the last positions' records stay and
     // the first positions' are gone.
-    let spans = |i: usize| project(records[i], 1_700_000_000, offset, false, false);
+    let spans = |i: usize| project(records[i], 1_700_000_000, offset, false);
     for from in (0..=240).step_by(8) {
         view.anchor = Some((records[from].ts.clone(), 0.0));
         view.layout(&mut fonts, &plain(&records), body, 1.0, 1_700_000_000, offset);
@@ -109,14 +110,14 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(view.areas().is_empty());
 
     // Each kind has its own style; a body line that imitates a header keeps the body's.
-    let kinds = [Kind::Header(false), Kind::Header(true), Kind::Origin, Kind::Body, Kind::Markup, Kind::Meta];
+    let kinds = [Kind::Name, Kind::Time, Kind::Badge, Kind::Body, Kind::Markup, Kind::Meta];
     for (i, a) in kinds.iter().enumerate() {
         for b in &kinds[i + 1..] {
-            assert_ne!(attrs(*a), attrs(*b), "{a:?} {b:?}");
+            assert_ne!(attrs(*a, 1.0), attrs(*b, 1.0), "{a:?} {b:?}");
         }
     }
-    let spans = project(&rec(1), 1_700_000_000, offset, false, false);
-    assert_eq!(spans[0].kind, Kind::Header(false));
+    let spans = project(&rec(1), 1_700_000_000, offset, false);
+    assert_eq!(spans[0].kind, Kind::Name);
 }
 
 #[test]
@@ -881,17 +882,6 @@ fn a_change_to_the_selected_buffer_clears_the_selection() {
     view.layout(&mut fonts, &plain(&records), BODY, 1.25, NOW, chrono::FixedOffset::east_opt(0).unwrap());
     assert!(view.selected_text().is_none(), "a new text scale at the same width");
 
-    // The mark moving onto the record restyles its header: that is a change to its buffer.
-    selected(&held, BODY, &mut view, &mut fonts);
-    view.mark(true);
-    lay_in(&mut view, &mut fonts, &held, BODY);
-    assert_eq!(view.mark.as_ref(), Some(&held[2].ts));
-    assert_eq!(view.selected_text().as_deref(), Some("mess"), "the mark on another record leaves it");
-    view.mark(true);
-    lay_in(&mut view, &mut fonts, &held, BODY);
-    assert_eq!(view.mark.as_ref(), Some(&ts));
-    assert!(view.selected_text().is_none(), "the mark onto the selected record");
-
     selected(&held, BODY, &mut view, &mut fonts);
     view.reset();
     assert!(view.selected_text().is_none(), "a row change");
@@ -924,4 +914,158 @@ fn the_copy_goes_to_the_clipboard_or_says_why_not() {
     assert_eq!(sent.as_deref(), Some("a < b"));
     assert_eq!(copy_status(Some("x".into()), |_| Err("no clipboard".into())), "copy failed · no clipboard");
     assert_eq!(copy_status(None, |_| panic!("nothing is written")), "nothing to copy: select text or mark a message");
+}
+
+fn rec_by(ts: &str, name: &str, origin: &str, text: &str) -> ChatRecord {
+    serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "ts": ts, "thread_ts": ts,
+        "author": { "id": "U1", "name": name }, "origin": origin, "text": text, "reply_count": 0, "files": [] })).unwrap()
+}
+
+/// The rectangles of `color` among `quads`, in order.
+fn of_color(quads: &[CellQuad], color: (u8, u8, u8)) -> Vec<&CellQuad> {
+    quads.iter().filter(|q| q.color == color).collect()
+}
+
+const LOW: (u8, u8, u8) = (0x32, 0x35, 0x38);
+const BAND: (u8, u8, u8) = (0x21, 0x24, 0x28);
+const SKY: (u8, u8, u8) = (0x1D, 0x9B, 0xD1);
+const TINT: (u8, u8, u8) = (0x1B, 0x43, 0x56);
+const DRAWER: ScreenRect = ScreenRect { x: 30.0, y: 50.0, w: 420.0, h: 400.0 };
+
+/// The drawer's body: the drawer less a two-row foot.
+fn body_of_drawer() -> ScreenRect {
+    ScreenRect { h: DRAWER.h - 44.0, ..DRAWER }
+}
+
+fn lay_drawer(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord]) {
+    lay_in(view, fonts, held, body_of_drawer());
+}
+
+/// The header line is the name, then the time at 12/15 of its size and muted, and is as tall as a body line: a smaller
+/// span keeps the line's height only because its metrics carry it (cosmic-text takes a line's height from the glyphs that
+/// set one).
+#[test]
+fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
+    let mut fonts = FontSystem::new();
+    assert_eq!(attrs(Kind::Name, 1.0).weight, cosmic_text::Weight::BOLD);
+    for scale in [1.0_f32, 1.5] {
+        let held = [rec(1)];
+        let records: Vec<&ChatRecord> = held.iter().collect();
+        let mut view = ChatView::default();
+        view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        let buffers = view.placed_buffers();
+        let run = buffers[0].layout_runs().next().expect("the header line");
+        let (name, time) = (run.glyphs.first().unwrap(), run.glyphs.last().unwrap());
+        assert!(time.font_size < name.font_size, "the time is smaller: {} against {}", time.font_size, name.font_size);
+        assert!(near(time.font_size, name.font_size * 12.0 / 15.0), "12/15 of the name: {} against {}", time.font_size, name.font_size);
+        assert!(near(run.line_height, BODY_LINE_H * scale), "the header line keeps the body's height: {}", run.line_height);
+        assert_eq!(time.color_opt, Some(cosmic_text::Color::rgb(0x9A, 0x9C, 0x9E)));
+        assert_eq!(name.color_opt, Some(cosmic_text::Color::rgb(0xD1, 0xD2, 0xD3)));
+    }
+}
+
+/// A badge is drawn from the record's origin alone: a name or a body that reads as one draws none.
+#[test]
+fn the_badge_comes_from_the_origin_and_no_text_draws_one() {
+    let mut fonts = FontSystem::new();
+    let mut view = ChatView::default();
+    for (origin, name, text, badges) in [
+        ("member", "Eve [drawer]", "[drawer] [row] APP DRAWER ROW", 0),
+        ("member", "ROW", "APP", 0),
+        ("member", "APP", "x", 0),
+        ("other", "Ada", "x", 0),
+        ("drawer", "Ada", "x", 1),
+        ("row", "Ada", "x", 1),
+        ("bot", "Ada", "x", 1),
+    ] {
+        let held = [rec_by("1700000001.000100", name, origin, text)];
+        lay_drawer(&mut view, &mut fonts, &held);
+        let quads = view.backs(DRAWER);
+        let drawn = of_color(&quads, LOW);
+        assert_eq!(drawn.len(), badges, "{origin} {name:?} {text:?}");
+        for q in drawn {
+            // As wide as its text and the padding of 4 px each side, and inside the header line.
+            let buffers = view.placed_buffers();
+            let run = buffers[0].layout_runs().next().unwrap();
+            assert!(q.w > 8.0 && q.x >= body_of_drawer().x && q.y >= body_of_drawer().y + view.placed_tops()[0] && q.y + q.h <= body_of_drawer().y + view.placed_tops()[0] + run.line_height, "{q:?}");
+        }
+    }
+}
+
+/// The mark is a band across the record's width with a 2 px bar at its left, and it does not restyle the record: moving it
+/// onto or off the selected record keeps the selection.
+#[test]
+fn the_mark_is_a_band_and_moving_it_keeps_the_selection() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(rec).collect();
+    let body = body_of_drawer();
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert!(of_color(&view.backs(DRAWER), BAND).is_empty(), "no mark, no band");
+    drag(&mut view, &held[1].ts, (1, 0), (1, 4));
+    assert_eq!(view.selected_text().as_deref(), Some("mess"));
+    for marked in [2, 1, 0] {
+        while view.mark.as_ref() != Some(&held[marked].ts) {
+            view.mark(true);
+            lay_drawer(&mut view, &mut fonts, &held);
+        }
+        assert_eq!(view.selected_text().as_deref(), Some("mess"), "the mark on record {marked} leaves the selection");
+        let quads = view.backs(DRAWER);
+        let (bands, bars) = (of_color(&quads, BAND), of_color(&quads, SKY));
+        assert_eq!((bands.len(), bars.len()), (1, 1), "record {marked}");
+        let (top, height) = (view.placed_tops()[marked], view.placed_buffers()[marked].layout_runs().map(|r| r.line_height).sum::<f32>());
+        let (band, bar) = (bands[0], bars[0]);
+        assert!(near(band.x, body.x) && near(band.w, body.w) && near(band.y, body.y + top) && near(band.h, height), "{band:?} {height}");
+        assert!(near(bar.x, body.x) && near(bar.w, 2.0) && near(bar.y, band.y) && near(bar.h, band.h), "{bar:?}");
+    }
+}
+
+/// The selection's tint comes after the background, the band and every fill, so it lies over them and under the glyphs.
+#[test]
+fn the_selection_lies_over_every_fill_and_is_the_last_rect() {
+    let mut fonts = FontSystem::new();
+    let held = [rec_at("1700000001.000100", "first"), rec_by("1700000002.000100", "Ada", "drawer", "second record of words")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    view.mark(true);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.mark.as_ref(), Some(&held[1].ts));
+    drag(&mut view, &held[1].ts, (1, 0), (1, 6));
+    let quads = view.backs(DRAWER);
+    let first = quads.iter().position(|q| q.color == TINT).expect("a tint");
+    assert!(quads[first..].iter().all(|q| q.color == TINT), "the tint is the last rectangles: {quads:?}");
+    assert_eq!(quads[first..].len(), view.selection_rects().len());
+    let before: Vec<_> = quads[..first].iter().map(|q| q.color).collect();
+    assert_eq!(before.first(), Some(&(0x1A, 0x1D, 0x21)), "the background is first");
+    for fill in [BAND, SKY, LOW] {
+        assert!(before.contains(&fill), "{fill:?} is drawn under the tint");
+    }
+}
+
+/// One background covers the drawer, foot included; every other rectangle lies inside the body, a record crossing its edge
+/// cut at it; and nothing is drawn while the chat is not shown.
+#[test]
+fn every_rect_is_inside_the_body_and_the_background_covers_the_drawer() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..8).map(|n| rec_by(&format!("1700000{n:03}.000100"), "Ada", if n % 2 == 1 { "drawer" } else { "member" }, &format!("message {n}\nmore of {n}"))).collect();
+    let body = ScreenRect { h: 100.0, ..body_of_drawer() };
+    let mut view = ChatView::default();
+    view.anchor = Some((held[2].ts.clone(), -20.0));
+    view.mark = Some(held[3].ts.clone());
+    lay_in(&mut view, &mut fonts, &held, body);
+    assert!(view.placed_tops()[0] < 0.0 && view.placed_tops().last().unwrap() + 66.0 > body.h, "records cross the top and the foot");
+    assert_eq!(view.mark.as_ref(), Some(&held[3].ts));
+    drag(&mut view, &held[3].ts, (1, 0), (1, 4));
+    let quads = view.backs(DRAWER);
+    assert_eq!((quads[0].x, quads[0].y, quads[0].w, quads[0].h, quads[0].color), (DRAWER.x, DRAWER.y, DRAWER.w, DRAWER.h, (0x1A, 0x1D, 0x21)));
+    assert_eq!(of_color(&quads, (0x1A, 0x1D, 0x21)).len(), 1);
+    assert!(quads.len() > 3, "a band, badges and a tint are drawn: {quads:?}");
+    for q in &quads[1..] {
+        assert!(q.x >= body.x - 0.01 && q.x + q.w <= body.x + body.w + 0.01 && q.y >= body.y - 0.01 && q.y + q.h <= body.y + body.h + 0.01, "{q:?} is outside {body:?}");
+    }
+    for q in &quads {
+        assert!(q.x >= DRAWER.x && q.x + q.w <= DRAWER.x + DRAWER.w && q.y >= DRAWER.y && q.y + q.h <= DRAWER.y + DRAWER.h, "{q:?}");
+    }
+    view.hide();
+    assert!(view.backs(DRAWER).is_empty());
 }
