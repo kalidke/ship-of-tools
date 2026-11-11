@@ -15,6 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
+use resvg::usvg::roxmltree::{self, ParsingOptions};
 use resvg::usvg::{fontdb, ImageHrefResolver, ImageKind, Options, Tree};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
@@ -129,15 +130,21 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     };
     let bytes = one_paragraph_svg(bytes);
     check_xml_shape(&bytes)?;
+    let text = std::str::from_utf8(&bytes).context("svg is not UTF-8")?;
+    let xml = ParsingOptions { allow_dtd: true, ..ParsingOptions::default() };
+    let doc = roxmltree::Document::parse_with_options(text, xml).context("svg parse failed")?;
+    check_reference_cost(&doc)?;
     #[allow(clippy::disallowed_methods, reason = "text into the shaper: an SVG's one way into usvg, through one_paragraph_svg")]
-    let tree = Tree::from_data(&bytes, &opts);
+    let tree = Tree::from_xmltree(&doc, &opts);
     tree.context("svg parse failed")
 }
 
 /// The stack of the thread that parses and draws an SVG, the same on every platform: Windows gives its main thread
-/// 1 MiB, and a release build needs 1.2 MiB for 1000 levels of nesting (usvg's limit) and 2.4 for any mask, pattern or
-/// filter. The 32 leave a release build over ten times that, and a debug build, which needs several times the stack,
-/// draws 1024 levels too.
+/// 1 MiB, and a release build needs 1.2 MiB for 1000 levels of nesting and 2.4 for any mask, pattern or filter.
+/// Measured in a release build, in KiB of stack per level of nesting or link of a chain of references: nesting 1.2,
+/// `clip-path` 2.6, `mask` 2.8, `use` 4.7, `pattern` 5.6, `filter` and `marker` 5.9. `MAX_RECURSION_UNITS` holds a
+/// document to about 5 MiB above that base, so the 32 leave a release build six times the room, and a debug build,
+/// which needs several times the stack, draws the bounds too.
 const SVG_STACK: usize = 32 << 20;
 
 /// `f` on a thread of `SVG_STACK` bytes, joined before this returns: what recurses once per element or per link of a
@@ -147,6 +154,109 @@ fn on_svg_stack<T: Send>(f: impl FnOnce() -> Result<T> + Send) -> Result<T> {
         let thread = std::thread::Builder::new().name("svg".into()).stack_size(SVG_STACK).spawn_scoped(scope, f);
         thread.context("svg thread did not start")?.join().map_err(|_| anyhow::anyhow!("svg drawing panicked"))?
     })
+}
+
+/// A unit of recursion is one level of XML nesting, 1.25 KiB of stack. A link of a chain of references costs the depth
+/// of the element that holds it below its owner (the nearest element with an id) plus `REF_COST`, over the 5.9 KiB
+/// the dearest kind measured.
+const REF_COST: u64 = 4;
+
+/// The most recursion units a document may need: usvg's 1024 levels of nesting, or a chain of 818 `clip-path` links.
+const MAX_RECURSION_UNITS: u64 = 4096;
+
+/// Refuses a document whose recursion would pass `MAX_RECURSION_UNITS`, before usvg converts it: the cost of the
+/// costliest path through its nesting and its references (`url(#id)` and `#id` anywhere, and in a `<style>`, which may
+/// reach any element). A chain of references nests usvg's converter and resvg's renderer with no XML nesting, so 20000
+/// `clip-path` links overflow any stack. The nodes are the document and the elements with an `id`; an edge is the
+/// nesting down to the next such element, or a reference, at its cost. Kahn's algorithm finds the longest path with no
+/// recursion; what a cycle holds (usvg breaks them) is bounded by its node count times the dearest edge.
+fn check_reference_cost(doc: &roxmltree::Document) -> Result<()> {
+    use std::collections::HashMap;
+    let n = doc.descendants().count() + 1;
+    let hub = n - 1;
+    let slot = |node: roxmltree::Node| node.id().get_usize();
+    let elements: Vec<_> = doc.descendants().filter(|e| e.is_element()).collect();
+    let (mut depth, mut owner, mut deepest) = (vec![0u64; n], vec![0usize; n], vec![0u64; n]);
+    let mut gradient = vec![false; n];
+    let (mut ids, mut edges): (HashMap<&str, Vec<usize>>, Vec<(usize, usize, u64)>) = (HashMap::new(), Vec::new());
+    for e in &elements {
+        let (i, parent) = (slot(*e), slot(e.parent().expect("an element has a parent")));
+        depth[i] = depth[parent] + 1;
+        deepest[i] = depth[i];
+        gradient[i] = matches!(e.tag_name().name(), "linearGradient" | "radialGradient");
+        owner[i] = owner[parent];
+        if let Some(id) = e.attribute("id") {
+            ids.entry(id).or_default().push(i);
+            edges.push((owner[parent], i, depth[i] - depth[owner[parent]]));
+            owner[i] = i;
+        }
+    }
+    for e in elements.iter().rev() {
+        let parent = slot(e.parent().expect("an element has a parent"));
+        deepest[parent] = deepest[parent].max(deepest[slot(*e)]);
+    }
+    let max_depth = deepest[0];
+    let mut styled = false;
+    for e in &elements {
+        let (i, is_style) = (slot(*e), e.has_tag_name("style"));
+        let from = if is_style { hub } else { owner[i] };
+        let cost = (if is_style { max_depth } else { depth[i] - depth[from] }) + REF_COST;
+        let mut refer = |text: &str| {
+            for target in referenced_ids(text).filter_map(|id| ids.get(id)).flatten() {
+                // A gradient holds only stops, so a stylesheet's `fill` of one continues no chain.
+                if !(is_style && gradient[*target]) {
+                    edges.push((from, *target, cost));
+                }
+            }
+        };
+        e.attributes().for_each(|a| refer(a.value()));
+        if is_style {
+            styled = true;
+            e.descendants().filter_map(|d| d.text()).for_each(refer);
+        }
+    }
+    if styled {
+        let ided: Vec<usize> = ids.values().flatten().copied().collect();
+        edges.extend(std::iter::once(0).chain(ided).map(|from| (from, hub, 0)));
+    }
+    let dearest = edges.iter().map(|e| e.2).max().unwrap_or(0);
+    let (mut indegree, mut first) = (vec![0u32; n], vec![0usize; n + 1]);
+    edges.sort_unstable_by_key(|e| e.0);
+    for &(from, to, _) in &edges {
+        indegree[to] += 1;
+        first[from + 1] += 1;
+    }
+    for v in 0..n {
+        first[v + 1] += first[v];
+    }
+    let mut dist = vec![0u64; n];
+    let mut ready: Vec<usize> = (0..n).filter(|&v| indegree[v] == 0).collect();
+    let (mut seen, mut worst, mut reach) = (0, 0u64, 0u64);
+    while let Some(v) = ready.pop() {
+        seen += 1;
+        worst = worst.max(dist[v] + deepest[v] - depth[v]);
+        reach = reach.max(dist[v]);
+        for &(_, to, cost) in &edges[first[v]..first[v + 1]] {
+            dist[to] = dist[to].max(dist[v] + cost);
+            indegree[to] -= 1;
+            if indegree[to] == 0 {
+                ready.push(to);
+            }
+        }
+    }
+    let cyclic = (n - seen) as u64;
+    let cost = if cyclic > 0 { worst.max(reach + cyclic * dearest + max_depth) } else { worst };
+    anyhow::ensure!(cost <= MAX_RECURSION_UNITS, "svg nests {cost} deep through its elements and references, past {MAX_RECURSION_UNITS}");
+    Ok(())
+}
+
+/// The ids `value` refers to: `#id` as a whole (an href), and each `url(#id)` in it.
+fn referenced_ids(value: &str) -> impl Iterator<Item = &str> {
+    let urls = value.match_indices("url(").filter_map(|(at, _)| {
+        let rest = value[at + 4..].trim_start().trim_start_matches(['"', '\'']).strip_prefix('#')?;
+        Some(&rest[..rest.find([')', '"', '\'', ' ']).unwrap_or(rest.len())])
+    });
+    value.strip_prefix('#').into_iter().chain(urls)
 }
 
 /// usvg's own bound on element nesting, which it checks only after roxmltree has parsed the document, and roxmltree

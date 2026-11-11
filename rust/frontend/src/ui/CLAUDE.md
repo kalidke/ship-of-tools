@@ -296,12 +296,23 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Everything that recurses runs on a thread of `SVG_STACK` (32 MiB, the same on every platform: Windows gives the main
   thread 1 MiB, and a release build overflows it at about 900 levels of nesting), joined before the call returns
   (`on_svg_stack`), and a panic is an error.
-  Not closed: a chain of references (`SVG-REFERENCE-CHAIN-OVERFLOWS-STACK`). Tests: `a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it` (a child process; plain, quoted, embedded, entity,
+  A chain of references recurses with no XML nesting, so `check_reference_cost` refuses, before usvg converts the
+  document, one whose costliest path through nesting and references (`url(#id)`, a `#id` href, a `<style>`'s, which may
+  reach any element, except a gradient, which holds only stops) is past `MAX_RECURSION_UNITS` (4096): a unit is a level
+  of nesting and a link costs the depth of its element below its owner plus `REF_COST` (4), a cycle being bounded by its
+  node count at the dearest edge. Release-build measurements on that stack, KiB per level or link: nesting 1.2,
+  `clip-path` 2.6, `mask` 2.8, `use` 4.7, `pattern` 5.6, `filter` and `marker` 5.9, on a base of 2.4 MiB; the bound is
+  1024 levels, 818 `clip-path` links or about 400 `filter` links; the dearest measured at the bound, 800 `marker` links,
+  needed 4.5 MiB in all, a seventh of the stack. Limits: a stylesheet naming more than a few hundred distinct patterns,
+  clip paths, masks or filters (or in a document 100 levels deep, a few tens) reads as a chain and is refused; the
+  document's ids and edges are held in memory for a file up to the daemon's 512 MiB. Tests: `a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it` (a child process; plain, quoted, embedded, entity,
   `<!ELEMENT` and processing-instruction cases), `the_nesting_limit_is_pinned_at_1024`,
   `nesting_within_the_limit_draws_and_past_it_is_refused`,
   `an_image_href_naming_a_local_file_draws_nothing`, `an_image_href_naming_a_fifo_returns_at_once`,
   `an_embedded_raster_draws_and_embedded_svg_does_not`, `an_embedded_raster_repeated_past_the_pixel_budget_stops_drawing`,
-  `an_svg_draws_on_its_own_stack_whatever_the_callers` (a child process), `a_panic_on_the_svg_thread_is_an_error`.
+  `an_svg_draws_on_its_own_stack_whatever_the_callers` (a child process), `a_panic_on_the_svg_thread_is_an_error`,
+  `a_long_chain_of_references_is_refused_and_a_short_one_draws` (a child process), `the_reference_bound_is_pinned_at_4096_units`,
+  `cycles_stylesheets_and_many_uses_are_not_taken_for_deep_chains`.
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint
