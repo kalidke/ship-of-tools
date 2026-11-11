@@ -1847,3 +1847,29 @@ A landing's record goes here, with its measured times; the package page holds on
   the step-down) and 200 test lines. Review round 1 (no blockers; ten mutants killed; a hub move probed end to end; a
   held start gave up for good on a topology being edited, now only on one naming another hub), its fixes landed on the
   builder's reds; two rebases by the session; three scoped gates.
+- B3c, the watch model hands every new record of a delivering channel over, 2026-11-10: builder launched about 19:17,
+  main 19:36 (2fe137150), 19 minutes, inside the half hour. About 35 product lines and 70 test lines. Review round 1
+  (no blockers; 9 of 12 mutants killed; a separate take of the arrived records could be forgotten), and the session
+  chose the reviewer's simpler shape: the pump and the start return the handover, which the caller must use, and the
+  separate take, its buffer and its stop check went; one rebase; two scoped gates.
+- B3h1, the recovery traversal's channel walk and its horizon, 2026-11-11: builder launched about 07:12, main 08:04
+  (4fdbd1889), 52 minutes, a miss. About 98 product lines of code (139 with comments), the fake Slack's history pages
+  (98) and 335 test lines; the thread walk is the next landing, split before the build. Where the minutes went: review
+  round 1 (no blockers; nine mutants; the horizon's taking from the first page alone, the step back by a page's raw
+  oldest timestamp and one skipped pace were unpinned, and the contract let a caller commit before the thread walk);
+  two narrow rounds on the pace test, whose first gap carried the first connection's handshake, state the test does not
+  own; a gate whose results were complete but whose wrapper hung on a user service manager another agent had broken,
+  read by hand; two scoped gates.
+- An SVG's image reads no file or URL, 2026-11-11: builder launched about 08:33, main 09:03 (fe6a459a7), 30 minutes,
+  at the half hour. About 19 product lines and 100 test lines; closes SVG-IMAGE-HREF-READS-LOCAL-FILES. It follows an
+  in-process hardening of the SVG reader that did not land after three review rounds, each finding new ways a file
+  could still hold the window; the plan now draws a file's SVG in a bounded child process, and this is its first
+  landing. Review round 1 (no blockers; 49 hostile spellings traced at the system-call level read nothing, against 42
+  reads and 5 hangs at the base), its fixes (one table over four elements and three spellings) landed on the builder's
+  reds; two scoped gates.
+- The chat drawer's look, L1: Slack's dark colors, the header, the origin badge, the mark band and the selection,
+  2026-11-11: builder launched about 08:12, main 09:06 (1434b66a9), 54 minutes, a miss. About 163 product lines added
+  and 122 deleted, 368 test lines added. Where the minutes went: review round 1 (no blockers; the manual
+  called the lighter band darker; the run finder moved without a test; the frame's order of layout and rectangles was
+  untested, so the layout now returns the frame's rectangles and no order remains; the badge's line height unpinned);
+  two amend rounds; one rebase by the session; two scoped gates.

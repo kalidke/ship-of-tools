@@ -174,7 +174,7 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it. v0.7.1-rc.3 (2026-11-10) is an
-unpublished draft, installed by archive on the hub and one window computer for a person's first use of the project
+unpublished draft, installed by archive on the hub and two window computers for a person's first use of the project
 chat's drawer (rc.1 and rc.2, the day before, carried selection and drawing); `main` carries 0.7.1-rc.4-dev, and the
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
 the last one and carries everything that use found. In progress is the project chat (the daemon speaks Slack itself,
@@ -199,7 +199,10 @@ it), and posting into a thread (a draft goes where it was begun, the thread read
 post), and selection and copy (a drag selects text inside one message, Primary+c copies it or the marked message's
 shown text, never shared with the agent), and the native witness (the real window's chat through its State under a
 virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
-hub's chat configuration. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+hub's chat configuration. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
+bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection have
+landed. Also in progress: an SVG file previewed as its picture, by drawing a file's SVG in a bounded child process; its
+first landing, an SVG's image read only from embedded data (never a file or a URL), is on main. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the
@@ -208,8 +211,10 @@ maintainer's word after the first stage is measured. Mail (B3) is in progress: t
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound
 alone refused), each delivering channel's boundary file and its filed set in memory, a delivering configuration of at
-most 32 channels each with its own floor, and one chat listener per comm folder; the traversal, delivery's decisions,
-the daemon's filing and the row replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
+most 32 channels each with its own floor, one chat listener per comm folder, the watch model handing every new record
+of a delivering channel over once, in order, and the recovery traversal's channel walk and its horizon (no caller
+commits from it until the thread walk lands); the thread walk, delivery's decisions, the daemon's filing and the row
+replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
