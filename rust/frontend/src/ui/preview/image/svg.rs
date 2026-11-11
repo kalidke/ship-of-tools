@@ -103,6 +103,56 @@ fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
     Ok(pixmap)
 }
 
+/// The most pixels a picture of an SVG has: 16 Mpx, over a 4K screen's 8.3 Mpx.
+const MAX_RASTER_PIXELS: u64 = 16 * 1024 * 1024;
+
+/// The pane a picture fills with none laid out: a small fixed size, never the SVG's own, which the file declares.
+const NO_PANE: (u32, u32) = (1024, 1024);
+
+/// The raster size of an SVG `svg` units across, drawn to fill a `pane` (physical pixels, else `NO_PANE`) on its
+/// limiting side with its own aspect ratio, no side under one pixel or over `cap` (the GPU's texture limit) and no
+/// more than `MAX_RASTER_PIXELS` in all.
+pub fn svg_fit_dims((sw, sh): (f32, f32), pane: Option<(u32, u32)>, cap: u32) -> (u32, u32) {
+    let (sw, sh) = (sw.max(0.001), sh.max(0.001));
+    let (pw, ph) = pane.unwrap_or(NO_PANE);
+    let fit = (pw as f32 / sw).min(ph as f32 / sh).min(cap as f32 / sw.max(sh));
+    let side = |units: f32| ((units * fit).round() as u32).clamp(1, cap.max(1));
+    let (w, h) = (side(sw), side(sh));
+    if u64::from(w) * u64::from(h) <= MAX_RASTER_PIXELS {
+        return (w, h);
+    }
+    let shrink = (MAX_RASTER_PIXELS as f64 / (f64::from(w) * f64::from(h))).sqrt();
+    (((f64::from(w) * shrink).floor() as u32).max(1), ((f64::from(h) * shrink).floor() as u32).max(1))
+}
+
+/// An SVG drawn to fill `pane` (`svg_fit_dims`) as RGBA8 bytes, width and height, on the SVG's own stack.
+pub fn rasterize_fit(bytes: &[u8], pane: Option<(u32, u32)>, cap: u32) -> Result<(Vec<u8>, u32, u32)> {
+    on_svg_stack(|| {
+        let tree = svg_tree(bytes)?;
+        let size = tree.size();
+        let (w, h) = svg_fit_dims((size.width(), size.height()), pane, cap);
+        Ok((draw(&tree, w, h)?.take(), w, h))
+    })
+}
+
+/// The preview pane's picture of an SVG file as a quad and its size, filtered Linear.
+pub fn quad_fit_from_svg_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &QuadPipeline,
+    bytes: &[u8],
+    pane: Option<(u32, u32)>,
+) -> Result<(Quad, u32, u32)> {
+    let (rgba, w, h) = rasterize_fit(bytes, pane, device.limits().max_texture_dimension_2d)?;
+    Ok((Quad::from_rgba8(device, queue, pipeline, &rgba, w, h)?, w, h))
+}
+
+/// The status line for an SVG the pane could not draw (its text is shown instead).
+pub fn svg_not_drawn(why: &anyhow::Error) -> String {
+    let reason: String = format!("{why:#}").lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).collect();
+    format!("svg not drawn: {reason}")
+}
+
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
 /// separator (`one_paragraph_svg`), an XML shape the parser cannot be crashed by (`check_xml_shape`) and no file read
 /// for an `<image>` (`embedded_images_only`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it

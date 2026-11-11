@@ -283,6 +283,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
   outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+  An SVG file (`image/svg+xml`, `preview_route`'s `Svg`) is drawn by `State::install_svg_preview` into the same
+  `RasterView`: `rasterize_fit` (preview/image/svg.rs) draws it, on `svg_tree`'s own stack, at the pane's size in physical pixels on its limiting
+  side (`NO_PANE`, 1024 square, before a layout or while another pane is maximized), the SVG's aspect, no side past the
+  texture limit and no more than `MAX_RASTER_PIXELS` in all (`svg_fit_dims`), filtered Linear, with no view carry. An
+  SVG is not an image node (`is_image_node_id`): it has no ROI, crop (`c` says an SVG cannot be cropped), scale bar,
+  caption or drawing, since the daemon can decode none of them (drawing over an SVG is not built). One that will not
+  parse or draw is shown as its text and the status line says `svg not drawn: <first line of the reason>`.
+  Limits: a zoom past fit enlarges the raster's pixels (no re-raster at zoom), a pane resized after the draw scales the picture until the preview is next rendered, a text
+  scale change or a row switch draws it again at fit (no carry), `.svgz` is not served as `image/svg+xml` by the
+  daemon (`mime_for_path`) so it is not drawn, a non-UTF-8 `.svg` shows the last preview's text under its title (the
+  last branch of `render_preview_source`, which any non-UTF-8 text reaches).
+  Tests: `a_preview_is_routed_by_its_mime_an_svg_to_the_picture_not_the_raster_decoder_or_the_text`,
+  `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit`,
+  `the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small`,
+  `an_svg_that_will_not_parse_says_why_for_the_status_line`,
+  `the_preview_raster_is_drawn_on_the_svg_stack` (a child process), `an_svg_is_not_an_image_node`, the native fixture `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text`.
 - `svg_tree` (preview/image/svg.rs), the one way into usvg for the preview, math, markdown figures and the Monitor,
   scans the bytes before roxmltree parses them (`check_xml_shape`, one pass, no recursion): nesting past usvg's 1024
   elements is refused, since roxmltree recurses once per element and a 20000-deep file aborted the process, and so is

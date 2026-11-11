@@ -177,6 +177,23 @@ pub(in crate::ui) fn is_raster_preview_mime(mime: &str) -> bool {
     )
 }
 
+/// How `render_preview_source` takes a blob by its mime: an SVG is drawn as a picture (and shown as text when it will
+/// not draw), a raster is decoded, anything else is text, tokens or a summary.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui) enum PreviewRoute {
+    Svg,
+    Raster,
+    Other,
+}
+
+pub(in crate::ui) fn preview_route(mime: &str) -> PreviewRoute {
+    match mime {
+        "image/svg+xml" => PreviewRoute::Svg,
+        m if is_raster_preview_mime(m) => PreviewRoute::Raster,
+        _ => PreviewRoute::Other,
+    }
+}
+
 impl State {
     /// C2 pin-and-leave toggle. If a preview is pinned, `p` (from any row)
     /// UNPINS it and jumps the cursor to the formerly-pinned row, so the user
@@ -254,7 +271,20 @@ impl State {
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         self.shaped.clear_selection();
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
-        if is_raster_preview_mime(mime) {
+        let route = match preview_route(mime) {
+            PreviewRoute::Svg => match self.install_svg_preview(bytes) {
+                Ok(()) => return,
+                // The pane stays useful: the SVG's text is shown below, as any text file's, and the reason is said.
+                Err(why) => {
+                    tracing::warn!(error = ?format!("{why:#}"), "svg preview not drawn");
+                    self.status.set(crate::ui::preview::image::svg::svg_not_drawn(&why));
+                    self.window.request_redraw();
+                    PreviewRoute::Other
+                }
+            },
+            route @ (PreviewRoute::Raster | PreviewRoute::Other) => route,
+        };
+        if route == PreviewRoute::Raster {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
             // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
@@ -404,6 +434,23 @@ impl State {
                 "preview blob is not UTF-8 and not an image — skipping"
             );
         }
+    }
+
+    /// Draw an SVG file as the pane's picture, rasterized to fill the pane and installed in the same `RasterView` as a
+    /// PNG, so zoom and pan work as on a raster. The view starts at fit with no carry (it keys on an image node's ROI).
+    fn install_svg_preview(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        let (w, h) = self.preview_fit_px();
+        let pane = w.zip(h);
+        let (quad, w, h) = crate::ui::preview::image::svg::quad_fit_from_svg_bytes(
+            self.gpu.device(),
+            self.gpu.queue(),
+            self.brushes.pipeline(),
+            bytes,
+            pane,
+        )?;
+        self.raster.install(quad, (w, h), self.preview_source.node_id());
+        self.raster.reset_view(None);
+        Ok(())
     }
 
     /// Rebuild the refused-hello overlay buffer (ADR 0030 protocol mismatch, ADR 0049 account refusals) from

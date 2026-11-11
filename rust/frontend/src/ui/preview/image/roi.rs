@@ -4,7 +4,8 @@ use crate::ui::*;
 
 impl State {
     /// True if a `files:` node id names a raster image the backend can decode
-    /// + crop (ADR 0022). PDFs are excluded — their preview is a rasterized
+    /// + crop (ADR 0022). SVGs are excluded too: the pane draws one as a picture, but the daemon cannot crop or
+    /// compose it. PDFs are excluded — their preview is a rasterized
     /// page, not the `.pdf` file `image.crop` would try to decode.
     pub(in crate::ui) fn is_image_node_id(node_id: &str) -> bool {
         let lower = node_id.to_ascii_lowercase();
@@ -23,7 +24,7 @@ impl State {
     /// move on any failure path, so a no-op leaves you on the image.
     pub(in crate::ui) fn capture_roi(&mut self) {
         let Some(roi) = self.raster.roi().cloned() else {
-            self.status.set("capture: no image ROI in preview (zoom an image first)".to_string());
+            self.status.set(no_roi_line(self.raster.node()));
             self.window.request_redraw();
             return;
         };
@@ -108,6 +109,17 @@ impl State {
         }) {
             tracing::warn!(error = %e, "preview_roi_applied: transport closed — echo dropped");
         }
+    }
+}
+
+/// Why a capture has no ROI to cut. A shown SVG gets its own line: the daemon crops raster files, so no crop of an
+/// SVG is offered, and the generic hint to zoom would never help.
+fn no_roi_line(shown: Option<&str>) -> String {
+    match shown {
+        Some(node) if node.to_ascii_lowercase().ends_with(".svg") => {
+            "capture: an SVG cannot be cropped (the daemon crops raster files)".to_string()
+        }
+        _ => "capture: no image ROI in preview (zoom an image first)".to_string(),
     }
 }
 

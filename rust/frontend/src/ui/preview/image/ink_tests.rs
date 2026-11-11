@@ -574,6 +574,8 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refu
     assert_eq!(shown(None, false, false), None);
     assert_eq!(shown(Some("files:doc.pdf"), false, false), None);
     assert_eq!(shown(Some("files:src/lib.jl"), false, false), None);
+    // an SVG's picture is no base: the daemon cannot compose one into the agent's picture
+    assert_eq!(shown(Some("files:a.svg"), false, false), None);
     assert_eq!(shown(Some("files:a.png"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), false, true), None);
 }
