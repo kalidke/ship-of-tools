@@ -87,9 +87,9 @@ fn body() -> ScreenRect {
 
 /// Presses the mark keys (`true` toward older messages), as a frame spends them, and opens the marked message's thread.
 fn open(d: &mut ChatDrawer, fonts: &mut FontSystem, keys: &[bool]) -> Vec<Out> {
-    d.layout(fonts, body(), 1.0);
+    d.layout(fonts, body(), 1.0, body());
     keys.iter().for_each(|older| d.mark(*older));
-    d.layout(fonts, body(), 1.0);
+    d.layout(fonts, body(), 1.0, body());
     d.open_thread()
 }
 
@@ -110,7 +110,7 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     let first = history(&outs);
     assert_eq!((first.thread.as_ref(), first.limit, first.cursor.as_deref(), &first.target), (Some(&parent), 20, None, &target()));
     assert_eq!(d.title(), " chat · CH1 · thread ");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "the parent alone until a reply comes: {}", joined(&d));
     let rs: Vec<ChatRecord> = (0..2).map(|n| reply_to(&parent, n)).collect();
     // The page is out of order and holds another thread's reply: only this thread's replies join, by time.
@@ -120,7 +120,7 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     assert_eq!((second.thread.as_ref(), second.cursor.as_deref()), (Some(&parent), Some("c1")));
     let more = reply_to(&parent, 2);
     assert!(on(&mut d, &second, page(&[more], None), at(3)).is_empty());
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     let text = d.placed_text();
     assert_eq!(text.len(), 4, "the parent and three replies: {}", joined(&d));
     assert!(text[0].contains("message 2") && text[1].contains("reply 0") && text[3].contains("reply 2"), "{}", joined(&d));
@@ -128,7 +128,7 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     // Escape closes it: the channel is back, and the mark is on the parent.
     assert!(d.close_thread());
     assert!(!d.close_thread(), "nothing to close");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.marked(), Some(parent.clone()));
     assert_eq!(d.placed_text().len(), 3);
     assert_eq!(d.title(), " chat · CH1 ");
@@ -142,10 +142,10 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     let b = history(&open(&mut d, &mut fonts, &[true]));
     assert_eq!(b.thread.as_ref(), Some(&other));
     assert!(on(&mut d, &a, page(&[reply_to(&parent, 0)], None), at(13)).is_empty(), "another thread's reply");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "{}", joined(&d));
     on(&mut d, &b, page(&[reply_to(&other, 5)], None), at(14));
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(joined(&d).contains("reply 5") && !joined(&d).contains("reply 0"), "{}", joined(&d));
     assert!(d.close_thread());
 
@@ -155,10 +155,10 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     assert_eq!(reads(&open(&mut d, &mut fonts, &[])), 0, "the new read waits for the old one");
     let outs = on(&mut d, &first, page(&[reply_to(&parent, 0)], None), at(22));
     assert_eq!(history(&outs), first, "the old reply leaves the set, then the new read goes");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "the old reply filled nothing: {}", joined(&d));
     on(&mut d, &first, page(&[reply_to(&parent, 1)], None), at(23));
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(joined(&d).contains("reply 1"), "{}", joined(&d));
 
     // A refused read is asked again after the pace, or after thirty seconds for `limited`, and the title names the code.
@@ -179,13 +179,13 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     let outs = d.on_connection(&host(), true, at(81));
     let again = outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatHistory { req } if req.thread.is_some())).count();
     assert_eq!(again, 1, "the walk starts again");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "from the first page: {}", joined(&d));
     // A reply to the read a link's end left in flight comes to nothing.
     let lost = outs.iter().find_map(|(_, r)| if let OutgoingReq::ChatHistory { req } = r { Some(req.clone()) } else { None }).expect("the read");
     d.on_connection(&host(), false, at(82));
     on(&mut d, &lost, page(&[reply_to(&parent, 7)], None), at(83));
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "{}", joined(&d));
 
     // A row switch closes it, and so does hiding the drawer.
@@ -226,7 +226,7 @@ fn a_thread_shares_the_bound_with_the_channel_and_says_what_it_leaves_out() {
     assert_eq!(reads(&outs), 0, "the walk stops at the bound");
     assert_eq!((d.thread_len(), d.held()), (156, 100));
     assert!(d.title().ends_with("thread the rest of this thread is not shown "), "{}", d.title());
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(joined(&d).contains("reply 154") && !joined(&d).contains("reply 155"), "the first replies stay: {}", joined(&d));
 
     // A channel snapshot never replaces thread replies.
@@ -235,19 +235,19 @@ fn a_thread_shares_the_bound_with_the_channel_and_says_what_it_leaves_out() {
     let outs = d.on_evt(&host(), ChatEvt::Watched { target: target(), reply }, at + Duration::from_secs(21));
     let snapshot: Vec<ChatRecord> = (200..220).map(top).collect();
     on(&mut d, &history(&outs), page(&snapshot, None), at + Duration::from_secs(22));
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.thread_len(), 156);
     assert!(joined(&d).contains("reply 154"), "{}", joined(&d));
 
     // The parent gave way: closing passes the mark to a held record by the view's rule.
     assert!(d.close_thread());
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     let mark = d.marked().expect("a mark");
     assert!(mark != parent && d.placed_text().len() > 1, "the mark passed on");
 
     // The thread's share goes back to the channel (the reader follows the newest, so no anchor holds the trim): it grows past 100 again.
     d.latest();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     for chunk in (300..400).collect::<Vec<usize>>().chunks(20) {
         let put: Vec<ChatRecord> = chunk.iter().map(|n| top(*n)).collect();
         let changed = serde_json::from_value(serde_json::json!({ "workspace": "WS1", "channel": "CH1", "put": put, "deleted": [] })).unwrap();
@@ -273,17 +273,17 @@ fn thread_view_compose_and_back_keep_target() {
     let parent = held[1].ts.clone();
 
     // Nothing is marked, so nothing opens.
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.open_thread();
     assert_eq!((d.title(), d.placed_text().len()), (" chat · CH1 ".to_string(), 3));
 
     // The marked message's thread shows its parent alone; opening another thread meanwhile is nothing.
     open(&mut d, &mut fonts, &[true, true]);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.title(), " chat · CH1 · thread ");
     assert!(d.placed_text().len() == 1 && d.placed_text()[0].contains("message 1"), "{:?}", d.placed_text());
     d.mark(true);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.open_thread();
     assert!(d.placed_text()[0].contains("message 1"), "{:?}", d.placed_text());
 
@@ -296,7 +296,7 @@ fn thread_view_compose_and_back_keep_target() {
     // Escape closes it: the channel's view is back, with its mark on the parent.
     assert!(d.close_thread());
     assert!(!d.close_thread(), "nothing to close");
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!((d.marked(), d.placed_text().len()), (Some(parent), 3));
     assert!(!d.title().contains("thread"));
 
@@ -312,17 +312,17 @@ fn thread_view_compose_and_back_keep_target() {
 
     // The channel's place is kept: a reader scrolled up is still there after the thread closes.
     let (mut d, _) = channel(&(0..20).map(top).collect::<Vec<_>>());
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.mark(true);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.scroll(true, Step::Page);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(!d.following());
     d.open_thread();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(d.following(), "the thread has a view of its own");
     d.close_thread();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(!d.following(), "the channel's position returns");
 
     // The parent gave way under a resync while its thread was open: closing passes the mark to the nearest newer message.
@@ -330,7 +330,7 @@ fn thread_view_compose_and_back_keep_target() {
     open(&mut d, &mut fonts, &[true, true]);
     resnapshot(&mut d, &[held[0].clone(), held[2].clone()], None, at);
     d.close_thread();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!((d.marked(), d.placed_text().len()), (Some(held[2].ts.clone()), 2));
 
     // `no messages` is the channel's: not over a thread whose channel was emptied meanwhile.
@@ -354,19 +354,19 @@ fn thread_view_compose_and_back_keep_target() {
     let gone = serde_json::from_value(serde_json::json!({ "workspace": "WS1", "channel": "CH1", "put": [], "deleted": [held[1].ts] })).unwrap();
     d.on_evt(&host(), ChatEvt::Changed(gone), at);
     open(&mut d, &mut fonts, &[true, true]);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(d.placed_text()[0].ends_with("(message deleted)"), "{:?}", d.placed_text());
 
     // The thread's view never moves the channel's reading place: the owner holds no anchor (the channel's oldest give way) and asks for no page.
     let (mut d, at) = channel_with(&(0..20).map(top).collect::<Vec<_>>(), Some("older"));
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.mark(true);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     d.scroll(true, Step::Page);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert!(d.owner_anchor().is_some(), "scrolled up");
     d.open_thread();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.owner_anchor(), None, "the thread's frames set no anchor");
     assert!(d.tick(shown("ROW1"), at + Duration::from_secs(1)).0.is_empty(), "no older page is asked for");
 
@@ -377,7 +377,7 @@ fn thread_view_compose_and_back_keep_target() {
         assert!(d.tick(shown("ROW1"), at + Duration::from_secs(s)).0.is_empty(), "tick {s}");
     }
     d.close_thread();
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(history(&d.tick(shown("ROW1"), at + Duration::from_secs(20)).0).upper.is_some(), true, "the channel pages again once the thread is closed");
 }
 
@@ -494,8 +494,13 @@ fn made(d: &mut ChatDrawer, req: &ChatPostReq, at: Instant) -> Vec<Out> {
     d.on_evt(&host(), ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Posted { ts }) }, at)
 }
 
+/// Three days after the parent `top(1)` (22:13 UTC on the 14th), in UTC, so the compose line's stamp is the same on every day
+/// the test runs.
+const PINNED_NOW: i64 = 1_700_200_000;
+const PARENT_STAMP: &str = "reply in thread of Nov 14 10:13 PM";
+
 fn to_line(d: &ChatDrawer) -> String {
-    compose_rows(&d.compose_text(false).unwrap(), 60, 6).pop().unwrap()
+    compose_rows(&d.compose_text_at(false, PINNED_NOW, chrono::FixedOffset::east_opt(0).unwrap()).unwrap(), 60, 6).pop().unwrap()
 }
 
 #[test]
@@ -508,14 +513,14 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     let (mut d, at) = channel(&held);
     open(&mut d, &mut fonts, &[true, true]);
     d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
-    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    assert!(to_line(&d).starts_with(PARENT_STAMP), "{}", to_line(&d));
     d.close_thread();
-    assert!(to_line(&d).starts_with("reply in thread of "), "the draft keeps its thread through the close");
+    assert!(to_line(&d).starts_with(PARENT_STAMP), "the draft keeps its thread through the close");
     // A row switch away and back, and the watch ended, leave it as it was.
     d.tick(shown("ROW2"), at + Duration::from_secs(1));
     d.tick(shown("ROW1"), at + Duration::from_secs(2));
     d.on_evt(&host(), ChatEvt::Resolved { row: "ROW1".into(), reply: ChatReply::Refused(ChatCode::Unmapped) }, at + Duration::from_secs(3));
-    assert!(to_line(&d).starts_with("reply in thread of "), "the draft keeps its thread through a row switch and a lost watch");
+    assert!(to_line(&d).starts_with(PARENT_STAMP), "the draft keeps its thread through a row switch and a lost watch");
     d.on_connection(&host(), false, at);
     d.on_connection(&host(), true, at);
     let req = send(&mut d, at);
@@ -538,7 +543,7 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     let (mut d, at) = channel(&held);
     let outs = open(&mut d, &mut fonts, &[true, true]);
     on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.thread_len(), 2);
     let req = type_and_send(&mut d, "a reply", at);
     let again = history(&made(&mut d, &req, at));
@@ -583,7 +588,7 @@ fn only_a_posted_reply_rereads_and_an_empty_draft_names_the_open_thread() {
     let (mut d, at) = channel(&held);
     assert_eq!(to_line(&d), "to CH1");
     let outs = open(&mut d, &mut fonts, &[true, true]);
-    assert!(to_line(&d).starts_with("reply in thread of 2023-11-1"), "{}", to_line(&d));
+    assert!(to_line(&d).starts_with(PARENT_STAMP), "{}", to_line(&d));
     on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
     let req = type_and_send(&mut d, "a reply", at);
     let refused = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy });
@@ -610,17 +615,17 @@ fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
     let mut fonts = FontSystem::new();
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let (mut d, _) = channel(&held);
-    d.layout(&mut fonts, body(), 1.0);
+    d.layout(&mut fonts, body(), 1.0, body());
     let hit = d.hit(d.point_at(&held[0].ts, 1, 0).unwrap());
     assert!(d.press(hit));
     let end = d.point_at(&held[0].ts, 1, 4).unwrap();
     d.extend_drag(end);
-    assert!(!d.selection_rects().is_empty(), "record 0 is selected");
+    let tinted = |d: &mut ChatDrawer, fonts: &mut FontSystem| d.layout(fonts, body(), 1.0, body()).iter().any(|q| q.color == (0x1B, 0x43, 0x56));
+    assert!(tinted(&mut d, &mut fonts), "record 0 is selected");
     // Mark another message and open its thread: a press elsewhere (an agent click) while it is open, then close.
     open(&mut d, &mut fonts, &[true]);
     d.press(None);
     assert!(d.close_thread());
-    d.layout(&mut fonts, body(), 1.0);
-    assert!(d.selection_rects().is_empty(), "the old selection does not return at close");
+    assert!(!tinted(&mut d, &mut fonts), "the old selection does not return at close");
     assert_eq!(d.copy_text().as_deref(), Some("message 2"), "Primary+c copies the marked parent, not the old selection");
 }

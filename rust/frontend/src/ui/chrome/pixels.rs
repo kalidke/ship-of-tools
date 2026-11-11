@@ -1,12 +1,12 @@
 //! The chrome's pixel layer: the projected text lines, the border quads, and the overlay text layer's prepare.
 
 use super::*;
-use crate::ui::render::brushes::CellBacks;
+use crate::ui::render::cells::CellQuad;
 
 /// The chrome's pixel layer for one frame: the text lines, the border rects by colour, the strip's logo rects and
-/// the cell backgrounds.
+/// the cell backgrounds, which the frame adds the chat's rectangles to before it builds their palette.
 pub(in crate::ui) type ChromeProjection =
-    (Vec<crate::ui::render::text::Line>, HashMap<(u8, u8, u8), Vec<ScreenRect>>, Vec<ScreenRect>, CellBacks);
+    (Vec<crate::ui::render::text::Line>, HashMap<(u8, u8, u8), Vec<ScreenRect>>, Vec<ScreenRect>, Vec<CellQuad>);
 
 impl State {
     pub(in crate::ui) fn project_chrome(&mut self) -> Result<ChromeProjection> {
@@ -16,13 +16,12 @@ impl State {
             self.canvas.cell_w(),
             self.canvas.cell_h(),
         );
-        let backs = self.canvas.chrome().project_backs(
+        let cell_backs = self.canvas.chrome().project_backs(
             self.canvas.origin_x(),
             self.canvas.origin_y(),
             self.canvas.cell_w(),
             self.canvas.cell_h(),
         );
-        let cell_backs = self.brushes.prepare_backs(&backs, &self.gpu)?;
 
         let mut border_rects_by_color = self.project_border_quads()?;
         let strip_logo_rects = self.draw_session_strip(&mut lines, &mut border_rects_by_color)?;

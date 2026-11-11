@@ -4,7 +4,7 @@ The Chat drawer (`Ctrl+Shift+K`) shows the messages of one Slack channel: the ch
 The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
 a message that arrives takes the bottom line and lifts the rest. An empty channel shows `no messages`.
 
-ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view moves to show it; a scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
+ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view moves to show it. The mark is a lighter band across the message with a blue bar at its left edge; it changes nothing else about the message. A scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
 
 ArrowRight (`chat.thread_open`) opens the marked message's thread, a message with no replies included: the thread shows the message and its replies, oldest first, and Escape closes it, with the mark back on the message. Changing the row or hiding the drawer closes it too. A thread is read when it is opened, not watched: a reply made on the phone shows when the thread is opened again, and `N replies` on a message is not live either. Each open takes about 8 Slack reads for a long thread, more when Slack sends short pages, plus the lookups of the authors' names. A thread shows up to 156 messages, the parent included: past that the newest replies are not shown, and the title says so. While a thread is open the channel's older messages give way to it, never its newest 100. A refused read is asked again after a few seconds (thirty when Slack rate limits), and the title says why. A message begun while a thread is open is a reply in that thread (the line under the draft reads `reply in thread of` the message's time), and one begun in the channel stays the channel's when a thread opens; a draft keeps where it was begun through closing the thread, changing the row and a reconnect. After your own reply is posted and the thread is open, it is read again, which costs about what opening it did (about 8 reads for a long thread), so it shows the parent alone for a moment.
 
@@ -23,8 +23,11 @@ replace the newest held; the older ones kept stay as read, so an edit or delete 
 not reach the drawer for as long as the channel is one of the last two. The drawer keeps those messages in memory when the
 Chat drawer is hidden.
 
-Each message starts with its own header line: the author's name, a tag for a post that came from the drawer, a row or a
-bot, and the time (`HH:MM` for today, with the date for an earlier day). The text follows as typed.
+The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each message starts with
+its own header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
+(`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`; `Nov 9 2:14 PM` for an
+earlier day, with the year for another year). The badge comes from where Slack says the post came from, never from the
+text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed.
 
 ## Which channel
 
@@ -51,8 +54,8 @@ row. Its title is `chat · <channel id>` (the id shows only while a channel is w
 ## Markup shows as markup
 
 A message is shown as its poster typed it. Slack's markup, such as a mention or a link, is shown as the markup text in
-its own color and is not rendered: a link is not clickable and a mention is not replaced by a name. Text that looks like
-a header inside a message stays body text.
+blue and is not rendered: a link is not clickable and a mention is not replaced by a name. Text that looks like
+a header or a badge inside a message stays body text.
 
 ## Deleted messages
 
@@ -105,7 +108,7 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 Press the left mouse button on a message's text and drag to select within that message: the selection stays in the message
 where you began, and the name and time line is not selectable. A click on the name and time line, or anywhere else, selects
 nothing, and a click in the messages still focuses the drawer. Any other click clears the selection, and so does a change
-to the message (an edit or a delete), a new window width, moving the mark onto or off it, opening a thread, and changing the row. A chat
+to the message (an edit or a delete), a new window width, opening a thread, and changing the row; moving the mark does not. A chat
 selection is never shared with the agent; only the preview's text and your drawing are.
 
 ## Copying

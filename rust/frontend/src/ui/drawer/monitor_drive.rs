@@ -61,25 +61,29 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Lays the drawer's tenants out in pixels; returns the chat's rectangles for this frame (none unless it is shown).
     pub(in crate::ui) fn layout_drawer_px(
         &mut self,
         cells_to_px: impl Fn(ratatui::layout::Rect) -> ScreenRect,
         repl_scrollback_cells: ratatui::layout::Rect,
         repl_window: (usize, usize),
         repl_cells: ratatui::layout::Rect,
-    ) {
+    ) -> Vec<crate::ui::render::cells::CellQuad> {
         // The chat drawer's records are placed in the drawer's pixels and shaped, or dropped while it is not shown.
         // The compose rows the chrome drew sit at its foot.
         let foot = self.chat.foot();
         let chat_body = (self.layout_help.drawer() == DrawerContent::Chat)
             .then(|| cells_to_px(ratatui::layout::Rect { height: repl_cells.height.saturating_sub(foot), ..repl_cells }));
-        match chat_body {
+        let chat_backs = match chat_body {
             Some(body) => {
-                let (chat, scale) = (&mut self.chat, (self.canvas.cell_h() / BASE_CELL_H));
-                self.canvas.shape(|fonts| chat.layout(fonts, body, scale));
+                let (chat, scale, inside) = (&mut self.chat, (self.canvas.cell_h() / BASE_CELL_H), cells_to_px(repl_cells));
+                self.canvas.shape(|fonts| chat.layout(fonts, body, scale, inside))
             }
-            None => self.chat.hide(),
-        }
+            None => {
+                self.chat.hide();
+                Vec::new()
+            }
+        };
         // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
         // Regenerate the SVG → wgpu quad whenever the readings changed
         // (the pane's dirty mark) or the chart on screen was drawn for another size,
@@ -103,6 +107,7 @@ impl State {
             .ok();
             self.monitor.install(draw, quad);
         }
+        chat_backs
     }
 }
 

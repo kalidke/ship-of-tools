@@ -290,8 +290,10 @@ impl ChatDrawer {
         self.thread.is_none() && self.owner.no_messages()
     }
 
-    /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it.
-    pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32) {
+    /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it, and returns the frame's
+    /// rectangles for the drawer's `inside` (`view::ChatView::backs`), in painting order. They come only from this layout, so
+    /// the frame cannot take the last frame's.
+    pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32, inside: ScreenRect) -> Vec<crate::ui::render::cells::CellQuad> {
         let now = chrono::Local::now();
         // The thread's records are its own; the channel's reader keeps the place it left.
         let records = self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records);
@@ -300,6 +302,7 @@ impl ChatDrawer {
             self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
             self.owner.reaches(self.view.at_oldest);
         }
+        self.view.backs(inside)
     }
 
     /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
@@ -384,7 +387,7 @@ impl ChatDrawer {
         self.view.hide();
     }
 
-    /// The selection's view calls: a press, the drag, the copy and the tint (`view::ChatView`).
+    /// The selection's view calls: a press, the drag and the copy (`view::ChatView`).
     pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
         self.view.hit(at)
     }
@@ -404,10 +407,6 @@ impl ChatDrawer {
     /// What `chat.copy_selection` copies (`view::ChatView::copy_text`).
     pub(in crate::ui) fn copy_text(&self) -> Option<String> {
         self.view.copy_text()
-    }
-
-    pub(in crate::ui) fn selection_rects(&self) -> Vec<ScreenRect> {
-        self.view.selection_rects()
     }
 
     pub(in crate::ui) fn areas(&self) -> Vec<crate::ui::render::text::ExtraArea<'_>> {
@@ -438,9 +437,15 @@ impl ChatDrawer {
     }
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
-    /// (`to <channel>`, or `reply in thread of HH:MM`, the parent's time as its header shows it), else where the next
+    /// (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time as its header shows it), else where the next
     /// draft would go: the open thread, or the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
+        let now = chrono::Local::now();
+        self.compose_text_at(focused, now.timestamp(), *now.offset())
+    }
+
+    /// `compose_text` at a given time and offset, which the parent's time in `reply in thread of` is shown against.
+    pub(super) fn compose_text_at(&self, focused: bool, now: i64, offset: chrono::FixedOffset) -> Option<ComposeText> {
         if let Some(name) = &self.asking {
             return Some(ComposeText::asking(name, focused));
         }
@@ -449,10 +454,7 @@ impl ChatDrawer {
         // With no draft, the line names where the next one would go: the open thread's parent.
         let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
         let to = match thread {
-            Some(p) => {
-                let now = chrono::Local::now();
-                format!("reply in thread of {}", super::project::when(p.as_str(), now.timestamp(), *now.offset()))
-            }
+            Some(p) => format!("reply in thread of {}", super::project::when(p.as_str(), now, offset)),
             None => format!("to {}", dest.channel.as_str()),
         };
         Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))

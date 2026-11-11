@@ -14,7 +14,7 @@ fn utc() -> chrono::FixedOffset {
 }
 
 fn spans(r: &ChatRecord) -> Vec<Span> {
-    project(r, NOW, utc(), false, false)
+    project(r, NOW, utc(), false)
 }
 
 fn body(r: &ChatRecord) -> Vec<(Kind, String)> {
@@ -34,24 +34,28 @@ fn chat_markup_and_hostile_text_remain_literal() {
     let mut r = rec("hi");
     r.author.name = "Eve\u{202e}\nAda 12:00".to_string();
     let s = spans(&r);
-    let header: String = s.iter().filter(|s| matches!(s.kind, Kind::Header(_))).map(|s| s.text.as_str()).collect();
+    let header: String = s.iter().filter(|s| is_header(s.kind)).map(|s| s.text.as_str()).collect();
     assert_eq!(header.matches('\n').count(), 1, "{header:?}");
     assert!(header.ends_with('\n') && !header.contains('\u{202e}'), "{header:?}");
-    assert!(header.starts_with("Eve") && header.ends_with(" 22:13\n"), "{header:?}");
+    assert!(header.starts_with("Eve") && header.ends_with("  10:13 PM\n"), "{header:?}");
 
     let mut old = rec("x");
     old.ts = sot_protocol::chat::Ts::parse("1600000000.000000").unwrap();
-    assert_eq!(spans(&old)[1].text, "2020-09-13 12:26\n");
+    assert_eq!(spans(&old)[1].text, "Sep 13 2020 12:26 PM\n");
 
     let fake = body(&rec("\nAda 12:00\nhello"));
     assert!(fake.iter().all(|(k, _)| *k == Kind::Body));
     let all = spans(&rec("Ada 12:00\nx"));
-    assert!(matches!(all[0].kind, Kind::Header(false)) && all[2..].iter().all(|s| !matches!(s.kind, Kind::Header(_))));
-    assert!(matches!(project(&rec("x"), NOW, utc(), true, false)[0].kind, Kind::Header(true)));
+    assert!(matches!(all[0].kind, Kind::Name) && all[2..].iter().all(|s| !is_header(s.kind)));
+}
+
+/// The kinds only a header has.
+fn is_header(kind: Kind) -> bool {
+    matches!(kind, Kind::Name | Kind::Time | Kind::Badge)
 }
 
 fn lines(r: &ChatRecord, now: i64, off: chrono::FixedOffset) -> String {
-    project(r, now, off, false, false).iter().map(|s| s.text.as_str()).collect()
+    project(r, now, off, false).iter().map(|s| s.text.as_str()).collect()
 }
 
 fn east(h: i32) -> chrono::FixedOffset {
@@ -62,12 +66,12 @@ fn east(h: i32) -> chrono::FixedOffset {
 fn a_stamp_beyond_chronos_range_shows_raw_and_the_date_is_the_local_one() {
     let mut r = rec("x");
     r.ts = sot_protocol::chat::Ts::parse("8210266876798.000000").unwrap();
-    assert_eq!(lines(&r, NOW, east(14)), "Ada 8210266876798.000000\nx");
+    assert_eq!(lines(&r, NOW, east(14)), "Ada  8210266876798.000000\nx");
     // 05:00 UTC on the 14th is the same UTC date as now, but at +14 now is the 15th and the stamp is not today.
     let mut r = rec("x");
     r.ts = sot_protocol::chat::Ts::parse("1699938000.000000").unwrap();
-    assert_eq!(lines(&r, NOW, east(14)), "Ada 2023-11-14 19:00\nx");
-    assert_eq!(lines(&r, NOW, east(0)), "Ada 05:00\nx");
+    assert_eq!(lines(&r, NOW, east(14)), "Ada  Nov 14 7:00 PM\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "Ada  5:00 AM\nx");
 }
 
 #[test]
@@ -81,20 +85,20 @@ fn meta_lines_origins_and_names_read_exactly() {
         { "id": "F1", "name": "a.png", "mime": "image/png", "bytes": 1_048_575, "thumbnail": false },
         { "id": "F2", "name": "", "mime": "", "thumbnail": false }])).unwrap();
     assert_eq!(lines(&r, NOW, east(0)),
-        "Ada 22:13\n[file a.png, 1.0 MiB]\n[a file]\n[+2 files]\n1 reply\n(cut)\n(this message could not be shown)");
+        "Ada  10:13 PM\n[file a.png, 1.0 MiB]\n[a file]\n[+2 files]\n1 reply\n(cut)\n(this message could not be shown)");
     r.reply_count = 3;
     r.text = "hi".to_string();
-    assert!(lines(&r, NOW, east(0)).starts_with("Ada 22:13\nhi\n[file a.png"));
+    assert!(lines(&r, NOW, east(0)).starts_with("Ada  10:13 PM\nhi\n[file a.png"));
     assert!(lines(&r, NOW, east(0)).contains("\n3 replies\n"));
 
     let mut r = rec("x");
     r.origin = serde_json::from_value(serde_json::json!("future")).unwrap();
-    assert_eq!(lines(&r, NOW, east(0)), "Ada 22:13\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "Ada  10:13 PM\nx");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
-    assert_eq!(lines(&r, NOW, east(0)), "Ada [row] 22:13\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "Ada  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nx");
 
     r.author.name = "Eve\u{2028}Ada\u{fff9}\u{2067}".to_string();
-    assert_eq!(lines(&r, NOW, east(0)), "EveAda [row] 22:13\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "EveAda  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nx");
 }
 
 #[test]
@@ -103,20 +107,19 @@ fn file_names_tags_extreme_stamps_and_marks_are_exact() {
     r.files = serde_json::from_value(serde_json::json!([
         { "id": "F1", "name": "a\u{202e}b\nc.png", "mime": "image/png", "bytes": 5, "thumbnail": false },
         { "id": "F2", "name": "\u{202e}\n", "mime": "x", "bytes": 5, "thumbnail": false }])).unwrap();
-    assert_eq!(lines(&r, NOW, east(0)), "Ada 22:13\nhi\n[file abc.png, 5 B]\n[a file]");
-    for (origin, tag) in [("drawer", "[drawer] "), ("bot", "[bot] ")] {
+    assert_eq!(lines(&r, NOW, east(0)), "Ada  10:13 PM\nhi\n[file abc.png, 5 B]\n[a file]");
+    for (origin, tag) in [("drawer", "DRAWER"), ("bot", "APP")] {
         let mut r = rec("x");
         r.origin = serde_json::from_value(serde_json::json!(origin)).unwrap();
-        assert_eq!(lines(&r, NOW, east(0)), format!("Ada {tag}22:13\nx"));
+        assert_eq!(lines(&r, NOW, east(0)), format!("Ada  \u{a0}\u{a0}{tag}\u{a0}\u{a0}  10:13 PM\nx"));
     }
     let mut r = rec("x");
     r.ts = sot_protocol::chat::Ts::parse("9223372036854775807.000000").unwrap();
-    assert_eq!(lines(&r, i64::MAX, east(14)), "Ada 9223372036854775807.000000\nx");
+    assert_eq!(lines(&r, i64::MAX, east(14)), "Ada  9223372036854775807.000000\nx");
     let mut r = rec("x");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
-    let headers: Vec<_> = project(&r, NOW, east(0), true, false).into_iter().filter(|s| matches!(s.kind, Kind::Header(_))).collect();
-    assert_eq!(headers.len(), 2);
-    assert!(headers.iter().all(|s| s.kind == Kind::Header(true)));
+    let kinds: Vec<_> = project(&r, NOW, east(0), false).into_iter().map(|s| s.kind).collect();
+    assert_eq!(kinds, [Kind::Name, Kind::Badge, Kind::Time, Kind::Body]);
 }
 
 /// A deleted message that had text, files and replies is its header and the notice and nothing more; the daemon's record of a
@@ -130,8 +133,23 @@ fn a_deleted_message_is_its_header_and_the_notice_alone() {
     r.omitted = true;
     r.latest_reply = Some(sot_protocol::chat::Ts::parse("1700000001.000000").unwrap());
     r.files = serde_json::from_value(serde_json::json!([{ "id": "F1", "name": "a.png", "mime": "image/png", "bytes": 10, "thumbnail": false }])).unwrap();
-    let shown: String = project(&r, NOW, utc(), false, true).iter().map(|s| s.text.as_str()).collect();
-    assert_eq!(shown, "Ada 22:13\n(message deleted)");
+    let shown: String = project(&r, NOW, utc(), true).iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(shown, "Ada  10:13 PM\n(message deleted)");
     let unreadable = lines(&r, NOW, utc());
     assert!(unreadable.contains("(this message could not be shown)") && !unreadable.contains("(message deleted)"), "{unreadable:?}");
+}
+
+/// Slack's desktop app shows `12:47 AM` and `1:05 PM`: a 12-hour clock with no leading zero, midnight and noon as 12.
+#[test]
+fn a_time_is_twelve_hour_as_slack_shows_it() {
+    // 1699920000 is midnight on the day of `NOW`, in UTC.
+    let at = |secs: i64, now: i64, off| when(&format!("{secs}.000000"), now, off);
+    for (secs, want) in [(1_699_922_820, "12:47 AM"), (1_699_967_100, "1:05 PM"), (1_699_920_000, "12:00 AM"), (1_699_963_200, "12:00 PM"), (1_699_999_999, "10:13 PM")] {
+        assert_eq!(at(secs, NOW, utc()), want);
+    }
+    // Another day shows its date first, and another year its year.
+    assert_eq!(at(1_699_833_600, NOW, utc()), "Nov 13 12:00 AM");
+    assert_eq!(at(1_600_000_000, NOW, utc()), "Sep 13 2020 12:26 PM");
+    // The fixed offset moves the day as well as the hour.
+    assert_eq!(at(1_699_922_820, NOW, east(-1)), "Nov 13 11:47 PM");
 }

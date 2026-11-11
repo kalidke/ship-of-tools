@@ -1,6 +1,7 @@
 //! `MarkdownPreview`'s methods (build, resize, scroll and hit-test math) and its text helpers.
 
 use super::*;
+use crate::ui::render::text::flagged_runs;
 
 /// Collapse CRLF / lone-CR line endings to LF before handing text to the
 /// shaper. cosmic-text treats a `\r` as its own line break, so a Windows
@@ -394,29 +395,7 @@ impl MarkdownPreview {
     /// thin (1–2 px) horizontal quad at the glyph's x-height midline
     /// rather than a full-cell panel. Driven by `STRIKE_GLYPH_FLAG`.
     pub fn strike_glyph_rects(&self) -> Vec<(f32, f32, f32, f32)> {
-        let mut rects = Vec::new();
-        for run in self.buffer.layout_runs() {
-            let top = run.line_top;
-            let h = run.line_height;
-            let mut current: Option<(f32, f32)> = None;
-            for g in run.glyphs.iter() {
-                let is_strike = (g.metadata & STRIKE_GLYPH_FLAG) != 0;
-                let gx = g.x;
-                let gw = g.w.max(0.0);
-                if is_strike {
-                    let span = current
-                        .map(|(s, _)| (s, gx + gw))
-                        .unwrap_or((gx, gx + gw));
-                    current = Some(span);
-                } else if let Some((s, e)) = current.take() {
-                    rects.push((s, top, e - s, h));
-                }
-            }
-            if let Some((s, e)) = current.take() {
-                rects.push((s, top, e - s, h));
-            }
-        }
-        rects
+        flagged_runs(&self.buffer, |m| m & STRIKE_GLYPH_FLAG != 0)
     }
 
     /// Per-LayoutRun rects for any glyphs carrying `CODE_BLOCK_FLAG`,
@@ -495,34 +474,7 @@ impl MarkdownPreview {
     /// instead). Splitting the two lets the chrome render inline as a
     /// text-sized pill and block as a full-pane-width panel.
     pub fn code_glyph_rects(&self) -> Vec<(f32, f32, f32, f32)> {
-        let mut rects = Vec::new();
-        for run in self.buffer.layout_runs() {
-            let top = run.line_top;
-            let h = run.line_height;
-            // (x_start, x_end) of the in-progress code run; None when
-            // we're between code spans.
-            let mut current: Option<(f32, f32)> = None;
-            for g in run.glyphs.iter() {
-                // Inline-only: block code is reported via
-                // `code_block_line_rects` instead so the chrome can
-                // expand to pane width.
-                let is_code = (g.metadata & CODE_GLYPH_FLAG) != 0
-                    && (g.metadata & CODE_BLOCK_FLAG) == 0;
-                let gx = g.x;
-                let gw = g.w.max(0.0);
-                if is_code {
-                    let span = current
-                        .map(|(s, _)| (s, gx + gw))
-                        .unwrap_or((gx, gx + gw));
-                    current = Some(span);
-                } else if let Some((s, e)) = current.take() {
-                    rects.push((s, top, e - s, h));
-                }
-            }
-            if let Some((s, e)) = current.take() {
-                rects.push((s, top, e - s, h));
-            }
-        }
-        rects
+        // Inline-only: block code is reported via `code_block_line_rects` instead so the chrome can expand to pane width.
+        flagged_runs(&self.buffer, |m| m & CODE_GLYPH_FLAG != 0 && m & CODE_BLOCK_FLAG == 0)
     }
 }
