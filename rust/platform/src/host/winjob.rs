@@ -9,10 +9,11 @@
 
 use std::ffi::c_void;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+use std::process::Child;
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -66,6 +67,16 @@ impl AnonymousJob {
         self.0.as_raw_handle() as HANDLE
     }
 
+    /// `AssignProcessToJobObject` for a child already started, so the child runs for a moment outside the job (and
+    /// anything it started in that moment stays outside); a caller that must bound it assigns before it feeds the
+    /// child any input. The job then ends it when the last handle closes.
+    pub fn assign(&self, child: &Child) -> Result<(), JobError> {
+        if unsafe { AssignProcessToJobObject(self.raw(), child.as_raw_handle() as HANDLE) } == 0 {
+            return Err(failed("AssignProcessToJobObject"));
+        }
+        Ok(())
+    }
+
     /// `TerminateJobObject`: the raw call only; sequencing around it is the caller's.
     pub fn terminate(&self) -> Result<(), JobError> {
         if unsafe { TerminateJobObject(self.raw(), 1) } == 0 {
@@ -93,3 +104,7 @@ impl AnonymousJob {
         Ok(info.ActiveProcesses)
     }
 }
+
+#[cfg(test)]
+#[path = "winjob_tests.rs"]
+mod tests;
