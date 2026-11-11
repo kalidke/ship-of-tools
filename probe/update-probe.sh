@@ -81,6 +81,12 @@ entry_main() {
     curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/main/scripts/install.sh | env -u GITHUB_TOKEN -u GH_TOKEN bash
 }
 entry_installed() { bash "$PREFIX/repo/current/scripts/install.sh"; }
+# The newest release from GitHub's latest-release redirect (no API call), and that release's own installer run with
+# SOT_INSTALL_TAG, which skips its prelude, with the tokens cleared.
+entry_latest() {
+    tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/kalidke/ship-of-tools/releases/latest); tag=${tag##*/}; echo "newest release: $tag"
+    f=$(mktemp) && curl -fsSL -o "$f" "https://raw.githubusercontent.com/kalidke/ship-of-tools/$tag/scripts/install.sh" && env -u GITHUB_TOKEN -u GH_TOKEN SOT_INSTALL_TAG="$tag" bash "$f"; rm -f "$f"
+}
 [ "$MODE" != token ] || export GITHUB_TOKEN=probe-dummy-not-a-token
 run update "entry_$ENTRY"
 UPDATE_LAST="$LAST"

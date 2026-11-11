@@ -4,10 +4,12 @@
 # used (a hosted runner is thrown away after the job).
 param(
     [Parameter(Mandatory = $true)][string]$Start,
-    [ValidateSet('plain', 'pinned', 'token')][string]$Mode = 'plain'
+    [ValidateSet('plain', 'pinned', 'token')][string]$Mode = 'plain',
+    [ValidateSet('main', 'latest')][string]$Entry = 'main'
 )
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
+$script:EntryKind = $Entry
 $Repo = 'kalidke/ship-of-tools'
 $prefix = Join-Path $env:LOCALAPPDATA 'sot'
 $out = Join-Path $env:RUNNER_TEMP 'probe'
@@ -73,10 +75,22 @@ if (-not (Test-Path -LiteralPath (Join-Path $prefix 'install.json'))) { Say 'RES
 
 # ---- the runbook's command ------------------------------------------------------------------------------------------
 function Invoke-Runbook([string]$label) {
-    $entry = Join-Path $env:TEMP 'sot-install.ps1'
-    curl.exe -fsSL -o $entry "https://raw.githubusercontent.com/$Repo/main/scripts/install.ps1"
+    $entryFile = Join-Path $env:TEMP 'sot-install.ps1'
+    if ($script:EntryKind -eq 'latest') {
+        # The newest release from GitHub's latest-release redirect (no API call), and its own installer run with
+        # SOT_INSTALL_TAG, which skips its prelude.
+        $tag = (curl.exe -fsSLI -o NUL -w '%{url_effective}' "https://github.com/$Repo/releases/latest").Split('/')[-1]
+        Say "newest release: $tag"
+        curl.exe -fsSL -o $entryFile "https://raw.githubusercontent.com/$Repo/$tag/scripts/install.ps1"
+        Remove-Item Env:GITHUB_TOKEN, Env:GH_TOKEN -ErrorAction SilentlyContinue
+        $env:SOT_INSTALL_TAG = $tag
+        Invoke-Ps $label $entryFile @()
+        Remove-Item Env:SOT_INSTALL_TAG -ErrorAction SilentlyContinue
+        return
+    }
+    curl.exe -fsSL -o $entryFile "https://raw.githubusercontent.com/$Repo/main/scripts/install.ps1"
     Remove-Item Env:GITHUB_TOKEN, Env:GH_TOKEN -ErrorAction SilentlyContinue
-    Invoke-Ps $label $entry @()
+    Invoke-Ps $label $entryFile @()
 }
 if ($Mode -eq 'token') { $env:GITHUB_TOKEN = 'probe-dummy-not-a-token' }
 Invoke-Runbook 'update'
