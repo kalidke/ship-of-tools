@@ -206,8 +206,9 @@ an author's messages grouped under one header with a tile in a gutter, and day d
 header and Slack's thread summary, have landed. Also in progress: an SVG file previewed as its picture, by drawing a file's SVG in a bounded child process; its
 first landing, an SVG's image read only from embedded data (never a file or a URL), is on main, and so are platform's
 primitives that child bounds itself with (a capped allocator that exits with its code, closing inherited descriptors,
-crashes as exits, a CPU limit, ending with its parent on Linux, and a Windows job that takes an assigned child), which no
-caller uses yet. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+crashes as exits, a CPU limit, ending with its parent on Linux, and a Windows job that takes an assigned child), and so
+is the child itself (the window's binary started to draw: it bounds itself before it reads, draws each job of a
+bounded request and answers each), which nothing calls yet. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the

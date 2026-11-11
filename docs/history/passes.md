@@ -1911,3 +1911,17 @@ A landing's record goes here, with its measured times; the package page holds on
   the system; on macOS closing inherited descriptors also closes the system frameworks' own, so the child's real
   tests must run there); one rebuild of both commits, a second probe and two gates. Measured: disarmed, the allocator
   adds 0.8 ns to an allocation.
+- The SVG child's start cost, measured before its third landing, 2026-11-11: warm medians of 20 starts from a 300 MiB
+  parent, the window's binary started to print its version and, apart, a fresh process loading the system fonts:
+  Linux 1.5 and 15.3 ms, macOS 7.5 and 10.4 ms, Windows 63.3 and 10.9 ms (an empty process 4.3 ms there; hosted
+  runners for macOS and Windows). Windows is past the plan's 50 ms by the start of its 35 MB binary, not by fonts, so
+  fonts stay loaded for every draw and a page's equations will go to one child as a batch. Cold first runs: Windows
+  fonts 2,993 ms, inside the child's 10 s wall.
+- The SVG child, `sot --draw-svg`, with no caller, 2026-11-11: builder launched 12:47, main 13:48 (4c5519034, three
+  commits), 61 minutes, a miss. About 125 product lines and 260 test lines. Where the minutes went: one hosted probe on
+  macOS and Windows (a macOS child that closed its inherited descriptors still draws, and leaves no crash report; a
+  Windows stack overflow ends the child in 102 ms and leaves no dump; whether Windows shows an error dialog cannot be
+  seen on a hosted runner, so a lab Windows computer must show it before a person sees the child's drawing); review
+  round 1 (no blockers: a reply still in the buffer was lost when a later job crashed; the error text's bounds had no
+  test; SVG's library can print a warning line to standard output, which a later platform landing closes); round 2
+  (no blockers: the draw thread's panic arm unpinned; the record's Windows wording); two fix commits and three gates.
