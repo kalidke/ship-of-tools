@@ -707,3 +707,78 @@ async fn a_hello_during_a_snapshot_refuses_it_and_tells_the_watch() {
     complete(&hub, &["C0AAAA"]).await;
     eventually("the gap cleared", || matches!(service.status(), ServiceStatus::Running { gap: false, .. })).await;
 }
+
+/// The daemon's path: `start_owner` is called while the service is still starting, and the owner then runs with no
+/// connection, applying nothing and reading no history.
+#[tokio::test(flavor = "current_thread")]
+async fn the_owner_runs_from_the_services_start_with_no_watch() {
+    let (fake, lv) = live().await;
+    let rig = super::chat_ops_tests::rig_booting(&fake).await;
+    assert_eq!(rig.services.chat.status(), Status::Starting, "the owner's task is begun before the start ends");
+    let hub = rig.services.chat.hub().clone();
+    eventually("the owner with no connection", || hub.running()).await;
+    assert!(hub.slots().is_empty());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(lv.histories.load(Ordering::SeqCst), 0, "an owner with nothing watched reads no history");
+    // A watch that comes after finds the one owner and is served by it.
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+}
+
+#[derive(Clone, Default)]
+struct Log(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Log {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// In a process of its own: a scoped subscriber sees a call site only if no thread without one reached it first (the
+/// site's interest is cached for all), and the owner's task runs in every rig.
+#[test]
+fn the_running_state_is_logged_once() {
+    if !sot_platform::test_isolated::run_isolated("server::dispatch::chat_watch_tests::the_running_state_is_logged_once") {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let (fake, _lv) = live().await;
+        let log = Log::default();
+        let sink = log.clone();
+        let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || sink.clone()).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let rig = rig(&fake).await;
+        let hub = rig.services.chat.hub().clone();
+        eventually("the owner", || hub.running()).await;
+        // A watch that comes after starts nothing and logs nothing more.
+        let mut conn = connect(rig.services.clone()).await;
+        assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(text.matches("the chat service is running").count(), 1, "{text}");
+    });
+}
+
+/// The boot's wait ends with the chat when the chat is retired while starting.
+#[tokio::test(flavor = "current_thread")]
+async fn the_boots_wait_ends_when_the_chat_is_retired_while_starting() {
+    let home = Home::new(Some(SELF));
+    let folder = home.folder("a");
+    home.chat_toml(&[folder.to_string_lossy().into_owned()]);
+    home.secrets();
+    let rows = Workspaces::new();
+    rows.insert(row("alpha", &folder));
+    let never: crate::chat::Starter<sot_chat::service::Service> = Box::new(|_, _, _| Box::pin(std::future::pending()));
+    let chat = Chat::begin(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), never);
+    let task = chat.start_owner(rows.clone());
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    assert!(!task.is_finished(), "the wait holds while the chat starts");
+    Participant::request_stop(&*chat);
+    bounded("the boot's wait to end", task).await.unwrap();
+    assert!(!chat.hub().running());
+}

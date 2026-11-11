@@ -93,7 +93,8 @@ pub(super) async fn running(chat: &Chat<Service>) {
     }
 }
 
-pub(super) async fn rig(fake: &FakeSlack) -> Rig {
+/// The rig as the daemon's boot makes it: the chat's own composition, returned while the service is still starting.
+pub(super) async fn rig_booting(fake: &FakeSlack) -> Rig {
     let home = Home::new(Some(SELF));
     let folders = [home.folder("a"), home.folder("b"), home.folder("c")];
     home.chat_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
@@ -101,14 +102,19 @@ pub(super) async fn rig(fake: &FakeSlack) -> Rig {
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
     let beta = rows.insert(row("beta", &folders[1])).workspace_id.clone();
-    let chat = Chat::begin(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
-    running(&chat).await;
-    assert_eq!(chat.status(), Status::Running, "the service starts against the fake: {:?}", fake.seen().iter().map(|s| s.target.clone()).collect::<Vec<_>>());
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake));
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
     services.workspaces = rows.clone();
     Rig { _home: home, services, rows, alpha, beta, folders, _root: root }
+}
+
+pub(super) async fn rig(fake: &FakeSlack) -> Rig {
+    let rig = rig_booting(fake).await;
+    running(&rig.services.chat).await;
+    assert_eq!(rig.services.chat.status(), Status::Running, "the service starts against the fake: {:?}", fake.seen().iter().map(|s| s.target.clone()).collect::<Vec<_>>());
+    rig
 }
 
 /// One open control connection.
