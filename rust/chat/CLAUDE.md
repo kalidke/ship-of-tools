@@ -3,8 +3,8 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and has no delivery. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
+listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel (the thread walk is unbuilt). The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and has no delivery. `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -380,6 +380,35 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    link to nothing reads as missing, and a link to another file gives that file's boundary), which takes this account's
    own hand in a private folder; a write that fails leaves the in-memory boundary where `commit` put it, so the caller
    writes `boundary()` again; `read_regular` ends a FIFO's wait only, as its guarantee says.
+26. **A pass walks one channel back from its upper bound to its floor in fresh reads, and files and commits nothing.**
+   `traverse::pass(api, order, upper, pace)` takes an `Order` (a snapshot of the channel's `State`, its floor, and the
+   greatest `ts` the delivery was handed for it before the first read), the pass's upper bound U (the caller's clock,
+   passed in) and the pace between reads, and returns `Passed { horizon, mail, outcome, reads, limited }`. Every read is
+   `Api::scan` (guarantee 11) at 999 with `oldest` = the floor, and `latest` = U on the first read and the oldest raw `ts`
+   of the page before on each next one, never a cursor, never a lower bound alone: that walk was measured to return every
+   message exactly once, also while posts arrive, and a first read without `latest` saw only the oldest page and looked
+   complete (SlackClaw's facts note, "The walk back with no cursor, measured" and "Posts arriving during reads and the
+   walk (P-ORDER), measured"). It ends at the first page that says `has_more: false`, full or not, never at an empty read
+   after it, and reads on past a short page that says more is behind it (`has_more` decides, not the count). A page that
+   does not lower `latest` ends the pass `ReadFailed` instead of reading it again. `is_limited` is information only
+   (`Passed.limited`): it ends nothing and fails nothing, so Slack's plan horizon is the walk's own bound. A page that
+   passes its response bound (`TooLarge`) or the read deadline (`Timeout`) halves the limit, down to 1, and is read
+   again for the rest of the pass; at 1 it is `ReadFailed`. Reads are at least `pace` apart, the halved ones included, and
+   no read waits out a `Retry-After`: a 429 or `ratelimited` ends the pass `RateLimited` with the wait. `mail` is every
+   record `mail::is_mail` accepts against the floor, above the boundary and not `State::contains`, deduplicated by `ts`,
+   oldest first, bounded while it streams at `MAX_PASS_MAIL` (200) after the filed set has removed what it holds; one
+   more than that ends `Truncated` instead of `Complete`. `horizon` is the greater of the boundary and the lesser of U
+   and (the greatest of `Order.seen` and the first page's `ts` and `latest_reply` values, less `MARGIN`, 2 s), fixed at
+   the first page that is read: it is the most the boundary may move to, so the newest posts are always above it and are
+   still returned as `mail`. A parent's `latest_reply` was measured above the read's own `latest` (by a fraction of a second), which
+   the margin covers and the cap at U covers beyond it. `MAX_PASS_READS` (10,000) ends a runaway pass `TooLong`; a closed
+   client is `Stopped`. Every outcome but `Complete` and `Truncated` commits nothing, and keeps the mail already read.
+   Limits: a full page of 999 with more behind it (no measured channel held more than 999) is inferred to be the newest
+   999; a daemon clock behind Slack's by d leaves the last d before U to the next pass; a visibility window shorter than
+   the gap between a post's `ts` and the next read was not resolved by the measurement (the margin is its reserve); a
+   limit halved by one slow read stays halved for the pass; replies are not walked here, so a reply under an older
+   parent is not found by this walk (the thread walk is unbuilt, and the parents whose `latest_reply` is after the
+   boundary are for it to collect).
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -390,8 +419,8 @@ never holds another form.
 `MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack
-and its websocket peer (`ws.rs`).
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `traverse.rs`: `Order`, `Passed`, `Outcome`, `pass`, `MARGIN`, `MAX_PASS_READS`, `MAX_PASS_MAIL`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack,
+its websocket peer (`ws.rs`) and a channel that answers history as measured (`history.rs`, which states what it infers).
 
 ## Calls in
 `sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, escape_text, post_text_fits, MAX_*}` (and `text_segments`, `TextSegment`; `page_reply::unsafe_char`), `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_RETRY_SECS}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
@@ -399,7 +428,7 @@ webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the librar
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 
 ## Does not
-Open a socket except through `Http::websocket`, call a file method outside `config.rs` and `state.rs`, hold a credential at rest, read a token from the environment, file mail, or resolve a row (it maps folders to channels from supplied facts). Define the
+Open a socket except through `Http::websocket`, call a file method outside `config.rs` and `state.rs`, hold a credential at rest, read a token from the environment, file mail, commit a boundary, or resolve a row (it maps folders to channels from supplied facts). Define the
 record's representation (wire's). Offer another way to the network, a retry helper or a generic outbound HTTP type.
 
 ## Dependencies (the web stack)
