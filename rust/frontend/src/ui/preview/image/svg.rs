@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg::{fontdb, Options, Tree};
+use resvg::usvg::{fontdb, ImageHrefResolver, ImageKind, Options, Tree};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
@@ -88,29 +88,28 @@ pub fn quad_from_svg_bytes(
     target_w: u32,
     target_h: u32,
 ) -> Result<Quad> {
-    let tree = svg_tree(bytes)?;
-
-    let svg_size = tree.size();
-    let sx = target_w as f32 / svg_size.width().max(0.001);
-    let sy = target_h as f32 / svg_size.height().max(0.001);
-
-    let pw = target_w.max(1);
-    let ph = target_h.max(1);
-
-    let mut pixmap = Pixmap::new(pw, ph)
-        .ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {}x{}", pw, ph))?;
-
-    resvg::render(&tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
-
-    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
+    let pixmap = draw(&svg_tree(bytes)?, target_w, target_h)?;
+    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pixmap.width(), pixmap.height())
 }
 
-/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, and its text with no bidi paragraph
-/// separator (`one_paragraph_svg`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
+/// `tree` drawn into a `w` by `h` pixmap (a side under one pixel is one), stretched to fill it.
+fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
+    let (w, h) = (w.max(1), h.max(1));
+    let size = tree.size();
+    let mut pixmap = Pixmap::new(w, h).ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {w}x{h}"))?;
+    let (sx, sy) = (w as f32 / size.width().max(0.001), h as f32 / size.height().max(0.001));
+    resvg::render(tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+    Ok(pixmap)
+}
+
+/// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
+/// separator (`one_paragraph_svg`), no element nested past `SVG_MAX_DEPTH` and no file read for an `<image>`
+/// (`refuse_deep_or_markup_entities`, `embedded_images_only`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it itself,
 /// past both rules.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
+        image_href_resolver: embedded_images_only(),
         ..Options::default()
     };
     let bytes = unpack_svgz(bytes, PREVIEW_BINARY_CAP)?;
@@ -128,9 +127,94 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     } else {
         bytes
     };
+    let bytes = one_paragraph_svg(bytes);
+    refuse_deep_or_markup_entities(&bytes)?;
     #[allow(clippy::disallowed_methods, reason = "text into the shaper: an SVG's one way into usvg, through one_paragraph_svg")]
-    let tree = Tree::from_data(&one_paragraph_svg(bytes), &opts);
+    let tree = Tree::from_data(&bytes, &opts);
     tree.context("svg parse failed")
+}
+
+/// usvg's own bound on element nesting (usvg-0.44.0 parser/parse.rs), which it checks only after roxmltree has parsed
+/// the whole document. roxmltree recurses once per element, so a document nested 20000 deep overflows the stack and
+/// aborts the process first; a scan before the parse refuses it, losing nothing usvg would draw.
+const SVG_MAX_DEPTH: usize = 1024;
+
+/// The only `<image>` sources the window draws: embedded (`data:`) PNG, JPEG, GIF and WebP. A path or URL names a file
+/// on the window's computer (usvg's default reads any path that exists: a FIFO hangs the thread, `/dev/zero` fills
+/// memory) and is refused; so is nested SVG data, which usvg parses past `refuse_deep_or_markup_entities`.
+fn embedded_images_only() -> ImageHrefResolver<'static> {
+    ImageHrefResolver {
+        resolve_data: Box::new(|mime, data, _| match mime {
+            "image/jpg" | "image/jpeg" => Some(ImageKind::JPEG(data)),
+            "image/png" => Some(ImageKind::PNG(data)),
+            "image/gif" => Some(ImageKind::GIF(data)),
+            "image/webp" => Some(ImageKind::WEBP(data)),
+            _ => None,
+        }),
+        resolve_string: Box::new(|_, _| None),
+    }
+}
+
+/// Refuses XML nested deeper than `SVG_MAX_DEPTH` elements, or a DOCTYPE entity whose value holds markup (roxmltree
+/// expands it as content). One pass over the bytes, no recursion: a tag ends at the `>` outside its quoted attribute
+/// values, and comments, CDATA, processing instructions and the DOCTYPE are skipped whole. A document it passes may
+/// still be malformed; the parser says so.
+fn refuse_deep_or_markup_entities(xml: &[u8]) -> Result<()> {
+    fn find(from: &[u8], needle: &[u8]) -> usize {
+        from.windows(needle.len()).position(|w| w == needle).map_or(from.len(), |at| at + needle.len())
+    }
+    let (mut at, mut depth) = (0, 0usize);
+    while let Some(lt) = xml[at..].iter().position(|&b| b == b'<') {
+        at += lt;
+        let rest = &xml[at..];
+        if rest.starts_with(b"<!--") {
+            at += 4 + find(&rest[4..], b"-->");
+        } else if rest.starts_with(b"<![CDATA[") {
+            at += 9 + find(&rest[9..], b"]]>");
+        } else if rest.starts_with(b"<?") {
+            at += 2 + find(&rest[2..], b"?>");
+        } else if rest.starts_with(b"<!DOCTYPE") {
+            let (mut quote, mut subset, mut i) = (0u8, false, 9);
+            while i < rest.len() {
+                let b = rest[i];
+                match (quote, b) {
+                    (0, b'"' | b'\'') => quote = b,
+                    (q, _) if q != 0 && b == q => quote = 0,
+                    (0, b'[') => subset = true,
+                    (0, b']') => subset = false,
+                    (0, b'>') if !subset => break,
+                    (0, b'<') if rest[i..].starts_with(b"<!--") => i += find(&rest[i + 4..], b"-->") + 3,
+                    (q, b'<') if q != 0 => anyhow::bail!("svg has a DOCTYPE entity that holds markup"),
+                    _ => {}
+                }
+                i += 1;
+            }
+            at += i + 1;
+        } else if rest.starts_with(b"</") {
+            depth = depth.saturating_sub(1);
+            at += 2 + find(&rest[2..], b">") - 1;
+        } else {
+            let (mut quote, mut i) = (0u8, 1);
+            while i < rest.len() {
+                match (quote, rest[i]) {
+                    (0, q @ (b'"' | b'\'')) => quote = q,
+                    (q, b) if q != 0 && b == q => quote = 0,
+                    (0, b'>') => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if i > 1 && rest[i - 1] != b'/' {
+                depth += 1;
+                anyhow::ensure!(depth <= SVG_MAX_DEPTH, "svg is nested deeper than {SVG_MAX_DEPTH} elements");
+            }
+            at += i + 1;
+        }
+        if at >= xml.len() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// An `.svgz`'s SVG, unpacked on the window's thread to at most `cap` bytes: the product passes `PREVIEW_BINARY_CAP`,

@@ -283,6 +283,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
   outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+- `svg_tree` (preview/image/svg.rs), the one way into usvg for the preview, math, markdown figures and the Monitor,
+  refuses a document nested deeper than usvg's 1024 or with a DOCTYPE entity that holds markup before the parser runs
+  (`refuse_deep_or_markup_entities`: roxmltree recurses once per element and a 20000-deep file aborted the process),
+  and its `<image>` resolver (`embedded_images_only`) reads no file and no URL and draws embedded PNG, JPEG, GIF and
+  WebP only, never nested SVG data (usvg's default read any path: a FIFO hung the thread and a local file was drawn).
+  Limit: an SVG's embedded SVG image is not drawn. Tests: `a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it`
+  (a child process, on an 8 MiB stack), `nesting_within_the_limit_draws_and_past_it_is_refused`,
+  `an_image_href_naming_a_local_file_draws_nothing`, `an_image_href_naming_a_fifo_returns_at_once`,
+  `an_embedded_raster_draws_and_embedded_svg_does_not`.
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint
