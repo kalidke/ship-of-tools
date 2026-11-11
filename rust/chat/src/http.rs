@@ -22,6 +22,8 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 pub const MAX_OPERATIONS: usize = 16;
 /// A raw response body, counted as it streams, whatever `Content-Length` claims.
 pub const MAX_BODY: usize = 1 << 20;
+/// A delivery scan's response bound (`Request::max_body`): one read of up to 999 full-size messages.
+pub const MAX_SCAN_BODY: usize = 16 << 20;
 /// Redirects followed by one operation.
 pub const MAX_REDIRECTS: usize = 3;
 /// The only port a product destination may name.
@@ -124,6 +126,7 @@ pub struct Request {
     body: Vec<u8>,
     content_type: Option<&'static str>,
     deadline: Duration,
+    max_body: usize,
 }
 
 impl Request {
@@ -136,6 +139,7 @@ impl Request {
             body: Vec::new(),
             content_type: None,
             deadline,
+            max_body: MAX_BODY,
         }
     }
 
@@ -153,7 +157,14 @@ impl Request {
             body,
             content_type: Some(content_type),
             deadline,
+            max_body: MAX_BODY,
         }
+    }
+
+    /// This operation's own response bound, counted as the body streams, in place of `MAX_BODY`.
+    pub(crate) fn max_body(mut self, bytes: usize) -> Request {
+        self.max_body = bytes;
+        self
     }
 
     /// Send the bot authorization with each hop of this operation.
@@ -172,7 +183,7 @@ impl fmt::Debug for Request {
     }
 }
 
-/// A finished answer: status, headers and at most `MAX_BODY` bytes.
+/// A finished answer: status, headers and at most the request's bound of bytes (`MAX_BODY` unless it set its own).
 pub struct Response {
     status: u16,
     headers: HeaderMap,
@@ -374,7 +385,7 @@ impl Inner {
             let headers = response.headers().clone();
             let mut body = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(classify)? {
-                if body.len() + chunk.len() > MAX_BODY {
+                if body.len() + chunk.len() > request.max_body {
                     return Err(HttpError::TooLarge);
                 }
                 body.extend_from_slice(&chunk);

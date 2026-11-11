@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use sot_protocol::chat::{escape_text, post_text_fits, ChatRecord, Origin, Ts};
 use tokio::time::Instant;
 
-use crate::http::{Http, HttpError, Request, Response, Secret};
+use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_NAME};
 
 /// A read (`auth.test`, history, replies, `users.info`): Slack answers in well under a second, so fifteen seconds
@@ -26,6 +26,8 @@ pub const POST_DEADLINE: Duration = Duration::from_secs(30);
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
 pub use sot_protocol::ops::{MAX_CURSOR, MAX_PAGE};
+/// The most messages one scan asks for: Slack's documented maximum for a history read.
+pub const MAX_SCAN: u16 = 999;
 /// Author names kept; the oldest entry leaves first.
 pub const MAX_NAMES: usize = 1024;
 /// Reads wait this long after a rate limit whose retry header is missing or invalid.
@@ -200,6 +202,40 @@ impl HistoryQuery {
         usize::from(self.limit) + usize::from(self.thread.is_some())
     }
 
+    /// The Slack method and parameters of this query's read, with the cursor that continues it.
+    fn request(&self, cursor: Option<&str>) -> (&'static str, Vec<(&'static str, String)>) {
+        let mut params = vec![
+            ("channel", self.channel.clone()),
+            ("limit", self.limit.to_string()),
+            ("include_all_metadata", "true".into()),
+        ];
+        let method = match &self.thread {
+            Some(parent) => {
+                params.push(("ts", parent.as_str().into()));
+                "conversations.replies"
+            }
+            None => "conversations.history",
+        };
+        if let Some(after) = &self.bounds.after {
+            params.push(("oldest", after.as_str().into()));
+        }
+        match &self.bounds.upper {
+            None => {}
+            Some(Upper::Before(t)) => {
+                params.push(("latest", t.as_str().into()));
+                params.push(("inclusive", "false".into()));
+            }
+            Some(Upper::Until(t)) => {
+                params.push(("latest", t.as_str().into()));
+                params.push(("inclusive", "true".into()));
+            }
+        }
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.into()));
+        }
+        (method, params)
+    }
+
     /// The query as the values a continuation is bound to.
     fn fields(&self, workspace: &str) -> Vec<Value> {
         let (kind, upper) = match &self.bounds.upper {
@@ -270,6 +306,43 @@ pub struct Page {
     pub records: Vec<ChatRecord>,
     pub next: Option<Continuation>,
     /// Slack cut the history at the plan's horizon (`is_limited`); not an error.
+    pub limited: bool,
+}
+
+/// What a scan asks for: delivery's one read of a channel or a thread, a fresh first page between two exclusive bounds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanQuery(HistoryQuery);
+
+impl ScanQuery {
+    /// `bounds` must hold `after` and `before` (an `until` or a missing bound is `BadRequest`); `limit` is 1 to
+    /// `MAX_SCAN`. Nothing is sent for a query that is refused here.
+    pub fn new(
+        channel: &str,
+        thread: Option<&str>,
+        bounds: Bounds,
+        limit: u16,
+    ) -> Result<ScanQuery, ApiError> {
+        let both = bounds.after.is_some() && matches!(bounds.upper, Some(Upper::Before(_)));
+        if !both || !(1..=MAX_SCAN).contains(&limit) {
+            return Err(ApiError::BadRequest);
+        }
+        // `HistoryQuery::new` bounds the limit at the display page; a scan's own bound is checked above.
+        let q = HistoryQuery::new(channel, thread, bounds, 1)?;
+        Ok(ScanQuery(HistoryQuery { limit, ..q }))
+    }
+}
+
+/// A scan's page. `oldest` and `newest` are the raw extremes of the page's `ts` whatever order Slack listed them (a
+/// replies page's parent apart); `threads` is every message's `(ts, latest_reply)` as Slack sent it, a deleted
+/// parent's and one above the read's `latest` included; `records` are the representable messages inside the bounds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScanPage {
+    pub records: Vec<ChatRecord>,
+    pub threads: Vec<(Ts, Ts)>,
+    pub oldest: Option<Ts>,
+    pub newest: Option<Ts>,
+    pub has_more: bool,
+    /// Slack's `is_limited`, reported and never an error.
     pub limited: bool,
 }
 
@@ -396,7 +469,7 @@ impl Api {
 
     /// The bot identity, which history needs. The token must belong to the configured workspace.
     pub async fn auth_test(&self) -> Result<Identity, ApiError> {
-        let v = self.read("auth.test", &[]).await?;
+        let v = self.read("auth.test", &[], MAX_BODY).await?;
         let id = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| valid_id(s));
         if id("team_id").ok_or(ApiError::Malformed)? != self.workspace {
             return Err(ApiError::WrongWorkspace);
@@ -416,60 +489,16 @@ impl Api {
         query: &HistoryQuery,
         cont: Option<&Continuation>,
     ) -> Result<Page, ApiError> {
-        let own = self
-            .own
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(ApiError::NoIdentity)?;
+        // Slack's replies cursor under a lower bound alone drops a reply at every page boundary (guarantee 11).
+        let lower_alone = query.bounds.after.is_some() && query.bounds.upper.is_none();
+        if cont.is_some() && query.thread.is_some() && lower_alone {
+            return Err(ApiError::BadRequest);
+        }
+        let own = self.identity()?;
         let sent = cont.map(|c| c.unwrap(&self.workspace, query)).transpose()?;
-        let mut params = vec![
-            ("channel", query.channel.clone()),
-            ("limit", query.limit.to_string()),
-            ("include_all_metadata", "true".into()),
-        ];
-        let method = match &query.thread {
-            Some(parent) => {
-                params.push(("ts", parent.as_str().into()));
-                "conversations.replies"
-            }
-            None => "conversations.history",
-        };
-        if let Some(after) = &query.bounds.after {
-            params.push(("oldest", after.as_str().into()));
-        }
-        match &query.bounds.upper {
-            None => {}
-            Some(Upper::Before(t)) => {
-                params.push(("latest", t.as_str().into()));
-                params.push(("inclusive", "false".into()));
-            }
-            Some(Upper::Until(t)) => {
-                params.push(("latest", t.as_str().into()));
-                params.push(("inclusive", "true".into()));
-            }
-        }
-        if let Some(cursor) = &sent {
-            params.push(("cursor", cursor.clone()));
-        }
-        let v = self.read(method, &params).await?;
-
-        let messages = v
-            .get("messages")
-            .and_then(Value::as_array)
-            .ok_or(ApiError::Malformed)?;
-        if messages.len() > query.capacity() {
-            return Err(ApiError::Malformed);
-        }
-        let has_more = v
-            .get("has_more")
-            .and_then(Value::as_bool)
-            .ok_or(ApiError::Malformed)?;
-        let limited = match v.get("is_limited") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(b)) => *b,
-            Some(_) => return Err(ApiError::Malformed),
-        };
+        let (method, params) = query.request(sent.as_deref());
+        let v = self.read(method, &params, MAX_BODY).await?;
+        let (messages, has_more, limited) = page_parts(&v, query.capacity())?;
         let next = if has_more {
             let slack = v
                 .pointer("/response_metadata/next_cursor")
@@ -509,6 +538,64 @@ impl Api {
             next,
             limited,
         })
+    }
+
+    /// Delivery's one read of a channel or a thread: a fresh first page with both bounds (`inclusive=false`), up to
+    /// 999 messages, never a cursor, under its own response bound. The caller reads on by lowering `before`.
+    pub async fn scan(&self, query: &ScanQuery) -> Result<ScanPage, ApiError> {
+        let (own, query) = (self.identity()?, &query.0);
+        let (method, params) = query.request(None);
+        let v = self.read(method, &params, MAX_SCAN_BODY).await?;
+        let (messages, has_more, limited) = page_parts(&v, query.capacity())?;
+        let ctx = Context {
+            workspace: &self.workspace,
+            own_bot_id: own.bot_id.as_deref(),
+            own_user_id: Some(&own.user_id),
+            limited,
+        };
+        let mut page = ScanPage {
+            has_more,
+            limited,
+            ..ScanPage::default()
+        };
+        let ts_of = |raw: &Value, key: &str| {
+            let ts = raw.get(key).and_then(Value::as_str);
+            ts.and_then(|t| Ts::parse(t).ok())
+                .ok_or(ApiError::Malformed)
+        };
+        for raw in messages {
+            let ts = ts_of(raw, "ts")?;
+            if raw.get("latest_reply").is_some_and(|r| !r.is_null()) {
+                page.threads.push((ts.clone(), ts_of(raw, "latest_reply")?));
+            }
+            let is_parent = query.thread.as_ref() == Some(&ts);
+            if !is_parent {
+                let key = ts_key(&ts);
+                if page.oldest.as_ref().is_none_or(|o| key < ts_key(o)) {
+                    page.oldest = Some(ts.clone());
+                }
+                if page.newest.as_ref().is_none_or(|n| key > ts_key(n)) {
+                    page.newest = Some(ts);
+                }
+            }
+            match normalize(&ctx, &query.channel, raw) {
+                Normalized::New(rec) if is_parent || query.bounds.admits(&rec.ts) => {
+                    page.records.push(rec)
+                }
+                Normalized::New(_) | Normalized::Unsupported => {}
+                _ => return Err(ApiError::Malformed),
+            }
+        }
+        // More behind a page that gave nothing to walk back from can never end.
+        if has_more && page.oldest.is_none() {
+            return Err(ApiError::Malformed);
+        }
+        Ok(page)
+    }
+
+    /// The bot identity as `auth_test` last answered it.
+    fn identity(&self) -> Result<Identity, ApiError> {
+        self.own.lock().unwrap().clone().ok_or(ApiError::NoIdentity)
     }
 
     /// Post once under a custom author. `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused
@@ -601,7 +688,9 @@ impl Api {
         if !valid_id(user) {
             return Err(ApiError::BadRequest);
         }
-        let v = self.read("users.info", &[("user", user.into())]).await?;
+        let v = self
+            .read("users.info", &[("user", user.into())], MAX_BODY)
+            .await?;
         let profile = v.pointer("/user/profile");
         let field = |holder: Option<&Value>, k: &str| {
             holder
@@ -641,9 +730,14 @@ impl Api {
         Ok(url.into())
     }
 
-    /// One read: refused while a rate limit's wait is running, one request otherwise, and the answer is the JSON
-    /// object with `ok: true` or an error.
-    async fn read(&self, method: &str, params: &[(&str, String)]) -> Result<Value, ApiError> {
+    /// One read, its response bounded by `max_body`: refused while a rate limit's wait is running, one request
+    /// otherwise, and the answer is the JSON object with `ok: true` or an error.
+    async fn read(
+        &self,
+        method: &str,
+        params: &[(&str, String)],
+        max_body: usize,
+    ) -> Result<Value, ApiError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(ApiError::Closed);
         }
@@ -656,8 +750,9 @@ impl Api {
                 assumed: false,
             });
         }
-        let request =
-            Request::get(self.url(method, params)?, self.deadlines.read).bearer(self.token.clone());
+        let request = Request::get(self.url(method, params)?, self.deadlines.read)
+            .max_body(max_body)
+            .bearer(self.token.clone());
         let response = self.http.send(request).await.map_err(ApiError::Http)?;
         let limited = |api: &Api| {
             let (retry_after, assumed) = retry_after(&response);
@@ -685,6 +780,26 @@ impl Api {
             None => Err(ApiError::Malformed),
         }
     }
+}
+
+/// A history or replies answer's `messages` (at most `capacity`), `has_more` and `is_limited`; anything else is
+/// `Malformed`.
+fn page_parts(v: &Value, capacity: usize) -> Result<(&Vec<Value>, bool, bool), ApiError> {
+    let messages = v
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|m| m.len() <= capacity)
+        .ok_or(ApiError::Malformed)?;
+    let has_more = v
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .ok_or(ApiError::Malformed)?;
+    let limited = match v.get("is_limited") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(ApiError::Malformed),
+    };
+    Ok((messages, has_more, limited))
 }
 
 /// The retry header, whatever its case, in seconds: capped at `MAX_RETRY`. Missing or invalid is the conservative
