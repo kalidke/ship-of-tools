@@ -182,7 +182,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `Config::load` and `Credentials::read`: the status, its words, `resolve`, a stop and a wait read memory. The hub fact
    is read once. A daemon that stops being the hub after its start (the topology changes or vanishes) keeps its running
    service until it ends and opens no file again; a reload does not exist, and a start after a stop is a second `begin`
-   (a restart of the daemon in practice). A failed start is final until the daemon restarts. **M3, `Chat::admit`, `Chat::admit_unwatch` and
+   (a restart of the daemon in practice). A failed start is final until the daemon restarts. **The owner.** The daemon's boot calls `Chat::start_owner`, one task that waits for the start to end and, when the service runs, logs `the chat service is running` once and calls `Hub::ensure_owner`, so the socket is served with no window open; `ensure_owner` stays the one start, and a first watch that comes earlier starts it too (`the_owner_runs_from_the_services_start_with_no_watch_and_the_running_state_is_logged_once`). An owner with nothing watched applies nothing and reads no history. **M3, `Chat::admit`, `Chat::admit_unwatch` and
    `Chat::resolve`.** `Chat::service` is private, so a call that reaches Slack or a file gets the service only from
    `admit`, which reads the registry's current entry for the row id at that moment (an exact id, never a slug) and
    refuses: no running service (not the hub, no or refused `chat.toml`, no secrets, a failed, starting, stopping or

@@ -707,3 +707,39 @@ async fn a_hello_during_a_snapshot_refuses_it_and_tells_the_watch() {
     complete(&hub, &["C0AAAA"]).await;
     eventually("the gap cleared", || matches!(service.status(), ServiceStatus::Running { gap: false, .. })).await;
 }
+
+#[derive(Clone, Default)]
+struct Log(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Log {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// One test, so that no other test reaches the owner's log call site while this one's subscriber is being set: a call
+/// site first reached with no subscriber would keep its interest cached as never.
+#[tokio::test(flavor = "current_thread")]
+async fn the_owner_runs_from_the_services_start_with_no_watch_and_the_running_state_is_logged_once() {
+    let (fake, _lv) = live().await;
+    let log = Log::default();
+    let sink = log.clone();
+    let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || sink.clone()).finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let rig = rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    assert!(!hub.running(), "nothing started the owner yet");
+    rig.services.chat.start_owner(rig.rows.clone());
+    eventually("the owner with no connection", || hub.running()).await;
+    assert!(hub.slots().is_empty());
+    // A watch that comes after finds the one owner, starts nothing and logs nothing more.
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(text.matches("the chat service is running").count(), 1, "{text}");
+}

@@ -265,6 +265,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         Box::new(crate::chat::start_service),
     );
     tracing::info!(status = %chat.status(), "project chat");
+    chat.start_owner(workspaces.clone());
 
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();

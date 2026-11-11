@@ -120,8 +120,14 @@ impl Hub {
         matches!(*lock(&self.owner), Owner::Ended)
     }
 
-    /// The owner, started with the first watch. A service another `Watches` already serves is refused.
-    fn ensure_owner(self: &Arc<Hub>, service: &Arc<Service>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<(), ChatCode> {
+    /// Whether the owner is running.
+    #[cfg(test)]
+    pub(crate) fn running(&self) -> bool {
+        matches!(*lock(&self.owner), Owner::Running)
+    }
+
+    /// A service another `Watches` already serves is refused.
+    pub(super) fn ensure_owner(self: &Arc<Hub>, service: &Arc<Service>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<(), ChatCode> {
         let mut owner = lock(&self.owner);
         match *owner {
             Owner::Running => Ok(()),
