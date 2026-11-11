@@ -616,9 +616,9 @@ fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let (mut d, _) = channel(&held);
     d.layout(&mut fonts, body(), 1.0, body());
-    let hit = d.hit(d.point_at(&held[0].ts, 1, 0).unwrap());
+    let hit = d.hit(d.point_at(&held[0].ts, 2, 0).unwrap());
     assert!(d.press(hit));
-    let end = d.point_at(&held[0].ts, 1, 4).unwrap();
+    let end = d.point_at(&held[0].ts, 2, 4).unwrap();
     d.extend_drag(end);
     let tinted = |d: &mut ChatDrawer, fonts: &mut FontSystem| d.layout(fonts, body(), 1.0, body()).iter().any(|q| q.color == (0x1B, 0x43, 0x56));
     assert!(tinted(&mut d, &mut fonts), "record 0 is selected");

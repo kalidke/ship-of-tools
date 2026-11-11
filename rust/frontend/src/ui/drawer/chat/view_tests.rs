@@ -111,14 +111,14 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(view.areas().is_empty());
 
     // Each kind has its own style; a body line that imitates a header keeps the body's.
-    let kinds = [Kind::Name, Kind::Time, Kind::Badge, Kind::Body, Kind::Markup, Kind::Meta];
+    let kinds = [Kind::Day, Kind::Name, Kind::Time, Kind::Badge, Kind::Body, Kind::Markup, Kind::Meta, Kind::Replies, Kind::Last];
     for (i, a) in kinds.iter().enumerate() {
         for b in &kinds[i + 1..] {
             assert_ne!(attrs(*a, 1.0), attrs(*b, 1.0), "{a:?} {b:?}");
         }
     }
     let spans = project(&rec(1), None, 1_700_000_000, offset, false);
-    assert_eq!(spans[0].kind, Kind::Name);
+    assert_eq!((spans[0].kind, spans[1].kind), (Kind::Day, Kind::Name));
 }
 
 #[test]
@@ -310,9 +310,9 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     let mut fonts = FontSystem::new();
     let mut view = ChatView::default();
     let mut held: Vec<ChatRecord> = (0..20).map(rec).collect();
-    // One record's height, from two records of a following view.
+    // One record's height, from two records of a following view that are not the oldest (which carries a divider).
     let probe = lay(&mut view, &mut fonts, &held, 1000.0);
-    let h = probe[1].1 - probe[0].1;
+    let h = probe[2].1 - probe[1].1;
     let at = |view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], n: &str, dy: f32| {
         let shown = lay(view, fonts, held, h);
         let (got, top) = top_of(&shown);
@@ -535,7 +535,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     let mut view = ChatView::default();
     let held: Vec<ChatRecord> = (0..20).map(rec).collect();
     let probe = lay(&mut view, &mut fonts, &held, 1000.0);
-    let h = probe[1].1 - probe[0].1;
+    let h = probe[2].1 - probe[1].1;
     let number = |view: &ChatView| view.mark.as_ref().map(|t| t.as_str()[7..10].parse::<usize>().unwrap());
     let top = |view: &ChatView, shown: &[(String, f32)]| (view.anchor.is_some(), top_of(shown));
     view.reset();
@@ -781,7 +781,7 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     let mut view = ChatView::default();
     lay_in(&mut view, &mut fonts, &held, BODY);
 
-    // The same drags on the preview of the same text (its line 0 is the record's line 1, after the header): the same bytes.
+    // The same drags on the preview of the same text (its line 0 is the record's line 2, after the divider and the header): the same bytes.
     let rect = ScreenRect { x: 37.0, y: 61.0, w: 145.0, h: 400.0 };
     let mut preview = ShapedPreview::new(MarkdownPreview::new_plain(&mut fonts, TEXT, rect.w, 1.0), HighlightService::new().unwrap(), rect);
     let at = |preview: &ShapedPreview, line: usize, byte: usize| {
@@ -794,12 +794,12 @@ fn chat_and_preview_copy_same_utf8_ranges() {
         preview.press(preview.hit(start, true));
         preview.extend_drag(at(&preview, to.0, to.1));
         preview.release();
-        let chat = drag(&mut view, &held[0].ts, (from.0 + 1, from.1), (to.0 + 1, to.1));
+        let chat = drag(&mut view, &held[0].ts, (from.0 + 2, from.1), (to.0 + 2, to.1));
         assert!(chat.is_some());
         assert_eq!(chat, preview.selected_text(), "{from:?} to {to:?}");
     }
-    assert_eq!(drag(&mut view, &held[0].ts, (1, 6), (3, 3)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé ñandú charlie\nome"));
-    assert_eq!(drag(&mut view, &held[0].ts, (1, 6), (2, 7)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé "));
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 6), (4, 3)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé ñandú charlie\nome"));
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 6), (3, 7)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé "));
     // Markup shown as typed is copied as shown.
     assert_eq!(drag(&mut view, &held[1].ts, (1, 0), (1, 4)).as_deref(), Some("a < "));
     let end = view.point_at(&held[1].ts, 1, 4).unwrap();
@@ -824,14 +824,14 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     view.reset();
     lay_in(&mut view, &mut fonts, &held, BODY);
 
-    // The tint: rectangles inside the body, below the header, inside the selected record.
-    drag(&mut view, &held[0].ts, (1, 6), (3, 3));
+    // The tint: rectangles inside the body, below the divider and the header, inside the selected record.
+    drag(&mut view, &held[0].ts, (2, 6), (4, 3));
     let top = BODY.y + view.placed_tops()[0];
     let rects = view.selection_rects();
     assert!(rects.len() >= 3);
     let height = view.placed_tops()[1] - view.placed_tops()[0];
     for r in &rects {
-        assert!(r.x >= BODY.x && r.x + r.w <= BODY.x + BODY.w + 0.01 && r.y >= top + BODY_LINE_H - 0.01 && r.y + r.h <= top + height + 0.01 && r.y + r.h <= BODY.y + BODY.h + 0.01, "{r:?}");
+        assert!(r.x >= BODY.x && r.x + r.w <= BODY.x + BODY.w + 0.01 && r.y >= top + DAY_H + BODY_LINE_H - 0.01 && r.y + r.h <= top + height + 0.01 && r.y + r.h <= BODY.y + BODY.h + 0.01, "{r:?}");
     }
 }
 
@@ -841,8 +841,9 @@ fn a_press_selects_in_the_record_under_it_and_a_drag_stays_in_it() {
     let held = [rec_at("1700000001.000100", "first one"), rec_at("1700000002.000100", "second one")];
     let mut view = ChatView::default();
     lay_in(&mut view, &mut fonts, &held, BODY);
-    // A header starts none, but the press is still in the body; outside the body there is no press at all.
-    let header = view.point_at(&held[0].ts, 0, 0).unwrap();
+    // A divider and a header start none, but the press is still in the body; outside the body there is no press at all.
+    let (divider, header) = (view.point_at(&held[0].ts, 0, 0).unwrap(), view.point_at(&held[0].ts, 1, 0).unwrap());
+    assert!(view.hit(divider).is_some_and(|h| !view.press(Some(h))));
     assert!(view.hit(header).is_some_and(|h| !view.press(Some(h))));
     assert!(view.selected_text().is_none());
     assert!(view.hit((BODY.x - 1.0, header.1)).is_none() && view.hit((BODY.x + 1.0, BODY.y + BODY.h + 1.0)).is_none());
@@ -850,10 +851,12 @@ fn a_press_selects_in_the_record_under_it_and_a_drag_stays_in_it() {
     assert!(view.hit((BODY.x + 1.0, BODY.y + 1.0)).is_some_and(|h| !view.press(Some(h))));
     // A drag into the next record, or above into the header, stays in the pressed one.
     let into_second = (BODY.x + BODY.w - 1.0, view.point_at(&held[1].ts, 1, 3).unwrap().1);
-    let hit = view.hit(view.point_at(&held[0].ts, 1, 2).unwrap());
+    let hit = view.hit(view.point_at(&held[0].ts, 2, 2).unwrap());
     assert!(view.press(hit));
     view.extend_drag(into_second);
     assert_eq!(view.selected_text().as_deref(), Some("rst one"));
+    view.extend_drag(divider);
+    assert_eq!(view.selected_text().as_deref(), Some("fi"));
     view.extend_drag(header);
     assert_eq!(view.selected_text().as_deref(), Some("fi"));
 }
@@ -916,7 +919,7 @@ fn a_change_to_the_selected_buffer_clears_the_selection() {
     view = ChatView::default();
     view.anchor = Some((first.clone(), 0.0));
     lay_in(&mut view, &mut fonts, &many, small);
-    drag(&mut view, &first, (1, 0), (1, 4));
+    drag(&mut view, &first, (2, 0), (2, 4));
     assert!(view.selected_text().is_some());
     // Every position is visited, so the buffers shaped (a few a layout, as many as the host's fonts leave in view) far exceed
     // the 64 kept besides those in view whatever the fonts: stepping by 8 left the host's wrap to decide whether any went.
@@ -966,6 +969,17 @@ fn lay_drawer(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord]) 
     lay_in(view, fonts, held, body_of_drawer());
 }
 
+/// A divider's line, in pixels at text scale 1.
+const DAY_H: f32 = 30.0;
+
+/// The badges' rectangles of the placed records: those in `LOW` below the divider's lines (the divider's pill and rules are in
+/// it too, and lie in the oldest record's first lines, which a narrow drawer wraps into more than one).
+fn badges_in<'a>(view: &ChatView, quads: &'a [CellQuad]) -> Vec<&'a CellQuad> {
+    let divider: f32 = view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 0).map(|r| r.line_height).sum();
+    let below = DRAWER.y + view.placed_tops()[0] + divider;
+    of_color(quads, LOW).into_iter().filter(|q| q.y >= below - 0.01).collect()
+}
+
 /// The header line is the name, then the time at 12/15 of its size and muted, and is as tall as a body line: a smaller
 /// span keeps the line's height only because its metrics carry it (cosmic-text takes a line's height from the glyphs that
 /// set one).
@@ -979,7 +993,7 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
         let mut view = ChatView::default();
         view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
         let buffers = view.placed_buffers();
-        let run = buffers[0].layout_runs().next().expect("the header line");
+        let run = buffers[0].layout_runs().find(|r| r.line_i == 1).expect("the header line, after the divider's");
         let (name, time) = (run.glyphs.first().unwrap(), run.glyphs.last().unwrap());
         assert!(time.font_size < name.font_size, "the time is smaller: {} against {}", time.font_size, name.font_size);
         assert!(near(time.font_size, name.font_size * 12.0 / 15.0), "12/15 of the name: {} against {}", time.font_size, name.font_size);
@@ -996,7 +1010,7 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
             let mut view = ChatView::default();
             // `w` is the text's width, right of the gutter.
             view.layout(&mut fonts, &plain(&records), ScreenRect { w: w as f32 + GUTTER_PX * scale, ..body_of_drawer() }, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
-            for run in view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 0) {
+            for run in view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 1) {
                 assert!(near(run.line_height, BODY_LINE_H * scale), "width {w}, scale {scale}: a header line is {} tall", run.line_height);
             }
         }
@@ -1020,13 +1034,14 @@ fn the_badge_comes_from_the_origin_and_no_text_draws_one() {
         let held = [rec_by("1700000001.000100", name, origin, text)];
         lay_drawer(&mut view, &mut fonts, &held);
         let quads = view.backs(DRAWER);
-        let drawn = of_color(&quads, LOW);
+        let drawn = badges_in(&view, &quads);
         assert_eq!(drawn.len(), badges, "{origin} {name:?} {text:?}");
         for q in drawn {
             // As wide as its text and the padding of 4 px each side, and inside the header line.
             let buffers = view.placed_buffers();
-            let run = buffers[0].layout_runs().next().unwrap();
-            assert!(q.w > 8.0 && q.x >= body_of_drawer().x && q.y >= body_of_drawer().y + view.placed_tops()[0] && q.y + q.h <= body_of_drawer().y + view.placed_tops()[0] + run.line_height, "{q:?}");
+            let run = buffers[0].layout_runs().find(|r| r.line_i == 1).unwrap();
+            let top = body_of_drawer().y + view.placed_tops()[0] + run.line_top;
+            assert!(q.w > 8.0 && q.x >= body_of_drawer().x && q.y >= top && q.y + q.h <= top + run.line_height, "{q:?}");
         }
     }
 }
@@ -1059,7 +1074,9 @@ fn the_mark_is_a_band_and_moving_it_keeps_the_selection() {
         assert_eq!((bands.len(), bars.len()), (1, 1), "record {marked}");
         let (top, height) = (view.placed_tops()[marked], view.placed_buffers()[marked].layout_runs().map(|r| r.line_height).sum::<f32>());
         let (band, bar) = (bands[0], bars[0]);
-        assert!(near(band.x, body.x) && near(band.w, body.w) && near(band.y, body.y + top) && near(band.h, height), "{band:?} {height}");
+        // The oldest record's divider is above its band.
+        let day = if marked == 0 { DAY_H } else { 0.0 };
+        assert!(near(band.x, body.x) && near(band.w, body.w) && near(band.y, body.y + top + day) && near(band.h, height - day), "{band:?} {height}");
         assert!(near(bar.x, body.x) && near(bar.w, 2.0) && near(bar.y, band.y) && near(bar.h, band.h), "{bar:?}");
     }
 }
@@ -1096,7 +1113,7 @@ fn a_badge_keeps_its_rectangle_and_its_padding_where_a_wrap_cuts_the_header() {
             let mut view = ChatView::default();
             view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
             let quads = view.backs(DRAWER);
-            let drawn = of_color(&quads, LOW);
+            let drawn = badges_in(&view, &quads);
             let buffer = view.placed_buffers()[0];
             let mut badges = 0;
             for run in buffer.layout_runs() {
@@ -1192,11 +1209,12 @@ fn a_continuations_first_line_selects_and_a_header_never_does() {
     let mut view = ChatView::default();
     lay_drawer(&mut view, &mut fonts, &held);
     let buffers = view.placed_buffers();
-    assert_eq!((buffers[0].lines.len(), buffers[1].lines.len()), (2, 1), "a header and a body line, then a body line alone");
+    assert_eq!((buffers[0].lines.len(), buffers[1].lines.len()), (3, 1), "a divider, a header and a body line, then a body line alone");
     assert_eq!(selects(&mut view, &held[1].ts, 0).as_deref(), Some("gamm"));
-    // The header's glyphs select nothing; the body line below them does.
+    // The divider's and the header's glyphs select nothing; the body line below them does.
     assert_eq!(selects(&mut view, &held[0].ts, 0), None);
-    assert_eq!(selects(&mut view, &held[0].ts, 1).as_deref(), Some("alph"));
+    assert_eq!(selects(&mut view, &held[0].ts, 1), None);
+    assert_eq!(selects(&mut view, &held[0].ts, 2).as_deref(), Some("alph"));
     // A press in the gutter beside a continuation selects nothing.
     let (x, y) = (view.point_at(&held[1].ts, 0, 0).unwrap().0 - GUTTER_PX / 2.0, view.point_at(&held[1].ts, 0, 0).unwrap().1);
     let hit = view.hit((x, y));
@@ -1271,7 +1289,8 @@ fn a_tile_starts_each_group_and_no_text_draws_one() {
         let quads = view.backs(DRAWER);
         let tiles: Vec<_> = quads.iter().filter(|q| TILES.contains(&q.color)).collect();
         assert_eq!(tiles.len(), 2, "one a group at scale {scale}: {tiles:?}");
-        for ((t, top), author) in tiles.iter().zip([view.placed_tops()[0], view.placed_tops()[2]]).zip([&held[0].author, &held[2].author]) {
+        // The first group's record is the oldest, so its divider is above its tile.
+        for ((t, top), author) in tiles.iter().zip([view.placed_tops()[0] + DAY_H * scale, view.placed_tops()[2]]).zip([&held[0].author, &held[2].author]) {
             let (left, side, down) = (8.0 * scale, 34.0 * scale, 2.0 * scale);
             assert!(near(t.x, body.x + left) && near(t.w, side) && near(t.h, side) && near(t.y, body.y + top + down), "scale {scale}: {t:?}");
             assert_eq!(t.color, tile_color(author), "the color is the author's");
@@ -1318,8 +1337,113 @@ fn a_page_above_moves_every_record_below_it_by_one_line() {
         lay_drawer(view, fonts, &held[from..]);
         (view.placed_buffers()[0].lines.len(), view.placed_tops()[1] - view.placed_tops()[0])
     };
-    assert_eq!(layout(10, &mut ChatView::default(), &mut fonts), (2, 2.0 * line), "the oldest held record has a header and its text");
-    assert_eq!(layout(0, &mut ChatView::default(), &mut fonts), (1, line), "with a page above it, one line and the next record up by one");
-    // The oldest leaving: the record after it becomes the oldest and gains a header.
-    assert_eq!(layout(11, &mut ChatView::default(), &mut fonts).0, 2);
+    assert_eq!(layout(10, &mut ChatView::default(), &mut fonts), (3, DAY_H + 2.0 * line), "the oldest held record has a divider, a header and its text");
+    assert_eq!(layout(0, &mut ChatView::default(), &mut fonts), (1, line), "with a page above it, one line and the next record up by its divider and header");
+    // The oldest leaving: the record after it becomes the oldest and gains a divider and a header.
+    assert_eq!(layout(11, &mut ChatView::default(), &mut fonts).0, 3);
+}
+
+/// A divider is a lead line: no press, drag or copy reaches it, on the record that starts a day and on the oldest alike.
+#[test]
+fn a_divider_is_neither_selected_nor_copied() {
+    let mut fonts = FontSystem::new();
+    // The oldest is yesterday's and the other today's: each starts a day.
+    let held = [rec_by("1699900000.000100", "Ada", "member", "alpha beta"), by_ada(0, "gamma delta")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    let buffers = view.placed_buffers();
+    assert_eq!(buffers.iter().map(|b| b.lines[0].text().trim_matches('\u{a0}').to_string()).collect::<Vec<_>>(), ["Yesterday", "Today"]);
+    for (i, ts) in held.iter().map(|r| &r.ts).enumerate() {
+        assert_eq!(selects(&mut view, ts, 0), None, "record {i}: a press and drag on the divider");
+        assert_eq!(selects(&mut view, ts, 1), None, "record {i}: the header");
+        assert!(selects(&mut view, ts, 2).is_some(), "record {i}: the body");
+        // A drag that ends on the divider stays in the body.
+        let hit = view.hit(view.point_at(ts, 2, 3).unwrap());
+        view.press(hit);
+        view.extend_drag(view.point_at(ts, 0, 0).unwrap());
+        let text = view.selected_text().expect("a selection");
+        assert!(!text.is_empty() && held[i].text.starts_with(&text), "record {i}: {text:?}");
+        view.clear_selection();
+    }
+    // The marked message's copy is its body alone.
+    view.mark(false);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.marked_text().as_deref(), Some("gamma delta"));
+    view.mark(true);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.marked_text().as_deref(), Some("alpha beta"));
+}
+
+/// A divider's label is centered in the text's width, in a pill a body line tall with a border and the ground inside it, and a
+/// rule runs from each side of the pill to the tile's distance from the body's edge; the band and the tile start below it.
+#[test]
+fn a_divider_is_a_pill_with_a_rule_to_each_side() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha")];
+    let body = body_of_drawer();
+    for scale in [1.0_f32, 1.5] {
+        let records: Vec<&ChatRecord> = held.iter().collect();
+        let mut view = ChatView::default();
+        view.mark = Some(held[0].ts.clone());
+        view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        let quads = view.backs(DRAWER);
+        let top = body.y + view.placed_tops()[0];
+        let run = view.placed_buffers()[0].layout_runs().next().unwrap();
+        let (first, last) = (run.glyphs.first().unwrap(), run.glyphs.last().unwrap());
+        let text_x = body.x + GUTTER_PX * scale;
+        let (left, right) = (text_x + first.x, text_x + last.x + last.w);
+        assert!(near((left + right) / 2.0, text_x + (body.w - GUTTER_PX * scale) / 2.0), "centered in the text's width: {left} {right}");
+        assert!(near(run.line_height, DAY_H * scale) && near(first.font_size, 13.0 * scale), "13/15 of the body on a line of its own height");
+        // The pill: the border's rectangle, the ground inside it a pixel in, and the rules between the pill and the margins.
+        let pill = quads.iter().find(|q| q.color == LOW && near(q.h, BODY_LINE_H * scale)).expect("the pill's border");
+        assert!(near(pill.x, left) && near(pill.w, right - left) && near(pill.y + pill.h / 2.0, top + DAY_H * scale / 2.0), "{pill:?}");
+        let inner = quads.iter().find(|q| q.color == (0x1A, 0x1D, 0x21) && q.w < DRAWER.w).expect("the ground inside");
+        assert!(near(inner.x, pill.x + scale) && near(inner.y, pill.y + scale) && near(inner.w, pill.w - 2.0 * scale) && near(inner.h, pill.h - 2.0 * scale), "{inner:?}");
+        let rules: Vec<_> = quads.iter().filter(|q| q.color == LOW && near(q.h, scale)).collect();
+        assert_eq!(rules.len(), 2, "{rules:?}");
+        assert!(near(rules[0].x, body.x + TILE_LEFT_PX * scale) && near(rules[0].x + rules[0].w, pill.x), "{:?}", rules[0]);
+        assert!(near(rules[1].x, pill.x + pill.w) && near(rules[1].x + rules[1].w, body.x + body.w - TILE_LEFT_PX * scale), "{:?}", rules[1]);
+        assert!(rules.iter().all(|r| near(r.y + r.h / 2.0, pill.y + pill.h / 2.0)));
+        // The band, its bar and the tile start below the divider's line.
+        let day = DAY_H * scale;
+        let (band, bar) = (of_color(&quads, BAND)[0], of_color(&quads, SKY)[0]);
+        assert!(near(band.y, top + day) && near(bar.y, top + day), "{band:?} {bar:?}");
+        let tile = quads.iter().find(|q| TILES.contains(&q.color)).unwrap();
+        assert!(near(tile.y, top + day + 2.0 * scale), "{tile:?}");
+    }
+}
+
+/// A thread's summary is a line of its own: the count bold in the accent, then the last reply in the muted color, both 13/15.
+#[test]
+fn a_thread_summary_is_its_own_line_in_the_accent_and_the_muted_color() {
+    let mut fonts = FontSystem::new();
+    let mut r = by_ada(0, "alpha");
+    r.reply_count = 2;
+    r.latest_reply = Some(sot_protocol::chat::Ts::parse(&format!("{}.000100", 1_700_000_100 + 60)).unwrap());
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &[r]);
+    let buffers = view.placed_buffers();
+    let run = buffers[0].layout_runs().find(|r| r.line_i == 3).expect("the summary's line after the divider, header and body");
+    assert_eq!(run.text, "2 replies   Last reply today at 10:16 PM");
+    let (count, rest) = (run.glyphs.first().unwrap(), run.glyphs.last().unwrap());
+    assert_eq!(count.color_opt, Some(cosmic_text::Color::rgb(0x1D, 0x9B, 0xD1)));
+    assert_eq!(rest.color_opt, Some(cosmic_text::Color::rgb(0x9A, 0x9C, 0x9E)));
+    assert!(near(count.font_size, 13.0) && near(rest.font_size, 13.0) && near(run.line_height, BODY_LINE_H));
+    assert_eq!(attrs(Kind::Replies, 1.0).weight, cosmic_text::Weight::BOLD);
+    assert_ne!(attrs(Kind::Last, 1.0).weight, cosmic_text::Weight::BOLD);
+}
+
+/// A drawer too narrow for the label wraps it into more lines, and the tile and the band start below all of them.
+#[test]
+fn a_divider_wrapped_in_a_narrow_drawer_keeps_the_tile_below_it() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha")];
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let mut view = ChatView::default();
+    view.layout(&mut fonts, &plain(&records), ScreenRect { w: GUTTER_PX + 20.0, ..body_of_drawer() }, 1.0, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+    let lines: Vec<f32> = view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 0).map(|r| r.line_height).collect();
+    assert!(lines.len() > 1, "the label wraps: {lines:?}");
+    let quads = view.backs(DRAWER);
+    let tile = quads.iter().find(|q| TILES.contains(&q.color)).unwrap();
+    assert!(near(tile.y, body_of_drawer().y + view.placed_tops()[0] + lines.iter().sum::<f32>() + 2.0), "{tile:?} {lines:?}");
 }
