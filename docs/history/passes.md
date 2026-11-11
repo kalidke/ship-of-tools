@@ -1813,3 +1813,37 @@ A landing's record goes here, with its measured times; the package page holds on
   records' limit unstated, a stale bound, the tick rule in six places, the mark's total half unpinned); review round 3
   (no blockers; two stale comments and the limit sentence too narrow, landed on the session's read of the records diff);
   a rebase onto P16, clean; four scoped gates.
+- B3a, the chat's owner runs from the service's start, 2026-11-10: builder launched about 16:45, main 18:30
+  (b3b1f7728), 105 minutes, a miss. About 65 product lines (`Chat::boot`, the one composition for the daemon and the
+  rig; `begin` private) and 80 test lines. The product code was judged right in every round; the minutes went to its
+  tests: review round 1 (blockers: the test never took the daemon's boot path, and its log check raced tracing-core's
+  call-site cache, 13 of 20 runs failing beside one sibling); review round 2 (blockers: the owner test watched before
+  the socket's hello, 3 of 20 failing; the log check bypassed platform's `test_log`, which already was the one capturing
+  subscriber); review round 3 by the strongest reviewer (no blockers, 385 runs without a failure; two record lines);
+  four scoped gates.
+- B3b, one bounded, marked mail body per channel post, 2026-11-10: builder launched about 17:15, main 18:40
+  (2d4eb9dcb), 85 minutes, a miss. About 105 product lines (`mail.rs`; the Slack id grammar made config's one copy) and
+  280 test lines. Where the minutes went: before review, the id grammar moved to its owner and the push sweep stopped
+  the maintainer's first name, copied into tests from the plan's example; review round 1 (no blockers; 20,000 hostile
+  records fuzzed, no forged line; the cut halved the text, an omitted record read as an empty post); review round 2 (no
+  blockers; a files-only body could pass the bound by four bytes, the line-end cost unpinned); review round 3, narrow
+  (no blockers; 115,000 bodies matched an oracle written from the rules; two tests); two rebases; three scoped gates.
+- B3f, the scan read and no thread cursor under a lower bound alone, 2026-11-10: builder launched about 18:11, main
+  18:46 (4d4579730), 35 minutes, a miss. About 125 product lines (the scan shares the drawer's request builder and page
+  parser) and 430 test lines; closes SLACK-REPLIES-CURSOR-DROPS. Review round 1 (no blockers; every drawer read
+  compared before and after, identical but for the refused form; a replies scan kept its parent outside the bounds;
+  reds by `unwrap`), its fixes landed on the builder's reds; two rebases; two scoped gates.
+- B3e, a channel's boundary file and its filed set in memory, 2026-11-10: builder launched about 18:41, main 19:04
+  (5ea47a681), 23 minutes, inside the half hour. About 77 product lines and 134 test lines. Review round 1 (no blockers;
+  20 of 21 mutants killed; the filed set's trim at a start dropped filings above the boundary, which the next pass would
+  file again, so the bound became soft; `contains` now true at or below the boundary), its fixes landed on the
+  builder's reds; two scoped gates.
+- B3d, a delivering configuration of at most 32 channels, each with its own floor, 2026-11-10: builder launched about
+  18:51, main 19:10 (75242faa4), 19 minutes, inside the half hour. About 56 product lines and 100 test lines. Review
+  round 1 (no blockers; two floor mutants survived, the malformed value carried no ordinal, the resolution carried the
+  hub's value), its fixes landed on the builder's reds; two scoped gates.
+- P18, one chat listener per comm folder, 2026-11-10: builder launched about 18:32, main 19:13 (d22e6c096), 41
+  minutes, a miss. About 110 product lines (the lock in the comm folder's `chat/`, a held start tried again each minute,
+  the step-down) and 200 test lines. Review round 1 (no blockers; ten mutants killed; a hub move probed end to end; a
+  held start gave up for good on a topology being edited, now only on one naming another hub), its fixes landed on the
+  builder's reds; two rebases by the session; three scoped gates.

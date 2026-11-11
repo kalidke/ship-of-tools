@@ -800,6 +800,10 @@ owned by `docs/CLAUDE.md`.
   the `complete` reply carries the daemon's latest page from its model, which deletes the window's overlay, stale flag,
   read and its matching, and the second Slack read per recovery. A wire and daemon change, for the maintainer's word.
   Found reading code; never seen.
+- **CHAT-AFTER-HELLO-WAITS-CONNECTED** [note] The test rigs' `after_hello` waits for the socket's `connected`, which
+  `rust/chat/src/socket.rs` sets one lock before it latches the hello's gap, so a test that watches right after it can
+  begin before the gap and be left needing a snapshot. Every caller of `after_hello` shares the window. Fix: wait for
+  the gap itself. Found by a review reading code; never seen in a run.
 - **CHAT-FLOOD-CAP-UNDER-LOAD** [note] `socket_tests.rs`'s
   `a_write_that_cannot_finish_retires_the_socket_within_the_write_bound` fails on a Linux host under CPU load, in two ways.
   Under 64 busy loops its flood reached its frame and byte caps without one write stalling ("the flood never stalled a write

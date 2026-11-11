@@ -204,8 +204,12 @@ sees what the user selects"); its wire op, the daemon's pure check and the handl
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the
 maintainer's word after the first stage is measured. Mail (B3) is in progress: the filing that names its expected row
-(P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so has the chat's
-owner running from the service's start, so delivery can run with no window open; SlackClaw's pause switch (its PR 18) merges on his word when the
+(P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
+owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
+channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound
+alone refused), each delivering channel's boundary file and its filed set in memory, a delivering configuration of at
+most 32 channels each with its own floor, and one chat listener per comm folder; the traversal, delivery's decisions,
+the daemon's filing and the row replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
