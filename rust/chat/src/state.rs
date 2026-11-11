@@ -56,8 +56,8 @@ pub fn write(dir: &Path, workspace: &str, channel: &str, boundary: &Ts) -> Resul
     sot_platform::host::write_durable(&path(dir, workspace, channel)?, encode(boundary).as_bytes()).map_err(|_| StateError::Unwritable)
 }
 
-/// One channel's boundary and its filed set.
-#[derive(Debug)]
+/// One channel's boundary and its filed set. `Clone` so a pass can read a snapshot while the owner goes on filing.
+#[derive(Clone, Debug)]
 pub struct State {
     workspace: String,
     channel: String,
@@ -80,6 +80,10 @@ impl State {
 
     pub fn boundary(&self) -> &Ts {
         &self.boundary
+    }
+
+    pub fn channel(&self) -> &str {
+        &self.channel
     }
 
     /// Adds the filings of this channel above the boundary; true when this took the set past `MAX_FILED`. A filing of

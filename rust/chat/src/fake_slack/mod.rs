@@ -29,7 +29,9 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::http::Http;
 
+mod history;
 mod ws;
+pub use history::History;
 pub use ws::{Flood, WsPeer};
 
 /// The names the test resolver maps to loopback: Slack's, two lookalikes, a foreign host, and one Slack name the
