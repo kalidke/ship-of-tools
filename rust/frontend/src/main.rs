@@ -20,6 +20,7 @@ mod ui;
 use std::sync::mpsc;
 
 use anyhow::Result;
+use sot_platform::host::heap_cap::HeapCap;
 use sot_platform::secret::RedactingWriter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -64,7 +65,18 @@ fn log_subscriber<W: std::io::Write + 'static>(
         .finish()
 }
 
+/// The window's allocator: a plain pass-through to the system's while disarmed, which it is in every mode but
+/// `--draw-svg`, where the child arms it before it reads a byte (`ui::preview::image::svg_child`).
+#[global_allocator]
+static HEAP: HeapCap = HeapCap::new();
+
+/// What both `main`s do first. `--draw-svg` as the first argument is the drawing child, which never returns; its
+/// remaining arguments are for it alone (the window's own binary must not parse them).
 fn window_entry<T>(startup: impl FnOnce() -> Result<T>) -> Result<T> {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|mode| mode == "--draw-svg") {
+        ui::preview::image::svg_child::child_main(&HEAP, &args);
+    }
     #[cfg(windows)]
     if let Err(e) = sot_platform::host::winhandle::harden_own_stdio(true) {
         eprintln!("sot-fe: could not harden inherited stdio ({e}); continuing");

@@ -667,6 +667,45 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   URL reads nothing. Limit: an SVG that links a raster by path now draws without it and says nothing. Tests
   `an_image_href_naming_a_local_file_draws_nothing`,
   `an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling`, `an_embedded_png_image_still_draws`.
+- The drawing child, `sot --draw-svg <heap bytes> <cpu seconds> --version` (preview/image/svg_child.rs, whose numbers
+  are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
+  or spin only a process the window can lose. It has no caller yet (the runner, the worker and the callers are later
+  landings). The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
+  and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
+  it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), crashes as
+  exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
+  `HeapCap` that costs a bool load while disarmed, which is every other mode). Request on stdin: `SVG1`, a u32 job count,
+  then per job `S` (a stretch ask), `w` and `h` as u32, a u64 length and that many bytes of SVG; the lengths' sum is at
+  most `PREVIEW_BINARY_CAP` and the bytes are allocated at their declared length, so the cap sees an input before it is
+  read. Reply on stdout, which holds nothing else (stderr is the window's to close): `SVG1`, then per job in order
+  `R`, `w` and `h` as u32 and `4 * w * h` premultiplied RGBA bytes, or `E`, a u16 length and at most 1 KiB of the
+  error's first line; an SVG that does not parse is that job's `E` and the next job still draws. Jobs draw on one thread
+  of 32 MiB (`SVG_STACK`, the same on every system; Windows gives a main thread 1 MiB); a panic there is an abort. The
+  child exits 0, or: 71 at its heap cap, 72 at its CPU bound, 73 in a crash (an abort, Rust's stack-overflow report), 74
+  when its arguments, its request or its bounds cannot be had, and then writes no reply. Windows has no code for a
+  crash or a CPU bound: the OS's own crash status stands (P8), and the parent's wall clock is the only time bound.
+  Limits: a crash by `SIGSEGV` outside a stack overflow, `SIGBUS` or `SIGILL` ends by signal; the heap cap counts
+  requested bytes, so memory the file can reach without the allocator (fonts and the stack are fixed mappings) is not
+  counted; nothing is enforced on what the child may open beyond what the code does (an `<image>` reads nothing, the
+  child starts no process). `SVG_HEAP`, the number landing 3's runner passes, is set from the allocator's high-water
+  mark at 4096 by 4096 pixels (16 Mpx, the largest ask) in a release build: 501 MB for a 15 MB scatter of 200000 circles
+  under a blur with 200 labels, 177 MB for a 234 KB drawing from a system's help pages, 581 MB for 450000 flat
+  rectangles (26 MB); twice the highest, 1.16e9, rounds up to 2 GiB. Tests (`rust/frontend/tests/svg_child.rs`, each
+  spawning the built binary under a cleared environment with `HOME`, stderr null, and a core limit and a scratch folder
+  for the two that end by a bound's signal handler): `a_plain_svg_comes_back_as_its_pixels`,
+  `every_job_of_a_request_is_drawn_in_order_and_an_error_does_not_end_the_child`,
+  `a_request_that_is_no_request_is_refused_with_its_code`, `an_input_past_the_heap_ends_with_its_code`,
+  `a_draw_past_its_heap_ends_with_its_code`, `an_entity_expansion_past_its_heap_ends_with_its_code`,
+  `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
+  (Unix). In a debug build the CPU test's file, without the bound, ends by an arithmetic-overflow panic after about 7 s
+  (code 73), not by spinning. Hosted run 43092941740 (debug builds, tests alone and in order): on macOS 15 all eight pass,
+  so a child that closed every inherited descriptor first still draws with the system frameworks loaded (the 2a review's
+  S3), the CPU bound is enforced (P7), and `DiagnosticReports` held the same files before and after the run (a control
+  that aborts without the handler was not run, so the exit code 73, not the listing, is the evidence). On Windows the
+  seven pass; the cycle's stack overflow ended the child in 0.1 s with the OS status 0xc00000fd, with no dialog possible to
+  see on a hosted runner; `%LOCALAPPDATA%\CrashDumps` was never created and the Windows Error Reporting archive path was
+  not resolved by the run's shell, so P8's "no dump" holds for the user dump folder only, and its dialog half is unseen
+  (no lab computer was used).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).
