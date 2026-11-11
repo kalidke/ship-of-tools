@@ -115,3 +115,11 @@ exactly as shown: Slack's markup as the markup text, `&lt;` and `&gt;` as `<` an
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
 message's text, not its name and time line. With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
+
+## Moving the hub
+
+The chat listens on one computer for the whole comm folder: the daemon that holds the lock in `chat/` of the comm folder
+(`~/.sot-comm/chat/` by default). To move the hub, edit `hosts.toml` and start the new hub's daemon; nothing else. The old
+hub's chat notices the new topology within a minute and stops listening, and a new hub whose start finds the lock still
+held tries again each minute and listens once it is free. A computer that was lost frees its lock when the file server's
+lease runs out, about two minutes. A computer that becomes the hub starts its chat when its daemon next starts.

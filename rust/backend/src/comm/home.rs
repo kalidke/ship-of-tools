@@ -37,6 +37,18 @@ pub(crate) fn ensure(home: &Path, env: &super::Env) -> Vec<String> {
     notes
 }
 
+/// The chat listener's lock folder: `chat/` in the comm folder, which every daemon filing into these inboxes shares, so
+/// one listener runs per comm folder. The comm folder is made whole first ([`ensure`]), then `chat/` private; the
+/// platform's trust in a private folder needs a parent no other user can write into, which the comm folder is. `None`
+/// when the folder cannot be named or made private.
+pub(crate) fn chat_dir(env: &super::Env) -> Option<PathBuf> {
+    let home = comm_home(env)?;
+    ensure(&home, env);
+    let dir = home.join("chat");
+    sot_platform::host::paths::ensure_private_dir(&dir).ok()?;
+    Some(dir)
+}
+
 /// Whether the folder is whole already: a command that finds it so writes nothing to make it.
 pub(crate) fn is_whole(home: &Path) -> bool {
     home.join("registry.json").is_file() && ["inbox", "self", "read"].iter().all(|d| home.join(d).is_dir())

@@ -192,7 +192,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    missing file and `TopologyStore::refresh` keeps an earlier parse; neither is used); then `Config::load` against the
    daemon's rows through one canonicalizer (an absolute folder, resolved through symlinks, `.`, `..` and a trailing
    slash, de-verbatimed and in the system's letter case on Windows; a relative spelling or a folder that does not exist
-   is unknown); then `Credentials::read`; then the lock folder (`<daemon state>/chat`, private); then registration with
+   is unknown); then `Credentials::read`; then the lock folder (messaging's `chat_dir`: the comm folder made whole, then its `chat/` private; never made by chat itself); then registration with
    lifecycle's `retire::participants()`, made with the phase lock already held and kept until the start task is in
    place, so a retirement that reaches `request_stop` after the registration finds the start and aborts it (pinned by
    `a_retirement_reaching_request_stop_between_register_and_starting_finds_the_start`, through a test-only hook in
@@ -201,9 +201,16 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    registers nothing; a hub with no `chat.toml` is off (`Refused(Missing)`) and writes nothing; a malformed one opens no
    secret file. Every open goes through the one `Reader` passed to `begin`, and `begin` is the only caller of
    `Config::load` and `Credentials::read`: the status, its words, `resolve`, a stop and a wait read memory. The hub fact
-   is read once. A daemon that stops being the hub after its start (the topology changes or vanishes) keeps its running
-   service until it ends and opens no file again; a reload does not exist, and a start after a stop is a second `begin`
-   (a restart of the daemon in practice). A failed start is final until the daemon restarts. **The owner.** The daemon's boot is `Chat::boot` (begin, the boot's log line, and `Chat::start_owner`, called while the chat is still `Starting`; the tests' rig is built by the same function): one task waits for the start to end and, when the service runs, logs `the chat service is running` once and calls `Hub::ensure_owner`, so the socket is served with no window open; `ensure_owner` stays the one start, and a first watch that comes earlier starts it too. The wait ends with the chat when it is retired while starting. An owner with nothing watched applies nothing and reads no history (`the_owner_runs_from_the_services_start_with_no_watch` with a fake Slack that counts history reads, `the_running_state_is_logged_once` through `test_log`, `the_boots_wait_ends_when_the_chat_is_retired_while_starting`). The rig's tests run with the boot's task, and either start may come first (`ensure_owner` holds the owner's lock); the tests built with `begin_unowned` (`many()`'s: `a_watch_is_admitted_and_bounded_per_connection`, `a_closed_connections_channels_leave_the_model`) have no boot task, so a first watch starts the owner there. `begin` is private to the daemon's chat module, so `server::run` can build a chat only through `boot`. **M3, `Chat::admit`, `Chat::admit_unwatch` and
+   is read at the start and once a minute after (`HUB_CHECK`). A running chat steps down when a readable topology names
+   another computer as the hub: the service stops, which frees its lock, and the status is `NotHub` (`names_another_hub`
+   is true only for a topology that parses and a self-name that is not empty: a missing or unparsable topology and an
+   unreadable or empty self-name never count as another computer naming the hub, and a chat running through one runs on;
+   `a_chat_whose_topology_names_another_hub_steps_down_and_a_broken_topology_changes_nothing`). A step-down opens no file;
+   a computer that becomes the hub starts its chat at its daemon's next start; a reload does not exist, and a start after a
+   stop is a second `begin` (a restart of the daemon in practice). A start refused `held` is not final: it is tried again
+   each minute while this computer is the hub, logged once, the phase staying `Starting` so the owner's wait holds and the
+   owner starts when the lock comes (`a_held_start_starts_once_the_holder_lets_go`); a retirement or a topology naming
+   another computer ends the tries. Any other failed start is final until the daemon restarts. **The owner.** The daemon's boot is `Chat::boot` (begin, the boot's log line, and `Chat::start_owner`, called while the chat is still `Starting`; the tests' rig is built by the same function): one task waits for the start to end and, when the service runs, logs `the chat service is running` once and calls `Hub::ensure_owner`, so the socket is served with no window open; `ensure_owner` stays the one start, and a first watch that comes earlier starts it too. The wait ends with the chat when it is retired while starting. An owner with nothing watched applies nothing and reads no history (`the_owner_runs_from_the_services_start_with_no_watch` with a fake Slack that counts history reads, `the_running_state_is_logged_once` through `test_log`, `the_boots_wait_ends_when_the_chat_is_retired_while_starting`). The rig's tests run with the boot's task, and either start may come first (`ensure_owner` holds the owner's lock); the tests built with `begin_unowned` (`many()`'s: `a_watch_is_admitted_and_bounded_per_connection`, `a_closed_connections_channels_leave_the_model`) have no boot task, so a first watch starts the owner there. `begin` is private to the daemon's chat module, so `server::run` can build a chat only through `boot`. **M3, `Chat::admit`, `Chat::admit_unwatch` and
    `Chat::resolve`.** `Chat::service` is private, so a call that reaches Slack or a file gets the service only from
    `admit`, which reads the registry's current entry for the row id at that moment (an exact id, never a slug) and
    refuses: no running service (not the hub, no or refused `chat.toml`, no secrets, a failed, starting, stopping or
@@ -238,7 +245,9 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    credentials, http, dir)` takes the lock first, then reads `auth.test`, then opens the socket; a second service for the
    workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
    (a kernel `flock`, close-on-exec) on `<dir>/chat-<workspace>.lock`, a name built from the validated workspace id alone,
-   holding no secret; `dir` is a private folder the caller supplies and owns (not checked here). The lock is moved into the
+   holding no secret; `dir` is a private folder the caller supplies and owns (not checked here); the daemon's is the comm folder's `chat/`, so
+   every daemon that files into those inboxes takes the same lock and one listener runs per comm folder
+   (`two_daemons_on_one_comm_folder_run_one_listener`). The lock is moved into the
    listener's task (`Socket::launch`'s `held` argument), so it is released when the task's future is dropped, after its last poll: at a
    normal end, at a `stop` that timed out and aborted (the abort is awaited first), and at a drop without `stop` (the
    abort, not an await). A killed holder releases it with its descriptor, a child born later does not inherit it, and
@@ -248,11 +257,14 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    signaled) from the moment a stop begins; only the call that began the stop waits for the listener, any other returns at once;
    a request already in flight (including `apps.connections.open`, whose ticket nobody connects with) runs to its own deadline. `status()` is `Running { socket, gap }` (the socket's `Status`; `gap` is true after any hello until `Watches::reconcile` clears it through `Service::reconciled`; `Service::gap` is a status read; `Watches` takes the events, answers `loaded`, clears through `reconcile` and waits, and all of them answer nothing once a stop has begun; a `wait` already in flight is woken by the stop and answers `Stopped`),
    `Stopping` or `Stopped`. A service holds four things: the workspace lock, its phase, the API's closed state (set when a stop begins, never cleared, seen by every handle), and the claim that makes `Service::watches` give one `Watches`: free, held while that `Watches` lives, and ended when a stop begins (or the service is dropped), which is never undone, so a stopped service gives none and its `Watches` reads it. A stop whose caller stops waiting (its future is dropped, as lifecycle's 1 s retirement bound does) leaves that service at `Stopping` for good, not `Stopped`: every handle answers `Closed` and the task is aborted, so the lock frees when the runtime drops the task and a `start` right after may wait platform's short retry; nothing may poll for `Stopped` after cancelling. A service refused or never started has no value, its state is `start`'s error. The error codes are
-   the existing ones plus `held`, `lock`, `stopped`, and `closed`, which a handle answers once its service has begun to stop. Limits: the lab's computers share a home over NFSv4.2, where `flock` is
-   a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another and freed when the
-   holder ended; a holder killed on one computer, a lost computer (lease expiry) and a mount that does not support locks
-   are not measured, and Windows is `LockFileEx` with no cross-computer claim. A path outside the shared home (a
-   per-computer `dir`) gives per-computer exclusion only. `auth.test` reports no app id, so a duplicate app id across
+   the existing ones plus `held`, `lock`, `stopped`, and `closed`, which a handle answers once its service has begun to stop. Limits: a second computer sharing the home over NFSv4.2, where `flock` is
+   a byte-range lock on the server: measured, a lock held on one computer refused `flock -n` on another, and a holder
+   killed with `kill -9` freed it for a second computer on its first try, 0.23 s after the kill; a lost computer is not
+   measured and rests on the NFS lease (120 s on the lab's mounts), so its lock should free within about two minutes; a
+   holder cut off but still running does not learn its lock was lost, so a hub moved during a cut longer than the lease may
+   file one more message from the one filing it had in flight, and every later filing reads the moved topology first and
+   files nothing. A mount that does not support locks is not measured, and Windows is `LockFileEx` with no cross-computer
+   claim. A comm folder outside the shared home gives per-computer exclusion only. `auth.test` reports no app id, so a duplicate app id across
    different workspace ids, and an app token that belongs to another app than the bot token, are not detected here. A
    mutation or name lookup begun before `stop` runs to its own deadline (guarantees 7, 12, 16). The service's `stop` bound
    is the caller's; the daemon's retirement of in-process services allows 1 s (`lifecycle`), and a `within` over that is

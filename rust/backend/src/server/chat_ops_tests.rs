@@ -83,6 +83,7 @@ pub(super) struct Rig {
 pub(super) fn starter(fake: &FakeSlack) -> crate::chat::Starter<Service> {
     let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
     Box::new(move |config, credentials, dir| {
+        let (http, base) = (http.clone(), base.clone());
         Box::pin(async move { Service::start_at(config, credentials, http, dir, base).await.map(Arc::new).map_err(|e| e.code()) })
     })
 }
