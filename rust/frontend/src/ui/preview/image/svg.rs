@@ -88,21 +88,20 @@ pub fn quad_from_svg_bytes(
     target_w: u32,
     target_h: u32,
 ) -> Result<Quad> {
-    let tree = svg_tree(bytes)?;
+    let pixmap = draw(&svg_tree(bytes)?, target_w, target_h)?;
+    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pixmap.width(), pixmap.height())
+}
 
-    let svg_size = tree.size();
-    let sx = target_w as f32 / svg_size.width().max(0.001);
-    let sy = target_h as f32 / svg_size.height().max(0.001);
-
-    let pw = target_w.max(1);
-    let ph = target_h.max(1);
-
-    let mut pixmap = Pixmap::new(pw, ph)
-        .ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {}x{}", pw, ph))?;
-
-    resvg::render(&tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
-
-    Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pw, ph)
+/// `tree` stretched onto a pixmap of exactly `w` by `h` (a zero side is one): the draw of `quad_from_svg_bytes` and of
+/// the drawing child (`svg_child`).
+pub(super) fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
+    let size = tree.size();
+    let sx = w as f32 / size.width().max(0.001);
+    let sy = h as f32 / size.height().max(0.001);
+    let (pw, ph) = (w.max(1), h.max(1));
+    let mut pixmap = Pixmap::new(pw, ph).ok_or_else(|| anyhow::anyhow!("pixmap alloc failed for {pw}x{ph}"))?;
+    resvg::render(tree, Transform::from_scale(sx, sy), &mut pixmap.as_mut());
+    Ok(pixmap)
 }
 
 /// An `<image>` is drawn only from embedded (`data:`) data, by usvg's own data resolver. A path or URL names a file on
@@ -118,7 +117,7 @@ fn embedded_images_only() -> ImageHrefResolver<'static> {
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
 /// separator (`one_paragraph_svg`) and no file read for an `<image>`. An `.svgz` (gzip) is
 /// unpacked first (`unpack_svgz`): usvg would unpack it itself, past both rules.
-fn svg_tree(bytes: &[u8]) -> Result<Tree> {
+pub(super) fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
         image_href_resolver: embedded_images_only(),
