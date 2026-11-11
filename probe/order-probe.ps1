@@ -36,8 +36,11 @@ $env:SOT_SELF_HOST = 'probehub'
 $env:SOT_HOSTS = Join-Path $out 'hosts.toml'
 [IO.File]::WriteAllText($env:SOT_HOSTS, "hub = `"probehub`"`n[host.probehub]`ndaemon = true`n[host.probefar]`ndaemon = true`n")
 $ld = Join-Path $prefix 'repo\current\scripts\sot-local-daemon.ps1'
-$null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ld 2>&1 | Tee-Object -FilePath (Join-Path $out 'daemon-start.out')
+# Redirected to a file by cmd, never through a pipeline: the daemon it starts inherits its standard handles, and a pipe
+# would not end while the daemon runs.
+cmd /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ld`" > `"$out\daemon-start.out`" 2>&1 < NUL"
 Say "daemon start script exit: $LASTEXITCODE"
+Get-Content -LiteralPath "$out\daemon-start.out" | ForEach-Object { Say "  $_" }
 
 # the runbook's blocks, from PowerShell
 Push-Location -LiteralPath $neutral
@@ -72,6 +75,6 @@ if (-not ($s070 | Where-Object { $_ -match '^probehub hub,daemon unreachable: .*
 Say '--- step 5 status (PowerShell block)'
 Push-Location -LiteralPath $neutral
 try { @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $probeDir 'step5-1.ps1') 2>&1 | ForEach-Object { "$_" }) | ForEach-Object { Say $_ } } finally { Pop-Location }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ld -Stop 2>&1 | Out-Null
+cmd /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ld`" -Stop > `"$out\daemon-stop.out`" 2>&1 < NUL"
 Say "RESULT $(if ($script:ok) { 'PASS' } else { 'FAIL' })"
 if ($script:ok) { exit 0 } else { exit 1 }
