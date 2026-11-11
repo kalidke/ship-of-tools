@@ -694,6 +694,13 @@ owned by `docs/CLAUDE.md`.
   that is a link into other storage); and it splits on `/` only, so a Windows daemon's `a\b.pdf` is accepted but never
   equals the tree's `a/b.pdf` and never refreshes, and `a\..\b.pdf` is refused and marked. Found by the review of the
   landing that closed PREVIEW-PDF-STALE, probing the first and reading the second; the second never seen.
+- **PANE-COPY-KEEPS-WRAPS** [person] Text copied from an agent's pane carries the pane's soft wraps as real line
+  breaks. A one-line command of about 260 characters, wrapped at the pane's width, pasted into the agent's shell
+  prompt as two lines: its first part ran alone and the rest failed (2026-11-11). Copy should join a row that the
+  terminal wrapped onto the next, as a terminal's own copy does; the wrap is known per row in the screen the pane draws.
+- **PREVIEW-NOT-FOLLOWING-ROW** [person] The preview pane does not always change with the row the person switches to
+  (the maintainer, 2026-11-11), and a row's preview showed a markdown file that nothing in that row had shown, a file
+  other rows on the same hub had worked on. Cause not yet found.
 
 ## distribution
 
