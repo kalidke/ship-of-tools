@@ -137,10 +137,11 @@ Supervisor:
   the person can end it), a requested end the journal holds is made durable before anything moves, and the layout moves
   into `.retired-voyages/`. The fence is taken for that step only when `supervisor.lock` exists: a folder that holds
   the layout and no fence file never started, and the retire never creates the start marker (it moves the layout
-  without the creating fence). An end the retire asked for is not a person's, so such a row starts fresh and resumes
-  the conversation; an end a person asked for under 0.6 is kept, so the row rests until selected: it is read from the
-  live supervisor's rest (decided before the stop, above) or, when none lives, from the 0.6 journal (a closed or
-  verified `end_run` on the pointer's voyage whose id is not the retire's; a completion entry that is present and not a
+  without the creating fence). An end the retire asked for is not a person's, so such a row starts again: its
+  supervisor in resume mode, its agent by the ordinary recipe, which carries no `--resume` (agents' guarantee 2), so
+  the agent begins a new conversation and the earlier one comes back only by `/resume` in the row. An end a person
+  asked for under 0.6 is kept, so the row rests until selected: it is read from the live supervisor's rest (decided
+  before the stop, above) or, when none lives, from the 0.6 journal (a closed or verified `end_run` on the pointer's voyage whose id is not the retire's; a completion entry that is present and not a
   regular file, or anything else that cannot be read, rests the row, since a wrong rest is undone by one selection and
   a wrong start cannot be undone). A retire that fails leaves the row `unreachable`, retried at every start, never
   latched `terminal`. The boot resume retires every such row at once, each in its own task, before the semaphore that

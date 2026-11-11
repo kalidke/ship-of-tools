@@ -10,105 +10,14 @@ runs its own `sotd install`; your job is the
 judgment around it — choosing the right topology, verifying prerequisites, and
 proving the result works.
 
-## Update this computer (Linux and macOS)
+## Update this computer
 
-If Ship of Tools is already installed here (`~/.local/share/sot/install.json` exists) and the human says "update sot",
-"update sot from the repo" or "update Ship of Tools", run the installer from the installed checkout, with no options:
-
-```bash
-bash ~/.local/share/sot/repo/current/scripts/install.sh
-```
-
-(`--prefix <dir>` or `SOT_PREFIX` if the install is not under `~/.local/share/sot`.) With no `--version` it follows the
-channel this computer already runs: a stable release takes the latest stable release; a pre-release takes the newest
-published release of any kind. The role is `hosts.toml`'s entry for this computer first (it wins over a role flag), then
-the role flag, then what the install recorded, so an update needs no `--local`, `--backend` or `--be-only`. It never moves the install backwards unless told (`--version vX.Y.Z` names the target; an older one is then
-said to be older and installed, and a run that names a version pins the install). A run can take many minutes (the
-Julia environments are prepared), longer than a tool call's default timeout: run it in the background or with the
-longest timeout the tool allows. It ends with exactly one line; read the last line of its output, and act on it:
-
-- `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
-- `ONE STEP LEFT: <step>`: the install is whole and one thing remains that only the human can do (usually: quit the
-  window and start it again, since it still runs the old version). Tell the human that step in those words.
-- `FAIL: <check>: <detail>`: stop and report the line. Three are decisions, not faults. `daemon:` names rows with a live
-  REPL and says when the Pluto server is running (a restart would end the REPLs and every notebook open in it; their
-  variables are lost, the rows and their agents keep running between 0.7 releases), or says why the daemon could not be
-  asked in full. The update from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its conversation
-  back. A daemon that cannot answer is judged from its own REPL and Pluto child processes: with none, the run goes on with no flag. When something is live and a person is at the console, the installer asks "Restart the daemon? ... [y/N]" in place; with no console (an agent's run) it stops with this line: ask the human, and re-run with `--restart-daemon` only on a yes. `target:` and
-  `direction:` are the human's to answer, never a version the agent picks. `target:` says the install is a build of the
-  line (a `+` in its version): a pack of the line (`scripts/pack-build.sh` in the checkout that built it) goes in with
-  `--archive <folder>`, while a release named with `--version` is usually older and moves this computer back.
-  `direction:` says the newest release is older than what runs here: only a version the human names goes back. Ask the
-  human which they want.
-
-`--archive` runs the install.sh of the checkout that made the pack, not the installed one:
-`bash <that checkout>/scripts/install.sh --archive <folder>`.
-
-If a run stops half way (a lost connection, a Ctrl-C), run it again: `install.json` is written last, and a repeat is a
-repair run that ends in `PASS`. With no network, `--archive <folder>` installs from a folder carried here (the base
-clone still needs the repo's origin unless it already holds the commit).
-
-An install old enough to predate this entry has an `install.sh` that does not end in one of those lines
-(`grep -q 'ONE STEP LEFT' ~/.local/share/sot/repo/current/scripts/install.sh` says which). Read `version` in its
-`install.json` first: a `+` in it is the `target:` case above, so ask the human; otherwise follow the channel (a stable
-version takes the latest stable release, a pre-release the newest published one), tell the human the version, and run
-that tag's installer with no version: `curl -fsSL https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.sh | bash`.
-It follows the same channel itself, so the install stays unpinned and its automatic updates stay on (`--version` would pin it).
-A source checkout (no `install.json`) updates by `git pull` and a rebuild. With no install here at all, go on to the next
-sections.
-
-## Update this computer (Windows)
-
-If `%LOCALAPPDATA%\sot\install.json` exists and the human says "update sot", "update sot from the repo" or "update Ship
-of Tools", run the installer from the installed checkout, with no options (`-Prefix <dir>` if the install is elsewhere).
-The versions path works from an ssh session too, where `repo\current` cannot be traversed:
-
-```powershell
-$p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
-powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
-```
-
-It follows the channel this computer already runs, exactly as the Unix installer does (a stable release takes the latest
-stable release; a pre-release the newest published one; a `+` build stops), and never moves the install backwards unless
-told (`-Version vX.Y.Z` names the target; an older one is then said to be older and installed, and a run that names a
-version pins the install). A run can take many minutes (the stage prepares Julia, and a converge waits up to 30 minutes
-for the window), longer than a tool call's default timeout: run it in the background or with the longest timeout the tool
-allows. It ends with exactly one line; read the last line of its output, and act on it:
-
-- `PASS: Ship of Tools <v> at <short> on this computer`: done. Say so.
-- `ONE STEP LEFT: <step>`: the install is whole or the update is armed, and one thing remains that only the human can do:
-  quit Ship of Tools (choose Keep) and start it from the shortcut, start it at the desk, or install Julia or jq with the
-  winget command the line names. Tell the human that step in those words, and run the installer again to confirm.
-- `FAIL: <check>: <detail>`: stop and report the line. `daemon:` names rows with a live REPL and says when the Pluto
-  server is running (a restart would end both; the rows and their agents keep running between 0.7 releases). The update
-  from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its conversation back. A daemon that cannot answer is judged
-  from its own REPL and Pluto child processes, and the installer asks "Restart the daemon?" in place at a console; with no
-  console it stops with this line: ask the human, and run it again with `-RestartDaemon` only on a yes. `target:` and `direction:` are the human's to answer, never a version the agent
-  picks: `target:` says the install is a build of the line (a `+` in its version), which a pack of the line
-  (`scripts\pack-build.ps1` in the checkout that built it) updates with `-Archive <folder>`, while a release named with
-  `-Version` is usually older and moves this computer back; `direction:` says the newest release is older than what runs
-  here, and only a version the human names goes back. Ask the human which they want.
-
-`-Archive` runs the install.ps1 of the checkout that made the pack, not the installed one:
-`powershell -NoProfile -ExecutionPolicy Bypass -File <that checkout>\scripts\install.ps1 -Archive <folder>`. A run that
-names what to install (`-Version`, `-Archive`) pins the install: automatic updates stay off until a run that names no
-version, and the PASS or ONE STEP LEFT line ends "pinned at <v>" (tell the human when it does). If a run stops half way (a lost connection, a Ctrl-C), run it again: a repeat is a repair run that ends in `PASS`.
-
-An install that predates `install.ps1` has no such file in its checkout. Read `version` in its `install.json` first: a `+`
-in it is the `target:` case above, so ask the human; otherwise tell the human the version (a stable one takes the latest
-stable release, a pre-release the newest published one) and fetch that tag's installer:
-`curl.exe -fsSL -o "$env:TEMP\sot-install.ps1" https://raw.githubusercontent.com/kalidke/ship-of-tools/<tag>/scripts/install.ps1`,
-then run it with no version, so the install stays unpinned: its prelude follows the same channel.
-
-## After an update
-
-- A run that names a version or archive pins the install and turns automatic updates off. Run the installer again with
-  no version or archive to remove the pin and follow the channel again.
-- Restart every open Ship of Tools window after an update, on every computer that shows one.
-- A computer declared as a frontend also runs its own local daemon; this is expected even when it shows rows on other
-  computers. An explicit `--backend <alias>` install is the exception and runs no local daemon.
-- `sotd` is installed in `$PREFIX/bin`: `~/.local/share/sot/bin` by default on Linux and macOS, or
-  `%LOCALAPPDATA%\sot\bin` on Windows (where it is `sotd.exe`).
+If Ship of Tools is already installed here (`~/.local/share/sot/install.json` exists, or
+`%LOCALAPPDATA%\sot\install.json` on Windows) and the human asks you to update it ("update sot", "update sot from the
+repo", "update Ship of Tools"), do not use this page: follow [`docs/UPDATE-AGENT.md`](UPDATE-AGENT.md)
+(https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md). It is the one update procedure, the
+same command for every install from 0.6.6-rc1 on, and it says what to ask the human. The rest of this page is for a
+computer with no install yet.
 
 ## Which install is this?
 
@@ -237,8 +146,8 @@ systemctl --user is-active --quiet sotd.service && systemctl --user cat sotd.ser
 cat ~/.local/bin/sot-launch 2>/dev/null                 # does an existing launcher belong to another prefix?
 ```
 
-- **A schema-1 manifest** → this is an UPGRADE: "Update this computer" at the top
-  of this page. Role is derived fresh each run (the declared list first, which wins over a
+- **A schema-1 manifest** → this is an UPGRADE: follow `docs/UPDATE-AGENT.md`, not this
+  page. Role is derived fresh each run (the declared list first, which wins over a
   role flag; then the role flag; then what the manifest records: its `daemon`/`frontend` bits, its
   `service`, its `hub`, and a remote install's alias from its wrapper) — so an
   update needs no role flag; the installer also reads `daemon` and `service`
@@ -334,8 +243,12 @@ quote these facts to the human and wait for an explicit yes:
 
 ## 2b. Windows frontend → remote backend
 
+A Windows computer that already holds Ship of Tools files but no `install.json` (a source checkout whose window will not
+start, an old `sot.exe` alone in `%LOCALAPPDATA%\sot\bin`) is not a fresh install: follow `docs/UPDATE-AGENT.md`
+step 1, which owns that case. What follows is for a Windows computer with neither.
+
 Windows is a first-class *frontend* host (the backend stays on Linux). `scripts\install.ps1` is the whole install, and
-the update (the first section above). A fresh box has no checkout yet, so fetch the installer of the latest stable release
+the update (`docs/UPDATE-AGENT.md`). A fresh box has no checkout yet, so fetch the installer of the latest stable release
 (`<tag>`) and run it with no version; it takes the latest stable release itself:
 
 ```powershell
@@ -434,8 +347,8 @@ leading `v` is required — the flag is used verbatim as the tag), and
 `--prefix <dir>` relocates the install from `~/.local/share/sot` (substitute
 your prefix in every path below if you use it).
 
-Idempotent; re-running is also the upgrade path, and every run ends in one
-`PASS`, `ONE STEP LEFT` or `FAIL` line (see "Update this computer").
+Idempotent; re-running is a repair, and every run ends in one `PASS`, `ONE STEP LEFT` or
+`FAIL` line (`docs/UPDATE-AGENT.md` step 4 says what each asks of you).
 (If you fetched this runbook at a pinned commit, still use `main`'s installer as
 above — it only resolves the release tag, then runs that release's own
 `scripts/install.sh` unmodified, so this runbook stays compatible with any
@@ -591,19 +504,11 @@ top line of the nav pane always shows the pane-switch keys.**
   `docs\USING.md` under `%LOCALAPPDATA%\sot\repo\current` (made by §2b). Inside the app, the
   terminal-drawer agent gets the right path via `$SOT_MANUAL` on every
   platform.
-- Updating later:
-  - **Linux / macOS** — "Update this computer" at the top of this page: one
-    command, one verdict line. The app also notifies about new releases and
-    stages fresh binaries itself; `sot-launch` applies them at the next start
-    via `sot-apply`.
-  - **Windows** — "Update this computer (Windows)" at the top of this page: one command, one verdict line. The
-    frontend also checks for releases at startup and stages them (this needs `install.json`); `launch-sot.ps1` calls
-    `scripts\sot-apply.ps1` on the next launch to verify and swap the binaries, keeping `.prev` and rolling back if the
-    new build crash-loops. Scripts and config update the same way: the shortcut targets
-    `%LOCALAPPDATA%\sot\repo\current\scripts\launch-sot.ps1` and `sot-apply.ps1`'s junction flip carries them in the same
-    transaction as the binaries (docs/history/adr/0030-versioning-release-and-auto-update.md's 2026-09-17 amendment).
-  - A source build (a `+` in its version) never self-updates on any platform;
-    they update by pulling and rebuilding.
+- Updating later: `docs/UPDATE-AGENT.md`, one command and one verdict line on every platform. The daemon also checks
+  for releases daily and stages them; on Linux and macOS `sot-launch` (or the unit's restart) applies a staged release
+  through `sot-apply`, and on Windows `launch-sot.ps1` applies it through `scripts\sot-apply.ps1` at the next launch,
+  keeping `.prev` and rolling back if the new build crash-loops. A source build (a `+` in its version) never
+  self-updates; it updates by pulling and rebuilding.
 - Preserve the privately maintained `publish-list.txt` deliberately before uninstalling or deleting config folders;
   removing `~/.config/sot` or Windows local app data also deletes the policy. Never ask an agent to print or copy it.
 - Uninstall: `rm -rf ~/.local/share/sot ~/.config/sot ~/.local/bin/sot-launch`;

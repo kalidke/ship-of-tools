@@ -80,7 +80,7 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
 
 Use `--backend <ssh-alias>` for a frontend here with the backend on a remote host, or `--be-only` for a headless backend.
 
-To update a Linux or macOS machine, tell a coding agent running there "update sot from the repo", or run `bash ~/.local/share/sot/repo/current/scripts/install.sh` yourself: with no options it moves to the newest release on the channel the machine already runs, never moves backwards, takes its role from the `hosts.toml` entry for this computer (else a role flag, else what the install recorded), and ends with one `PASS`, `ONE STEP LEFT` or `FAIL` line.
+To update a machine (Linux, macOS or Windows), tell a coding agent running there: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md and follow it. That runbook is the one update procedure: what to ask the person who uses the computer, one command per system, and what each of its last lines (`PASS`, `ONE STEP LEFT` or `FAIL`) asks of you; a person can follow it by hand too.
 
 Needs on every machine:
 - **git, curl and tar.**
