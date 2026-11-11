@@ -1651,6 +1651,9 @@ impl State {
             probe_row("base", &format!("id-base-{a}"), true),
             probe_row("project", "id-follow", false),
             probe_row("other", "id-other", false),
+            probe_row("answered", "id-answered", false),
+            probe_row("refused", "id-refused", false),
+            probe_row("pending", "id-pending", false),
         ]);
         let mut wire = TreeWire::new(&a, &events)?;
         let other_words = "the other row's words";
@@ -1682,6 +1685,67 @@ impl State {
         );
         self.probe_answer_readme(&a, "project", "the project's own words", again.unwrap_or_default());
         anyhow::ensure!(self.probe_preview_text().contains("the project's own words"), "the project row's own README did not show");
+
+        // The keep side: a row whose bytes answered its request, and a row the daemon refused, ask nothing on any
+        // return; a row never answered asks once per return and stops once answered.
+        let answered = self.probe_follow_visit(&a, "answered", &mut wire, &mut rx)?;
+        self.probe_answer_readme(&a, "answered", "the answered row's words", answered);
+        let refused = self.probe_follow_visit(&a, "refused", &mut wire, &mut rx)?;
+        self.on_preview_get_failed(a.clone(), Some("files:README.md".into()), Some("refused".into()), refused,
+            "kernel_unavailable".into());
+        self.probe_follow_visit(&a, "pending", &mut wire, &mut rx)?;
+        let mut asks = Vec::new();
+        for _ in 0..3 {
+            let (answered_asks, answered_text) = self.probe_return(&a, "answered", &mut wire, &mut rx, other_words)?;
+            let (refused_asks, refused_text) = self.probe_return(&a, "refused", &mut wire, &mut rx, other_words)?;
+            anyhow::ensure!(
+                answered_asks.is_empty() && answered_text.0 && !answered_text.1,
+                "an answered row returned to asked {answered_asks:?}; its own words shown {}, another row's {}",
+                answered_text.0, answered_text.1
+            );
+            anyhow::ensure!(
+                refused_asks.is_empty() && !refused_text.1 && self.preview_requests.fired_refused(),
+                "a refused row returned to asked {refused_asks:?}; another row's text shown {}; still marked refused {}",
+                refused_text.1, self.preview_requests.fired_refused()
+            );
+            asks.push(self.probe_return(&a, "pending", &mut wire, &mut rx, other_words)?.0);
+        }
+        anyhow::ensure!(
+            asks.iter().all(|asked| asked.len() == 1),
+            "a row never answered must ask exactly once per return: {asks:?}"
+        );
+        let last = asks[2][0];
+        self.probe_answer_readme(&a, "pending", "the pending row's words", last);
+        for _ in 0..3 {
+            let (again, text) = self.probe_return(&a, "pending", &mut wire, &mut rx, other_words)?;
+            anyhow::ensure!(again.is_empty() && text.0, "a row answered after its returns asked {again:?} (own words {})", text.0);
+        }
         Ok(())
+    }
+
+    /// Leave for the other row and come back to `slug`: the generations of the README requests the return asked
+    /// for, and whether its pane shows `(its own answer, the other row's words)`.
+    fn probe_return(
+        &mut self,
+        host: &HostKey,
+        slug: &str,
+        wire: &mut TreeWire<'_>,
+        rx: &mut ProbeRx,
+        other_words: &str,
+    ) -> Result<(Vec<u64>, (bool, bool))> {
+        self.switch_to_workspace(host.clone(), Some("other".into()), None, false);
+        self.serve_result_requests(wire, rx, &["README.md"], Hold::Nothing)?;
+        self.maybe_fire_preview();
+        let _ = previews_asked(rx);
+        self.switch_to_workspace(host.clone(), Some(slug.into()), None, false);
+        self.serve_result_requests(wire, rx, &["README.md"], Hold::Nothing)?;
+        self.maybe_fire_preview();
+        let asks = previews_asked(rx)
+            .into_iter()
+            .filter(|(node, row, _)| node == "files:README.md" && row.as_deref() == Some(slug))
+            .map(|(_, _, generation)| generation)
+            .collect();
+        let text = self.probe_preview_text();
+        Ok((asks, (text.contains(&format!("the {slug} row's words")), text.contains(other_words))))
     }
 }

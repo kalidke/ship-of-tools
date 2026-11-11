@@ -276,6 +276,9 @@ impl State {
         // visit to a workspace whose UI is already cached has no REPL
         // snapshot yet).
         let _ = self.restore_workspace_repl(&key);
+        // A row with no installed preview shows no text: the row left never shows under this row's title, whether
+        // this is a first visit, a restore without bytes, or bytes that fail to render.
+        self.clear_preview_text();
         let restored = self.restore_workspace_ui(&key);
         if !restored {
             // First visit — start from a clean slate.
@@ -288,14 +291,12 @@ impl State {
             // reply) or its markdown origin (THIS workspace's first figure
             // fetch resolved against the WRONG project) — nor its
             // figure_failed, which would collapse figures that are
-            // perfectly healthy here, nor its text, which would show
-            // under this row's title until its own reply.
+            // perfectly healthy here.
             self.preview_source = Default::default();
             self.pages.set_page(None);
             self.figures.clear_failed();
             self.raster.hide();
             self.shaped.clear_svg();
-            self.clear_preview_text();
             self.concept.clear();
             self.preview_requests.reset_concept_follow();
             self.drift.clear();

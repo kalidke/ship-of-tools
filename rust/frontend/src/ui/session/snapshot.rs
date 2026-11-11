@@ -39,8 +39,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// Restored via `attach_session_to_bl` on swap-in.
     bl_pane_target: Option<String>,
     /// The node id we most recently asked the backend to preview, so
-    /// switching back doesn't bounce-fetch the same preview again; it comes
-    /// back only when `source` answered it or the daemon refused it.
+    /// switching back doesn't bounce-fetch the same preview again.
     preview_node_id_fired: Option<String>,
     /// Whether the daemon refused that request, so the older bytes in `source` come back marked.
     preview_refused: bool,
@@ -162,8 +161,8 @@ impl State {
         self.ink.restore(snap.ink);
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds the shaped text/png/svg for the
-        // restored mime; a row with nothing installed gets an empty text
-        // pane below, never the departed row's text.
+        // restored mime; the switch emptied the text pane before this
+        // restore, so a row with nothing installed shows none.
         self.raster.hide();
         self.shaped.clear_svg();
         // The installed source travels whole: restored BEFORE
@@ -178,9 +177,8 @@ impl State {
         // The page of those bytes, never the departed row's: before the repaint, which picks its sampler from it.
         self.pages.set_page(snap.page);
         self.figures.restore_failed(snap.figure_failed.clone());
-        match self.preview_source.source_copy() {
-            Some((mime, bytes)) => self.render_preview_source(&mime, &bytes),
-            None => self.clear_preview_text(),
+        if let Some((mime, bytes)) = self.preview_source.source_copy() {
+            self.render_preview_source(&mime, &bytes);
         }
         // NOTE: no foreign-provenance corrective reload here or anywhere —
         // the class is retired. The caller swaps the tree in from the store

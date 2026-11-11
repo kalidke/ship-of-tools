@@ -700,8 +700,7 @@ owned by `docs/CLAUDE.md`.
   terminal wrapped onto the next, as a terminal's own copy does; the wrap is known per row in the screen the pane draws.
 - **FIGURE-CACHE-KEYED-BY-LINK** [note] The markdown figure cache (`preview/image/figure_store.rs`) is keyed by the
   figure's link text alone, and a figure reply carries no host or row, so two markdown files, in two rows or two
-  folders of one row, that name the same relative image share one picture. Known by reading only, found by the
-  diagnosis of PREVIEW-NOT-FOLLOWING-ROW.
+  folders of one row, that name the same relative image share one picture. Known by reading only.
 - **PARKED-ROW-PREVIEW-STALE** [note] A file rewritten while its row is not shown keeps its old picture when the
   person comes back, until the cursor moves off it and back: the daemon reports a file's change only for the row on
   screen (`server/events.rs`). Not seen in use; three forms of a fix (refetch on every return, the daemon keeping the
@@ -981,10 +980,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
-- **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a
-  row left before its preview reply came back kept the request as its shown target, so no return to it asked again,
-  and its pane kept the text of whichever row was shown before it (a markdown file of another project under the
-  row's own title); a restore now forgets a target its bytes never answered, and a row with no bytes shows no text.
+- **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
 - **SVG-IMAGE-HREF-READS-LOCAL-FILES** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG draw: an `<image href>` in an SVG went to usvg's default resolver, which read any path that exists on the window's computer, so a FIFO hung the window's thread and a local PNG was drawn into the picture of a file served by a daemon; reachable through a markdown figure (known by reading). `svg_tree`'s resolver (`embedded_images_only`) now draws an image only from embedded `data:` data; a path or URL reads nothing.
 - **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
   contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the
