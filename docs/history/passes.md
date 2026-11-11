@@ -1900,3 +1900,14 @@ A landing's record goes here, with its measured times; the package page holds on
   at four scales and midnight in every half-hour offset held; a marked record could count as in view with no band
   drawn below a divider); one amend by a new builder; two scoped gates. The divider is centered in the text's width,
   half a gutter right of the drawer's middle, as recorded in the contract.
+- Platform's primitives for a process that bounds itself, the SVG child's second landing, in two, 2026-11-11: builder
+  launched 11:29; the capped allocator and the exit by a code on main 12:26 (37958a6c2), the inherited descriptors,
+  crashes as exits, the CPU limit, ending with the parent and the Windows job's assigned child on main 12:27
+  (7e5ab2b88); 58 minutes, a miss. About 120 and 130 product lines. Where the minutes went: the change passed the
+  stop at 154 lines and was split into two commits, each gated alone; one hosted probe on macOS and Windows (macOS
+  enforces the CPU limit and kept no crash report; a Windows child ended 50 ms after its job closed); review round 1
+  (one blocker: a single request near the address space's size wrapped the allocator's running total and let the cap
+  go; three allocator mutants survived; the guarantee said every bound ends by a code where three end by a signal or
+  the system; on macOS closing inherited descriptors also closes the system frameworks' own, so the child's real
+  tests must run there); one rebuild of both commits, a second probe and two gates. Measured: disarmed, the allocator
+  adds 0.8 ns to an allocation.
