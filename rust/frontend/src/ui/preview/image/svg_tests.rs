@@ -151,12 +151,6 @@ fn svg_text_after_a_paragraph_separator_is_drawn() {
 
 const SVG_NS: &str = r#"xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink""#;
 
-/// `f` on a thread with the stack of the Linux main thread, where the window parses: a parser that recurses once per
-/// element overflows it on the inputs below.
-fn on_a_main_sized_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    std::thread::Builder::new().stack_size(8 << 20).spawn(f).expect("spawn").join().expect("the parse panicked")
-}
-
 fn nested(open: &str, close: &str, depth: usize) -> String {
     format!("<svg {SVG_NS} width=\"10\" height=\"10\">{}{}</svg>", open.repeat(depth), close.repeat(depth))
 }
@@ -193,7 +187,7 @@ fn a_deeply_nested_svg_is_refused_before_the_parser_recurses_into_it() {
     };
     let (element, pi) = (deep_entity("<!ELEMENT x ]>"), deep_entity("<?x ]>?>"));
     for (name, svg) in [("plain", plain), ("quoted", quoted), ("embedded", embedded), ("entity", entity), ("element", element), ("pi", pi)] {
-        let got = on_a_main_sized_stack(move || svg_tree(svg.as_bytes()).map(|_| ()).map_err(|why| format!("{why:#}")));
+        let got = on_svg_stack(|| svg_tree(svg.as_bytes()).map(|_| ())).map_err(|why| format!("{why:#}"));
         match (name, got) {
             ("embedded", Ok(())) => {} // the nested SVG is refused (`embedded_images_only`), the outer one draws
             (_, Err(why)) => assert!(why.contains("nested") || why.contains("DOCTYPE"), "{name}: {why}"),
@@ -213,10 +207,10 @@ fn the_nesting_limit_is_pinned_at_1024() {
 /// A nesting an editor can write still draws, and one past the limit is refused with its reason.
 #[test]
 fn nesting_within_the_limit_draws_and_past_it_is_refused() {
-    let ok = on_a_main_sized_stack(|| svg_tree(nested("<g>", "</g>", 500).as_bytes()).map(|_| ()).map_err(|why| format!("{why:#}")));
+    let ok = on_svg_stack(|| svg_tree(nested("<g>", "</g>", 500).as_bytes()).map(|_| ())).map_err(|why| format!("{why:#}"));
     assert_eq!(ok, Ok(()));
     let deep = nested("<g>", "</g>", 1100);
-    let why = on_a_main_sized_stack(move || svg_tree(deep.as_bytes()).err().map(|why| format!("{why:#}")).unwrap_or_default());
+    let why = format!("{:#}", on_svg_stack(|| svg_tree(deep.as_bytes()).map(|_| ())).expect_err("1100 levels"));
     assert!(why.contains("nested deeper than 1024"), "{why}");
     // An Illustrator-style DOCTYPE entity of a URL is no markup and parses; comments, CDATA and a PI hold no element.
     let doc = format!(
@@ -318,3 +312,27 @@ fn an_embedded_raster_draws_and_embedded_svg_does_not() {
     assert_eq!(center(image_svg(&format!("data:image/svg+xml;base64,{}", b64(red.as_bytes())))), [0, 0, 0, 0], "nested SVG data was drawn");
 }
 
+/// An SVG is parsed and drawn on a thread of `SVG_STACK` whatever the caller's: 1000 levels of nesting need about
+/// 1.2 MiB in a release build and five times that in a debug one, so on a 256 KiB caller it overflows unless it is
+/// drawn on the SVG's own thread (in a child process, where an overflow aborts it).
+#[test]
+fn an_svg_draws_on_its_own_stack_whatever_the_callers() {
+    if !sot_platform::test_isolated::run_isolated("ui::preview::image::svg::tests::an_svg_draws_on_its_own_stack_whatever_the_callers") {
+        return;
+    }
+    let svg = nested("<g>", "</g>", 1000);
+    let drawn = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(move || on_svg_stack(|| draw(&svg_tree(svg.as_bytes())?, 10, 10).map(|_| ())))
+        .expect("spawn")
+        .join()
+        .expect("the caller's thread");
+    drawn.expect("1000 levels draw");
+}
+
+/// A panic while drawing is an error for the caller, not a panic in it.
+#[test]
+fn a_panic_on_the_svg_thread_is_an_error() {
+    let why = on_svg_stack::<()>(|| panic!("boom")).expect_err("a panic");
+    assert!(format!("{why:#}").contains("panicked"), "{why:#}");
+}

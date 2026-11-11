@@ -88,7 +88,7 @@ pub fn quad_from_svg_bytes(
     target_w: u32,
     target_h: u32,
 ) -> Result<Quad> {
-    let pixmap = draw(&svg_tree(bytes)?, target_w, target_h)?;
+    let pixmap = on_svg_stack(|| draw(&svg_tree(bytes)?, target_w, target_h))?;
     Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pixmap.width(), pixmap.height())
 }
 
@@ -105,7 +105,7 @@ fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph
 /// separator (`one_paragraph_svg`), an XML shape the parser cannot be crashed by (`check_xml_shape`) and no file read
 /// for an `<image>` (`embedded_images_only`). An `.svgz` (gzip) is unpacked first (`unpack_svgz`): usvg would unpack it
-/// itself, past all of it.
+/// itself, past all three.
 fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     let opts = Options {
         fontdb: system_fontdb(),
@@ -132,6 +132,21 @@ fn svg_tree(bytes: &[u8]) -> Result<Tree> {
     #[allow(clippy::disallowed_methods, reason = "text into the shaper: an SVG's one way into usvg, through one_paragraph_svg")]
     let tree = Tree::from_data(&bytes, &opts);
     tree.context("svg parse failed")
+}
+
+/// The stack of the thread that parses and draws an SVG, the same on every platform: Windows gives its main thread
+/// 1 MiB, and a release build needs 1.2 MiB for 1000 levels of nesting (usvg's limit) and 2.4 for any mask, pattern or
+/// filter. The 32 leave a release build over ten times that, and a debug build, which needs several times the stack,
+/// draws 1024 levels too.
+const SVG_STACK: usize = 32 << 20;
+
+/// `f` on a thread of `SVG_STACK` bytes, joined before this returns: what recurses once per element or per link of a
+/// chain of references runs here, so its limit does not depend on the caller's thread, and a panic is an error.
+fn on_svg_stack<T: Send>(f: impl FnOnce() -> Result<T> + Send) -> Result<T> {
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new().name("svg".into()).stack_size(SVG_STACK).spawn_scoped(scope, f);
+        thread.context("svg thread did not start")?.join().map_err(|_| anyhow::anyhow!("svg drawing panicked"))?
+    })
 }
 
 /// usvg's own bound on element nesting, which it checks only after roxmltree has parsed the document, and roxmltree
