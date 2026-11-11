@@ -23,11 +23,20 @@ replace the newest held; the older ones kept stay as read, so an edit or delete 
 not reach the drawer for as long as the channel is one of the last two. The drawer keeps those messages in memory when the
 Chat drawer is hidden.
 
-The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each message starts with
-its own header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
+The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each group of messages starts
+with a header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
 (`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`; `Nov 9 2:14 PM` for an
 earlier day, with the year for another year). The badge comes from where Slack says the post came from, never from the
 text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed.
+
+Messages from one author in a row share one header, as in Slack: a message with the same author and origin as the one before
+it, on the same local day and less than five minutes after it, has no header of its own and its text follows the last one's. The
+first message of each group has a small colored square in the margin at the left, a color chosen from eight by the author (so two authors can
+share one); the text of every message starts right of that margin. Mark a message that has no header and its time (`2:01`, without AM or PM) shows in the margin beside it.
+The five minutes are Slack's rule as remembered, and have not been checked against the desktop app. A page of older messages
+that arrives above the top message can take that message's header off, which moves that message and every message below it up one
+line. The reverse also happens: the oldest message held always shows a header, so when the oldest messages go (past 276), the one
+that becomes the oldest gains a header, and the messages below it move down a line.
 
 ## Which channel
 
@@ -106,7 +115,7 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 ## Selecting
 
 Press the left mouse button on a message's text and drag to select within that message: the selection stays in the message
-where you began, and the name and time line is not selectable. A click on the name and time line, or anywhere else, selects
+where you began, and the name and time line is not selectable. A click on the name and time line, in the margin, or anywhere else, selects
 nothing, and a click in the messages still focuses the drawer. Any other click clears the selection, and so does a change
 to the message (an edit or a delete), a new window width, opening a thread, and changing the row; moving the mark does not. A chat
 selection is never shared with the agent; only the preview's text and your drawing are.
@@ -116,7 +125,7 @@ selection is never shared with the agent; only the preview's text and your drawi
 `Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
 exactly as shown: Slack's markup as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
-message's text, not its name and time line. With neither, the status line says there is nothing to copy. Ctrl+C in the
+message's text, not its name and time line (a message without a header copies its whole text). With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
 ## Moving the hub
