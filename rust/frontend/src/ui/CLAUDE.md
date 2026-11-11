@@ -189,7 +189,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   reply's. The markdown origin is not: it is the last markdown reply with a node, so after markdown A with a node, a
   PNG or a node-less markdown B replaces the bytes, node and scale and keeps A's origin (figure fetches for the shown
   markdown still need it). The coordinator repaints from an owned copy of the
-  bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot.
+  bytes; `figure_failed` stays with the markdown media and travels beside it in the snapshot. A row's restore brings
+  back its fired target only when the parked bytes answered it or the daemon refused it: a target whose reply came
+  after the row was left (and was dropped) is forgotten, so the cursor's follow asks for it again; a row restored or
+  first visited with no installed bytes empties the pane's flowed text (`clear_preview_text`), so the row left never
+  shows under its title. Pinned by the native fixture `a_row_left_before_its_preview_came_back_shows_its_own`.
 - `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State

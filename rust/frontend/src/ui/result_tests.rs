@@ -1607,3 +1607,81 @@ impl State {
         Ok(())
     }
 }
+
+/// The `preview.get`s the window wrote, as `(node, row, generation)`.
+fn previews_asked(rx: &mut ProbeRx) -> Vec<(String, Option<String>, u64)> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|request| match request {
+            OutgoingReq::PreviewGet { node_id, workspace_id, generation, .. } => Some((node_id, workspace_id, generation)),
+            _ => None,
+        })
+        .collect()
+}
+
+impl State {
+    /// The preview pane's flowed text.
+    fn probe_preview_text(&self) -> String {
+        self.shaped.md().buffer.lines.iter().map(|line| line.text()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Show `slug`, answer its tree requests and let its cursor's follow fire: the generation of its README's request.
+    fn probe_follow_visit(&mut self, host: &HostKey, slug: &str, wire: &mut TreeWire<'_>, rx: &mut ProbeRx) -> Result<u64> {
+        self.switch_to_workspace(host.clone(), Some(slug.into()), None, false);
+        self.serve_result_requests(wire, rx, &["README.md"], Hold::Nothing)?;
+        self.maybe_fire_preview();
+        let asked = previews_asked(rx);
+        asked
+            .iter()
+            .find(|(node, row, _)| node == "files:README.md" && row.as_deref() == Some(slug))
+            .map(|(_, _, generation)| *generation)
+            .ok_or_else(|| anyhow::anyhow!("{slug}: the cursor's follow asked for no README: {asked:?}"))
+    }
+
+    fn probe_answer_readme(&mut self, host: &HostKey, slug: &str, words: &str, generation: u64) {
+        self.on_preview(host.clone(), Some("files:README.md".into()), Some(slug.into()), "text/plain".into(),
+            format!("{words}\n").into_bytes(), None, generation);
+    }
+
+    /// A row left before its preview came back shows its own file when the person returns: the cursor's follow asks
+    /// for it again, and the text of another row is in its pane neither at its first visit nor on its return.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_row_left_before_its_preview_came_back_shows_its_own(&mut self) -> Result<()> {
+        let (a, mut rx, events) = self.prepare_lifetime_probe("<host-follow>", "id-follow");
+        self.on_workspaces(a.clone(), vec![
+            probe_row("base", &format!("id-base-{a}"), true),
+            probe_row("project", "id-follow", false),
+            probe_row("other", "id-other", false),
+        ]);
+        let mut wire = TreeWire::new(&a, &events)?;
+        let other_words = "the other row's words";
+        let other = self.probe_follow_visit(&a, "other", &mut wire, &mut rx)?;
+        self.probe_answer_readme(&a, "other", other_words, other);
+        anyhow::ensure!(self.probe_preview_text().contains(other_words), "the other row's README was not shown");
+        // The project row's first visit asks for its README; the person goes back to the other row before it comes
+        // back, and the reply, arriving while another row is shown, is dropped.
+        let project = self.probe_follow_visit(&a, "project", &mut wire, &mut rx)?;
+        let first_visit_leaked = self.probe_preview_text().contains(other_words);
+        self.switch_to_workspace(a.clone(), Some("other".into()), None, false);
+        self.serve_result_requests(&mut wire, &mut rx, &["README.md"], Hold::Nothing)?;
+        self.probe_answer_readme(&a, "project", "the project's own words", project);
+        // Back to the project row, its cursor still on its README.
+        self.switch_to_workspace(a.clone(), Some("project".into()), None, false);
+        self.serve_result_requests(&mut wire, &mut rx, &["README.md"], Hold::Nothing)?;
+        self.maybe_fire_preview();
+        let again = previews_asked(&mut rx)
+            .into_iter()
+            .find(|(node, row, _)| node == "files:README.md" && row.as_deref() == Some("project"))
+            .map(|(_, _, generation)| generation);
+        let return_leaked = self.probe_preview_text().contains(other_words);
+        anyhow::ensure!(
+            !first_visit_leaked && again.is_some() && !return_leaked,
+            "a row left before its preview came back: another row's text in its pane at its first visit: \
+             {first_visit_leaked}; its README asked for again on return: {}; another row's text in its pane on return: \
+             {return_leaked}",
+            again.is_some()
+        );
+        self.probe_answer_readme(&a, "project", "the project's own words", again.unwrap_or_default());
+        anyhow::ensure!(self.probe_preview_text().contains("the project's own words"), "the project row's own README did not show");
+        Ok(())
+    }
+}

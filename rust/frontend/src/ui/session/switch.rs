@@ -288,12 +288,14 @@ impl State {
             // reply) or its markdown origin (THIS workspace's first figure
             // fetch resolved against the WRONG project) — nor its
             // figure_failed, which would collapse figures that are
-            // perfectly healthy here.
+            // perfectly healthy here, nor its text, which would show
+            // under this row's title until its own reply.
             self.preview_source = Default::default();
             self.pages.set_page(None);
             self.figures.clear_failed();
             self.raster.hide();
             self.shaped.clear_svg();
+            self.clear_preview_text();
             self.concept.clear();
             self.preview_requests.reset_concept_follow();
             self.drift.clear();

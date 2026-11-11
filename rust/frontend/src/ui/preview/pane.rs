@@ -247,6 +247,14 @@ impl State {
         }
     }
 
+    /// The row shown has no installed preview (a first visit, or a row left before its reply came back): the pane's
+    /// flowed text is emptied, its tables and figures with it, so another row's text never shows under this row.
+    pub(in crate::ui) fn clear_preview_text(&mut self) {
+        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs, "", self.shaped.rect().w.max(1.0), scale));
+        self.shaped.install(md);
+    }
+
     /// Branch on mime and route a preview blob to the right renderer.
     /// Called both from the live `Preview` event arm and from the
     /// font-rescale path (which replays against the cached source).
