@@ -1,42 +1,50 @@
 # [Updating and rollback](@id updating)
 
-Updating a release install on Linux, macOS or Windows is one command. Tell a coding agent running on the machine
+Updating a release install on Linux, macOS or Windows is one command. To have a coding agent on the machine do it, tell
+it
 
 ```text
-update sot from the repo
+Update Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md and follow it.
 ```
 
-or run it yourself:
+[`docs/UPDATE-AGENT.md`](https://github.com/kalidke/ship-of-tools/blob/main/docs/UPDATE-AGENT.md) is the one update
+procedure, for an agent or for a person running it by hand: its step 3 is the command for each system, the same from
+every install since 0.6.6-rc1, and its other steps say what to ask the person who uses the computer first. That command
+reads the newest release from GitHub's latest-release page and runs that release's own installer, so it lists no
+releases through GitHub's API, needs no token, and moves a pre-release install to the latest stable release.
 
-```bash
-bash ~/.local/share/sot/repo/current/scripts/install.sh
-```
-
-On Windows the same entry is `install.ps1` in the installed checkout (its versions path also works over ssh, where
-`repo\current` cannot be traversed):
+The installed checkout's own entry is the other way in: `bash ~/.local/share/sot/repo/current/scripts/install.sh`, or on
+Windows `install.ps1` from the versions path (which also works over ssh, where `repo\current` cannot be traversed):
 
 ```powershell
 $p="$env:LOCALAPPDATA\sot"; $t=(Get-Content "$p\install.json" -Raw | ConvertFrom-Json).tag
 powershell -NoProfile -ExecutionPolicy Bypass -File "$p\repo\versions\$t\scripts\install.ps1"
 ```
 
-Its options are `-Version`, `-Archive`, `-Hub`, `-Prefix` and `-RestartDaemon`, and it ends in the same one line. A
+Run with no options, the installed entry follows the channel the computer runs (a stable release takes the latest
+stable release; a pre-release takes the newest published release of any kind) and never moves the install backwards,
+within two limits. From 0.6.6-rc9.14 on, a pre-release install's entry lists the releases through GitHub's API, which
+answers a shared network address past its hourly limit with `FAIL: target: could not list the releases ... (HTTP 403,
+its rate limit ...)`. And from 0.6.6-rc9.15 on it sends `GITHUB_TOKEN` or `GH_TOKEN` when one is set, so a token GitHub
+refuses ends `FAIL: target: could not list the releases`, and one with push access lists an unpublished draft first,
+whose files cannot be fetched.
+
+The Windows entry's options are `-Version`, `-Archive`, `-Hub`, `-Prefix` and `-RestartDaemon`, and it ends in the
+same one line. A
 `ONE STEP LEFT` there is usually to quit Ship of Tools (choose Keep) and start it from the shortcut, when the window's
 launcher is older than release candidate 9.13 or no window is up to be told, or to start it at the desk when the run was
 over ssh; with a current launcher running, the entry asks it to converge and waits for it, and your sessions keep running
 between 0.7 releases. The update from 0.6 to 0.7 ends every row's agent once; use `/resume` in each row to bring its
 conversation back.
 
-With no options it moves to the newest release on the channel the machine already runs (a stable release follows the
-stable releases; a release candidate follows the candidates), and never moves the install backwards. The role is decided
-in this order: `hosts.toml`'s entry for this computer first (it wins over a role flag); then the role flag, used only when
-the topology names no entry; then the role the install recorded, used only when there is no flag either. An update
-therefore needs no role flag. On Windows there is no role flag, and every box runs its local daemon (`install.json`
-records `daemon` and `frontend` as true). Where no Julia is found the update's stage skips the Julia environments instead
-of failing: the launcher prepares them at the new version's first start, and the run ends with a step naming
-`winget install --id Julialang.Juliaup -e`. A run can take many minutes (the stage prepares Julia, and a converge waits up
-to 30 minutes for the window), so a coding agent runs it in the background or with the longest timeout and reads the last
-line of its output. It ends with exactly one line:
+However the installer is reached, the role is decided in this order: `hosts.toml`'s entry for this computer first (it
+wins over a role flag); then the role flag, used only when the topology names no entry; then the role the install
+recorded, used only when there is no flag either. An update therefore needs no role flag. On Windows there is no role
+flag, and every box runs its local daemon (`install.json` records `daemon` and `frontend` as true). Where no Julia is
+found the update's stage skips the Julia environments instead of failing: the launcher prepares them at the new
+version's first start, and the run ends with a step naming `winget install --id Julialang.Juliaup -e`. A run can take
+many minutes (the stage prepares Julia, and a converge waits up to 30 minutes for the window), so a coding agent runs it
+in the background or with the longest timeout and reads the last line of its output. It ends with exactly one line:
 
 | Last line | Meaning |
 |-----------|---------|
@@ -75,6 +83,26 @@ starting `sotd` by hand). Until it is taken the old daemon runs beside the new `
 Without a network, `--archive <folder>` installs from a folder carried to the machine (the base clone still needs the
 repo's origin unless it already holds the commit). On Windows the frontend stages the update and `launch-sot.ps1` applies
 it at the next launch, below.
+
+## Moving from 0.6 to 0.7
+
+- Every 0.6.6 install moves to 0.7.0 with the runbook's command: a 0.6.6 release candidate, 0.6.6 itself, a pinned
+  install (the run removes the pin), and the installed entry of an install too old to print the one line, whose run
+  hands over to the new release's own installer. On 0.7.0 the same command is a repair run that changes nothing.
+- A Windows computer that ran from a source checkout whose window will not start (no `install.json`, an old `sot.exe`
+  alone in `%LOCALAPPDATA%\sot\bin`, a launcher that says "no sotd binary found") takes a release install over it:
+  the runbook's command lays down the binaries, the checkout under the prefix, `install.json` and a Desktop shortcut to
+  the release's launcher, and leaves the source checkout as it was.
+- The move ends every row's agent once, and everything that agent started in its row. The 0.7 daemon ends
+  each 0.6 row and starts it again with a new conversation, which begins by running `/sot-session-start`; `/resume` in
+  a Claude row lists its earlier conversations and brings the chosen one back. An agent that runs the update from
+  inside a row is ended the same way, most likely before it reads the last line, while the update carries on to its
+  end: brought back with `/resume`, it runs the same command again, which ends `PASS` on the updated computer.
+- A hub and the computers linked to it move in one sitting, hub first. A computer on 0.6 and one on 0.7 carry no mail
+  between them, and a window does not use a daemon on the other line: a 0.6 window against a 0.7 daemon says which side
+  speaks which protocol. Computers that share one comm folder keep their mail across the line.
+- The move is one way. A rollback to 0.6 restores the binaries, links, unit and record, not the agent comm and not the
+  rows 0.7 already started again.
 
 ## What updates a machine
 

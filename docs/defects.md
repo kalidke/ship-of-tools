@@ -308,9 +308,9 @@ owned by `docs/CLAUDE.md`.
   the link's hello passes the one protocol gate (`server/hello.rs` `protocol_gate`), 0.6.6 is 3 and 0.7 is 4, and
   0.6.6's scripts send protocol 3. Seen with the published 0.6.6 and 0.7.0 daemons through `comm/tests/interop-066.sh`
   part 2, in both pairings: the link drops every 30 s and a send answers `FAILED`, never `filed`; part 1 (one shared
-  folder) passes. The contract said they carried mail both ways; it now says what holds. Fix still owed: say in the
-  manual's updating page that linked computers move in one sitting, and delete part 2 of the test (the gate that
-  refuses is right and stays).
+  folder) passes. The contract said they carried mail both ways; it now says what holds, and the manual's updating
+  page and `docs/UPDATE-AGENT.md` say that linked computers move in one sitting, hub first. Fix still owed: delete
+  part 2 of the test (the gate that refuses is right and stays).
 - **WAKE-EATS-UNSENT-PROMPT** [person] A mail wake typed into a row whose prompt held a person's unsent line
   replaced that line, so the instruction never reached the session; seen again on the 0.6.6 daemon, where a typed answer
   to a permission question was gone. The wake promises a free prompt only. Main has a test that a row holding unsent
@@ -405,6 +405,11 @@ owned by `docs/CLAUDE.md`.
   the mail plan's design review; delete one.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
+- **SOT-INSTALL-SKILL-OWN-UPDATE** [note] The `sot-install` skill (`agents/claude/sot-install/SKILL.md` and its
+  `.claude/skills` copy) keeps an update procedure of its own beside `docs/UPDATE-AGENT.md`: the installed entry, run
+  with whatever token the shell holds (INSTALLER-NEWEST-TAKES-A-DRAFT), and none of the runbook's steps for an agent
+  inside a row or a hub's group. Fix: its update sections point at `docs/UPDATE-AGENT.md` (both copies, then
+  `scripts/legacy-skill-hashes.sh`).
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's
   `julia-root` fail until `scripts/legacy-skill-hashes.sh` is rerun, because removal needs the shipped copy's hash in
   `comm/legacy-skills.txt`. A test that names the rule would say so at the edit.
@@ -691,17 +696,33 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
-- **INSTALLER-NEWEST-TAKES-A-DRAFT** [note] `newest_release` (`scripts/install.sh`, `scripts/install.ps1`, and 0.6.6's
-  prelude) takes the first entry of GitHub's release list and sends `GITHUB_TOKEN` or `GH_TOKEN` when set. With push
-  access the list holds drafts, and its first entry is one: seen, the first entry was the draft `v0.7.1-rc.3`, where an
-  anonymous call gave `v0.7.0`, and a draft's files answer 404 by tag. So a no-argument update of a candidate install in
-  such a shell would end `FAIL: SHA256SUMS not found`, writing nothing (the end-to-end run was not made). It is also a
-  second rule for one concept: the updater takes the highest published version, the prelude the first listed, and
-  GitHub lists by creation. Fix: one owner; at the least the prelude skips drafts. Until then name the version.
-- **UPDATE-FROM-06-UNTESTED** [note] The release run's update legs start from `v0.6.6` (0.7.0's run, all three
-  platforms green) and from the release before, but none starts from a `0.6.6-rcN` candidate, from a computer with a
-  live daemon, unit or row, or installs on a glibc 2.31 host, and `comm/tests/interop-066.sh` is in no gate. Fix: a leg
-  from the last 0.6.6 candidate, and part 1 of the interop script in the local gate while a 0.6 computer exists.
+- **INSTALLER-NEWEST-TAKES-A-DRAFT** [session] `newest_release` (`scripts/install.sh`, `scripts/install.ps1`, and
+  the preludes of 0.6.6-rc9.15 on) takes the first entry of GitHub's release list and sends `GITHUB_TOKEN` or `GH_TOKEN`
+  when set. Seen in a test run: on a 0.6.6-rc9.15 install with a token GitHub refuses in the environment, the installed
+  entry ends `FAIL: target: could not list the releases of kalidke/ship-of-tools` (the listing answers 401), where the
+  same run without the token moves the computer to 0.7.0. With a token that has push access the list holds drafts and
+  its first entry is one (seen: the draft `v0.7.1-rc.3`, where an anonymous call gave `v0.7.0`), whose files answer 404
+  by tag; that run was not made. It is also a second rule for one concept: the updater takes the highest published
+  version, the prelude the first listed, and GitHub lists by creation. Fix: one owner; at the least the prelude skips
+  drafts and lists anonymously after a refused token. Until then `docs/UPDATE-AGENT.md`'s command runs the release's own
+  installer with `SOT_INSTALL_TAG`, which skips the prelude, the one reader of either token.
+- **UPDATE-FROM-06-UNTESTED** [note] The release run's update legs start from `v0.6.6` and from the release before. Run
+  by hand on 2026-11-11 with `docs/UPDATE-AGENT.md`'s command (Linux test containers, hosted macOS and Windows runners):
+  from 0.6.6-rc1, rc9.13 (Linux and macOS), rc9.14 (Windows), rc9.15, 0.6.6, a pinned 0.6.6 and 0.7.0, each ended `PASS`
+  at 0.7.0 and a second run changed nothing. Also run once, in a Linux test container: a 0.6.6 daemon under a stand-in
+  for its unit, with a row whose agent ran the command from inside the row; the agent was ended mid-run, the update
+  completed, the row started again with a new conversation, and its agent's repeat ended `PASS`. Still in no gate, and
+  not run: the `daemon:` question with a live REPL, mail to a row the update restarted, a real systemd unit, a window's
+  lease, a Windows install older than rc9.14, a glibc 2.31 host, and `comm/tests/interop-066.sh`. Fix: a leg from the
+  last 0.6.6 candidate, and part 1 of the interop script in the local gate while a 0.6 computer exists.
+- **INSTALLER-LISTING-RATE-LIMIT** [session] On a pre-release install the prelude of `scripts/install.sh` and
+  `scripts/install.ps1` lists the releases through GitHub's API, which allows an address 60 anonymous calls an hour.
+  Seen in a hosted test run: main's entry on a 0.6.6-rc9.15 macOS install ended `FAIL: target: could not list the
+  releases of kalidke/ship-of-tools: GitHub refused the anonymous request (HTTP 403, its rate limit for this network
+  address)`, and its retry the same; the line's own advice to set a token meets INSTALLER-NEWEST-TAKES-A-DRAFT. A
+  computer behind a shared address meets it the same way. `docs/UPDATE-AGENT.md` reads the newest release from the
+  latest-release redirect instead, which is no API call. Fix: the prelude falls back to the latest release when the
+  listing is refused (one owner with INSTALLER-NEWEST-TAKES-A-DRAFT).
 - **ROLLBACK-ACROSS-A-LINE** [note] The installer's rollback (`sot-apply.sh --rollback`) restores binaries, links, unit,
   wrapper and record, not comm and not rows. From 0.7 back to 0.6.6 the comm wrappers call `sotd comm`, which 0.6.6
   refuses, until the next launch; rows 0.7 retired stay ended, and 0.7 supervisors run on unseen by the 0.6.6 daemon,
