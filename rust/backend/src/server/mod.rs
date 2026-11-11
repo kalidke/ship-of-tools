@@ -257,14 +257,13 @@ pub async fn run(opts: Opts) -> Result<()> {
 
     // The project chat: the hub fact decides before any chat file is opened; a daemon that is not the hub holds none.
     // It retires with the daemon's other in-process services (lifecycle's terminal).
-    let chat = crate::chat::Chat::begin(
+    let chat = crate::chat::Chat::boot(
         &sot_platform::host::env::Env::process(),
-        &crate::chat::row_facts(&workspaces),
+        &workspaces,
         &sot_chat::config::read_file,
         crate::lifecycle::retire::participants(),
         Box::new(crate::chat::start_service),
     );
-    tracing::info!(status = %chat.status(), "project chat");
 
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
