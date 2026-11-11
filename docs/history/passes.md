@@ -1799,3 +1799,17 @@ A landing's record goes here, with its measured times; the package page holds on
   a blocker (a change event between the take-up and the snapshot; a recovery restarted before its snapshot; records
   held before a channel's first whole state counted as history, found by the strongest reviewer), the walk added to
   close the class; the fourth round no blockers, its model fix taken; five scoped gates.
+- P16, one reader for every inbox's lines from one sender, 2026-11-10: builder launched about 16:45, main 17:43
+  (f4f94b9b5), 58 minutes, a miss. About 55 product lines (the reader, the complete-line rule moved into it from the
+  cursor) and 72 test lines. Where the minutes went: the build (13 minutes); review round 1 (blocker: an inbox file or
+  folder that could not be read gave a partial or empty answer, the skipped inbox its lock rule exists to prevent, which
+  would let the chat's rebuild file a post twice; should-fix: two copies of the complete-line rule, the lock-fault rule
+  untested); review round 2 (no blockers; the folder rule and "creates no inbox" unpinned, its two tests taken, landed on
+  the builder's reds without a third round); three scoped gates.
+- P15, one poll prints a bounded batch, and the Stop hook blocks again after it, 2026-11-10: builder launched about
+  16:22, main 17:56 (fc88d046c), 94 minutes, a miss. About 30 product lines (the poll's byte budget and its count line,
+  the hook's mark of total and unread) and 110 test lines. Where the minutes went: review round 1 (blocker: the hook
+  keyed on the inbox total let a turn end with mail unread after a partial poll); review round 2 (no blockers; the
+  records' limit unstated, a stale bound, the tick rule in six places, the mark's total half unpinned); review round 3
+  (no blockers; two stale comments and the limit sentence too narrow, landed on the session's read of the records diff);
+  a rebase onto P16, clean; four scoped gates.
