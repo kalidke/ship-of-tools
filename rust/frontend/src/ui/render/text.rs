@@ -59,6 +59,27 @@ pub(crate) fn set_buffer_rich_text<'r, 's, I>(
     buffer.set_rich_text(font_system, spans, default_attrs, shaping);
 }
 
+/// The runs of glyphs whose `Attrs::metadata` `flag` accepts, as `(x, y, w, h)` in the buffer's own coordinates: one per
+/// layout line and unbroken stretch of flagged glyphs, `y` and `h` the line's top and height.
+pub(crate) fn flagged_runs(buffer: &Buffer, flag: impl Fn(usize) -> bool) -> Vec<(f32, f32, f32, f32)> {
+    let mut rects = Vec::new();
+    for run in buffer.layout_runs() {
+        let mut current: Option<(f32, f32)> = None;
+        for g in run.glyphs.iter() {
+            if flag(g.metadata) {
+                let end = g.x + g.w.max(0.0);
+                current = Some((current.map_or(g.x, |(s, _)| s), end));
+            } else if let Some((s, e)) = current.take() {
+                rects.push((s, run.line_top, e - s, run.line_height));
+            }
+        }
+        if let Some((s, e)) = current {
+            rects.push((s, run.line_top, e - s, run.line_height));
+        }
+    }
+    rects
+}
+
 /// One run of text to render at a baseline position (top-left of the line
 /// box, in physical pixels relative to the surface). `color` overrides the
 /// TextLayer's default rgb when `Some`; `None` means "fall through to the

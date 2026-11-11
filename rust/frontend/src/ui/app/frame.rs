@@ -9,7 +9,7 @@ impl State {
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
             owed_drawn, leaving_drawn, presentation_candidate) = self.draw_chrome()?;
-        let (lines, border_rects_by_color, strip_logo_rects, cell_backs) = self.project_chrome()?;
+        let (lines, border_rects_by_color, strip_logo_rects, mut cell_backs) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
         let cell_w = self.canvas.cell_w();
@@ -33,7 +33,9 @@ impl State {
         let (show_fatal, show_png, show_svg, show_edit, show_md, show_canvas) = self.preview_shows();
         let (caption_draw, image_rect, png_rect, svg_rect) = self.layout_figure(preview_rect, show_png, show_svg);
         let md_rect = self.layout_markdown(preview_rect, cell_w, cell_h);
-        self.layout_drawer_px(cells_to_px, repl_scrollback_cells, repl_window, repl_cells);
+        // The chat's rectangles come back from its layout, so they are this frame's.
+        cell_backs.extend(self.layout_drawer_px(cells_to_px, repl_scrollback_cells, repl_window, repl_cells));
+        let cell_backs = self.brushes.prepare_backs(&cell_backs, &self.gpu)?;
         self.rebuild_fatal_if_shown(show_fatal);
         self.layout_concept(preview_rect);
         let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
