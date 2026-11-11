@@ -13,6 +13,7 @@ import{_ as s,o as t,c as a,ao as o}from"./chunks/framework.B7UvRKha.js";const k
 <span class="line"><span>  inbox/&lt;name&gt;.jsonl       # durable per-recipient inbox (append-only)</span></span>
 <span class="line"><span>  inbox/&lt;name&gt;.lock        # that inbox&#39;s lock file</span></span>
 <span class="line"><span>  read/&lt;name&gt;.cursor       # per-recipient read cursor</span></span>
+<span class="line"><span>  chat/chat-&lt;workspace&gt;.lock  # the chat listener&#39;s kernel lock, one per comm folder (the hub daemon&#39;s; holds no data)</span></span>
 <span class="line"><span>  self/&lt;host&gt;__&lt;row&gt;.txt   # a session&#39;s handle between commands (below)</span></span>
 <span class="line"><span>  state/                   # per-session scratch of the hooks: the end-of-turn check&#39;s tick files and</span></span>
 <span class="line"><span>                           # feedback record, rows&#39; turn marks. Bounded per-session litter; nothing sweeps it.</span></span>
