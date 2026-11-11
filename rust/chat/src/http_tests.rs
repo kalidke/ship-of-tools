@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply};
 use crate::http::{
     is_slack_host, Http, HttpError, Request, Secret, MAX_BODY, MAX_OPERATIONS, MAX_REDIRECTS,
+    MAX_SCAN_BODY,
 };
 
 const TOKEN: &str = "sentinel-bot-token-not-a-credential";
@@ -256,6 +257,43 @@ async fn a_name_the_certificate_does_not_cover_fails_before_any_http() {
             HttpError::Connect
         );
         assert_eq!(fake.connections(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_requests_own_body_bound_replaces_the_default_and_still_counts_the_stream() {
+    bounded(async {
+        const OWN: usize = 3 << 20;
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| match seen.target.as_str() {
+            "/two-mib" => Reply::ok(&vec![b'y'; 2 << 20]),
+            "/exact" => Reply::ok(&vec![b'y'; OWN]),
+            "/over" => Reply::ok(&vec![b'y'; OWN + 1]),
+            // Claims a gigabyte and sends past the bound.
+            "/lie-long" => Reply::Raw(
+                [
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\n\r\n".to_vec(),
+                    vec![b'x'; OWN + 1],
+                ]
+                .concat(),
+            ),
+            _ => Reply::ok(b"ok"),
+        })
+        .await;
+        let own = |path: &str| get(&fake, "slack.com", path).max_body(OWN);
+        let len = |r: Result<crate::http::Response, HttpError>| r.map(|r| r.body().len());
+        // Past the default, up to the request's own bound; one byte over it, and a lying length, are too large.
+        assert_eq!(len(fake.http().send(own("/two-mib")).await), Ok(2 << 20));
+        assert_eq!(len(fake.http().send(own("/exact")).await), Ok(OWN));
+        for path in ["/over", "/lie-long"] {
+            let got = fake.http().send(own(path)).await;
+            assert_eq!(len(got), Err(HttpError::TooLarge), "{path}");
+        }
+        // A request that sets none keeps the default.
+        let got = fake.http().send(get(&fake, "slack.com", "/two-mib")).await;
+        assert_eq!(len(got), Err(HttpError::TooLarge));
+        assert!(MAX_SCAN_BODY > MAX_BODY);
         fake.shutdown().await;
     })
     .await;

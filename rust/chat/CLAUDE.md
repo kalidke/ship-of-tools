@@ -61,9 +61,11 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    bound and a caller that stops waiting neither frees the permit nor cancels a mutation already sent. Sixteen
    operations are admitted; the seventeenth is `Busy` at once. Limit: the permit returns only when the task ends
    (the deadline at the latest); a name lookup that outlives it keeps its blocking thread until the resolver returns.
-8. **A response body is bounded while it streams.** At most 1 MiB, counted as chunks arrive, whatever `Content-Length`
-   claims (a gigabyte claimed over a two MiB body, an endless chunkless body and one byte over the bound are `TooLarge`;
-   a body of exactly the bound passes; a short claim ends the body at the claim).
+8. **A response body is bounded while it streams.** At most 1 MiB, or the request's own bound where it sets one (a
+   scan's is `MAX_SCAN_BODY`, 16 MiB; a page over it is `TooLarge`, and what the walk does then is the traversal's),
+   counted as chunks arrive, whatever `Content-Length` claims (a gigabyte claimed over a two MiB body, an endless
+   chunkless body and one byte over the bound are `TooLarge`; a body of exactly the bound passes; a short claim ends the
+   body at the claim).
 9. **One `send` is one request.** The library's retry is set to never, HTTP/1 has no protocol retry, and no idle
    connection is kept, so a request is never re-sent on a stale pooled connection; a mutation the server accepted and
    then dropped is `Protocol`, with the server having seen it once.
@@ -83,6 +85,25 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    unrepresentable message, or a non-`ok` answer fails the whole page (no partial page); `is_limited` is `Page.limited`.
    The client rechecks every message against the bounds (the parent is exempt). Limit: a continuation is not
    authenticated, only matched to its query; one unrepresentable message fails its page, which the caller treats as a gap.
+   **No thread read follows a cursor under a lower bound alone.** `Api::history` refuses a continuation for a replies
+   query with `after` and no upper bound (`bad_request`), unsent: in that form Slack's cursor was measured live dropping
+   one reply at every page boundary, never returned, with a last page that says it is complete (SlackClaw's facts note,
+   "Page order with `oldest` alone, measured"). That form's first page, which loses nothing, and the drawer's reads (no
+   bound, or an upper one) are sent as before.
+   **`Api::scan` is delivery's one read.** `ScanQuery` needs `after` below `before` (an `until`, a missing bound or an
+   empty or inverted window is `bad_request`) and a limit of 1 to 999 (`MAX_SCAN`); the read sends `oldest`, `latest`
+   and `inclusive=false`, never a cursor, under its own response bound (guarantee 8). A `ScanPage` gives the records
+   inside the bounds (a replies page's parent only when it is inside them; it is always in `threads`), `oldest` and
+   `newest` as the raw extremes of the page's `ts` (a replies page's parent apart, whatever order Slack lists them),
+   `threads` as every message's `(ts, latest_reply)` as Slack sent it (a deleted parent's, and one above the read's
+   `latest`, which Slack was measured to send, included), `has_more`, and `limited` as Slack's flag, reported and never an
+   error. A replies page holds its limit plus the parent (1,000 at 999); a page with `has_more` and nothing but the
+   parent, or nothing at all, is `Malformed` (no walk can start from it), and a replies page of the parent alone with
+   `has_more: false` is a page, the measured end of a walk. A message with no valid `ts`, or a `latest_reply` that is
+   not one, fails the page. The walk that uses it, a fresh read per page with `latest` lowered to the page's oldest raw
+   `ts`, was measured to return every message exactly once, also while posts arrive (SlackClaw's facts note, "The walk
+   back with no cursor, measured" and "Posts arriving during reads and the walk (P-ORDER), measured"); its first read
+   must carry `latest`, since `oldest` alone returned only the oldest page and then stopped.
 12. **A post is submitted once.** `Api::post` sends one `chat.postMessage` with the custom `username` (`<name> (<kind> via
    Ship of Tools)`) and `sot_chat_post` metadata (kind, name), so `normalize` recovers the origin the same way over
    history; there is no text prefix. `Refused` is Slack's definite rejection (a non-5xx status, or `ok: false` with a
@@ -318,8 +339,8 @@ never holds another form.
 ## Owns
 `normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key`; it re-exports wire's record bounds (`MAX_RECORD_BYTES`, `MAX_TEXT`, `MAX_FILES`, `MAX_ID`, `MAX_NAME`, `MAX_FILENAME`, `MAX_MIME`) and the id grammar `is_id` (as `valid_id`), which wire owns. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
-`MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `Bounds`, `Upper`, `Continuation`,
-`Page`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
+`MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
+`Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
 `http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack
 and its websocket peer (`ws.rs`).
@@ -378,10 +399,10 @@ Paths are under `rust/chat/src/`.
 | 4 | attachment only | `normalize_tests.rs`: `an_attachment_only_message_keeps_its_files_and_has_no_text` |
 | 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations`, `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect`, `an_ambient_proxy_variable_is_ignored` (the test re-runs itself through `sot_platform::test_isolated` as a child with every proxy variable naming a dead address and expects a direct request; the helper fails the parent when the body was not entered exactly once or exited non-zero), `the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations` (no network) |
 | 6 | verified server, and no test root in a shipped binary | `scripts/tests/release-features-check.sh --prove` (the gate runs it: green for the real tree and for the feature on a dev-dependency alone; red with the feature on a normal dependency, in `default`, on the frontend, in a target table, or on a member only `--workspace` builds); the compile error is shown by a release build of `sot-chat` with the feature failing and a test build passing, and `sot-backend`'s `the_exported_fake_slack_answers_one_scripted_reply` (the export works); `http_tests.rs`: `an_untrusted_certificate_fails_before_any_http`, `a_name_the_certificate_does_not_cover_fails_before_any_http` (each with a passing control; the second also the resolver's refusal) |
-| 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop` |
+| 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop`, `a_requests_own_body_bound_replaces_the_default_and_still_counts_the_stream` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
-| 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending` |
+| 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending`, `a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent`, `a_scan_reads_999_and_its_bound_is_its_own`, `a_scan_page_names_its_raw_extremes_and_every_parents_latest_reply`, `a_limited_page_is_a_page_with_its_flag`, `a_replies_scan_at_999_may_hold_1000_with_its_parent`, `a_replies_page_holding_only_its_parent_with_no_more_is_an_end`, `a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999` |
 | 12 | one post, origin kept | `api_tests.rs`: `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin`, `a_message_text_is_sent_escaped_and_bounded_escaped` |
 | 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
 | 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline`, `name_lookups_together_end_at_the_names_deadline` |

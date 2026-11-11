@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    Api, ApiError, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome, ASSUMED_RETRY,
-    MAX_CURSOR, MAX_NAMES, MAX_RETRY,
+    Api, ApiError, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome, ScanQuery,
+    ASSUMED_RETRY, MAX_CURSOR, MAX_NAMES, MAX_RETRY, MAX_SCAN,
 };
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen};
 use crate::http::{HttpError, Secret};
@@ -1033,6 +1033,395 @@ async fn a_message_text_is_sent_escaped_and_bounded_escaped() {
         let over = format!("{}aa", "&".repeat(1639));
         assert_eq!(post(over).await.unwrap_err(), ApiError::BadRequest);
         assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+const SCAN_AFTER: &str = "1699999000.000000";
+const SCAN_BEFORE: &str = "1800000000.000000";
+const PARENT: &str = "1700000100.000000";
+
+fn scan_query(channel: &str, thread: Option<&str>, limit: u16) -> ScanQuery {
+    let bounds = Bounds::new(Some(SCAN_AFTER), Some(SCAN_BEFORE), None).unwrap();
+    ScanQuery::new(channel, thread, bounds, limit).unwrap()
+}
+
+/// A scan page as Slack answers it: the raw messages, `has_more`, and `is_limited` when given.
+fn scan_reply(messages: Vec<Value>, more: bool, limited: Option<bool>) -> Reply {
+    let mut v = json!({"ok": true, "messages": messages, "has_more": more});
+    if let Some(l) = limited {
+        v["is_limited"] = json!(l);
+    }
+    Reply::json(&v)
+}
+
+/// An answer a test expects to be a page: a failure is an assertion that prints the error.
+fn ok<T: std::fmt::Debug>(got: Result<T, ApiError>) -> T {
+    assert!(matches!(got, Ok(_)), "{got:?}");
+    got.unwrap()
+}
+
+fn ts(s: &str) -> sot_protocol::chat::Ts {
+    sot_protocol::chat::Ts::parse(s).unwrap()
+}
+
+fn reply_msg(ts: &str) -> Value {
+    let mut m = msg(ts);
+    m["thread_ts"] = json!(PARENT);
+    m
+}
+
+#[tokio::test]
+async fn a_scan_reads_999_and_its_bound_is_its_own() {
+    bounded(async {
+        let big = |text: usize| {
+            (0..999)
+                .map(|i| {
+                    let mut m = msg(&format!("{}.000001", 1_700_000_000 + i));
+                    m["text"] = json!("x".repeat(text));
+                    m
+                })
+                .collect::<Vec<_>>()
+        };
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+            auth(seen).unwrap_or_else(|| match seen.param("channel").as_deref() {
+                Some("C0SMALL") => scan_reply(big(10), false, None),
+                _ => scan_reply(big(2100), false, None),
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+
+        let got = ok(api.scan(&scan_query("C0SMALL", None, 999)).await);
+        assert_eq!(got.records.len(), 999);
+        let asked = fake.seen().pop().unwrap();
+        assert_eq!(asked.path(), "/api/conversations.history");
+        for (k, v) in [
+            ("channel", "C0SMALL"),
+            ("limit", "999"),
+            ("include_all_metadata", "true"),
+            ("oldest", SCAN_AFTER),
+            ("latest", SCAN_BEFORE),
+            ("inclusive", "false"),
+        ] {
+            assert_eq!(asked.param(k).as_deref(), Some(v), "{k}");
+        }
+        assert_eq!(asked.param("cursor"), None, "a scan never sends a cursor");
+
+        // A body of over 2 MiB passes a scan and fails the display page's 1 MiB bound.
+        let got = ok(api.scan(&scan_query("C0BULKY", None, 999)).await);
+        assert_eq!(got.records.len(), 999);
+        let plain = query("C0BULKY", Bounds::default(), 20);
+        assert_eq!(
+            api.history(&plain, None).await,
+            Err(ApiError::Http(HttpError::TooLarge))
+        );
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_scan_page_names_its_raw_extremes_and_every_parents_latest_reply() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            let join = |ts: &str| json!({"ts": ts, "subtype": "channel_join", "user": "U0MEM"});
+            match seen.param("channel").unwrap().as_str() {
+                // Joins only: no record, and still the page's extremes (newest first).
+                "C0JOINS" => scan_reply(
+                    vec![join("1700000300.000000"), join("1700000200.000000")],
+                    true,
+                    None,
+                ),
+                // A deleted parent, and a parent whose last reply came while the read was in flight.
+                "C0TOMB" => {
+                    let tomb = json!({"ts": "1700000300.000000", "subtype": "tombstone",
+                        "thread_ts": "1700000300.000000", "latest_reply": "1700000900.000100"});
+                    let mut live = msg("1700000200.000000");
+                    live["latest_reply"] = json!("1800000000.000270");
+                    scan_reply(vec![tomb, live, msg("1700000100.000000")], false, None)
+                }
+                "C0HIST" => scan_reply(
+                    vec![
+                        msg("1700000400.000000"),
+                        msg("1700000300.000000"),
+                        msg("1700000200.000000"),
+                    ],
+                    false,
+                    None,
+                ),
+                // A replies page, oldest first, the parent first and older than every reply.
+                "C0REPL" => {
+                    let mut parent = msg(PARENT);
+                    parent["thread_ts"] = json!(PARENT);
+                    parent["latest_reply"] = json!("1700000400.000000");
+                    scan_reply(
+                        vec![
+                            parent,
+                            reply_msg("1700000200.000000"),
+                            reply_msg("1700000300.000000"),
+                            reply_msg("1700000400.000000"),
+                        ],
+                        false,
+                        None,
+                    )
+                }
+                "C0NOTS" => scan_reply(vec![json!({"subtype": "channel_join"})], false, None),
+                _ => {
+                    let mut m = msg("1700000200.000000");
+                    m["latest_reply"] = json!("soon");
+                    scan_reply(vec![m], false, None)
+                }
+            }
+        })
+        .await;
+        let api = ready(&fake).await;
+
+        let got = ok(api.scan(&scan_query("C0JOINS", None, 10)).await);
+        assert!(got.records.is_empty() && got.threads.is_empty() && got.has_more);
+        assert_eq!(got.oldest, Some(ts("1700000200.000000")));
+        assert_eq!(got.newest, Some(ts("1700000300.000000")));
+
+        let got = ok(api.scan(&scan_query("C0TOMB", None, 10)).await);
+        assert_eq!(tss_of(&got), ["1700000200.000000", "1700000100.000000"]);
+        assert_eq!(
+            got.threads,
+            [
+                (ts("1700000300.000000"), ts("1700000900.000100")),
+                (ts("1700000200.000000"), ts("1800000000.000270")),
+            ],
+            "a tombstone's latest_reply, and one above the read's latest, as Slack sent them"
+        );
+
+        // The same extremes from a page newest first and one oldest first, and the parent is not the oldest.
+        let hist = ok(api.scan(&scan_query("C0HIST", None, 10)).await);
+        let replies = ok(api.scan(&scan_query("C0REPL", Some(PARENT), 10)).await);
+        assert_eq!(hist.oldest, Some(ts("1700000200.000000")));
+        assert_eq!(hist.newest, Some(ts("1700000400.000000")));
+        assert_eq!(
+            (&replies.oldest, &replies.newest),
+            (&hist.oldest, &hist.newest)
+        );
+        assert_eq!(replies.records.len(), 4, "the parent is inside the bounds");
+        assert_eq!(replies.threads, [(ts(PARENT), ts("1700000400.000000"))]);
+
+        // A replies scan's records are the messages inside its bounds: a parent below `after` is no record (it is
+        // still in `threads` with its latest_reply) and is not the page's oldest.
+        let bounds = Bounds::new(Some("1700000150.000000"), Some(SCAN_BEFORE), None).unwrap();
+        let q = ScanQuery::new("C0REPL", Some(PARENT), bounds, 10).unwrap();
+        let got = ok(api.scan(&q).await);
+        assert_eq!(tss_of(&got).len(), 3);
+        assert_eq!(got.records[0].ts, ts("1700000200.000000"));
+        assert_eq!(got.threads, [(ts(PARENT), ts("1700000400.000000"))]);
+        assert_eq!(got.oldest, Some(ts("1700000200.000000")));
+
+        // A message with no valid ts, or a latest_reply that is not one, fails the page.
+        for c in ["C0NOTS", "C0BADLR"] {
+            let got = api.scan(&scan_query(c, None, 10)).await;
+            assert_eq!(got, Err(ApiError::Malformed), "{c}");
+        }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+fn tss_of(page: &crate::api::ScanPage) -> Vec<&str> {
+    page.records.iter().map(|r| r.ts.as_str()).collect()
+}
+
+#[tokio::test]
+async fn a_limited_page_is_a_page_with_its_flag() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| match seen.param("channel").unwrap().as_str() {
+                "C0LAST" => scan_reply(vec![msg("1700000100.000001")], false, Some(true)),
+                _ => scan_reply(vec![msg("1700000100.000001")], true, Some(true)),
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        for (c, more) in [("C0LAST", false), ("C0MORE", true)] {
+            let got = ok(api.scan(&scan_query(c, None, 10)).await);
+            assert!(got.limited && got.has_more == more, "{c}");
+            assert!(got.records.iter().all(|r| r.limited), "{c}");
+        }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_replies_scan_at_999_may_hold_1000_with_its_parent() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| {
+                let held = match seen.param("channel").unwrap().as_str() {
+                    "C0ENOUGH" => 1000,
+                    _ => 1001,
+                };
+                let mut messages = vec![msg(PARENT)];
+                messages
+                    .extend((1..held).map(|i| reply_msg(&format!("{}.000001", 1_700_000_200 + i))));
+                scan_reply(messages, false, None)
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        let got = api
+            .scan(&scan_query("C0ENOUGH", Some(PARENT), MAX_SCAN))
+            .await;
+        assert_eq!(ok(got).records.len(), 1000);
+        let got = api
+            .scan(&scan_query("C0TOOMANY", Some(PARENT), MAX_SCAN))
+            .await;
+        assert_eq!(got, Err(ApiError::Malformed));
+        // A channel read has no parent to add: 1,000 at 999 is too many.
+        let got = api.scan(&scan_query("C0ENOUGH", None, MAX_SCAN)).await;
+        assert_eq!(got, Err(ApiError::Malformed));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_replies_page_holding_only_its_parent_with_no_more_is_an_end() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| match seen.param("channel").unwrap().as_str() {
+                "C0END" => scan_reply(vec![msg(PARENT)], false, None),
+                // More behind it, and nothing to walk back from.
+                "C0LIE" => scan_reply(vec![msg(PARENT)], true, None),
+                "C0EMPTY" => scan_reply(vec![], true, None),
+                // A page shorter than its limit with more behind it is a page.
+                _ => scan_reply(vec![msg("1700000200.000000")], true, None),
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        let thread = |c: &'static str| {
+            let api = &api;
+            async move { api.scan(&scan_query(c, Some(PARENT), 999)).await }
+        };
+        let end = ok(thread("C0END").await);
+        assert!(!end.has_more && end.oldest.is_none() && end.newest.is_none());
+        assert_eq!(end.records.len(), 1);
+        assert_eq!(thread("C0LIE").await, Err(ApiError::Malformed));
+        let got = api.scan(&scan_query("C0EMPTY", None, 999)).await;
+        assert_eq!(got, Err(ApiError::Malformed));
+        let short = ok(api.scan(&scan_query("C0SHORT", None, 999)).await);
+        assert!(short.has_more && short.records.len() == 1);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| {
+                scan_reply(
+                    vec![
+                        msg("1700000500.000000"),
+                        msg("1700000400.000000"),
+                        msg("1700000300.000000"),
+                        msg("1700000100.000000"),
+                        msg("1700000099.999999"),
+                    ],
+                    false,
+                    None,
+                )
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        // Slack's edges are not trusted: `oldest` and `latest` are both exclusive, and the page's raw extremes stay.
+        let b = Bounds::new(Some("1700000100.000000"), Some("1700000400.000000"), None).unwrap();
+        let q = ScanQuery::new("C0EDGE", None, b, 10).unwrap();
+        let got = ok(api.scan(&q).await);
+        assert_eq!(tss_of(&got), ["1700000300.000000"]);
+        assert_eq!(got.oldest, Some(ts("1700000099.999999")));
+        assert_eq!(got.newest, Some(ts("1700000500.000000")));
+
+        // Refused unsent: a limit of 0 or over 999, a missing bound, an inclusive one, an empty or inverted window,
+        // a bad id or thread.
+        let sent = fake.seen().len();
+        let both = || Bounds::new(Some(SCAN_AFTER), Some(SCAN_BEFORE), None).unwrap();
+        let bounds =
+            |a: Option<&str>, b: Option<&str>, u: Option<&str>| Bounds::new(a, b, u).unwrap();
+        let window =
+            |a: &str, b: &str| ScanQuery::new("C0EDGE", None, bounds(Some(a), Some(b), None), 10);
+        let refused = [
+            ScanQuery::new("C0EDGE", None, both(), 0),
+            ScanQuery::new("C0EDGE", None, both(), 1000),
+            ScanQuery::new("C0EDGE", None, bounds(None, Some(SCAN_BEFORE), None), 10),
+            ScanQuery::new("C0EDGE", None, bounds(Some(SCAN_AFTER), None, None), 10),
+            ScanQuery::new(
+                "C0EDGE",
+                None,
+                bounds(Some(SCAN_AFTER), None, Some(SCAN_BEFORE)),
+                10,
+            ),
+            ScanQuery::new("not an id", None, both(), 10),
+            window(SCAN_AFTER, SCAN_AFTER),
+            window(SCAN_BEFORE, SCAN_AFTER),
+        ];
+        for r in refused {
+            assert_eq!(r, Err(ApiError::BadRequest));
+        }
+        let junk = ScanQuery::new("C0EDGE", Some("17000"), both(), 10);
+        assert_eq!(junk, Err(ApiError::BadBound));
+        assert!(ScanQuery::new("C0EDGE", None, both(), MAX_SCAN).is_ok());
+        assert_eq!(fake.seen().len(), sent, "nothing was sent");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| {
+                let next = seen.param("cursor").is_none().then_some("c1");
+                Reply::json(&page(vec![msg("1700000200.000000")], next))
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        let after = Some("1700000100.000000");
+        let thread =
+            |channel: &str, b: Bounds| HistoryQuery::new(channel, Some(PARENT), b, 2).unwrap();
+        let lower_only = thread("C0THR", Bounds::new(after, None, None).unwrap());
+        let first = ok(api.history(&lower_only, None).await);
+        let cont = first.next.expect("more pages");
+        let sent = fake.seen().len();
+        assert_eq!(
+            api.history(&lower_only, Some(&cont)).await,
+            Err(ApiError::BadRequest)
+        );
+        assert_eq!(fake.seen().len(), sent, "refused before anything was sent");
+
+        // The same query's first page, and every other form's continuation, are sent as ever.
+        let upper = Some("1700001000.000000");
+        let forms = [
+            thread("C0A", Bounds::new(after, upper, None).unwrap()),
+            thread("C0B", Bounds::new(after, None, upper).unwrap()),
+            thread("C0C", Bounds::new(None, None, None).unwrap()),
+            thread("C0D", Bounds::new(None, upper, None).unwrap()),
+            query("C0E", Bounds::new(after, None, None).unwrap(), 2),
+        ];
+        for form in &forms {
+            let first = ok(api.history(form, None).await);
+            let sent = fake.seen().len();
+            let second = ok(api.history(form, first.next.as_ref()).await);
+            assert!(second.next.is_none());
+            assert_eq!(fake.seen().len(), sent + 1, "{form:?}");
+        }
         fake.shutdown().await;
     })
     .await;
