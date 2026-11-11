@@ -1,0 +1,55 @@
+# A probe branch's run, never merged: platform's new bound-self tests on macOS and Windows, and what a crash left behind.
+name: svg-2a-probe
+
+on:
+  push:
+    branches: ['tmp/**']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - name: Line tables only (Windows)
+        if: runner.os == 'Windows'
+        run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Crash reports before (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "user:"; ls -la ~/Library/Logs/DiagnosticReports || true
+          echo "system:"; ls -la /Library/Logs/DiagnosticReports || true
+      - name: Crash dumps before (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          echo "user dumps:"; ls -la "$LOCALAPPDATA/CrashDumps" || true
+          echo "WER archive:"; ls -la "$PROGRAMDATA/Microsoft/Windows/WER/ReportArchive" || true
+      - name: The new tests
+        run: cargo test -p sot-platform --locked --lib -- host::bound host::heap_cap host::winjob --nocapture --test-threads=1
+      - name: The whole platform suite (informational)
+        continue-on-error: true
+        run: cargo test -p sot-platform --locked
+      - name: Crash reports after (macOS)
+        if: always() && runner.os == 'macOS'
+        run: |
+          sleep 30
+          echo "user:"; ls -la ~/Library/Logs/DiagnosticReports || true
+          echo "system:"; ls -la /Library/Logs/DiagnosticReports || true
+      - name: Crash dumps after (Windows)
+        if: always() && runner.os == 'Windows'
+        run: |
+          echo "user dumps:"; ls -la "$LOCALAPPDATA/CrashDumps" || true
+          echo "WER archive:"; ls -la "$PROGRAMDATA/Microsoft/Windows/WER/ReportArchive" || true

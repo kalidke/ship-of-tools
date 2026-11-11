@@ -3,10 +3,12 @@
 //! `sot_platform::host::wide_null`, `sot_platform::host::daemon_lock_path` and so on.
 
 mod beneath;
+pub mod bound;
 mod durable;
 pub mod env;
 #[cfg(unix)]
 pub mod fd;
+pub mod heap_cap;
 mod held_dir;
 mod lock;
 pub mod paths;
