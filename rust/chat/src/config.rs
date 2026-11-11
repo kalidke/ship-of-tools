@@ -118,13 +118,14 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 /// A Slack id: a capital letter, then capital letters and digits, at most 32.
+pub(crate) fn is_slack_id(s: &str) -> bool {
+    let mut b = s.bytes();
+    b.next().is_some_and(|c| c.is_ascii_uppercase()) && s.len() <= 32 && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
 fn id(v: &toml::Value) -> Result<String, ConfigError> {
     let s = v.as_str().ok_or(ConfigError::Malformed(None))?;
-    let mut b = s.bytes();
-    let ok = b.next().is_some_and(|c| c.is_ascii_uppercase())
-        && s.len() <= 32
-        && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-    if ok {
+    if is_slack_id(s) {
         Ok(s.to_string())
     } else {
         Err(ConfigError::BadId)

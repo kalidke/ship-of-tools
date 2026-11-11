@@ -75,7 +75,10 @@ owned by `docs/CLAUDE.md`.
   chat drawer also uses to clean names, does not list the deprecated format characters U+206A to U+206F, the soft
   hyphen, the tag characters (U+E0001, U+E0020 to U+E007F, which can carry hidden text) or U+180E, while
   `docs/integration.md`'s page reply row says it refuses "invisible formatting characters". None breaks a line. Found by
-  B5f's reviews, reading code; never seen.
+  B5f's reviews, reading code; never seen. Chat's mail body (`sot-chat` `mail::body`, B3b) passes them on to the agent
+  that reads it, so mail can carry text a person reading it does not see; B3b's review's probe built such a body (tag
+  characters, U+00AD and U+180E all present). The fix is wire's: one rule for every reader of the text grammar, its own
+  landing.
 
 ## topology
 
