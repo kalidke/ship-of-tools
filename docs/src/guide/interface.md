@@ -150,7 +150,7 @@ surface.
 
 *Middle column.* The preview pane renders whatever the [Navigation pane](#The-Navigation-Pane)
 cursor is on, at the fidelity appropriate to its type — markdown rendered, PNGs
-shown, `.jl` syntax-highlighted, PDFs paged, video as a poster frame.
+and SVGs shown, `.jl` syntax-highlighted, PDFs paged, video as a poster frame.
 
 ```@raw html
 <DemoShot name="preview-math" caption="A markdown note with typeset math and a table of each leg's bearing." />
@@ -169,6 +169,7 @@ use; the bytes are opaque to Rust, so adding a format is a **Julia-only** change
 | `.jl` | syntax-highlighted source (tokenized kernel-side, no client re-parsing) |
 | `.md` | rendered markdown, including inline math |
 | `.json` / `.toml` / `.txt` | plain text (JSON/TOML pretty-print / colour planned) |
+| `.svg` | its picture, fitted to the pane; zoom and pan as on a PNG (zoom past fit enlarges the picture's pixels, it is not drawn again); a file that will not draw shows as text, with the reason on the status line; no crop, scale bar, caption or drawing |
 | `.pdf` | one rasterized page; with the preview focused (`Ctrl+Right`) `n` / `p` turn pages |
 | video (`.mp4`, `.webm`, …) | a poster frame; `o` opens playback in the browser |
 

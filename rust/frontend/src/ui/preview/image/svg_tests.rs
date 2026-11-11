@@ -149,6 +149,55 @@ fn svg_text_after_a_paragraph_separator_is_drawn() {
     assert_eq!(got, cases.map(|text| (text, whole)));
 }
 
+const RED_BOX: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#ff0000"/></svg>"##;
+
+/// The picture fills the pane on its limiting side, keeps the SVG's aspect ratio and never passes the texture limit.
+#[test]
+fn the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit() {
+    let fit = |pane, cap| svg_fit_dims((200.0, 100.0), pane, cap);
+    assert_eq!(fit(Some((800, 800)), 16384), (800, 400), "width limits");
+    assert_eq!(fit(Some((600, 100)), 16384), (200, 100), "height limits");
+    assert_eq!(fit(Some((100, 800)), 16384), (100, 50));
+    assert_eq!(fit(Some((20000, 20000)), 4096), (4096, 2048), "the texture limit wins, aspect kept");
+    assert_eq!(fit(None, 16384), (1024, 512), "no pane yet: a small fixed bound, not the SVG's own size");
+    assert_eq!(svg_fit_dims((1.0, 1000.0), Some((50, 50)), 16384), (1, 50), "a side is never under one pixel");
+}
+
+/// The raster's area is bounded as well as each side: an SVG that declares a huge size draws at the fixed bound with no
+/// pane, and no pane or texture limit lifts a picture past the pixel budget.
+#[test]
+fn the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small() {
+    let area = |(w, h): (u32, u32)| u64::from(w) * u64::from(h);
+    assert!(area(svg_fit_dims((1e30, 1e30), None, 16384)) <= 1024 * 1024);
+    assert!(area(svg_fit_dims((100.0, 100.0), Some((60000, 60000)), 65535)) <= MAX_RASTER_PIXELS);
+    assert!(area(svg_fit_dims((100.0, 25.0), Some((30000, 60000)), 65535)) <= MAX_RASTER_PIXELS);
+}
+
+/// The raster is the SVG drawn at that size: its pixels are as many as it says, and the drawing fills them.
+#[test]
+fn the_svg_raster_is_drawn_at_the_fit_size() {
+    let (rgba, w, h) = rasterize_fit(RED_BOX, Some((400, 400)), 16384).expect("the SVG draws");
+    assert_eq!((w, h), (400, 200));
+    assert_eq!(rgba.len(), 400 * 200 * 4);
+    let px = |x: usize, y: usize| &rgba[(y * 400 + x) * 4..][..4];
+    assert_eq!(px(200, 100), [255, 0, 0, 255]);
+    assert_eq!(px(0, 0), [255, 0, 0, 255]);
+    assert_eq!(px(399, 199), [255, 0, 0, 255]);
+}
+
+/// An SVG that will not parse is an error with its reason, and the status line says it was not drawn.
+#[test]
+fn an_svg_that_will_not_parse_says_why_for_the_status_line() {
+    let why = rasterize_fit(b"<svg><not closed", Some((400, 400)), 16384).expect_err("not an SVG");
+    let line = svg_not_drawn(&why);
+    assert!(line.starts_with("svg not drawn: "), "{line}");
+    assert!(line.contains("svg parse failed"), "{line}");
+    assert!(!line.contains('\n'), "one line: {line}");
+    // Only the error's first line, and no control character of the file's own bytes, reaches the line.
+    let long = anyhow::anyhow!("first \u{7}line\nsecond line");
+    assert_eq!(svg_not_drawn(&long), "svg not drawn: first line");
+}
+
 const SVG_NS: &str = r#"xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink""#;
 
 /// `f` on a thread with the stack of the Linux main thread, where the window parses: a parser that recurses once per

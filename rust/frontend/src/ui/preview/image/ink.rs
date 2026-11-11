@@ -202,8 +202,8 @@ impl InkLayer {
     }
 
     /// The base on show: none in edit mode or under the refused-hello overlay; else the canvas when it is shown; else the
-    /// figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF page or a plugin
-    /// preview is no base).
+    /// figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF page, an SVG
+    /// or a plugin preview is no base: the daemon cannot compose an SVG into the agent's picture).
     pub(in crate::ui) fn shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
         if self.drawing.canvas && !editing && !refused {
             return Some(InkBase::Canvas);
