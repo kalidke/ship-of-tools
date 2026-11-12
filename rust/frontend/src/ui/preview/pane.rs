@@ -384,8 +384,8 @@ impl State {
             ));
             self.shaped.install(md);
             self.raster.hide();
-        } else if mime == "text/markdown" || mime == "text/x-markdown" {
-            if let Ok(s) = std::str::from_utf8(bytes) {
+        } else if let Ok(s) = std::str::from_utf8(bytes) {
+            if mime == "text/markdown" || mime == "text/x-markdown" {
                 // NOTE: `figure_failed` is deliberately NOT touched here.
                 // This function is also the cached-source REFLOW callback
                 // (apply_text_scale, the reflow redraw path,
@@ -427,17 +427,18 @@ impl State {
                 // didn't hit the per-fence cache. Replies overlay onto
                 // tree-sitter's base on the next reflow.
                 self.dispatch_pending_markdown_tokens();
+            } else {
+                let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs,
+                    s,
+                    self.shaped.rect().w.max(1.0),
+                    scale,
+                ));
+                self.shaped.install(md);
+                self.raster.hide();
             }
-        } else if let Ok(s) = std::str::from_utf8(bytes) {
-            let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs,
-                s,
-                self.shaped.rect().w.max(1.0),
-                scale,
-            ));
-            self.shaped.install(md);
-            self.raster.hide();
         } else {
-            // Not UTF-8 and no image: one line says so, so no earlier file's text or picture stays under this title.
+            // Not UTF-8 (checked once, before markdown and plain text take their text) and no image: one line says so, so
+            // no earlier file's text or picture stays under this title, whatever the mime.
             let msg = format!("not UTF-8, {} bytes\n\nNot previewed as text (mime: {mime}).", bytes.len());
             let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs, &msg, self.shaped.rect().w.max(1.0), scale));
             self.shaped.install(md);

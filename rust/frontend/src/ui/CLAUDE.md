@@ -313,9 +313,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   drains it once and hands each outcome to its owner (the preview by key, else `FigureStore`); the window keeps the
   upload (`settle_svg_draws`, called by `frame_upkeep`, and `apply_svg_step`). A refusal says `svg not drawn: <the
   drawing's or the runner's first line>` on the status line (`svg_not_drawn`, no control character) and the text
-  stays, the old raster hidden (a picture of the same source that is already up stays, with the line); a file that is
-  not UTF-8 shows one line saying so (`render_preview_source`'s last branch, which every non-UTF-8 text reaches), never
-  an earlier file's text. An SVG is not an image node
+  stays, the old raster hidden. A refusal that arrives while a picture of the same source is up leaves the picture
+  with the line until that source is next rendered; that render finds the refusal kept, and the picture goes for the
+  file's text and the line. A refusal is the file's alone, so one bound's end (`Ended`, such as `took past 10 s`, which
+  depends on the size asked) refuses the file at every size until it leaves the two kept slots. A file that is not UTF-8
+  shows one line saying so, never an earlier file's text or picture: `render_preview_source` checks UTF-8 once, before
+  markdown and plain text take their text, so every mime reaches it (a `tokens+json` that fails to decode installs
+  nothing, as before). An SVG is not an image node
   (`is_image_node_id`): it has no ROI, crop (`c` says an SVG cannot be cropped), scale bar, caption or drawing, since
   the daemon can decode none of them (drawing over an SVG is not built).
   Limits: a zoom past fit enlarges the raster's pixels (no re-raster at zoom); a pane resized after the draw scales the
@@ -343,8 +347,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header`); and the native fixture
   `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text` (through the real child, the frame's own `frame_upkeep`:
   after a layout, the text shows until the picture is installed at the pane's size, the same file again is installed at
-  once, a text-size change leaves the picture up, a file that is not UTF-8 says so over the previous file's text, a
-  broken one says why).
+  once, a text-size change leaves the picture up, a file that is not UTF-8 says so, one per route (`text/plain`, `text/markdown`, `image/svg+xml`), each right after a
+  picture over an earlier file's words, a broken one says why).
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint

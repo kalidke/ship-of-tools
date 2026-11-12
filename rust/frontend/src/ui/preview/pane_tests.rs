@@ -287,14 +287,19 @@ impl State {
         self.raster.hide();
         self.show_svg_source(svg);
         anyhow::ensure!(self.raster.is_shown(), "the same file again was not installed from its kept outcome");
-        // Another file's text takes the pane and the picture goes; this one is not UTF-8 and says so.
-        self.show_text_source("the previous file's words");
-        self.show_svg_source(b"<svg><title>caf\xe9</title></svg>");
-        anyhow::ensure!(!self.raster.is_shown(), "a file that is not UTF-8 kept the last raster");
-        anyhow::ensure!(
-            self.shown_text().contains("not UTF-8"),
-            "a file that is not UTF-8 left the previous file's text in the pane"
-        );
+        // A file that is not UTF-8, of each kind of route, right after a drawn picture over an earlier file's words: the
+        // picture and the words both go, and one line says what it is.
+        for mime in ["text/plain", "text/markdown", "image/svg+xml"] {
+            self.show_text_source("the previous file's words");
+            self.show_svg_source(svg);
+            anyhow::ensure!(self.raster.is_shown(), "the picture was not up before a {mime} file");
+            self.preview_source.install(mime.into(), b"caf\xe9".to_vec(), Some("files:a.bin".into()), None, None);
+            self.render_preview_source(mime, b"caf\xe9");
+            anyhow::ensure!(!self.raster.is_shown(), "a {mime} file that is not UTF-8 kept the last raster");
+            let text = self.shown_text();
+            anyhow::ensure!(text.contains("not UTF-8"), "a {mime} file that is not UTF-8 shows `{text}`");
+            anyhow::ensure!(!text.contains("previous file"), "a {mime} file that is not UTF-8 left the earlier text");
+        }
         self.status.set(String::new());
         self.show_svg_source(svg);
         self.frames_until(|state| state.raster.is_shown(), "the SVG drew no picture again")?;
