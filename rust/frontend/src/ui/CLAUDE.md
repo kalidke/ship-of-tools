@@ -820,9 +820,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
   (Unix), `a_library_print_never_reaches_the_reply_stream` (debug builds: a hook prints between replies, as usvg does), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
   assertions exists), and in svg_child_tests.rs `an_error_is_its_first_line` and
-  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
-  crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
-  can show neither); until then that is unknown.
+  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Seen once on a Windows 11 computer (2026-11-12, this
+  test binary on a debug build, each crash test alone and then the whole binary): the reference cycle's stack overflow
+  ended the child with the OS's crash status in 0.15 to 1.3 s, and the three crash tests showed no error window
+  (screenshots and the window list), started no error-reporting process (a 100 ms watch), and left no new crash dump,
+  error report or Application-log event; that computer's error reporting was at its defaults (platform's guarantee 18).
 - The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; its caller is the
   worker, through `draw_in_own_child`): `draw_in_child(command, jobs, bounds, stop)` starts the drawing child and
   returns one `Outcome` per job, in order: `Drawn` (w, h, RGBA); `Ended` with the words of a child that hit a bound or

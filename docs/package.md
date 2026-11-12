@@ -214,8 +214,8 @@ SVG that comes from a file (an `.svg` file, a markdown figure, a page's math, th
 in a bounded child of the window's own binary (it bounds its memory, CPU, crashes and inherited descriptors before it
 reads, and answers on a private stdout) through one worker thread (one draw at a time, each job tagged with the shown
 source's generation, a stale draw stopped at once, waiting input bounded, two strikes per generation) and a runner that
-holds it to a 10 s wall; the window's own process draws only the Monitor's chart, its text clamped. Before a person sees
-this in a release, a crash on a lab Windows computer must be seen to show no dialog and leave no dump. Also in progress,
+holds it to a 10 s wall; the window's own process draws only the Monitor's chart, its text clamped. A crash of it on a
+Windows computer was seen to show no dialog and leave no dump or report (2026-11-12). Also in progress,
 built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
