@@ -118,23 +118,6 @@ impl FigureStore {
         Reply::Raster { url, bytes }
     }
 
-    /// The top of a frame: the worker is told the pane's `generation`, and every outcome it has returned settles its
-    /// figure; the window acts on each that is not `Ignored`.
-    pub(in crate::ui) fn settle_frame(&mut self, draws: &mut SvgDraws, generation: u64) -> Vec<(String, Settled)> {
-        draws.advance(generation);
-        let mut done = Vec::new();
-        draws.drain(|each| done.push(each));
-        let mut settled = Vec::new();
-        for each in done {
-            let url = each.key.clone();
-            match self.settle_drawing(each) {
-                Settled::Ignored => {}
-                other => settled.push((url, other)),
-            }
-        }
-        settled
-    }
-
     /// An SVG reply: one job for the worker keyed by `url`, which stays pending until its outcome. Refused by the
     /// worker (a full queue, no thread), the figure fails at once.
     fn submit_svg(&mut self, draws: &mut SvgDraws, url: String, generation: u64, svg: Vec<u8>) -> bool {

@@ -49,8 +49,10 @@ fn failed_figure_stays_skipped_across_repeated_dispatch_until_seam_clears_it() {
 // draw is a stand-in that holds each job until released or stopped and answers `refused` for a job that says so. ---
 
 mod worker {
+    use super::super::resolve_figure_node_id;
     use super::super::super::figure_store::{FigureStore, Reply, Settled};
     use super::super::super::svg_draws::{Done, SvgDraws};
+    use super::super::super::svg_preview::{settle_frame, PREVIEW_KEY};
     use super::super::super::svg_run::{Job, Outcome, Stop};
     use super::super::super::svg_wire::Ask;
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -94,7 +96,7 @@ mod worker {
     fn frames(figures: &mut FigureStore, draws: &mut SvgDraws, generation: u64) -> Settled {
         let begun = Instant::now();
         loop {
-            let mut settled = figures.settle_frame(draws, generation);
+            let mut settled = settle_frame(draws, figures, generation);
             if let Some((url, one)) = settled.pop() {
                 assert!(settled.is_empty() && url == URL, "one figure settles, once");
                 return one;
@@ -111,7 +113,7 @@ mod worker {
         let mut figures = FigureStore::default();
         assert!(matches!(reply(&mut figures, &mut draws, 1, b"<svg/>"), Reply::Submitted), "an SVG is not decoded here");
         // The stand-in holds the job until released, so nothing has settled and nothing is installed.
-        assert!(figures.settle_frame(&mut draws, 1).is_empty());
+        assert!(settle_frame(&mut draws, &mut figures, 1).is_empty());
         assert!(figures.handled(URL), "a figure being drawn is not fetched again");
         assert!(figures.get(URL).is_none() && figures.metrics().is_empty(), "nothing is installed by the reply");
         release.store(true, SeqCst);
@@ -175,6 +177,12 @@ mod worker {
         assert!(figures.handled(URL) && figures.metrics().is_empty(), "still pending, not failed");
         release.store(true, SeqCst);
         assert!(matches!(frames(&mut figures, &mut draws, 2), Settled::Drawn { .. }), "generation 2 still draws");
+    }
+
+    /// The key is a figure's URL that cannot be: the walk never fetches a URL with `://`, so no figure shares it.
+    #[test]
+    fn no_figure_url_can_hold_the_previews_key() {
+        assert_eq!(resolve_figure_node_id(&Some("files:docs/a.md".into()), PREVIEW_KEY), None);
     }
 
     #[test]

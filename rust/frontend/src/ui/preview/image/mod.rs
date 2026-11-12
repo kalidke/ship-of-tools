@@ -15,6 +15,7 @@ pub(in crate::ui) mod figure_store;
 pub(crate) mod svg;
 pub(crate) mod svg_child;
 pub(crate) mod svg_draws;
+pub(in crate::ui) mod svg_preview;
 pub(crate) mod svg_run;
 pub(crate) mod svg_wire;
 pub(crate) mod view;

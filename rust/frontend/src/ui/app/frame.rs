@@ -115,10 +115,7 @@ impl State {
         layout_help::start_pending(requests, self);
 
         self.drain_events();
-        let generation = self.preview_source.generation();
-        for (url, settled) in self.figures.settle_frame(&mut self.svg_draws, generation) {
-            self.on_svg_settled(url, settled);
-        }
+        self.settle_svg_draws();
         self.reconcile_selection_share();
         // Prune finished status-change flashes; while any is still fading,
         // mark dirty so the frame loop keeps animating it (the fast-repaint

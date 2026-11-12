@@ -3,6 +3,7 @@
 
 use super::figure_store::{Reply, Settled};
 use super::figures::{FigureCacheEntry, FIGURE_SVG_SIZE};
+use super::svg_preview::settle_frame;
 use crate::ui::*;
 
 impl State {
@@ -60,7 +61,16 @@ impl State {
         }
     }
 
-    /// A figure's SVG settled, at the top of a frame (`FigureStore::settle_frame`): a picture is uploaded and installed,
+    /// The top of a frame's step for the worker's outcomes (`svg_preview::settle_frame`): the worker is told the pane's
+    /// generation and each figure's outcome goes to `on_svg_settled`.
+    pub(in crate::ui) fn settle_svg_draws(&mut self) {
+        let generation = self.preview_source.generation();
+        for (url, settled) in settle_frame(&mut self.svg_draws, &mut self.figures, generation) {
+            self.on_svg_settled(url, settled);
+        }
+    }
+
+    /// A figure's SVG settled: a picture is uploaded and installed,
     /// a refusal has failed the figure, a stale job left it unhandled so the next walk fetches it again. One reflow
     /// follows each.
     pub(in crate::ui) fn on_svg_settled(&mut self, url: String, settled: Settled) {

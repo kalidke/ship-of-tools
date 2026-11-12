@@ -305,15 +305,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   settles its URL, then installs or fails it; an unresolvable local URL fails at once. An SVG reply is the exception:
   `route_reply` never draws it on the window's thread but submits one job to the drawing worker, keyed by its URL under
   the pane's generation, and the URL stays pending until the outcome; the window decodes only what `route_reply` hands
-  back (`Reply::Raster`). Each frame `settle_frame` tells the worker the pane's generation and settles every outcome it
-  returned, and the window (`on_svg_settled`) uploads a picture or reflows. Drawn, it is installed onto 800 by 600
+  back (`Reply::Raster`). Each frame `svg_preview::settle_frame` tells the worker the pane's generation, drains it once and hands every outcome
+  to its owner by key (a figure's to `settle_drawing`; a key no figure URL can hold, `PREVIEW_KEY`, is the SVG file
+  preview's, which has no owner yet and is dropped), and the window (`settle_svg_draws`, called by `frame_upkeep`, and
+  `on_svg_settled`) uploads a picture or reflows. Drawn, it is installed onto 800 by 600
   pixels (`FIGURE_SVG_SIZE`); refused (the worker's words, a bound's end, a full queue or no worker thread), it fails
   like an undecodable figure, terminally until a fresh markdown reply; stale, it leaves `pending` and one reflow lets
   the walk fetch it again under the new generation. Only the outcome of the generation a URL's job was submitted under
   counts: a departed generation's `Stale` can arrive after the new one submitted the same URL, and is ignored. Tests
   (preview/image/figures_tests.rs, a stand-in draw): `a_figure_stays_pending_until_its_drawing_settles`,
   `a_raster_reply_settles_its_url_and_comes_back_to_decode`,
-  `a_refused_figure_is_not_drawn_again_until_a_fresh_reply`,
+  `a_refused_figure_is_not_drawn_again_until_a_fresh_reply`, `no_figure_url_can_hold_the_previews_key`,
   `a_stale_figure_is_fetched_again_under_the_new_generation`,
   `a_late_stale_after_a_resubmit_does_not_undo_the_pending_job` and `a_figure_the_worker_will_not_take_fails_at_once`.
   Limit: the window's two calls to the store (`on_figure_loaded`, `frame_upkeep`) and the upload need a GPU and have no
@@ -826,7 +828,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     is not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new
     generation starts clean.
   - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, read in `frame_upkeep`
-    through `FigureStore::settle_frame`, which only the figures answer so far); each the worker sends is followed by one
+    through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the figures so far); each the worker sends is followed by one
     `MainWake::wake` (the stale ones `advance` and
     `submit` hand back are read by the window's own thread and wake nothing). A draw that panics gives no outcomes, and each
     of its jobs is refused in `cannot start the drawing` words; a worker thread the OS refuses makes `submit` itself
