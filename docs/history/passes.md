@@ -2176,3 +2176,13 @@ A landing's record goes here, with its measured times; the package page holds on
   that. The fix pins the installed text exactly (the source with each part line replaced by the part), red against that
   mutant and against a dropped part, and agents guarantee 13 now cites both testsets. A deletion's cover is a claim to
   test with mutants, not to read.
+- The chat's configuration refusals name their file, 2026-11-12: builder handed the landing at 13:10, main 13:46
+  (9adf05135, e28763b94), 36 minutes, a miss. About 30 product lines and 90 test lines. Two defects a session met at
+  the hub's first chat start: a refused `chat.toml` and a refused `chat-secrets.toml` gave the same words, and a key
+  the file must not hold gave none; and two programs wrote the secrets file in two forms. Now every refusal's line
+  starts with its file's name and names a stray key only when another chat table accepts it (any other key, a
+  token-shaped one included, stays unnamed, since nothing from a file is quoted), and the reference holds a parsed
+  sample of each file. The second form's writer is a test tool in another repository, which owns its fix. Review
+  round 1 (no blockers): the first list of nameable keys held four names no file accepts; it is now built from the
+  parsers' own lists. Where the minutes went: the build 12, the review 8, one fix commit 4, and about 10 lost to two
+  gates started at once on the one scratch clone, which voided both; the rerun passed alone.
