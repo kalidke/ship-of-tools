@@ -34,6 +34,16 @@ pub(in crate::ui) struct FigureStore {
     drawing: HashMap<String, u64>,
 }
 
+/// What a figure reply did: an SVG is with the worker, a raster is for the window to decode now.
+pub(in crate::ui) enum Reply {
+    /// With the worker: nothing for the window to do until its outcome.
+    Submitted,
+    /// The worker would not take it, and the figure has failed: the window reflows.
+    Failed,
+    /// Not an SVG: its URL is settled, and these bytes are for the window to decode and `install` or `fail`.
+    Raster { url: String, bytes: Vec<u8> },
+}
+
 /// What a drawing outcome did to its figure; the window acts on all but `Ignored`.
 pub(in crate::ui) enum Settled {
     /// The key is not a figure drawing, or the outcome is of a generation that is not the one pending.
@@ -95,9 +105,38 @@ impl FigureStore {
         self.cache.insert(url, entry);
     }
 
+    /// Where a `figure.get` reply goes: an SVG is never drawn here but submitted to the worker (`submit_svg`) and its
+    /// URL stays pending until the outcome; any other reply settles its URL and comes back for the window to decode.
+    pub(in crate::ui) fn route_reply(
+        &mut self, draws: &mut SvgDraws, generation: u64, url: String, mime: &str, bytes: Vec<u8>,
+    ) -> Reply {
+        if mime == "image/svg+xml" {
+            return if self.submit_svg(draws, url, generation, bytes) { Reply::Submitted } else { Reply::Failed };
+        }
+        self.settle(&url);
+        Reply::Raster { url, bytes }
+    }
+
+    /// The top of a frame: the worker is told the pane's `generation`, and every outcome it has returned settles its
+    /// figure; the window acts on each that is not `Ignored`.
+    pub(in crate::ui) fn settle_frame(&mut self, draws: &mut SvgDraws, generation: u64) -> Vec<(String, Settled)> {
+        draws.advance(generation);
+        let mut done = Vec::new();
+        draws.drain(|each| done.push(each));
+        let mut settled = Vec::new();
+        for each in done {
+            let url = each.key.clone();
+            match self.settle_drawing(each) {
+                Settled::Ignored => {}
+                other => settled.push((url, other)),
+            }
+        }
+        settled
+    }
+
     /// An SVG reply: one job for the worker keyed by `url`, which stays pending until its outcome. Refused by the
     /// worker (a full queue, no thread), the figure fails at once.
-    pub(in crate::ui) fn submit_svg(&mut self, draws: &mut SvgDraws, url: String, generation: u64, svg: Vec<u8>) -> bool {
+    fn submit_svg(&mut self, draws: &mut SvgDraws, url: String, generation: u64, svg: Vec<u8>) -> bool {
         let job = Job { size: FIGURE_SVG_SIZE, svg: svg.into() };
         match draws.submit(url.clone(), generation, job) {
             Ok(()) => {

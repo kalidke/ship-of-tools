@@ -115,11 +115,9 @@ impl State {
         layout_help::start_pending(requests, self);
 
         self.drain_events();
-        self.svg_draws.advance(self.preview_source.generation());
-        let mut settled = Vec::new();
-        self.svg_draws.drain(|done| settled.push(done));
-        for done in settled {
-            self.on_svg_drawn(done);
+        let generation = self.preview_source.generation();
+        for (url, settled) in self.figures.settle_frame(&mut self.svg_draws, generation) {
+            self.on_svg_settled(url, settled);
         }
         self.reconcile_selection_share();
         // Prune finished status-change flashes; while any is still fading,

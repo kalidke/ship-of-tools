@@ -1,9 +1,8 @@
 //! Image replies: markdown figure bytes and their failures, the ROI crop pasted to the agent pane,
 //! crop failures, a rejected pixel-size save.
 
-use super::figure_store::Settled;
+use super::figure_store::{Reply, Settled};
 use super::figures::{FigureCacheEntry, FIGURE_SVG_SIZE};
-use super::svg_draws;
 use crate::ui::*;
 
 impl State {
@@ -17,16 +16,18 @@ impl State {
         // — without it the FFFC stays at the
         // FIGURE_BLOCK_H_DEFAULT fallback even after the
         // bytes land.
-        if mime == "image/svg+xml" {
-            // Drawn by the worker, never on this thread: the URL stays pending until its outcome (`on_svg_drawn`).
-            let generation = self.preview_source.generation();
-            if !self.figures.submit_svg(&mut self.svg_draws, url, generation, bytes) {
+        // An SVG is drawn by the worker, never on this thread: its URL stays pending until its outcome
+        // (`on_svg_settled`); anything else comes back here to decode.
+        let generation = self.preview_source.generation();
+        let (url, bytes) = match self.figures.route_reply(&mut self.svg_draws, generation, url, &mime, bytes) {
+            Reply::Raster { url, bytes } => (url, bytes),
+            Reply::Submitted => return,
+            Reply::Failed => {
                 self.md_media.request_reflow();
                 self.window.request_redraw();
+                return;
             }
-            return;
-        }
-        self.figures.settle(&url);
+        };
         match decode_figure_bytes(
             self.gpu.device(),
             self.gpu.queue(),
@@ -59,11 +60,11 @@ impl State {
         }
     }
 
-    /// A drawing outcome the worker gave back, at the top of a frame: a figure's picture is installed, a refusal fails
-    /// the figure, a stale job leaves it unhandled so the next walk fetches it again. One reflow follows each.
-    pub(in crate::ui) fn on_svg_drawn(&mut self, done: svg_draws::Done) {
-        let url = done.key.clone();
-        match self.figures.settle_drawing(done) {
+    /// A figure's SVG settled, at the top of a frame (`FigureStore::settle_frame`): a picture is uploaded and installed,
+    /// a refusal has failed the figure, a stale job left it unhandled so the next walk fetches it again. One reflow
+    /// follows each.
+    pub(in crate::ui) fn on_svg_settled(&mut self, url: String, settled: Settled) {
+        match settled {
             Settled::Ignored => return,
             Settled::Drawn { w, h, rgba } => {
                 let quad = Quad::from_rgba8(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline(), &rgba, w, h);

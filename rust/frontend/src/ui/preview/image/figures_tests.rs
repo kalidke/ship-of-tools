@@ -49,18 +49,19 @@ fn failed_figure_stays_skipped_across_repeated_dispatch_until_seam_clears_it() {
 // draw is a stand-in that holds each job until released or stopped and answers `refused` for a job that says so. ---
 
 mod worker {
-    use super::super::super::figure_store::{FigureStore, Settled};
+    use super::super::super::figure_store::{FigureStore, Reply, Settled};
     use super::super::super::svg_draws::{Done, SvgDraws};
-    use super::super::super::svg_run::{Outcome, Stop};
+    use super::super::super::svg_run::{Job, Outcome, Stop};
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     const URL: &str = "figures/a.svg";
+    const SVG: &str = "image/svg+xml";
 
     fn draws(release: &Arc<AtomicBool>) -> SvgDraws {
         let release = release.clone();
-        let draw = Arc::new(move |jobs: Vec<super::super::super::svg_run::Job>, stop: &Stop| {
+        let draw = Arc::new(move |jobs: Vec<Job>, stop: &Stop| {
             let begun = Instant::now();
             jobs.into_iter()
                 .map(|job| {
@@ -81,47 +82,61 @@ mod worker {
         SvgDraws::new(1 << 20, || {}, draw)
     }
 
-    /// The next outcome the window would read at the top of a frame.
-    fn next(draws: &mut SvgDraws) -> Done {
-        let begun = Instant::now();
-        loop {
-            let mut got = None;
-            draws.drain(|done| got = got.take().or(Some(done)));
-            if let Some(done) = got {
-                return done;
-            }
-            assert!(begun.elapsed() < Duration::from_secs(10), "no outcome arrived");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+    /// What the walk and the reply do: the URL goes pending, then the reply is routed.
+    fn reply(figures: &mut FigureStore, draws: &mut SvgDraws, generation: u64, svg: &[u8]) -> Reply {
+        figures.mark_pending(URL.into());
+        figures.route_reply(draws, generation, URL.into(), SVG, svg.to_vec())
     }
 
-    fn pending_store(draws: &mut SvgDraws, svg: &[u8], generation: u64) -> FigureStore {
-        let mut figures = FigureStore::default();
-        figures.mark_pending(URL.into());
-        assert!(figures.submit_svg(draws, URL.into(), generation, svg.to_vec()));
-        figures
+    /// The frames until one settles a figure, as the window runs them; exactly one figure settles.
+    fn frames(figures: &mut FigureStore, draws: &mut SvgDraws, generation: u64) -> Settled {
+        let begun = Instant::now();
+        loop {
+            let mut settled = figures.settle_frame(draws, generation);
+            if let Some((url, one)) = settled.pop() {
+                assert!(settled.is_empty() && url == URL, "one figure settles, once");
+                return one;
+            }
+            assert!(begun.elapsed() < Duration::from_secs(10), "no figure settled");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
     fn a_figure_stays_pending_until_its_drawing_settles() {
         let release = Arc::new(AtomicBool::new(false));
         let mut draws = draws(&release);
-        let mut figures = pending_store(&mut draws, b"<svg/>", 1);
-        std::thread::sleep(Duration::from_millis(30));
+        let mut figures = FigureStore::default();
+        assert!(matches!(reply(&mut figures, &mut draws, 1, b"<svg/>"), Reply::Submitted), "an SVG is not decoded here");
+        // The stand-in holds the job until released, so nothing has settled and nothing is installed.
+        assert!(figures.settle_frame(&mut draws, 1).is_empty());
         assert!(figures.handled(URL), "a figure being drawn is not fetched again");
         assert!(figures.get(URL).is_none() && figures.metrics().is_empty(), "nothing is installed by the reply");
         release.store(true, SeqCst);
-        let Settled::Drawn { w, h, .. } = figures.settle_drawing(next(&mut draws)) else { panic!("not drawn") };
+        let Settled::Drawn { w, h, .. } = frames(&mut figures, &mut draws, 1) else { panic!("not drawn") };
         assert_eq!((w, h), (800, 600), "the figure is drawn onto 800 by 600");
         assert!(figures.handled(URL), "pending until the window installs it");
+    }
+
+    #[test]
+    fn a_raster_reply_settles_its_url_and_comes_back_to_decode() {
+        let mut draws = draws(&Arc::new(AtomicBool::new(false)));
+        let mut figures = FigureStore::default();
+        figures.mark_pending(URL.into());
+        let Reply::Raster { url, bytes } = figures.route_reply(&mut draws, 1, URL.into(), "image/png", vec![7]) else {
+            panic!("a raster is for the window to decode")
+        };
+        assert_eq!((url.as_str(), bytes), (URL, vec![7]));
+        assert!(!figures.handled(URL), "settled: the decode installs or fails it");
     }
 
     #[test]
     fn a_refused_figure_is_not_drawn_again_until_a_fresh_reply() {
         let release = Arc::new(AtomicBool::new(false));
         let mut draws = draws(&release);
-        let mut figures = pending_store(&mut draws, b"refused", 1);
-        assert!(matches!(figures.settle_drawing(next(&mut draws)), Settled::Failed(why) if why == "svg parse failed"));
+        let mut figures = FigureStore::default();
+        assert!(matches!(reply(&mut figures, &mut draws, 1, b"refused"), Reply::Submitted));
+        assert!(matches!(frames(&mut figures, &mut draws, 1), Settled::Failed(why) if why == "svg parse failed"));
         for _ in 0..3 {
             assert!(figures.handled(URL), "a refusal is terminal");
         }
@@ -134,36 +149,37 @@ mod worker {
     fn a_stale_figure_is_fetched_again_under_the_new_generation() {
         let release = Arc::new(AtomicBool::new(false));
         let mut draws = draws(&release);
-        let mut figures = pending_store(&mut draws, b"<svg/>", 1);
-        std::thread::sleep(Duration::from_millis(30));
-        draws.advance(2);
-        assert!(matches!(figures.settle_drawing(next(&mut draws)), Settled::Unhandled));
+        let mut figures = FigureStore::default();
+        assert!(matches!(reply(&mut figures, &mut draws, 1, b"<svg/>"), Reply::Submitted));
+        // The pane moved on: the next frame tells the worker, whether the job was queued or running.
+        assert!(matches!(frames(&mut figures, &mut draws, 2), Settled::Unhandled));
         assert!(!figures.handled(URL), "stale: unhandled, so the next walk fetches it");
-        figures.mark_pending(URL.into());
-        assert!(figures.submit_svg(&mut draws, URL.into(), 2, b"<svg/>".to_vec()));
+        assert!(matches!(reply(&mut figures, &mut draws, 2, b"<svg/>"), Reply::Submitted));
         release.store(true, SeqCst);
-        assert!(matches!(figures.settle_drawing(next(&mut draws)), Settled::Drawn { .. }), "drawn under generation 2");
+        assert!(matches!(frames(&mut figures, &mut draws, 2), Settled::Drawn { .. }), "drawn under generation 2");
     }
 
     #[test]
     fn a_late_stale_after_a_resubmit_does_not_undo_the_pending_job() {
         let release = Arc::new(AtomicBool::new(false));
         let mut draws = draws(&release);
-        let mut figures = pending_store(&mut draws, b"<svg/>", 2);
-        let late = |outcome| Done { key: URL.into(), generation: 1, outcome };
-        assert!(matches!(figures.settle_drawing(late(Outcome::Stale)), Settled::Ignored));
-        assert!(matches!(figures.settle_drawing(late(Outcome::Refused("x".into()))), Settled::Ignored));
+        let mut figures = FigureStore::default();
+        assert!(matches!(reply(&mut figures, &mut draws, 2, b"<svg/>"), Reply::Submitted));
+        // The departed generation's outcomes, handed to the store after the resubmit.
+        for outcome in [Outcome::Stale, Outcome::Refused("x".into())] {
+            let late = Done { key: URL.into(), generation: 1, outcome };
+            assert!(matches!(figures.settle_drawing(late), Settled::Ignored));
+        }
         assert!(figures.handled(URL) && figures.metrics().is_empty(), "still pending, not failed");
         release.store(true, SeqCst);
-        assert!(matches!(figures.settle_drawing(next(&mut draws)), Settled::Drawn { .. }), "generation 2 still draws");
+        assert!(matches!(frames(&mut figures, &mut draws, 2), Settled::Drawn { .. }), "generation 2 still draws");
     }
 
     #[test]
     fn a_figure_the_worker_will_not_take_fails_at_once() {
         let mut draws = SvgDraws::new(1, || {}, Arc::new(|_, _| Vec::new()));
         let mut figures = FigureStore::default();
-        figures.mark_pending(URL.into());
-        assert!(!figures.submit_svg(&mut draws, URL.into(), 1, b"<svg/>".to_vec()), "two bytes past a cap of one");
+        assert!(matches!(reply(&mut figures, &mut draws, 1, b"<svg/>"), Reply::Failed), "past a cap of one byte");
         assert!(figures.handled(URL) && figures.metrics().get(URL).is_some(), "failed, not pending");
     }
 }
