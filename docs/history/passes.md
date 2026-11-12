@@ -2060,3 +2060,12 @@ A landing's record goes here, with its measured times; the package page holds on
   filing's own admission and now calls it; the start's read grouped what delivery already filters; a refusal's
   sentence was dropped from the log). One run of the rows suite on the builder's scratch host failed 22 tests and was
   not kept; three later runs, and the reviewer's, were green; its cause is unknown.
+- The chat drawer's look, L4b (links, mentions on their slug, Slack's special tokens), 2026-11-12: builder launched
+  05:15, main 05:58 (54320c707, 5876dc479), 43 minutes, a miss. About 65 product lines and 240 test lines. Where the
+  minutes went: the build took 13 minutes; the local gate failed one test the builder's host passed, and the review
+  (about 17 minutes) found why: a wrapped mention's trailing space can hang past the width in one font and not
+  another, and the product clips the slug to the body while the test expected the unclipped extent; a sweep of 3,602
+  widths and scales found the product right in every one. The fix commit (7 minutes) makes the test expect the clipped
+  extent over a range of widths, leaves a run's trailing blank out of its rectangle, and makes the rectangles hold in
+  right-to-left lines (L4a's code boxes had the same fault); the gate then passed where it had failed. No second
+  review: the fix was tests and ten product lines, and the failing environment proved it.
