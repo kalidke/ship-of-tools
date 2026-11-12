@@ -1,5 +1,6 @@
 //! The recovery traversal of one channel: the channel read back from the pass's upper bound to the channel's floor in
-//! fresh reads, each thread with a reply after the boundary read back to the boundary the same way, and what to hand over (the mail not yet filed) and how far the boundary may move (the horizon). It
+//! fresh reads, each thread with a reply after the boundary read back to the boundary the same way, and what to hand
+//! over (the mail not yet filed) and how far the boundary may move (the horizon). It
 //! files nothing and commits nothing: the caller's delivery decides both from `Passed`.
 //! The walk is the one SlackClaw measured (its facts note, "The walk back with no cursor, measured" and "Posts arriving
 //! during reads and the walk (P-ORDER), measured"): every read carries both bounds and no cursor, the first with the
@@ -20,7 +21,8 @@ use crate::state::State;
 /// How far below the newest `ts` a pass has seen its horizon lies. Measured unneeded (a post below a read's `latest` was
 /// never missing by that read), kept in reserve for a visibility window the measurement could not resolve.
 pub const MARGIN: Duration = Duration::from_secs(2);
-/// A runaway guard: about ten million top-level messages at 999 a read.
+/// A runaway guard on the reads of one pass, the channel's pages and its threads' alike: the channel's pages alone
+/// reach it at about ten million top-level messages at 999 a read.
 pub const MAX_PASS_READS: u32 = 10_000;
 /// The mail one pass hands over, the oldest first; past it the pass says `Truncated`.
 pub const MAX_PASS_MAIL: usize = 200;
@@ -55,9 +57,10 @@ pub enum Outcome {
 #[derive(Clone, Debug)]
 pub struct Passed {
     /// The latest the boundary may be committed to, fixed from the first page alone: the greatest `ts` or `latest_reply`
-    /// seen less `MARGIN`, capped at U, and never below the boundary, which wins when it is above U. A `Complete` pass has
-    /// read the thread of every parent it saw, so the horizon rises over no reply of those; the replies it can still pass
-    /// are the ones the pass cannot see (the crate contract's guarantee 26 lists them).
+    /// seen less `MARGIN`, capped at U, and never below the boundary, which wins when it is above U. A `Complete` pass
+    /// may be committed to it. A `Truncated` one handed over only the oldest `MAX_PASS_MAIL` records, so it may be
+    /// committed only as far as the mail it handed over was filed; mail past the cap at or below `horizon` is not in
+    /// `mail`.
     pub horizon: Ts,
     /// Every mail record read above the boundary and not in the filed set, oldest first, at most `MAX_PASS_MAIL`.
     pub mail: Vec<ChatRecord>,

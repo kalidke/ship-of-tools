@@ -987,6 +987,13 @@ owned by `docs/CLAUDE.md`.
   (`stale_row`, `unmapped`) is asked again every 5 seconds where the channel's owner waits for a row or link change.
   Both are the hub's own refusals and cost no Slack read (`rust/frontend/src/ui/drawer/chat/thread.rs`). Found by B5p's
   stack review, reading code and a probe; never seen.
+- **CHAT-DELETED-PARENT-THREAD-UNSERVED** [note] The recovery pass reads the thread of every parent it sees with a
+  `latest_reply` after the boundary, a deleted parent's tombstone included (`rust/chat/src/traverse.rs`). If Slack's
+  `conversations.replies` does not serve a deleted parent's thread, that read fails and ends every pass on the channel
+  `ReadFailed`, so the boundary never moves and recovery there stops until the boundary passes the parent (Slack's
+  history window or a later commit); live filing is unaffected. Whether Slack serves such a thread is unmeasured: a
+  read-only probe of `conversations.replies` on a deleted parent decides it. Found by B3h2's review, reading code; never
+  seen.
 
 ## records
 

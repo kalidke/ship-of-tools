@@ -380,7 +380,8 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    link to nothing reads as missing, and a link to another file gives that file's boundary), which takes this account's
    own hand in a private folder; a write that fails leaves the in-memory boundary where `commit` put it, so the caller
    writes `boundary()` again; `read_regular` ends a FIFO's wait only, as its guarantee says.
-26. **A pass walks one channel back from its upper bound to its floor, and each thread with a reply after the boundary back to the boundary, in fresh reads, and files and commits nothing.**
+26. **A pass walks one channel back from its upper bound to its floor, and each thread with a reply after the
+   boundary back to the boundary, in fresh reads, and files and commits nothing.**
    `traverse::pass(api, order, upper, pace)` takes an `Order` (a snapshot of the channel's `State`, its floor, and the
    greatest `ts` the delivery was handed for it before the first read), the pass's upper bound U (the caller's clock,
    passed in) and the pace between reads, and returns `Passed { horizon, mail, outcome, reads, limited }`. Every read is
@@ -397,7 +398,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    thread page that says more and lowers nothing is `ReadFailed`. A thread read is a read of the pass in every rule here:
    paced by `pace`, counted by `MAX_PASS_READS`, halved and made again when too large or slow, a 429 or `ratelimited`
    ending the pass `RateLimited`, any other failure `ReadFailed` (a thread Slack will not serve ends the pass the same
-   way; that case was not measured), `is_limited` ending nothing. The records of a thread join the one candidate set,
+   way; that case was not measured, docs/defects.md: CHAT-DELETED-PARENT-THREAD-UNSERVED), `is_limited` ending nothing. The records of a thread join the one candidate set,
    one record a `ts`: a broadcast reply, which the channel and its thread both list, is one candidate.
    `is_limited` is information only (`Passed.limited`): it ends
    nothing and fails nothing, so Slack's plan horizon is the walk's own bound. A page that passes its response bound
@@ -414,18 +415,19 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    as `mail` either way. A parent's `latest_reply` was measured above the read's own `latest` (by a fraction of a second),
    which the margin covers and the cap at U covers beyond it. `MAX_PASS_READS` (10,000) ends a runaway pass `TooLong`; a
    closed client is `Stopped`. Every outcome but `Complete` and `Truncated` commits nothing, and keeps the mail already
-   read, the threads read so far included. **A `Complete` or `Truncated` pass has read the channel from its floor to U
-   and the thread of every parent in it whose `latest_reply` is after the boundary, so a caller may commit the boundary
-   to `horizon` from it, with these limits.** It can still miss, and the horizon can still rise over, a reply under a
-   parent it never sees: one Slack's plan hides (older than its history window, which no page returns; whether such a
-   thread can be replied in, or its replies read, was not measured), and one at or below the floor, which is not mail
-   (`mail::is_mail` needs the thread's parent after the floor) and so no miss. It does not read a reply above U (a
-   later pass or the live event files it, and `horizon` never passes U), and a reply made after its thread was read
-   is above U or within the visibility limit below. Nothing else lies under the horizon unread: a parent whose
-   newest reply is at or below the boundary has no reply to read, and a reply the pass cannot read ends it
-   incomplete rather than passing.
+   read, the threads read so far included. **A `Complete` pass has read the channel from its floor to U and the thread of
+   every parent in it whose `latest_reply` is after the boundary, so a caller may commit the boundary to `horizon` from
+   it; from a `Truncated` pass, only as far as the mail it handed over was filed.** `Truncated` hands over the oldest
+   `MAX_PASS_MAIL` records, so mail past the cap at or below `horizon` is not in `mail`, and a commit to `horizon`
+   would put it at or below the boundary for good (the caller's rule, delivery's). What a `Complete` pass can miss, and
+   what the horizon can then rise over, is a reply under a parent Slack's plan hides: no page returns that parent, so
+   its thread is never read (whether such a thread can be replied in, or its replies read, was not measured). A reply
+   under a parent at or below the floor is not a miss: it is not mail (`mail::is_mail` needs the thread's parent after
+   the floor). A reply above `horizon` is not passed by a commit, so one made after its thread was read, or above U,
+   is left to a later pass or the live event; and a parent whose newest reply is at or below the boundary has no reply
+   to read. A read the pass cannot make ends it incomplete rather than passing over a reply.
    Limits: a full page of 999 with more behind it, of history or of a thread (no measured channel held more than 999, no
-   thread more than 9 replies at that limit), is inferred to be the newest 999; a daemon clock behind Slack's by d
+   measured thread held more than a few replies), is inferred to be the newest 999; a daemon clock behind Slack's by d
    leaves a post made while the socket was down in the last d before the pass to the next pass; a visibility window
    shorter than the gap between a post's `ts` and the next read was not resolved by the measurement (the margin is its
    reserve); a limit halved by one slow read stays halved for the pass, and a path that accepts requests and never
