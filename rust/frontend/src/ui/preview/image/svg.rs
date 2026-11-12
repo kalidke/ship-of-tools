@@ -19,6 +19,8 @@ use resvg::usvg::{fontdb, ImageHrefResolver, Options, Tree};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
+use super::svg_wire::MAX_RASTER_PIXELS;
+
 use crate::ui::render::quad::{Quad, QuadPipeline};
 use crate::ui::render::text::{one_paragraph_per_line, PARAGRAPH_SEPARATORS};
 
@@ -112,6 +114,21 @@ fn embedded_images_only() -> ImageHrefResolver<'static> {
         resolve_data: ImageHrefResolver::default_data_resolver(),
         resolve_string: Box::new(|_, _| None),
     }
+}
+
+/// The raster size of an SVG `svg` units across, drawn to fill `pane` (physical pixels) on its limiting side with its
+/// own aspect ratio, no side under one pixel or over `cap` (the GPU's texture limit) and no more than
+/// `MAX_RASTER_PIXELS` in all.
+pub(super) fn svg_fit_dims((sw, sh): (f32, f32), (pw, ph): (u32, u32), cap: u32) -> (u32, u32) {
+    let (sw, sh) = (sw.max(0.001), sh.max(0.001));
+    let fit = (pw as f32 / sw).min(ph as f32 / sh).min(cap as f32 / sw.max(sh));
+    let side = |units: f32| ((units * fit).round() as u32).clamp(1, cap.max(1));
+    let (w, h) = (side(sw), side(sh));
+    if u64::from(w) * u64::from(h) <= MAX_RASTER_PIXELS {
+        return (w, h);
+    }
+    let shrink = (MAX_RASTER_PIXELS as f64 / (f64::from(w) * f64::from(h))).sqrt();
+    (((f64::from(w) * shrink).floor() as u32).max(1), ((f64::from(h) * shrink).floor() as u32).max(1))
 }
 
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph

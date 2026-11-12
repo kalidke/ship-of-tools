@@ -701,13 +701,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling`, `an_embedded_png_image_still_draws`.
 - The drawing child, `sot --draw-svg <heap bytes> <cpu seconds> --version` (preview/image/svg_child.rs, whose numbers
   are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
-  or spin only a process the window can lose. It has no caller yet: its runner is built (the next bullet) and every caller is unbuilt. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
+  or spin only a process the window can lose. Its one caller so far is the markdown figure, through the worker (below); the fit ask has none yet. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
   and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
   it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), stdout taken
   for the replies (`take_stdout`), crashes as exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
   `HeapCap` that costs a load and a compare per allocation while disarmed, which is every other mode). Request on
-  stdin: `SVG1`, a u32 job count, then per job `S` (a stretch ask), `w` and `h` as u32, a u64 length and that many bytes
-  of SVG; the SVG bytes' sum is at most `PREVIEW_BINARY_CAP` (the headers are not counted) and each job's bytes are
+  stdin: `SVG1`, a u32 job count, then per job an ask, a u64 length and that many bytes of SVG (the ask is `S` and `w` and
+  `h` as u32, draw onto exactly that, or `F` and a pane's `w` and `h` and a texture limit `cap` as u32, draw to fill
+  the pane, the size being the child's to work out from the file's own: aspect kept, no side past `cap`, at most
+  `MAX_RASTER_PIXELS`, 16 Mpx, in all (`svg_fit_dims`)); the SVG bytes' sum is at most `PREVIEW_BINARY_CAP` (the headers are not counted) and each job's bytes are
   allocated at their declared length, so the cap sees an input before it is read. Reply on stdout: `SVG1`, then per job
   in order `R`, `w` and `h` as u32 and `4 * w * h` premultiplied RGBA bytes (a zero side is drawn as one), or `E`, a u16
   length and at most 1 KiB of the error's first line, cut at a character boundary; an SVG that does not parse is that
@@ -737,7 +739,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
   (Unix), `a_library_print_never_reaches_the_reply_stream` (debug builds: a hook prints between replies, as usvg does), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
   assertions exists), and in svg_child_tests.rs `an_error_is_its_first_line` and
-  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
+  `an_error_is_cut_at_its_limit_and_never_inside_a_character`; the fit ask: `a_fit_ask_is_drawn_at_the_size_the_child_works_out`
+  (and, in the fit's size, `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit` and
+  `the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small`, preview/image/svg_tests.rs). Open: before this child's drawing is shown to a person, a
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
   can show neither); until then that is unknown.
 - The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; its caller is the
@@ -763,7 +767,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   - Finish (`finish`): the request is written on one thread and the replies read on another (a binary without the mode
     never reads its input, and must still be read from), while the caller waits on a channel to the wall. Each reply is
     checked as it arrives: the first four bytes are `SVG1` (else `not a drawing program`, at once, whatever the input's
-    size), a picture's size equals its ask (a zero side counts as one, as the child draws it) before its body is read,
+    size), a picture's size is what its ask allows (`Ask::accepts`: a stretch's own size, a zero side counting as one as the child draws it; a fit's within `cap` and the pixel budget) before its body is read,
     and the body is read as it comes, so a size the child only claims allocates nothing; an error text is at most 1 KiB
     of UTF-8; after the last reply the stream must end. A reply that breaks its form refuses every job with `the drawing's
     reply was not what was asked`. The child is always killed and reaped when `finish` returns, the reap being the one
@@ -789,7 +793,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (Linux: the real child, drawing, holds no descriptor the window left open, has the null device for stderr and only the
     font variables, plus the few its shell adds, in its environment) and
     `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows) and
-    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it).
+    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it),
+    `the_runner_returns_a_fit_ask_at_the_childs_size` and `a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header`.
 - The preview source's generation (`InstalledPreviewSource::generation`, preview/source.rs) says which source the pane
   shows, for the drawing worker: a process-wide counter, so a number is never reused. An install, a snapshot's restore
   (`renewed`) and an emptied source (`Default`) each take a fresh one; a repaint of the same source, a reflow or a

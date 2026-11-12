@@ -39,9 +39,9 @@ impl Bounds {
     }
 }
 
-/// One picture: `svg` drawn onto exactly `size` pixels.
+/// One picture: `svg` drawn as `ask` says.
 pub(crate) struct Job {
-    pub size: (u32, u32),
+    pub ask: Ask,
     pub svg: Arc<[u8]>,
 }
 
@@ -193,7 +193,7 @@ fn refusals(count: usize, words: &str) -> Vec<Outcome> {
 /// each ends when its pipe reports the child's end.
 pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds, stop: &Stop) -> Vec<Outcome> {
     let count = jobs.len();
-    let asks: Vec<_> = jobs.iter().map(|job| job.size).collect();
+    let asks: Vec<_> = jobs.iter().map(|job| job.ask).collect();
     let (stdin, stdout) = (started.child.stdin.take().unwrap(), started.child.stdout.take().unwrap());
     let (tx, rx) = mpsc::channel();
     let tx_stop = tx.clone();
@@ -260,27 +260,26 @@ fn write_request(mut to: impl Write, jobs: &[Job]) -> io::Result<()> {
     to.write_all(&MAGIC)?;
     to.write_all(&(jobs.len() as u32).to_le_bytes())?;
     for job in jobs {
-        let (w, h, len) = (job.size.0.to_le_bytes(), job.size.1.to_le_bytes(), (job.svg.len() as u64).to_le_bytes());
-        for part in [&[ASK_STRETCH][..], &w, &h, &len, &job.svg] {
+        for part in [&job.ask.to_bytes()[..], &(job.svg.len() as u64).to_le_bytes(), &job.svg] {
             to.write_all(part)?;
         }
     }
     Ok(())
 }
 
-/// One outcome sent per reply read, `asks` being each job's `(w, h)`. A reply that breaks its form is `InvalidData`,
-/// whose text is the person's words: the magic, a size other than the ask's (a zero side is drawn as one), an error
+/// One outcome sent per reply read, `asks` being each job's ask. A reply that breaks its form is `InvalidData`,
+/// whose text is the person's words: the magic, a size the ask does not allow (`Ask::accepts`), an error
 /// text past its bound, a tag unknown, or a byte after the last reply. The body is read as it arrives, so a size the
 /// child only claims allocates nothing.
-fn read_replies(mut from: impl Read, asks: &[(u32, u32)], tx: &Sender<Reply>) -> io::Result<()> {
+fn read_replies(mut from: impl Read, asks: &[Ask], tx: &Sender<Reply>) -> io::Result<()> {
     if word::<4>(&mut from)? != MAGIC {
         return Err(invalid("not a drawing program"));
     }
-    for &(w, h) in asks {
+    for ask in asks {
         let outcome = match word::<1>(&mut from)?[0] {
             REPLY_PIXELS => {
                 let (rw, rh) = (u32::from_le_bytes(word(&mut from)?), u32::from_le_bytes(word(&mut from)?));
-                let len = (rw as u64 * rh as u64).checked_mul(4).filter(|_| (rw, rh) == (w.max(1), h.max(1)));
+                let len = (rw as u64 * rh as u64).checked_mul(4).filter(|_| ask.accepts(rw, rh));
                 let Some(len) = len else { return Err(invalid(BAD_REPLY)) };
                 let mut rgba = Vec::new();
                 if from.by_ref().take(len).read_to_end(&mut rgba)? as u64 != len {

@@ -250,3 +250,25 @@ fn an_embedded_png_image_still_draws() {
     let data = base64::engine::general_purpose::STANDARD.encode(green_png());
     assert_eq!(center(image_svg(&format!("data:image/png;base64,{data}"))), [0, 255, 0, 255]);
 }
+
+/// The picture fills the pane on its limiting side, keeps the SVG's aspect ratio and never passes the texture limit.
+#[test]
+fn the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit() {
+    let fit = |pane, cap| svg_fit_dims((200.0, 100.0), pane, cap);
+    assert_eq!(fit((800, 800), 16384), (800, 400), "width limits");
+    assert_eq!(fit((600, 100), 16384), (200, 100), "height limits");
+    assert_eq!(fit((100, 800), 16384), (100, 50));
+    assert_eq!(fit((20000, 20000), 4096), (4096, 2048), "the texture limit wins, aspect kept");
+    assert_eq!(fit((1024, 1024), 16384), (1024, 512), "no pane yet: a small fixed bound, not the SVG's own size");
+    assert_eq!(svg_fit_dims((1.0, 1000.0), (50, 50), 16384), (1, 50), "a side is never under one pixel");
+}
+
+/// The raster's area is bounded as well as each side: an SVG that declares a huge size draws at the fixed bound with no
+/// pane, and no pane or texture limit lifts a picture past the pixel budget.
+#[test]
+fn the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small() {
+    let area = |(w, h): (u32, u32)| u64::from(w) * u64::from(h);
+    assert!(area(svg_fit_dims((1e30, 1e30), (1024, 1024), 16384)) <= 1024 * 1024);
+    assert!(area(svg_fit_dims((100.0, 100.0), (60000, 60000), 65535)) <= MAX_RASTER_PIXELS);
+    assert!(area(svg_fit_dims((100.0, 25.0), (30000, 60000), 65535)) <= MAX_RASTER_PIXELS);
+}

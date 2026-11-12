@@ -1,4 +1,5 @@
 use super::*;
+use super::super::svg_wire::Ask;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::Mutex;
@@ -51,7 +52,7 @@ impl Stand {
 }
 
 fn job(label: &str) -> Job {
-    Job { size: (1, 1), svg: Arc::from(label.as_bytes()) }
+    Job { ask: Ask::Stretch(1, 1), svg: Arc::from(label.as_bytes()) }
 }
 
 fn draws_over(stand: &Arc<Stand>, cap: usize) -> (SvgDraws, Arc<AtomicUsize>) {

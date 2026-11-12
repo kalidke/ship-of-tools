@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use super::figures::{fail_figure, figure_already_handled, FigureCacheEntry, FIGURE_SVG_SIZE};
 use super::svg_draws::{Done, SvgDraws};
 use super::svg_run::{Job, Outcome};
+use super::svg_wire::Ask;
 use crate::ui::preview::markdown::{FigureMetrics, FigureMetricsMap};
 
 /// Every figure URL is in at most one of three states: cached, pending or failed. A fetch is sent only for a URL in
@@ -137,7 +138,7 @@ impl FigureStore {
     /// An SVG reply: one job for the worker keyed by `url`, which stays pending until its outcome. Refused by the
     /// worker (a full queue, no thread), the figure fails at once.
     fn submit_svg(&mut self, draws: &mut SvgDraws, url: String, generation: u64, svg: Vec<u8>) -> bool {
-        let job = Job { size: FIGURE_SVG_SIZE, svg: svg.into() };
+        let job = Job { ask: Ask::Stretch(FIGURE_SVG_SIZE.0, FIGURE_SVG_SIZE.1), svg: svg.into() };
         match draws.submit(url.clone(), generation, job) {
             Ok(()) => {
                 self.drawing.insert(url, generation);

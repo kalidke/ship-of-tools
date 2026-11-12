@@ -52,6 +52,7 @@ mod worker {
     use super::super::super::figure_store::{FigureStore, Reply, Settled};
     use super::super::super::svg_draws::{Done, SvgDraws};
     use super::super::super::svg_run::{Job, Outcome, Stop};
+    use super::super::super::svg_wire::Ask;
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -74,7 +75,8 @@ mod worker {
                     } else if refused {
                         Outcome::Refused("svg parse failed".into())
                     } else {
-                        Outcome::Drawn { w: job.size.0, h: job.size.1, rgba: vec![0; 4] }
+                        let Ask::Stretch(w, h) = job.ask else { panic!("a figure is stretched") };
+                        Outcome::Drawn { w, h, rgba: vec![0; 4] }
                     }
                 })
                 .collect()

@@ -4,7 +4,7 @@
 //! version and exits 0, which the window reads as "not a drawing program".
 //!
 //! The child bounds itself before it reads a byte (`bound_self`), reads one request from stdin (`svg_wire`: the magic,
-//! a u32 job count, then per job an ask and a u64 length with that many bytes of SVG, at most `PREVIEW_BINARY_CAP` in
+//! a u32 job count, then per job an ask (`Ask`: a stretch to a size, or a fit to a pane, whose size the child works out) and a u64 length with that many bytes of SVG, at most `PREVIEW_BINARY_CAP` in
 //! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to the process's stdout,
 //! taken for the reply alone before the read (`take_stdout`: descriptor 1 then leads to the null device), each written
 //! as it is whole, so a later job that crashes the child costs only itself. usvg prints a fixed warning line for some
@@ -19,7 +19,7 @@ use sot_platform::host::bound::{end_with_parent, exit_now, exit_on_crash, take_s
 use sot_platform::host::heap_cap::HeapCap;
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
-use super::svg::{draw, svg_tree};
+use super::svg::{draw, svg_fit_dims, svg_tree};
 use super::svg_wire::*;
 
 /// The stack of the thread that parses and draws, the same on every platform: Windows gives its main thread 1 MiB, and
@@ -28,7 +28,7 @@ const SVG_STACK: usize = 32 << 20;
 
 /// One job: how to draw, and what.
 struct Job {
-    size: (u32, u32),
+    ask: Ask,
     svg: Vec<u8>,
 }
 
@@ -73,19 +73,27 @@ fn read_request(mut from: impl Read) -> io::Result<Vec<Job>> {
     let (count, mut room) = (u32::from_le_bytes(word(&mut from)?), PREVIEW_BINARY_CAP as u64);
     let mut jobs = Vec::new();
     for _ in 0..count {
-        if word::<1>(&mut from)? != [ASK_STRETCH] {
-            return Err(invalid("an ask this child does not know"));
-        }
-        let size = (u32::from_le_bytes(word(&mut from)?), u32::from_le_bytes(word(&mut from)?));
+        let ask = read_ask(&mut from)?;
         let len = u64::from_le_bytes(word(&mut from)?);
         room = room.checked_sub(len).ok_or_else(|| invalid("input past the cap"))?;
         let mut svg = Vec::with_capacity(len as usize);
         if from.by_ref().take(len).read_to_end(&mut svg)? as u64 != len {
             return Err(invalid("input ends early"));
         }
-        jobs.push(Job { size, svg });
+        jobs.push(Job { ask, svg });
     }
     Ok(jobs)
+}
+
+/// The next ask on `from`.
+fn read_ask(from: &mut impl Read) -> io::Result<Ask> {
+    let tag = word::<1>(from)?[0];
+    let mut u32 = || Ok::<_, io::Error>(u32::from_le_bytes(word(from)?));
+    match tag {
+        ASK_STRETCH => Ok(Ask::Stretch(u32()?, u32()?)),
+        ASK_FIT => Ok(Ask::Fit { pane: (u32()?, u32()?), cap: u32()? }),
+        _ => Err(invalid("an ask this child does not know")),
+    }
 }
 
 /// Every job drawn in order on a thread of `SVG_STACK`, one reply each written to `out` (a file, so unbuffered: the
@@ -114,7 +122,13 @@ fn stray_print() {
 }
 
 fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {
-    match svg_tree(&job.svg).and_then(|tree| draw(&tree, job.size.0, job.size.1)) {
+    match svg_tree(&job.svg).and_then(|tree| {
+        let (w, h) = match job.ask {
+            Ask::Stretch(w, h) => (w, h),
+            Ask::Fit { pane, cap } => svg_fit_dims((tree.size().width(), tree.size().height()), pane, cap),
+        };
+        draw(&tree, w, h)
+    }) {
         Ok(pixmap) => {
             out.write_all(&[REPLY_PIXELS])?;
             out.write_all(&pixmap.width().to_le_bytes())?;

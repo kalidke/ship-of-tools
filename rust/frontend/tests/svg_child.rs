@@ -121,9 +121,7 @@ fn request(jobs: &[(u32, u32, &[u8])]) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
     out.extend((jobs.len() as u32).to_le_bytes());
     for (w, h, svg) in jobs {
-        out.push(ASK_STRETCH);
-        out.extend(w.to_le_bytes());
-        out.extend(h.to_le_bytes());
+        out.extend(Ask::Stretch(*w, *h).to_bytes());
         out.extend((svg.len() as u64).to_le_bytes());
         out.extend(*svg);
     }
@@ -186,6 +184,28 @@ fn a_plain_svg_comes_back_as_its_pixels() {
     assert_eq!(replies.len(), 1);
     assert!(matches!(&replies[0], Reply::Pixels { w: 20, h: 20, .. }));
     assert_eq!(pixel(&replies[0], 10, 10), [255, 0, 0, 255]);
+}
+
+/// A request for one job drawn to fit `pane` under `cap`.
+fn fit_request(pane: (u32, u32), cap: u32, svg: &[u8]) -> Vec<u8> {
+    let mut out = MAGIC.to_vec();
+    out.extend(1u32.to_le_bytes());
+    out.extend(Ask::Fit { pane, cap }.to_bytes());
+    out.extend((svg.len() as u64).to_le_bytes());
+    out.extend(svg);
+    out
+}
+
+#[test]
+fn a_fit_ask_is_drawn_at_the_size_the_child_works_out() {
+    // A 10 by 10 SVG fitted to a 400 by 200 pane is 200 by 200; a texture limit of 50 holds it to 50 by 50.
+    for (cap, side) in [(16384, 200), (50, 50)] {
+        let ran = run(ROOMY, 30, fit_request((400, 200), cap, rect("red").as_bytes()));
+        assert_eq!(ran.status.code(), Some(0));
+        let replies = replies(&ran.out);
+        assert!(matches!(&replies[0], Reply::Pixels { w, h, .. } if (*w, *h) == (side, side)), "cap {cap}: {:?}", replies[0]);
+        assert_eq!(pixel(&replies[0], side / 2, side / 2), [255, 0, 0, 255]);
+    }
 }
 
 #[test]
@@ -348,7 +368,7 @@ fn a_panic_on_the_draw_thread_is_the_crash_code() {
 // commands, since the runner's environment has no `PATH`).
 
 fn job(w: u32, h: u32, svg: &[u8]) -> Job {
-    Job { size: (w, h), svg: Arc::from(svg) }
+    Job { ask: Ask::Stretch(w, h), svg: Arc::from(svg) }
 }
 
 fn refused(words: &str) -> Outcome {
@@ -506,6 +526,37 @@ fn a_reply_past_its_ask_is_refused() {
     let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
     assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds, &Stop::default()), [refused(BAD_REPLY)]);
     assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+}
+
+#[test]
+fn the_runner_returns_a_fit_ask_at_the_childs_size() {
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(WAIT, ROOMY, &scratch);
+    let jobs = vec![Job { ask: Ask::Fit { pane: (400, 200), cap: 16384 }, svg: Arc::from(rect("red").as_bytes()) }];
+    let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
+    assert!(matches!(&outcomes[0], Outcome::Drawn { w: 200, h: 200, .. }), "{:?}", outcomes[0]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header() {
+    // The headers name 101 by 1 under a cap of 100, and 5000 by 5000 (25 Mpx) under a cap of 16384; then the child
+    // waits, so a refusal at the wall or after the body would be slow. The control is within both.
+    let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
+    let ask = |cap: u32, header: &str| {
+        let command = stand_in(&format!("/usr/bin/printf 'SVG1R{header}'; exec /bin/sleep 30"));
+        let jobs = vec![Job { ask: Ask::Fit { pane: (100, 100), cap }, svg: Arc::from(&b"<svg/>"[..]) }];
+        let begun = Instant::now();
+        let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
+        assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+        outcomes
+    };
+    assert_eq!(ask(100, r"\145\000\000\000\001\000\000\000"), [refused(BAD_REPLY)]);
+    assert_eq!(ask(16384, r"\210\023\000\000\210\023\000\000"), [refused(BAD_REPLY)]);
+    // Within both limits it is read as drawn (the body is one pixel, so the child's sleep is cut short by the end).
+    let command = stand_in(&format!("/usr/bin/printf '{ONE_RED_PIXEL}'"));
+    let jobs = vec![Job { ask: Ask::Fit { pane: (100, 100), cap: 100 }, svg: Arc::from(&b"<svg/>"[..]) }];
+    assert_eq!(draw_in_child(command, jobs, &bounds, &Stop::default()), [Outcome::Drawn { w: 1, h: 1, rgba: vec![255, 0, 0, 255] }]);
 }
 
 #[cfg(unix)]
