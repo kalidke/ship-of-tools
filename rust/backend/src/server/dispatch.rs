@@ -367,3 +367,7 @@ mod chat_ops_tests;
 #[cfg(test)]
 #[path = "chat_watch_tests.rs"]
 mod chat_watch_tests;
+
+#[cfg(test)]
+#[path = "chat_mail_tests.rs"]
+mod chat_mail_tests;

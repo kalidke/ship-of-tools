@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use sot_chat::config::{self, Config, ConfigError, Credentials, Folder, Reader, Resolution};
+use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
 use sot_chat::service::Service;
 use sot_platform::host::env::Env;
@@ -211,6 +212,8 @@ pub(crate) struct Chat<L: Listener = Service> {
     handle: Option<Handle>,
     /// Which connection watches which channel, and the owner task that serves them.
     hub: Arc<watch::Hub>,
+    /// The environment `begin` was given: the owner's state folder and every filing are read through it.
+    env: Env,
 }
 
 impl<L: Listener> Chat<L> {
@@ -224,7 +227,7 @@ impl<L: Listener> Chat<L> {
         let shared = Shared::new();
         let chat = |config, status| {
             *shared.lock() = Phase::Off(status);
-            Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()), hub: watch::Hub::new() })
+            Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()), hub: watch::Hub::new(), env: env.clone() })
         };
         if !is_hub(env) {
             return chat(None, Status::NotHub);
@@ -327,7 +330,7 @@ impl<L: Listener> Chat<L> {
     #[cfg(test)]
     pub(crate) fn off() -> Arc<Chat<L>> {
         let shared = Shared::new();
-        Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok(), hub: watch::Hub::new() })
+        Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok(), hub: watch::Hub::new(), env: Env::empty() })
     }
 
     pub(crate) fn hub(&self) -> &Arc<watch::Hub> {
@@ -463,10 +466,11 @@ impl Chat<Service> {
     }
 
     /// The daemon's chat as the boot makes it, and as the tests' rig makes it: begin, the boot's log line, and the
-    /// owner's task, started while the chat is still `Starting`. `check` is [`Chat::begin`]'s. Must run inside the daemon's
+    /// owner's task, started while the chat is still `Starting`. `check` is [`Chat::begin`]'s; `timing` is the delivery's (`Timing::PRODUCT`; a test shortens it). Must run inside the daemon's
     /// runtime.
-    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, check: Duration) -> Arc<Chat> {
+    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, check: Duration, timing: Timing) -> Arc<Chat> {
         let chat = Chat::begin(env, &row_facts(rows), read, registry, start, check);
+        chat.hub.set_timing(timing);
         tracing::info!(status = %chat.status(), "project chat");
         drop(chat.start_owner(rows.clone()));
         chat

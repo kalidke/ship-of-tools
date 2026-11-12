@@ -65,10 +65,21 @@ impl Home {
         canonical(&p).unwrap()
     }
 
+    /// A `chat.toml` that maps the folders to `C0AAAA` and `C0BBBB` in turn and delivers nothing (no `mail_after`).
     pub(crate) fn chat_toml(&self, folders: &[String]) {
-        let mut text = String::from("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\nmail_after = \"1.000000\"\n");
+        self.toml(folders, false);
+    }
+
+    /// The same mappings with the hub's `mail_after` and each mapping's own, so the file delivers.
+    pub(crate) fn delivering_toml(&self, folders: &[String]) {
+        self.toml(folders, true);
+    }
+
+    fn toml(&self, folders: &[String], delivers: bool) {
+        let after = |t: &str| if delivers { format!("mail_after = \"{t}\"\n") } else { String::new() };
+        let mut text = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\n{}", after("1.000000"));
         for (f, c) in folders.iter().zip(["C0AAAA", "C0BBBB"]) {
-            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\nmail_after = \"1.000000\"\n");
+            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\n{}", after("1.000000"));
         }
         self.write(CONFIG_FILE, &text);
     }
@@ -628,7 +639,7 @@ async fn a_held_start_starts_once_the_holder_lets_go() {
     // Another holder of the workspace's lock, as a second computer's daemon would be.
     let lock = sot_platform::host::lock_supervisor(&crate::comm::home::chat_dir(&home.env).unwrap().join("chat-T0AAAA.lock")).unwrap();
     let (registry, tries) = (Registry::new(), Arc::new(AtomicUsize::new(0)));
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), FAST);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), FAST, sot_chat::delivery::Timing::PRODUCT);
     until("a retry or the start's end", || tries.load(Ordering::SeqCst) >= 3 || chat.status() != Status::Starting).await;
     assert_eq!(chat.status(), Status::Starting, "a held start is not final, and stays starting");
     assert!(!chat.hub().running());
@@ -741,7 +752,7 @@ struct World {
 async fn world() -> World {
     let home = Home::new(Some(SELF));
     let folders = [home.folder("a"), home.folder("b"), home.folder("c")];
-    home.chat_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
+    home.delivering_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
     home.secrets();
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
@@ -863,6 +874,7 @@ async fn resolve_joins_the_mapping_with_the_row_and_the_service_status() {
     // refused chat.toml say so.
     let starting = Home::new(Some(SELF));
     let folder = starting.configured();
+    starting.delivering_toml(&[folder.to_string_lossy().into_owned()]);
     let rows = Workspaces::new();
     let id = rows.insert(row("alpha", &folder)).workspace_id.clone();
     let chat = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), pending());

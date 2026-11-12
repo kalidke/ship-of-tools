@@ -94,16 +94,22 @@ pub(super) async fn running(chat: &Chat<Service>) {
     }
 }
 
-/// The rig as the daemon's boot makes it: the chat's own composition, returned while the service is still starting.
+/// The rig as the daemon's boot makes it: the chat's own composition, returned while the service is still starting. Its
+/// `chat.toml` delivers nothing: a test that asks whether mail is delivered takes `rig_delivering`.
 pub(super) async fn rig_booting(fake: &FakeSlack) -> Rig {
+    rig_booting_with(fake, false).await
+}
+
+async fn rig_booting_with(fake: &FakeSlack, delivers: bool) -> Rig {
     let home = Home::new(Some(SELF));
     let folders = [home.folder("a"), home.folder("b"), home.folder("c")];
-    home.chat_toml(&[folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()]);
+    let own = [folders[0].to_string_lossy().into_owned(), folders[1].to_string_lossy().into_owned()];
+    if delivers { home.delivering_toml(&own) } else { home.chat_toml(&own) }
     home.secrets();
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
     let beta = rows.insert(row("beta", &folders[1])).workspace_id.clone();
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), crate::chat::HUB_CHECK);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), crate::chat::HUB_CHECK, sot_chat::delivery::Timing::PRODUCT);
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
@@ -112,7 +118,11 @@ pub(super) async fn rig_booting(fake: &FakeSlack) -> Rig {
 }
 
 pub(super) async fn rig(fake: &FakeSlack) -> Rig {
-    let rig = rig_booting(fake).await;
+    rig_started(fake, false).await
+}
+
+async fn rig_started(fake: &FakeSlack, delivers: bool) -> Rig {
+    let rig = rig_booting_with(fake, delivers).await;
     running(&rig.services.chat).await;
     assert_eq!(rig.services.chat.status(), Status::Running, "the service starts against the fake: {:?}", fake.seen().iter().map(|s| s.target.clone()).collect::<Vec<_>>());
     rig
@@ -186,7 +196,7 @@ pub(super) fn code(reply: &Value) -> &str {
 async fn a_current_row_reaches_slack_through_each_request_op() {
     let mode = Arc::new(AtomicU8::new(OK));
     let fake = slack(&mode).await;
-    let rig = rig(&fake).await;
+    let rig = rig_started(&fake, true).await;
     let mut conn = connect(rig.services.clone()).await;
     let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
     assert_eq!((resolved["state"].as_str(), resolved["channel"].as_str(), resolved["delivers"].as_bool()), (Some("mapped"), Some("C0AAAA"), Some(true)));

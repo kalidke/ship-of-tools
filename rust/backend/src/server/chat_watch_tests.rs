@@ -27,7 +27,7 @@ async fn bounded<T>(what: &str, f: impl Future<Output = T>) -> T {
 }
 
 /// `eventually` with the file's own deadline, for waits on many snapshots at once.
-async fn until(what: &str, mut check: impl FnMut() -> bool) {
+pub(super) async fn until(what: &str, mut check: impl FnMut() -> bool) {
     bounded(what, async {
         while !check() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -37,12 +37,12 @@ async fn until(what: &str, mut check: impl FnMut() -> bool) {
 }
 
 /// The fake's levers: its history answer, a gate the first history call waits on, the socket's feed and what it saw.
-struct Levers {
-    mode: Arc<AtomicU8>,
+pub(super) struct Levers {
+    pub(super) mode: Arc<AtomicU8>,
     gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
-    feed: tokio::sync::mpsc::UnboundedSender<Value>,
+    pub(super) feed: tokio::sync::mpsc::UnboundedSender<Value>,
     /// Envelopes the socket's client acknowledged.
-    acked: Arc<AtomicUsize>,
+    pub(super) acked: Arc<AtomicUsize>,
     /// History calls that reached the fake, counted before the gate.
     histories: Arc<AtomicUsize>,
     /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
@@ -52,7 +52,7 @@ struct Levers {
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, and the socket says
 /// hello and then sends what the test feeds it.
-async fn live() -> (FakeSlack, Levers) {
+pub(super) async fn live() -> (FakeSlack, Levers) {
     let (feed, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let rx = Arc::new(tokio::sync::Mutex::new(rx));
     let lv = Levers {
@@ -113,12 +113,12 @@ async fn live() -> (FakeSlack, Levers) {
     (fake, lv)
 }
 
-fn stamp(n: u32) -> String {
+pub(super) fn stamp(n: u32) -> String {
     format!("17001{n:05}.000100")
 }
 
 /// A new message in `channel`, as Slack's socket delivers it.
-fn message(channel: &str, n: u32) -> Value {
+pub(super) fn message(channel: &str, n: u32) -> Value {
     message_saying(channel, n, "hello")
 }
 
@@ -142,7 +142,7 @@ async fn live_rig(fake: &FakeSlack) -> Rig {
 }
 
 /// Waits until the service `target` is admitted against has had its socket say hello.
-async fn after_hello(chat: &Chat, rows: &Workspaces, target: &ChatTarget) {
+pub(super) async fn after_hello(chat: &Chat, rows: &Workspaces, target: &ChatTarget) {
     let service = chat.admit(rows, target).expect("the service runs");
     eventually("the socket's hello", || matches!(service.status(), ServiceStatus::Running { socket, .. } if socket.connected)).await;
 }

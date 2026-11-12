@@ -12,8 +12,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use sot_chat::api::{Bounds, HistoryQuery};
+use sot_chat::delivery::{Action, Delivery, Filing, Timing, Verdict};
+use sot_chat::mail::Filed;
 use sot_chat::service::{Service, Status};
-use sot_chat::watch::{Loaded, State, Wake, Watches, MAX_CHANNELS, MAX_KEPT};
+use sot_chat::watch::{Arrived, Loaded, State, Wake, Watches, MAX_CHANNELS, MAX_KEPT};
+use sot_platform::host::env::Env;
 use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{
     ChatChangedEvt, ChatChannel, ChatCode, ChatService, ChatStatusEvt, ChatTarget, ChatWatchState, MAX_PAGE, MAX_PAGE_RECORDS,
@@ -21,7 +24,7 @@ use sot_protocol::ops::{
 use tokio::sync::{broadcast, mpsc, Notify};
 
 use super::ops::{admitted, code_of};
-use super::Chat;
+use super::{mail, Chat};
 use crate::rows::Workspaces;
 
 /// The wait between a snapshot refused `busy` and its next attempt, and the attempts before the watch is told to resync.
@@ -81,6 +84,8 @@ pub(crate) struct Hub {
     events: broadcast::Sender<Evt>,
     owner: Mutex<Owner>,
     conns: AtomicU64,
+    /// The delivery's timings, read when the owner starts.
+    timing: Mutex<Timing>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -95,7 +100,13 @@ impl Hub {
             events: broadcast::channel(EVENTS_QUEUE).0,
             owner: Mutex::new(Owner::Idle),
             conns: AtomicU64::new(0),
+            timing: Mutex::new(Timing::PRODUCT),
         })
+    }
+
+    /// The delivery's timings, read when the owner starts.
+    pub(super) fn set_timing(&self, timing: Timing) {
+        *lock(&self.timing) = timing;
     }
 
     /// A connection's side, subscribed before its first request is read.
@@ -135,7 +146,7 @@ impl Hub {
             Owner::Idle => {
                 let watches = service.watches().ok_or(ChatCode::Unavailable)?;
                 *owner = Owner::Running;
-                let own = Own { hub: self.clone(), service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new() };
+                let own = Own { hub: self.clone(), service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new(), mail: None };
                 tokio::spawn(own.run(watches));
                 Ok(())
             }
@@ -241,6 +252,47 @@ struct Own {
     known: BTreeSet<String>,
     /// The channels last told to resync.
     told: BTreeSet<String>,
+    /// The delivery, when the hub's `chat.toml` maps a delivering channel.
+    mail: Option<Mail>,
+}
+
+/// What a job of the delivery hands back to the owner.
+enum Done {
+    /// The start's read of the inboxes.
+    Read(Vec<Filed>),
+    Filed { channel: String, ts: Ts, live: bool, result: Result<(), String> },
+}
+
+/// The pure `Delivery` and what its owner keeps to run it: each job's handle and the instant to ask again.
+struct Mail {
+    delivery: Delivery,
+    /// Channel and its mapped folder.
+    folders: Vec<(String, String)>,
+    tx: mpsc::Sender<Done>,
+    wake: Option<tokio::time::Instant>,
+}
+
+/// The start's read of every inbox, tried again on the backoff while it fails; nothing is filed or passed before it succeeds.
+async fn read_inboxes(env: Env, tx: mpsc::Sender<Done>, timing: Timing) {
+    let mut wait = timing.backoff_first;
+    while !tx.is_closed() {
+        let e = env.clone();
+        match tokio::task::spawn_blocking(move || mail::read_filings(&e)).await {
+            Ok(Ok(filings)) => return drop(tx.send(Done::Read(filings)).await),
+            Ok(Err(why)) => tracing::warn!(why, "project chat: the inboxes could not be read; nothing is filed until they are"),
+            Err(_) => tracing::warn!("project chat: the read of the inboxes did not finish"),
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(timing.backoff_max);
+    }
+}
+
+/// One filing: the author named as a read names it, then the guarded append.
+async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing) -> Done {
+    if let Ok(api) = service.api() {
+        api.fill_names(std::slice::from_mut(&mut f.record)).await;
+    }
+    Done::Filed { result: mail::file(&env, &rows, &folder, &f.record).await, channel: f.channel, ts: f.record.ts, live: f.live }
 }
 
 fn held(w: &Watches, channel: &str) -> Vec<ChatRecord> {
@@ -299,23 +351,99 @@ pub(crate) async fn snapshot(chat: &Arc<Chat>, rows: &Workspaces, targets: &[(u6
 impl Own {
     async fn run(mut self, mut watches: Watches) {
         let (done_tx, mut done_rx) = mpsc::channel::<Fetched>(MAX_CHANNELS);
+        let (mail_tx, mut mail_rx) = mpsc::channel::<Done>(8);
+        self.mail = self.open_mail(&mut watches, mail_tx);
         loop {
+            let at = self.mail.as_ref().and_then(|m| m.wake);
             tokio::select! {
                 _ = self.hub.kick.notified() => self.sync(&mut watches, &done_tx),
                 Some(f) = done_rx.recv() => self.finish(&mut watches, f),
+                Some(d) = mail_rx.recv() => self.returned(d),
+                _ = async { match at { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => {}
                 wake = watches.wait(&self.service, LOOK) => match wake {
                     Wake::Stopped => break,
                     Wake::Look => {
                         let service = self.service.clone();
-                        // No channel delivers until B3i2: the handover is empty, and dropped here.
-                        let _ = self.step(&mut watches, None, |w| w.pump(&service));
+                        let arrived = self.step(&mut watches, None, |w| w.pump(&service));
+                        self.hand_over(arrived);
                     }
                     Wake::Idle => {}
                 },
             }
             self.publish(&mut watches);
+            self.drive();
         }
         self.end();
+    }
+
+    fn hand_over(&mut self, arrived: Arrived) {
+        if let Some(m) = &mut self.mail {
+            m.delivery.hand_over(arrived);
+        }
+    }
+
+    /// The delivery for the hub's delivering channels, whose states are read and whose records the model hands over from
+    /// here on; the start's read of the inboxes begins. A channel whose state cannot be read stays off.
+    fn open_mail(&self, watches: &mut Watches, tx: mpsc::Sender<Done>) -> Option<Mail> {
+        let Some(Ok(config)) = &self.chat.config else { return None };
+        let dir = sot_platform::host::state_dir::daemon_state_dir_in(&self.chat.env).join("chat");
+        let (mut states, mut folders) = (Vec::new(), Vec::new());
+        for (folder, channel) in config.mappings() {
+            let Some(floor) = config.floor(channel) else { continue };
+            match sot_chat::state::State::load(&dir, config.workspace(), channel, &floor) {
+                Ok(state) if watches.deliver(channel).is_ok() => {
+                    states.push((state, floor));
+                    folders.push((channel.to_string(), folder.to_string()));
+                }
+                Ok(_) => {}
+                Err(code) => tracing::warn!(?code, channel, "project chat: a delivering channel's state is unreadable; it stays off"),
+            }
+        }
+        if states.is_empty() {
+            return None;
+        }
+        let timing = *lock(&self.hub.timing);
+        drop(tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing)));
+        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), folders, tx, wake: None })
+    }
+
+    /// A job came back: the delivery learns its result, and the daemon's log gets one line (fixed codes and ids, no text).
+    fn returned(&mut self, done: Done) {
+        let Some(m) = &mut self.mail else { return };
+        let over = match done {
+            Done::Read(filings) => {
+                for (channel, _) in &m.folders {
+                    tracing::info!(channel, filings = filings.iter().filter(|f| &f.channel == channel).count(), "project chat: the inboxes were read");
+                }
+                m.delivery.start(&filings)
+            }
+            Done::Filed { channel, ts, live, result } => {
+                let reason = result.as_ref().err().map(|e| e.split(':').next().unwrap_or_default().to_string());
+                tracing::info!(channel, ts = ts.as_str(), source = if live { "live" } else { "pass" }, filed = result.is_ok(), reason, "project chat: mail");
+                m.delivery.filed(std::time::Instant::now(), if result.is_ok() { Verdict::Filed } else { Verdict::Refused })
+            }
+        };
+        if over {
+            tracing::warn!("project chat: a channel's filed set passed its bound");
+        }
+    }
+
+    /// Ask the delivery what to do next and start it, until it has nothing to do now. Passes and the boundary's commit are
+    /// not built yet: a pass is answered as skipped, so no read is made, and no pass settles into a commit.
+    fn drive(&mut self) {
+        let Some(m) = &mut self.mail else { return };
+        loop {
+            match m.delivery.poll(std::time::Instant::now()) {
+                Action::File(f) => {
+                    let folder = m.folders.iter().find(|(c, _)| *c == f.channel).map(|(_, folder)| folder.clone()).unwrap_or_default();
+                    let (env, rows, service, tx) = (self.chat.env.clone(), self.rows.clone(), self.service.clone(), m.tx.clone());
+                    drop(tokio::spawn(async move { drop(tx.send(file_job(env, rows, service, folder, f).await).await) }));
+                }
+                Action::Pass { .. } => m.delivery.pass_skipped(std::time::Instant::now()),
+                Action::Commit { .. } => {}
+                Action::Idle(at) => return m.wake = at.map(tokio::time::Instant::from_std),
+            }
+        }
     }
 
     /// Run `change` on the model and tell the watchers what it changed. `base` replaces one channel's before-picture
@@ -366,8 +494,9 @@ impl Own {
                 continue;
             }
             let service = self.service.clone();
-            // No channel delivers until B3i2: the handover is empty, and dropped here.
-            let (Some(ticket), _) = self.step(watches, None, |w| w.begin(&channel, &service)) else { continue };
+            let (ticket, arrived) = self.step(watches, None, |w| w.begin(&channel, &service));
+            self.hand_over(arrived);
+            let Some(ticket) = ticket else { continue };
             let targets: Vec<(u64, ChatTarget)> = lock(&self.hub.table).slots.iter().filter(|(_, t)| t.channel.as_str() == channel).cloned().collect();
             let (chat, rows, done) = (self.chat.clone(), self.rows.clone(), done.clone());
             let key = Arc::as_ptr(&self.hub) as usize;

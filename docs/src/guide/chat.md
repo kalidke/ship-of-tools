@@ -165,6 +165,15 @@ exactly as shown: a link's label, a mention's name and a style's text without it
 message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
+## Mail to the row
+
+When the hub's `chat.toml` sets `mail_after`, the daemon files each new post a channel member makes (or the drawer makes
+for you) in a mapped channel as one marked line of mail to the row mapped to its folder, with no window open. A free
+Claude row is woken, a busy one reads it at the end of its turn, and a Codex row gets it unwoken. Today this covers the
+posts the daemon sees live: a post made while the daemon was down or the Slack connection was lost is not delivered yet.
+A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has. The
+row cannot reply from the shell yet.
+
 ## Moving the hub
 
 The chat listens on one computer for the whole comm folder: the daemon that holds the lock in `chat/` of the comm folder

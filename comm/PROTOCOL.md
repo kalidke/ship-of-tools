@@ -117,6 +117,8 @@ any failure cuts the file back to its length before the line. The wait is bounde
 under an `nfs4` manager a non-blocking try every 15 to 25 ms, under any other a blocking wait; past the bound nothing is
 appended and the answer is `the inbox lock for @<name> was held for 2s — nothing was appended`.
 
+**Channel mail.** A line whose `from` is `#chat` (no handle can be it) and whose `repo` is `daemon` is a project chat message the hub's daemon filed to the row mapped to the channel's folder; its `msg` starts `[chat] ` and its second line is `ts=<ts> thread=<ts> channel=<id> workspace=<id>`. It is read like any other line. The daemon's chat also reads these lines back at every start, from every inbox (`lines_from`), as its record of what it filed, so a restart files no post twice; editing or clearing an inbox by hand makes the posts it held eligible again.
+
 **The lock manager.** A lock excludes only writers that share one lock manager, so the folder's hub records its own
 in `inbox-lock-manager` at its start: line 1 `nfs4 <server>:<export>` (an NFS v4 mount with `local_lock=none`), `local
 <machine-id>` (a local file system), or `none@<machine-id>` (any other mount, and every mount on macOS and Windows:

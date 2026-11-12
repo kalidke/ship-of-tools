@@ -264,6 +264,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         crate::lifecycle::retire::participants(),
         Box::new(crate::chat::start_service),
         crate::chat::HUB_CHECK,
+        sot_chat::delivery::Timing::PRODUCT,
     );
 
     let label = Arc::new(opts.label);
