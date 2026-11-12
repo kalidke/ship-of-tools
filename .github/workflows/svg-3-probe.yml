@@ -1,0 +1,29 @@
+# A probe branch's run, never merged: the drawing child's target (svg_child), which holds the runner's tests, on macOS and Windows.
+name: svg-3-probe
+
+on:
+  push:
+    branches: ['tmp/**']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: The runner's and the child's tests
+        timeout-minutes: 40
+        run: cargo test -p sot-frontend --locked --test svg_child -- --nocapture --test-threads=1
