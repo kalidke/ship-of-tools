@@ -83,7 +83,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   from `State::frame_upkeep` (app/frame.rs). It only routes: one arm per `IncomingEvt` variant, each calling
   `on_<variant>` in its owner's `replies.rs`, and no wildcard arm, so a new variant does not compile until routed.
 - Other threads reach the window only through `MainWake::wake` (app/mod.rs): the transports, the relaunch and
-  fe-command watchers, the drawer terminal's reader and the `FeAttachClient` wake closures (agent_pane/attach.rs). `State`'s window is a `MainWindow`, which is `!Send`, so no other thread holds it, and `create_window` returns it
+  fe-command watchers, the drawer terminal's reader and the `FeAttachClient` wake closures (agent_pane/attach.rs), and the SVG worker
+  (preview/image/svg_draws.rs), which wakes after each outcome it queues. `State`'s window is a `MainWindow`, which is `!Send`, so no other thread holds it, and `create_window` returns it
   directly: no bare `Arc<Window>` exists outside it and wgpu's surface; on macOS a `Window` call from
   another thread waits for the frame being drawn.
 - An action resolves only if `help::Context::allows` it (input/keypress.rs passes it to the resolver), so help and
@@ -724,8 +725,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
   can show neither); until then that is unknown.
-- The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; nothing calls it yet:
-  the worker is unbuilt): `draw_in_child(command, jobs, bounds, stop)` starts the drawing child and
+- The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; its caller is the
+  worker, through `draw_in_own_child`): `draw_in_child(command, jobs, bounds, stop)` starts the drawing child and
   returns one `Outcome` per job, in order: `Drawn` (w, h, RGBA); `Ended` with the words of a child that hit a bound or
   crashed (`took past`, `needed more than`, `the drawing ended`); `Refused` with any other words a person reads (the
   drawing's own first line of error, a bad reply, `not a drawing program`, `cannot start the drawing`); or `Stale`, the
@@ -775,10 +776,35 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows) and
     `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it).
 - The preview source's generation (`InstalledPreviewSource::generation`, preview/source.rs) says which source the pane
-  shows, for the drawing worker (unbuilt): a process-wide counter, so a number is never reused. An install, a snapshot's restore
+  shows, for the drawing worker: a process-wide counter, so a number is never reused. An install, a snapshot's restore
   (`renewed`) and an emptied source (`Default`) each take a fresh one; a repaint of the same source, a reflow or a
   text-scale change, keeps it. Tests, in source.rs: `a_new_source_is_a_new_generation_and_the_same_source_is_not`,
   `a_restored_or_emptied_source_never_reuses_a_generation`.
+- The drawing worker (preview/image/svg_draws.rs): `SvgDraws`, owned by `State`, is the one owner of the window's SVG
+  draws, and nothing yet submits to it (the figures are the next landing). One worker thread, started at the first
+  submit, draws one batch at a time (a batch of one for now; the draw takes a list of jobs, so a generation's math
+  jobs can go to one child later without a change to the queue's rules) on a helper thread of its own, so the worker
+  waits on one inbox that carries jobs, generation advances and the finished draw, and wakes for any of them without
+  polling. Rules:
+  - A job carries the generation of the preview pane's source (above). `frame_upkeep` tells the worker the current
+    generation after `drain_events`.
+  - A job whose generation is not current at its turn is skipped, never given to the draw; a running draw whose
+    generation goes stale is stopped (`Stop`), and the outcome of every job of a generation that is not current when
+    its draw ends is `Stale`, whatever the draw said. The owner submits a stale key again under the new generation.
+  - One draw at a time; the queue holds at most `QUEUED_BYTES` (`PREVIEW_BINARY_CAP`) of input from its submit to its
+    start, and a submit past it is `too many pictures waiting`.
+  - After `SVG_STRIKES` (2) draws of one generation end `Ended` (a bound or a crash; the drawing's own parse error is
+    not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new generation
+    starts clean.
+  - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, which has no reader
+    until the figures), each followed by one `MainWake::wake`. A draw that panics, or a thread the OS refuses, gives no
+    outcomes, and each of its jobs is refused in `cannot start the drawing` words. The `State` never waits on the worker; dropping `SvgDraws` stops the
+    running draw and ends the worker without joining it. A child left running when the window exits ends with its
+    helper thread on Linux (`end_with_parent`), at its CPU bound on macOS and with the job's last handle on Windows.
+  - Tests (preview/image/svg_draws_tests.rs, a stand-in draw held until released or stopped, no child):
+    `a_new_generation_starts_after_at_most_the_stale_run_is_killed`, `a_stale_job_is_skipped_before_it_starts`,
+    `one_draw_runs_at_a_time`, `a_submit_past_the_queued_bytes_is_refused`, `after_two_strikes_a_generation_draws_no_more`,
+    `an_outcome_reaches_the_drain_and_wakes_once`, `a_draw_that_panics_refuses_its_jobs_and_the_worker_goes_on`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

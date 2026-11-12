@@ -144,6 +144,11 @@ impl Drop for Started {
     }
 }
 
+/// `jobs` drawn by the window's own binary: the worker's draw.
+pub(crate) fn draw_in_own_child(jobs: Vec<Job>, stop: &Stop) -> Vec<Outcome> {
+    draw_in_child(child_command(own_program(), &SVG_BOUNDS), jobs, &SVG_BOUNDS, stop)
+}
+
 /// Starts `command` as the child (`child_command`'s, or a stand-in under test).
 pub(crate) fn start(mut command: Command) -> io::Result<Started> {
     command.env_clear().envs(child_env(std::env::vars_os()));

@@ -115,6 +115,8 @@ impl State {
         layout_help::start_pending(requests, self);
 
         self.drain_events();
+        self.svg_draws.advance(self.preview_source.generation());
+        self.svg_draws.drain(|_settled| {}); // no owner yet: the figures are the first
         self.reconcile_selection_share();
         // Prune finished status-change flashes; while any is still fading,
         // mark dirty so the frame loop keeps animating it (the fast-repaint

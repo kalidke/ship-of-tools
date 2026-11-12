@@ -364,6 +364,8 @@ struct State {
     overlays: FigureOverlays,
     /// The markdown figures: fetched bitmaps, requests in flight and terminal failures.
     figures: FigureStore,
+    /// The drawing worker: every SVG whose bytes the window received is drawn through it, by a child process.
+    svg_draws: preview::image::svg_draws::SvgDraws,
     // ui/preview/markdown: tables, math and token caches, and reflow.
     /// The markdown media: table buffers and their scroll, math and token caches, and the pending reflow.
     md_media: MarkdownMedia,

@@ -46,7 +46,6 @@ impl InstalledPreviewSource {
         self
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "the drawing worker, the next landing, reads it"))]
     pub(in crate::ui) fn generation(&self) -> u64 { self.generation }
 
     /// An admitted reply: its bytes, node and scale replace the installed ones; a markdown reply with a node also

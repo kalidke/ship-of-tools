@@ -49,6 +49,7 @@ impl State {
         let PreviewContent {
             highlight_service, preview_md, md_rect_px, concept_rect_px,
         } = content;
+        let draws_wake = wake.clone();
         Self {
             window,
             wake,
@@ -150,6 +151,11 @@ impl State {
             editor: Editor::default(),
             hello_refused: Default::default(),
             figures: FigureStore::default(),
+            svg_draws: preview::image::svg_draws::SvgDraws::new(
+                preview::image::svg_draws::QUEUED_BYTES,
+                move || draws_wake.wake(),
+                Arc::new(preview::image::svg_run::draw_in_own_child),
+            ),
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
             proxies: crate::ui::proxy_arms::ProxyArms::default(),
