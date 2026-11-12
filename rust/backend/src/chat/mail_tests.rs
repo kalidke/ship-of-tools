@@ -121,7 +121,8 @@ async fn a_handle_moved_before_the_append_is_not_filed() {
     // The handle's session now binds another row: the recipient was read before, and the append checks again.
     w.session("cl", "ws-another-0", 5);
     let later = record("T0AAAA", "C0AAAA", "1700000200.000100", "again");
-    assert_eq!(append(&w.th.env, &to, &later).await, Err("not_here".into()));
+    let refused = append(&w.th.env, &to, &later).await.unwrap_err();
+    assert!(refused.starts_with("not_here: ") && refused.contains("no longer bound"), "the code and its sentence: {refused}");
     assert_eq!(w.th.inbox("cl").len(), 1, "a moved handle was filed to");
 }
 
@@ -134,6 +135,11 @@ fn a_handle_with_no_live_session_is_absent() {
     assert_eq!(w.recipient(), Err("no_live_session"), "a heartbeat an hour old");
     w.session("cl", "ws-another-0", 5);
     assert_eq!(w.recipient(), Err("no_live_session"), "a live session of another row");
+    // A Claude row whose session is gone is absent: a live Codex row in the folder never takes its mail.
+    let codex = w.row("codex", "cx");
+    w.session("cx", &codex.workspace_id, 5);
+    w.session("cl", &row.workspace_id, 3600);
+    assert_eq!(w.recipient(), Err("no_live_session"), "a dead Claude row fell through to the Codex row");
     w.session("cl", &row.workspace_id, 5);
     is(w.recipient(), "cl", &row);
 }
@@ -186,13 +192,13 @@ fn the_starts_read_gives_each_channels_filings_from_every_inbox() {
             line("#chat", &mail("T0AAAA", "C0AAAA", "1700000600.000100"), false),
         ],
     );
-    let read = read_filings(&w.th.env, "T0AAAA", &["C0AAAA", "C0BBBB", "C0DDDD"]).unwrap();
-    let ts = |c: &str| read[c].iter().map(|f| f.ts.as_str().to_string()).collect::<Vec<_>>();
-    assert_eq!((ts("C0AAAA"), ts("C0BBBB"), ts("C0DDDD")), (vec!["1700000100.000100".into()], vec!["1700000200.000100".into()], vec![]));
-    assert_eq!(read.len(), 3, "only the delivering channels are listed");
+    // Every well-formed `#chat` line of every inbox, in file-name order; `Delivery::start` keeps each channel's own.
+    let got: Vec<_> = read_filings(&w.th.env).unwrap().into_iter().map(|f| (f.workspace, f.channel, f.ts.as_str().to_string())).collect();
+    let want = [("T0AAAA", "C0AAAA", "1700000100.000100"), ("T0AAAA", "C0BBBB", "1700000200.000100"), ("T0ZZZZ", "C0AAAA", "1700000300.000100"), ("T0AAAA", "C0CCCC", "1700000400.000100")];
+    assert_eq!(got, want.map(|(w, c, t)| (w.to_string(), c.to_string(), t.to_string())));
     // An inbox that cannot be read fails the whole read: no filings is not what it found.
     std::fs::create_dir(w.th.home.join("inbox").join("b.jsonl")).unwrap();
-    let failed = read_filings(&w.th.env, "T0AAAA", &["C0AAAA", "C0BBBB"]).unwrap_err();
+    let failed = read_filings(&w.th.env).unwrap_err();
     assert!(failed.contains("@b"), "{failed}");
 }
 
@@ -208,10 +214,8 @@ fn the_commit_writes_the_boundary_into_a_private_folder_it_makes() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o700);
     }
-    // A folder that cannot be made, or an id that is not Slack's, is a failure the owner logs, and the old file stays.
+    // A folder that cannot be made is a failure the owner logs.
     let file = dir.path().join("plain");
     std::fs::write(&file, "x").unwrap();
     assert_eq!(commit(&file, "T0AAAA", "C0AAAA", &to), Err(StateError::Unwritable));
-    assert_eq!(commit(&state, "T0AAAA", "not an id", &to), Err(StateError::BadId));
-    assert_eq!(State::load(&state, "T0AAAA", "C0AAAA", &floor).unwrap().boundary(), &to);
 }

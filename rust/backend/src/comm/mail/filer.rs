@@ -311,7 +311,7 @@ pub(crate) fn file_here(
 /// The registry read fresh answers for `to`: listed with a host, bound to the row `expected` names when it names one, and
 /// held by a session whose `last_seen` is fresh, in that order. `Err` is `(code, sentence)`; with `expected`, an entry
 /// that is not listed is "not bound here" and one bound to another row is `not_here` naming the move.
-fn admit_entry(home: &std::path::Path, to: &str, expected: Option<&str>, now_secs: u64) -> std::result::Result<(), (String, String)> {
+pub(crate) fn admit_entry(home: &std::path::Path, to: &str, expected: Option<&str>, now_secs: u64) -> std::result::Result<(), (String, String)> {
     let unlisted = || if expected.is_some() { not_bound_here(to) } else { not_here(to) };
     // A missing registry lists nobody; bytes that are not a registry are no
     // answer at all, never "not here".
