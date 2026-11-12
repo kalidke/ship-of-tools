@@ -2005,3 +2005,12 @@ A landing's record goes here, with its measured times; the package page holds on
   page went to one child, so the per-equation mutant passed every test; a batch refused at submit was untested); one
   fix commit and two gates. The standalone math pane's draw that it deleted filled a slot no frame showed; that slot's
   plumbing is a deletion of its own.
+- The hosted run after the math landing was red on Windows, 2026-11-12: a test of a batch whose child ends early gave
+  the child a 1 s wall, and a Windows child's cold start (about 3 s to load fonts) passed the wall first. The landing
+  ran no hosted probe, on the session's judgment that nothing in it was specific to one system; a test that starts the
+  real child is. Fixed forward in 30c44047e (the test ends its child at its heap instead), on main 01:4x after a hosted
+  probe on macOS and Windows; about 25 minutes red.
+- The markdown preview's dead SVG slot deleted, 2026-11-12: builder launched about 01:23, main 01:45 (da0d8c002,
+  f2444af79), 22 minutes. About 50 lines removed, nothing a person sees changed. Review round 1 (no blockers: the
+  preview's shown flags were a tuple of five read by position, so a reader shifted to the wrong flag compiled and
+  passed every test; the flags are now a named struct).
