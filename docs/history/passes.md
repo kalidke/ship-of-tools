@@ -2119,3 +2119,13 @@ A landing's record goes here, with its measured times; the package page holds on
   that a channel's name shows only when Slack says the channel is public, since Slack hides a private channel's name
   from a reader who is not in it. The session removed the builder's scratch folder while the builder still used it,
   which cost the builder one redo of its uncommitted fix; a lane's scratch goes only when the lane closes.
+- LEGACY-SKILL-LIST-BEHIND, 2026-11-12: the session's own commit, main 08:54 (7d9cb927a), about 4 minutes: the legacy
+  skill list regenerated (three onboarding-skill versions the retire step never reads), and the agents contract's
+  sentence without the count that had gone stale. Its scoped gate selected the comm and agents shells and not the
+  root Julia suite that reads the list; the hosted CI run reads it.
+- B3h3, a thread Slack answers `thread_not_found` reads as empty (CHAT-DELETED-PARENT-THREAD-UNSERVED), 2026-11-12:
+  builder launched 08:55, main 09:02 (28a5975a1), 7 minutes. About 10 product lines and 41 test lines; the pass counts
+  each such skip, and every other error stays fatal. Built ahead of the read-only measurement the item asked for, on the
+  session's judgment that the rule loses nothing a reader could have read; the measurement stays owed and says only
+  whether the rule ever fires. No review: ten lines read by the session, with a red test. It clears the way for the
+  daemon to deliver from the pass (B3i2).

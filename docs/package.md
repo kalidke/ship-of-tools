@@ -227,8 +227,8 @@ channel post with its one reader, the scan read (both bounds, never a cursor; a 
 alone refused), each delivering channel's boundary file and its filed set in memory, a delivering configuration of at
 most 32 channels each with its own floor, one chat listener per comm folder, the watch model handing every new record
 of a delivering channel over once, in order, and the recovery traversal, the channel walk with its horizon and the
-walk of every thread with a reply after the boundary (a caller may commit to the horizon from a complete pass, once a
-thread Slack may not serve is settled: `docs/defects.md`, CHAT-DELETED-PARENT-THREAD-UNSERVED), and delivery's
+walk of every thread with a reply after the boundary (a thread Slack answers `thread_not_found` reads as empty, so a
+caller may commit to the horizon from a complete pass), and delivery's
 decisions, pure (one queue for live and recovered mail, nothing filed before the start's read, a post counted filed
 only when its filing returns so; passes owed and paced, each channel's own backoff, and the boundary's commit, which
 never reaches a post still pending), and the mail jobs (the recipient, the guarded filing behind the hub check, the
