@@ -1708,6 +1708,14 @@ fn a_code_block_is_one_panel_and_a_quote_one_bar() {
             assert!(near(glyph(quote).expect("a glyph").font_size, 15.0 * scale));
             assert_eq!(glyph(first + 1).expect("the blank line's space").font_size, code.font_size);
         }
+        // A plain line between two quote runs ends the bar, and between two blocks ends the panel: three bars and two panels.
+        for width in (0..=8).map(|i| 200.0 + 24.0 * i as f32) {
+            let (_, quads, body) = lay(&mut fonts, "> a\nplain\n> b\n>\n> c\nplain\n> d", width, scale);
+            let bars = of_color(&quads, LOW).into_iter().filter(|q| near(q.x, body.x + (GUTTER_PX - 8.0) * scale) && near(q.w, 4.0 * scale));
+            assert_eq!(bars.count(), 3, "w {width}: a plain line ends a bar");
+            let (_, quads, _) = lay(&mut fonts, "```a```\nplain\n```b```", width, scale);
+            assert_eq!(of_color(&quads, BAND).len(), 2, "w {width}: a plain line ends a panel");
+        }
         // Two blocks that meet are two panels, one a line below the other.
         let (view, quads, body) = lay(&mut fonts, "```a```\n```b```", 320.0, scale);
         let fills = of_color(&quads, BAND);

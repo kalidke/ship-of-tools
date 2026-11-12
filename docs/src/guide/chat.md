@@ -88,6 +88,7 @@ gray bar left of the text, one bar for consecutive quote lines; `>>>` quotes its
 mentions work inside a quote. An empty line inside a block or a quote keeps its place in the panel or the bar. Neither indents
 its text, so a line that wraps starts at the text's left edge, and a list shows as Slack sends it (`• `, `1. `) with no
 hanging indent.
+These rules, too, are the drawer's reading of Slack's and have not yet been compared with the desktop app side by side.
 
 Links and mentions show as Slack shows them, in blue. A link shows its label, or its address when it has none; the address
 is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's id (the drawer does not look

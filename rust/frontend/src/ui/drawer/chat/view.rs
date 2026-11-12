@@ -188,33 +188,29 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
 pub(super) fn styled_attrs(kind: Kind, style: u8, scale: f32) -> Attrs<'static> {
     let mut a = attrs(kind, scale);
     let mono = Metrics::new(BODY_SIZE * scale * CODE_SIZE / 15.0, BODY_LINE_H * scale);
-    if style & BLOCK != 0 {
-        a = a.family(Family::Monospace).metrics(mono);
-    } else if style & CODE != 0 {
-        a = a.family(Family::Monospace).color(rgb(CODE_TEXT)).metrics(mono).metadata(CODE_RUN);
-    } else {
-        if style & BOLD != 0 {
-            a = a.weight(Weight::BOLD);
-        }
-        if style & ITALIC != 0 {
-            a = a.style(Style::Italic);
-        }
-        if style & STRIKE != 0 {
-            a = a.metadata(a.metadata | STRIKE_RUN);
-        }
-    }
     let flag = |bit, run| if style & bit != 0 { run } else { 0 };
-    a.metadata(a.metadata | flag(QUOTE, QUOTE_RUN) | flag(BLOCK, BLOCK_RUN) | flag(ALT, ALT_RUN) | flag(FILL, FILL_RUN))
+    let flags = flag(QUOTE, QUOTE_RUN) | flag(BLOCK, BLOCK_RUN) | flag(ALT, ALT_RUN) | flag(FILL, FILL_RUN);
+    if style & BLOCK != 0 {
+        return a.family(Family::Monospace).metrics(mono).metadata(flags);
+    }
+    if style & CODE != 0 {
+        return a.family(Family::Monospace).color(rgb(CODE_TEXT)).metrics(mono).metadata(CODE_RUN | flags);
+    }
+    if style & BOLD != 0 {
+        a = a.weight(Weight::BOLD);
+    }
+    if style & ITALIC != 0 {
+        a = a.style(Style::Italic);
+    }
+    if style & STRIKE != 0 {
+        a = a.metadata(a.metadata | STRIKE_RUN);
+    }
+    a.metadata(a.metadata | flags)
 }
 
-/// The space an empty line in a block or a quote is shaped as: it has no place in a copy.
-fn pad(line: &BufferLine) -> bool {
-    line.text() == " " && line.attrs_list().get_span(0).metadata & FILL_RUN != 0
-}
-
-/// A line as a copy shows it.
+/// A line as a copy shows it: the space an empty line in a block or a quote is shaped as is no part of the text.
 fn shown_line(line: &BufferLine) -> &str {
-    if pad(line) { "" } else { line.text() }
+    if line.text() == " " && line.attrs_list().get_span(0).metadata & FILL_RUN != 0 { "" } else { line.text() }
 }
 
 /// The stretches of consecutive buffer lines whose first span carries `flag`, one block's lines together, as `(top, height)`
@@ -392,7 +388,7 @@ impl ChatView {
         let y = body.y + top.unwrap_or(-1e9);
         let (from, to) = (y.max(body.y), (y + shaped.height).min(body.y + body.h));
         let rect = ScreenRect { x: text.x, y: from, w: text.w, h: (to - from).max(0.0) };
-        FlowedText { buffer: &shaped.buffer, rect, origin_y: y, clip_bottom: to, reserved: None }
+        FlowedText { buffer: &shaped.buffer, rect, origin_y: y, clip_bottom: to, reserved: None, shown: Some(shown_line) }
     }
 
     /// The selected record's buffer, lent.
@@ -439,17 +435,7 @@ impl ChatView {
 
     /// The selected bytes of the record's buffer, but for the space of an empty line in a block or a quote.
     pub(in crate::ui) fn selected_text(&self) -> Option<String> {
-        let ((from, a), (to, b)) = self.selection.range()?;
-        let buffer = self.lent()?.buffer;
-        let mut out = String::new();
-        for i in from..=to {
-            let line = buffer.lines.get(i)?;
-            let text = line.text();
-            let (s, e) = (if i == from { a } else { 0 }, if i == to { b } else { text.len() });
-            out.push_str(if i == from { "" } else { "\n" });
-            out.push_str(if pad(line) { "" } else { text.get(s..e)? });
-        }
-        (!out.is_empty()).then_some(out)
+        self.selection.text(&self.lent()?)
     }
 
     /// The marked record's shown text: its buffer after its lead (the header line, if it has one).

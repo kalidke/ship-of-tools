@@ -35,7 +35,7 @@ pub(super) enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct Span {
     pub kind: Kind,
-    /// Slack's inline styles (`mrkdwn`'s bits), only ever on a body's text and tokens.
+    /// Slack's inline styles and its blocks' and quotes' bits (`mrkdwn`'s), only ever on a body's text and tokens.
     pub style: u8,
     pub text: String,
 }

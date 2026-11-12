@@ -28,7 +28,7 @@ impl Fixture {
         let origin_y = rect.y + EXTRA_TOP_PAD_PX - self.scroll_px;
         let clip_bottom = (rect.y + EXTRA_TOP_PAD_PX
             + whole_line_bottom(&self.buffer, self.scroll_px, rect.h - EXTRA_TOP_PAD_PX)).min(rect.y + rect.h);
-        FlowedText { buffer: &self.buffer, rect, origin_y, clip_bottom, reserved: self.reserved }
+        FlowedText { buffer: &self.buffer, rect, origin_y, clip_bottom, reserved: self.reserved, shown: None }
     }
 }
 

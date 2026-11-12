@@ -73,6 +73,7 @@ impl ShapedPreview {
             origin_y: self.rect.y + EXTRA_TOP_PAD_PX - self.scroll_px(),
             clip_bottom: self.clip_bottom(),
             reserved: (!self.md.media_blocks.is_empty()).then_some(crate::ui::preview::markdown::MATH_PLACEHOLDER),
+            shown: None,
         }
     }
 

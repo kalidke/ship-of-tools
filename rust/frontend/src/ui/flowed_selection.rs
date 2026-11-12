@@ -2,18 +2,20 @@
 //! and the clipped tint. The owner knows no pane; a pane lends its buffer and geometry as a `FlowedText` per call.
 
 use crate::ui::render::quad::ScreenRect;
-use cosmic_text::{Buffer, Cursor};
+use cosmic_text::{Buffer, BufferLine, Cursor};
 
 /// What a pane lends for one call: the shaped buffer and where it sits on screen. `origin_y` is the screen y of the
 /// buffer's first line (pane top, padding and scroll already applied); `clip_bottom` is where the renderer stops
 /// painting. `reserved` is a placeholder character that stands for non-text media: it is never copied, and a buffer
-/// line holding only it is never tinted (a visual line of a wrapped buffer line that holds other text is).
+/// line holding only it is never tinted (a visual line of a wrapped buffer line that holds other text is). `shown`, when set,
+/// gives the text a buffer line copies as (a line's own text otherwise), for a line that holds a space only to be shaped.
 pub(in crate::ui) struct FlowedText<'a> {
     pub buffer: &'a Buffer,
     pub rect: ScreenRect,
     pub origin_y: f32,
     pub clip_bottom: f32,
     pub reserved: Option<char>,
+    pub shown: Option<fn(&BufferLine) -> &str>,
 }
 
 /// Buffer positions survive scrolling and resizing; the pane retires them when it replaces the buffer.
@@ -83,11 +85,13 @@ impl FlowedSelection {
     pub(in crate::ui) fn text(&self, text: &FlowedText) -> Option<String> {
         let (start, end) = self.ordered()?;
         let mut out = String::new();
-        for line in start.line..=end.line {
-            if line != start.line { out.push('\n'); }
-            let source = text.buffer.lines.get(line)?.text();
-            let from = if line == start.line { start.index } else { 0 };
-            let to = if line == end.line { end.index } else { source.len() };
+        for line_i in start.line..=end.line {
+            if line_i != start.line { out.push('\n'); }
+            let line = text.buffer.lines.get(line_i)?;
+            let source = text.shown.map_or_else(|| line.text(), |shown| shown(line));
+            let from = if line_i == start.line { start.index } else { 0 };
+            let to = if line_i == end.line { end.index } else { source.len() };
+            let (from, to) = (from.min(source.len()), to.min(source.len()));
             let selected = source.get(from..to)?;
             match text.reserved {
                 None => out.push_str(selected),
