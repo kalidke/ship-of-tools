@@ -198,8 +198,8 @@ of each.
     embedded in the installed `sot-fe` and is no file of its own; nothing in `claude/` or
     `codex/` installs there (the launchers and the `PATH` wrappers reach `~/.local/bin` through the installer's own
     stage, `src/sources.jl`), and the wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
-    `test/install_tests.jl` ("the agents tools install flat from the four listed folders"), over the installer's own
-    file list.
+    `test/install_tests.jl` ("the agents tools install flat from the four listed folders", and "comm-lib.sh and sot-fe
+    install as one file each..." for the embedded text), over the installer's own file list.
 14. **No tool leaves a file in the temporary folders, by messaging's rule and with its limits.** On success, on failure,
     killed by a catchable signal and ended twice, no script of this folder leaves a file in `$TMPDIR` or
     `$XDG_RUNTIME_DIR`, by the cleanup-trap rule of `comm/CLAUDE.md` (a shell running `comm-spawn.sh` that stops on
@@ -413,7 +413,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
 | 11 | the hosted run of `scripts/tests/under-bash.sh`; `test/skills_tests.jl` ("a launcher's Windows shim refuses at once and names Git Bash") |
 | 12 | `tests/test-crlf-gh-auth.sh` |
-| 13 | `test/install_tests.jl` (the agents testset) |
+| 13 | `test/install_tests.jl` (the agents testset; "comm-lib.sh and sot-fe install as one file each...") |
 | 14 | `tests/test-temp-files.sh` |
 | 15 | `tests/test-skill-templates.sh` (a lint) |
 | 16 | `tests/test-spawn-capsule-workspace.sh` (a reader that leaves), `tests/test-despawn-resolve.sh` (D6b) |

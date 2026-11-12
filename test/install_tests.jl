@@ -229,7 +229,12 @@ end
         @test !isempty(parts)
         @test !any(p -> haskey(folder_of, p), parts)        # a part does not install on its own
         text = ShipTools._comm_bin_text(f, entry)
-        @test all(p -> occursin(read(joinpath(f, p), String), text), parts)
+        # Each part stands at its own source line, in order: the source text with every part line replaced by the
+        # part's bytes (a final newline added when it lacks one). Red against a text that appends the parts at the end.
+        expected = join((p = ShipTools._comm_part_of(f, l); p === nothing ? l : let b = read(joinpath(f, p), String)
+                             isempty(b) || endswith(b, "\n") ? b : b * "\n" end)
+                         for l in readlines(joinpath(f, entry); keep = true))
+        @test text == expected
         @test all(l -> ShipTools._comm_part_of(f, l) === nothing, eachline(IOBuffer(text)))
     end
     if Sys.isunix()
