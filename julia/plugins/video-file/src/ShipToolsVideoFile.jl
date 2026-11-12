@@ -9,10 +9,13 @@ module ShipToolsVideoFile
 # representative frame, full-resolution and lossless (PNG), which the
 # frontend's existing image preview path renders directly.
 #
-# Poster extraction shells out to `ffmpeg` on the host where the file lives
-# (often a remote backend), consistent with the backend-side-decode model.
+# Poster extraction runs `ffmpeg` on the host where the file lives (often a
+# remote backend), consistent with the backend-side-decode model. It is
+# `FFMPEG_jll`'s own build, run through its command form; nothing is looked up
+# on the search path.
 
 using ConceptExplorerCore
+using FFMPEG_jll
 
 export VideoFile
 
@@ -26,8 +29,13 @@ struct VideoFile <: ConceptExplorerCore.FileType end
 
 const VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv", ".m4v")
 
-# The longest ffmpeg may run, in seconds; the kernel serves one request at a time, so a stuck tool must end.
-const TOOL_BOUND = 20
+# The longest ffmpeg may run, in seconds; the kernel serves one request at a time, so a stuck tool must end, and the
+# daemon gives up on a kernel answer at 10 s (`KERNEL_REQUEST_TIMEOUT`).
+const TOOL_BOUND = 8
+
+# The tool as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
+# ffmpeg still loads this module; a test stands another command in here.
+const FFMPEG = Ref{Function}(() -> FFMPEG_jll.ffmpeg())
 
 ConceptExplorerCore.matches(::Type{VideoFile}, path::AbstractString) =
     any(endswith(lowercase(path), ext) for ext in VIDEO_EXTENSIONS)
@@ -36,17 +44,18 @@ ConceptExplorerCore.matches(::Type{VideoFile}, path::AbstractString) =
     preview(::Type{VideoFile}, path) -> PreviewPayload
 
 Returns the first frame as a lossless `image/png` poster (full resolution; the
-frontend downsamples if it exceeds the GPU texture cap). When ffmpeg is
-unavailable or extraction fails, returns a `text/markdown` note explaining how
-to view the video — never a silent blank pane.
+frontend downsamples if it exceeds the GPU texture cap). When extraction fails
+or outlasts `TOOL_BOUND`, returns a `text/markdown` note explaining how to view
+the video — never a silent blank pane.
 """
-function ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString)
-    ffmpeg = Sys.which("ffmpeg")
-    if ffmpeg === nothing
-        return _note("`ffmpeg` not found on the kernel host — install it to show a video poster. Playback opens in the browser with `o`.")
+ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString) = _poster(path, TOOL_BOUND)
+
+function _poster(path::AbstractString, bound::Real)
+    if !FFMPEG_jll.is_available()
+        return _note("no ready-built ffmpeg exists for this platform. Playback opens in the browser with `o`.")
     end
     poster = try
-        ConceptExplorerCore.read_within(`$ffmpeg -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, TOOL_BOUND)
+        ConceptExplorerCore.read_within(`$(FFMPEG[]()) -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, bound)
     catch e
         return _note("Couldn't extract a poster frame: $(sprint(showerror, e))\n\nPlayback still opens in the browser with `o`.")
     end

@@ -197,10 +197,18 @@ of each.
     `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, attempted at most once per kernel (`preview.jl:29`, the
     `LAZY_PLUGIN_FOR_EXT` table); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
     a preview answers a payload or an error, never an exception to the wire (`preview.jl:99`); an external tool a plugin
-    runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). The PDF plugin keeps rendered pages in memory up to
+    runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). The tools are the plugins' own, never a program on the
+    search path: the PDF plugin runs `pdftoppm` and `pdfinfo` from `Poppler_jll`, the video plugin `ffmpeg` from
+    `FFMPEG_jll`, each through the JLL's command form, and the JLLs' artifacts come into the user's Julia depot when the
+    kernel's environment is instantiated (x86_64 Linux, both macOS architectures, x86_64 Windows; elsewhere the plugin
+    answers a note saying no ready-built tool exists). The bounds fit inside guarantee 3's wait: a PDF page's two tools
+    share `PREVIEW_BOUND` (8 s), the poster's `ffmpeg` has `TOOL_BOUND` (8 s), and a request that runs past answers with
+    the plugin's own note, never `kernel_unavailable`. The PDF plugin keeps rendered pages in memory up to
     `PAGE_CACHE_LIMIT` (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime,
     page and render size. It reads `pdfinfo` once per path and mtime and never prefetches. The existing package suite,
-    `julia/plugins/pdf-file/test/runtests.jl`, checks hits, path/mtime/size misses and byte eviction through `preview`.
+    `julia/plugins/pdf-file/test/runtests.jl`, checks hits, path/mtime/size misses and byte eviction through `preview`, a
+    real page with a failing stand-in on the search path (never run) and the shared bound; the video suite checks the
+    same two for the poster.
     Limits: a lazy load that failed is not retried until the
     kernel restarts; nothing discovers a user's packages as plugins (see the root CLAUDE.md); a plugin's own code is the
     plugin's.

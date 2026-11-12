@@ -35,8 +35,8 @@ would.
 | `.toml` | raw UTF-8 bytes | code/text renderer |
 | `.json` | raw UTF-8 bytes | plain text today (pretty-print / colour planned) |
 | `.txt` | raw UTF-8 bytes | plain text renderer |
-| `.pdf` | one poppler-rasterized page | paged; `n`/`p` turn pages with the preview focused, rasterized backend-side to fit the pane |
-| `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` | a single ffmpeg poster frame | still poster in the pane; `o` opens playback in the browser |
+| `.pdf` | one rasterized page (poppler, bundled) | paged; `n`/`p` turn pages with the preview focused, rasterized backend-side to fit the pane |
+| `.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v` | a single poster frame (ffmpeg, bundled) | still poster in the pane; `o` opens playback in the browser |
 
 The plugin module and MIME type behind each row are listed under
 [Built-in preview plugins](@ref builtin-preview-plugins).
@@ -60,14 +60,16 @@ A few notes on the table:
   byte-for-byte.
 - **PDF** is the one format whose preview takes a page parameter — the only
   built-in that addresses *which part* of a file to render. Pages rasterize on the
-  host where the file lives (poppler's `pdftoppm` / `pdfinfo`), matching the
-  backend-side-decode model.
+  host where the file lives (poppler's `pdftoppm` / `pdfinfo`, which come with the
+  previews), matching the backend-side-decode model.
 - **Video** deliberately does *not* play in the pane. A native player (HTML5
   `<video>` with hardware decode) beats streaming decoded frames over a socket, so
   the pane shows a poster and `o` pops the real file out to the browser.
 
-When an external tool is missing (ffmpeg for video, poppler for PDF), the plugin
-returns a `text/markdown` note explaining the gap — never a silent blank pane.
+The previews bring their own poppler and ffmpeg; nothing is installed for them.
+When a page or poster cannot be made (the tool fails or takes longer than its
+bound of 8 seconds), the plugin returns a `text/markdown` note explaining why —
+never a silent blank pane.
 
 ## Opens in the browser, not the pane
 
