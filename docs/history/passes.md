@@ -1933,3 +1933,16 @@ A landing's record goes here, with its measured times; the package page holds on
   without asking again), its diff applied as written; review round 1 (no blockers: the fixture pinned only the side
   that asks again, so a fix that fetched on every visit would pass; two clears where one serves); one fix commit and
   two gates.
+- The update runbook moves every daemon a window dials before that window, 2026-11-11: the maintainer at about 13:10,
+  "your directions are bad - its leaving fe orphaned to non updated Bes", and later "users followed your exact
+  intructions above and had systems that updated but would not connect due to a FE/BE version mismatch"; builder
+  launched 13:52, main 18:05 (8494686d7 to 5756c144e, five commits), 4 hours 13 minutes, a miss by far. About 270
+  runbook and guide lines. The cause: the runbook updated only the computer its agent ran on, and a window and its
+  daemon on two computers refuse each other across 0.6 and 0.7; its first proof had run single computers only. Where
+  the time went: the cases themselves (two-computer groups, window-only laptops, a home several computers share, a
+  hub with a window, pairs with no group file, every split state the old text left, each red on the old text first,
+  in containers with the real 0.6.6 and 0.7.0 releases); four hosted probes on macOS and Windows, two of them failing
+  on the probe's own scripts; four review rounds with five blockers (a shared home's one record; two orders that
+  pointed at each other; a pair with no group file left broken; a lookup that could lead a person to overwrite a
+  group's file on its hub; flags that would declare every window computer a dialed daemon) and nine should-fixes.
+  The maintainer asked during it that the same message, sent again, take people from wherever the old text left them.
