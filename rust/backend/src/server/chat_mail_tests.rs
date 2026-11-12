@@ -107,17 +107,35 @@ async fn a_live_member_post_is_marked_mail_for_the_row_and_nothing_else_is() {
     assert!(first.contains(&format!("ts={} thread={} channel=C0AAAA workspace=T0AAAA", stamp(1), stamp(1))), "{first}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+/// A file without `mail_after` opens no delivery: the trap (an inbox that cannot be read, which makes any read of the
+/// inboxes log its name) is read by a delivering file and by none other, and nothing is filed.
+#[tokio::test(flavor = "current_thread")]
 async fn a_file_without_mail_after_reads_no_inbox_and_files_nothing() {
-    let w = world(false).await;
-    let chat = w.start(&w.fake).await;
-    // Both events are acknowledged by the socket's client; a delivery would have filed the first before the second.
-    send(&w.lv, 1, "e1");
-    send(&w.lv, 2, "e2");
-    until("both events taken", || w.lv.acked.load(Ordering::SeqCst) >= 2).await;
+    let log = sot_platform::test_log::capture();
+    for delivers in [false, true] {
+        let w = world(delivers).await;
+        std::fs::create_dir(w.th.home.join("inbox").join("trapnoread.jsonl")).unwrap();
+        let _chat = w.start(&w.fake).await;
+        send(&w.lv, 1, "e1");
+        send(&w.lv, 2, "e2");
+        until("both events taken", || w.lv.acked.load(Ordering::SeqCst) >= 2).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(w.inbox(), Vec::<String>::new());
+        assert_eq!(log.text().contains("trapnoread"), delivers, "{}", log.text());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filing_job_that_panics_still_answers_and_the_next_post_is_filed() {
+    let w = world(true).await;
+    let _chat = w.start(&w.fake).await;
+    // A ts no other test sends: the seam is process-wide.
+    crate::chat::watch::PANIC_ON.lock().unwrap().push(stamp(777));
+    send(&w.lv, 777, "e1");
+    send(&w.lv, 778, "e2");
+    w.filed_count(1).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(w.inbox(), Vec::<String>::new());
-    assert!(chat.hub().running(), "the owner runs without a delivery");
+    assert_eq!(w.filed(), vec![stamp(778)], "the post whose job panicked is not filed, and the next is");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -887,6 +887,11 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
+  `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on
+  every try (an inbox that is a directory), an `ambiguous_row` or `no_row` that refuses every filing, a chat held by
+  another computer's daemon (status `Starting`) (`rust/backend/src/chat/watch.rs`, `chat.rs`). Fix: say it in the reply
+  or the status. Found by reading code; never seen.
 - **CHAT-SECRETS-TWO-FORMS** [session] Two programs claim the hub's `chat-secrets.toml` in two forms: the November
   live-test tool's template writes `[[workspace]]` tables keyed `id`, and the daemon (`config.rs`, `Credentials::parse`)
   reads three top-level keys, `workspace`, `bot_token` and `app_token`. Seen 2026-11-10 at the first start of the chat

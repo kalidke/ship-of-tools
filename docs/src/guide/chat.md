@@ -170,7 +170,11 @@ agent pane, the Terminal and the Julia REPL is unchanged.
 When the hub's `chat.toml` sets `mail_after`, the daemon files each new post a channel member makes (or the drawer makes
 for you) in a mapped channel as one marked line of mail to the row mapped to its folder, with no window open. A free
 Claude row is woken, a busy one reads it at the end of its turn, and a Codex row gets it unwoken. Today this covers the
-posts the daemon sees live: a post made while the daemon was down or the Slack connection was lost is not delivered yet.
+posts the daemon sees live and files at once. A post made while the daemon was down or the Slack connection was lost, and
+a post whose filing was refused (the row had no live session for ten minutes, say), are not delivered yet: they wait for
+the recovery passes, which are unbuilt, and the daemon log shows a refused filing as one line. Slack hands each event to
+one connection, so any other program that opens a connection with the chat app's token while the hub delivers (a probe, or
+a daemon from before the single listener) takes some events from it, and those posts wait for the same passes.
 A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has. The
 row cannot reply from the shell yet.
 

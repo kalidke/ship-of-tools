@@ -287,8 +287,14 @@ async fn read_inboxes(env: Env, tx: mpsc::Sender<Done>, timing: Timing) {
     }
 }
 
+/// The `ts` values whose filing job panics, so a test can prove a failed job still answers.
+#[cfg(test)]
+pub(crate) static PANIC_ON: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// One filing: the author named as a read names it, then the guarded append.
 async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing) -> Done {
+    #[cfg(test)]
+    assert!(!PANIC_ON.lock().unwrap().contains(&f.record.ts.as_str().to_string()), "a test's filing job fails here");
     if let Ok(api) = service.api() {
         api.fill_names(std::slice::from_mut(&mut f.record)).await;
     }
@@ -437,7 +443,15 @@ impl Own {
                 Action::File(f) => {
                     let folder = m.folders.iter().find(|(c, _)| *c == f.channel).map(|(_, folder)| folder.clone()).unwrap_or_default();
                     let (env, rows, service, tx) = (self.chat.env.clone(), self.rows.clone(), self.service.clone(), m.tx.clone());
-                    drop(tokio::spawn(async move { drop(tx.send(file_job(env, rows, service, folder, f).await).await) }));
+                    let (channel, ts, live) = (f.channel.clone(), f.record.ts.clone(), f.live);
+                    // A job that panics or is cancelled still answers, so the delivery's one filing in flight returns.
+                    drop(tokio::spawn(async move {
+                        let done = tokio::spawn(file_job(env, rows, service, folder, f)).await.unwrap_or_else(|e| {
+                            tracing::warn!(channel, ts = ts.as_str(), cancelled = e.is_cancelled(), "project chat: a filing job did not finish");
+                            Done::Filed { channel, ts, live, result: Err("job_failed".into()) }
+                        });
+                        drop(tx.send(done).await)
+                    }));
                 }
                 Action::Pass { .. } => m.delivery.pass_skipped(std::time::Instant::now()),
                 Action::Commit { .. } => {}
