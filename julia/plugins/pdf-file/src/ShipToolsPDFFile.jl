@@ -7,10 +7,11 @@ module ShipToolsPDFFile
 # via the 3-arg `preview` form. Rasterization shells out to poppler
 # (`pdftoppm` for the page bitmap, `pdfinfo` for the page count) on the
 # host where the file lives — same backend-side-decode model as the
-# ffmpeg poster path (ADR 0018), and poppler is already present on the
-# backend hosts.
+# ffmpeg poster path (ADR 0018). Both tools are `Poppler_jll`'s own build,
+# run through its command form; nothing is looked up on the search path.
 
 using ConceptExplorerCore
+using Poppler_jll
 
 export PDFFile
 
@@ -28,9 +29,14 @@ struct PDFFile <: ConceptExplorerCore.FileType end
 # (zoom-triggered re-rasterize, deferred in ADR 0021).
 const RASTER_DPI = 144
 
-# The longest pdftoppm or pdfinfo may run, in seconds; the kernel serves one request at a time, so a stuck tool must
-# end.
-const TOOL_BOUND = 20
+# The longest one page request may spend in pdfinfo and pdftoppm together, in seconds; the kernel serves one request at
+# a time, so a stuck tool must end, and the daemon gives up on a kernel answer at 10 s (`KERNEL_REQUEST_TIMEOUT`).
+const PREVIEW_BOUND = 8
+
+# The tools as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
+# poppler still loads this module; a test stands other commands in here.
+const PDFTOPPM = Ref{Function}(() -> Poppler_jll.pdftoppm())
+const PDFINFO = Ref{Function}(() -> Poppler_jll.pdfinfo())
 
 ConceptExplorerCore.matches(::Type{PDFFile}, path::AbstractString) =
     endswith(lowercase(path), ".pdf")
@@ -94,20 +100,25 @@ end
 
 function _preview_page(path::AbstractString, page::Int;
                        fit_w::Union{Int,Nothing}=nothing,
-                       fit_h::Union{Int,Nothing}=nothing)
-    pdftoppm = Sys.which("pdftoppm")
-    pdfinfo = Sys.which("pdfinfo")
-    if pdftoppm === nothing || pdfinfo === nothing
-        # No quiet fallback: name the gap and the fix.
-        return _note("poppler (`pdftoppm`/`pdfinfo`) not found on the kernel host — install poppler-utils to render PDF pages.")
+                       fit_h::Union{Int,Nothing}=nothing,
+                       bound::Real=PREVIEW_BOUND)
+    if !Poppler_jll.is_available()
+        return _note("no ready-built poppler exists for this platform.")
     end
+    deadline = time() + bound
+    left() = max(deadline - time(), 0.1)
     path = abspath(path)
     modified = mtime(path)
     cached_info = get(PDF_INFO, path, nothing)
     info = if cached_info !== nothing && first(cached_info) == modified
         last(cached_info)
     else
-        read_info = _pdf_info(pdfinfo, path)
+        read_info = try
+            _pdf_info(path, left())
+        catch e
+            # A tool that ran out of time says nothing about the file, so it is not remembered.
+            return _note("Couldn't read this file's page count: $(sprint(showerror, e))")
+        end
         PDF_INFO[path] = (modified, read_info)
         read_info
     end
@@ -142,7 +153,7 @@ function _preview_page(path::AbstractString, page::Int;
             # root yields 0 bytes silently, and without `-singlefile` the `-`
             # is treated as a filename prefix (`./--1.png` in the cwd). `-png`
             # keeps the frontend's existing image path.
-            ConceptExplorerCore.read_within(`$pdftoppm -png $scale_args -f $p -l $p -singlefile $path`, TOOL_BOUND)
+            ConceptExplorerCore.read_within(`$(PDFTOPPM[]()) -png $scale_args -f $p -l $p -singlefile $path`, left())
         catch e
             return _note("Couldn't rasterize page $p: $(sprint(showerror, e))")
         end
@@ -156,18 +167,20 @@ function _preview_page(path::AbstractString, page::Int;
 end
 
 """
-    _pdf_info(pdfinfo, path) -> Union{Tuple{Int,Float64,Float64}, Nothing}
+    _pdf_info(path, bound) -> Union{Tuple{Int,Float64,Float64}, Nothing}
 
 `(page_count, page_w_pts, page_h_pts)` from one `pdfinfo` run, or `nothing`
 when the tool fails or the Pages field is absent (corrupt/encrypted file).
+A run that outlasts `bound` seconds throws.
 Page size falls back to 0×0 when unparsable — callers treat that as "no
 geometry" and use the fixed-DPI path.
 """
-function _pdf_info(pdfinfo::AbstractString, path::AbstractString)
+function _pdf_info(path::AbstractString, bound::Real)
     out = try
-        String(ConceptExplorerCore.read_within(`$pdfinfo $path`, TOOL_BOUND))
-    catch
-        return nothing
+        String(ConceptExplorerCore.read_within(`$(PDFINFO[]()) $path`, bound))
+    catch e
+        e isa ProcessFailedException && return nothing
+        rethrow()
     end
     pages = match(r"^Pages:\s+(\d+)"m, out)
     pages === nothing && return nothing

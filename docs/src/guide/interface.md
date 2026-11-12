@@ -193,8 +193,8 @@ The full table — every built-in type and its MIME — is on the
   and hand it straight to the agent — "what's the artifact here?". The crop
   is taken from the source image on the backend, so the agent sees exactly what
   you do.
-- **No silent blanks.** When an external tool is missing (ffmpeg, poppler), the
-  plugin returns a `text/markdown` note explaining the gap instead of an empty
+- **No silent blanks.** When a PDF page or a video poster cannot be made, the
+  plugin returns a `text/markdown` note explaining why instead of an empty
   pane.
 
 ## The Agent Pane

@@ -544,7 +544,7 @@ fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<
     // huge); surface why instead of a silent blank pane.
     if crate::pages::video::is_servable_video(path) {
         tracing::warn!(%node_id, "video reached bytes-level reader — video plugin not loaded");
-        let msg = "# video preview unavailable\n\nNo plugin decoded this video — the `ShipToolsVideoFile` kernel plugin isn't loaded (or the kernel is down). Ensure the kernel env has it (`Pkg.develop(path=\"julia/plugins/video-file\")`) and that `ffmpeg`/`ffprobe` are on PATH.\n".to_string();
+        let msg = "# video preview unavailable\n\nNo plugin decoded this video — the `ShipToolsVideoFile` kernel plugin isn't loaded (or the kernel is down). Ensure the kernel env has it (`Pkg.develop(path=\"julia/plugins/video-file\")`).\n".to_string();
         return Ok(("text/markdown".to_string(), msg.into_bytes()));
     }
     let mime = mime_for_path(path).to_string();
