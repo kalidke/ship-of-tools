@@ -535,19 +535,31 @@ fn a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value() {
     assert!(!format!("{e} {e:?}").contains("sentinel"));
 }
 
-/// The reference's sample of a file, from the fenced block that follows `lead`.
-fn sample(lead: &str) -> &'static str {
-    const DOC: &str = include_str!("../../../docs/src/ref/config.md");
-    let after = &DOC[DOC.find(lead).unwrap_or_else(|| panic!("the reference has no sample after {lead:?}"))..];
+/// The reference's sample of a file, from the fenced block that follows `lead`. A Windows checkout holds the markdown
+/// with CRLF line endings, so the search runs on the text with every line ending as LF.
+fn sample_in(doc: &str, lead: &str) -> String {
+    let doc = doc.replace("\r\n", "\n");
+    let after = &doc[doc.find(lead).unwrap_or_else(|| panic!("the reference has no sample after {lead:?}"))..];
     let block = &after[after.find("```toml\n").unwrap() + 8..];
-    &block[..block.find("```").unwrap()]
+    block[..block.find("```").unwrap()].to_string()
+}
+
+fn sample(lead: &str) -> String {
+    sample_in(include_str!("../../../docs/src/ref/config.md"), lead)
+}
+
+#[test]
+fn a_sample_is_found_in_a_reference_with_either_line_ending() {
+    const DOC: &str = include_str!("../../../docs/src/ref/config.md");
+    let lead = "A `chat.toml` of one mapping:";
+    assert_eq!(sample_in(&DOC.replace('\n', "\r\n"), lead), sample_in(DOC, lead));
 }
 
 #[test]
 fn the_reference_samples_are_accepted_by_the_parsers() {
     let rows = |f: &str| (f == "/path/to/project").then(|| Folder { canonical: f.into(), inert: false });
-    let config = Config::parse(sample("A `chat.toml` of one mapping:"), &rows).unwrap();
-    assert!(Credentials::parse(sample("A `chat-secrets.toml`, with placeholder tokens:"), &config).is_ok());
+    let config = Config::parse(&sample("A `chat.toml` of one mapping:"), &rows).unwrap();
+    assert!(Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:"), &config).is_ok());
 }
 
 #[test]
