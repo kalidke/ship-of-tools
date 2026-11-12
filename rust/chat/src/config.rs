@@ -1,7 +1,8 @@
 //! The chat's configuration: `chat.toml` (the one workspace, its channels, the folder-to-channel mappings, an optional
 //! `mail_after`) and `chat-secrets.toml` (the workspace and its two tokens). Both sit in platform's config folder. Every
-//! refusal is a fixed code with a fixed explanation: a value from either file is never quoted, and the library's own
-//! parse errors (which quote the source) are never formatted. Reading the secrets is its own call, so a caller that is
+//! refusal is a fixed code with a fixed explanation: a value from either file is never quoted, a key is quoted only
+//! from a fixed list of documented names (the caller says which file refused), and the library's own parse errors
+//! (which quote the source) are never formatted. Reading the secrets is its own call, so a caller that is
 //! not the hub never opens that file.
 
 use crate::http::Secret;
@@ -67,6 +68,8 @@ pub enum ConfigError {
     BadId,
     BadMailAfter(Option<usize>),
     BadToken,
+    /// A key the file does not take: named when it is one of [`NAMED_KEYS`], else not named at all.
+    UnknownKey(Option<&'static str>),
     SecondWorkspace,
     DuplicateChannel,
     UnknownFolder(usize),
@@ -87,6 +90,7 @@ impl ConfigError {
             ConfigError::BadId => "a workspace or channel id is not a Slack id (capital letters and digits)",
             ConfigError::BadMailAfter(_) => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
             ConfigError::BadToken => "a token in chat-secrets.toml is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
+            ConfigError::UnknownKey(_) => "a key this file does not take is present: each chat file holds only its own documented keys",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
             ConfigError::UnknownFolder(_) => "a mapping names a folder no row knows: use the project folder's canonical path",
@@ -118,6 +122,7 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.explain())?;
         match (self, self.at()) {
+            (ConfigError::UnknownKey(Some(key)), _) => write!(f, " (key \"{key}\")"),
             (ConfigError::Malformed(_), Some(n)) => write!(f, " (line {n})"),
             (_, Some(n)) => write!(f, " (mapping {n})"),
             _ => Ok(()),
@@ -152,12 +157,18 @@ fn parse_table(text: &str) -> Result<toml::Table, ConfigError> {
     })
 }
 
+/// The only key names a refusal may quote: every documented key of either file and a mapping, and the names a file of
+/// another form uses. A key from a file is otherwise as untrusted as a value, so any other is refused unnamed.
+const NAMED_KEYS: [&str; 12] = [
+    "workspace", "channels", "mail_after", "mapping", "folder", "channel", "bot_token", "app_token", "id", "token",
+    "bot", "app",
+];
+
 /// Only the named keys may be present.
 fn only(t: &toml::Table, keys: &[&str]) -> Result<(), ConfigError> {
-    if t.keys().all(|k| keys.contains(&k.as_str())) {
-        Ok(())
-    } else {
-        Err(ConfigError::Malformed(None))
+    match t.keys().find(|k| !keys.contains(&k.as_str())) {
+        None => Ok(()),
+        Some(k) => Err(ConfigError::UnknownKey(NAMED_KEYS.iter().copied().find(|n| n == k))),
     }
 }
 

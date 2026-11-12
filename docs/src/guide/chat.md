@@ -62,7 +62,7 @@ row. Its title is `chat · <channel id>` (the id shows only while a channel is w
 | `reading…` | the hub is being asked, or the channel is being read | |
 | (nothing after the channel) | the channel was read whole | |
 | `the row's folder maps to no channel` | the folder is not in `chat.toml` | at a link change or another row |
-| `the hub has no usable chat configuration` | `chat.toml` is missing or invalid; the hub's daemon log says why | at a link change |
+| `the hub has no usable chat configuration` | `chat.toml` is missing or invalid; the hub's daemon log says why, starting with the file's name | at a link change |
 | `the chat runs on the hub, not on <host>` | the row's computer is not the hub | at a link change |
 | `the row is gone or was replaced` | the row's id changed | when the listing gives the row a new id, or at a link change |
 | `the hub could not answer: <reason>` | the hub refused for another reason | after a minute |

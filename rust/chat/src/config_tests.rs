@@ -144,18 +144,19 @@ fn index(e: ConfigError) -> usize {
         E::BadId => 3,
         E::BadMailAfter(_) => 4,
         E::BadToken => 5,
-        E::SecondWorkspace => 6,
-        E::DuplicateChannel => 7,
-        E::UnknownFolder(_) => 8,
-        E::InertAnchor(_) => 9,
-        E::FolderRepeated(_) => 10,
-        E::ChannelRepeated(_) => 11,
-        E::ChannelNotListed(_) => 12,
-        E::TooManyDelivering => 13,
-        E::MappingWithoutFloor(_) => 14,
+        E::UnknownKey(_) => 6,
+        E::SecondWorkspace => 7,
+        E::DuplicateChannel => 8,
+        E::UnknownFolder(_) => 9,
+        E::InertAnchor(_) => 10,
+        E::FolderRepeated(_) => 11,
+        E::ChannelRepeated(_) => 12,
+        E::ChannelNotListed(_) => 13,
+        E::TooManyDelivering => 14,
+        E::MappingWithoutFloor(_) => 15,
     }
 }
-const VARIANTS: usize = 15;
+const VARIANTS: usize = 16;
 
 fn mapping_from(folder: &str, channel: &str, from: &str) -> String {
     format!("{}mail_after = \"{from}\"\n", mapping(folder, channel))
@@ -242,12 +243,12 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         (
             "unknown key",
             parse(&chat("typo = 1\n")).map(drop),
-            Err(E::Malformed(None)),
+            Err(E::UnknownKey(None)),
         ),
         (
             "unknown key in a mapping",
             parse(&chat(&(m("/work/a", "C0AAAA") + "extra = 1\n"))).map(drop),
-            Err(E::Malformed(None)),
+            Err(E::UnknownKey(None)),
         ),
         (
             "lowercase id",
@@ -390,7 +391,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         (
             "secrets with an unknown key",
             creds(&(secrets() + "extra = 1\n")).map(drop),
-            Err(E::Malformed(None)),
+            Err(E::UnknownKey(None)),
         ),
     ];
     let mut seen = [false; VARIANTS];
@@ -427,6 +428,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         E::BadId,
         E::BadMailAfter(Some(2)),
         E::BadToken,
+        E::UnknownKey(Some("id")),
         E::SecondWorkspace,
         E::DuplicateChannel,
         E::UnknownFolder(2),
@@ -447,6 +449,8 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
     }
     assert!(E::Malformed(Some(3)).to_string().ends_with("(line 3)"));
     assert!(E::UnknownFolder(2).to_string().ends_with("(mapping 2)"));
+    assert!(E::UnknownKey(Some("id")).to_string().ends_with("(key \"id\")"));
+    assert_eq!(E::UnknownKey(None).to_string(), E::UnknownKey(None).explain());
     assert_eq!(E::Missing.to_string(), E::Missing.explain());
     // The files are named as the contract names them.
     assert_eq!(MAX_FILE, 64 * 1024);
@@ -529,6 +533,38 @@ fn a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value() {
         Credentials::read(Path::new("/nowhere"), failing, &parse(&chat("")).unwrap()).unwrap_err();
     assert_eq!(e, E::Unreadable);
     assert!(!format!("{e} {e:?}").contains("sentinel"));
+}
+
+/// The reference's sample of a file, from the fenced block that follows `lead`.
+fn sample(lead: &str) -> &'static str {
+    const DOC: &str = include_str!("../../../docs/src/ref/config.md");
+    let after = &DOC[DOC.find(lead).unwrap_or_else(|| panic!("the reference has no sample after {lead:?}"))..];
+    let block = &after[after.find("```toml\n").unwrap() + 8..];
+    &block[..block.find("```").unwrap()]
+}
+
+#[test]
+fn the_reference_samples_are_accepted_by_the_parsers() {
+    let rows = |f: &str| (f == "/path/to/project").then(|| Folder { canonical: f.into(), inert: false });
+    let config = Config::parse(sample("A `chat.toml` of one mapping:"), &rows).unwrap();
+    assert!(Credentials::parse(sample("A `chat-secrets.toml`, with placeholder tokens:"), &config).is_ok());
+}
+
+#[test]
+fn a_secrets_refusal_names_the_key_the_file_must_not_hold_and_never_a_value() {
+    let b = bot();
+    // A key chat.toml takes, and the live-test harness's `id`, in the secrets file: named, by the key alone.
+    for key in ["channels", "id", "mail_after"] {
+        let shown = creds(&(secrets() + &format!("{key} = \"{b}\"\n"))).unwrap_err().to_string();
+        assert!(shown.contains(&format!("\"{key}\"")), "{shown}");
+        assert!(!shown.contains("sentinel"), "{shown}");
+    }
+    // A key no one documents is never quoted, even when it looks like a token.
+    let shown = creds(&(secrets() + &format!("{b} = 1\n"))).unwrap_err().to_string();
+    assert!(!shown.contains("sentinel"), "{shown}");
+    // A mapping's stray key is named too.
+    let text = chat(&(mapping("/work/a", "C0AAAA") + "id = \"C0AAAA\"\n"));
+    assert!(parse(&text).unwrap_err().to_string().contains("\"id\""));
 }
 
 #[test]

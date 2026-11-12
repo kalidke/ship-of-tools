@@ -82,9 +82,10 @@ impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Status::NotHub => f.write_str(Resolution::NotHub.explain()),
-            Status::Refused(e) => write!(f, "{e}"),
-            Status::Secrets(ConfigError::Missing) => f.write_str("chat-secrets.toml is missing from the config folder"),
-            Status::Secrets(e) => write!(f, "{e}"),
+            Status::Refused(e @ ConfigError::Missing) => write!(f, "{e}"),
+            Status::Refused(e) => write!(f, "{}: {e}", config::CONFIG_FILE),
+            Status::Secrets(ConfigError::Missing) => write!(f, "{} is missing from the config folder", config::SECRETS_FILE),
+            Status::Secrets(e) => write!(f, "{}: {e}", config::SECRETS_FILE),
             Status::Failed(code) => write!(f, "the chat service did not start: {code}"),
             Status::Starting => f.write_str("the chat service is starting"),
             Status::Running => f.write_str("the chat service is running"),
