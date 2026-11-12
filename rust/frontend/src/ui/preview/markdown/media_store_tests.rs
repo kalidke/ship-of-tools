@@ -8,7 +8,7 @@ use crate::ui::preview::image::svg_preview::{settle_frame, SvgPreview};
 use crate::ui::preview::image::svg_run::{Outcome, Stop};
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 struct Bench {
@@ -17,16 +17,23 @@ struct Bench {
     figures: FigureStore,
     preview: SvgPreview,
     given: Arc<AtomicUsize>,
+    /// The size of each batch the draw was given.
+    calls: Arc<Mutex<Vec<usize>>>,
     release: Arc<AtomicBool>,
 }
 
 fn key(latex: &str) -> (String, bool) { (latex.to_owned(), false) }
 
 impl Bench {
-    fn new() -> Self {
+    fn new() -> Self { Self::with_cap(1 << 20) }
+
+    /// A bench whose worker queues at most `cap` bytes of input.
+    fn with_cap(cap: usize) -> Self {
         let (given, release) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
-        let (count, held) = (given.clone(), release.clone());
+        let (count, held, calls) = (given.clone(), release.clone(), Arc::new(Mutex::new(Vec::new())));
+        let sizes = calls.clone();
         let draw = Arc::new(move |jobs: Vec<Job>, stop: &Stop| {
+            sizes.lock().unwrap().push(jobs.len());
             let begun = Instant::now();
             jobs.into_iter()
                 .map(|job| {
@@ -46,10 +53,11 @@ impl Bench {
         });
         Self {
             media: MarkdownMedia::default(),
-            draws: SvgDraws::new(1 << 20, || {}, draw),
+            draws: SvgDraws::new(cap, || {}, draw),
             figures: FigureStore::default(),
             preview: SvgPreview::default(),
             given,
+            calls,
             release,
         }
     }
@@ -84,6 +92,9 @@ impl Bench {
     }
 
     fn given(&self) -> usize { self.given.load(SeqCst) }
+
+    /// The size of each batch the draw was given: one entry per child.
+    fn calls(&self) -> Vec<usize> { self.calls.lock().unwrap().clone() }
 
     /// Lets the worker finish what it has started.
     fn settle_worker(&self) { std::thread::sleep(Duration::from_millis(100)); }
@@ -148,6 +159,32 @@ fn the_snippets_of_a_frame_go_to_the_worker_together() {
         assert!(begun.elapsed() < Duration::from_secs(10), "{drawn} drawn");
     }
     assert_eq!(bench.given(), 3, "each snippet once, though one is shown twice");
+    assert_eq!(bench.calls(), [3], "one draw, so one child, for the frame's three snippets");
+}
+
+#[test]
+fn a_batch_refused_at_submit_is_not_asked_again() {
+    // A job fills the queue behind a held draw, so the frame's snippet does not fit and is refused. It stays asked: when
+    // room comes, no frame sends it, and the worker is given the two jobs and nothing else.
+    let mut bench = Bench::with_cap(10);
+    bench.draws.submit("h1".into(), 1, Job { ask: Ask::Stretch(1, 1), svg: Arc::from(&b"hold1"[..]) }).unwrap();
+    while bench.given() < 1 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    bench.draws.submit("h2".into(), 1, Job { ask: Ask::Stretch(1, 1), svg: Arc::from(&b"hold2"[..]) }).unwrap();
+    bench.reply("x", "<svg/>");
+    for _ in 0..3 {
+        bench.frame(1, &["x"], (12, 8));
+    }
+    bench.release.store(true, SeqCst);
+    while bench.given() < 2 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    for _ in 0..3 {
+        bench.frame(1, &["x"], (12, 8));
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(bench.given(), 2, "the refused snippet was asked again once there was room");
 }
 
 #[test]

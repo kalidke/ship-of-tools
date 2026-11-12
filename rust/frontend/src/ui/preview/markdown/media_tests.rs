@@ -32,8 +32,9 @@ fn math_shaped_svg(n: usize) -> String {
 }
 
 impl State {
-    /// A page of 50 inline equations is drawn by the worker, all in view: every one has its raster, and the page's cost
-    /// from the first frame to the last raster is printed (`math-page`). The equations are MathJax-shaped stand-ins.
+    /// A page of 50 inline equations, all in view and all replied before the first frame, is drawn by the worker in one
+    /// child: every one has its raster, and the page's cost from the first frame to the last raster is printed
+    /// (`math-page`). The equations are MathJax-shaped stand-ins.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
     pub(in crate::ui) fn a_page_of_math_is_drawn_by_the_worker_in_one_batch(&mut self) -> anyhow::Result<()> {
         self.redraw()?;
@@ -43,6 +44,17 @@ impl State {
             .collect();
         self.preview_source.install("text/markdown".into(), source.clone().into_bytes(), Some("files:m.md".into()), None, None);
         self.render_preview_source("text/markdown", source.as_bytes());
+        // The worker's draw counts each child it starts: a page asked together is one.
+        let children = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let counted = children.clone();
+        self.svg_draws = crate::ui::preview::image::svg_draws::SvgDraws::new(
+            crate::ui::preview::image::svg_draws::QUEUED_BYTES,
+            || {},
+            std::sync::Arc::new(move |jobs, stop| {
+                counted.lock().unwrap().push(jobs.len());
+                crate::ui::preview::image::svg_run::draw_in_own_child(jobs, stop)
+            }),
+        );
         let keys: Vec<_> = (0..EQUATIONS).map(|n| (format!("a_{{{n}}}"), false)).collect();
         for (n, (latex, display)) in keys.iter().enumerate() {
             self.on_math_rendered(latex.clone(), math_shaped_svg(n).into_bytes(), 8.0, *display);
@@ -54,7 +66,9 @@ impl State {
             self.redraw()?;
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        println!("math-page equations={EQUATIONS} ms={}", begun.elapsed().as_millis());
+        let children = children.lock().unwrap().clone();
+        println!("math-page equations={EQUATIONS} children={} ms={}", children.len(), begun.elapsed().as_millis());
+        anyhow::ensure!(children == [EQUATIONS], "the page was drawn by {} children ({children:?}), not one", children.len());
         Ok(())
     }
 }

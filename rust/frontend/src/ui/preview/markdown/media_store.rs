@@ -197,14 +197,12 @@ impl MarkdownMedia {
     /// again, and a replaced entry was asked of nothing.
     pub(in crate::ui) fn settle_drawing(&mut self, done: Done) -> Option<((String, bool), Settled)> {
         let key = math_key(&done.key)?;
-        let entry = self.math.get_mut(&key).filter(|entry| entry.asked == Some(done.generation))?;
+        self.math.get(&key).filter(|entry| entry.asked == Some(done.generation))?;
         let settled = match done.outcome {
             Outcome::Drawn { w, h, rgba } => Settled::Drawn { w, h, rgba },
             Outcome::Refused(why) | Outcome::Ended(why) => Settled::Failed(why),
-            Outcome::Stale => {
-                entry.asked = None;
-                Settled::Unhandled
-            }
+            // A `Stale` is of a generation the pane has left, and `wants_raster` asks again under the new one.
+            Outcome::Stale => Settled::Unhandled,
         };
         Some((key, settled))
     }

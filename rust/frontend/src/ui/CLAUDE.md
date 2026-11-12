@@ -310,7 +310,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   keyed `PREVIEW_KEY` (a key no figure URL holds), of the pane's generation; a second `show` of the same generation
   while it is in flight submits nothing, and an outcome of another generation (a departed source's `Stale` or a late
   outcome after a resubmit) is ignored. The frame's one step, `settle_frame`, tells the worker the pane's generation,
-  drains it once and hands each outcome to its owner (the preview by key, else `FigureStore`); the window keeps the
+  drains it once and hands each outcome to its owner (the preview by `PREVIEW_KEY`, a math snippet by its key's prefix to `MarkdownMedia::settle_drawing`, else `FigureStore`); the window keeps the
   upload (`settle_svg_draws`, called by `frame_upkeep`, and `apply_svg_step`). A refusal says `svg not drawn: <the
   drawing's or the runner's first line>` on the status line (`svg_not_drawn`, no control character) and the text
   stays, the old raster hidden. A refusal that arrives while a picture of the same source is up leaves the picture
@@ -389,14 +389,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   until the source is installed anew (a later generation asks again) or its entry is replaced by a fresh reply, and a
   resize or a later frame asks nothing. An outcome counts only if the snippet was asked under the generation it
   carries (`settle_drawing`): a departed generation's `Stale` can arrive after the new one asked again, and changes
-  nothing; a current `Stale` leaves the snippet unasked, so the next paint asks again. The window keeps only the
+  nothing; it needs no reset, since the next paint asks again under the new generation. A batch the worker refuses at
+  submit (a full queue) leaves its snippets asked, so they are not sent again each frame. The window keeps only the
   upload (`on_math_settled`). An inline math raster is sized to fit the preview pane's width and its reservation's
   height, never wider than the pane (`a_formula_wider_than_the_pane_rasterizes_at_the_pane_width`). Tests, in
   media_store_tests.rs (a stand-in draw): `a_math_snippet_is_submitted_once`,
   `a_refused_math_snippet_is_not_submitted_on_later_frames`, `the_snippets_of_a_frame_go_to_the_worker_together`,
   `a_departed_generations_outcome_does_not_undo_a_new_ask`,
-  `a_stale_snippet_is_asked_again_under_the_current_generation`; the native fixture
-  `a_page_of_math_is_drawn_by_the_worker_in_one_batch` draws 50 inline equations through the real child. Limit: a
+  `a_stale_snippet_is_asked_again_under_the_current_generation`, `a_batch_refused_at_submit_is_not_asked_again`; the
+  native fixture `a_page_of_math_is_drawn_by_the_worker_in_one_batch` draws 50 inline equations, all replied before
+  its first frame, through the real child and asserts they went to one child (about 180 ms in a debug build on a
+  loaded Linux host, against about 3 s with one child per snippet). Cost in use: the batch is of what is waiting when
+  the worker pops, and each `math.render` reply arrives on its own, so a page costs one child per pop (a pop takes every
+  snippet waiting then), not one per page; the 50-equation figure is the all-arrived case. Limit: a
   batch has the one wall (`SVG_WALL`) for all its snippets, so a page whose snippets together take longer is cut at
   it, the rest refused in its words; the old standalone math pane's draw is gone (the SVG slot above is what it filled).
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
@@ -903,7 +908,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     generation starts clean. A strike is one child's end, not one job's: a batch whose child ended early (the
     jobs it had not answered come back `Ended` in its end's words) is one strike.
   - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, read in `frame_upkeep`
-    through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the preview or a figure); each the worker sends is followed by one
+    through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the preview, a math snippet or a figure); each the worker sends is followed by one
     `MainWake::wake` (the stale ones `advance` and
     `submit` hand back are read by the window's own thread and wake nothing). A draw that panics gives no outcomes, and each
     of its jobs is refused in `cannot start the drawing` words; a worker thread the OS refuses makes `submit` itself
