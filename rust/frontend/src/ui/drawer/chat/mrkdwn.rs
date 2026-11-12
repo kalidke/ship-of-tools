@@ -54,27 +54,50 @@ fn push(out: &mut Vec<Piece>, a: &Atom, style: u8, flat: bool) {
     }
 }
 
-/// The marker closing the `c` at `open`: the nearest `c` on its line that follows a non-space and precedes an edge, and is
-/// not next to the opener (an empty style never closes).
-fn close(atoms: &[Atom], open: usize, c: char) -> Option<usize> {
-    let line = atoms[open..].iter().position(|a| matches!(a, Atom::Ch('\n'))).map_or(atoms.len(), |n| open + n);
-    (open + 2..line).find(|&j| matches!(atoms[j], Atom::Ch(x) if x == c) && !space(&atoms[j - 1]) && edge(atoms.get(j + 1)))
+// The atoms the closer scans have stepped over on this thread, for the test that holds the parse linear.
+#[cfg(test)]
+thread_local!(static SCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+#[cfg(test)]
+pub(super) fn scanned_reset() {
+    SCANNED.with(|s| s.set(0));
+}
+#[cfg(test)]
+pub(super) fn scanned() -> usize {
+    SCANNED.with(|s| s.get())
+}
+
+/// The marker closing the `c` at `open`: the nearest `c` before `eol` (the line's end) that follows a non-space and precedes an
+/// edge, and is not next to the opener (an empty style never closes).
+fn close(atoms: &[Atom], open: usize, c: char, eol: usize) -> Option<usize> {
+    (open + 2..eol).find(|&j| {
+        #[cfg(test)]
+        SCANNED.with(|s| s.set(s.get() + 1));
+        matches!(atoms[j], Atom::Ch(x) if x == c) && !space(&atoms[j - 1]) && edge(atoms.get(j + 1))
+    })
 }
 
 fn parse(atoms: &[Atom], style: u8, out: &mut Vec<Piece>) {
-    let mut i = 0;
+    // `eol` is the end of the line `i` is on, found once a line; `failed` holds, per marker, the line a scan for its closer
+    // failed on: a closer for a later opener is one for this, so no later opener of that marker on that line scans again.
+    let (mut i, mut eol, mut failed) = (0, 0, [usize::MAX; 4]);
     while i < atoms.len() {
+        if i >= eol {
+            eol = atoms[i..].iter().position(|a| matches!(a, Atom::Ch('\n'))).map_or(atoms.len(), |n| i + n);
+        }
         let c = if let Atom::Ch(c) = atoms[i] { c } else { '\0' };
         let bit = match c { '*' => BOLD, '_' => ITALIC, '~' => STRIKE, '`' => CODE, _ => 0 };
         if bit == CODE && matches!(atoms.get(i + 1), Some(Atom::Ch('`'))) {
-            // A run of backticks is a fence, literal until code blocks are drawn.
+            // A run of backticks at an opener is a fence, literal until code blocks are drawn.
             let run = atoms[i..].iter().take_while(|a| matches!(a, Atom::Ch('`'))).count();
             (i..i + run).for_each(|k| push(out, &atoms[k], style, false));
             i += run;
             continue;
         }
-        let opens = bit != 0 && edge(atoms.get(i.wrapping_sub(1))) && atoms.get(i + 1).is_some_and(|a| !space(a));
-        if let Some(j) = opens.then(|| close(atoms, i, c)).flatten() {
+        // An opener is followed by a non-space that is not its own marker (`**x**` opens at the second asterisk).
+        let opens = bit != 0 && edge(atoms.get(i.wrapping_sub(1))) && atoms.get(i + 1).is_some_and(|a| !space(a) && !matches!(a, Atom::Ch(x) if *x == c));
+        let slot = bit.trailing_zeros() as usize % 4;
+        let closer = if opens && failed[slot] != eol { close(atoms, i, c, eol) } else { None };
+        if let Some(j) = closer {
             if bit == CODE {
                 atoms[i + 1..j].iter().for_each(|a| push(out, a, style | CODE, true));
             } else {
@@ -82,6 +105,7 @@ fn parse(atoms: &[Atom], style: u8, out: &mut Vec<Piece>) {
             }
             i = j + 1;
         } else {
+            failed[slot] = if opens { eol } else { failed[slot] };
             push(out, &atoms[i], style, false);
             i += 1;
         }

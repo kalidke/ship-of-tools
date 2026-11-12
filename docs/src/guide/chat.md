@@ -72,11 +72,13 @@ row. Its title is `chat · <channel id>` (the id shows only while a channel is w
 
 Slack's inline styles show as styles. `*bold*`, `_italic_` and `~strike~` are drawn bold, slanted and struck through, and
 `` `code` `` is drawn in a monospace face, in orange, on a bordered box; the marks themselves are not shown, and a
-selection or a copy of the message gives the text as shown. Slack's rules for where a style starts and stops apply: it
-opens at the start of the text or after a space or punctuation mark and before something that is not a space, and closes at the next
+selection or a copy of the message gives the text as shown. The rules for where a style starts and stops are the
+drawer's reading of Slack's and have not yet been compared with the desktop app side by side: a style opens at the start
+of the text or after a space or punctuation mark and before something that is not a space, and closes at the next
 matching mark on the same line before a space, punctuation or the end. A mark in the middle of a word (`2*3*4`,
-`snake_case_name`), an unclosed one, and one closed on a later line stay as typed, and so does a run of backticks.
-Code shows no other style inside it.
+`snake_case_name`), an unclosed one, and one closed on a later line stay as typed, and so does a run of backticks that
+starts a style. A mark followed by the same mark does not start a style, so `**x**` shows `x` in bold between two
+asterisks. Code shows no other style inside it, and a style around code is dropped.
 
 Other markup, such as a mention or a link, is shown as the markup text in blue and is not rendered: a link is not
 clickable and a mention is not replaced by a name. Text that looks like a header or a badge inside a message stays

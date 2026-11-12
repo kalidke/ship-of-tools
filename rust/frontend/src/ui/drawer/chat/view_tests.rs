@@ -973,12 +973,18 @@ fn lay_drawer(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord]) 
 /// A divider's line, in pixels at text scale 1.
 const DAY_H: f32 = 30.0;
 
-/// The badges' rectangles of the placed records: those in `LOW` below the divider's lines (the divider's pill and rules are in
-/// it too, and lie in the oldest record's first lines, which a narrow drawer wraps into more than one).
+/// The `color` rectangles of the first placed record that lie on one of its header's layout lines (`header`) or of its body's,
+/// never on its divider's (the pill and rules lie there, in as many lines as a narrow drawer wraps the label into).
+fn on_lines<'a>(view: &ChatView, quads: &'a [CellQuad], color: (u8, u8, u8), header: bool) -> Vec<&'a CellQuad> {
+    let top = DRAWER.y + view.placed_tops()[0];
+    let lines: Vec<(f32, f32)> = view.placed_buffers()[0].layout_runs().filter(|r| if header { r.line_i == 1 } else { r.line_i >= 2 }).map(|r| (top + r.line_top, r.line_height)).collect();
+    of_color(quads, color).into_iter().filter(|q| lines.iter().any(|(t, h)| q.y >= t - 0.01 && q.y + q.h <= t + h + 0.01)).collect()
+}
+
+/// The badges' rectangles of the first placed record: its `LOW` fills on the header's lines, so a code run's border below them
+/// is not counted.
 fn badges_in<'a>(view: &ChatView, quads: &'a [CellQuad]) -> Vec<&'a CellQuad> {
-    let divider: f32 = view.placed_buffers()[0].layout_runs().filter(|r| r.line_i == 0).map(|r| r.line_height).sum();
-    let below = DRAWER.y + view.placed_tops()[0] + divider;
-    of_color(quads, LOW).into_iter().filter(|q| q.y >= below - 0.01).collect()
+    on_lines(view, quads, LOW, true)
 }
 
 /// The header line is the name, then the time at 12/15 of its size and muted, and is as tall as a body line: a smaller
@@ -1023,20 +1029,24 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
 fn the_badge_comes_from_the_origin_and_no_text_draws_one() {
     let mut fonts = FontSystem::new();
     let mut view = ChatView::default();
-    for (origin, name, text, badges) in [
-        ("member", "Eve [drawer]", "[drawer] [row] APP DRAWER ROW", 0),
-        ("member", "ROW", "APP", 0),
-        ("member", "APP", "x", 0),
-        ("other", "Ada", "x", 0),
-        ("drawer", "Ada", "x", 1),
-        ("row", "Ada", "x", 1),
-        ("bot", "Ada", "x", 1),
+    // `boxes` is the code boxes the body draws: typed code that reads as a badge is a box on the body's line, never a badge.
+    for (origin, name, text, badges, boxes) in [
+        ("member", "Eve [drawer]", "[drawer] [row] APP DRAWER ROW", 0, 0),
+        ("member", "ROW", "APP", 0, 0),
+        ("member", "APP", "x", 0, 0),
+        ("other", "Ada", "x", 0, 0),
+        ("drawer", "Ada", "x", 1, 0),
+        ("row", "Ada", "x", 1, 0),
+        ("bot", "Ada", "x", 1, 0),
+        ("member", "Ada", "`ROW` `APP`", 0, 2),
+        ("row", "Ada", "`ROW`", 1, 1),
     ] {
         let held = [rec_by("1700000001.000100", name, origin, text)];
         lay_drawer(&mut view, &mut fonts, &held);
         let quads = view.backs(DRAWER);
         let drawn = badges_in(&view, &quads);
         assert_eq!(drawn.len(), badges, "{origin} {name:?} {text:?}");
+        assert_eq!(on_lines(&view, &quads, LOW, false).len(), boxes, "{origin} {name:?} {text:?}: the code boxes");
         for q in drawn {
             // As wide as its text and the padding of 4 px each side, and inside the header line.
             let buffers = view.placed_buffers();
@@ -1465,57 +1475,84 @@ fn a_divider_wrapped_in_a_narrow_drawer_keeps_the_tile_below_it() {
     assert!(near(tile.y, body_of_drawer().y + view.placed_tops()[0] + lines.iter().sum::<f32>() + 2.0), "{tile:?} {lines:?}");
 }
 
-/// Inline code is monospace and orange on a filled, bordered rectangle padded 3 px, and strike is a 1 px rule through its run:
-/// both rectangles come from the glyphs' flags, so no text draws one without the styles, and the markers are gone from the
-/// shown text and from the copy.
+/// Inline code is monospace and orange on a bordered fill padded 3 px, and strike is a 1 px rule through its run: on every layout
+/// line a run covers, from the glyphs' flags alone, so no text draws one without the styles. The markers are gone from the shown
+/// text and the copy; on a marked record the fill is the band's color, so only the border shows.
 #[test]
 fn code_and_strike_draw_their_rects_from_glyph_flags() {
+    use cosmic_text::{Color, Style, Weight};
     let mut fonts = FontSystem::new();
-    let held = [by_ada(0, "plain `code` and ~struck~ *bold* _it_")];
-    for scale in [1.0_f32, 1.5] {
-        let records: Vec<&ChatRecord> = held.iter().collect();
-        let mut view = ChatView::default();
-        view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
-        let quads = view.backs(DRAWER);
-        let buffers = view.placed_buffers();
-        let shown: Vec<&str> = buffers[0].lines.iter().map(|l| l.text()).collect();
-        assert_eq!(shown[2], "plain code and struck bold it", "the markers leave the shown text");
-        let body = body_of_drawer();
-        let top = body.y + view.placed_tops()[0];
-        let run = buffers[0].layout_runs().find(|r| r.line_i == 2).expect("the body line");
-        // The glyphs of a flag: their left edge, their right edge and their count.
-        let flagged = |flag: usize| {
-            let g: Vec<_> = run.glyphs.iter().filter(|g| g.metadata & flag != 0).collect();
-            (g.iter().map(|g| g.x).fold(f32::MAX, f32::min), g.iter().map(|g| g.x + g.w).fold(0.0, f32::max), g)
-        };
-        let text_x = body.x + GUTTER_PX * scale;
-        let (code, strike) = (styled_attrs(Kind::Body, CODE, scale), styled_attrs(Kind::Body, STRIKE, scale));
-        assert_ne!(code.metadata, strike.metadata);
-        assert_eq!(styled_attrs(Kind::Body, 0, scale).metadata, 0, "no style, no flag");
-        let (left, right, glyphs) = flagged(code.metadata);
-        assert_eq!(glyphs.len(), 4);
-        assert!(glyphs.iter().all(|g| near(g.font_size, 14.0 * scale) && g.color_opt == Some(cosmic_text::Color::rgb(0xE8, 0x91, 0x2D))));
-        let border = badges_in(&view, &quads);
-        assert_eq!(border.len(), 1, "{border:?}");
-        let pad = 3.0 * scale;
-        assert!(near(border[0].x, text_x + left - pad) && near(border[0].w, right - left + 2.0 * pad), "{:?}", border[0]);
-        assert!(border[0].y >= top + run.line_top && border[0].y + border[0].h <= top + run.line_top + run.line_height, "{:?}", border[0]);
-        let fill = of_color(&quads, BAND);
-        assert_eq!(fill.len(), 1, "no mark: the fill alone");
-        assert!(near(fill[0].x, border[0].x + scale) && near(fill[0].y, border[0].y + scale) && near(fill[0].w, border[0].w - 2.0 * scale) && near(fill[0].h, border[0].h - 2.0 * scale), "{:?}", fill[0]);
-        let (left, right, glyphs) = flagged(strike.metadata);
-        assert_eq!(glyphs.len(), 6);
-        let rule = of_color(&quads, (0xD1, 0xD2, 0xD3));
-        assert_eq!(rule.len(), 1, "{rule:?}");
-        assert!(near(rule[0].x, text_x + left) && near(rule[0].w, right - left) && near(rule[0].h, scale), "{:?}", rule[0]);
-        assert!(near(rule[0].y + rule[0].h / 2.0, top + run.line_top + run.line_height / 2.0), "{:?}", rule[0]);
-        // Bold and italic are the font's weight and style.
-        assert_eq!(styled_attrs(Kind::Body, BOLD, scale).weight, cosmic_text::Weight::BOLD);
-        assert_eq!(styled_attrs(Kind::Body, ITALIC, scale).style, cosmic_text::Style::Italic);
-        assert_ne!(styled_attrs(Kind::Body, 0, scale).weight, cosmic_text::Weight::BOLD);
-        // The copy follows the shown text.
-        view.mark = Some(held[0].ts.clone());
-        view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
-        assert_eq!(view.marked_text().as_deref(), Some("plain code and struck bold it"));
+    let (code, strike) = (styled_attrs(Kind::Body, CODE, 1.0), styled_attrs(Kind::Body, STRIKE, 1.0));
+    assert_ne!(code.metadata, strike.metadata);
+    assert_eq!(styled_attrs(Kind::Body, 0, 1.0).metadata, 0, "no style, no flag");
+    assert_eq!(styled_attrs(Kind::Body, BOLD, 1.0).weight, Weight::BOLD);
+    assert_eq!(styled_attrs(Kind::Body, ITALIC, 1.0).style, Style::Italic);
+    assert_ne!(styled_attrs(Kind::Body, 0, 1.0).weight, Weight::BOLD);
+    let words = ["alpha"; 9].join(" ");
+    // (the text, what it shows, the text's width, whether it is marked, whether the run is code or strike and wraps)
+    for (text, shown, width, marked, wraps) in [
+        ("plain `code` and ~struck~ *bold* _it_".to_string(), "plain code and struck bold it".to_string(), 320.0, false, false),
+        ("a `code` b".to_string(), "a code b".to_string(), 320.0, true, false),
+        (format!("x `{words}` y"), format!("x {words} y"), 120.0, false, true),
+        (format!("x ~{words}~ y"), format!("x {words} y"), 120.0, false, true),
+    ] {
+        for scale in [1.0_f32, 1.5] {
+            let held = [by_ada(0, &text)];
+            let records: Vec<&ChatRecord> = held.iter().collect();
+            let mut view = ChatView::default();
+            view.mark = marked.then(|| held[0].ts.clone());
+            let body = ScreenRect { w: width + GUTTER_PX * scale, ..body_of_drawer() };
+            view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+            let quads = view.backs(DRAWER);
+            let buffers = view.placed_buffers();
+            assert_eq!(buffers[0].lines[2].text(), shown, "the markers leave the shown text");
+            let top = body.y + view.placed_tops()[0];
+            let text_x = body.x + GUTTER_PX * scale;
+            let right = body.x + body.w;
+            // Per layout line holding a flagged glyph: its top, its height and the extent of those glyphs.
+            let lines = |flag: usize| -> Vec<(f32, f32, f32, f32)> {
+                buffers[0].layout_runs().filter(|r| r.line_i == 2).filter_map(|r| {
+                    let g: Vec<_> = r.glyphs.iter().filter(|g| g.metadata & flag != 0).collect();
+                    (!g.is_empty()).then(|| (r.line_top, r.line_height, g.iter().map(|g| g.x).fold(f32::MAX, f32::min), g.iter().map(|g| g.x + g.w).fold(0.0, f32::max)))
+                }).collect()
+            };
+            let (coded, struck) = (lines(code.metadata), lines(strike.metadata));
+            assert_eq!(coded.is_empty(), !text.contains('`'));
+            assert_eq!(struck.is_empty(), !text.contains('~'));
+            assert!(!wraps || coded.len().max(struck.len()) >= 2, "a wrapped run spans lines: {coded:?} {struck:?}");
+            let pad = 3.0 * scale;
+            let (borders, fills) = (on_lines(&view, &quads, LOW, false), on_lines(&view, &quads, BAND, false));
+            assert_eq!((borders.len(), fills.len()), (coded.len(), coded.len()), "{text:?}: one border and one fill a line");
+            for (i, (lt, lh, x0, x1)) in coded.iter().enumerate() {
+                let (b, f) = (borders[i], fills[i]);
+                assert!(near(b.x, text_x + x0 - pad) && near(b.x + b.w, (text_x + x1 + pad).min(right)), "{b:?}");
+                assert!(near(b.y, top + lt + 2.0 * scale) && near(b.h, lh - 4.0 * scale), "{b:?} inside its line, inset 2 px");
+                assert!(near(f.x, b.x + scale) && near(f.y, b.y + scale) && near(f.w, b.w - 2.0 * scale) && near(f.h, b.h - 2.0 * scale), "{f:?}");
+            }
+            let glyph = buffers[0].layout_runs().filter(|r| r.line_i == 2).flat_map(|r| r.glyphs.iter()).find(|g| g.metadata & code.metadata != 0);
+            assert!(glyph.is_none_or(|g| near(g.font_size, 14.0 * scale) && g.color_opt == Some(Color::rgb(0xE8, 0x91, 0x2D))));
+            let rules = of_color(&quads, (0xD1, 0xD2, 0xD3));
+            assert_eq!(rules.len(), struck.len(), "{text:?}: one rule a line");
+            for (r, (lt, lh, x0, x1)) in rules.iter().zip(&struck) {
+                assert!(near(r.x, text_x + x0) && near(r.w, x1 - x0) && near(r.h, scale) && near(r.y + r.h / 2.0, top + lt + lh / 2.0), "{r:?}");
+            }
+            let band: Vec<_> = of_color(&quads, BAND).into_iter().filter(|q| q.h > 2.0 * BODY_LINE_H * scale || q.w > width).collect();
+            assert_eq!(band.len(), usize::from(marked), "the mark's band alone is not a code fill");
+            for f in &fills {
+                assert!(band.iter().all(|b| f.x >= b.x && f.x + f.w <= b.x + b.w && f.y >= b.y && f.y + f.h <= b.y + b.h), "the fill lies inside the band: only the border shows");
+            }
+            assert_eq!(view.marked_text().as_deref(), marked.then_some(shown.as_str()), "the copy follows the shown text");
+        }
     }
+}
+
+/// A drag across styled runs copies the shown text, with no marker in it.
+#[test]
+fn a_drag_across_styled_runs_copies_the_shown_text() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "x *bold* y `code` z ~s~ w _i_")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    // The shown line is `x bold y code z s w i`: the drag ends at the start of `w`.
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (2, 18)).as_deref(), Some("x bold y code z s "));
 }

@@ -473,6 +473,8 @@ impl ChatView {
             let (right, bottom) = ((r.x + r.w).min(body.x + body.w), (r.y + r.h).min(body.y + body.h));
             (right > left && bottom > top).then_some(CellQuad { x: left, y: top, w: right - left, h: bottom - top, color })
         };
+        // A `LOW` border one pixel wide (at the text scale) and `fill` inside it: the day pill's, and an inline code run's.
+        let boxed = |r: ScreenRect, fill, px: f32| [quad(r, LOW), quad(ScreenRect { x: r.x + px, y: r.y + px, w: r.w - 2.0 * px, h: r.h - 2.0 * px }, fill)].into_iter().flatten();
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
         let text = text_rect(body, self.scale);
         for (key, top, ts, tile) in &self.placed {
@@ -495,14 +497,12 @@ impl ChatView {
                 let rule = |from: f32, to: f32| ScreenRect { x: from, y: pill.y + line / 2.0 - scale / 2.0, w: to - from, h: scale };
                 out.extend(quad(rule(body.x + TILE_LEFT_PX * scale, pill.x), LOW));
                 out.extend(quad(rule(pill.x + w, body.x + body.w - TILE_LEFT_PX * scale), LOW));
-                out.extend(quad(pill, LOW));
-                out.extend(quad(ScreenRect { x: pill.x + scale, y: pill.y + scale, w: w - 2.0 * scale, h: line - 2.0 * scale }, BG));
+                out.extend(boxed(pill, BG, scale));
             }
             // Inline code is a bordered fill around its run, padded left and right; strike is a rule through the middle of its.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & CODE_RUN != 0) {
                 let outer = ScreenRect { x: text.x + x - CODE_PAD_PX * scale, y: all.y + y + CODE_INSET_PX * scale, w: w + 2.0 * CODE_PAD_PX * scale, h: h - 2.0 * CODE_INSET_PX * scale };
-                out.extend(quad(outer, LOW));
-                out.extend(quad(ScreenRect { x: outer.x + scale, y: outer.y + scale, w: outer.w - 2.0 * scale, h: outer.h - 2.0 * scale }, BAND));
+                out.extend(boxed(outer, BAND, scale));
             }
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & STRIKE_RUN != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + (h - scale) / 2.0, w, h: scale }, TEXT));

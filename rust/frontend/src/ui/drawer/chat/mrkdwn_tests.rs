@@ -37,7 +37,33 @@ fn slacks_inline_styles_follow_its_boundary_rules() {
     assert_eq!(shown("*hi <@U1>*"), [s("hi ", BOLD), s("<<@U1>>", BOLD)]);
     assert_eq!(shown("`<@U1> x`"), [s("<@U1> x", CODE)]);
     assert_eq!(shown("<@U1>*b*"), [s("<<@U1>>", 0), s("*b*", 0)]);
+    // A marker followed by the same marker never opens, so in `**x**` the inner pair styles `x` between literal outer marks;
+    // two pairs that meet merge into one run, and a run of backticks closing one span and opening the next is one box.
+    for (t, m) in [("**x**", '*'), ("~~x~~", '~'), ("__init__", '_')] {
+        let bit = match m { '*' => BOLD, '~' => STRIKE, _ => ITALIC };
+        let inner = t.trim_matches(m);
+        assert_eq!(shown(t), [s(&m.to_string(), 0), s(inner, bit), s(&m.to_string(), 0)], "{t}");
+    }
+    assert_eq!(shown("*a**b*"), [s("ab", BOLD)]);
+    assert_eq!(shown("`a``b`"), [s("ab", CODE)]);
+    // Only ASCII punctuation is a boundary.
+    for t in ["*a*\u{201d}", "\u{201c}*a*", "*a*\u{2014}x", "x*\u{65e5}\u{672c}*y"] {
+        assert_eq!(shown(t), plain(t), "{t}");
+    }
     // A fenced run stays literal until code blocks are drawn.
     assert_eq!(shown("```code```"), plain("```code```"));
     assert_eq!(shown("```\nx\n```"), plain("```\nx\n```"));
+}
+
+/// The closer scans a parse makes, counted by `close`: a line of openers that never close costs one scan, not one a marker.
+#[test]
+fn the_parse_is_linear_on_a_line_of_openers() {
+    for unit in ["*a ", "_a ", "~a ", "`a ", "*a_", "*a* "] {
+        let text = unit.repeat(8192 / unit.len());
+        scanned_reset();
+        let pieces = shown(&text);
+        let steps = scanned();
+        assert!(!pieces.is_empty());
+        assert!(steps <= 4 * text.len(), "{unit:?}: {steps} atoms stepped over for {} of text", text.len());
+    }
 }
