@@ -2,7 +2,7 @@
 //! cleared environment, with stderr null, behind the birth lock, and on Windows in a kill-on-close job before any input;
 //! `finish` writes its request on one thread, reads and checks every reply (each header against its ask before the body, the end of
 //! the stream after the last reply), holds it to the wall clock, always kills and reaps it, and turns each job into an
-//! `Outcome` in the person's words. The exit status wins over a pipe error. The reap after a kill is the one unbounded
+//! `Outcome` in the person's words; a `Stop` from the worker kills it early. The exit status wins over a pipe error. The reap after a kill is the one unbounded
 //! wait (an uninterruptible sleep), as in containment's guarantee 4. A leaf on std and platform: the test target
 //! `svg_child` includes this file.
 
@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::svg_wire::*;
@@ -45,11 +45,61 @@ pub(crate) struct Job {
     pub svg: Arc<[u8]>,
 }
 
-/// A job's end: its pixels, or the words a person reads (the drawing's own first line of error, or the run's).
+/// A job's end: its pixels, or the words a person reads. `Ended` is a child that hit a bound or crashed (the worker
+/// counts these); `Refused` is anything else (the drawing's own first line of error, a bad reply, no start). `Stale`
+/// is the worker's: the job was stopped or skipped because the pane moved on, so nothing is said of it.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Outcome {
     Drawn { w: u32, h: u32, rgba: Vec<u8> },
     Refused(String),
+    Ended(String),
+    Stale,
+}
+
+/// What the thread waiting on a child hears: a reply, a reply that broke its form, or the stop.
+enum Reply {
+    Outcome(Outcome),
+    Violation(String),
+    Stopped,
+    /// The reader's last word, sent when it ends: a `Stop` holds a sender, so the channel never closes by itself.
+    Done,
+}
+
+struct EndOnDrop(Sender<Reply>);
+
+impl Drop for EndOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(Reply::Done);
+    }
+}
+
+/// The off switch of one draw, held by the thread that asked for it. `finish` arms it with its own channel, so a stop
+/// wakes the wait at once; a stop before the arming is kept and met when it comes.
+#[derive(Clone, Default)]
+pub(crate) struct Stop(Arc<Mutex<(bool, Option<Sender<Reply>>)>>);
+
+impl Stop {
+    pub(crate) fn stop(&self) {
+        let mut held = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        held.0 = true;
+        if let Some(tx) = &held.1 {
+            let _ = tx.send(Reply::Stopped);
+        }
+    }
+
+    /// A stand-in draw's way to see its stop (a real one is woken through `finish`).
+    #[cfg(test)]
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0
+    }
+
+    fn arm(&self, tx: Sender<Reply>) {
+        let mut held = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if held.0 {
+            let _ = tx.send(Reply::Stopped);
+        }
+        held.1 = Some(tx);
+    }
 }
 
 const BAD_REPLY: &str = "the drawing's reply was not what was asked";
@@ -120,9 +170,9 @@ pub(crate) fn start(mut command: Command) -> io::Result<Started> {
 }
 
 /// `jobs` drawn by the child `command` starts: one outcome per job, in order.
-pub(crate) fn draw_in_child(command: Command, jobs: Vec<Job>, bounds: &Bounds) -> Vec<Outcome> {
+pub(crate) fn draw_in_child(command: Command, jobs: Vec<Job>, bounds: &Bounds, stop: &Stop) -> Vec<Outcome> {
     match start(command) {
-        Ok(started) => finish(started, jobs, bounds),
+        Ok(started) => finish(started, jobs, bounds, stop),
         Err(_) => refusals(jobs.len(), "cannot start the drawing"),
     }
 }
@@ -134,36 +184,44 @@ fn refusals(count: usize, words: &str) -> Vec<Outcome> {
 /// Writes `jobs` to `started`'s child and reads its replies, to the end of the stream or `bounds.wall`; the child is
 /// dead and reaped when this returns. A reply that breaks its form refuses every job; a child that ends early costs the
 /// jobs it did not answer, in the words of its end, and one the runner had to kill (it closed its stdout and lived) in
-/// the wall's. The two threads are not joined: each ends when its pipe reports the child's end.
-pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> Vec<Outcome> {
+/// the wall's. A `stop` ends the wait at once: the jobs not yet answered are `Stale`. The two threads are not joined:
+/// each ends when its pipe reports the child's end.
+pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds, stop: &Stop) -> Vec<Outcome> {
     let count = jobs.len();
     let asks: Vec<_> = jobs.iter().map(|job| job.size).collect();
     let (stdin, stdout) = (started.child.stdin.take().unwrap(), started.child.stdout.take().unwrap());
     let (tx, rx) = mpsc::channel();
+    let tx_stop = tx.clone();
     // Two threads, so that a child that never reads its input (a binary without the mode) is still read from.
     let writer = std::thread::Builder::new().spawn(move || drop(write_request(stdin, &jobs)));
     let reader = std::thread::Builder::new().spawn(move || {
+        let _end = EndOnDrop(tx.clone());
         // Only a reply that broke its form is told; a pipe that ended is the exit status's to explain.
         if let Err(error) = read_replies(stdout, &asks, &tx) {
             if error.kind() == io::ErrorKind::InvalidData {
-                let _ = tx.send(Err(error.to_string()));
+                let _ = tx.send(Reply::Violation(error.to_string()));
             }
         }
     });
     if writer.is_err() || reader.is_err() {
         return refusals(count, "cannot start the drawing");
     }
+    stop.arm(tx_stop);
     let deadline = Instant::now() + bounds.wall;
-    let (mut outcomes, mut violation, mut timed_out) = (Vec::new(), None, false);
+    let (mut outcomes, mut violation, mut timed_out, mut stopped) = (Vec::new(), None, false, false);
     loop {
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(Ok(outcome)) => outcomes.push(outcome),
-            Ok(Err(text)) => violation = Some(text),
+            Ok(Reply::Outcome(outcome)) => outcomes.push(outcome),
+            Ok(Reply::Violation(text)) => violation = Some(text),
+            Ok(Reply::Stopped) => {
+                stopped = true;
+                break;
+            }
             Err(RecvTimeoutError::Timeout) => {
                 timed_out = true;
                 break;
             }
-            Err(RecvTimeoutError::Disconnected) => break,
+            Ok(Reply::Done) | Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     let _ = started.child.kill();
@@ -173,12 +231,13 @@ pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> V
     }
     if outcomes.len() < count {
         let words = match status {
-            _ if timed_out || status.as_ref().is_ok_and(killed_by_us) => format!("took past {} s", bounds.wall.as_secs()),
-            Ok(status) if status.code() == Some(EXIT_HEAP) => format!("needed more than {} MiB", bounds.heap >> 20),
-            Ok(status) => format!("the drawing ended ({status})"),
-            Err(error) => format!("the drawing ended ({error})"),
+            _ if stopped => None,
+            _ if timed_out || status.as_ref().is_ok_and(killed_by_us) => Some(format!("took past {} s", bounds.wall.as_secs())),
+            Ok(status) if status.code() == Some(EXIT_HEAP) => Some(format!("needed more than {} MiB", bounds.heap >> 20)),
+            Ok(status) => Some(format!("the drawing ended ({status})")),
+            Err(error) => Some(format!("the drawing ended ({error})")),
         };
-        outcomes.extend(refusals(count - outcomes.len(), &words));
+        outcomes.extend((outcomes.len()..count).map(|_| words.clone().map_or(Outcome::Stale, Outcome::Ended)));
     }
     outcomes
 }
@@ -208,7 +267,7 @@ fn write_request(mut to: impl Write, jobs: &[Job]) -> io::Result<()> {
 /// whose text is the person's words: the magic, a size other than the ask's (a zero side is drawn as one), an error
 /// text past its bound, a tag unknown, or a byte after the last reply. The body is read as it arrives, so a size the
 /// child only claims allocates nothing.
-fn read_replies(mut from: impl Read, asks: &[(u32, u32)], tx: &Sender<Result<Outcome, String>>) -> io::Result<()> {
+fn read_replies(mut from: impl Read, asks: &[(u32, u32)], tx: &Sender<Reply>) -> io::Result<()> {
     if word::<4>(&mut from)? != MAGIC {
         return Err(invalid("not a drawing program"));
     }
@@ -235,7 +294,7 @@ fn read_replies(mut from: impl Read, asks: &[(u32, u32)], tx: &Sender<Result<Out
             }
             _ => return Err(invalid(BAD_REPLY)),
         };
-        if tx.send(Ok(outcome)).is_err() {
+        if tx.send(Reply::Outcome(outcome)).is_err() {
             return Ok(());
         }
     }

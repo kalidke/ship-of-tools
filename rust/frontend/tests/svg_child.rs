@@ -18,7 +18,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use svg_run::{child_env, draw_in_child, finish, killed_by_us, start, Bounds, Job, Outcome};
+use svg_run::{child_env, draw_in_child, finish, killed_by_us, start, Bounds, Job, Outcome, Stop};
 use svg_wire::*;
 
 const MIB: usize = 1 << 20;
@@ -355,6 +355,10 @@ fn refused(words: &str) -> Outcome {
     Outcome::Refused(words.to_owned())
 }
 
+fn ended(words: &str) -> Outcome {
+    Outcome::Ended(words.to_owned())
+}
+
 /// The shell script that starts the real child under the core limit with `HOME` in `scratch`.
 #[cfg(unix)]
 fn wrap(scratch: &Scratch) -> String {
@@ -413,7 +417,7 @@ fn the_runner_returns_each_job_as_its_pixels_or_its_error() {
     let scratch = Scratch::new();
     let (command, bounds) = real_child(WAIT, ROOMY, &scratch);
     let jobs = vec![job(4, 4, red.as_bytes()), job(6, 2, b"this is no SVG"), job(0, 3, blue.as_bytes())];
-    let outcomes = draw_in_child(command, jobs, &bounds);
+    let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
     assert_eq!(outcomes.len(), 3);
     assert!(matches!(&outcomes[0], Outcome::Drawn { w: 4, h: 4, rgba } if rgba[4 * (2 * 4 + 2)..][..4] == [255, 0, 0, 255]));
     assert!(matches!(&outcomes[1], Outcome::Refused(text) if text.starts_with("svg parse failed")), "{:?}", outcomes[1]);
@@ -427,7 +431,7 @@ fn a_program_that_cannot_be_started_is_refused_in_words() {
         wall: WAIT,
         heap: ROOMY as u64,
         cpu: 30,
-    });
+    }, &Stop::default());
     assert_eq!(outcomes, [refused("cannot start the drawing"), refused("cannot start the drawing")]);
 }
 
@@ -438,8 +442,8 @@ fn a_draw_past_its_wall_bound_is_killed_and_refused() {
     let started = start(command).expect("start the child");
     let pid = started.child.id();
     let begun = Instant::now();
-    let outcomes = finish(started, vec![job(100, 100, SPIN.as_bytes())], &bounds);
-    assert_eq!(outcomes, [refused("took past 1 s")]);
+    let outcomes = finish(started, vec![job(100, 100, SPIN.as_bytes())], &bounds, &Stop::default());
+    assert_eq!(outcomes, [ended("took past 1 s")]);
     assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
     assert!(process_gone(pid), "the child is gone once the runner returns");
 }
@@ -451,7 +455,7 @@ fn a_heap_end_during_the_input_write_says_heap() {
     let svg = vec![b' '; 200 * MIB];
     let scratch = Scratch::new();
     let (command, bounds) = real_child(WAIT, 64 * MIB, &scratch);
-    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds), [refused("needed more than 64 MiB")]);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds, &Stop::default()), [ended("needed more than 64 MiB")]);
 }
 
 #[test]
@@ -474,7 +478,7 @@ fn a_binary_without_the_mode_is_refused_at_once() {
     let (begun, svg) = (Instant::now(), vec![b' '; MIB]);
     let command = stand_in("/usr/bin/printf 'sot 0.7.0\\n'; exec /bin/sleep 30");
     let bounds = Bounds { wall: Duration::from_secs(20), heap: ROOMY as u64, cpu: 30 };
-    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds), [refused("not a drawing program")]);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds, &Stop::default()), [refused("not a drawing program")]);
     assert!(begun.elapsed() < Duration::from_secs(5), "{:?}", begun.elapsed());
 }
 
@@ -486,7 +490,7 @@ const ONE_RED_PIXEL: &str = r"SVG1R\001\000\000\000\001\000\000\000\377\000\000\
 #[test]
 fn bytes_after_the_last_reply_are_refused() {
     let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
-    let ask = |script: String| draw_in_child(stand_in(&script), vec![job(1, 1, b"<svg/>")], &bounds);
+    let ask = |script: String| draw_in_child(stand_in(&script), vec![job(1, 1, b"<svg/>")], &bounds, &Stop::default());
     // The control: the reply alone is drawn.
     assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}'")), [Outcome::Drawn { w: 1, h: 1, rgba: vec![255, 0, 0, 255] }]);
     assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}X'")), [refused(BAD_REPLY)]);
@@ -500,7 +504,7 @@ fn a_reply_past_its_ask_is_refused() {
     let begun = Instant::now();
     let command = stand_in(r"/usr/bin/printf 'SVG1R\210\023\000\000\210\023\000\000'; exec /bin/sleep 30");
     let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
-    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused(BAD_REPLY)]);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds, &Stop::default()), [refused(BAD_REPLY)]);
     assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
 }
 
@@ -514,7 +518,7 @@ fn a_reply_that_breaks_its_form_is_refused() {
         ("a tag the runner does not know", "SVG1Z"),
     ] {
         let command = stand_in(&format!("/usr/bin/printf '{reply}'"));
-        assert_eq!(draw_in_child(command, vec![job(1, 1, b"<svg/>")], &bounds), [refused(BAD_REPLY)], "{what}");
+        assert_eq!(draw_in_child(command, vec![job(1, 1, b"<svg/>")], &bounds, &Stop::default()), [refused(BAD_REPLY)], "{what}");
     }
 }
 
@@ -525,8 +529,35 @@ fn a_child_the_runner_has_to_kill_is_refused_in_the_walls_words() {
     let begun = Instant::now();
     let command = stand_in("/usr/bin/printf 'SVG1'; exec /bin/sleep 30 >&-");
     let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
-    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused("took past 5 s")]);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds, &Stop::default()), [ended("took past 5 s")]);
     assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stopped_draw_is_killed_at_once_and_stale() {
+    // A child that answers nothing and lives: the stop, not the wall, ends it, whether it comes while the runner waits
+    // or before the wait begins.
+    let bounds = Bounds { wall: Duration::from_secs(20), heap: ROOMY as u64, cpu: 30 };
+    for early in [false, true] {
+        let started = start(stand_in("/usr/bin/printf 'SVG1'; exec /bin/sleep 30")).expect("start the child");
+        let pid = started.child.id();
+        let stop = Stop::default();
+        let from_elsewhere = stop.clone();
+        let wait = Duration::from_millis(if early { 0 } else { 300 });
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            from_elsewhere.stop();
+        });
+        if early {
+            stopper.join().unwrap();
+        }
+        let begun = Instant::now();
+        let outcomes = finish(started, vec![job(2, 2, b"<svg/>"), job(2, 2, b"<svg/>")], &bounds, &stop);
+        assert_eq!(outcomes, [Outcome::Stale, Outcome::Stale], "early: {early}");
+        assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+        assert!(process_gone(pid), "the child is gone once the runner returns");
+    }
 }
 
 #[cfg(unix)]

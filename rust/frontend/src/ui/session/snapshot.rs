@@ -173,7 +173,7 @@ impl State {
         // never whatever the departing workspace left in place. Its
         // figure_failed is restored first too, since that branch reads it
         // (via figure_already_handled).
-        self.preview_source = snap.source.clone();
+        self.preview_source = snap.source.clone().renewed();
         // The page of those bytes, never the departed row's: before the repaint, which picks its sampler from it.
         self.pages.set_page(snap.page);
         self.figures.restore_failed(snap.figure_failed.clone());

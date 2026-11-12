@@ -725,8 +725,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
   can show neither); until then that is unknown.
 - The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; nothing calls it yet:
-  the worker is unbuilt): `draw_in_child(command, jobs, bounds)` starts the drawing child and returns one `Outcome` per
-  job, in order: `Drawn` (w, h, RGBA) or `Refused` with the words a person reads.
+  the worker is unbuilt): `draw_in_child(command, jobs, bounds, stop)` starts the drawing child and
+  returns one `Outcome` per job, in order: `Drawn` (w, h, RGBA); `Ended` with the words of a child that hit a bound or
+  crashed (`took past`, `needed more than`, `the drawing ended`); `Refused` with any other words a person reads (the
+  drawing's own first line of error, a bad reply, `not a drawing program`, `cannot start the drawing`); or `Stale`, the
+  jobs a `Stop` cut short. A `Stop` (the worker's off switch for one draw) wakes the runner's wait at once, and a stop
+  that comes before the wait begins is met when it does; the child is killed and reaped, and every job it had not
+  answered is `Stale`.
   - Start (`start`): a cleared environment that holds only what the font code reads (`child_env`: `HOME`,
     `FONTCONFIG_FILE` and the `XDG_` config, data and cache folders on Unix; `SYSTEMROOT` and `USERPROFILE` on Windows,
     in any case), stderr null, stdin and stdout piped, around `fork_guard` (macOS's birth lock) and with no `pre_exec`,
@@ -757,8 +762,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     lets go.
   - Limits: the child starts no process, and the start's `#[allow(clippy::disallowed_methods)]` says why it stands
     (containment's guarantee 9); on Windows the child runs for a moment outside its job, before it is assigned and given
-    any input; a refusal does not say whether the child ended at a bound or the file failed to parse (the worker's
-    strikes will need that); an error text a child sends holds the file's own bytes and is untrusted where shown.
+    any input; an error text a child sends holds the file's own bytes and is untrusted where shown.
   - Tests (`rust/frontend/tests/svg_child.rs`; stand-ins are `/bin/sh` with `/usr/bin/printf` and `/bin/sleep`, Unix):
     `the_runner_returns_each_job_as_its_pixels_or_its_error`, `a_program_that_cannot_be_started_is_refused_in_words`,
     `a_draw_past_its_wall_bound_is_killed_and_refused` (the pid is gone after), `a_heap_end_during_the_input_write_says_heap`,
@@ -768,7 +772,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `a_dropped_start_ends_its_child`, `the_runners_own_kill_is_known_by_its_status`, `a_child_reads_no_descriptor_of_the_window`
     (Linux: the real child, drawing, holds no descriptor the window left open, has the null device for stderr and only the
     font variables, plus the few its shell adds, in its environment) and
-    `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows).
+    `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows) and
+    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it).
+- The preview source's generation (`InstalledPreviewSource::generation`, preview/source.rs) says which source the pane
+  shows, for the drawing worker (unbuilt): a process-wide counter, so a number is never reused. An install, a snapshot's restore
+  (`renewed`) and an emptied source (`Default`) each take a fresh one; a repaint of the same source, a reflow or a
+  text-scale change, keeps it. Tests, in source.rs: `a_new_source_is_a_new_generation_and_the_same_source_is_not`,
+  `a_restored_or_emptied_source_never_reuses_a_generation`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).
