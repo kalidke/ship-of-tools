@@ -286,8 +286,9 @@ opens neither file. Both files are read once, when the daemon starts, and a mapp
 editing either file, or adding a row for a mapped folder, restart the daemon (on Linux `systemctl --user restart sotd`;
 rows keep running). A missing or refused `chat.toml`, or a missing or refused `chat-secrets.toml`, leaves the chat off.
 One refused mapping, such as a folder with no row at start, turns the chat off for every project. The reason is in the
-daemon's log, on the "project chat" line, as a fixed explanation with the mapping's number or the line, never a key's
-value; `sotd log-path` prints the log's path. A start that Slack refuses or cannot reach (a rejected token, no network)
+daemon's log, on the "project chat" line, as a fixed explanation that starts with the name of the file that was refused
+(`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a documented key that
+file does not take (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that Slack refuses or cannot reach (a rejected token, no network)
 is logged as "project chat did not start" and stays failed until the daemon restarts.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
@@ -304,6 +305,28 @@ Each file is a regular file of at most 64 KiB, and only the keys below are accep
 `chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`) and `app_token` (it starts `xapp-`), each token
 letters, digits and hyphens up to 512 bytes. Keep the file private to your account; the
 daemon never prints a token and masks one in its log, but it does not check the file's permissions.
+
+`chat-secrets.toml` has one form: those three top-level keys, never a `[[workspace]]` table, and one workspace. A tool
+that needs several workspaces keeps its own file at its own path.
+
+A `chat.toml` of one mapping:
+
+```toml
+workspace = "T0EXAMPLE"
+channels = ["C0EXAMPLE"]
+
+[[mapping]]
+folder = "/path/to/project"
+channel = "C0EXAMPLE"
+```
+
+A `chat-secrets.toml`, with placeholder tokens:
+
+```toml
+workspace = "T0EXAMPLE"
+bot_token = "xoxb-replace-with-the-bot-token"
+app_token = "xapp-replace-with-the-app-token"
+```
 
 ## See also
 
