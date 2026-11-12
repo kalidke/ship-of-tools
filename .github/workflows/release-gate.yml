@@ -440,6 +440,8 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # chat post replies for the row it runs in: one resolve, one post, never a second send, free text on stdin.
+          bash test-sot-fe-chat.sh
           # goto switches the window and starts nothing: --boot is refused as an unknown flag.
           bash test-sot-fe-goto.sh
           # An absolute path is sent relative to its root in every spelling Windows gives one folder.

@@ -46,6 +46,9 @@ pub(super) struct Levers {
     /// When set, the channel the fake's history and replies answer as measured (`fake_slack::History`), in place of the
     /// empty page.
     pub(super) channel: Arc<Mutex<Option<Arc<History>>>>,
+    /// While set, a thread read (`conversations.replies`) is answered 500, and counted in the second field.
+    pub(super) replies_fail: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) replies_failed: Arc<AtomicUsize>,
     /// History calls that reached the fake, counted before the gate.
     histories: Arc<AtomicUsize>,
     /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
@@ -64,10 +67,13 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         feed,
         acked: Arc::new(AtomicUsize::new(0)),
         channel: Arc::new(Mutex::new(None)),
+        replies_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        replies_failed: Arc::new(AtomicUsize::new(0)),
         histories: Arc::new(AtomicUsize::new(0)),
         hello: Arc::new(tokio::sync::Semaphore::new(1000)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
+    let (replies_fail, replies_failed) = (lv.replies_fail.clone(), lv.replies_failed.clone());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -80,6 +86,13 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         if path.ends_with("/apps.connections.open") {
             let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
             return Reply::json(&json!({"ok": true, "url": url}));
+        }
+        if path.ends_with("/chat.postMessage") {
+            return Reply::json(&json!({"ok": true, "ts": "1700000300.000100"}));
+        }
+        if path.ends_with("/conversations.replies") && replies_fail.load(Ordering::SeqCst) {
+            replies_failed.fetch_add(1, Ordering::SeqCst);
+            return Reply::Status { code: 500, headers: Vec::new(), body: Vec::new() };
         }
         let played = channel.lock().unwrap().clone();
         if let (Some(h), true) = (played, path.ends_with("/conversations.history") || path.ends_with("/conversations.replies")) {

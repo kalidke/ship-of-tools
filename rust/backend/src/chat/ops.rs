@@ -20,6 +20,7 @@ use sot_protocol::Frame;
 
 use super::watch::Conn;
 use super::Chat;
+use crate::rows::handle::bound_handle;
 use crate::rows::Workspaces;
 
 /// A refusal: the standard error payload with the fixed text and the code, never Slack's or a library's words.
@@ -133,7 +134,11 @@ pub(crate) async fn history(req_id: u64, payload: serde_json::Value, chat: &Arc<
     reply(req_id, NAME, &ChatHistoryRes { records: page.records, next: page.next.map(|c| c.as_str().to_string()), limited: page.limited })
 }
 
-pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+/// `chat.post`. After admission, two refusals by the connection's declared role and the row's bound handle, each
+/// `bad_request` before any Slack call: a person's post only from a window (a row's own `Drawer` post would be mail to
+/// itself), and a row's post only under its own bound handle. The role is the client's own declaration, so this is
+/// attribution among one account's programs, not a security boundary.
+pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_POST;
     let req = match decode::<ChatPostReq>(payload) {
         Ok(r) => r,
@@ -143,6 +148,16 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
         Ok(s) => s,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
+    let allowed = match req.kind {
+        ChatPostKind::Person => window,
+        ChatPostKind::Row => {
+            let all = rows.list();
+            rows.resolve(Some(&req.target.row)).is_some_and(|ws| !req.name.is_empty() && bound_handle(&ws, &all) == req.name)
+        }
+    };
+    if !allowed {
+        return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
+    }
     let api = match service.api() {
         Ok(a) => a,
         Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),

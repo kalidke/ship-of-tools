@@ -30,6 +30,7 @@
 #   sot-fe screen <workspace>                      [--timeout <s>]
 #   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
 #   sot-fe reauth <account>                        [--timeout <s>]
+#   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
 #
 #   preview  — preview <path> and expand the file tree to it. If the FE is
 #              already on <workspace> it happens at once; otherwise it is
@@ -160,6 +161,17 @@
 #              `reauth` skill first: everything in flight dies with the leg,
 #              and the new account has no server-side cache for the
 #              conversation.
+#   chat     — `chat post` replies in the channel this row is mapped to, under this session's comm handle and for the
+#              row it runs in (`$SOT_WORKSPACE_ID`; outside a row it is refused before an endpoint is found). It
+#              asks the daemon `chat.resolve` for the row's channel, then sends ONE `chat.post` of kind `row`, into
+#              the thread named by --thread <ts> (the `ts=` value in the channel mail's second line), else as a new
+#              message in the channel. The post is never sent twice: unlike the fe.command verbs this one does not
+#              retry on no answer, so a post that may exist is never repeated. Free text goes by --stdin (a leading
+#              `/` or `-` in an argument is mangled or read as a flag). Waits 40 s for the post
+#              (--timeout <s> changes both waits). Prints `posted <ts>`
+#              and exits 0; exit 1 for usage; exit 2 with `refused <code> <words>`, `limited, wait <n> s`,
+#              `unknown: the post may exist; do not send it again` or `no answer: the post may exist; do not send it
+#              again`. A reply is public to every member of the channel.
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -248,6 +260,7 @@ DIRECT=none   # docs: one entry's reply scope; never inferred from page contents
 CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 75
 LEVEL=""
 NOTIFY_WS=""
+THREAD=""      # chat post: the thread's ts
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
@@ -274,6 +287,11 @@ while [ $# -gt 0 ]; do
         --force)    FORCE=true; shift ;;
         --level)    LEVEL="$2"; shift 2 ;;
         --ws)       NOTIFY_WS="$2"; shift 2 ;;
+        --thread)   case "${2:-}" in
+                        ''|*[!0-9.]*|.*|*.|*.*.*) echo "ERROR: --thread expects a message ts like 1700000000.000100, got '${2:-}'" >&2; exit 1 ;;
+                    esac
+                    case "$2" in *.*) : ;; *) echo "ERROR: --thread expects a message ts like 1700000000.000100, got '$2'" >&2; exit 1 ;; esac
+                    THREAD="$2"; shift 2 ;;
         # Validate here, once: TIMEOUT feeds the command bound (`sot_bounded`) and $((...)) math in
         # four different functions. Unvalidated, a non-numeric value made
         # `timeout` itself fail with its complaint discarded (2>/dev/null) and
@@ -302,6 +320,7 @@ done
 source "$SCRIPT_DIR/sot-fe-request.sh"
 source "$SCRIPT_DIR/sot-fe-repl.sh"
 source "$SCRIPT_DIR/sot-fe-row.sh"
+source "$SCRIPT_DIR/sot-fe-chat.sh"
 source "$SCRIPT_DIR/sot-fe-version.sh"
 
 case "$CMD" in
@@ -525,6 +544,18 @@ case "$CMD" in
         ACCOUNT="${POS[0]:-}"
         [ -n "$ACCOUNT" ] || { echo "usage: sot-fe reauth <account> [--timeout <s>]  -- name the account; this verb never guesses which login was meant" >&2; exit 1; }
         send_workspace_reauth "$ACCOUNT"
+        ;;
+    chat)
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]" >&2; exit 1; }
+        if [ "$READ_STDIN" = true ]; then
+            [ "${#POS[@]}" -le 1 ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  — text from the argument or from --stdin, not both" >&2; exit 1; }
+            TEXT="$(cat)"
+        else
+            [ "${#POS[@]}" -le 2 ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  — one text argument" >&2; exit 1; }
+            TEXT="${POS[1]:-}"
+        fi
+        [ -n "$TEXT" ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  — nothing to post" >&2; exit 1; }
+        send_chat_post "$TEXT" "$THREAD"
         ;;
     version)
         send_version

@@ -3,6 +3,7 @@
 
 use super::chat_ops_tests::{running, starter};
 use super::chat_watch_tests::{live, message, stamp, until, Levers};
+use super::Services;
 use crate::chat::tests::{Home, SELF};
 use crate::chat::{Chat, Status, HUB_CHECK};
 use crate::comm::registry::registry::{iso8601_utc_from_secs, unix_now_secs};
@@ -38,13 +39,25 @@ struct World {
 }
 
 async fn world(delivers: bool) -> World {
+    world_with(delivers.then_some("1.000000")).await
+}
+
+/// [`world`] delivering from the floor `floor`.
+async fn world_at(floor: &str) -> World {
+    world_with(Some(floor)).await
+}
+
+async fn world_with(floor: Option<&str>) -> World {
     let th = TestHome::new();
     th.own_record();
     let mut home = Home::new(Some(SELF));
     home.env = std::mem::take(&mut home.env).with("SOT_COMM_HOME", &th.home).with("SOT_SOCKET", th.home.join("no-daemon.sock"));
     let folder = home.folder("a");
     let own = [folder.to_string_lossy().into_owned()];
-    if delivers { home.delivering_toml(&own) } else { home.chat_toml(&own) }
+    match floor {
+        Some(floor) => home.delivering_toml_after(&own, floor),
+        None => home.chat_toml(&own),
+    }
     home.secrets();
     let rows = Workspaces::new();
     rows.insert(Workspace::from_label("claude-alpha", folder.clone(), false, "claude".into(), "alpha-h".into(), String::new()));
@@ -428,6 +441,118 @@ async fn a_channel_of_50000_roots_completes_its_passes_moves_the_boundary_and_fi
     until("the last post", || w.filed().contains(&"1700250100.000100".to_string())).await;
     assert_eq!(w.filed(), vec![reply.to_string(), newest.to_string(), "1700250100.000100".to_string()]);
     assert!(w.inbox()[0].contains(&format!("in the thread of {}", at(1))), "{}", w.inbox()[0]);
+}
+
+/// The channel of the stage test: old parent Q (a bot's, so not mail) whose reply R is a member's, and a member's root P
+/// that is the channel's newest message; with `s`, a member's root S after them. Every page says it is limited.
+fn stage_channel(with_s: bool) -> History {
+    let (q, r, p) = ("1700000050.000000", "1700000100.000000", "1700000100.000100");
+    let parent = json!({"ts": q, "thread_ts": q, "bot_id": "B0OTHER", "text": "old", "reply_count": 1, "latest_reply": r});
+    let h = History::new().raw(parent).reply(q, r).post(p).limited();
+    if with_s { h.post("1700000200.000100") } else { h }
+}
+
+/// The inbox's lines of `alpha-h`, whole, as the wake's trigger counts them.
+fn counted(w: &World) -> usize {
+    let text = std::fs::read_to_string(w.th.home.join("inbox").join("alpha-h.jsonl")).unwrap_or_default();
+    text.lines().filter(|l| crate::comm::mail::cursor::counts(l.as_bytes(), "alpha-h")).count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_the_window_closed_a_channel_post_becomes_marked_mail_and_the_rows_reply_reaches_its_thread() {
+    let (q, r, p, s, t) = ("1700000050.000000", "1700000100.000000", "1700000100.000100", "1700000200.000100", "1700000300.000100");
+    let w = world_at("1700000000.000000").await;
+    // Made while no socket ran: the history holds P and the old thread Q with its reply R, and the first read of Q's
+    // thread fails.
+    serve(&w.lv, stage_channel(false));
+    w.lv.replies_fail.store(true, Ordering::SeqCst);
+    let chat = w.start(&w.fake).await;
+
+    // 1. The first pass files P, although it lies above the horizon; Q's thread read fails, so R is not filed and no
+    // boundary is committed above the floor.
+    w.filed_count(1).await;
+    assert!(soon(|| w.lv.replies_failed.load(Ordering::SeqCst) >= 1).await, "the thread read was never made");
+    assert_eq!(w.filed(), vec![p.to_string()]);
+    assert_eq!(counted(&w), 1, "the filing is mail by the wake's own rule");
+    let first = &w.inbox()[0];
+    assert!(first.starts_with("[chat] From a channel member"), "{first}");
+    assert!(first.contains(&format!("ts={p} thread={p} channel=C0AAAA workspace=T0AAAA")), "{first}");
+    assert!(w.boundary().is_none_or(|b| b == "1700000000.000000"), "a boundary above the floor after a failed read: {:?}", w.boundary());
+
+    // 2. After the backoff the next pass files R and completes although every page was limited: the boundary is H.
+    w.lv.replies_fail.store(false, Ordering::SeqCst);
+    w.filed_count(2).await;
+    until("the commit at H", || w.boundary().as_deref() == Some("1700000098.000100")).await;
+    assert_eq!(w.filed(), vec![p.to_string(), r.to_string()]);
+    assert!(w.inbox()[1].contains(&format!("in the thread of {q}")), "{}", w.inbox()[1]);
+
+    // 3. The socket's root S is filed at once.
+    send_at(&w.lv, s, "e-s");
+    w.filed_count(3).await;
+    assert_eq!(w.filed(), vec![p.to_string(), r.to_string(), s.to_string()]);
+
+    // 4. A restart on the same folders files nothing, and so does a new state folder after it. The history holds S
+    // now, so each first pass ends at a boundary the one before did not reach.
+    stop(chat);
+    let (fake, lv) = live().await;
+    serve(&lv, stage_channel(true));
+    let chat = w.start(&fake).await;
+    until("the restart's first pass", || w.boundary().as_deref() == Some("1700000198.000100")).await;
+    stop(chat);
+    assert_eq!(w.count_in("alpha-h"), 3, "a restart filed a post again");
+    std::fs::remove_dir_all(w.state_dir()).unwrap();
+    let (fake, lv) = live().await;
+    serve(&lv, stage_channel(true));
+    let chat = w.start(&fake).await;
+    until("the new state folder's first pass", || w.boundary().is_some()).await;
+    assert_eq!(w.count_in("alpha-h"), 3, "a new state folder filed a post again");
+
+    // 5. A poll of alpha-h prints the three and says nothing remains.
+    w.th.self_file(&w.th.nopane(), "alpha-h");
+    w.th.live("alpha-h", &w.th.root());
+    let polled = crate::comm::cli::poll::poll(&w.th.env, &[]);
+    assert_eq!(polled.code, 0, "{}", polled.stderr);
+    for ts in [p, r, s] {
+        assert!(polled.stdout.contains(&format!("ts={ts} ")), "the poll did not print {ts}: {}", polled.stdout);
+    }
+    assert_eq!(crate::comm::cli::poll::poll(&w.th.env, &[]).stdout, "No new messages.\n");
+    w.session(0);
+
+    // 6. The row's reply, from a connection that is not a window: under its bound handle it reaches the fake once, into
+    // the thread; under another name, and as a person's, it is refused and adds no Slack call.
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    services.chat = chat.clone();
+    services.workspaces = w.rows.clone();
+    let mut conn = super::chat_ops_tests::connect(services).await;
+    let alpha = w.rows.list()[0].workspace_id.clone();
+    let target = super::chat_ops_tests::target(&alpha, "C0AAAA");
+    let post = |kind: &str, name: &str| json!({"target": target, "thread": q, "kind": kind, "name": name, "text": "done"});
+    let posts = |fake: &FakeSlack| fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).filter_map(|s| s.json()).collect::<Vec<Value>>();
+    let posted = conn.ask(10, sot_protocol::ops::op::CHAT_POST, post("row", "alpha-h")).await;
+    assert_eq!(posted["outcome"], "posted", "{posted}");
+    let sent = posts(&fake);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!((sent[0]["thread_ts"].as_str(), sent[0]["username"].as_str()), (Some(q), Some("alpha-h (row via Ship of Tools)")), "{}", sent[0]);
+    assert_eq!(super::chat_ops_tests::code(&conn.ask(11, sot_protocol::ops::op::CHAT_POST, post("row", "someone-else")).await), "bad_request");
+    assert_eq!(super::chat_ops_tests::code(&conn.ask(12, sot_protocol::ops::op::CHAT_POST, post("person", "alpha-h")).await), "bad_request");
+    assert_eq!(posts(&fake).len(), 1, "a refused post reached Slack");
+    // The socket then sends that row post, another bot's message and a member's root T: only T is the fourth line.
+    let mut own = message("C0AAAA", 1);
+    own["envelope_id"] = json!("e-own");
+    own["payload"]["event"]["ts"] = json!("1700000250.000100");
+    own["payload"]["event"]["bot_id"] = json!("B0BOT");
+    own["payload"]["event"]["thread_ts"] = json!(q);
+    lv.feed.send(own).unwrap();
+    let mut other = message("C0AAAA", 2);
+    other["envelope_id"] = json!("e-other");
+    other["payload"]["event"]["ts"] = json!("1700000260.000100");
+    other["payload"]["event"]["bot_id"] = json!("B0OTHER");
+    lv.feed.send(other).unwrap();
+    send_at(&lv, t, "e-t");
+    w.filed_count(4).await;
+    assert_eq!(w.filed(), vec![p.to_string(), r.to_string(), s.to_string(), t.to_string()]);
+    stop(chat);
 }
 
 /// The record a member's first post makes, as the daemon files it.

@@ -345,7 +345,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         // The three requests that reach Slack are jobs: admission and the Slack call never hold the connection.
         op::CHAT_RESOLVE => crate::chat::ops::resolve(req_id, payload, chat, workspaces).await,
         op::CHAT_HISTORY => crate::chat::ops::history(req_id, payload, chat, workspaces).await,
-        op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces).await,
+        op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_WATCH => crate::chat::ops::watch(req_id, payload, chat, workspaces, &shared.chat_conn).await,
         op::CHAT_UNWATCH => crate::chat::ops::unwatch(req_id, payload, chat, &shared.chat_conn).await,
         other => {

@@ -136,6 +136,15 @@ pub(super) struct Conn {
 }
 
 pub(super) async fn connect(services: Services) -> Conn {
+    connect_as(services, "cli", None).await
+}
+
+/// A connection whose hello names a window (`role` `fe`, a name): the only kind a person's chat post is taken from.
+pub(super) async fn connect_window(services: Services) -> Conn {
+    connect_as(services, "fe", Some("fe@test")).await
+}
+
+async fn connect_as(services: Services, role: &str, name: Option<&str>) -> Conn {
     let (client, server) = tokio::io::duplex(1 << 16);
     let (srx, stx) = tokio::io::split(server);
     let task = tokio::spawn(handle_connection(srx, stx, services, None));
@@ -143,7 +152,7 @@ pub(super) async fn connect(services: Services) -> Conn {
     let mut crx = codec::buffered(crx);
     let hello = json!({
         "client_id": "chat-test", "protocol": sot_protocol::PROTOCOL_VERSION, "app_version": sot_protocol::app_version(),
-        "host": "test-host", "os_user": "test-user", "role": "cli",
+        "host": "test-host", "os_user": "test-user", "role": role, "name": name,
     });
     codec::write_frame(&mut ctx, &Frame::req(1, op::HELLO, hello), None).await.unwrap();
     let (reply, _) = codec::read_frame(&mut crx).await.unwrap();
@@ -197,7 +206,7 @@ async fn a_current_row_reaches_slack_through_each_request_op() {
     let mode = Arc::new(AtomicU8::new(OK));
     let fake = slack(&mode).await;
     let rig = rig_started(&fake, true).await;
-    let mut conn = connect(rig.services.clone()).await;
+    let mut conn = connect_window(rig.services.clone()).await;
     let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
     assert_eq!((resolved["state"].as_str(), resolved["channel"].as_str(), resolved["delivers"].as_bool()), (Some("mapped"), Some("C0AAAA"), Some(true)));
     assert_eq!(calls(&fake), 0, "a resolve calls nothing");
@@ -374,11 +383,50 @@ async fn a_post_whose_outcome_is_unknown_is_made_once_and_answered_unknown() {
     let mode = Arc::new(AtomicU8::new(DROP));
     let fake = slack(&mode).await;
     let rig = rig(&fake).await;
-    let mut conn = connect(rig.services.clone()).await;
+    let mut conn = connect_window(rig.services.clone()).await;
     let reply = conn.ask(10, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await;
     assert_eq!(reply["outcome"], "unknown", "{reply}");
     let posts = fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).count();
     assert_eq!(posts, 1, "the handler sent the post again");
+}
+
+/// A row post as the verb sends it: the row's bound handle as the name, into `thread`.
+fn row_post(row: &str, channel: &str, name: &str, thread: Option<&str>) -> Value {
+    json!({"target": target(row, channel), "thread": thread, "kind": "row", "name": name, "text": "done"})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn row_verbs_target_current_thread_and_submit_once() {
+    let mode = Arc::new(AtomicU8::new(OK));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
+    // Not a window: a person's post, a row's post under another name (the other row's, a stranger's, none), and a row
+    // post to the other row's channel under alpha's handle are refused, and none reaches Slack.
+    let mut cli = connect(rig.services.clone()).await;
+    let thread = "1700000050.000000";
+    let refused = [
+        post(&rig.alpha, "C0AAAA"),
+        row_post(&rig.alpha, "C0AAAA", "someone-else", Some(thread)),
+        row_post(&rig.alpha, "C0AAAA", "", Some(thread)),
+        row_post(&rig.beta, "C0BBBB", "alpha-h", Some(thread)),
+    ];
+    for (n, payload) in refused.into_iter().enumerate() {
+        assert_eq!(code(&cli.ask(10 + n as u64, op::CHAT_POST, payload).await), "bad_request", "refused post {n}");
+    }
+    assert_eq!(calls(&fake), 0, "a refused post reached Slack");
+    // A window may post as a person; its row post is held to the handle as well.
+    let mut window = connect_window(rig.services.clone()).await;
+    assert_eq!(window.ask(20, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await["outcome"], "posted");
+    assert_eq!(code(&window.ask(21, op::CHAT_POST, row_post(&rig.alpha, "C0AAAA", "someone-else", None)).await), "bad_request");
+    assert_eq!(calls(&fake), 1);
+    // The row under its bound handle, from a connection that is not a window: one post, into the thread, under the
+    // handle's username.
+    let posted = cli.ask(30, op::CHAT_POST, row_post(&rig.alpha, "C0AAAA", "alpha-h", Some(thread))).await;
+    assert_eq!((posted["outcome"].as_str(), posted["ts"].as_str()), (Some("posted"), Some("1700000000.000100")), "{posted}");
+    let sent: Vec<Value> = fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).filter_map(|s| s.json()).collect();
+    assert_eq!(sent.len(), 2, "one post for the window's and one for the row's");
+    assert_eq!((sent[1]["thread_ts"].as_str(), sent[1]["username"].as_str()), (Some(thread), Some("alpha-h (row via Ship of Tools)")), "{}", sent[1]);
 }
 
 #[test]

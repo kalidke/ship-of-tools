@@ -67,19 +67,24 @@ impl Home {
 
     /// A `chat.toml` that maps the folders to `C0AAAA` and `C0BBBB` in turn and delivers nothing (no `mail_after`).
     pub(crate) fn chat_toml(&self, folders: &[String]) {
-        self.toml(folders, false);
+        self.toml(folders, None);
     }
 
     /// The same mappings with the hub's `mail_after` and each mapping's own, so the file delivers.
     pub(crate) fn delivering_toml(&self, folders: &[String]) {
-        self.toml(folders, true);
+        self.delivering_toml_after(folders, "1.000000");
     }
 
-    fn toml(&self, folders: &[String], delivers: bool) {
-        let after = |t: &str| if delivers { format!("mail_after = \"{t}\"\n") } else { String::new() };
-        let mut text = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\n{}", after("1.000000"));
+    /// [`Home::delivering_toml`] with the floor `after` for the hub and every mapping.
+    pub(crate) fn delivering_toml_after(&self, folders: &[String], after: &str) {
+        self.toml(folders, Some(after));
+    }
+
+    fn toml(&self, folders: &[String], delivers: Option<&str>) {
+        let after = delivers.map(|t| format!("mail_after = \"{t}\"\n")).unwrap_or_default();
+        let mut text = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0BBBB\"]\n{after}");
         for (f, c) in folders.iter().zip(["C0AAAA", "C0BBBB"]) {
-            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\n{}", after("1.000000"));
+            text += &format!("[[mapping]]\nfolder = '{f}'\nchannel = \"{c}\"\n{after}");
         }
         self.write(CONFIG_FILE, &text);
     }

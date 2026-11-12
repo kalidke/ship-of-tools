@@ -135,7 +135,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -337,6 +337,17 @@ of each.
   document is ordinary, and the page reads `states.reply_scope` before enabling scoped controls. A scoped page's reply
   is typed directly; an unscoped page's is refused (pages' contract). `tests/test-sot-fe-paths.sh` records the scope in
   the actual request; `tests/test-sot-fe-goto.sh` covers invalid flag combinations.
+- `sot-fe chat post [--thread <ts>] (<text> | --stdin)` (`sot-fe/sot-fe-chat.sh`) is a row's reply in its channel. It
+  posts only for the row it runs in (`$SOT_WORKSPACE_ID`, none refused before an endpoint is found) under the handle
+  `comm-context.sh` gives (none refused the same way), asks `chat.resolve` for the pair, sends one `chat.post` of kind
+  `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 40 s for the post.
+  The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`; 1 for usage; 2 with `refused <code> <words>`,
+  `limited, wait <n> s`, `unknown: the post may exist; do not send it again` or `no answer: the post may exist; do not
+  send it again`. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
+  `tests/test-sot-fe-chat.sh` runs it against a stub daemon: outside a row and with no handle refused before an
+  endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
+  request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
+  (messaging's `sot-comm`); a Codex row is not woken for channel mail.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,
@@ -397,7 +408,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`);
 `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them, and a missing selection script a silent no-op); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
-| 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh` |
+| 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh`, `tests/test-sot-fe-chat.sh` (the chat ops) |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
 | 11 | the hosted run of `scripts/tests/under-bash.sh`; `test/skills_tests.jl` ("a launcher's Windows shim refuses at once and names Git Bash") |
 | 12 | `tests/test-crlf-gh-auth.sh` |

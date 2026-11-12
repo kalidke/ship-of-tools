@@ -10,7 +10,7 @@ mod book;
 mod door;
 mod guard;
 mod join;
-mod poll;
+pub(crate) mod poll;
 mod send;
 mod start;
 mod wire;

@@ -180,8 +180,23 @@ plans, and a pass reads what Slack gives. Slack hands each event to one connecti
 connection with the chat app's token while the hub delivers (a probe, or a daemon from before the single listener) takes
 some events from it with no sign that any was lost, and those posts wait for the next hello (a few hours) or the
 6-hour sweep, whichever comes first, not for the next pass of any kind.
-A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has. The
-row cannot reply from the shell yet.
+A pass and the drawer share Slack's limit on reads: a pass at about 40 reads a minute leaves the drawer the rest of Slack's
+history allowance, and when Slack tells a pass to wait, the drawer's reads wait for the same time (a post is not held by it).
+A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has.
+
+### The row's reply
+
+A row's agent replies with `sot-fe chat post [--thread <ts>] (<text> | --stdin)`, run in the row. It posts for the row it
+runs in, under the handle the row's session joined with, shown as `<handle> (row via Ship of Tools)`, into the channel the
+row is mapped to: into the thread named by `--thread` (the `thread=` value of the mail's second line), else as a new message.
+The skills tell an agent to give the reply on standard input. It asks the daemon for the row's channel and sends one post,
+never a second: a post whose answer is lost is reported as `may exist`, and the agent is told never to send it again. It
+prints `posted <ts>` and exits 0, or exits 2 with `refused <code>`, `limited, wait <n> s` (nothing was posted), or `unknown`
+or `no answer` (the post may exist). A reply is public to every member of the channel, so the agent is told to put nothing
+in it that the lab's rules on public text and on partners' work keep out of shared text. The daemon refuses a person's post
+from a connection that is not a window, and a row's post under any name but the row's own handle; the declared role is the
+connection's own word, so this keeps one account's programs apart and is not a security boundary. A reply is not mail: it
+does not come back to the row.
 
 ## Moving the hub
 
