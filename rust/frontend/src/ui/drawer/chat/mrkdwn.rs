@@ -35,7 +35,7 @@ pub(super) struct Piece {
     pub style: u8,
 }
 
-/// A token carries, for a person's, the name the record holds for its id, cleaned (`named`).
+/// A token carries, for a person's or a channel's, the name the record holds for its id, cleaned (`named`).
 enum Atom {
     Ch(char),
     Tok(String, Option<String>),
@@ -145,16 +145,17 @@ fn one_line(s: &str) -> String {
     s.chars().map(|c| match c { '\n' | '\r' => ' ', c if c.is_control() => '\u{fffd}', c => c }).collect()
 }
 
-/// The name `names` holds for a person's token (`<@U..>`, `<@W..>`), without the invisible and direction characters a
-/// header's name loses and trimmed; `None` for any other token, an id with no entry, or a name nothing visible is left of.
+/// The name `names` holds for a person's or a channel's token (`<@U..>`, `<@W..>`, `<#C..>`, `<#G..>`), without the
+/// invisible and direction characters a header's name loses and trimmed; `None` for any other token, an id with no entry,
+/// or a name nothing visible is left of. `resolve` applies it only to a token of the id's own kind.
 fn named(tok: &str, names: &[ChatName]) -> Option<String> {
-    let id = tok.strip_prefix("<@")?.strip_suffix('>')?.split('|').next()?;
+    let id = tok.strip_prefix("<@").or_else(|| tok.strip_prefix("<#"))?.strip_suffix('>')?.split('|').next()?;
     let name: String = names.iter().find(|n| n.id == id)?.name.chars().filter(|c| !unsafe_char(*c)).collect();
     Some(name.trim().to_string()).filter(|n| !n.is_empty())
 }
 
 /// A token as Slack shows it, with its role: a link its label or its URL; a user (`<@U..>`, `<@W..>`) `@` and the name, else
-/// the label, else the id; a channel `#` and the label or the id; `<!here>`, `<!channel>` and `<!everyone>` by name; a group its label; a date its
+/// the label, else the id; a channel (`<#C..>`, `<#G..>`) `#` and the name, else the label, else the id; `<!here>`, `<!channel>` and `<!everyone>` by name; a group its label; a date its
 /// fallback. A name loses the invisible and direction characters a header's name loses, and one left empty shows the id. A
 /// token not so (or one without what it shows) is its decoded text, as typed.
 fn resolve(tok: &str, name: Option<&str>) -> (String, Role) {
@@ -170,7 +171,7 @@ fn resolve(tok: &str, name: Option<&str>) -> (String, Role) {
         let mention = |sigil, i: &str, name: Option<&str>| (format!("{sigil}{}", name.or(line(true).as_deref()).unwrap_or(i)), Role::Mention);
         Some(match (head.get(..1)?, head.get(1..)?) {
             ("@", i) if id(i, &['U', 'W']) => mention('@', i, name),
-            ("#", i) if id(i, &['C']) => mention('#', i, None),
+            ("#", i) if id(i, &['C', 'G']) => mention('#', i, name),
             ("!", s @ ("here" | "channel" | "everyone")) => (format!("@{s}"), Role::Mention),
             ("!", s) if s.starts_with("subteam^") => (line(true)?, Role::Mention),
             ("!", s) if s.starts_with("date^") => (line(false)?, Role::Text),

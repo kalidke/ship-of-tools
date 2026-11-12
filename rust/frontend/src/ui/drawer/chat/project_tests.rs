@@ -430,8 +430,10 @@ fn a_mention_shows_its_name_or_its_label_or_its_id() {
     assert_eq!(at("<@U4>"), shown("@U4"));
     assert_eq!(at("<@U5|label>"), shown("@label"), "a name nothing visible is left of is no name");
     assert_eq!(at("<@U6>"), shown("@Grace"));
-    // A name belongs to its id alone, and only to a person's token: a channel, a group or typed text is never renamed.
-    assert_eq!(at("<#C1>"), shown("#C1"));
+    // A name belongs to its id alone and to a token of its own kind: a person's name is not a channel's, and a group or
+    // typed text is never renamed.
+    assert_eq!(at("<#U1>"), [(Kind::Markup, "<#U1>".to_string())]);
+    assert_eq!(at("<@C1>"), [(Kind::Markup, "<@C1>".to_string())]);
     assert_eq!(at("<!here>"), shown("@here"));
     assert_eq!(at("&lt;@U1&gt;"), [(Kind::Body, "<@U1>".to_string())]);
     assert_eq!(at("<@U7|label>"), shown("@label"), "a name of spaces is no name");
@@ -444,4 +446,30 @@ fn a_mention_shows_its_name_or_its_label_or_its_id() {
         (Kind::Body, "hi ".to_string()), (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, ", ".to_string()),
         (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, "!".to_string()),
     ]);
+}
+
+/// A channel mention shows `#` and the name the record carries for its id, else the token's label, else the id; the name
+/// loses what a header's name loses, a name is never a person's, and a token in code stays as typed.
+#[test]
+fn a_channel_mention_shows_its_name() {
+    let mut r = rec("");
+    let name = |id: &str, name: &str| sot_protocol::chat::ChatName { id: id.into(), name: name.into() };
+    r.names = vec![name("C1", "dev"), name("G2", "Priv\u{202e}ate"), name("C5", "\u{200b}"), name("U1", "Ada")];
+    let at = |text: &str| { let mut r = r.clone(); r.text = text.into(); body(&r) };
+    let shown = |t: &str| [(Kind::Mention, t.to_string())];
+    assert_eq!(at("<#C1>"), shown("#dev"));
+    assert_eq!(at("<#C1|>"), shown("#dev"));
+    assert_eq!(at("<#C1|label>"), shown("#dev"), "the name beats the label");
+    assert_eq!(at("<#G2>"), shown("#Private"));
+    assert_eq!(at("<#C3|label>"), shown("#label"));
+    assert_eq!(at("<#C4>"), shown("#C4"));
+    assert_eq!(at("<#C5|label>"), shown("#label"), "a name nothing visible is left of is no name");
+    assert_eq!(at("<#U1>"), [(Kind::Markup, "<#U1>".to_string())], "a person's id is no channel");
+    assert_eq!(at("<@U1> in <#C1>"), [
+        (Kind::Mention, "@Ada".to_string()), (Kind::Body, " in ".to_string()), (Kind::Mention, "#dev".to_string()),
+    ]);
+    assert_eq!(at("`<#C1>`"), [(Kind::Body, "<#C1>".to_string())]);
+    assert_eq!(at("`<#C1|label>`"), [(Kind::Body, "<#C1|label>".to_string())]);
+    let fenced = at("```\n<#C1>\n```");
+    assert!(fenced.iter().any(|(_, t)| t.contains("<#C1>")) && fenced.iter().all(|(_, t)| !t.contains("dev")), "{fenced:?}");
 }

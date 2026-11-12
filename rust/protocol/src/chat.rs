@@ -180,8 +180,8 @@ pub struct ChatRecord {
     /// Slack marked the message edited (its `edited` object); the record carries the fact, not who or when.
     #[serde(default, skip_serializing_if = "is_false")]
     pub edited: bool,
-    /// The people the text mentions whose names are known, at most `MAX_MENTIONS`, one per id; a mention not here shows
-    /// its label or its id.
+    /// The people and the label-less channels the text mentions whose names are known, at most `MAX_MENTIONS`, one per id
+    /// (a person's id and a channel's never collide); a mention not here shows its label or its id.
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
     pub names: Vec<ChatName>,
 }

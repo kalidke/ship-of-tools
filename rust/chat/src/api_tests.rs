@@ -959,6 +959,76 @@ async fn fill_names_keeps_what_it_found_when_the_cache_cannot() {
     .await;
 }
 
+/// A label-less `<#C…>` or `<#G…>` token is looked up once with `conversations.info`, through the cache and within the
+/// names' deadline, after the authors and the people; a labeled one, a direct-message id and a failure are not, and a
+/// record's names stay within `MAX_MENTIONS` whatever their kind.
+#[tokio::test]
+async fn a_channel_mention_without_a_label_is_looked_up_once() {
+    use sot_protocol::chat::MAX_MENTIONS;
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            let user = seen.param("user").unwrap_or_default();
+            let channel = seen.param("channel").unwrap_or_default();
+            match seen.path().as_str() {
+                "/api/users.info" => Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}})),
+                "/api/conversations.info" if channel == "C0BAD" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
+                "/api/conversations.info" if channel == "C0CTRL" => Reply::json(&json!({"ok": true, "channel": {"name": " la\u{7}b "}})),
+                "/api/conversations.info" => Reply::json(&json!({"ok": true, "channel": {"name": format!("name-{channel}")}})),
+                _ => Reply::json(&json!({"ok": false, "error": "unexpected"})),
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let asked = |param: &str, id: &str| fake.seen().iter().any(|s| s.param(param).as_deref() == Some(id));
+        let mut records = vec![member_record("U0AUTH"), member_record("U0AUTH")];
+        records[0].text = "<#C0AAA> <#G0PRIV|> <#C0LAB|label> <#C0BAD> <#D0DM> <#C0CTRL> <#C0AAA> <@C0NOT> <#U0USER>".into();
+        // Ten people and ten channels: the first sixteen tokens in the text's order get an entry, and no lookup past them.
+        records[1].text = format!("{} {}", mentions(10), (0..10).map(|i| format!("<#C0K{i:02}>")).collect::<String>());
+        api.fill_names(&mut records).await;
+        assert_eq!(named(&records[0]), ["C0AAA", "G0PRIV", "C0CTRL"]);
+        assert_eq!(records[0].names[0].name, "name-C0AAA");
+        assert_eq!(records[0].names[2].name, "lab", "a name is cleaned");
+        assert!(!asked("channel", "C0LAB") && !asked("channel", "D0DM") && !asked("channel", "C0NOT") && !asked("channel", "U0USER"));
+        assert_eq!(records[1].names.len(), MAX_MENTIONS);
+        assert_eq!((named(&records[1])[9], named(&records[1])[15]), ("U0M09", "C0K05"));
+        assert!(asked("channel", "C0K05") && !asked("channel", "C0K06"), "a lookup past the sixteenth of a record");
+        assert_eq!(calls(&fake, "conversations.info"), 4 + 6, "a channel was asked for twice or not at all");
+        // The second fill asks again only for what failed; a cache read asks for nothing.
+        let before = calls(&fake, "conversations.info");
+        api.fill_names(&mut records).await;
+        assert_eq!(calls(&fake, "conversations.info"), before + 1, "a cached channel was asked for again");
+        let mut cold = vec![member_record("U0AUTH")];
+        cold[0].text = records[0].text.clone();
+        let (before, users) = (calls(&fake, "conversations.info"), calls(&fake, "users.info"));
+        api.cached_names(&mut cold);
+        assert_eq!((calls(&fake, "conversations.info"), calls(&fake, "users.info")), (before, users));
+        assert_eq!(named(&cold[0]), ["C0AAA", "G0PRIV", "C0CTRL"]);
+        fake.shutdown().await;
+
+        // A channel lookup that hangs costs the deadline, after the author and the people have their names.
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if seen.path() == "/api/conversations.info" {
+                return Reply::Hang;
+            }
+            let user = seen.param("user").unwrap_or_default();
+            Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
+        })
+        .await;
+        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(400));
+        let mut records = vec![member_record("U0AUTH")];
+        records[0].text = "<#C0AAA> <@U0ONE> <#C0BBB>".into();
+        let start = Instant::now();
+        api.fill_names(&mut records).await;
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        assert_eq!((records[0].author.name.as_str(), named(&records[0])), ("Name-U0AUTH", vec!["U0ONE"]));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 fn member_record(id: &str) -> sot_protocol::chat::ChatRecord {
     let ctx = crate::normalize::Context {
         workspace: WS,

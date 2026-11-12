@@ -94,9 +94,9 @@ name is in this crate's one op table.
     `bot`), `text` (Slack's markup as sent, read through the chat text grammar of guarantee 6), `reply_count`, `files` (`{id, name, mime, bytes, thumbnail}`, no URL), and the defaulted
     `truncated`, `latest_reply`, `limited`, `omitted`, `files_omitted`, `edited` (Slack marked the message edited) and `names`, left out of the JSON when false, zero, absent or
     empty (`chat_tests::an_edited_flag_is_additive`: an older peer's record reads as not edited, and a record with a key this
-    reader does not know is read, so an older window reads a newer daemon). `names` is the people the text mentions whose names the daemon looked up
-    (`ChatName {id, name}`, the id of a `<@U…>` token): at most `MAX_MENTIONS` (16), each id `is_id`, each name at most 160 bytes, all refused past
-    their bounds on decode (`chat_tests::a_records_names_are_bounded_at_decode`); a mention with no entry shows its label or id. `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
+    reader does not know is read, so an older window reads a newer daemon). `names` is the people and the channels the text mentions whose names the daemon looked up
+    (`ChatName {id, name}`, the id of a `<@U…>` or `<@W…>` token or of a label-less `<#C…>` or `<#G…>` one; the two kinds of id never collide, so the one list holds both): at most `MAX_MENTIONS` (16), each id `is_id`, each name at most 160 bytes, all refused past
+    their bounds on decode (`chat_tests::a_records_names_are_bounded_at_decode`); a mention with no entry shows its label or id (a channel `#` and its label or id). `Ts` is the decimal string `<seconds>.<exactly six digits>`, never a float: `Ts::parse` and deserializing
     refuse any other number of fraction digits, because Slack answers such a bound with an empty page and no error.
     Mechanism: a new type and no new op, so every existing payload and `PROTOCOL_VERSION` (4) are unchanged. Bounds, enforced on decode since the chat family (guarantee 12): ids 64 bytes, text 8 KiB, author name 160, file name 256,
     MIME 128, eight files. `sot-chat` uses these constants. Limit: the 32 KiB total (`MAX_RECORD_BYTES`) is not checked on decode (the per-field

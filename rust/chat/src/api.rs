@@ -17,8 +17,8 @@ use tokio::time::Instant;
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_MENTIONS, MAX_NAME};
 
-/// A read (`auth.test`, history, replies, `users.info`): Slack answers in well under a second, so fifteen seconds
-/// covers a slow link and still frees a drawer waiting on a stalled page.
+/// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
+/// fifteen seconds covers a slow link and still frees a drawer waiting on a stalled page.
 pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 /// A post is never resent, so its wait is longer than a read's: giving up early turns an acknowledgement still on its
 /// way into `Unknown` for the person to resolve.
@@ -646,7 +646,8 @@ impl Api {
         self.name_of(user).await.unwrap_or_else(|| user.to_string())
     }
 
-    /// The name from the cache or `users.info`, remembered on a success; `None` on any failure.
+    /// The name from the cache or `users.info` (`conversations.info` for a channel's id), remembered on a success; `None`
+    /// on any failure.
     async fn name_of(&self, user: &str) -> Option<String> {
         if let Some(name) = self.names.lock().unwrap().by_id.get(user) {
             return Some(name.clone());
@@ -656,11 +657,12 @@ impl Api {
         Some(name)
     }
 
-    /// Give each member record without a name its display name, and each record the names of the people its text
-    /// mentions (`mentioned`), all lookups within `NAMES_DEADLINE`: authors first, then mentions. The records are filled
-    /// from what these lookups found, held here and not read back from the cache, whose 1,024 entries a large fill can
-    /// push its own first names out of. What could not be looked up shows the id for an author and adds no entry for a
-    /// mention.
+    /// Give each member record without a name its display name, and each record the names of the people and the
+    /// label-less channels its text mentions (`mentioned`), all lookups within `NAMES_DEADLINE`: authors first, then
+    /// people, then channels, so a deadline that runs out costs the least wanted names (a header without a name shows an
+    /// id; a channel mention shows its id as it did). The records are filled from what these lookups found, held here and
+    /// not read back from the cache, whose 1,024 entries a large fill can push its own first names out of. What could
+    /// not be looked up shows the id for an author and adds no entry for a mention.
     pub async fn fill_names(&self, records: &mut [ChatRecord]) {
         let mut ids: Vec<String> = Vec::new();
         let mentions: Vec<String> = records.iter().flat_map(|r| mentioned(&r.text)).collect();
@@ -669,6 +671,8 @@ impl Api {
                 ids.push(id);
             }
         }
+        // Stable: channels (`C…`, `G…`) go last, the rest keep their order.
+        ids.sort_by_key(|id| id.starts_with(['C', 'G']));
         let found: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         let lookups = async {
             for id in &ids {
@@ -692,9 +696,19 @@ impl Api {
         name_records(records, |id| names.by_id.get(id).cloned());
     }
 
+    /// A channel's name from `conversations.info`, cleaned.
+    async fn channel_name(&self, channel: &str) -> Result<String, ApiError> {
+        let v = self.read("conversations.info", &[("channel", channel.into())], MAX_BODY).await?;
+        let name = v.pointer("/channel/name").and_then(Value::as_str).map(|s| clean(s, MAX_NAME).0);
+        name.filter(|s| !s.is_empty()).ok_or(ApiError::Malformed)
+    }
+
     async fn lookup(&self, user: &str) -> Result<String, ApiError> {
         if !valid_id(user) {
             return Err(ApiError::BadRequest);
+        }
+        if user.starts_with(['C', 'G']) {
+            return self.channel_name(user).await;
         }
         let v = self
             .read("users.info", &[("user", user.into())], MAX_BODY)
@@ -808,15 +822,21 @@ fn unnamed(r: &ChatRecord) -> bool {
     r.origin == Origin::Member && r.author.name.is_empty() && !r.author.id.is_empty()
 }
 
-/// The distinct ids of the `<@U…>` and `<@W…>` tokens in a text, at most `MAX_MENTIONS`, in order. A token a byte cut
-/// left open has no id.
+/// The distinct ids of the `<@U…>` and `<@W…>` tokens in a text and of the `<#C…>` and `<#G…>` tokens with no label,
+/// together at most `MAX_MENTIONS`, in order. A token a byte cut left open has no id.
 fn mentioned(text: &str) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
     for seg in text_segments(text) {
         let TextSegment::Markup(t) = seg else { continue };
-        let Some(inner) = t.strip_prefix("<@").and_then(|t| t.strip_suffix('>')) else { continue };
-        let id = inner.split('|').next().unwrap_or_default();
-        if id.starts_with(['U', 'W']) && valid_id(id) && !ids.iter().any(|i| i == id) && ids.len() < MAX_MENTIONS {
+        let Some(inner) = t.strip_prefix('<').and_then(|t| t.strip_suffix('>')) else { continue };
+        let (head, label) = inner.split_once('|').unwrap_or((inner, ""));
+        let id = head.get(1..).unwrap_or_default();
+        let wanted = match head.get(..1) {
+            Some("@") => id.starts_with(['U', 'W']),
+            Some("#") => label.is_empty() && id.starts_with(['C', 'G']),
+            _ => false,
+        };
+        if wanted && valid_id(id) && !ids.iter().any(|i| i == id) && ids.len() < MAX_MENTIONS {
             ids.push(id.to_string());
         }
     }
