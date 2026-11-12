@@ -95,7 +95,7 @@ fn parse(atoms: &[Atom], style: u8, out: &mut Vec<Piece>) {
         }
         // An opener is followed by a non-space that is not its own marker (`**x**` opens at the second asterisk).
         let opens = bit != 0 && edge(atoms.get(i.wrapping_sub(1))) && atoms.get(i + 1).is_some_and(|a| !space(a) && !matches!(a, Atom::Ch(x) if *x == c));
-        let slot = bit.trailing_zeros() as usize % 4;
+        let slot = bit.trailing_zeros() as usize;
         let closer = if opens && failed[slot] != eol { close(atoms, i, c, eol) } else { None };
         if let Some(j) = closer {
             if bit == CODE {
@@ -105,7 +105,9 @@ fn parse(atoms: &[Atom], style: u8, out: &mut Vec<Piece>) {
             }
             i = j + 1;
         } else {
-            failed[slot] = if opens { eol } else { failed[slot] };
+            if opens {
+                failed[slot] = eol;
+            }
             push(out, &atoms[i], style, false);
             i += 1;
         }

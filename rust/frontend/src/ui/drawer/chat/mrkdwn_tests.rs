@@ -46,6 +46,9 @@ fn slacks_inline_styles_follow_its_boundary_rules() {
     }
     assert_eq!(shown("*a**b*"), [s("ab", BOLD)]);
     assert_eq!(shown("`a``b`"), [s("ab", CODE)]);
+    // A failed closer scan is remembered per marker and per line: it never suppresses another marker or the next line.
+    assert_eq!(shown("*a _b_"), [s("*a ", 0), s("b", ITALIC)]);
+    assert_eq!(shown("*a\n*b*"), [s("*a\n", 0), s("b", BOLD)]);
     // Only ASCII punctuation is a boundary.
     for t in ["*a*\u{201d}", "\u{201c}*a*", "*a*\u{2014}x", "x*\u{65e5}\u{672c}*y"] {
         assert_eq!(shown(t), plain(t), "{t}");

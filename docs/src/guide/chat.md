@@ -76,9 +76,10 @@ selection or a copy of the message gives the text as shown. The rules for where 
 drawer's reading of Slack's and have not yet been compared with the desktop app side by side: a style opens at the start
 of the text or after a space or punctuation mark and before something that is not a space, and closes at the next
 matching mark on the same line before a space, punctuation or the end. A mark in the middle of a word (`2*3*4`,
-`snake_case_name`), an unclosed one, and one closed on a later line stay as typed, and so does a run of backticks that
-starts a style. A mark followed by the same mark does not start a style, so `**x**` shows `x` in bold between two
-asterisks. Code shows no other style inside it, and a style around code is dropped.
+`snake_case_name`), an unclosed one, and one closed on a later line stay as typed, and so does a run of backticks where
+no code span is open (two that end one span and begin the next disappear: `` `a``b` `` shows `ab` in one box). A mark
+followed by the same mark does not start a style, so `**x**` shows `x` in bold between two asterisks. Code shows no other style inside it, and a
+style around code is dropped.
 
 Other markup, such as a mention or a link, is shown as the markup text in blue and is not rendered: a link is not
 clickable and a mention is not replaced by a name. Text that looks like a header or a badge inside a message stays

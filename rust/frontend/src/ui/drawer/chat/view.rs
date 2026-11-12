@@ -474,12 +474,12 @@ impl ChatView {
             (right > left && bottom > top).then_some(CellQuad { x: left, y: top, w: right - left, h: bottom - top, color })
         };
         // A `LOW` border one pixel wide (at the text scale) and `fill` inside it: the day pill's, and an inline code run's.
-        let boxed = |r: ScreenRect, fill, px: f32| [quad(r, LOW), quad(ScreenRect { x: r.x + px, y: r.y + px, w: r.w - 2.0 * px, h: r.h - 2.0 * px }, fill)].into_iter().flatten();
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
         let text = text_rect(body, self.scale);
         for (key, top, ts, tile) in &self.placed {
             let shaped = &self.cache[key];
             let scale = f32::from_bits(key.2);
+            let boxed = |r: ScreenRect, fill| [quad(r, LOW), quad(ScreenRect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, fill)].into_iter().flatten();
             let all = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: shaped.height };
             let at = ScreenRect { y: all.y + shaped.day, h: all.h - shaped.day, ..all };
             if self.mark.as_ref() == Some(ts) {
@@ -497,12 +497,12 @@ impl ChatView {
                 let rule = |from: f32, to: f32| ScreenRect { x: from, y: pill.y + line / 2.0 - scale / 2.0, w: to - from, h: scale };
                 out.extend(quad(rule(body.x + TILE_LEFT_PX * scale, pill.x), LOW));
                 out.extend(quad(rule(pill.x + w, body.x + body.w - TILE_LEFT_PX * scale), LOW));
-                out.extend(boxed(pill, BG, scale));
+                out.extend(boxed(pill, BG));
             }
             // Inline code is a bordered fill around its run, padded left and right; strike is a rule through the middle of its.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & CODE_RUN != 0) {
                 let outer = ScreenRect { x: text.x + x - CODE_PAD_PX * scale, y: all.y + y + CODE_INSET_PX * scale, w: w + 2.0 * CODE_PAD_PX * scale, h: h - 2.0 * CODE_INSET_PX * scale };
-                out.extend(boxed(outer, BAND, scale));
+                out.extend(boxed(outer, BAND));
             }
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & STRIKE_RUN != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + (h - scale) / 2.0, w, h: scale }, TEXT));
