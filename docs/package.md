@@ -204,7 +204,8 @@ virtual display), which closes B5's plan; a person's first use of the drawer wai
 hub's chat configuration. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
 bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection,
 an author's messages grouped under one header with a tile in a gutter, and day dividers with the time alone in the
-header and Slack's thread summary, have landed. An `.svg` file now previews as its picture fitted to the pane, and every
+header and Slack's thread summary, and Slack's inline styles (bold, italic, strike and code, by the drawer's reading of
+Slack's rules, not yet compared with the desktop app), have landed. An `.svg` file now previews as its picture fitted to the pane, and every
 SVG that comes from a file (an `.svg` file, a markdown figure, a page's math, the last in one batch per frame) is drawn
 in a bounded child of the window's own binary (it bounds its memory, CPU, crashes and inherited descriptors before it
 reads, and answers on a private stdout) through one worker thread (one draw at a time, each job tagged with the shown

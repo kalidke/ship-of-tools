@@ -2014,3 +2014,13 @@ A landing's record goes here, with its measured times; the package page holds on
   f2444af79), 22 minutes. About 50 lines removed, nothing a person sees changed. Review round 1 (no blockers: the
   preview's shown flags were a tuple of five read by position, so a reader shifted to the wrong flag compiled and
   passed every test; the flags are now a named struct).
+- The chat drawer's look, L4a (Slack's inline styles: bold, italic, strike and code), 2026-11-12: builder launched
+  01:46, main 02:45 (cc855d902, c276093d9, 922c3f86e), 59 minutes, a miss. About 120 product lines of code (about 180
+  added with comments; the plan said 110) and 210 test lines. Where the minutes went: the build took 11 minutes, then
+  two review rounds of about 15 minutes each and two fix commits. Review round 1 (no blockers): the parse was quadratic
+  on a long line of openers and runs every frame for every placed record, 13 to 20 ms for one 8 KiB line, now linear
+  (0.2 ms) with a test that counts the scan; `**x**` showed half a style; the guide stated Slack's rules as fact, now
+  the drawer's reading of them, unconfirmed (the plan's premise PB, a person's message from the desktop app, unrun);
+  three drawing and copy claims had no test. Round 2 (no blockers): the scan's memory per marker and per line had no
+  row that failed when either scope was dropped. The builder ran its first suite with the real home folder, against
+  its brief; nothing under the window's folders changed, and the one daemon test sets its own.
