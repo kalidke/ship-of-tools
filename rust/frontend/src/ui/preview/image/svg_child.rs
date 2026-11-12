@@ -64,16 +64,6 @@ fn bound_self(heap: &HeapCap, heap_bytes: usize, cpu_seconds: u64) -> io::Result
     Ok(out)
 }
 
-fn invalid(what: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, what.to_owned())
-}
-
-fn word<const N: usize>(from: &mut impl Read) -> io::Result<[u8; N]> {
-    let mut word = [0; N];
-    from.read_exact(&mut word)?;
-    Ok(word)
-}
-
 /// The request on `from`. A job's bytes are allocated at their declared length, which the heap cap sees before they
 /// are read; their sum may not pass `PREVIEW_BINARY_CAP`.
 fn read_request(mut from: impl Read) -> io::Result<Vec<Job>> {

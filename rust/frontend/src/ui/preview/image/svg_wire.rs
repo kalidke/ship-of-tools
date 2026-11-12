@@ -2,6 +2,8 @@
 //! request and a reply, the tags of an ask and of a job's reply, and the codes the child ends with. The test target
 //! `svg_child` includes this file, so the numbers have one owner.
 
+use std::io::{self, Read};
+
 /// The first four bytes of a request on stdin and of a reply on stdout.
 pub(crate) const MAGIC: [u8; 4] = *b"SVG1";
 /// An ask: draw onto exactly `w` by `h` pixels (two u32 little endian follow).
@@ -21,3 +23,15 @@ pub(crate) const EXIT_HEAP: i32 = 71;
 pub(crate) const EXIT_CPU: i32 = 72;
 pub(crate) const EXIT_CRASH: i32 = 73;
 pub(crate) const EXIT_REFUSED: i32 = 74;
+
+/// A refusal of what a peer sent: the text is shown where the refusal ends.
+pub(crate) fn invalid(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, what.to_owned())
+}
+
+/// The next `N` bytes of `from`.
+pub(crate) fn word<const N: usize>(from: &mut impl Read) -> io::Result<[u8; N]> {
+    let mut word = [0; N];
+    from.read_exact(&mut word)?;
+    Ok(word)
+}

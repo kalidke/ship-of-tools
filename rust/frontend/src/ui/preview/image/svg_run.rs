@@ -1,13 +1,20 @@
-//! The window's half of the drawing child's bounds (`svg_child`, `sot --draw-svg`), its start: `start` puts the child
-//! in its cleared environment (`child_env`), with stderr null, behind the birth lock, and on Windows in a kill-on-close
-//! job before it can be given any input. The bounds' constants live here. A leaf on std and platform: the test target
+//! The window's half of the drawing child's bounds (`svg_child`, `sot --draw-svg`): `start` puts the child in its
+//! cleared environment, with stderr null, behind the birth lock, and on Windows in a kill-on-close job before any input;
+//! `finish` writes its request on one thread, reads and checks every reply (each header against its ask before the body, the end of
+//! the stream after the last reply), holds it to the wall clock, always kills and reaps it, and turns each job into an
+//! `Outcome` in the person's words. The exit status wins over a pipe error. The reap after a kill is the one unbounded
+//! wait (an uninterruptible sleep), as in containment's guarantee 4. A leaf on std and platform: the test target
 //! `svg_child` includes this file.
 
 use std::ffi::{OsStr, OsString};
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use super::svg_wire::*;
 
 /// The wall clock of one child: twice the dearest lawful drawing measured (a 15 MB scatter of 200000 circles under a
 /// blur, 4.7 s at 12.6 Mpx).
@@ -31,6 +38,21 @@ impl Bounds {
         ["--draw-svg".into(), self.heap.to_string(), self.cpu.to_string(), "--version".into()]
     }
 }
+
+/// One picture: `svg` drawn onto exactly `size` pixels.
+pub(crate) struct Job {
+    pub size: (u32, u32),
+    pub svg: Arc<[u8]>,
+}
+
+/// A job's end: its pixels, or the words a person reads (the drawing's own first line of error, or the run's).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Outcome {
+    Drawn { w: u32, h: u32, rgba: Vec<u8> },
+    Refused(String),
+}
+
+const BAD_REPLY: &str = "the drawing's reply was not what was asked";
 
 /// The window's own binary: on Linux the running image, even after an update replaced the file (a computer with no
 /// `/proc` fails to start it, so every draw is refused), elsewhere the executable's path.
@@ -73,7 +95,7 @@ pub(crate) fn start(mut command: Command) -> io::Result<Started> {
     std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0800_0000);
     #[cfg(windows)]
     let job = sot_platform::host::winjob::AnonymousJob::create().map_err(io::Error::other)?;
-    #[allow(clippy::disallowed_methods, reason = "the window's SVG child: starts nothing, CPU-limited on Unix, in a kill-on-close job on Windows")]
+    #[allow(clippy::disallowed_methods, reason = "the window's SVG child: starts nothing, killed at its wall, CPU-limited on Unix, in a kill-on-close job on Windows")]
     let child = {
         #[cfg(unix)]
         let _fork = sot_platform::host::fd::fork_guard();
@@ -92,4 +114,117 @@ pub(crate) fn start(mut command: Command) -> io::Result<Started> {
         return Err(io::Error::other(error));
     }
     Ok(started)
+}
+
+/// `jobs` drawn by the child `command` starts: one outcome per job, in order.
+pub(crate) fn draw_in_child(command: Command, jobs: Vec<Job>, bounds: &Bounds) -> Vec<Outcome> {
+    match start(command) {
+        Ok(started) => finish(started, jobs, bounds),
+        Err(_) => refusals(jobs.len(), "cannot start the drawing"),
+    }
+}
+
+fn refusals(count: usize, words: &str) -> Vec<Outcome> {
+    (0..count).map(|_| Outcome::Refused(words.to_owned())).collect()
+}
+
+/// Writes `jobs` to `started`'s child and reads its replies, to the end of the stream or `bounds.wall`; the child is
+/// dead and reaped when this returns. A reply that breaks its form refuses every job; a child that ends early costs the
+/// jobs it did not answer, in the words of its end.
+pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> Vec<Outcome> {
+    let count = jobs.len();
+    let asks: Vec<_> = jobs.iter().map(|job| job.size).collect();
+    let (stdin, stdout) = (started.child.stdin.take().unwrap(), started.child.stdout.take().unwrap());
+    let (tx, rx) = mpsc::channel();
+    // Two threads, so that a child that never reads its input (a binary without the mode) is still read from.
+    std::thread::spawn(move || drop(write_request(stdin, &jobs)));
+    std::thread::spawn(move || {
+        // Only a reply that broke its form is told; a pipe that ended is the exit status's to explain.
+        if let Err(error) = read_replies(stdout, &asks, &tx) {
+            if error.kind() == io::ErrorKind::InvalidData {
+                let _ = tx.send(Err(error.to_string()));
+            }
+        }
+    });
+    let deadline = Instant::now() + bounds.wall;
+    let (mut outcomes, mut violation, mut timed_out) = (Vec::new(), None, false);
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(outcome)) => outcomes.push(outcome),
+            Ok(Err(text)) => violation = Some(text),
+            Err(RecvTimeoutError::Timeout) => {
+                timed_out = true;
+                break;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = started.child.kill();
+    let status = started.child.wait();
+    if let Some(words) = violation {
+        return refusals(count, &words);
+    }
+    if outcomes.len() < count {
+        let words = match status {
+            _ if timed_out => format!("took past {} s", bounds.wall.as_secs()),
+            Ok(status) if status.code() == Some(EXIT_HEAP) => format!("needed more than {} MiB", bounds.heap >> 20),
+            Ok(status) => format!("the drawing ended ({status})"),
+            Err(error) => format!("the drawing ended ({error})"),
+        };
+        outcomes.extend(refusals(count - outcomes.len(), &words));
+    }
+    outcomes
+}
+
+fn write_request(mut to: impl Write, jobs: &[Job]) -> io::Result<()> {
+    to.write_all(&MAGIC)?;
+    to.write_all(&(jobs.len() as u32).to_le_bytes())?;
+    for job in jobs {
+        let (w, h, len) = (job.size.0.to_le_bytes(), job.size.1.to_le_bytes(), (job.svg.len() as u64).to_le_bytes());
+        for part in [&[ASK_STRETCH][..], &w, &h, &len, &job.svg] {
+            to.write_all(part)?;
+        }
+    }
+    Ok(())
+}
+
+/// One outcome sent per reply read, `asks` being each job's `(w, h)`. A reply that breaks its form is `InvalidData`,
+/// whose text is the person's words: the magic, a size other than the ask's (a zero side is drawn as one), an error
+/// text past its bound, a tag unknown, or a byte after the last reply. The body is read as it arrives, so a size the
+/// child only claims allocates nothing.
+fn read_replies(mut from: impl Read, asks: &[(u32, u32)], tx: &Sender<Result<Outcome, String>>) -> io::Result<()> {
+    if word::<4>(&mut from)? != MAGIC {
+        return Err(invalid("not a drawing program"));
+    }
+    for &(w, h) in asks {
+        let outcome = match word::<1>(&mut from)?[0] {
+            REPLY_PIXELS => {
+                let (rw, rh) = (u32::from_le_bytes(word(&mut from)?), u32::from_le_bytes(word(&mut from)?));
+                let len = (rw as u64 * rh as u64).checked_mul(4).filter(|_| (rw, rh) == (w.max(1), h.max(1)));
+                let Some(len) = len else { return Err(invalid(BAD_REPLY)) };
+                let mut rgba = Vec::new();
+                if from.by_ref().take(len).read_to_end(&mut rgba)? as u64 != len {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                Outcome::Drawn { w: rw, h: rh, rgba }
+            }
+            REPLY_ERROR => {
+                let len = u16::from_le_bytes(word(&mut from)?) as usize;
+                if len > ERROR_BYTES {
+                    return Err(invalid(BAD_REPLY));
+                }
+                let mut text = vec![0; len];
+                from.read_exact(&mut text)?;
+                Outcome::Refused(String::from_utf8(text).map_err(|_| invalid(BAD_REPLY))?)
+            }
+            _ => return Err(invalid(BAD_REPLY)),
+        };
+        if tx.send(Ok(outcome)).is_err() {
+            return Ok(());
+        }
+    }
+    if from.read(&mut [0])? != 0 {
+        return Err(invalid(BAD_REPLY));
+    }
+    Ok(())
 }

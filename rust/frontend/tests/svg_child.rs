@@ -1,7 +1,8 @@
 //! The drawing child, `sot --draw-svg`: the built binary started the way the window starts it (a cleared environment
 //! with `HOME`, stderr null), a request on stdin, and its replies and its end read back. Each bound has the file that
 //! meets it. A child that crashes or spins runs under a core limit and in a scratch folder, so nothing it ends by can
-//! leave a core or a report outside that folder. The runner (`svg_run`, the window's half) is tested here too.
+//! leave a core or a report outside that folder. The runner (`svg_run`, the window's half) is tested here too, on the
+//! real child and on stand-ins for it.
 
 // The two files side by side at the root, as they are in the crate, so that the runner's `super::svg_wire` resolves.
 #[path = "../src/ui/preview/image/svg_wire.rs"]
@@ -13,9 +14,10 @@ mod svg_run;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use svg_run::{child_env, start, Bounds};
+use svg_run::{child_env, draw_in_child, finish, start, Bounds, Job, Outcome};
 use svg_wire::*;
 
 const MIB: usize = 1 << 20;
@@ -338,7 +340,109 @@ fn a_panic_on_the_draw_thread_is_the_crash_code() {
     assert_eq!(replies(&ran.out).len(), 0, "nothing was answered before the panic");
 }
 
-// The start: the child's environment, its descriptors and, on Windows, its job.
+// The runner. The real child as the window starts it, and stand-ins for it (Unix: `/bin/sh` with absolute inner
+// commands, since the runner's environment has no `PATH`).
+
+fn job(w: u32, h: u32, svg: &[u8]) -> Job {
+    Job { size: (w, h), svg: Arc::from(svg) }
+}
+
+fn refused(words: &str) -> Outcome {
+    Outcome::Refused(words.to_owned())
+}
+
+/// The real child with `heap` bytes of heap and a wall of `wall`; on Unix under a core limit, in `scratch`.
+fn real_child(wall: Duration, heap: usize, scratch: &Scratch) -> (Command, Bounds) {
+    let bounds = Bounds { wall, heap: heap as u64, cpu: 30 };
+    let bin = env!("CARGO_BIN_EXE_sot");
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", WRAP, bin]).args(bounds.args());
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = svg_run::child_command(bin, &bounds);
+    command.current_dir(&scratch.0);
+    (command, bounds)
+}
+
+/// A stand-in child: `script` under `/bin/sh`, ignoring its input.
+#[cfg(unix)]
+fn stand_in(script: &str) -> Command {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", script]);
+    command
+}
+
+#[cfg(unix)]
+fn process_gone(pid: u32) -> bool {
+    !sot_platform::test_wait::run_within(Command::new("/bin/kill").args(["-0", &pid.to_string()]), WAIT).status.success()
+}
+
+#[cfg(windows)]
+fn process_gone(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a handle opened here is closed here; the call only reads a status.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return true;
+        }
+        let mut code = 0;
+        let read = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        read != 0 && code != STILL_ACTIVE as u32
+    }
+}
+
+#[test]
+fn the_runner_returns_each_job_as_its_pixels_or_its_error() {
+    let (red, blue) = (rect("red"), rect("blue"));
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(WAIT, ROOMY, &scratch);
+    let jobs = vec![job(4, 4, red.as_bytes()), job(6, 2, b"this is no SVG"), job(0, 3, blue.as_bytes())];
+    let outcomes = draw_in_child(command, jobs, &bounds);
+    assert_eq!(outcomes.len(), 3);
+    assert!(matches!(&outcomes[0], Outcome::Drawn { w: 4, h: 4, rgba } if rgba[4 * (2 * 4 + 2)..][..4] == [255, 0, 0, 255]));
+    assert!(matches!(&outcomes[1], Outcome::Refused(text) if text.starts_with("svg parse failed")), "{:?}", outcomes[1]);
+    // A zero side is drawn as one, and the runner accepts that as the ask.
+    assert!(matches!(&outcomes[2], Outcome::Drawn { w: 1, h: 3, .. }), "{:?}", outcomes[2]);
+}
+
+#[test]
+fn a_program_that_cannot_be_started_is_refused_in_words() {
+    let outcomes = draw_in_child(Command::new("/no/such/program"), vec![job(2, 2, b"<svg/>"), job(2, 2, b"<svg/>")], &Bounds {
+        wall: WAIT,
+        heap: ROOMY as u64,
+        cpu: 30,
+    });
+    assert_eq!(outcomes, [refused("cannot start the drawing"), refused("cannot start the drawing")]);
+}
+
+#[test]
+fn a_draw_past_its_wall_bound_is_killed_and_refused() {
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(Duration::from_secs(1), ROOMY, &scratch);
+    let started = start(command).expect("start the child");
+    let pid = started.child.id();
+    let begun = Instant::now();
+    let outcomes = finish(started, vec![job(100, 100, SPIN.as_bytes())], &bounds);
+    assert_eq!(outcomes, [refused("took past 1 s")]);
+    assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+    assert!(process_gone(pid), "the child is gone once the runner returns");
+}
+
+#[test]
+fn a_heap_end_during_the_input_write_says_heap() {
+    // 200 MiB against a 64 MiB heap: the child ends while its input is still being written, so the writer meets a
+    // closed pipe, and the words are the exit status's.
+    let svg = vec![b' '; 200 * MIB];
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(WAIT, 64 * MIB, &scratch);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds), [refused("needed more than 64 MiB")]);
+}
 
 #[test]
 fn the_childs_environment_is_the_font_list() {
@@ -350,6 +454,44 @@ fn the_childs_environment_is_the_font_list() {
     } else {
         assert_eq!(kept, ["HOME", "XDG_DATA_HOME"]);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_binary_without_the_mode_is_refused_at_once() {
+    // It prints its version line, reads nothing and sleeps: the refusal comes at the first line, though the input is
+    // far past what a pipe holds (so a runner that writes before it reads waits for the wall).
+    let (begun, svg) = (Instant::now(), vec![b' '; MIB]);
+    let command = stand_in("/usr/bin/printf 'sot 0.7.0\\n'; exec /bin/sleep 30");
+    let bounds = Bounds { wall: Duration::from_secs(20), heap: ROOMY as u64, cpu: 30 };
+    assert_eq!(draw_in_child(command, vec![job(2, 2, &svg)], &bounds), [refused("not a drawing program")]);
+    assert!(begun.elapsed() < Duration::from_secs(5), "{:?}", begun.elapsed());
+}
+
+/// A stand-in child's whole reply to a 1x1 job: the magic and a red pixel.
+#[cfg(unix)]
+const ONE_RED_PIXEL: &str = r"SVG1R\001\000\000\000\001\000\000\000\377\000\000\377";
+
+#[cfg(unix)]
+#[test]
+fn bytes_after_the_last_reply_are_refused() {
+    let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
+    let ask = |script: String| draw_in_child(stand_in(&script), vec![job(1, 1, b"<svg/>")], &bounds);
+    // The control: the reply alone is drawn.
+    assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}'")), [Outcome::Drawn { w: 1, h: 1, rgba: vec![255, 0, 0, 255] }]);
+    assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}X'")), [refused("the drawing's reply was not what was asked")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reply_past_its_ask_is_refused() {
+    // The header names 5000 x 5000 for a 2 x 2 ask, then the child waits: it is refused at the header, not at the wall
+    // and not after 100 MB of body.
+    let begun = Instant::now();
+    let command = stand_in(r"/usr/bin/printf 'SVG1R\210\023\000\000\210\023\000\000'; exec /bin/sleep 30");
+    let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
+    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused("the drawing's reply was not what was asked")]);
+    assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
 }
 
 #[cfg(target_os = "linux")]
@@ -387,9 +529,7 @@ fn a_child_reads_no_descriptor_of_the_window() {
 #[test]
 fn a_started_child_is_in_its_job_before_it_is_given_any_input() {
     let scratch = Scratch::new();
-    let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
-    let mut command = svg_run::child_command(env!("CARGO_BIN_EXE_sot"), &bounds);
-    command.current_dir(&scratch.0);
+    let (command, _) = real_child(WAIT, ROOMY, &scratch);
     let mut started = start(command).expect("start the child");
     // The pipes are still unused here, so no input byte has been written.
     assert_eq!(started.job.active_processes().unwrap(), 1, "the child is in the job");
