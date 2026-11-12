@@ -409,10 +409,17 @@ async fn row_verbs_target_current_thread_and_submit_once() {
         post(&rig.alpha, "C0AAAA"),
         row_post(&rig.alpha, "C0AAAA", "someone-else", Some(thread)),
         row_post(&rig.alpha, "C0AAAA", "", Some(thread)),
+        // The handle is compared exactly: no case folding, no trimming.
+        row_post(&rig.alpha, "C0AAAA", "ALPHA-H", Some(thread)),
+        row_post(&rig.alpha, "C0AAAA", " alpha-h", Some(thread)),
+        row_post(&rig.alpha, "C0AAAA", "alpha-h\n", Some(thread)),
         row_post(&rig.beta, "C0BBBB", "alpha-h", Some(thread)),
     ];
     for (n, payload) in refused.into_iter().enumerate() {
-        assert_eq!(code(&cli.ask(10 + n as u64, op::CHAT_POST, payload).await), "bad_request", "refused post {n}");
+        let reply = cli.ask(10 + n as u64, op::CHAT_POST, payload).await;
+        // The daemon's own refusal, an error reply: not `Api::post`'s `outcome: refused`, which would also stop a spelling
+        // the handle check let through (a trimmed or case-folded name).
+        assert_eq!((code(&reply), reply.get("outcome")), ("bad_request", None), "refused post {n}: {reply}");
     }
     assert_eq!(calls(&fake), 0, "a refused post reached Slack");
     // A window may post as a person; its row post is held to the handle as well.

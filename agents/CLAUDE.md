@@ -341,9 +341,10 @@ of each.
   posts only for the row it runs in (`$SOT_WORKSPACE_ID`, none refused before an endpoint is found) under the handle
   `comm-context.sh` gives (none refused the same way), asks `chat.resolve` for the pair, sends one `chat.post` of kind
   `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 40 s for the post.
-  The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`; 1 for usage; 2 with `refused <code> <words>`,
-  `limited, wait <n> s`, `unknown: the post may exist; do not send it again` or `no answer: the post may exist; do not
-  send it again`. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
+  The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`; 1 for usage; 2, nothing posted for certain, with
+  `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
+  reply) or `no answer: ...` (also a hello the daemon refused, which cannot be told apart), each ending "do not send it
+  again; read the thread first". A caller tests the exit code, and never posts again on 3. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
   `tests/test-sot-fe-chat.sh` runs it against a stub daemon: outside a row and with no handle refused before an
   endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it

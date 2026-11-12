@@ -164,14 +164,15 @@
 #   chat     — `chat post` replies in the channel this row is mapped to, under this session's comm handle and for the
 #              row it runs in (`$SOT_WORKSPACE_ID`; outside a row it is refused before an endpoint is found). It
 #              asks the daemon `chat.resolve` for the row's channel, then sends ONE `chat.post` of kind `row`, into
-#              the thread named by --thread <ts> (the `ts=` value in the channel mail's second line), else as a new
+#              the thread named by --thread <ts> (the `thread=` value in the channel mail's second line), else as a new
 #              message in the channel. The post is never sent twice: unlike the fe.command verbs this one does not
 #              retry on no answer, so a post that may exist is never repeated. Free text goes by --stdin (a leading
 #              `/` or `-` in an argument is mangled or read as a flag). Waits 40 s for the post
 #              (--timeout <s> changes both waits). Prints `posted <ts>`
-#              and exits 0; exit 1 for usage; exit 2 with `refused <code> <words>`, `limited, wait <n> s`,
-#              `unknown: the post may exist; do not send it again` or `no answer: the post may exist; do not send it
-#              again`. A reply is public to every member of the channel.
+#              and exits 0; exit 1 for usage; exit 2 with `refused <code> <words>` or `limited, wait <n> s` (NOTHING was
+#              posted: fix it, or wait and post once more); exit 3 with `unknown: ...` or `no answer: ...` (the post
+#              MAY exist: never post again; read the thread first). Test the exit code, not the words. A reply is
+#              public to every member of the channel.
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One

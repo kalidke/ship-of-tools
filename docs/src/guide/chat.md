@@ -191,8 +191,8 @@ runs in, under the handle the row's session joined with, shown as `<handle> (row
 row is mapped to: into the thread named by `--thread` (the `thread=` value of the mail's second line), else as a new message.
 The skills tell an agent to give the reply on standard input. It asks the daemon for the row's channel and sends one post,
 never a second: a post whose answer is lost is reported as `may exist`, and the agent is told never to send it again. It
-prints `posted <ts>` and exits 0, or exits 2 with `refused <code>`, `limited, wait <n> s` (nothing was posted), or `unknown`
-or `no answer` (the post may exist). A reply is public to every member of the channel, so the agent is told to put nothing
+prints `posted <ts>` and exits 0; exits 2 with `refused <code>` or `limited, wait <n> s` when nothing was posted; and exits 3 with
+`unknown` or `no answer` when the post may exist, in which case the agent never posts again and reads the thread first. A reply is public to every member of the channel, so the agent is told to put nothing
 in it that the lab's rules on public text and on partners' work keep out of shared text. The daemon refuses a person's post
 from a connection that is not a window, and a row's post under any name but the row's own handle; the declared role is the
 connection's own word, so this keeps one account's programs apart and is not a security boundary. A reply is not mail: it

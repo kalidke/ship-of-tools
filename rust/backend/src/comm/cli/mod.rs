@@ -10,7 +10,9 @@ mod book;
 mod door;
 mod guard;
 mod join;
-pub(crate) mod poll;
+mod poll;
+#[cfg(test)]
+pub(crate) use poll::poll;
 mod send;
 mod start;
 mod wire;

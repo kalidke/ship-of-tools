@@ -22,6 +22,13 @@ _chat_refused() {
     exit 2
 }
 
+# The post may exist: exit 3, the one code that means "never post again". Every exit 2 is a certain "nothing was posted".
+# (A hello the daemon refused, or a frame that never left, is no answer too, and says the same: it cannot be told apart.)
+_chat_may_exist() {
+    echo "$1: the post may exist; do not send it again; read the thread first" >&2
+    exit 3
+}
+
 # One request, one reply, no second try: the chat's post is submitted once (chat guarantee 12), so unlike
 # `send_fe_command` nothing here sends a frame again. $1=op, $2=the request frame.
 _chat_ask() {
@@ -29,9 +36,9 @@ _chat_ask() {
 }
 
 # $1=text, $2=thread ts or "". Posts for the row this session runs in ($SOT_WORKSPACE_ID) under its comm handle, into
-# the thread, and exits 0 with `posted <ts>`; 2 with a refusal, a limit, or an outcome that says the post may exist.
+# the thread, and exits 0 with `posted <ts>`; 2 when nothing was posted (a refusal or a limit); 3 when the post may exist.
 send_chat_post() {
-    local text="$1" thread="$2" row="${SOT_WORKSPACE_ID:-}" handle res req resp err state
+    local text="$1" thread="$2" row="${SOT_WORKSPACE_ID:-}" handle res req resp err code state
     if [ -z "$row" ]; then
         echo "refused: SOT_WORKSPACE_ID is unset, so this is not a row and has no channel. Nothing was sent." >&2
         exit 2
@@ -71,12 +78,14 @@ send_chat_post() {
     export SEND_TIMEOUT="${TIMEOUT:-40}"
     resp="$(_chat_ask chat.post "$req")"
     if [ -z "$resp" ]; then
-        echo "no answer: the post may exist; do not send it again" >&2
-        exit 2
+        _chat_may_exist "no answer"
     fi
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
     if [ -n "$err" ]; then
-        _chat_refused "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')" "$err"
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        # A panic in the daemon's job after the send began is an error reply too: the post may exist.
+        [ "$code" != handler_error ] || _chat_may_exist unknown
+        _chat_refused "$code" "$err"
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
         posted)
@@ -90,8 +99,7 @@ send_chat_post() {
             exit 2
             ;;
         *)
-            echo "unknown: the post may exist; do not send it again" >&2
-            exit 2
+            _chat_may_exist unknown
             ;;
     esac
 }

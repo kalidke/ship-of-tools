@@ -28,8 +28,7 @@ send_fe_command() {
     # $FE (fe@<host>) and fe_cmd are both id-shaped tokens (an address;
     # a small fixed set of literal verbs from the case
     # dispatch below) -- neither can legitimately start with "/", so both
-    # stay --arg (allowlisted; see the audit test in
-    # test-join-disambiguation.sh).
+    # stay --arg (the free-text rule is comm-lib-base.sh's, "free text and jq").
     local payload
     if [ -n "$FE" ]; then
         payload="$(jq -nc --arg c "$fe_cmd" --argjson a "$args_json" --arg t "$FE" \

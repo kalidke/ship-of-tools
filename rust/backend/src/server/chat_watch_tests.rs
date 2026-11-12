@@ -88,7 +88,7 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
             return Reply::json(&json!({"ok": true, "url": url}));
         }
         if path.ends_with("/chat.postMessage") {
-            return Reply::json(&json!({"ok": true, "ts": "1700000300.000100"}));
+            return Reply::json(&json!({"ok": true, "ts": "1700000250.000100"}));
         }
         if path.ends_with("/conversations.replies") && replies_fail.load(Ordering::SeqCst) {
             replies_failed.fetch_add(1, Ordering::SeqCst);

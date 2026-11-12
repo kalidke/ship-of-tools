@@ -152,7 +152,7 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
         ChatPostKind::Person => window,
         ChatPostKind::Row => {
             let all = rows.list();
-            rows.resolve(Some(&req.target.row)).is_some_and(|ws| !req.name.is_empty() && bound_handle(&ws, &all) == req.name)
+            rows.resolve(Some(&req.target.row)).is_some_and(|ws| bound_handle(&ws, &all) == req.name)
         }
     };
     if !allowed {

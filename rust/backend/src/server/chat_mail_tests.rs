@@ -471,13 +471,14 @@ async fn with_the_window_closed_a_channel_post_becomes_marked_mail_and_the_rows_
     // 1. The first pass files P, although it lies above the horizon; Q's thread read fails, so R is not filed and no
     // boundary is committed above the floor.
     w.filed_count(1).await;
-    assert!(soon(|| w.lv.replies_failed.load(Ordering::SeqCst) >= 1).await, "the thread read was never made");
+    // The first pass has ended once the next one reads the thread (a pass is owed again only after a failed one ends).
+    assert!(soon(|| w.lv.replies_failed.load(Ordering::SeqCst) >= 2).await, "the failed pass was not tried again (a pass that commits through a failed read is not owed again)");
     assert_eq!(w.filed(), vec![p.to_string()]);
     assert_eq!(counted(&w), 1, "the filing is mail by the wake's own rule");
     let first = &w.inbox()[0];
     assert!(first.starts_with("[chat] From a channel member"), "{first}");
     assert!(first.contains(&format!("ts={p} thread={p} channel=C0AAAA workspace=T0AAAA")), "{first}");
-    assert!(w.boundary().is_none_or(|b| b == "1700000000.000000"), "a boundary above the floor after a failed read: {:?}", w.boundary());
+    assert!(w.boundary().is_none_or(|b| b == "1700000000.000000"), "a boundary above the floor after a failed pass had ended: {:?}", w.boundary());
 
     // 2. After the backoff the next pass files R and completes although every page was limited: the boundary is H.
     w.lv.replies_fail.store(false, Ordering::SeqCst);
@@ -510,12 +511,12 @@ async fn with_the_window_closed_a_channel_post_becomes_marked_mail_and_the_rows_
     // 5. A poll of alpha-h prints the three and says nothing remains.
     w.th.self_file(&w.th.nopane(), "alpha-h");
     w.th.live("alpha-h", &w.th.root());
-    let polled = crate::comm::cli::poll::poll(&w.th.env, &[]);
+    let polled = crate::comm::cli::poll(&w.th.env, &[]);
     assert_eq!(polled.code, 0, "{}", polled.stderr);
     for ts in [p, r, s] {
         assert!(polled.stdout.contains(&format!("ts={ts} ")), "the poll did not print {ts}: {}", polled.stdout);
     }
-    assert_eq!(crate::comm::cli::poll::poll(&w.th.env, &[]).stdout, "No new messages.\n");
+    assert_eq!(crate::comm::cli::poll(&w.th.env, &[]).stdout, "No new messages.\n");
     w.session(0);
 
     // 6. The row's reply, from a connection that is not a window: under its bound handle it reaches the fake once, into

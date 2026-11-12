@@ -5,6 +5,7 @@
 # ONE `chat.post` of kind `row` into the thread, and never a second (a post
 # that may exist is not sent again, so no answer is one request, not two).
 # Outside a row, or with no handle, it is refused before an endpoint is found.
+# Exit codes: 0 posted; 1 usage; 2 nothing was posted (refused, limited); 3 the post may exist (unknown, no answer).
 #
 # No real daemon: a STUB unix-socket daemon (the harness of
 # test-sot-fe-reauth.sh) answers `chat.resolve` and `chat.post` with canned
@@ -38,6 +39,14 @@ mkdir -p "$SOT_COMM_HOME"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "NAME=%s\n" "${STUB_NAME:-}"' > "$SCRIPTS_DIR/comm-context.sh"
 chmod +x "$SCRIPTS_DIR/comm-context.sh"
 
+# A jq on PATH that logs its argv (NUL-separated, to $JQ_ARGV_LOG when a case sets it) and runs the real one, so a case
+# can assert the free text was never on a jq command line.
+REAL_JQ="$(command -v jq)"; export REAL_JQ
+mkdir -p "$WORK/shim"
+printf '%s\n' '#!/usr/bin/env bash' '[ -z "${JQ_ARGV_LOG:-}" ] || printf "%s\0" "$@" >> "$JQ_ARGV_LOG"' 'exec "$REAL_JQ" "$@"' > "$WORK/shim/jq"
+chmod +x "$WORK/shim/jq"
+PATH="$WORK/shim:$PATH"
+
 STUB_NC_PID=""
 STUB_WATCHER_PID=""
 cleanup() {
@@ -52,7 +61,7 @@ PASS=0
 FAIL=0
 SKIP=0
 
-# check DESC FN — mirrors test-join-disambiguation.sh's own runner exactly:
+# check DESC FN — the runner of the other agents suites:
 # FN prints diagnostics and returns 0 = pass, 2 = SKIP, anything else = fail.
 check() {
     local desc="$1" fn="$2"
@@ -136,7 +145,7 @@ run_chat() {
     local input="$1" envs=()
     shift
     while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
-    CH_OUT="$(printf '%s' "$input" | env -u SOT_WORKSPACE_ID -u STUB_NAME "${envs[@]}" "$SOT_FE" chat post "$@" --endpoint "unix:$SOCK" --timeout 3 2>&1)"
+    CH_OUT="$(printf '%s' "$input" | env -u SOT_WORKSPACE_ID -u STUB_NAME JQ_ARGV_LOG="$WORK/jq-argv.log" "${envs[@]}" "$SOT_FE" chat post "$@" --endpoint "unix:$SOCK" --timeout 3 2>&1)"
     CH_RC=$?
 }
 # How many requests of OP the stub has logged; and how many requests of any op (hellos included).
@@ -211,8 +220,9 @@ case_each_outcome_has_its_words_and_exit_code() {
 {"outcome":"refused","code":"busy"}|2|refused busy the chat service is busy
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this row's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
-{"outcome":"unknown"}|2|unknown: the post may exist; do not send it again
-{"outcome":"somethingelse"}|2|unknown: the post may exist; do not send it again
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
 {"error":"the row now maps to another channel","code":"stale_mapping"}|2|refused stale_mapping the row now maps to another channel
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
@@ -234,11 +244,11 @@ EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
 
-case_no_answer_to_the_post_is_one_request_and_exit_2() {
+case_no_answer_to_the_post_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "hi"
     local p; p="$(sent chat.post)"; stop_stub_daemon
-    [ "$CH_RC" = 2 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again" && [ "$p" = 1 ] \
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; read the thread first" && [ "$p" = 1 ] \
         || { echo "rc=$CH_RC post_requests=$p out=$CH_OUT"; return 1; }
 }
 
@@ -252,13 +262,22 @@ case_no_answer_to_the_resolve_posts_nothing() {
 
 case_stdin_text_reaches_the_payload_whole() {
     # Newlines, quotes, a backslash, a dollar, a leading slash and a leading dash all survive.
-    local text='/not a path
+    local text='/not a path ZQMARKERZ
 "quoted" and '"'"'single'"'"' \n back\\slash $HOME $(date) -n
 last line'
     stage_reply chat.resolve "$MAPPED"; stage_reply chat.post "$POSTED"; start_stub_daemon
     run_chat "$text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- --stdin --thread 1700000050.000000
     local got; got="$(posted_field .payload.text)"; stop_stub_daemon
     [ "$CH_RC" = 0 ] && [ "$got" = "$text" ] || { echo "rc=$CH_RC out=$CH_OUT"; printf 'sent:\n%s\n' "$got"; return 1; }
+}
+
+case_free_text_is_on_no_jq_command_line() {
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.post "$POSTED"; start_stub_daemon
+    : > "$WORK/jq-argv.log"
+    run_chat "/leading slash ZQMARKERZ" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- --stdin --thread 1700000050.000000
+    local calls hits; calls="$(tr -cd '\0' < "$WORK/jq-argv.log" | wc -c)"; hits="$(grep -ac ZQMARKERZ "$WORK/jq-argv.log")"
+    stop_stub_daemon
+    [ "$CH_RC" = 0 ] && [ "$calls" -gt 0 ] && [ "$hits" = 0 ] || { echo "rc=$CH_RC jq_args=$calls argv_lines_with_the_text=$hits"; return 1; }
 }
 
 case_usage_errors_send_nothing_and_exit_1() {
@@ -279,9 +298,10 @@ check "one chat.resolve, then one chat.post of kind row with the handle and the 
 check "with no --thread the post carries no thread"                                         case_without_a_thread_the_post_carries_none
 check "each outcome prints its words and exits with its code"                               case_each_outcome_has_its_words_and_exit_code
 check "a resolve that maps nothing, or is refused, posts nothing"                           case_a_resolve_that_maps_nothing_posts_nothing
-check "no answer to the post is one request, never two, and exit 2"                         case_no_answer_to_the_post_is_one_request_and_exit_2
+check "no answer to the post is one request, never two, and exit 3"                         case_no_answer_to_the_post_is_one_request_and_exit_3
 check "no answer to the resolve posts nothing"                                              case_no_answer_to_the_resolve_posts_nothing
 check "--stdin text with newlines, quotes and a leading slash reaches the payload whole"    case_stdin_text_reaches_the_payload_whole
+check "the free text is on no jq command line"                                              case_free_text_is_on_no_jq_command_line
 check "a usage error sends nothing and exits 1"                                             case_usage_errors_send_nothing_and_exit_1
 
 echo ""
