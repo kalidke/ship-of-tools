@@ -1966,3 +1966,11 @@ A landing's record goes here, with its measured times; the package page holds on
   round 1 (no blockers: nothing tested that the private copy is not inherited, and a grandchild holding it stalled the
   parent's read 5 s; the records named a console writer as the limit, which never reaches a pipe, in place of a copy
   made before the call), one fix commit, a second probe and two gates.
+- The SVG child's runner, its fifth landing (3a, 3b), 2026-11-11: builder launched about 19:42, main 20:30 (592d146e9,
+  6039df26e, e63d60b71), 48 minutes, a miss. About 180 product lines and 320 test lines. Where the minutes went: the
+  change passed the stop at 177 code lines (the plan said 95: the Windows branch, the check on each reply and a second
+  thread, so a binary that never reads its input is refused at its first line rather than at the wall) and was split
+  into the start and the finish, each gated alone; one hosted probe on macOS and Windows; review round 1 (no blockers:
+  the start's environment and silenced error output were tested only through a helper, so removing both left every
+  test green; the descriptor test failed 2 of 150 runs while the child opened font files; no guard ended the child if
+  a thread failed to start); one fix commit, a second probe and three gates.
