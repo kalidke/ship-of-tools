@@ -27,7 +27,8 @@ to pin one).
 - Optional, on the backend machine: **node/npm** (typeset math in markdown
   previews renders in a node process; without it math is not typeset),
   **poppler-utils** (`pdftoppm` and `pdfinfo`, for PDF previews) and
-  **ffmpeg** (the poster frame of a video preview).
+  **ffmpeg** (the poster frame of a video preview). The installer looks for
+  the last two and offers to install them.
 
 !!! warning "Try it in a VM or a separate account"
     The installer changes your own agent setup (the Codex skills and plugin

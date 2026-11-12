@@ -16,6 +16,7 @@ mod record;
 #[cfg_attr(windows, allow(dead_code, reason = "Windows uses the role-widening notice; the Unix installer owns the role gates"))]
 mod role;
 mod supervisor;
+mod tools;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]

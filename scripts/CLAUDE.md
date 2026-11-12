@@ -266,6 +266,27 @@ Guarantees, each with the mechanism it rests on. Install:
   runs `loginctl enable-linger` only when linger is not already reported enabled. Each call is bounded at 30 s through
   the installer's bounded runner. A failed or unrunnable enable does not stop install: it adds ONE STEP LEFT with
   the exact `loginctl enable-linger` command for this account, also printed as a `todo` in the checklist.
+- The preview tools are looked for and offered (`install/tools.rs`). A run that sets up a daemon, in any role (a window
+  computer runs one too), looks for `pdftoppm`, `pdfinfo` and `ffmpeg`, which the preview plugins call, on the search
+  path the daemon will have: a managed Linux unit's is the user manager's environment (`systemctl --user
+  show-environment`) with what `/bin/bash -c '. ~/.bashrc'` adds, as the unit's `ExecStart` does; elsewhere (macOS,
+  `--no-service`, Windows) it is the run's own `PATH`. A `PATH=` in the unit's own `Environment=` is not read, nor is
+  the `PATH` a macOS app bundle gets from launchd. Nothing is asked when all three are present. When any is missing,
+  where a person is at the console (the rule above: `SOT_INSTALL_TTY`, else `/dev/tty` only where standard output or
+  error is a terminal), the run names each with what it is for and asks once, `[y/N]`, with no the default; on yes it
+  runs the platform's package command for the missing ones only, in the foreground with the console as its standard
+  input so the person types any password or answer: `sudo apt-get install poppler-utils ffmpeg` where `apt-get` is
+  present, `brew install poppler ffmpeg` where `brew` is, and on Windows one `winget install --id <id> -e` each for
+  `oschwartz10612.Poppler` and `Gyan.FFmpeg`. With no person at the console it never asks, never runs a package
+  command and never prompts for a password: one line names the missing tools and the command. With no package manager
+  it prints one line saying what to install (Windows: the download pages). Whatever the answer, a failed or
+  unfinished command, or one that leaves a tool still missing on that path, the result is one line of its own after
+  the other lines and before the checklist; the offer returns nothing, so it never fails the install or changes the
+  verdict, and a run whose checks failed does not offer. Limits: a Windows update left armed (the pending branch)
+  offers after it is armed, on this run's `PATH` and not the path a converge will give the daemon; winget's shims
+  reach a session started after the install, so a daemon already running there says "still not found" until it
+  restarts; the offer is not run by the install smokes, and the two call sites (`unix.rs`, `windows.rs`) are not
+  pinned by a test beyond the build.
 - The state folder qualifies by the row launcher's own `qualify_state_root`, never a second filesystem list. Unix
   resolves it with `sot_state_dir_in` from the installer's environment, where an exported `XDG_STATE_HOME` decides
   even when empty; with none exported, a managed unit's own `XDG_STATE_HOME` (a person's drop-in), read after the
@@ -394,12 +415,12 @@ never renamed), the verdict words, `$PREFIX`'s layout, `install.json`, the unit 
 Calls out: rows' `qualify_state_root`, agents' `resolve_claude`, platform's state resolver and host facts, and topology's
 `SSH_OPTS`; `sotd update direction|repls|stage|pointer`, `sotd same-version`, `sotd topology status|plan|sync|pin`,
 `sotd trust declare`, `sotd session-socket-path`, `sotd stdio-bridge`, run as programs; git, curl, tar, julia and juliaup,
-npm, systemctl, loginctl and ps; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
+npm, systemctl, loginctl and ps; `apt-get` (through sudo), `brew` or `winget` on a person's yes; on Windows powershell.exe for the shortcut, the converge (`relaunch-sot.ps1 -Converge`), the stop of a daemon
 (`sot-local-daemon.ps1 -Stop`) and the apply.
 
 Does not: write hosts.toml (the hub's daemon does); set or derive a Julia depot; install a package a box lacks (git,
 curl, tar and jq are named with their install command, never installed; Julia is installed through juliaup on Unix
-only); tag or publish; end a row.
+only; the preview tools are installed only on a person's yes at a console, above); tag or publish; end a row.
 
 Platforms: Linux runs the unit (systemd user manager, linger) and a desktop entry; macOS has no service manager wiring
 (the wrapper starts the daemon) and an app bundle; Windows runs a junction for `repo\current`, a supervisor
@@ -416,7 +437,9 @@ in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`).
 Tests: `install::tests::only_a_runs_arguments_pin_it_even_with_a_bootstrap_tag` checks the record's pin, verdict and
 downgrade guard with a bootstrap tag and no implicit marker, and with either marker value, on all systems.
 One test per guarantee: a Rust unit test in `rust/backend/src/install/*_tests.rs` (`cargo test -p sot-backend
-install::`), named for its guarantee, for what `sotd install` decides; a case of `tests/installer-entry.sh` for the
+install::`), named for its guarantee, for what `sotd install` decides (`install::tools::tests::*` for the preview tools:
+the daemon's search path built in a scratch home, and the offer run against stand-in console, package command and
+PATH, so no test runs `sudo`, `apt-get`, `brew` or `winget`); a case of `tests/installer-entry.sh` for the
 bootstrap's share and for what needs the real `sotd install` as a process (the binaries a backend-only run starts, a
 signal); the install smokes (`tests/install-smoke.sh`, `tests/install-smoke.ps1`, the jobs
 `install-linux`, `install-macos`, `install-windows` that release.yml's `draft` needs): a fresh install, an update from

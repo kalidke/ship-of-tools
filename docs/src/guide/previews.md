@@ -68,6 +68,8 @@ A few notes on the table:
 
 When an external tool is missing (ffmpeg for video, poppler for PDF), the plugin
 returns a `text/markdown` note explaining the gap — never a silent blank pane.
+The installer looks for these tools and offers to install them
+([Install](../start/install.md)).
 
 ## Opens in the browser, not the pane
 

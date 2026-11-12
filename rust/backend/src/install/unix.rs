@@ -10,7 +10,7 @@ use super::options::{Options, RoleFlag};
 use super::pack::Pack;
 use super::role::{self, Gate, Role};
 use super::verdict::{self, step, Found, Mark, Stop};
-use super::{cmd, julia, procs, record, say, state};
+use super::{cmd, julia, procs, record, say, state, tools};
 
 #[path = "unix_check.rs"]
 mod checks;
@@ -118,6 +118,9 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
     role::note_widening(plan.topo_named.then_some(plan.role), plan.pre_daemon, &mut found);
     enrolled.check(&mut found);
     checks::guard_items(&mut found);
+    if found.fail.is_none() && plan.role.daemon {
+        offer_tools(&plan);
+    }
     let pin = if plan.named { verdict::pin_tail(&plan.pack.version) } else { String::new() };
     if found.fail.is_none() && plan.unit_managed() {
         let wired = lib(&plan.checkout, "sot_boot_wired", &[&plan.units().to_string_lossy()]).ok();
@@ -128,6 +131,14 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         }
     }
     Ok((found, pin))
+}
+
+/// The preview tools, looked for on the search path the daemon will have: a managed unit's (the user manager's
+/// environment and what `~/.bashrc` exports), else this run's own, which a daemon started from a shell inherits.
+fn offer_tools(plan: &Plan) {
+    let own = std::env::var_os("PATH").unwrap_or_default();
+    let path = if plan.unit_managed() { tools::unit_path(&plan.home, &systemctl(&["show-environment"]).out).unwrap_or(own) } else { own };
+    tools::offer_here(if plan.macos { "macos" } else { "linux" }, &path, &|t| say(t));
 }
 
 /// Run one function of the checkout's `scripts/lib/sot-daemon.sh` with its arguments.

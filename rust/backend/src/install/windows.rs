@@ -14,7 +14,7 @@ use super::options::Options;
 use super::pack::Pack;
 use super::supervisor::Way;
 use super::verdict::{self, step, Found, Stop};
-use super::{cmd, julia, procs, record};
+use super::{cmd, julia, procs, record, tools};
 
 const TARGET: &str = "windows-x86_64";
 
@@ -138,6 +138,7 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         owned_stage(&ctx.prefix, &ctx.version_dir, &local_app_data().join("sot\\config"), &ctx.pointer())?;
         verdict::set_tail(armed_tail(&ctx));
         published?;
+        offer_tools(&found);
         return Ok((found, pin));
     }
     own_files(&ctx)?;
@@ -168,7 +169,15 @@ pub(super) fn install(opts: Options) -> Result<(Found, String), Stop> {
         let me = sot_platform::host::state_dir::host_name().unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_default().to_lowercase());
         found.fail("enroll", format!("the hosts.toml on '{hub}' does not list this computer ('{me}'), so the window would open with no hosts: on '{hub}' run  sotd topology set add {me} --frontend  (the sotd of its install), then run this installer again"));
     }
+    offer_tools(&found);
     Ok((found, pin))
+}
+
+/// The preview tools, looked for on this run's search path, which the daemon the supervisor starts here shares.
+fn offer_tools(found: &Found) {
+    if found.fail.is_none() {
+        tools::offer_here("windows", &std::env::var_os("PATH").unwrap_or_default(), &|t| println!("  {t}"));
+    }
 }
 
 fn armed_tail(ctx: &Ctx) -> String {

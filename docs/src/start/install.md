@@ -347,10 +347,20 @@ check, pinning a version, and rolling back are in
   continues, and math renders as raw LaTeX. To add math later, install node
   and re-run the installer (or `npm ci` in
   `<checkout>/rust/backend/sidecars/mathjax`).
-- **poppler-utils** (`pdftoppm`, `pdfinfo`) and **ffmpeg**, optional, on the
-  backend machine: PDF pages and video poster frames in previews. The
-  installer does not check for them; without them the preview shows a note
-  naming the missing tool.
+- **poppler-utils** (`pdftoppm`, `pdfinfo`) and **ffmpeg**, optional, on every
+  machine that runs a daemon (a window machine runs one too): PDF pages and
+  video poster frames in previews. The installer looks for them on the search
+  path the daemon will have (on Linux, the user manager's environment plus
+  what `~/.bashrc` exports, as the unit sets it up) and, when any is missing,
+  names what is missing and what each is for. At a console it asks once
+  whether to install them, with no the default, and on yes runs `sudo apt-get
+  install` (Linux), `brew install` (macOS) or `winget install` (Windows,
+  packages `oschwartz10612.Poppler` and `Gyan.FFmpeg`) for the missing ones in
+  front of you, so you type any password yourself. With no console (an
+  automatic update, an agent running the installer) it never asks or runs a
+  package command: it prints one line with the command. A no, a refused
+  password or a failed command never fails the install. Without the tools the
+  preview shows a note naming the missing tool.
 - Frontend roles need **glibc 2.35** or newer (Ubuntu 22.04 or newer) and a
   desktop session (X11 or Wayland): the frontend is a native window. It
   renders with `wgpu` through Vulkan on Linux, Metal on macOS and DirectX 12

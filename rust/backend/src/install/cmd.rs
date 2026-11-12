@@ -121,7 +121,12 @@ impl Steps {
     /// Run `cmd` to its end with stdout and stderr shown as they come: its exit code, `None` when it did not start (the
     /// reason printed) or a signal ended it.
     pub(super) fn shown(&self, cmd: &mut Command) -> Option<i32> {
-        cmd.stdin(Stdio::null());
+        self.shown_on(cmd, Stdio::null())
+    }
+
+    /// [`Steps::shown`] with `stdin` for the program: a package command's own questions are the person's.
+    pub(super) fn shown_on(&self, cmd: &mut Command, stdin: Stdio) -> Option<i32> {
+        cmd.stdin(stdin);
         match self.start(cmd) {
             Ok(mut child) => {
                 let pid = child.id();
@@ -274,6 +279,11 @@ pub(super) fn shown(cmd: &mut Command) -> Option<i32> {
     STEPS.shown(cmd)
 }
 
+/// See [`Steps::shown_on`].
+pub(super) fn shown_on(cmd: &mut Command, stdin: Stdio) -> Option<i32> {
+    STEPS.shown_on(cmd, stdin)
+}
+
 /// See [`Steps::output_within`].
 pub(super) fn output_within(cmd: &mut Command, bound: Duration) -> Ran {
     STEPS.output_within(cmd, bound)
@@ -305,9 +315,13 @@ pub(super) const CURL_BOUND: [&str; 6] = ["--connect-timeout", "15", "--speed-li
 
 /// Whether a program by this name is on PATH.
 pub(super) fn on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::var_os("PATH").is_some_and(|path| on_path_in(&path, name))
+}
+
+/// Whether a program by this name is in a folder of `path`.
+pub(super) fn on_path_in(path: &std::ffi::OsStr, name: &str) -> bool {
     let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&path).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
+    std::env::split_paths(path).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
 
 #[cfg(test)]

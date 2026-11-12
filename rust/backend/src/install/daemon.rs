@@ -288,10 +288,28 @@ fn console(named: Option<std::ffi::OsString>, out_is_tty: bool, err_is_tty: bool
 }
 
 #[cfg(unix)]
+fn console_here() -> Option<std::path::PathBuf> {
+    use std::io::IsTerminal as _;
+    console(std::env::var_os("SOT_INSTALL_TTY"), std::io::stdout().is_terminal(), std::io::stderr().is_terminal())
+}
+
+/// The console as a child's standard input, so a program the person agreed to run asks its own questions there; null
+/// where there is no console. Windows' child shares the console's input.
+#[cfg(unix)]
+pub(super) fn console_stdin() -> std::process::Stdio {
+    console_here().and_then(|tty| std::fs::File::open(tty).ok()).map_or_else(std::process::Stdio::null, std::process::Stdio::from)
+}
+
+#[cfg(windows)]
+pub(super) fn console_stdin() -> std::process::Stdio {
+    std::process::Stdio::inherit()
+}
+
+#[cfg(unix)]
 #[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
 pub(super) fn read_answer(question: &str) -> Option<String> {
-    use std::io::{BufRead as _, IsTerminal as _, Write as _};
-    let tty = console(std::env::var_os("SOT_INSTALL_TTY"), std::io::stdout().is_terminal(), std::io::stderr().is_terminal())?;
+    use std::io::{BufRead as _, Write as _};
+    let tty = console_here()?;
     let mut out = std::fs::OpenOptions::new().write(true).open(&tty).ok()?;
     let input = std::fs::File::open(&tty).ok()?;
     out.write_all(question.as_bytes()).ok()?;
