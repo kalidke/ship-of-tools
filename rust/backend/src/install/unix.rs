@@ -387,7 +387,7 @@ fn glibc_version() -> Option<(u32, u32)> {
 }
 
 /// The role asked at the console, when nothing else names one (it works under `curl | bash`: the questions go to
-/// `/dev/tty`). No console is a refusal.
+/// `/dev/tty`, where standard output or error is a terminal). No console is a refusal.
 fn ask_role(me: &str) -> Result<RoleFlag, Stop> {
     let question = format!(
         "No declared topology names this machine ({me}) — where should Ship of Tools run?\n  1) all on this machine        (frontend + backend here)\n  2) frontend here, backend on another machine over SSH\n  3) backend only on this machine (headless server)\nChoose [1-3]: "

@@ -320,3 +320,36 @@ fn children_from_a_listing_with_no_answer_rule_nothing_out() {
         assert_eq!(children_in(Ok(all), Path::new("/p")), Some(vec!["repl"]));
     }
 }
+
+/// Where the Unix questions go. `SOT_INSTALL_TTY` wins whatever the terminals are; otherwise `/dev/tty` only when
+/// standard output or error is a terminal (a person's), never behind an agent's piped shell tool, where `/dev/tty` is
+/// the row's terminal.
+#[cfg(unix)]
+#[test]
+fn the_questions_go_to_the_named_file_or_to_the_tty_a_person_watches() {
+    let named = || Some(std::ffi::OsString::from("/n/file"));
+    for (out, err) in [(false, false), (true, false), (false, true), (true, true)] {
+        assert_eq!(console(named(), out, err), Some("/n/file".into()), "named, out {out} err {err}");
+    }
+    assert_eq!(console(None, false, false), None);
+    for (out, err) in [(true, false), (false, true), (true, true)] {
+        assert_eq!(console(None, out, err), Some("/dev/tty".into()), "out {out} err {err}");
+    }
+}
+
+/// `SOT_INSTALL_TTY` is read: a file holding `y` answers yes, `/dev/null` answers nothing, so the restart question
+/// is no.
+#[cfg(unix)]
+#[test]
+fn sot_install_tty_names_the_file_the_answer_is_read_from() {
+    if !sot_platform::test_isolated::run_isolated("install::daemon::tests::sot_install_tty_names_the_file_the_answer_is_read_from") { return; }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("console");
+    std::fs::write(&file, "y\n").unwrap();
+    std::env::set_var("SOT_INSTALL_TTY", &file);
+    // An empty question writes nothing, so the file is still the person's answer.
+    assert_eq!(read_answer("").as_deref().map(str::trim), Some("y"));
+    std::env::set_var("SOT_INSTALL_TTY", "/dev/null");
+    assert!(read_answer("").unwrap_or_default().trim().is_empty());
+    assert!(!ask_restart("a live REPL"), "an empty answer is no answer");
+}

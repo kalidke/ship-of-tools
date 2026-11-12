@@ -267,19 +267,31 @@ fn live_text(state: State, pipe: &str, work: &Work, why: &str) -> String {
 }
 
 /// One answer, asked in place at the console: "Restart the daemon? This ends WORK [y/N]". False, asking nothing, where
-/// there is no console. Unix asks on `/dev/tty` (it works under `curl | bash`; `SOT_INSTALL_TTY` names another file for
-/// a test); Windows on standard input when it is a console.
+/// there is no console. Unix asks on `/dev/tty` where standard output or error is a terminal (it works under
+/// `curl | bash`; `SOT_INSTALL_TTY` names another file); Windows on standard input when it is a console.
 pub(super) fn ask_restart(work: &str) -> bool {
     let question = format!("Restart the daemon? This ends {work} [y/N] ");
     let answer = read_answer(&question);
     matches!(answer.as_deref().map(str::trim), Some("y" | "Y" | "yes" | "Yes" | "YES"))
 }
 
+/// The file the Unix questions go to, or none where no person is at the console. `SOT_INSTALL_TTY`, when set, names it.
+/// Otherwise it is `/dev/tty`, but only where standard output or error is a terminal: an agent's shell tool captures
+/// both through pipes while `/dev/tty` is still the row's terminal, which the agent program owns and no person answers.
+#[cfg(unix)]
+fn console(named: Option<std::ffi::OsString>, out_is_tty: bool, err_is_tty: bool) -> Option<std::path::PathBuf> {
+    match named {
+        Some(file) => Some(file.into()),
+        None if out_is_tty || err_is_tty => Some("/dev/tty".into()),
+        None => None,
+    }
+}
+
 #[cfg(unix)]
 #[allow(clippy::disallowed_methods, reason = "a person's answer at the console, not a child's output")]
 pub(super) fn read_answer(question: &str) -> Option<String> {
-    use std::io::{BufRead as _, Write as _};
-    let tty = std::env::var_os("SOT_INSTALL_TTY").unwrap_or_else(|| "/dev/tty".into());
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    let tty = console(std::env::var_os("SOT_INSTALL_TTY"), std::io::stdout().is_terminal(), std::io::stderr().is_terminal())?;
     let mut out = std::fs::OpenOptions::new().write(true).open(&tty).ok()?;
     let input = std::fs::File::open(&tty).ok()?;
     out.write_all(question.as_bytes()).ok()?;

@@ -240,9 +240,11 @@ Guarantees, each with the mechanism it rests on. Install:
   active `sotd.service`) or an update applies at the desk (Windows); each only once its live work (`sotd update repls`:
   REPL rows and the Pluto server; a daemon that cannot say is judged by its own child processes, by parent id) is
   answered: yes at a console, or `--restart-daemon`/`-RestartDaemon`; else the run stops changing nothing. The Unix
-  console is `/dev/tty`, or the file `SOT_INSTALL_TTY` names; a caller with no person at the console (an agent,
-  `docs/UPDATE-AGENT.md`) sets `SOT_INSTALL_TTY=/dev/null` so the question reads end of file and the run stops with its
-  `daemon:` line; no test pins the variable yet (INSTALLER-ASKS-A-ROWS-TERMINAL). A restart
+  console is the file `SOT_INSTALL_TTY` names when set, else `/dev/tty` only when standard output or error is a terminal
+  (a person at `curl | bash` or in a terminal-only row); an agent's shell tool captures both, where `/dev/tty` is the row's
+  terminal, so there is no console and the run stops with its `daemon:` line (the role question refuses): `console` in
+  `install/daemon.rs`, pinned with the variable's reading by tests there. `docs/UPDATE-AGENT.md` still sets
+  `SOT_INSTALL_TTY=/dev/null` for installers that predate the rule. A restart
   must answer as the target within its bound by the clock. A daemon that runs and cannot be told its version is never
   read as none. The state-folder correction below is the one additional restart: rows outlive it, and no row could
   have started on the unqualified root, so it asks nothing.

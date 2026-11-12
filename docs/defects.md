@@ -782,21 +782,10 @@ owned by `docs/CLAUDE.md`.
   stops and names them, and an agent on each computer runs the same runbook. Updating them from the one run, over ssh
   with each person's yes, is not built: it needs a proof per system (a Windows daemon over ssh has none) and ends the
   agents running on those computers.
-- **INSTALLER-ASKS-A-ROWS-TERMINAL** [session] On Unix the installer asks "Restart the daemon? ... [y/N]" on `/dev/tty`
-  (`rust/backend/src/install/daemon.rs`, `read_answer`; `SOT_INSTALL_TTY` names another file), which inside a Ship of
-  Tools row is the row's terminal, not a person at a console. Seen in a test run: an agent in a 0.6.6 row ran the update
-  with a live REPL in the row and its standard input at `/dev/null`; 0.7.0's `sotd install` opened the row's terminal,
-  printed the question there, and waited on it, so the agent saw no last line until its tool gave up. With
-  `SOT_INSTALL_TTY=/dev/null` on the installer, the same run stopped at once with the question line and `FAIL: daemon:`
-  and changed nothing, and after the person's yes the run with `--restart-daemon`, then the restarted row's repeat,
-  ended `PASS` (test runs, a stand-in agent in a real 0.6.6 row). The role question reads the same file: with no role
-  recorded and none declared, `/dev/null` ends the run `FAIL: ... no such choice: ''` where no console ends it "pick a
-  role" (read, not run). Windows asks on standard input when it is a console (read, not run). Fix: ask in place only
-  when standard input is the same terminal, or a flag that means never ask, with an empty answer no answer. Owed until
-  then: a test that fails if `SOT_INSTALL_TTY` goes (none pins it), and a Windows witness that the empty standard input
-  `docs/UPDATE-AGENT.md` gives keeps a console-hosted run from asking. `docs/UPDATE-AGENT.md` gives the installer
-  `SOT_INSTALL_TTY=/dev/null` on Unix and an empty standard input on Windows, so the restart question ends the run with
-  its `daemon:` line.
+- **INSTALLER-WINDOWS-ASK-UNWITNESSED** [note] Windows' `read_answer` (`rust/backend/src/install/daemon.rs`) asks on
+  standard input only when it is a console, so an agent's run on a console-hosted Windows shell with its standard input
+  at a pipe or empty should not ask; read, not run. Owed: a witness that such a run ends at the restart question with
+  its `daemon:` line and changes nothing. `docs/UPDATE-AGENT.md` gives the installer an empty standard input there.
 - **ROLLBACK-ACROSS-A-LINE** [note] The installer's rollback (`sot-apply.sh --rollback`) restores binaries, links, unit,
   wrapper and record, not comm and not rows. From 0.7 back to 0.6.6 the comm wrappers call `sotd comm`, which 0.6.6
   refuses, until the next launch; rows 0.7 retired stay ended, and 0.7 supervisors run on unseen by the 0.6.6 daemon,
@@ -1038,6 +1027,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **INSTALLER-ASKS-A-ROWS-TERMINAL** (distribution) closed on Unix by the landing that fixes it, 2026-11-12, seen by a session operating the product as a user: `sotd install` asked "Restart the daemon? ... [y/N]" and the role question on `/dev/tty`, which inside a row is the row's terminal, so an agent's shell tool waited on a question no person saw; `SOT_INSTALL_TTY` names the file when set, and otherwise `console` (`rust/backend/src/install/daemon.rs`) gives `/dev/tty` only where standard output or error is a terminal, so a captured run has no console and ends at the restart question with its `daemon:` line or the role question's refusal; tests `the_questions_go_to_the_named_file_or_to_the_tty_a_person_watches` and `sot_install_tty_names_the_file_the_answer_is_read_from`. What stays owed: INSTALLER-WINDOWS-ASK-UNWITNESSED.
 - **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
 - **UPDATE-WINDOW-BEFORE-ITS-DAEMONS** (distribution) closed by this records commit, 2026-11-11, seen by a person using
   the runbook: it updated only the computer its agent ran on, so a window moved to 0.7.0 while the daemons it dials
