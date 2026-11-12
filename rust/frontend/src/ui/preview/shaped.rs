@@ -1,5 +1,5 @@
-//! The shaped preview: the flowed text buffer, rect, scroll, selection and definition-line anchor, the math SVG
-//! beside it, the refused-hello overlay, and the highlighter every markdown shape uses.
+//! The shaped preview: the flowed text buffer, rect, scroll, selection and definition-line anchor, the refused-hello
+//! overlay, and the highlighter every markdown shape uses.
 
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;

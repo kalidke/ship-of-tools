@@ -3,19 +3,29 @@
 
 use crate::ui::*;
 
-/// What the pane shows, as `(fatal, png, edit, md, canvas)`. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
+/// What the pane shows. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
 /// hard block: it takes the pane over everything until a clean reconnect clears it. Edit mode owns the pane after it, so
 /// the editable annotation body has the whole rect. `canvas` arrives decided (`InkLayer::shown_base`, which yields it
 /// only outside both); it takes the pane from the image and the text, and the installed preview stays installed under it.
-pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> (bool, bool, bool, bool, bool) {
+pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> PreviewShows {
     let show_edit = !refused && edit;
     let show_png = raster && !refused && !canvas;
     let show_md = !refused && !show_png && !show_edit && !canvas;
-    (refused, show_png, show_edit, show_md, canvas)
+    PreviewShows { fatal: refused, png: show_png, edit: show_edit, md: show_md, canvas }
+}
+
+/// The pane's decision for a frame, one flag per source; every reader names the one it asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::ui) struct PreviewShows {
+    pub(in crate::ui) fatal: bool,
+    pub(in crate::ui) png: bool,
+    pub(in crate::ui) edit: bool,
+    pub(in crate::ui) md: bool,
+    pub(in crate::ui) canvas: bool,
 }
 
 impl State {
-    pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool) {
+    pub(in crate::ui) fn preview_shows(&self) -> PreviewShows {
         let show_fatal = self.hello_refused.refused(self.selected.host());
         let edit = self.editor.is_editing() && self.editor.shaped().is_some();
         let canvas = self.shown_ink_base() == Some(sot_protocol::ops::InkBase::Canvas);
