@@ -220,7 +220,7 @@ built alongside the chat: the agent sees the person's selection (`requirements.m
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the
-maintainer's word after the first stage is measured. Mail (B3) is in progress: the filing that names its expected row
+maintainer's word after the first stage is measured. Mail (B3) has landed: the filing that names its expected row
 (P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound
@@ -238,8 +238,8 @@ and filed once, the boundary written after), and the delivery's end before a ste
 flight returned, its pass and read stopped), which completes the daemon's delivery, and the row replies (a row's agent
 answers in its channel, in the mail's thread, through `sot-fe chat post`, one post per call, exit 3 when the post may
 exist; the daemon refuses a person's post from anything but a named window and a row's under any name but its own
-handle), so a channel post becomes mail and the row's answer reaches its thread with no window open; no hub maps a
-delivering channel yet;
+handle), so a channel post becomes mail and the row's answer reaches its thread with no window open; nothing runs it
+until a person maps a delivering channel on the hub, which no hub does yet;
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

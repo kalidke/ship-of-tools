@@ -2168,3 +2168,11 @@ A landing's record goes here, with its measured times; the package page holds on
   commits all passed); a redundant empty-name check, deleted. The plan's done test listed an old parent above the
   floor as not mail, which would itself be mail; the builder made it a bot's post. Each skill change needs its own
   legacy-list commit after it, so the fix round was two commits.
+- T1, one test of the part rule, 2026-11-12: builder handed the landing at 12:50, main 13:05 (4c41b46ef, ee6292ce9),
+  15 minutes. The later of two testsets proving that the installer embeds every part a tool sources was deleted (18
+  lines), and INSTALL-PARTS-TESTED-TWICE closed. Review round 1 found one blocker: the plan had called the older
+  testset a full cover, but an installer that appended every part at the end instead of at its source line passed it
+  while the installed `sot-fe` failed (a part's function called before it was defined); the deleted testset caught
+  that. The fix pins the installed text exactly (the source with each part line replaced by the part), red against that
+  mutant and against a dropped part, and agents guarantee 13 now cites both testsets. A deletion's cover is a claim to
+  test with mutants, not to read.
