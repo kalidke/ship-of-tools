@@ -403,6 +403,11 @@ owned by `docs/CLAUDE.md`.
 - **INSTALL-PARTS-TESTED-TWICE** [note] `test/install_tests.jl` holds two count-free tests that an installed tool runs
   the parts it sources (the one the parts landing added and an earlier one near the agents testset's start), found by
   the mail plan's design review; delete one.
+- **LEGACY-SKILL-LIST-BEHIND** [note] `comm/legacy-skills.txt` lacks the latest shipped versions of `sot-setup` and
+  `sot-statusline-setup`: a rerun of `scripts/legacy-skill-hashes.sh` on 2026-11-12 adds one line for each. A copy of
+  either version left in a person's own skills folder is then not recognized as shipped, so the retire step keeps it
+  (safe: a leftover, never a removal of a person's file). Found by reading during SOT-INSTALL-SKILL-OWN-UPDATE's
+  landing; fix: commit the rerun, with a test that the committed list equals the script's output.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's

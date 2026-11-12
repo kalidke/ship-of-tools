@@ -2084,3 +2084,9 @@ A landing's record goes here, with its measured times; the package page holds on
   read the diff and checked the one case it could break (the bootstrap starts the installer in the background with the
   person's terminal as its output, so `curl | bash` still asks); the gate's install smoke passed. The Windows witness
   stays owed (INSTALLER-WINDOWS-ASK-UNWITNESSED).
+- SOT-INSTALL-SKILL-OWN-UPDATE, the install skill points at the one update runbook, 2026-11-12: builder launched 06:48,
+  main 06:54 (90e885228), 6 minutes. The skill's two update sections (about 90 lines) became one pointer to
+  `docs/UPDATE-AGENT.md` at its raw address, so an agent that takes the skill's route follows the runbook's order of
+  daemons before windows; one test that the skill names the runbook and holds no installer command of its own, red
+  10 of 10 before. No review: a text change with its test, read by the session. Found on the way:
+  LEGACY-SKILL-LIST-BEHIND.
