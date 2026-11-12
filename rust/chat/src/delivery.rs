@@ -76,13 +76,15 @@ struct Chan {
     began: u64,
     /// The end of the last completed pass, for the sweep.
     done: Instant,
+    /// The channel's own backoff after failed passes: not passed again before `retry_at`, which the next failure doubles.
+    retry_at: Instant,
+    backoff: Duration,
 }
 
 /// A pass's candidates, once it returned, wait for their filings.
 struct Settle {
     mail: Vec<Ts>,
     limit: Ts,
-    truncated: bool,
 }
 
 struct Pass {
@@ -100,15 +102,15 @@ pub struct Delivery {
     started: bool,
     gap: u64,
     free_at: Instant,
-    retry_at: Instant,
-    backoff: Duration,
+    /// No pass starts before this: `read_pace` after the last pass's result, whichever channel's.
+    pace_at: Instant,
 }
 
 impl Delivery {
     /// One channel's state and floor each. Nothing is filed until `start`.
     pub fn new(timing: Timing, now: Instant, channels: impl IntoIterator<Item = (State, Ts)>) -> Delivery {
-        let chans = channels.into_iter().map(|(state, floor)| Chan { state, floor, seen: None, owed: false, began: 0, done: now }).collect();
-        Delivery { timing, chans, queue: VecDeque::new(), inflight: None, pass: None, started: false, gap: 0, free_at: now, retry_at: now, backoff: timing.backoff_first }
+        let chans = channels.into_iter().map(|(state, floor)| Chan { state, floor, seen: None, owed: false, began: 0, done: now, retry_at: now, backoff: timing.backoff_first }).collect();
+        Delivery { timing, chans, queue: VecDeque::new(), inflight: None, pass: None, started: false, gap: 0, free_at: now, pace_at: now }
     }
 
     /// The start's read of the inboxes is in: its filings join the sets, and filing may begin. True when a set went past
@@ -161,6 +163,7 @@ impl Delivery {
     }
 
     /// Whether a pass is owed to `channel` for a reason of its own (a gap number or the sweep owes one besides).
+    #[cfg(test)]
     pub fn owed(&self, channel: &str) -> bool {
         self.chans.iter().any(|c| c.owed && c.state.channel() == channel)
     }
@@ -191,7 +194,7 @@ impl Delivery {
             }
         }
         if self.pass.is_none() {
-            let due = |c: &Chan| if c.owed || self.gap > c.began { self.retry_at } else { (c.done + self.timing.sweep).max(self.retry_at) };
+            let due = |c: &Chan| (if c.owed || self.gap > c.began { c.retry_at } else { (c.done + self.timing.sweep).max(c.retry_at) }).max(self.pace_at);
             if let Some((i, at)) = self.chans.iter().enumerate().map(|(i, c)| (i, due(c))).min_by_key(|(_, at)| *at) {
                 if at > now {
                     return Action::Idle(Some(wake.map_or(at, |w: Instant| w.min(at))));
@@ -236,11 +239,12 @@ impl Delivery {
             let wait = if let Outcome::RateLimited { retry_after } = passed.outcome { retry_after } else { Duration::ZERO };
             return self.fail(now, i, wait);
         }
-        (self.chans[i].began, self.chans[i].done, self.retry_at) = (gap, now, now + self.timing.read_pace);
+        (self.chans[i].began, self.chans[i].done, self.pace_at) = (gap, now, now + self.timing.read_pace);
+        self.chans[i].owed |= truncated;
         // A `Truncated` pass handed over only its oldest candidates, so it commits no further than the last of them.
         let last = mail.last().filter(|t| truncated && ts_key(t) < ts_key(&passed.horizon));
         let limit = last.unwrap_or(&passed.horizon).clone();
-        self.pass = Some(Pass { chan: i, gap, settle: Some(Settle { mail, limit, truncated }) });
+        self.pass = Some(Pass { chan: i, gap, settle: Some(Settle { mail, limit }) });
     }
 
     /// The pass was not made, the recipient being absent: nothing was read, and it is owed again on the backoff.
@@ -251,9 +255,10 @@ impl Delivery {
     }
 
     fn fail(&mut self, now: Instant, i: usize, wait: Duration) {
-        self.chans[i].owed = true;
-        self.retry_at = now + self.backoff.max(wait);
-        self.backoff = (self.backoff * 2).min(self.timing.backoff_max);
+        let (c, max) = (&mut self.chans[i], self.timing.backoff_max);
+        c.owed = true;
+        c.retry_at = now + c.backoff.max(wait);
+        c.backoff = (c.backoff * 2).min(max);
     }
 
     /// Once every filing of a returned pass's candidates, and of every record of the channel at or below the limit, has
@@ -264,8 +269,7 @@ impl Delivery {
     fn settle(&mut self, now: Instant) -> Option<Action> {
         let Some(Pass { chan: i, settle: Some(s), .. }) = &self.pass else { return None };
         let i = *i;
-        let top = s.mail.last().filter(|t| ts_key(t) > ts_key(&s.limit)).unwrap_or(&s.limit);
-        if self.queued(i, |t| ts_key(t) <= ts_key(top)) {
+        if self.queued(i, |t| ts_key(t) <= ts_key(&s.limit)) {
             return None;
         }
         let Some(Pass { settle: Some(s), .. }) = self.pass.take() else { return None };
@@ -284,8 +288,7 @@ impl Delivery {
             c.state.commit(t);
         }
         if clean {
-            self.backoff = self.timing.backoff_first;
-            self.chans[i].owed |= s.truncated;
+            self.chans[i].backoff = self.timing.backoff_first;
         } else {
             self.fail(now, i, Duration::ZERO);
         }
