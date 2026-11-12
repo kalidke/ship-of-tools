@@ -992,8 +992,10 @@ owned by `docs/CLAUDE.md`.
   `conversations.replies` does not serve a deleted parent's thread, that read fails and ends every pass on the channel
   `ReadFailed`, so the boundary never moves and recovery there stops until the boundary passes the parent (Slack's
   history window or a later commit); live filing is unaffected. Whether Slack serves such a thread is unmeasured: a
-  read-only probe of `conversations.replies` on a deleted parent decides it. Found by B3h2's review, reading code; never
-  seen.
+  read-only probe of `conversations.replies` on a deleted parent decides it. This must be settled before any caller
+  commits from the pass (delivery's decisions and the daemon's delivery). The narrow rule to measure first: on a thread
+  read only, Slack's `thread_not_found` reads as an empty thread and the walk goes on, counted, while every other error
+  stays fatal; not built. Found by B3h2's review, reading code; never seen.
 
 ## records
 
