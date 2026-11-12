@@ -84,7 +84,7 @@ try {
     Say '--- step 2 with no hosts.toml'; $nh | ForEach-Object { Say $_ }
     if (-not ($nh | Where-Object { $_ -match 'no hosts.toml at' })) { Bad 'plan does not say no hosts.toml' }
     $alias = Join-Path $out 'daemons-3-probealias.ps1'
-    [IO.File]::WriteAllText($alias, ((Get-Content -Raw -LiteralPath (Join-Path $probeDir 'daemons-3.ps1')) -replace 'HUB', 'probealias'))
+    [IO.File]::WriteAllText($alias, ((Get-Content -Raw -LiteralPath (Join-Path $probeDir 'daemons-3.ps1')) -creplace 'HUB', 'probealias'))
     $as = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $alias 2>&1 | ForEach-Object { "$_" })
     Say '--- the record lookup and sync from an alias no ssh reaches'; $as | ForEach-Object { Say $_ }
     if (-not ($as | Where-Object { $_ -match 'ssh probealias' })) { Bad 'the sync does not fail naming ssh' }
