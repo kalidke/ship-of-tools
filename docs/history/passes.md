@@ -1974,3 +1974,11 @@ A landing's record goes here, with its measured times; the package page holds on
   the start's environment and silenced error output were tested only through a helper, so removing both left every
   test green; the descriptor test failed 2 of 150 runs while the child opened font files; no guard ended the child if
   a thread failed to start); one fix commit, a second probe and three gates.
+- The SVG draw worker, its sixth landing (4, in two parts), 2026-11-11: builder launched about 20:33; part 1 (the
+  runner's stop, its two kinds of end, the source's generation) on main 21:10 (bb6a46d55), part 2 (the worker) 22:46
+  (ec716bf86, 43ff2f198, 9f639f020); 2 hours 13 minutes, a miss, an hour of it held for the account's five-hour window.
+  About 80 and 177 product lines (the plan said 90 in all) and 340 test lines. Where the minutes went: the change
+  passed the stop at 283 code lines and was split; review round 1 (part 1 clean; part 2 one blocker: the waiting-input
+  bound counted every generation, so a hostile file's queue would refuse the next file's own preview for good; three
+  rules untested; a simpler worker in which a new generation stops the running draw itself, which the fix took, 19 lines
+  fewer); review round 2 (no blockers: a lock held across the wake); two fix commits and four gates.
