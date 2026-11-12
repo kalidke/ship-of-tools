@@ -20,7 +20,7 @@ fn spans(r: &ChatRecord) -> Vec<Span> {
 }
 
 fn body(r: &ChatRecord) -> Vec<(Kind, String)> {
-    spans(r).into_iter().filter(|s| matches!(s.kind, Kind::Body | Kind::Markup)).map(|s| (s.kind, s.text)).collect()
+    spans(r).into_iter().filter(|s| matches!(s.kind, Kind::Body | Kind::Markup | Kind::Link | Kind::Mention)).map(|s| (s.kind, s.text)).collect()
 }
 
 #[test]
@@ -28,9 +28,10 @@ fn chat_markup_and_hostile_text_remain_literal() {
     let b = |t: &str| body(&rec(t));
     assert_eq!(b("if a &lt; b &amp;&amp; c &gt; d"), [(Kind::Body, "if a < b && c > d".to_string())]);
     assert_eq!(b("&lt;b&gt; and &lt;@U1&gt;"), [(Kind::Body, "<b> and <@U1>".to_string())]);
-    assert_eq!(b("<@U1>"), [(Kind::Markup, "<@U1>".to_string())]);
-    assert_eq!(b("<https://x?a=1&amp;b=2|y>"), [(Kind::Markup, "<https://x?a=1&b=2|y>".to_string())]);
-    assert_eq!(b("<@U1|a\0b>"), [(Kind::Markup, "<@U1|a\u{fffd}b>".to_string())]);
+    assert_eq!(b("<@U1>"), [(Kind::Mention, "@U1".to_string())]);
+    assert_eq!(b("<https://x?a=1&amp;b=2|y>"), [(Kind::Link, "y".to_string())]);
+    assert_eq!(b("<@U1|a\0b>"), [(Kind::Mention, "@a\u{fffd}b".to_string())]);
+    assert_eq!(b("<!foo\0>"), [(Kind::Markup, "<!foo\u{fffd}>".to_string())]);
     // Styled text loses its markers; the controls and line ends around it are as ever.
     assert_eq!(b("*bold*\ta\r\nb\rc\0d\u{85}e"), [(Kind::Body, "bold".to_string()), (Kind::Body, "\ta\nb\nc\u{fffd}d\u{fffd}e".to_string())]);
     assert_eq!(b("*bold\ta\r\nb*"), [(Kind::Body, "*bold\ta\nb*".to_string())]);
@@ -52,6 +53,68 @@ fn chat_markup_and_hostile_text_remain_literal() {
     assert!(fake.iter().all(|(k, _)| *k == Kind::Body));
     let all = spans(&rec("Ada 12:00\nx"));
     assert!(matches!(all[0].kind, Kind::Name) && all[2..].iter().all(|s| !is_header(s.kind)));
+}
+
+/// Slack's tokens as the app shows them: a link its label (or its URL), a mention `@` and its label (or its id), a channel `#`
+/// and its label (or its id), the specials by name, a date its fallback; a token the drawer does not read stays as typed.
+#[test]
+fn links_mentions_and_specials_show_as_slack_shows_them() {
+    let b = |t: &str| body(&rec(t));
+    let s = |k, t: &str| (k, t.to_string());
+    assert_eq!(b("<https://x?a=1&amp;b=2|notes>"), [s(Kind::Link, "notes")]);
+    assert_eq!(b("<https://x.test/p>"), [s(Kind::Link, "https://x.test/p")]);
+    assert_eq!(b("<http://x.test|a &amp; b>"), [s(Kind::Link, "a & b")]);
+    assert_eq!(b("<mailto:a@x.test|mail me>"), [s(Kind::Link, "mail me")]);
+    assert_eq!(b("<https://x.test|>"), [s(Kind::Link, "https://x.test")], "an empty label shows the URL");
+    assert_eq!(b("<@U1>"), [s(Kind::Mention, "@U1")]);
+    assert_eq!(b("<@W2|ada>"), [s(Kind::Mention, "@ada")]);
+    assert_eq!(b("<@U1|>"), [s(Kind::Mention, "@U1")]);
+    assert_eq!(b("<#C1|dev>"), [s(Kind::Mention, "#dev")]);
+    assert_eq!(b("<#C1>"), [s(Kind::Mention, "#C1")]);
+    assert_eq!(b("<#C1|>"), [s(Kind::Mention, "#C1")]);
+    for t in ["<!here>", "<!here|here>", "<!here|anything>"] {
+        assert_eq!(b(t), [s(Kind::Mention, "@here")], "{t}");
+    }
+    assert_eq!(b("<!channel> <!everyone|x>"), [s(Kind::Mention, "@channel"), s(Kind::Body, " "), s(Kind::Mention, "@everyone")]);
+    assert_eq!(b("<!subteam^S1|@team>"), [s(Kind::Mention, "@team")]);
+    // A date shows its fallback as the text around it, and joins it.
+    assert_eq!(b("on <!date^1392734382^{date_num}|Jan 1> ok"), [s(Kind::Body, "on Jan 1 ok")]);
+    // Whatever else is a token stays as today, brackets and all, in the markup's style.
+    for t in ["<!foo>", "<x>", "<@u1>", "<@U1 x>", "<@Z1>", "<#D1|x>", "<http://>", "<ftp://x.test|y>", "<!subteam^S1>", "<!date^1^x>", "<!here", "<https://x.test|y"] {
+        assert_eq!(b(t), [s(Kind::Markup, &t.replace("&amp;", "&"))], "{t}");
+    }
+    // In a line: the words around a token are body text, and a style reaches a token's run.
+    assert_eq!(b("see <https://x.test|notes> and <@U1|ada> in <#C1|dev>, <!here>"), [
+        s(Kind::Body, "see "), s(Kind::Link, "notes"), s(Kind::Body, " and "), s(Kind::Mention, "@ada"), s(Kind::Body, " in "),
+        s(Kind::Mention, "#dev"), s(Kind::Body, ", "), s(Kind::Mention, "@here")]);
+    let styled = project(&rec("*<@U1|ada> x*"), None, NOW, utc(), false).into_iter().filter(|x| x.kind == Kind::Mention).map(|x| (x.text, x.style)).collect::<Vec<_>>();
+    assert_eq!(styled, [("@ada".to_string(), BOLD)]);
+    // Typed `&lt;@U1&gt;` is text, not a token, and a token in code is its decoded text.
+    assert_eq!(b("&lt;@U1&gt; `<@U1|ada>`"), [s(Kind::Body, "<@U1> "), s(Kind::Body, "<@U1|ada>")]);
+    // No token makes a header or a badge: a mention named like one is a mention.
+    let spans = project(&rec("<@U1|ROW> <https://x.test|Ada 12:00>"), Some(&at("1700000000.000000")), NOW, utc(), false);
+    assert!(spans.iter().all(|s| !is_header(s.kind)), "{spans:?}");
+}
+
+/// A label is one line and holds no control: a line end becomes a space, any other control U+FFFD; a mention's or channel's
+/// name also loses the invisible and direction characters a header's name loses. A token with a label of nothing shown shows
+/// its id.
+#[test]
+fn a_label_is_one_line_and_holds_no_control() {
+    let b = |t: &str| body(&rec(t));
+    let s = |k, t: &str| (k, t.to_string());
+    assert_eq!(b("<https://x.test|a\nb\r\nc\rd\0e\tf\u{85}g>"), [s(Kind::Link, "a b c d\u{fffd}e\u{fffd}f\u{fffd}g")]);
+    assert_eq!(b("<https://x.test/a\nb>"), [s(Kind::Link, "https://x.test/a b")], "a URL shown as the label is one line too");
+    assert_eq!(b("<@U1|a\nAda 12:00\0b>"), [s(Kind::Mention, "@a Ada 12:00\u{fffd}b")]);
+    assert_eq!(b("<#C1|a\u{202e}b\u{200b}c\u{2028}d>"), [s(Kind::Mention, "#abcd")]);
+    assert_eq!(b("<!subteam^S1|@te\u{2067}am>"), [s(Kind::Mention, "@team")]);
+    assert_eq!(b("<@U1|\u{200b}\u{202e}>"), [s(Kind::Mention, "@U1")], "nothing left shows the id");
+    assert_eq!(b("<!date^1^x|a\nb>"), [s(Kind::Body, "a b")]);
+    // No span a token makes holds a line end or any control.
+    let spans = project(&rec("<https://x.test|a\nb> <@U1|c\nd> <#C1|e\0f> <!subteam^S1|g\th> <!date^1^x|i\nj>"), None, NOW, utc(), false);
+    for x in spans.iter().filter(|x| matches!(x.kind, Kind::Body | Kind::Link | Kind::Mention)) {
+        assert!(x.text.chars().all(|c| !c.is_control()), "{x:?}");
+    }
 }
 
 /// No markup makes a header: a body that styles its first words like a header's has the body's kind, never the name's or

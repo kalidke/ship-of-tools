@@ -81,9 +81,12 @@ no code span is open (two that end one span and begin the next disappear: `` `a`
 followed by the same mark does not start a style, so `**x**` shows `x` in bold between two asterisks. Code shows no other style inside it, and a
 style around code is dropped.
 
-Other markup, such as a mention or a link, is shown as the markup text in blue and is not rendered: a link is not
-clickable and a mention is not replaced by a name. Text that looks like a header or a badge inside a message stays
-body text, however it is styled.
+Links and mentions show as Slack shows them, in blue. A link shows its label, or its address when it has none; the address
+is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's id (the drawer does not look
+names up yet) on a tinted slug, or `@` and the label when the message carries one; a channel shows `#` and its label or id;
+`@here`, `@channel` and `@everyone` show by name, and a group shows its label. A date shows the plain text Slack sends with it.
+A label is one line, whatever it holds. Any other markup the drawer does not read is shown as the markup text in blue. Text
+that looks like a header or a badge inside a message stays body text, however it is styled.
 
 ## Deleted messages
 
@@ -142,7 +145,7 @@ selection is never shared with the agent; only the preview's text and your drawi
 ## Copying
 
 `Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
-exactly as shown: Slack's markup as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
+exactly as shown: a link's label, a mention's name and a style's text without its marks, markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
 message's text, not its name and time line (a message without a header copies its whole text). With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.

@@ -1,9 +1,15 @@
 use super::mrkdwn::*;
 use sot_protocol::chat::text_segments;
 
-/// The shown pieces of Slack's text as `(text, style)`; a token is marked with `<>` around its text in the table.
+/// The shown pieces of Slack's text as `(text, style)`; a token not read is marked with `<>` around its text in the table, a
+/// link with `[]` and a mention with `{}`.
 fn shown(text: &str) -> Vec<(String, u8)> {
-    styled(text_segments(text)).into_iter().map(|p| (if p.markup { format!("<{}>", p.text) } else { p.text }, p.style)).collect()
+    styled(text_segments(text)).into_iter().map(|p| (match p.role {
+        Role::Text => p.text,
+        Role::Markup => format!("<{}>", p.text),
+        Role::Link => format!("[{}]", p.text),
+        Role::Mention => format!("{{{}}}", p.text),
+    }, p.style)).collect()
 }
 
 fn plain(t: &str) -> Vec<(String, u8)> {
@@ -34,9 +40,13 @@ fn slacks_inline_styles_follow_its_boundary_rules() {
     assert_eq!(shown("*a ~b~ c*"), [s("a ", BOLD), s("b", BOLD | STRIKE), s(" c", BOLD)]);
     assert_eq!(shown("`*a* _b_`"), [s("*a* _b_", CODE)]);
     // A token is one atom: it styles with its run, and inside code it is its decoded text.
-    assert_eq!(shown("*hi <@U1>*"), [s("hi ", BOLD), s("<<@U1>>", BOLD)]);
+    assert_eq!(shown("*hi <@U1>*"), [s("hi ", BOLD), s("{@U1}", BOLD)]);
+    assert_eq!(shown("*hi <!foo>*"), [s("hi ", BOLD), s("<<!foo>>", BOLD)]);
     assert_eq!(shown("`<@U1> x`"), [s("<@U1> x", CODE)]);
-    assert_eq!(shown("<@U1>*b*"), [s("<<@U1>>", 0), s("*b*", 0)]);
+    assert_eq!(shown("<@U1>*b*"), [s("{@U1}", 0), s("*b*", 0)]);
+    // A token is its shown text, whatever the styles around it: a link, a mention, and a date's fallback joining its words.
+    assert_eq!(shown("_<https://x.test|a *b*> <!here>_"), [s("[a *b*]", ITALIC), s(" ", ITALIC), s("{@here}", ITALIC)]);
+    assert_eq!(shown("a <!date^1^x|b> c"), plain("a b c"));
     // A marker followed by the same marker never opens, so in `**x**` the inner pair styles `x` between literal outer marks;
     // two pairs that meet merge into one run, and a run of backticks closing one span and opening the next is one box.
     for (t, m) in [("**x**", '*'), ("~~x~~", '~'), ("__init__", '_')] {
@@ -61,7 +71,7 @@ fn slacks_inline_styles_follow_its_boundary_rules() {
 /// The closer scans a parse makes, counted by `close`: a line of openers that never close costs one scan, not one a marker.
 #[test]
 fn the_parse_is_linear_on_a_line_of_openers() {
-    for unit in ["*a ", "_a ", "~a ", "`a ", "*a_", "*a* "] {
+    for unit in ["*a ", "_a ", "~a ", "`a ", "*a_", "*a* ", "*<@U1> ", "<!here>*a ", "`<https://x.test|a> ", "<#C1|d>_a_ "] {
         let text = unit.repeat(8192 / unit.len());
         scanned_reset();
         let pieces = shown(&text);

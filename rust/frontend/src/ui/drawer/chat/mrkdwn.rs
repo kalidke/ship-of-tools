@@ -1,19 +1,30 @@
 //! Slack's inline styles in a message's text: `*bold*`, `_italic_`, `~strike~` and `` `code` ``, read over wire's one
-//! tokenizer (`text_segments`), whose tokens (a mention, a link) are each one non-space atom here. Styling is the window's
-//! presentation, so it is this module's and no other reader's. Pure.
+//! tokenizer (`text_segments`), whose tokens (a mention, a link) are each one non-space atom here, shown as Slack shows them
+//! (`resolve`). Styling is the window's presentation, so it is this module's and no other reader's. Pure.
 
 use sot_protocol::chat::TextSegment;
+use sot_protocol::page_reply::unsafe_char;
 
 pub(super) const BOLD: u8 = 1;
 pub(super) const ITALIC: u8 = 2;
 pub(super) const STRIKE: u8 = 4;
 pub(super) const CODE: u8 = 8;
 
-/// A run of shown text in one style (the bits above); `markup` is a token, kept whole.
+/// What a piece is: typed text (and a date's fallback), a link's label or URL, a mention's name, or a token not read, which
+/// shows as its decoded text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Role {
+    Text,
+    Link,
+    Mention,
+    Markup,
+}
+
+/// A run of shown text in one style (the bits above); a token is a piece of its own, kept whole.
 #[derive(Debug, PartialEq)]
 pub(super) struct Piece {
     pub text: String,
-    pub markup: bool,
+    pub role: Role,
     pub style: u8,
 }
 
@@ -42,15 +53,51 @@ pub(super) fn styled(segments: impl IntoIterator<Item = TextSegment>) -> Vec<Pie
     out
 }
 
-/// `a` joins the last piece when both are text in one style; `flat` shows a token as its text (inside code).
+/// A label on one line: a line end is a space and any other control U+FFFD.
+fn one_line(s: &str) -> String {
+    s.chars().map(|c| match c { '\n' | '\r' => ' ', c if c.is_control() => '\u{fffd}', c => c }).collect()
+}
+
+/// A token as Slack shows it, with its role: a link its label or its URL; a user (`<@U..>`, `<@W..>`) `@` and the label or the
+/// id; a channel `#` and the label or the id; `<!here>`, `<!channel>` and `<!everyone>` by name; a group its label; a date its
+/// fallback. A name loses the invisible and direction characters a header's name loses, and one left empty shows the id. A
+/// token not so (or one without what it shows) is its decoded text, as typed.
+fn resolve(tok: &str) -> (String, Role) {
+    let shown = || {
+        let inner = tok.strip_prefix('<')?.strip_suffix('>')?;
+        let (head, label) = inner.split_once('|').map_or((inner, None), |(h, l)| (h, Some(l)));
+        // The label on one line, and for a name without the invisible and direction characters; `None` when none is left.
+        let line = |name: bool| {
+            let l: String = label.map(one_line)?.chars().filter(|c| !name || !unsafe_char(*c)).collect();
+            (!l.is_empty()).then_some(l)
+        };
+        let id = |i: &str, first: &[char]| i.starts_with(first) && i.bytes().all(|b| b.is_ascii_alphanumeric());
+        let mention = |sigil, i: &str| (format!("{sigil}{}", line(true).as_deref().unwrap_or(i)), Role::Mention);
+        Some(match (head.get(..1)?, head.get(1..)?) {
+            ("@", i) if id(i, &['U', 'W']) => mention('@', i),
+            ("#", i) if id(i, &['C']) => mention('#', i),
+            ("!", s @ ("here" | "channel" | "everyone")) => (format!("@{s}"), Role::Mention),
+            ("!", s) if s.starts_with("subteam^") => (line(true)?, Role::Mention),
+            ("!", s) if s.starts_with("date^") => (line(false)?, Role::Text),
+            _ if ["http://", "https://", "mailto:"].iter().any(|p| head.strip_prefix(p).is_some_and(|u| !u.is_empty())) => {
+                (line(false).unwrap_or_else(|| one_line(head)), Role::Link)
+            }
+            _ => return None,
+        })
+    };
+    shown().unwrap_or_else(|| (tok.to_string(), Role::Markup))
+}
+
+/// `a` joins the last piece when both are text in one style; `flat` shows a token as its decoded text (inside code).
 fn push(out: &mut Vec<Piece>, a: &Atom, style: u8, flat: bool) {
-    let (text, markup) = match a {
-        Atom::Ch(c) => (c.to_string(), false),
-        Atom::Tok(t) => (t.clone(), !flat),
+    let (text, role) = match a {
+        Atom::Ch(c) => (c.to_string(), Role::Text),
+        Atom::Tok(t) if flat => (t.clone(), Role::Text),
+        Atom::Tok(t) => resolve(t),
     };
     match out.last_mut() {
-        Some(p) if !markup && !p.markup && p.style == style => p.text.push_str(&text),
-        _ => out.push(Piece { text, markup, style }),
+        Some(p) if role == Role::Text && p.role == Role::Text && p.style == style => p.text.push_str(&text),
+        _ => out.push(Piece { text, role, style }),
     }
 }
 

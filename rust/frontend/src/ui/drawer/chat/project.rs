@@ -2,7 +2,7 @@
 //! to make a line read as another message's header or badge. Pure; the view that shapes the spans styles each kind.
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime};
-use super::mrkdwn::styled;
+use super::mrkdwn::{styled, Role};
 use sot_protocol::page_reply::unsafe_char;
 use sot_protocol::chat::{ChatRecord, Origin, TextSegment, text_segments};
 
@@ -21,7 +21,11 @@ pub(super) enum Kind {
     /// The origin's word, from the record's origin alone.
     Badge,
     Body,
+    /// A token Slack's markup has that the drawer does not read, shown as its decoded text.
     Markup,
+    /// A link's label or URL, and a mention's or special's name.
+    Link,
+    Mention,
     Meta,
     /// A thread summary's reply count, and what follows it on the line.
     Replies,
@@ -123,7 +127,8 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
         TextSegment::Text(t) => TextSegment::Text(literal(&t)),
         TextSegment::Markup(t) => TextSegment::Markup(literal(&t)),
     });
-    out.extend(styled(segments).into_iter().map(|p| Span { kind: if p.markup { Kind::Markup } else { Kind::Body }, style: p.style, text: p.text }));
+    let kind = |role| match role { Role::Text => Kind::Body, Role::Link => Kind::Link, Role::Mention => Kind::Mention, Role::Markup => Kind::Markup };
+    out.extend(styled(segments).into_iter().map(|p| Span { kind: kind(p.role), style: p.style, text: p.text }));
     // Each meta item is one line of spans: its kinds, in order.
     let mut meta: Vec<Vec<(Kind, String)>> = Vec::new();
     for f in &r.files {

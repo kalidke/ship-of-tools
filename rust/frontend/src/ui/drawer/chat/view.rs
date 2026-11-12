@@ -29,6 +29,8 @@ const LOW: (u8, u8, u8) = (0x32, 0x35, 0x38);
 /// The mark's band, and an inline code's fill.
 const BAND: (u8, u8, u8) = (0x21, 0x24, 0x28);
 const SKY: (u8, u8, u8) = (0x1D, 0x9B, 0xD1);
+/// A mention's slug: Sky Blue at about 10% over the background.
+const SLUG: (u8, u8, u8) = (0x18, 0x29, 0x34);
 const SELECTION: (u8, u8, u8) = (0x1B, 0x43, 0x56);
 /// Inline code's text: the one value here that is not the chart's, chosen to read as code on `BAND`.
 const CODE_TEXT: (u8, u8, u8) = (0xE8, 0x91, 0x2D);
@@ -44,6 +46,9 @@ const DAY: usize = 0x02;
 /// The glyph flags of inline code, whose rectangle is drawn behind it, and of strike, which a rule is drawn through.
 const CODE_RUN: usize = 0x04;
 const STRIKE_RUN: usize = 0x08;
+/// The same for a mention, whose slug is drawn behind it: a rectangle 1 px wider each side than its run, inset like code's.
+const MENTION_RUN: usize = 0x10;
+const MENTION_PAD_PX: f32 = 1.0;
 /// Inline code's size (of the body's 15), and its rectangle's padding left and right and its inset top and bottom, in pixels
 /// at text scale 1.
 const CODE_SIZE: f32 = 14.0;
@@ -160,7 +165,8 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
         Kind::Last => a.color(rgb(MUTED)).metrics(small(DAY_SIZE)),
         Kind::Badge => a.weight(Weight::BOLD).color(rgb(MUTED)).metrics(small(10.0)).metadata(BADGE),
         Kind::Body => a,
-        Kind::Markup => a.color(rgb(SKY)),
+        Kind::Markup | Kind::Link => a.color(rgb(SKY)),
+        Kind::Mention => a.color(rgb(SKY)).metadata(MENTION_RUN),
         Kind::Meta => a.style(Style::Italic).color(rgb(MUTED)),
     }
 }
@@ -499,10 +505,13 @@ impl ChatView {
                 out.extend(quad(rule(pill.x + w, body.x + body.w - TILE_LEFT_PX * scale), LOW));
                 out.extend(boxed(pill, BG));
             }
-            // Inline code is a bordered fill around its run, padded left and right; strike is a rule through the middle of its.
+            // Inline code is a bordered fill around its run, padded left and right, and a mention's slug a fill around its; strike is a rule through the middle of its.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & CODE_RUN != 0) {
                 let outer = ScreenRect { x: text.x + x - CODE_PAD_PX * scale, y: all.y + y + CODE_INSET_PX * scale, w: w + 2.0 * CODE_PAD_PX * scale, h: h - 2.0 * CODE_INSET_PX * scale };
                 out.extend(boxed(outer, BAND));
+            }
+            for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & MENTION_RUN != 0) {
+                out.extend(quad(ScreenRect { x: text.x + x - MENTION_PAD_PX * scale, y: all.y + y + CODE_INSET_PX * scale, w: w + 2.0 * MENTION_PAD_PX * scale, h: h - 2.0 * CODE_INSET_PX * scale }, SLUG));
             }
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & STRIKE_RUN != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + (h - scale) / 2.0, w, h: scale }, TEXT));

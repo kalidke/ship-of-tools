@@ -112,7 +112,7 @@ fn the_view_shows_the_held_records_newest_at_the_bottom_and_shapes_only_what_it_
     assert!(view.areas().is_empty());
 
     // Each kind has its own style; a body line that imitates a header keeps the body's.
-    let kinds = [Kind::Day, Kind::Name, Kind::Time, Kind::Badge, Kind::Body, Kind::Markup, Kind::Meta, Kind::Replies, Kind::Last];
+    let kinds = [Kind::Day, Kind::Name, Kind::Time, Kind::Badge, Kind::Body, Kind::Markup, Kind::Mention, Kind::Meta, Kind::Replies, Kind::Last];
     for (i, a) in kinds.iter().enumerate() {
         for b in &kinds[i + 1..] {
             assert_ne!(attrs(*a, 1.0), attrs(*b, 1.0), "{a:?} {b:?}");
@@ -801,12 +801,12 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     }
     assert_eq!(drag(&mut view, &held[0].ts, (2, 6), (4, 3)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé ñandú charlie\nome"));
     assert_eq!(drag(&mut view, &held[0].ts, (2, 6), (3, 7)).as_deref(), Some("beta gamma delta epsilon zeta eta theta\nbravé "));
-    // Markup shown as typed is copied as shown.
+    // A link's text is copied as shown: no brackets, the entity read.
     assert_eq!(drag(&mut view, &held[1].ts, (1, 0), (1, 4)).as_deref(), Some("a < "));
     let end = view.point_at(&held[1].ts, 1, 4).unwrap();
     view.extend_drag((end.0 + 200.0, end.1));
     assert_eq!(view.selected_text().as_deref(), Some("a < "), "a release ends the drag");
-    assert_eq!(drag(&mut view, &held[2].ts, (1, 0), (1, 18)).as_deref(), Some("<https://x?a=1&b=2"));
+    assert_eq!(drag(&mut view, &held[2].ts, (1, 0), (1, 16)).as_deref(), Some("https://x?a=1&b="));
 
     // The copy is the selection's bytes; with none it is the marked message's shown text, the header left out.
     view.clear_selection();
@@ -814,7 +814,7 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     view.mark(true);
     lay_in(&mut view, &mut fonts, &held, BODY);
     assert_eq!(view.mark.as_ref(), Some(&held[2].ts));
-    assert_eq!(view.copy_text().as_deref(), Some("<https://x?a=1&b=2>"));
+    assert_eq!(view.copy_text().as_deref(), Some("https://x?a=1&b=2"));
     drag(&mut view, &held[1].ts, (1, 0), (1, 4));
     assert_eq!(view.copy_text().as_deref(), Some("a < "), "the selection comes first");
     view.mark(true);
@@ -1555,4 +1555,86 @@ fn a_drag_across_styled_runs_copies_the_shown_text() {
     lay_drawer(&mut view, &mut fonts, &held);
     // The shown line is `x bold y code z s w i`: the drag ends at the start of `w`.
     assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (2, 18)).as_deref(), Some("x bold y code z s "));
+}
+
+const SLUG: (u8, u8, u8) = (0x18, 0x29, 0x34);
+
+/// A mention (a user, a channel, `@here`, a group) is Sky Blue text on a slug 1 px wider than its run each side and inset 2 px
+/// above and below, a rectangle with no border drawn after the mark's band; a link is Sky Blue with none; typed `@ada` and a
+/// token in code draw none. The slug comes from the mention's glyph flag, on every layout line a mention wraps across.
+#[test]
+fn a_mention_draws_its_slug() {
+    use cosmic_text::Color;
+    let mut fonts = FontSystem::new();
+    let group = "<!subteam^S1|@alpha beta gamma delta epsilon zeta eta>";
+    // (the text, what it shows, the mentions shown, the text's width, whether it is marked)
+    for (text, shown, names, width, marked) in [
+        ("hi <@U1|ada> see <https://x.test|notes> and <!here> ok".to_string(), "hi @ada see notes and @here ok".to_string(), vec!["@ada", "@here"], 320.0, false),
+        ("<#C1|dev> and <@U1>".to_string(), "#dev and @U1".to_string(), vec!["#dev", "@U1"], 320.0, true),
+        (format!("x {group} y"), "x @alpha beta gamma delta epsilon zeta eta y".to_string(), vec!["@alpha beta gamma delta epsilon zeta eta"], 120.0, false),
+        ("typed @ada, `<@U1|ada>` and <https://x.test|notes>".to_string(), "typed @ada, <@U1|ada> and notes".to_string(), vec![], 320.0, false),
+    ] {
+        for scale in [1.0_f32, 1.5] {
+            let held = [by_ada(0, &text)];
+            let records: Vec<&ChatRecord> = held.iter().collect();
+            let mut view = ChatView::default();
+            view.mark = marked.then(|| held[0].ts.clone());
+            let body = ScreenRect { w: width + GUTTER_PX * scale, ..body_of_drawer() };
+            view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+            let quads = view.backs(DRAWER);
+            let buffer = view.placed_buffers()[0];
+            assert_eq!(buffer.lines[2].text(), shown);
+            let (top, text_x) = (body.y + view.placed_tops()[0], body.x + GUTTER_PX * scale);
+            // Per layout line, each mention's glyphs: the line's top and height and the glyphs' extent.
+            let mut want = Vec::new();
+            for run in buffer.layout_runs().filter(|r| r.line_i == 2) {
+                for name in &names {
+                    let at = shown.find(name).unwrap();
+                    let g: Vec<_> = run.glyphs.iter().filter(|g| g.start >= at && g.end <= at + name.len()).collect();
+                    if !g.is_empty() {
+                        assert!(g.iter().all(|g| g.color_opt == Some(Color::rgb(0x1D, 0x9B, 0xD1))), "a mention is Sky Blue text");
+                        want.push((run.line_top, run.line_height, g.iter().map(|g| g.x).fold(f32::MAX, f32::min), g.iter().map(|g| g.x + g.w).fold(0.0, f32::max)));
+                    }
+                }
+            }
+            assert!(names.is_empty() || want.len() >= names.len(), "{want:?}");
+            assert!(names.len() != 1 || want.len() >= 2 || width > 200.0, "the wrapped mention spans lines: {want:?}");
+            let slugs = of_color(&quads, SLUG);
+            assert_eq!(slugs.len(), want.len(), "{text:?}: one slug a layout line a mention covers");
+            for (s, (lt, lh, x0, x1)) in slugs.iter().zip(&want) {
+                assert!(near(s.x, text_x + x0 - scale) && near(s.x + s.w, text_x + x1 + scale), "{s:?}");
+                assert!(near(s.y, top + lt + 2.0 * scale) && near(s.h, lh - 4.0 * scale), "{s:?} inset 2 px in its line");
+            }
+            // It is drawn over the mark's band, and no border comes with it.
+            let band = quads.iter().position(|q| q.color == BAND && q.w > width);
+            assert_eq!(band.is_some(), marked);
+            assert!(slugs.iter().all(|s| band.is_none_or(|b| quads.iter().position(|q| std::ptr::eq(q, *s)).unwrap() > b)));
+            // A link is Sky Blue and has no rectangle; no span but a mention is flagged.
+            let flagged = |kind| styled_attrs(kind, 0, scale).metadata;
+            assert_ne!(flagged(Kind::Mention), 0);
+            assert_eq!((flagged(Kind::Link), flagged(Kind::Body), flagged(Kind::Markup)), (0, 0, 0));
+            assert_eq!(styled_attrs(Kind::Link, 0, scale).color_opt, Some(Color::rgb(0x1D, 0x9B, 0xD1)));
+        }
+    }
+}
+
+/// A selection or a copy of the marked message gives the shown text: a link's label, a mention's name, a date's fallback; the
+/// URL of a link with a label never shows, so it is never copied.
+#[test]
+fn a_copy_gives_the_shown_text() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "see <https://x.test|notes> and <@U1|ada>, <#C1|dev> <!here> <!date^1^x|Jan 1>")];
+    let shown = "see notes and @ada, #dev @here Jan 1";
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.placed_buffers()[0].lines[2].text(), shown);
+    let at = |s: &str| shown.find(s).unwrap();
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (2, at("@here"))).as_deref(), Some("see notes and @ada, #dev "));
+    assert_eq!(drag(&mut view, &held[0].ts, (2, at("notes")), (2, at("#dev"))).as_deref(), Some("notes and @ada, "));
+    assert_eq!(drag(&mut view, &held[0].ts, (2, at("@ada")), (2, at("Jan"))).as_deref(), Some("@ada, #dev @here "));
+    view.clear_selection();
+    view.mark(true);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.copy_text().as_deref(), Some(shown), "the marked message's shown text");
+    assert!(!view.copy_text().unwrap().contains("x.test"));
 }
