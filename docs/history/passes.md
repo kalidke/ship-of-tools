@@ -2098,3 +2098,13 @@ A landing's record goes here, with its measured times; the package page holds on
   copied code block pasted into the REPL would run it as a line; the session decided it stays out of every copy, by a
   glyph flag the copy cuts at, as L5's empty-line space; the record bound's test and the mark's color and size were
   unpinned. Slack's `edited` object is as Slack documents it; the plan's premise PC is unmeasured.
+- The chat drawer's look, L7 (people by name), 2026-11-12: builder launched 07:29, main 08:18 (0a1469963, f05ccf214,
+  97362d09e), 49 minutes, a miss. About 110 product lines across wire (the record's `names`, bounded at decode), chat
+  (mention lookups in the fill, a reserve for the names inside the record bound, a fill that keeps its own finds),
+  the daemon's watch (a change event named from the cache alone) and the drawer, and about 330 test lines; a first
+  commit gave every crate's tests one record fixture behind a dev-only feature that the release features check now
+  proves out of every shipped binary. Where the minutes went: the build 20 minutes in two commits, the whole local gate
+  (the release check's script widened it) 5, one review round 15, one fix commit 8. Review round 1 (no blockers; the
+  reserve is exact at every bound; four more feature faults all caught): a name was put into tokens inside code, the
+  authors-first order was untested, and a large fill could lose its own first names to the shared cache's eviction.
+  No second review: three fixes, each with a test red against the old behavior.
