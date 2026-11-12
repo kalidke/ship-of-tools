@@ -116,9 +116,13 @@ it at the next launch, below.
   closed until all are updated, and the runbook goes on once every named computer without a window is on the new line.
 - A `--backend` laptop and its server with no `hosts.toml` on either computer (an install from before 0.6.6-rc9.13) is
   not moved by the update, from either computer: a 0.7 window dials only the hosts of a group file kept on its hub, so
-  moving either computer leaves the window with no host (`FAIL: enroll` on the laptop). The runbook stops with nothing
-  changed and tells the person to declare the group on the server (a three-block `hosts.toml`) and sync it on the laptop;
-  with that file the same message moves the pair, the server first.
+  moving either computer leaves the window with no host (`FAIL: enroll` on the laptop). The runbook first fetches the
+  hub's group file when the record or the launcher names a hub (a group member whose copy is missing needs nothing
+  more); if the hub holds a file that does not list the laptop, the hub's owner adds it with `sotd topology set add`; if
+  the server holds no file at all, it stops with nothing changed and tells the person to write a three-block
+  `hosts.toml` on the server and sync it on the laptop, after which the same message moves the pair, the server first.
+  That works only when the server's host name is also the name the laptop reaches it by; otherwise the pair stays as
+  it is (BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML). Nothing in the update writes or replaces a `hosts.toml` on another computer.
 - The same message can be sent again from any state an earlier run left: a window computer already on 0.7 whose daemon
   still runs 0.6 stops and names the daemon's computer (a repair there changes nothing); the daemon's computer updates
   and ends `PASS`; a 0.7 daemon with a 0.6 window lets the window's computer update; both on 0.7 is a repair that changes

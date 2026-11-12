@@ -746,7 +746,10 @@ owned by `docs/CLAUDE.md`.
   computers that also share one daemon state folder (the daemon takes one lock per state folder, so the stand-in gave
   each computer its own), Windows or macOS updating by the runbook with older daemons, and a 0.6.6 install older than
   rc9.13, whose plan names `tcp:` addresses nothing listens on, so every daemon reads as unknown and the runbook asks
-  the person (run on Linux with 0.6.6-rc1). The runbook never updates another computer: it stops and names the order.
+  the person (run on Linux with 0.6.6-rc1), and a Windows computer (the page counts every one as a window; the Linux
+  rule that a computer's declaration and its install agree is read from the installer, not run). The stand-in `ssh`
+  and `hostname` print each computer's test name, so the host-name check of a `--backend` pair ran against them, not a
+  real login. The runbook never updates another computer: it stops and names the order.
 - **BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML** [session] A `--backend <alias>` laptop installed before 0.6.6-rc9.13 (the window
   dials `SOT_HOST` through a tunnel) has no `hosts.toml`, and neither has its server. 0.7's installer on the laptop ends
   `FAIL: enroll: could not read the hosts.toml on '<alias>'`, and the 0.7 window dials only the plan's hosts, so even with
@@ -754,10 +757,16 @@ owned by `docs/CLAUDE.md`.
   `hosts.toml`: `sotd topology set` edits one, `sync` fetches one). Seen in test containers (a 0.6.6-rc1 pair, both
   orders). The update runbook therefore stops on both computers of such a pair with nothing changed, and tells the person
   to write the three-block file on the server and run `sotd topology sync --hub <server>` on the laptop; with that file
-  the same message moved the pair in a test (names equal to the ssh aliases). Fix: the installer on the server, or `sotd
-  topology set add` on a hub with no file, writes the one-hub file, which is a design for review.
+  the same message moved the pair in a test. A server that holds a group file not listing the laptop is the hub owner's
+  `sotd topology set add <laptop> --frontend`, and the runbook says so (also tested). The group file's names are
+  each computer's own host name and the window reaches the hub by that name in ssh, so a pair whose server prints another
+  name than the alias the laptop uses (`lab` against `srv`) has no way through that the runs could show: the runbook
+  leaves it as it is and says so. Fix: the installer on the server, or `sotd
+  topology set add` on a hub with no file, writes the one-hub file, and the group file names a host apart from its ssh
+  alias; a design for review.
 - **AUTO-UPDATE-SPLITS-A-PAIR** [session] A release daemon checks for the newest release daily, stages it, and applies it
-  at its next start; a window-only install updates itself at its next launch (`rust/frontend/src/selfupdate.rs`). Neither
+  at its next start; a window-only install updates itself at its next launch (`rust/frontend/src/selfupdate.rs`; this half is known by
+  reading, only the daemon's staging was seen). Neither
   asks the other computers, so a restart of one computer's daemon or window can move it to a release its pair does not
   speak, with no agent involved. Seen in test containers: a 0.6.6 hub that had run for a few minutes had staged 0.7.0,
   and its next start applied it, with no agent having updated it. The runbook's stop tells the
@@ -1023,7 +1032,7 @@ An item closes by moving here as one line: id, subsystem, the fixing commit or l
   pair). Step 2 now reads the newest release and every daemon of the group (`sotd topology plan`, `sotd status`) before
   step 3, stops with nothing changed and names the computers to update first when one is on another line or cannot be
   read, and step 5 reads them again before it asks for a window to start; a rerun of the message from each state the old
-  text left, in a group, ends in a usable pair or a repair that changes nothing. Not closed by it: a `--backend` pair
+  text left, in a group, ends in a stop that changes nothing, a repair, or a usable pair. Not closed by it: a `--backend` pair
   with no `hosts.toml` (BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML: the runbook stops on both computers), what was not run
   (UPDATE-ORDER-UNRUN) and the daemon's own staging of updates (AUTO-UPDATE-SPLITS-A-PAIR).
 - **SVG-IMAGE-HREF-READS-LOCAL-FILES** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG draw: an `<image href>` in an SVG went to usvg's default resolver, which read any path that exists on the window's computer, so a FIFO hung the window's thread and a local PNG was drawn into the picture of a file served by a daemon; reachable through a markdown figure (known by reading). `svg_tree`'s resolver (`embedded_images_only`) now draws an image only from embedded `data:` data; a path or URL reads nothing.
