@@ -579,3 +579,28 @@ fn a_commit_that_leaves_a_candidate_unfiled_backs_off() {
     assert!(!is_pass(d.poll(now + Duration::from_secs(20))));
     assert!(is_pass(d.poll(now + Duration::from_secs(40))));
 }
+
+#[test]
+fn a_failed_pass_keeps_read_pace_before_the_next_channels_first_read() {
+    // `CH`'s pass fails; `C0BBBB`, owed its start's pass, is not asked for before `read_pace` after that pass's result.
+    let t0 = Instant::now();
+    let (mut d, now) = in_pass(t0);
+    d.passed(now, passed(Outcome::ReadFailed, 10, &[]));
+    let pace = Timing::PRODUCT.read_pace;
+    assert!(!is_pass(d.poll(now)));
+    assert!(!is_pass(d.poll(now + pace - Duration::from_millis(1))));
+    assert!(matches!(d.poll(now + pace), Action::Pass { order, .. } if order.state.channel() == "C0BBBB"));
+}
+
+#[test]
+fn a_channel_truncated_at_every_pass_does_not_hold_anothers_owed_pass() {
+    // `CH` completes a truncated pass and is owed another at once, as is `C0BBBB` for its start's pass: ready together,
+    // the one passed less recently goes first.
+    let t0 = Instant::now();
+    let (mut d, now) = in_pass(t0);
+    let now = now + Duration::from_secs(10);
+    d.passed(now, passed(Outcome::Truncated, 10, &[3]));
+    let (files, _, now) = run(&mut d, now, &[]);
+    assert_eq!(files.len(), 1);
+    assert!(matches!(d.poll(now + Timing::PRODUCT.read_pace), Action::Pass { order, .. } if order.state.channel() == "C0BBBB"));
+}

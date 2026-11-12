@@ -195,7 +195,7 @@ impl Delivery {
         }
         if self.pass.is_none() {
             let due = |c: &Chan| (if c.owed || self.gap > c.began { c.retry_at } else { (c.done + self.timing.sweep).max(c.retry_at) }).max(self.pace_at);
-            if let Some((i, at)) = self.chans.iter().enumerate().map(|(i, c)| (i, due(c))).min_by_key(|(_, at)| *at) {
+            if let Some((i, at, _)) = self.chans.iter().enumerate().map(|(i, c)| (i, due(c), c.done)).min_by_key(|(_, at, done)| (*at, *done)) {
                 if at > now {
                     return Action::Idle(Some(wake.map_or(at, |w: Instant| w.min(at))));
                 }
@@ -230,6 +230,7 @@ impl Delivery {
     pub fn passed(&mut self, now: Instant, passed: Passed) {
         let Some(Pass { chan: i, gap, settle: None }) = self.pass else { return };
         let truncated = passed.outcome == Outcome::Truncated;
+        self.pace_at = now + self.timing.read_pace;
         let mail: Vec<Ts> = passed.mail.iter().map(|r| r.ts.clone()).collect();
         for rec in passed.mail {
             self.enqueue(i, rec, false);
@@ -239,7 +240,7 @@ impl Delivery {
             let wait = if let Outcome::RateLimited { retry_after } = passed.outcome { retry_after } else { Duration::ZERO };
             return self.fail(now, i, wait);
         }
-        (self.chans[i].began, self.chans[i].done, self.pace_at) = (gap, now, now + self.timing.read_pace);
+        (self.chans[i].began, self.chans[i].done) = (gap, now);
         self.chans[i].owed |= truncated;
         // A `Truncated` pass handed over only its oldest candidates, so it commits no further than the last of them.
         let last = mail.last().filter(|t| truncated && ts_key(t) < ts_key(&passed.horizon));

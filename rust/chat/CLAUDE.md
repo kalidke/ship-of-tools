@@ -450,7 +450,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    also not queued while its channel's set holds `MAX_FILED` filings, whereas a pass's candidates are queued whatever the
    set holds (their commit prunes it, so a full set is drained by its owed pass). A live record that is not queued for
    either reason, and one with `omitted` set (its content was not read: its copy from history is the one to file; owes
-   nothing if it is already settled), is not filed and owes its channel a pass (`owed(channel)`). `poll` answers, in this
+   nothing if it is already settled), is not filed and owes its channel a pass (the owner sees it as `poll` answering `Pass`). `poll` answers, in this
    order: `Commit` when a returned pass has settled; `File` for the oldest queued record that is still not settled (the
    check runs again as it is issued, so a filing the start's read settled after it entered is dropped unissued), only while
    none is in flight and `FILE_GAP` (200 ms) has passed since the last filing returned, whatever its verdict; `Pass` for
@@ -479,7 +479,8 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    and otherwise it moves to the last one filed before the first that was not. A candidate above the limit is not judged.
    The commit is `Action::Commit { channel, boundary }`: `State::commit` has moved the in-memory boundary, which drops
    the set's filings at or below it, and the owner writes the boundary durably (`state::write`); nothing comes back, since
-   a stale file only costs reads. A `Truncated` pass owes the channel another at once. Limits: an absent recipient
+   a stale file only costs reads. A `Truncated` pass owes the channel another at once; among ready channels the least recently passed goes first, so a
+   channel truncated at every pass does not hold another's owed pass. Limits: an absent recipient
    refuses each queued filing in turn, one per `FILE_GAP`, up to 512 records in about 100 s, each owing the same pass,
    and since the one queue is first in, first out, every other channel's filings wait behind that backlog for the same
    time (a pass's 200 candidates take about 40 s); a record that is in the queue when the start's read settles it is
