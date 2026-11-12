@@ -760,7 +760,8 @@ owned by `docs/CLAUDE.md`.
   orders). The update runbook therefore stops on both computers of such a pair with nothing changed, and tells the person
   to write the three-block file on the server and run `sotd topology sync --hub <server>` on the laptop; with that file
   the same message moved the pair in a test. A server that holds a group file not listing the laptop is the hub owner's
-  `sotd topology set add <laptop> <flags>`, the flags taken from the laptop's record, and the runbook says so (also tested). The group file's names are
+  `sotd topology set add <laptop> <flags>`, the flag taken from the record (`--frontend` for a window computer, `--daemon` for a daemon-only member), and the
+  runbook says so (tested for a `--backend` laptop, a daemon-only member and a `--local --hub` member). The group file's names are
   each computer's own host name and the window reaches the hub by that name in ssh, so a pair whose server prints another
   name than the alias the laptop uses (`lab` against `srv`) has no way through that the runs could show: the runbook
   leaves it as it is and says so. Fix: the installer on the server, or `sotd

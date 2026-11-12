@@ -130,7 +130,7 @@ On Windows, from PowerShell:
   lower case), the pair stays as it is: give the message that begins "Not updated: this pair stays on its version."
   below, with these names. Otherwise give the one that begins "Not updated, on purpose." below, with this computer as
   <server> and the first name as <laptop>. (Both sit in the `hosts.toml: No such file or directory` bullet below; use
-  them from there, whatever it says about Windows.)
+  them from there.)
 
   With one of them (the record's hub when both are there), fetch that computer's group file into this computer's own
   copy, putting its alias in place of `HUB`; this writes nothing on any other computer, and it is what step 3's
@@ -153,9 +153,10 @@ On Windows, from PowerShell:
     prints `self`, `hub` and `dial` lines". If `plan`'s `hub` line is not the name you fetched from, run
     `ssh -o BatchMode=yes <that hub> true` first; if it fails, show the person its words and stop.
   - **It says `does not list this box`.** The hub has a group file that does not name this computer. Stop and change
-    nothing here: the hub's owner runs `sotd topology set add <this computer> <flags>` on the hub, with the flags this
-    computer's record gives (`--daemon` when it says `"daemon": true`, `--frontend` when it says `"frontend": true`; a
-    daemon-only computer gets `--daemon` alone), then you send the message again. Never write or replace a `hosts.toml`
+    nothing here: the hub's owner runs `sotd topology set add <this computer> <flags>` on the hub, with the flag this
+    computer's record gives: `--frontend` when it says `"frontend": true` (that declares a window and its own daemon;
+    never add `--daemon`), `--daemon` alone when it says `"frontend": false` (ask the person if several computers share
+    this home, since the record is one per home), then you send the message again. Never write or replace a `hosts.toml`
     on the hub.
   - **Its last line ends `hosts.toml: No such file or directory`** (the hub holds no file at all; ssh's own warnings
     can carry those words too, so only a last line that ends so counts). On Windows, or with an alias that is not
@@ -357,7 +358,7 @@ It ends with exactly one line.
 | `FAIL: target: ...` | This computer runs a build of the line (a `+` in its version), not a release. Nothing was changed. Ask the person what they want: a pack of the line, or the release the line names. Change nothing yourself. |
 | `FAIL: direction: ...` | This computer runs a newer pre-release than the newest release (for example 0.7.1-rc.3 against 0.7.0). Nothing was changed, and there is nothing to update. Tell the person. Only if they name a version to go back to, run step 3 with `--version <that tag>` (Windows: `-Version`), which pins the install. |
 | a `FAIL:` line ending `no such choice: ''` | The installer wanted to ask which role this computer has (nothing here records one), and had no one to ask. Ask the person: everything on this computer (`--local`), the window here and the daemon on a server they reach by ssh (`--backend <alias>`), or the daemon only (`--be-only`). Run step 3 again with that option. |
-| `FAIL: enroll: ...` | The installer could not read or could not use the hub's group file, and this row decides nothing about why: go back to step 2, run its `plan` and `status`, and follow whatever the `sync` there says. Never write a `hosts.toml` on the hub from here. Until a group file serves this computer its window opens with no hosts, whatever the versions. |
+| `FAIL: enroll: ...` | The installer could not read or could not use the hub's group file, and this row decides nothing about why: go back to step 2, run its `plan` and `status`, and follow whatever the `sync` there says (or, when `plan` fails, show its words). Never write a `hosts.toml` on the hub from here. Until a group file serves this computer its window opens with no hosts, whatever the versions. |
 | `FAIL: <anything else>` | Report the line to the person. If the run was cut short (a lost connection, an interrupt), run step 3 once more: a repeat repairs. |
 | `STOP: ...` or a `curl:` error | This computer could not reach GitHub, or could not fetch the installer. Nothing was changed. Tell the person, and run step 3 again once it can. |
 
