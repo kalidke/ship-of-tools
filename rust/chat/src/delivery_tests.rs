@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{ChatAuthor, ChatRecord, Origin, Ts};
 
-use crate::delivery::{Action, Delivery, Verdict, FILE_GAP, MAX_QUEUED};
+use crate::delivery::{Action, Delivery, Timing, Verdict, FILE_GAP, MAX_QUEUED};
 use crate::mail::Filed;
 use crate::state::{State, MAX_FILED};
+use crate::traverse::{Outcome, Passed};
 use crate::watch::Arrived;
 
 const WS: &str = "T0AAAA";
@@ -49,7 +50,7 @@ fn post(n: u64) -> ChatRecord {
 }
 
 fn arrived(records: Vec<ChatRecord>) -> Arrived {
-    Arrived { records, gap: 1 }
+    Arrived { records, gap: 0 }
 }
 
 fn filed(n: u64) -> Filed {
@@ -78,7 +79,48 @@ fn fresh_from(t0: Instant, boundary: Option<u64>) -> Delivery {
         }
         (state, ts(FLOOR))
     };
-    Delivery::new(t0, [state(CH), state("C0BBBB")])
+    Delivery::new(Timing::PRODUCT, t0, [state(CH), state("C0BBBB")])
+}
+
+/// A pass's result: `mail` found, `horizon` seconds after the floor.
+fn passed(outcome: Outcome, horizon: u64, mail: &[u64]) -> Passed {
+    Passed { horizon: ts(&at(horizon)), mail: mail.iter().map(|n| post(*n)).collect(), outcome, reads: 1, limited: false }
+}
+
+/// The first socket hello, which owes every channel its start's pass.
+fn hello() -> Arrived {
+    Arrived { records: Vec::new(), gap: 1 }
+}
+
+/// Files what the delivery asks for until it asks for anything else, which is returned with the time it was asked; a
+/// filing's `ts` in `refuse` returns `Refused`, any other `Filed`, each a `FILE_GAP` after the last.
+fn run(d: &mut Delivery, mut now: Instant, refuse: &[u64]) -> (Vec<String>, Action, Instant) {
+    let mut files = Vec::new();
+    loop {
+        match d.poll(now) {
+            Action::File(f) => {
+                files.push(f.record.ts.as_str().to_string());
+                now += FILE_GAP;
+                let refused = refuse.iter().any(|n| at(*n) == f.record.ts.as_str());
+                d.filed(now, if refused { Verdict::Refused } else { Verdict::Filed });
+                now += FILE_GAP;
+            }
+            other => return (files, other, now),
+        }
+    }
+}
+
+/// A started delivery handed the hello, and the pass it asks for: the time it was asked.
+fn in_pass(t0: Instant) -> (Delivery, Instant) {
+    let mut d = started(t0);
+    d.hand_over(hello());
+    let (files, action, now) = run(&mut d, t0, &[]);
+    assert!(files.is_empty() && matches!(action, Action::Pass { .. }), "{action:?}");
+    (d, now)
+}
+
+fn is_pass(a: Action) -> bool {
+    matches!(a, Action::Pass { .. })
 }
 
 /// Files everything the delivery asks for, each returned `Filed` a `FILE_GAP` after the last; the ts of each, in order.
@@ -102,7 +144,7 @@ fn a_post_seen_live_and_by_a_pass_is_filed_once() {
     d.hand_over(arrived(vec![post(3), post(3)]));
     assert!(matches!(d.poll(t0), Action::File(f) if f.record.ts == ts(&at(3))));
     d.hand_over(arrived(vec![post(3)]));
-    assert!(matches!(d.poll(t0 + Duration::from_secs(9)), Action::Idle(None)), "in flight, none issued");
+    assert!(!matches!(d.poll(t0 + Duration::from_secs(9)), Action::File(_)), "in flight, none issued");
     d.filed(t0, Verdict::Filed);
     d.hand_over(arrived(vec![post(3)]));
     assert!(drain(&mut d, t0 + Duration::from_secs(9)).is_empty(), "filed, not queued again");
@@ -112,6 +154,20 @@ fn a_post_seen_live_and_by_a_pass_is_filed_once() {
     // The same ts in two channels is two posts: a ts is unique within a channel only.
     d.hand_over(arrived(vec![post(50), rec("C0BBBB", Origin::Member, &at(50), &at(50))]));
     assert_eq!(drain(&mut d, t0 + Duration::from_secs(40)), [at(50), at(50)]);
+
+    // A live event, then the pass's result holding it and one more: each is filed once, the live one as it was; a refusal
+    // is not retried by a second entry (the pass is owed instead).
+    let (mut d, now) = in_pass(t0);
+    d.hand_over(arrived(vec![post(3)]));
+    d.passed(now, passed(Outcome::Complete, 10, &[3, 4]));
+    assert_eq!(run(&mut d, now, &[3]).0, [at(3), at(4)]);
+    // The pass's filing in flight, then its live event, which is not queued behind it.
+    let (mut d, now) = in_pass(t0);
+    d.passed(now, passed(Outcome::Complete, 10, &[3]));
+    assert!(matches!(d.poll(now), Action::File(f) if !f.live));
+    d.hand_over(arrived(vec![post(3)]));
+    d.filed(now, Verdict::Refused);
+    assert!(run(&mut d, now + Duration::from_secs(1), &[]).0.is_empty());
 }
 
 #[test]
@@ -135,7 +191,7 @@ fn live_mail_is_filed_once_and_a_refusal_owes_a_pass() {
     d.filed(now, Verdict::Refused);
     assert!(d.owed(CH) && !d.owed("C0BBBB"));
     // The post was queued once, so its refusal leaves nothing to try again until a pass finds it.
-    assert!(matches!(d.poll(now + Duration::from_secs(1)), Action::Idle(None)));
+    assert!(!matches!(d.poll(now + Duration::from_secs(1)), Action::File(_)));
     d.hand_over(arrived(vec![post(40)]));
     assert_eq!(drain(&mut d, now + Duration::from_secs(5)), [at(40)]);
 }
@@ -151,8 +207,8 @@ fn an_omitted_live_record_owes_a_pass_and_is_not_filed() {
     d.hand_over(arrived(vec![cut_bot]));
     assert!(!d.owed(CH), "an omitted post that is not mail owes nothing");
     d.hand_over(arrived(vec![cut]));
-    assert!(drain(&mut d, t0).is_empty());
     assert!(d.owed(CH));
+    assert!(drain(&mut d, t0).is_empty());
     // One already settled (at or below the boundary) owes nothing: a pass would find it filed or passed.
     let mut d = fresh_from(t0, Some(10));
     d.start(&[]);
@@ -206,10 +262,10 @@ fn filings_are_at_least_file_gap_apart_from_a_return() {
     assert!(matches!(d.poll(back + FILE_GAP - Duration::from_millis(1)), Action::Idle(Some(_))));
     assert!(matches!(d.poll(back + FILE_GAP), Action::File(f) if f.record.ts == ts(&at(2))));
     // A refusal paces the next filing the same way, and nothing is issued while one is in flight.
-    assert!(matches!(d.poll(back + FILE_GAP * 9), Action::Idle(None)));
+    assert!(!matches!(d.poll(back + FILE_GAP * 9), Action::File(_)));
     let back = back + FILE_GAP * 10;
     d.filed(back, Verdict::Refused);
-    assert!(matches!(d.poll(back + FILE_GAP - Duration::from_millis(1)), Action::Idle(Some(_))));
+    assert!(!matches!(d.poll(back + FILE_GAP - Duration::from_millis(1)), Action::File(_)));
     assert!(matches!(d.poll(back + FILE_GAP), Action::File(f) if f.record.ts == ts(&at(3))));
 }
 
@@ -242,4 +298,162 @@ fn the_queue_and_a_channels_filed_set_are_bounded_and_a_dropped_post_owes_a_pass
     d.hand_over(arrived(vec![post(MAX_FILED as u64 + 10)]));
     assert!(d.owed(CH) && drain(&mut d, t0).is_empty());
     assert!(d.start(&[filed(MAX_FILED as u64 + 1)]), "one more takes the set past its bound");
+}
+
+#[test]
+fn a_pass_is_owed_after_every_newer_gap_a_held_or_dropped_filing_and_by_the_sweep() {
+    let t0 = Instant::now();
+    // The sweep, with nothing filed and no gap: a pass 6 h after the start, not before.
+    let mut d = started(t0);
+    let sweep = Timing::PRODUCT.sweep;
+    assert!(matches!(d.poll(t0), Action::Idle(Some(at)) if at == t0 + sweep));
+    assert!(!is_pass(d.poll(t0 + sweep - Duration::from_millis(1))));
+    assert!(is_pass(d.poll(t0 + sweep)));
+
+    // The first hello owes each channel its start's pass, one at a time, `read_pace` apart; once a pass has completed it is
+    // not owed again for the same gap, but is for the next.
+    let pace = Timing::PRODUCT.read_pace;
+    let (mut d, mut now) = in_pass(t0);
+    for n in 0..2 {
+        d.passed(now, passed(Outcome::Complete, 10, &[]));
+        assert!(matches!(d.poll(now), Action::Commit { .. }));
+        if n == 0 {
+            assert!(!is_pass(d.poll(now + pace - Duration::from_millis(1))));
+            now += pace;
+            assert!(is_pass(d.poll(now)), "the other channel's");
+        }
+    }
+    d.hand_over(hello());
+    assert!(!is_pass(d.poll(now + Duration::from_secs(60))), "the same gap again");
+    d.hand_over(Arrived { records: Vec::new(), gap: 2 });
+    assert!(!is_pass(d.poll(now + pace - Duration::from_millis(1))));
+    assert!(is_pass(d.poll(now + pace)));
+
+    // The pass is handed the greatest `ts` taken for its channel, of any origin and in any order.
+    let mut d = started(t0);
+    d.hand_over(Arrived { records: vec![post(7), rec(CH, Origin::Bot, &at(9), &at(9)), post(5)], gap: 1 });
+    let (_, action, _) = run(&mut d, t0, &[]);
+    assert!(matches!(action, Action::Pass { order, .. } if order.seen == Some(ts(&at(9)))));
+
+    // A refused filing, a dropped post and an omitted one each owe a pass.
+    let mut d = started(t0);
+    d.hand_over(arrived(vec![post(1)]));
+    assert!(is_pass(run(&mut d, t0, &[1]).1));
+    let mut d = started(t0);
+    d.hand_over(arrived((0..MAX_QUEUED as u64 + 1).map(|n| post(1 + n)).collect()));
+    let (files, action, _) = run(&mut d, t0, &[]);
+    assert!(files.len() == MAX_QUEUED && is_pass(action));
+    let mut d = started(t0);
+    let mut cut = post(1);
+    cut.omitted = true;
+    d.hand_over(arrived(vec![cut]));
+    assert!(is_pass(d.poll(t0)));
+}
+
+/// What the commit does after a pass that found `mail`, with `refuse` refused, at `horizon`: the boundary it commits
+/// (None: none) and the delivery, which asks for its next pass at the time it returns.
+fn committed(outcome: Outcome, horizon: u64, mail: &[u64], refuse: &[u64]) -> (Option<Ts>, Delivery, Instant) {
+    let t0 = Instant::now();
+    let (mut d, now) = in_pass(t0);
+    d.passed(now, passed(outcome, horizon, mail));
+    let (_, action, now) = run(&mut d, now, refuse);
+    let boundary = if let Action::Commit { boundary, .. } = action { Some(boundary) } else { None };
+    (boundary, d, now)
+}
+
+#[test]
+fn the_commit_moves_the_boundary_to_h_or_to_the_last_filing_before_the_first_that_was_not() {
+    let all = Outcome::Complete;
+    // Every candidate filed: to the horizon.
+    assert_eq!(committed(all.clone(), 10, &[3, 4, 5], &[]).0, Some(ts(&at(10))));
+    // One refused in the middle: to the last filed before it, not to the horizon.
+    assert_eq!(committed(all.clone(), 10, &[3, 4, 5], &[4]).0, Some(ts(&at(3))));
+    // The oldest refused: the boundary stays, though everything after it was filed.
+    assert_eq!(committed(all.clone(), 10, &[3, 4, 5], &[3]).0, None);
+    // A candidate above the horizon is not judged by this commit.
+    assert_eq!(committed(all, 10, &[3, 12], &[12]).0, Some(ts(&at(10))));
+    // A truncated pass handed over only its oldest: no further than its last candidate, when that lies below the horizon.
+    let (boundary, mut d, now) = committed(Outcome::Truncated, 10, &[3, 4, 5], &[]);
+    assert_eq!(boundary, Some(ts(&at(5))));
+    // And another pass of the channel is owed at once, no sooner than `read_pace` after this one.
+    assert!(matches!(d.poll(now + Timing::PRODUCT.read_pace), Action::Pass { order, .. } if order.state.channel() == CH));
+    // Above the horizon, the horizon is the limit.
+    assert_eq!(committed(Outcome::Truncated, 10, &[3, 12], &[]).0, Some(ts(&at(10))));
+}
+
+#[test]
+fn a_commit_never_reaches_a_post_still_pending() {
+    // A live post of the channel is in flight and another queued, neither among the pass's candidates; the commit waits
+    // until both have returned, or the recheck at issue would drop what the boundary passed.
+    let t0 = Instant::now();
+    let mut d = started(t0);
+    d.hand_over(arrived(vec![post(5), post(6)]));
+    d.hand_over(hello());
+    assert!(matches!(d.poll(t0), Action::File(_)));
+    assert!(is_pass(d.poll(t0)));
+    d.passed(t0, passed(Outcome::Complete, 10, &[]));
+    assert!(!matches!(d.poll(t0), Action::Commit { .. }), "one in flight");
+    d.filed(t0, Verdict::Filed);
+    assert!(!matches!(d.poll(t0), Action::Commit { .. }), "one queued");
+    assert!(matches!(d.poll(t0 + FILE_GAP), Action::File(_)));
+    d.filed(t0 + FILE_GAP, Verdict::Filed);
+    assert!(matches!(d.poll(t0 + FILE_GAP), Action::Commit { boundary, .. } if boundary == ts(&at(10))));
+}
+
+#[test]
+fn a_full_filed_set_is_drained_by_its_owed_pass() {
+    let t0 = Instant::now();
+    let mut d = fresh(t0);
+    d.start(&(0..MAX_FILED as u64).map(|n| filed(1 + n)).collect::<Vec<_>>());
+    // A live post waits in Slack, and owes a pass; the pass's candidate is queued whatever the set holds.
+    let late = MAX_FILED as u64 + 10;
+    d.hand_over(arrived(vec![post(late)]));
+    let (files, action, now) = run(&mut d, t0, &[]);
+    assert!(files.is_empty() && is_pass(action));
+    d.passed(now, passed(Outcome::Complete, late + 5, &[late]));
+    let (files, action, now) = run(&mut d, now, &[]);
+    assert_eq!(files, [at(late)]);
+    assert!(matches!(action, Action::Commit { boundary, .. } if boundary == ts(&at(late + 5))));
+    // The commit pruned the set: a live post is queued again.
+    d.hand_over(arrived(vec![post(late + 10)]));
+    assert_eq!(run(&mut d, now, &[]).0, [at(late + 10)]);
+}
+
+#[test]
+fn backoff_doubles_to_its_cap_and_a_complete_pass_resets_it() {
+    let t0 = Instant::now();
+    let (mut d, mut now) = in_pass(t0);
+    // Failed passes commit nothing, their candidates are filed all the same, and each waits twice the last, to the cap.
+    for (n, wait) in [30, 60, 120, 240, 480, 600, 600].into_iter().enumerate() {
+        let wait = Duration::from_secs(wait);
+        d.passed(now, Passed { outcome: Outcome::ReadFailed, ..passed(Outcome::Complete, 10, &[3 + n as u64]) });
+        let (files, action, later) = run(&mut d, now, &[]);
+        assert_eq!(files.len(), 1);
+        assert!(!matches!(action, Action::Commit { .. }));
+        assert!(!is_pass(d.poll(now + wait - Duration::from_millis(1))), "{wait:?}");
+        // The filing's time passed; the wait runs from the result.
+        assert!(later < now + wait);
+        now += wait;
+        assert!(is_pass(d.poll(now)), "{wait:?}");
+    }
+    // A complete pass resets it: the next failure waits the first backoff again.
+    d.passed(now, passed(Outcome::Complete, 10, &[]));
+    let _ = d.poll(now);
+    d.hand_over(Arrived { records: Vec::new(), gap: 2 });
+    now += Timing::PRODUCT.read_pace;
+    assert!(is_pass(d.poll(now)));
+    d.passed(now, passed(Outcome::TooLong, 10, &[]));
+    let wait = Timing::PRODUCT.backoff_first;
+    assert!(!is_pass(d.poll(now + wait - Duration::from_millis(1))));
+    assert!(is_pass(d.poll(now + wait)));
+
+    // A rate limit waits at least its `Retry-After`, a skipped pass (the recipient absent) the backoff, and neither reads.
+    let (mut d, now) = in_pass(t0);
+    d.passed(now, passed(Outcome::RateLimited { retry_after: Duration::from_secs(100) }, 10, &[]));
+    assert!(!is_pass(d.poll(now + Duration::from_secs(99))));
+    assert!(is_pass(d.poll(now + Duration::from_secs(100))));
+    let (mut d, now) = in_pass(t0);
+    d.pass_skipped(now);
+    assert!(!is_pass(d.poll(now + Duration::from_secs(29))));
+    assert!(is_pass(d.poll(now + Duration::from_secs(30))));
 }

@@ -3,7 +3,7 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel and its threads, and `delivery`, the filing queue and what to file next. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel and its threads, and `delivery`, the filing queue, the schedule of passes and the commit of the boundary. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and a `Delivery`'s filing queue (at most `MAX_QUEUED` records), the one filing in flight and each delivering channel's `State` (guarantee 27). `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
@@ -434,32 +434,59 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    answers costs about ten deadlines before `ReadFailed`, on every pass; each parent with a new reply costs a read at
    least, which `MAX_PASS_READS` bounds (`TooLong`); the first read of a pass is not paced against the pass before,
    which is the caller's.
-27. **A post is filed once, by one queue, one filing at a time, and nothing is filed before the start's read.**
-   `Delivery` is pure: `now` is passed in, and it reads no clock, calls no file and owns no thread or channel; the
-   daemon's owner asks `poll(now)`, runs what it answers and gives the result back (`filed(now, verdict)`).
-   `Delivery::new` takes each delivering channel's `State` and floor; `start(filings)` takes the filings the start's
-   read of the inboxes found (merged into each set, `State::merge`), and until it is called `poll` answers `Idle`, so
-   nothing is filed first. `hand_over(Arrived)` takes each new record: a channel that is not delivering is ignored,
-   and so is anything `mail::is_mail` refuses against that channel's floor. A mail record enters the one queue,
-   keyed by channel and `ts`, only when it is not settled (`State::contains`: at or below the boundary, or held in the
-   set), not queued and not in flight, so a post taken twice, in either order or out of `ts` order, is queued once.
-   The queue is first in, first out and holds at most `MAX_QUEUED` (512) records of all channels; a record is also
-   not queued while its channel's set holds `MAX_FILED` filings. A record that is not queued for either reason, and a
-   live record with `omitted` set (its content was not read: its copy from history is the one to file; owes nothing if
-   it is already settled), is not filed and owes its channel a pass (`owed(channel)`). `poll` answers `File` for the oldest queued record that is
-   still not settled (the check runs again as it is issued, so a filing the start's read settled after it entered is
-   dropped unissued), only while none is in flight and `FILE_GAP` (200 ms) has passed since the
-   last filing returned, whatever its verdict; otherwise `Idle`, with the instant to ask again when the gap is what
-   waits. A `ts` joins the set only when its filing returns `Verdict::Filed`; `Refused` (any reason it was not appended:
-   no row, an ambiguous one, a moved handle, a topology that names another computer) owes the channel a pass, leaves the
-   rest of the queue and does not retry the post (it is out of the queue, so only a pass or another event finds it).
-   `filed` and `start` return true when a set went past `MAX_FILED`, so the caller logs it. Limits: the filing half
-   only, so a pass is owed but nothing schedules or runs one (the pass half, which also queues a pass's candidates
-   whatever the set's bound and commits the boundary, is unbuilt); `owed` is read-only state with no wake; an absent
-   recipient refuses each queued filing in turn, one per `FILE_GAP`, up to 512 records in about 100 s, each owing the same
-   pass, and since the one queue is first in, first out, every other channel's filings wait behind that backlog for the
-   same time; a record that is in the queue when the start's read settles it is dropped at issue and owes nothing; instants
-   are `std::time::Instant`, and a test supplies offsets from one start.
+27. **A post is filed once, by one queue, one filing at a time; a pass is owed on a schedule; and the boundary moves only as
+   far as filings returned.** `Delivery` is pure: `now` is passed in, and it reads no clock, calls no file and owns no
+   thread or channel; the daemon's owner asks `poll(now)`, runs what it answers and gives the result back (`filed`,
+   `passed`, `pass_skipped`). `Delivery::new(timing, now, channels)` takes each delivering channel's `State` and floor and
+   a `Timing` (`read_pace`, `sweep`, `backoff_first`, `backoff_max`; `Timing::PRODUCT` is 1.5 s, 6 h, 30 s, 10 min, and a
+   test shortens them); `start(filings)` takes the filings the start's read of the inboxes found (merged into each set,
+   `State::merge`), and until it is called `poll` answers `Idle`, so nothing is filed or passed first. `hand_over(Arrived)`
+   takes each new record and the gap number (which only rises): a channel that is not delivering is ignored, the greatest
+   `ts` taken for a channel, of any origin and in any order, is kept for its pass (`Order.seen`), and anything
+   `mail::is_mail` refuses against the channel's floor goes no further. A mail record enters the one queue, keyed by
+   channel and `ts`, only when it is not settled (`State::contains`: at or below the boundary, or held in the set), not
+   queued and not in flight, so a post taken twice, live or from a pass, in either order or out of `ts` order, is queued
+   once. The queue is first in, first out and holds at most `MAX_QUEUED` (512) records of all channels; a live record is
+   also not queued while its channel's set holds `MAX_FILED` filings, whereas a pass's candidates are queued whatever the
+   set holds (their commit prunes it, so a full set is drained by its owed pass). A live record that is not queued for
+   either reason, and one with `omitted` set (its content was not read: its copy from history is the one to file; owes
+   nothing if it is already settled), is not filed and owes its channel a pass (`owed(channel)`). `poll` answers, in this
+   order: `Commit` when a returned pass has settled; `File` for the oldest queued record that is still not settled (the
+   check runs again as it is issued, so a filing the start's read settled after it entered is dropped unissued), only while
+   none is in flight and `FILE_GAP` (200 ms) has passed since the last filing returned, whatever its verdict; `Pass` for
+   the channel whose pass is due, when none is running; otherwise `Idle`, with the instant to ask again. A pass is due
+   when a gap number above the one the channel's last completed pass began at has been seen (the first hello owes each
+   channel its start's pass, and one gap owes one pass), when a filing was refused, a live record dropped or omitted, or
+   a `Truncated` pass completed, or by the sweep, `Timing.sweep` after the channel's last completed pass whatever
+   happened, and never before the backoff has run or before `read_pace` after the last pass's result (the first read of a
+   pass is not paced against the pass before, which is this). A `Pass` carries the channel's `Order` and the pace; the
+   caller resolves the recipient first and reads the clock for the pass's upper bound, and an absent recipient is
+   `pass_skipped`, which reads nothing and owes the pass again on the backoff. A `ts` joins the set only when its
+   filing returns `Verdict::Filed`; `Refused` (any reason it was not appended: no row, an ambiguous one, a moved handle, a
+   topology that names another computer) owes the channel a pass, leaves the rest of the queue and does not retry the
+   post (it is out of the queue, so only a pass or another event finds it). `filed` and `start` return true when a set
+   went past `MAX_FILED`, so the caller logs it. **A pass's result** (`passed`): its mail joins the queue whatever the
+   outcome. A `Complete` or `Truncated` one is completed (the channel's gap number and sweep clock move, and the backoff
+   resets once its commit is clean); any other outcome (`ReadFailed`, `RateLimited`, `TooLong`, `Stopped`) commits nothing
+   and owes the channel another pass after the backoff, which starts at `backoff_first`, doubles with each failure
+   (a failed pass, a skipped one, a pass whose commit left a candidate unfiled) to `backoff_max`, and is at least a
+   `RateLimited` pass's `Retry-After`. **The commit** is one rule, made once every filing of the pass's candidates, and of
+   every other queued or in-flight record of the channel at or below the limit, has returned (a candidate already filed
+   counts as filed; one queued or in flight counts only when its filing returns `Filed`, and the boundary never reaches
+   a `ts` still pending, which the recheck at issue would drop): the limit is the pass's `horizon`, or for a `Truncated`
+   pass the lesser of `horizon` and its last candidate, since it handed over only its oldest; then, among the
+   candidates at or below the limit, all filed moves the boundary to the limit, the oldest not filed leaves it where it was,
+   and otherwise it moves to the last one filed before the first that was not. A candidate above the limit is not judged.
+   The commit is `Action::Commit { channel, boundary }`: `State::commit` has moved the in-memory boundary, which drops
+   the set's filings at or below it, and the owner writes the boundary durably (`state::write`); nothing comes back, since
+   a stale file only costs reads. A `Truncated` pass owes the channel another at once. Limits: an absent recipient
+   refuses each queued filing in turn, one per `FILE_GAP`, up to 512 records in about 100 s, each owing the same pass,
+   and since the one queue is first in, first out, every other channel's filings wait behind that backlog for the same
+   time (a pass's 200 candidates take about 40 s); a record that is in the queue when the start's read settles it is
+   dropped at issue and owes nothing; a live record of the channel at or below the horizon that was never in the pass's
+   mail (Slack not yet showing it to the pass: measured not to happen) is filed once the commit has waited for it, and
+   if its filing is refused the boundary has passed it and only a person finds it; `owed` is read-only state with no
+   wake; instants are `std::time::Instant`, and a test supplies offsets from one start.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -470,7 +497,7 @@ never holds another form.
 `MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
 `Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Identity`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
-`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `traverse.rs`: `Order`, `Passed`, `Outcome`, `pass`, `MARGIN`, `MAX_PASS_READS`, `MAX_PASS_MAIL`. `delivery.rs`: `Delivery`, `Action`, `Filing`, `Verdict`, `FILE_GAP`, `MAX_QUEUED`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack,
+`http.rs` also holds `Http::websocket`, the one way to a websocket. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `traverse.rs`: `Order`, `Passed`, `Outcome`, `pass`, `MARGIN`, `MAX_PASS_READS`, `MAX_PASS_MAIL`. `delivery.rs`: `Delivery`, `Action`, `Filing`, `Verdict`, `Timing`, `FILE_GAP`, `MAX_QUEUED`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `Folder`, `resolve`, `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack,
 its websocket peer (`ws.rs`) and a channel that answers history as measured (`history.rs`, which states what it infers).
 
 ## Calls in
@@ -479,7 +506,7 @@ webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the librar
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 
 ## Does not
-Open a socket except through `Http::websocket`, call a file method outside `config.rs` and `state.rs`, hold a credential at rest, read a token from the environment, file mail, commit a boundary, or resolve a row (it maps folders to channels from supplied facts). Define the
+Open a socket except through `Http::websocket`, call a file method outside `config.rs` and `state.rs`, hold a credential at rest, read a token from the environment, file mail, write a boundary (`delivery` decides each commit and the caller writes it), or resolve a row (it maps folders to channels from supplied facts). Define the
 record's representation (wire's). Offer another way to the network, a retry helper or a generic outbound HTTP type.
 
 ## Dependencies (the web stack)
@@ -547,7 +574,7 @@ Paths are under `rust/chat/src/`.
 | 23 | watching (M5) | `watch_tests.rs`: `watch_snapshot_overlap_and_lag_resynchronize` (live edit, delete and add during a snapshot; a new message never replaces; the overlay at its bound and one past it), `a_gap_makes_every_watch_incomplete_until_a_later_snapshot_and_clears_only_then` (a gap pending, a second gap during a resync, a refused clear, the value given), `a_gap_with_nothing_watched_clears_and_a_watch_begun_after_it_needs_no_resync`, `events_nobody_keeps_and_answers_nobody_wants` (an unwatched channel, replies, an unwatch and a re-watch during a snapshot, a failed snapshot, an old page's edit and an unheld delete), `syncing_a_gap_already_known_keeps_a_complete_watch`, `a_snapshot_replaces_what_is_held_and_a_queued_event_never_wins_over_it`, `a_burst_after_the_events_were_taken_refuses_the_snapshot`, `a_gap_read_before_a_newer_one_was_seen_cannot_roll_the_model_back`, `no_interleaving_of_a_snapshot_a_pump_and_the_source_ends_complete_over_a_lost_event` (all 4,200 orders of a snapshot task (begin, fetch, read the gap, answer), a pump task (two pumps, a reconcile, then one more pump when `wait` says look) and the source, two starts, delivered or lost third edit, so 16,800 runs, each through a `Service` over a socket with no task, so the product's own take and wake run: a complete channel is never stale, a gap is never cleared over a stale model), `begin_applies_the_events_it_is_given_to_every_channel_whether_or_not_it_begins`, `a_snapshot_keeps_only_this_channels_top_level_messages`, `timestamps_order_numerically_on_validated_values`, `the_watch_is_bounded_in_channels_ids_and_messages`; `socket_tests.rs`: `take_hands_over_every_pending_event_and_the_gap_and_frees_the_budget`, `wait_wakes_on_a_gap_and_on_an_event_and_takes_nothing` (the event arrives while the wait waits); `service_tests.rs`: `the_watch_clears_the_services_gap_and_a_stopped_service_clears_nothing`, `a_stop_makes_every_watch_owed_a_snapshot_and_a_stranger_clears_nothing`, `a_wait_woken_while_the_stop_is_under_way_answers_false`, `a_dropped_service_ends_its_watch`, `a_stop_under_way_already_ends_the_watch` (a cancelled stop leaves `Stopping`), `loaded_reads_its_own_services_gap_and_a_stop_ends_what_was_pending_and_the_claim`, `a_pump_loop_beside_a_latched_gap_sees_it`, `wait_wakes_for_a_gap_and_an_event_sees_what_is_queued_and_ends_with_the_stop`, `a_wait_in_flight_ends_at_the_stop`; `watch_tests.rs` also: `pump_and_begin_apply_the_services_events_in_the_call_that_takes_them`, `a_service_has_one_watches_and_no_other_reads_its_events` (a stranger's take, answer and wait), `many_threads_asking_at_once_get_one_watches` (8 threads, 3,000 rounds) |
 | 24 | mail body, reader, origin | `mail_tests.rs`: `hostile_chat_is_one_marked_mail_record`, `a_mail_body_is_bounded_and_says_it_was_cut`, `an_omitted_record_is_its_header_and_a_cut_ts_line`, `filed_of_reads_only_what_body_writes`, `origin_filter_delivers_people_without_row_loops` |
 | 25 | boundary file, filed set | `state_tests.rs`: `the_boundary_is_the_later_of_the_file_and_the_floor_and_a_commit_never_lowers_it`, `an_unreadable_state_file_stops_its_channel` (not a `Ts`, no line end, a second line, over 4 KiB, not UTF-8, a directory, on Unix a FIFO), `a_missing_file_is_the_floor` (no filing moves it; the encoded line end), `the_merge_takes_only_this_channels_filings_above_the_boundary`, `a_set_over_the_bound_keeps_every_filing_above_the_boundary_and_says_so`, `a_ts_at_or_below_the_boundary_is_settled_and_one_above_it_only_when_held`, `the_file_is_named_from_validated_ids_alone` |
-| 27 | one queue, filed once, paced, after the start's read | `delivery_tests.rs`: `a_post_seen_live_and_by_a_pass_is_filed_once` (the live halves: taken twice, in flight, after it was filed, out of `ts` order; a pass's result is the pass half's; the same `ts` in two channels is two posts), `live_mail_is_filed_once_and_a_refusal_owes_a_pass` (what is not mail, a refusal, a queued post tried once), `an_omitted_live_record_owes_a_pass_and_is_not_filed`, `filings_are_at_least_file_gap_apart_from_a_return` (the gap from the return, not the start; none while one is in flight), `nothing_is_filed_or_passed_before_the_starts_read_is_in` (a queued post the read found filed is dropped at issue), `a_post_at_or_below_the_boundary_is_never_queued_and_owes_nothing`, `a_returns_report_is_true_once_when_it_takes_the_set_past_its_bound`, `the_queue_and_a_channels_filed_set_are_bounded_and_a_dropped_post_owes_a_pass` |
+| 27 | one queue, filed once, paced, after the start's read; passes owed, the backoff, the commit | `delivery_tests.rs`: `a_post_seen_live_and_by_a_pass_is_filed_once` (taken twice, in flight, out of `ts` order, the same `ts` in two channels, a live event then the pass's result and the reverse, each with a refusal that must not be retried), `live_mail_is_filed_once_and_a_refusal_owes_a_pass`, `an_omitted_live_record_owes_a_pass_and_is_not_filed`, `filings_are_at_least_file_gap_apart_from_a_return`, `nothing_is_filed_or_passed_before_the_starts_read_is_in`, `the_queue_and_a_channels_filed_set_are_bounded_and_a_dropped_post_owes_a_pass`, `a_post_at_or_below_the_boundary_is_never_queued_and_owes_nothing`, `a_returns_report_is_true_once_when_it_takes_the_set_past_its_bound`, `a_pass_is_owed_after_every_newer_gap_a_held_or_dropped_filing_and_by_the_sweep` (the sweep with nothing filed, one pass for one gap, `read_pace`, `Order.seen`), `the_commit_moves_the_boundary_to_h_or_to_the_last_filing_before_the_first_that_was_not` (the four cases, the `Truncated` limit and its owed pass), `a_commit_never_reaches_a_post_still_pending`, `a_full_filed_set_is_drained_by_its_owed_pass`, `backoff_doubles_to_its_cap_and_a_complete_pass_resets_it` (also a rate limit and a skipped pass) |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.
@@ -559,7 +586,7 @@ Paths are under `rust/chat/src/`.
 - `src/watch.rs`: the watch model; `src/watch_tests.rs`: its tests.
 - `src/mail.rs`: the mail body, its reader and what is mail; `src/mail_tests.rs`: its tests.
 - `src/state.rs`: a delivering channel's boundary file and filed set; `src/state_tests.rs`: its tests.
-- `src/delivery.rs`: the filing queue and what to file next; `src/delivery_tests.rs`: its tests.
+- `src/delivery.rs`: the filing queue, the passes' schedule and the commit; `src/delivery_tests.rs`: its tests.
 - `src/fake_slack/`: the fake (tests and the `test-support` feature), its websocket peer and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
