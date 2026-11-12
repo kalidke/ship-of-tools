@@ -1989,3 +1989,11 @@ A landing's record goes here, with its measured times; the package page holds on
   collects outcomes was untested, so dropping the loop left every SVG figure pending forever and passed; the routing
   moved into the figure store, where its mutants go red; the frame's one call to it still needs a real window to pin);
   one fix commit and two gates.
+- An `.svg` file previewed as its picture, the SVG child's eighth landing (6, in three parts), 2026-11-12: builder
+  launched about 23:25 the day before; the fit ask and the one drain on main 00:04 (9544bf2c6, 5c2da1bac), the preview
+  00:39 (9c6e30c89, 99d00ee09, be83b267c); 74 minutes, a miss. About 280 product lines (the plan said 110) and 450 test
+  lines. Where the minutes went: the change passed the stop at 258 code lines and was split in three; one hosted probe
+  on macOS and Windows; review round 1 (no blockers: a text-size change showed the file's text until the redraw and
+  asked a stale layout's size; a file not UTF-8 showed the previous file's text; the cache kept up to 1 GiB of file
+  bytes, now a digest); round 2 (no blockers: the not-UTF-8 line missed the markdown route); two fix commits and five
+  gates, one widened to the whole run by a lock change.

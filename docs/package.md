@@ -214,8 +214,11 @@ so is the window's runner for it (it starts the child with the font settings alo
 input, checks every reply's size against its ask before reading it, and kills and reaps it at the 10 s wall), and so
 is the one worker thread that will run every SVG draw (one at a time, each job tagged with the shown source's
 generation, a stale draw stopped at once, waiting input bounded per generation, two strikes per generation); a
-markdown figure's SVG is drawn through them (its URL pending until the outcome), while an `.svg` file's own preview
-and the math are not yet. Also in progress, built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+markdown figure's SVG is drawn through them (its URL pending until the outcome), and so is an `.svg` file's own
+preview, which shows the file as its picture fitted to the pane (the picture held through a text-size change, a refused
+file shown as its text with the reason on the status line); the math is not yet. Before a person sees these in a
+release, a crash on a lab Windows computer must be seen to show no dialog and leave no dump. Also in progress, built
+alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the
