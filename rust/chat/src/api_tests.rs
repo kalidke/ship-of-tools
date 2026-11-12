@@ -836,6 +836,7 @@ async fn fill_names_resolves_mentions_within_the_deadline_and_the_cache() {
             match seen.path().as_str() {
                 "/api/users.info" if user == "U0BAD" => Reply::json(&json!({"ok": false, "error": "user_not_found"})),
                 "/api/users.info" => Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}})),
+                "/api/conversations.info" => Reply::json(&json!({"ok": true, "channel": {"name": "chan", "is_private": false}})),
                 "/api/conversations.history" => Reply::json(&page(
                     vec![
                         json!({"ts": "1700000100.000001", "user": "U0AUTH", "text": "hi <@U0AAA> and <@U0BAD> and <@U0AAA|label>, <@W0WWW>, <@U0AUTH>"}),
@@ -862,8 +863,10 @@ async fn fill_names_resolves_mentions_within_the_deadline_and_the_cache() {
         assert_eq!(named(&records[1])[15], "U0M15");
         let asked = |id: &str| fake.seen().iter().any(|s| s.param("user").as_deref() == Some(id));
         assert!(asked("U0M15") && !asked("U0M16"), "a lookup past the sixteenth of a record");
-        // Only a person's token is looked up: not a bot, a channel or an open token.
-        assert!(records[2].names.is_empty() && !asked("B0NOPE") && !asked("U0OPEN"));
+        // `users.info` is asked only for a person's token: not a bot, a channel or an open token. A label-less channel token
+        // is asked for with `conversations.info` (`a_channel_mention_without_a_label_is_looked_up_once`).
+        assert!(!asked("B0NOPE") && !asked("U0OPEN") && !asked("C0CHAN"));
+        assert_eq!((named(&records[2]), calls(&fake, "conversations.info")), (vec!["C0CHAN"], 1));
 
         // The second page asks again only for what failed; the cache answers the rest, and a record cached names alone
         // takes them with no request.
@@ -959,6 +962,64 @@ async fn fill_names_keeps_what_it_found_when_the_cache_cannot() {
     .await;
 }
 
+/// A fill ends its channel lookups at the first answer no other channel escapes (a missing scope or a rate limit), so a
+/// scope Slack has not granted costs one request a fill and a wait is never earned by channel names; a channel Slack
+/// does not know is only its own failure, and the rest are still asked.
+#[tokio::test]
+async fn a_fill_stops_its_channel_lookups_at_a_scope_error_or_a_rate_limit() {
+    bounded(async {
+        // The answer to `conversations.info`, by case, and the requests a fill makes with it: all the channels the record's sixteen names leave room for, fifteen after its one person.
+        for (case, asked) in [("missing_scope", 1), ("ratelimited", 1), ("channel_not_found", 15)] {
+            let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+                if seen.path() == "/api/conversations.info" {
+                    let body = json!({"ok": false, "error": case});
+                    return if case == "ratelimited" { status(429, &[("Retry-After", "30")], &body) } else { Reply::json(&body) };
+                }
+                let user = seen.param("user").unwrap_or_default();
+                Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
+            })
+            .await;
+            let api = new_api(&fake);
+            let mut records = vec![member_record("U0AUTH")];
+            records[0].text = format!("<@U0ONE> {}", (0..16).map(|i| format!("<#C0K{i:02}>")).collect::<String>());
+            api.fill_names(&mut records).await;
+            assert_eq!(calls(&fake, "conversations.info"), asked, "{case}");
+            // The people and the author were looked up first, and keep their names.
+            assert_eq!((records[0].author.name.as_str(), named(&records[0])), ("Name-U0AUTH", vec!["U0ONE"]));
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+/// A record's sixteen names go to its people before its channels, whatever the text's order.
+#[tokio::test]
+async fn people_come_before_channels_under_the_cap_of_names() {
+    use sot_protocol::chat::MAX_MENTIONS;
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            let (user, channel) = (seen.param("user").unwrap_or_default(), seen.param("channel").unwrap_or_default());
+            match seen.path().as_str() {
+                "/api/conversations.info" => Reply::json(&json!({"ok": true, "channel": {"name": format!("n-{channel}"), "is_private": false}})),
+                _ => Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}})),
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let mut records = vec![member_record("U0AUTH")];
+        records[0].text = format!("<#C0FIRST> {} <#C0LAST>", mentions(MAX_MENTIONS));
+        api.fill_names(&mut records).await;
+        assert!(named(&records[0]).iter().all(|id| id.starts_with("U0M")) && records[0].names.len() == MAX_MENTIONS);
+        assert_eq!(calls(&fake, "conversations.info"), 0, "a channel past the sixteen was asked for");
+        records[0].text = format!("<#C0FIRST> {} <#C0LAST>", mentions(MAX_MENTIONS - 1));
+        api.fill_names(&mut records).await;
+        assert_eq!(named(&records[0]).last(), Some(&"C0FIRST"), "{:?}", named(&records[0]));
+        assert_eq!(records[0].names.len(), MAX_MENTIONS);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 /// A label-less `<#C…>` or `<#G…>` token is looked up once with `conversations.info`, through the cache and within the
 /// names' deadline, after the authors and the people; a labeled one, a direct-message id and a failure are not, and a
 /// record's names stay within `MAX_MENTIONS` whatever their kind.
@@ -975,8 +1036,13 @@ async fn a_channel_mention_without_a_label_is_looked_up_once() {
             match seen.path().as_str() {
                 "/api/users.info" => Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}})),
                 "/api/conversations.info" if channel == "C0BAD" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
-                "/api/conversations.info" if channel == "C0CTRL" => Reply::json(&json!({"ok": true, "channel": {"name": " la\u{7}b "}})),
-                "/api/conversations.info" => Reply::json(&json!({"ok": true, "channel": {"name": format!("name-{channel}")}})),
+                "/api/conversations.info" if channel == "C0CTRL" => Reply::json(&json!({"ok": true, "channel": {"name": " la\u{7}b ", "is_private": false}})),
+                // A name nothing is left of after cleaning is no name.
+                "/api/conversations.info" if channel == "C0EMPTY" => Reply::json(&json!({"ok": true, "channel": {"name": " \u{7} ", "is_private": false}})),
+                // A private channel's name is not added, nor one whose reply does not say it is public.
+                "/api/conversations.info" if channel == "C0PRIV" => Reply::json(&json!({"ok": true, "channel": {"name": "secret", "is_private": true}})),
+                "/api/conversations.info" if channel == "C0NOFLAG" => Reply::json(&json!({"ok": true, "channel": {"name": "unsure"}})),
+                "/api/conversations.info" => Reply::json(&json!({"ok": true, "channel": {"name": format!("name-{channel}"), "is_private": false}})),
                 _ => Reply::json(&json!({"ok": false, "error": "unexpected"})),
             }
         })
@@ -984,28 +1050,29 @@ async fn a_channel_mention_without_a_label_is_looked_up_once() {
         let api = new_api(&fake);
         let asked = |param: &str, id: &str| fake.seen().iter().any(|s| s.param(param).as_deref() == Some(id));
         let mut records = vec![member_record("U0AUTH"), member_record("U0AUTH")];
-        records[0].text = "<#C0AAA> <#G0PRIV|> <#C0LAB|label> <#C0BAD> <#D0DM> <#C0CTRL> <#C0AAA> <@C0NOT> <#U0USER>".into();
+        records[0].text = "<#C0AAA> <#G0GRP|> <#C0LAB|label> <#C0BAD> <#D0DM> <#C0CTRL> <#C0AAA> <@C0NOT> <#U0USER> <#C0EMPTY> <#C0PRIV> <#C0NOFLAG>".into();
         // Ten people and ten channels: the first sixteen tokens in the text's order get an entry, and no lookup past them.
         records[1].text = format!("{} {}", mentions(10), (0..10).map(|i| format!("<#C0K{i:02}>")).collect::<String>());
         api.fill_names(&mut records).await;
-        assert_eq!(named(&records[0]), ["C0AAA", "G0PRIV", "C0CTRL"]);
+        assert_eq!(named(&records[0]), ["C0AAA", "G0GRP", "C0CTRL"]);
         assert_eq!(records[0].names[0].name, "name-C0AAA");
         assert_eq!(records[0].names[2].name, "lab", "a name is cleaned");
         assert!(!asked("channel", "C0LAB") && !asked("channel", "D0DM") && !asked("channel", "C0NOT") && !asked("channel", "U0USER"));
         assert_eq!(records[1].names.len(), MAX_MENTIONS);
         assert_eq!((named(&records[1])[9], named(&records[1])[15]), ("U0M09", "C0K05"));
         assert!(asked("channel", "C0K05") && !asked("channel", "C0K06"), "a lookup past the sixteenth of a record");
-        assert_eq!(calls(&fake, "conversations.info"), 4 + 6, "a channel was asked for twice or not at all");
+        assert_eq!(calls(&fake, "conversations.info"), 7 + 6, "a channel was asked for twice or not at all");
+        assert!(asked("channel", "C0PRIV") && asked("channel", "C0EMPTY"), "a channel that gives no name was not asked for");
         // The second fill asks again only for what failed; a cache read asks for nothing.
         let before = calls(&fake, "conversations.info");
         api.fill_names(&mut records).await;
-        assert_eq!(calls(&fake, "conversations.info"), before + 1, "a cached channel was asked for again");
+        assert_eq!(calls(&fake, "conversations.info"), before + 4, "a cached channel was asked for again, or a failed one not");
         let mut cold = vec![member_record("U0AUTH")];
         cold[0].text = records[0].text.clone();
         let (before, users) = (calls(&fake, "conversations.info"), calls(&fake, "users.info"));
         api.cached_names(&mut cold);
         assert_eq!((calls(&fake, "conversations.info"), calls(&fake, "users.info")), (before, users));
-        assert_eq!(named(&cold[0]), ["C0AAA", "G0PRIV", "C0CTRL"]);
+        assert_eq!(named(&cold[0]), ["C0AAA", "G0GRP", "C0CTRL"]);
         fake.shutdown().await;
 
         // A channel lookup that hangs costs the deadline, after the author and the people have their names.

@@ -643,18 +643,17 @@ impl Api {
     /// A member's display name: `display_name`, then `real_name`, then `name`, from the cache or `users.info`. Any
     /// failure gives the id, and a failure is not remembered.
     pub async fn author_name(&self, user: &str) -> String {
-        self.name_of(user).await.unwrap_or_else(|| user.to_string())
+        self.name_of(user).await.unwrap_or_else(|_| user.to_string())
     }
 
-    /// The name from the cache or `users.info` (`conversations.info` for a channel's id), remembered on a success; `None`
-    /// on any failure.
-    async fn name_of(&self, user: &str) -> Option<String> {
+    /// The name from the cache or `users.info` (`conversations.info` for a channel's id), remembered on a success.
+    async fn name_of(&self, user: &str) -> Result<String, ApiError> {
         if let Some(name) = self.names.lock().unwrap().by_id.get(user) {
-            return Some(name.clone());
+            return Ok(name.clone());
         }
-        let name = self.lookup(user).await.ok()?;
+        let name = self.lookup(user).await?;
         self.remember(user, &name);
-        Some(name)
+        Ok(name)
     }
 
     /// Give each member record without a name its display name, and each record the names of the people and the
@@ -662,7 +661,8 @@ impl Api {
     /// people, then channels, so a deadline that runs out costs the least wanted names (a header without a name shows an
     /// id; a channel mention shows its id as it did). The records are filled from what these lookups found, held here and
     /// not read back from the cache, whose 1,024 entries a large fill can push its own first names out of. What could
-    /// not be looked up shows the id for an author and adds no entry for a mention.
+    /// not be looked up shows the id for an author and adds no entry for a mention. The channels come last, so the
+    /// first answer no other channel escapes (`gives_up`) ends the fill's lookups.
     pub async fn fill_names(&self, records: &mut [ChatRecord]) {
         let mut ids: Vec<String> = Vec::new();
         let mentions: Vec<String> = records.iter().flat_map(|r| mentioned(&r.text)).collect();
@@ -672,12 +672,16 @@ impl Api {
             }
         }
         // Stable: channels (`C…`, `G…`) go last, the rest keep their order.
-        ids.sort_by_key(|id| id.starts_with(['C', 'G']));
+        ids.sort_by_key(|id| is_channel_id(id));
         let found: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         let lookups = async {
             for id in &ids {
-                if let Some(name) = self.name_of(id).await {
-                    found.lock().unwrap().insert(id.clone(), name);
+                match self.name_of(id).await {
+                    Ok(name) => {
+                        found.lock().unwrap().insert(id.clone(), name);
+                    }
+                    Err(e) if is_channel_id(id) && gives_up(&e) => break,
+                    Err(_) => {}
                 }
             }
         };
@@ -699,15 +703,17 @@ impl Api {
     /// A channel's name from `conversations.info`, cleaned.
     async fn channel_name(&self, channel: &str) -> Result<String, ApiError> {
         let v = self.read("conversations.info", &[("channel", channel.into())], MAX_BODY).await?;
+        // Only a channel Slack says is not private: a reader may not be in a private one, and shows its label or id.
+        let public = v.pointer("/channel/is_private").and_then(Value::as_bool) == Some(false);
         let name = v.pointer("/channel/name").and_then(Value::as_str).map(|s| clean(s, MAX_NAME).0);
-        name.filter(|s| !s.is_empty()).ok_or(ApiError::Malformed)
+        name.filter(|s| public && !s.is_empty()).ok_or(ApiError::Malformed)
     }
 
     async fn lookup(&self, user: &str) -> Result<String, ApiError> {
         if !valid_id(user) {
             return Err(ApiError::BadRequest);
         }
-        if user.starts_with(['C', 'G']) {
+        if is_channel_id(user) {
             return self.channel_name(user).await;
         }
         let v = self
@@ -822,25 +828,45 @@ fn unnamed(r: &ChatRecord) -> bool {
     r.origin == Origin::Member && r.author.name.is_empty() && !r.author.id.is_empty()
 }
 
-/// The distinct ids of the `<@U…>` and `<@W…>` tokens in a text and of the `<#C…>` and `<#G…>` tokens with no label,
-/// together at most `MAX_MENTIONS`, in order. A token a byte cut left open has no id.
+/// Whether an id names a channel (`C…`, `G…`), as a person's begins `U` or `W`.
+fn is_channel_id(id: &str) -> bool {
+    id.starts_with(['C', 'G'])
+}
+
+/// An answer no other channel escapes: the scope or the token is missing or revoked, or Slack is limiting reads. The
+/// rest of a fill's channels would fail or earn a wait the same way.
+fn gives_up(e: &ApiError) -> bool {
+    const CODES: [&str; 6] =
+        ["missing_scope", "not_authed", "invalid_auth", "token_revoked", "account_inactive", "not_allowed_token_type"];
+    match e {
+        ApiError::Limited { .. } => true,
+        ApiError::Slack(code) => CODES.contains(&code.as_str()),
+        _ => false,
+    }
+}
+
+/// The distinct ids of the `<@U…>` and `<@W…>` tokens in a text, then of the `<#C…>` and `<#G…>` tokens with no label,
+/// together at most `MAX_MENTIONS`, each kind in the text's order: a full text gives up channels before people. A token
+/// a byte cut left open has no id.
 fn mentioned(text: &str) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
+    let (mut people, mut channels): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     for seg in text_segments(text) {
         let TextSegment::Markup(t) = seg else { continue };
         let Some(inner) = t.strip_prefix('<').and_then(|t| t.strip_suffix('>')) else { continue };
         let (head, label) = inner.split_once('|').unwrap_or((inner, ""));
         let id = head.get(1..).unwrap_or_default();
-        let wanted = match head.get(..1) {
-            Some("@") => id.starts_with(['U', 'W']),
-            Some("#") => label.is_empty() && id.starts_with(['C', 'G']),
-            _ => false,
+        let into = match head.get(..1) {
+            Some("@") if id.starts_with(['U', 'W']) => &mut people,
+            Some("#") if label.is_empty() && is_channel_id(id) => &mut channels,
+            _ => continue,
         };
-        if wanted && valid_id(id) && !ids.iter().any(|i| i == id) && ids.len() < MAX_MENTIONS {
-            ids.push(id.to_string());
+        if valid_id(id) && !into.iter().any(|i| i == id) && into.len() < MAX_MENTIONS {
+            into.push(id.to_string());
         }
     }
-    ids
+    people.extend(channels);
+    people.truncate(MAX_MENTIONS);
+    people
 }
 
 /// A history or replies answer's `messages` (at most `capacity`), `has_more` and `is_limited`; anything else is
