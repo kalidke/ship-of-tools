@@ -550,9 +550,10 @@ fn sample(lead: &str) -> String {
 
 #[test]
 fn a_sample_is_found_in_a_reference_with_either_line_ending() {
-    const DOC: &str = include_str!("../../../docs/src/ref/config.md");
+    // The checkout's own form is LF or CRLF; both forms are built from the text normalized first.
+    let lf = include_str!("../../../docs/src/ref/config.md").replace("\r\n", "\n");
     let lead = "A `chat.toml` of one mapping:";
-    assert_eq!(sample_in(&DOC.replace('\n', "\r\n"), lead), sample_in(DOC, lead));
+    assert_eq!(sample_in(&lf.replace('\n', "\r\n"), lead), sample_in(&lf, lead));
 }
 
 #[test]
