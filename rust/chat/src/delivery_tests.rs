@@ -34,14 +34,7 @@ fn rec(channel: &str, origin: Origin, at: &str, thread: &str) -> ChatRecord {
         author: ChatAuthor { id: "U0ADA".into(), name: "Ada".into() },
         origin,
         text: "text".into(),
-        truncated: false,
-        reply_count: 0,
-        files: Vec::new(),
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
+        ..ChatRecord::fixture()
     }
 }
 

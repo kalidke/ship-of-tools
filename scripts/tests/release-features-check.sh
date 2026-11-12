@@ -2,13 +2,15 @@
 # release-features-check.sh [--prove] [RUST_DIR]
 #
 # No shipped binary carries sot-chat's `test-support` feature: it builds the fake Slack and `Http::for_test`, and the
-# fake's committed server key lets anyone impersonate its Slack hosts to a client that trusts the fixture's CA. This
+# fake's committed server key lets anyone impersonate its Slack hosts to a client that trusts the fixture's CA. Nor does
+# one carry sot-protocol's `test-support` feature, which builds `ChatRecord::fixture`, test data in a shipped type. This
 # resolves `--workspace` over the normal and build edges (`cargo tree -e normal,build`: the edges `cargo build --release`
-# compiles, no dev-dependency's features) for the release targets, and fails when sot-chat's resolved features include
-# `test-support`. One resolution covers every release build: under resolver 2 a package's features in any subset of
-# the workspace are a subset of its features in the whole, and `--workspace` is itself the macOS and Windows selection.
-# The feature is also a compile error in a build without debug assertions (sot-chat's lib.rs), so any release-profile build
-# with it fails whatever the flag or manifest spelling; this check names the cause early, in the gate. A dev-dependency
+# compiles, no dev-dependency's features) for the release targets, and fails when the resolved features of sot-chat or
+# sot-protocol include `test-support`. One resolution covers every release build: under resolver 2 a package's
+# features in any subset of the workspace are a subset of its features in the whole, and `--workspace` is itself the
+# macOS and Windows selection.
+# sot-chat's feature is also a compile error in a build without debug assertions (its lib.rs), so any release-profile
+# build with it fails whatever the flag or manifest spelling; this check names the cause early, in the gate. A dev-dependency
 # enabling the feature does not show here; the same line under [dependencies] of any crate (also by target table, in
 # `default`, or another member) does.
 # --prove also builds sot-chat in the release profile with the feature, which must fail with that compile error.
@@ -29,13 +31,15 @@ check() {
   # shellcheck disable=SC2086
   out=$(cargo tree --manifest-path "$root/rust/Cargo.toml" --workspace -e normal,build "${targets[@]}" -f '{p} [{f}]' $flags 2>&1) \
     || { echo "release-features-check: cargo tree failed (a depot missing the release targets' packages needs cargo fetch --locked once): $out" >&2; return 2; }
-  grep -qE '^[^a-z]*sot-chat v' <<< "$out" || { echo "release-features-check: sot-chat is not in the resolved tree" >&2; return 2; }
-  if grep -qE '^[^a-z]*sot-chat v[^ ]* .*\[.*\btest-support\b' <<< "$out"; then
-    echo "release-features-check: feature test-support of sot-chat reaches the workspace release builds (sot, sotd, sot-capsule); enabled through:" >&2
-    # shellcheck disable=SC2086
-    cargo tree --manifest-path "$root/rust/Cargo.toml" --workspace -e normal,build "${targets[@]}" -i sot-chat $flags 2>&1 | head -20 >&2
-    return 1
-  fi
+  for crate in sot-chat sot-protocol; do
+    grep -qE "^[^a-z]*$crate v" <<< "$out" || { echo "release-features-check: $crate is not in the resolved tree" >&2; return 2; }
+    if grep -qE "^[^a-z]*$crate v[^ ]* .*\[.*\btest-support\b" <<< "$out"; then
+      echo "release-features-check: feature test-support of $crate reaches the workspace release builds (sot, sotd, sot-capsule); enabled through:" >&2
+      # shellcheck disable=SC2086
+      cargo tree --manifest-path "$root/rust/Cargo.toml" --workspace -e normal,build "${targets[@]}" -i $crate $flags 2>&1 | head -20 >&2
+      return 1
+    fi
+  done
 }
 
 if [ "$prove" = 1 ]; then
@@ -55,8 +59,12 @@ if [ "$prove" = 1 ]; then
   }
   CHAT='sot-chat = { path = "../chat", features = ["test-support"] }'
   RES='feature test-support of sot-chat reaches the workspace release builds'
+  PROTO='sot-protocol = { path = "../protocol", features = ["test-support"] }'
+  RESP='feature test-support of sot-protocol reaches the workspace release builds'
   fault dev-dependency-alone rust/backend/Cargo.toml '' ok
   fault feature-on-backend-normal-dependency rust/backend/Cargo.toml '0,/^sot-chat = { path = "..\/chat" }/s||'"$CHAT"'|' "$RES"
+  fault protocol-feature-on-backend-normal-dependency rust/backend/Cargo.toml '0,/^sot-protocol = { path = "..\/protocol" }/s||'"$PROTO"'|' "$RESP"
+  fault protocol-feature-in-default rust/protocol/Cargo.toml 's/^test-support = /default = ["test-support"]\ntest-support = /' "$RESP"
   fault feature-in-default rust/chat/Cargo.toml 's/^test-support = /default = ["test-support"]\ntest-support = /' "$RES"
   fault feature-on-frontend-normal-dependency rust/frontend/Cargo.toml '0,/^\[dependencies\]/s||[dependencies]\n'"$CHAT"'|' "$RES"
   fault feature-in-a-windows-target-table rust/backend/Cargo.toml "/^\[target.'cfg(windows)'.dependencies\]/a\\

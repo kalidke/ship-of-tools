@@ -446,23 +446,15 @@ fn inert() -> Service {
 }
 
 fn edit() -> crate::normalize::Normalized {
-    use sot_protocol::chat::{ChatAuthor, ChatRecord, Origin, Ts};
+    use sot_protocol::chat::{ChatAuthor, ChatRecord, Ts};
     crate::normalize::Normalized::Edited(ChatRecord {
         workspace: WS.into(),
         channel: "C0AAAA".into(),
         ts: Ts::parse("1.000000").unwrap(),
         thread_ts: Ts::parse("1.000000").unwrap(),
         author: ChatAuthor { id: "U0AAAA".into(), name: String::new() },
-        origin: Origin::Member,
         text: "x".into(),
-        truncated: false,
-        reply_count: 0,
-        files: Vec::new(),
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
+        ..ChatRecord::fixture()
     })
 }
 

@@ -74,6 +74,8 @@ name = "sotd"
 path = "src/main.rs"
 
 [dev-dependencies]
+# `ChatRecord::fixture` (dev-only; the release-features check keeps the feature out of shipped binaries).
+sot-protocol = { path = "../protocol", features = ["test-support"] }
 # Lane-client fixtures only; resolver 2 keeps this feature out of normal product builds.
 sot-topology = { path = "../topology", features = ["test-handshake-bound"] }
 # `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).

@@ -1,5 +1,5 @@
 use super::*;
-use sot_protocol::chat::{ChatAuthor, Origin};
+use sot_protocol::chat::ChatAuthor;
 use sot_protocol::ops::MAX_WATCHED;
 use std::sync::atomic::AtomicU32;
 
@@ -10,16 +10,8 @@ fn record(ts: &str, text: &str) -> ChatRecord {
         ts: Ts::parse(ts).unwrap(),
         thread_ts: Ts::parse(ts).unwrap(),
         author: ChatAuthor { id: "U0MEMBER".into(), name: String::new() },
-        origin: Origin::Member,
         text: text.into(),
-        truncated: false,
-        reply_count: 0,
-        files: Vec::new(),
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
+        ..ChatRecord::fixture()
     }
 }
 

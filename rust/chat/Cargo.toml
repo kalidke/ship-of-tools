@@ -27,5 +27,7 @@ tokio-rustls = { workspace = true, optional = true }
 test-support = ["dep:tokio-rustls"]
 
 [dev-dependencies]
+# `ChatRecord::fixture` (dev-only; the release-features check keeps the feature out of shipped binaries).
+sot-protocol = { path = "../protocol", features = ["test-support"] }
 tokio-rustls = { workspace = true }
 sot-platform = { path = "../platform", features = ["test-support"] }

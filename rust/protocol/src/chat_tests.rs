@@ -1,26 +1,7 @@
 use super::*;
 
 fn record() -> ChatRecord {
-    ChatRecord {
-        workspace: "W1".into(),
-        channel: "C1".into(),
-        ts: Ts::parse("1700000000.000100").unwrap(),
-        thread_ts: Ts::parse("1700000000.000100").unwrap(),
-        author: ChatAuthor {
-            id: "U1".into(),
-            name: "Ada".into(),
-        },
-        origin: Origin::Drawer,
-        text: "hi".into(),
-        truncated: false,
-        reply_count: 0,
-        files: vec![],
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
-    }
+    ChatRecord { workspace: "W1".into(), origin: Origin::Drawer, ..ChatRecord::fixture() }
 }
 
 #[test]

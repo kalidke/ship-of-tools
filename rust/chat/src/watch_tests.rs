@@ -28,16 +28,8 @@ fn rec_in(channel: &str, at: &str, thread: &str, text: &str) -> ChatRecord {
         ts: ts(at),
         thread_ts: ts(thread),
         author: ChatAuthor { id: "U0AAAA".into(), name: String::new() },
-        origin: Origin::Member,
         text: text.into(),
-        truncated: false,
-        reply_count: 0,
-        files: Vec::new(),
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
+        ..ChatRecord::fixture()
     }
 }
 

@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use super::*;
-use crate::chat::{ChatAuthor, Origin};
+use crate::chat::Origin;
 
 fn ts(s: &str) -> Ts {
     Ts::parse(s).unwrap()
@@ -17,23 +17,7 @@ fn target_json() -> Value {
 }
 
 fn record(text: &str) -> ChatRecord {
-    ChatRecord {
-        workspace: "T1".into(),
-        channel: "C1".into(),
-        ts: ts("1.000001"),
-        thread_ts: ts("1.000001"),
-        author: ChatAuthor { id: "U1".into(), name: "Ada".into() },
-        origin: Origin::Member,
-        text: text.into(),
-        truncated: false,
-        reply_count: 0,
-        files: vec![],
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
-    }
+    ChatRecord { ts: ts("1.000001"), thread_ts: ts("1.000001"), text: text.into(), ..ChatRecord::fixture() }
 }
 
 /// The value is exactly `shape`, the shape decodes back to the value, and a field added later (in the payload and in

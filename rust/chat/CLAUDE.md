@@ -51,7 +51,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    the normal and build edges for the release targets (one resolution covers `-p sot-frontend`, `-p sot-backend -p
    sot-capsule` and the macOS and Windows `--workspace` builds, since resolver 2 gives a package in a subset of the
    workspace a subset of its features) and fails, naming the feature and the crates that enable it, when sot-chat's
-   `test-support` is in it, whether set on a normal dependency of any crate (also under a target table), in `default`, or by
+   `test-support` (or sot-protocol's, which builds only `ChatRecord::fixture`) is in it, whether set on a normal dependency of any crate (also under a target table), in `default`, or by
    a member only `--workspace` builds; it runs in every gate run with each of those faults put in (`--prove`), and needs the
    release targets' packages in the depot (`cargo fetch --locked` once). Third: `--prove` also runs a release-profile check of `sot-chat` with the feature, which must fail with that compile error; deleting the `compile_error!` turns `--prove` red. Source builds by users (`launch-sot.sh`, `sot-freshness.ps1`) are `--release`, so the compile error covers them; a release-profile test build is refused by design. Limits, resting on review: a debug-profile build with the feature turned on by a command-line flag, a release profile that turns debug assertions on, a
    re-export of `for_test` or the fake outside its cfg, and code written to include the fixture's files from outside the

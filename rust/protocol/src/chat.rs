@@ -163,6 +163,32 @@ pub struct ChatRecord {
     pub edited: bool,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl ChatRecord {
+    /// A member's one-line top-level message, every optional field empty: a test writes
+    /// `ChatRecord { text: ..., ..ChatRecord::fixture() }`, so a field added later is added here once.
+    pub fn fixture() -> ChatRecord {
+        let ts = Ts::parse("1700000000.000100").unwrap();
+        ChatRecord {
+            workspace: "T1".into(),
+            channel: "C1".into(),
+            thread_ts: ts.clone(),
+            ts,
+            author: ChatAuthor { id: "U1".into(), name: "Ada".into() },
+            origin: Origin::Member,
+            text: "hi".into(),
+            truncated: false,
+            reply_count: 0,
+            files: Vec::new(),
+            latest_reply: None,
+            limited: false,
+            omitted: false,
+            files_omitted: 0,
+            edited: false,
+        }
+    }
+}
+
 /// One piece of a record's text: a token Slack delimited with `<` and `>`, or the words around it. Both are decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSegment {

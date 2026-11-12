@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sot_chat::state::State;
-use sot_protocol::chat::{ChatAuthor, Origin};
+use sot_protocol::chat::ChatAuthor;
 
 use crate::comm::registry::registry::iso8601_utc_from_secs;
 use crate::comm::test_home::TestHome;
@@ -17,16 +17,8 @@ fn record(workspace: &str, channel: &str, ts: &str, text: &str) -> ChatRecord {
         ts: Ts::parse(ts).unwrap(),
         thread_ts: Ts::parse(ts).unwrap(),
         author: ChatAuthor { id: "U0MEMBER".into(), name: "Ada".into() },
-        origin: Origin::Member,
         text: text.into(),
-        truncated: false,
-        reply_count: 0,
-        files: Vec::new(),
-        latest_reply: None,
-        limited: false,
-        omitted: false,
-        files_omitted: 0,
-        edited: false,
+        ..ChatRecord::fixture()
     }
 }
 

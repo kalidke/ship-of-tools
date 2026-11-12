@@ -102,6 +102,10 @@ name is in this crate's one op table.
     Tests `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`,
     `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`,
     `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode`.
+    `ChatRecord::fixture` (under `cfg(test)` or the dev-only `test-support` feature, held out of shipped binaries by
+    `scripts/tests/release-features-check.sh`) is the one record every crate's tests start from, so a field is added to a
+    test record once; the production literals (the window's tombstone, `identity_only`) stay literal, so a new field is a
+    compile error there.
 
 12. **Every chat payload is typed and bounded at decode, and every chat op is in the one table.** `ops/chat.rs`: requests
     `chat.resolve {row}`, `chat.watch {target}`, `chat.unwatch {target}`, `chat.history {target, thread?, after?, upper?, limit,
@@ -223,7 +227,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 
 ## Files
-- `Cargo.toml`: the crate manifest; depends on platform alone of ours
+- `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
 - `src/chat.rs`: `ChatRecord`, `ChatAuthor`, `ChatFile`, `Origin` and `Ts`, the one normalized chat record and its validated timestamp.
