@@ -405,12 +405,6 @@ owned by `docs/CLAUDE.md`.
   the mail plan's design review; delete one.
 - **SPAWN-REMOTE-FOLDER** [session] No verb starts a row on another computer from the hub for a folder only the far
   computer has: `comm-spawn.sh` checks the folder locally (`[ -d ]`). Running the spawn on the far box over ssh works around it.
-- **SOT-INSTALL-SKILL-OWN-UPDATE** [note] The `sot-install` skill (`agents/claude/sot-install/SKILL.md`, installed into
-  the global Claude skills folder of every computer that installed 0.6.6 or later, agents' guarantee 7) answers to
-  "update Ship of Tools" and keeps an update procedure of its own beside `docs/UPDATE-AGENT.md`: the installed entry,
-  run with whatever token the shell holds (INSTALLER-NEWEST-TAKES-A-DRAFT), and none of the runbook's questions. The
-  runbook's first lines tell an agent not to use it, which reaches the copies already installed. Fix: its update
-  sections point at `docs/UPDATE-AGENT.md`, then `scripts/legacy-skill-hashes.sh`.
 - **PLACED-COPY-SKILL-RERUN** [note] Every edit of a placed-copy skill (sitrep, show-result) makes the gate's
   `julia-root` fail until `scripts/legacy-skill-hashes.sh` is rerun, because removal needs the shipped copy's hash in
   `comm/legacy-skills.txt`. A test that names the rule would say so at the edit.
@@ -1027,6 +1021,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **SOT-INSTALL-SKILL-OWN-UPDATE** (agents) closed by the landing that fixes it, 2026-11-12, known by reading: the `sot-install` skill, installed into every computer's global skills folder, kept an update procedure of its own (the installed entry, no questions) beside `docs/UPDATE-AGENT.md`, so an agent that took the skill's route updated one computer and skipped the runbook's step 2; the skill's update sections are now one pointer to the runbook at its raw address on main, with the fresh install pointer, the comm-only refresh and the after-update notes kept; test `global skills: sot-install points an update at docs/UPDATE-AGENT.md and holds no installer command of its own` (`test/global_skills_tests.jl`). `comm/legacy-skills.txt` is unchanged on purpose: `_retire_placed_skills!` skips the four onboarding skills, so it never reads their versions. Copies placed before this landing keep the old text until the next install, and the runbook's first lines tell an agent not to use them.
 - **INSTALLER-ASKS-A-ROWS-TERMINAL** (distribution) closed on Unix by the landing that fixes it, 2026-11-12, seen by a session operating the product as a user: `sotd install` asked "Restart the daemon? ... [y/N]" and the role question on `/dev/tty`, which inside a row is the row's terminal, so an agent's shell tool waited on a question no person saw; `SOT_INSTALL_TTY` names the file when set, and otherwise `console` (`rust/backend/src/install/daemon.rs`) gives `/dev/tty` only where standard output or error is a terminal, so a captured run has no console and ends at the restart question with its `daemon:` line or the role question's refusal; tests `the_questions_go_to_the_named_file_or_to_the_tty_a_person_watches` and `sot_install_tty_names_the_file_the_answer_is_read_from`. What stays owed: INSTALLER-WINDOWS-ASK-UNWITNESSED.
 - **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
 - **UPDATE-WINDOW-BEFORE-ITS-DAEMONS** (distribution) closed by this records commit, 2026-11-11, seen by a person using

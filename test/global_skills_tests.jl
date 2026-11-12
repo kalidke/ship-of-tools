@@ -54,3 +54,13 @@ end
         @test !ispath(joinpath(skills, "sitrep"))
     end
 end
+
+# The skill answers to "update Ship of Tools" but holds no update procedure: docs/UPDATE-AGENT.md is the one, and a copy
+# of its commands here would skip its step 2 (every daemon a window dials moves before that window).
+@testset "global skills: sot-install points an update at docs/UPDATE-AGENT.md and holds no installer command of its own" begin
+    text = read(joinpath(@__DIR__, "..", "agents", "claude", "sot-install", "SKILL.md"), String)
+    @test occursin("https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md", text)
+    for needle in ("install.sh", "install.ps1", "--restart-daemon", "-RestartDaemon", "--version", "-Version", "--archive", "-Archive", "ONE STEP LEFT")
+        @test !occursin(needle, text)
+    end
+end
