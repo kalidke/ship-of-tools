@@ -73,7 +73,9 @@ pub struct Arrived {
 }
 
 enum Change {
-    Put { record: ChatRecord, edited: bool },
+    /// `replaces`: it came from a `message_changed`, so it replaces the held record and is never added (not Slack's
+    /// `edited` flag, which `record.edited` carries).
+    Put { record: ChatRecord, replaces: bool },
     Delete(Key),
 }
 
@@ -95,9 +97,9 @@ impl Channel {
             Change::Delete(k) => {
                 self.messages.remove(&k);
             }
-            Change::Put { record, edited } => {
+            Change::Put { record, replaces } => {
                 let k = ts_key(&record.ts);
-                if edited {
+                if replaces {
                     // An edit of a message not held is not added: it is older than the page, and a newer one
                     // missed would have been a gap.
                     if let Some(held) = self.messages.get_mut(&k) {
@@ -334,8 +336,8 @@ impl Watches {
                 if ts_key(&r.thread_ts) != ts_key(&r.ts) {
                     return false;
                 }
-                let edited = matches!(event, Normalized::Edited(_));
-                (&r.channel, Change::Put { record: r.clone(), edited })
+                let replaces = matches!(event, Normalized::Edited(_));
+                (&r.channel, Change::Put { record: r.clone(), replaces })
             }
             Normalized::Deleted { channel, ts, .. } => (channel, Change::Delete(ts_key(ts))),
             _ => return false,

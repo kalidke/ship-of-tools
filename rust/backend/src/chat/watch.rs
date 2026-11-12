@@ -327,7 +327,11 @@ impl Own {
             before.insert(channel.to_string(), records);
         }
         for (channel, old) in before {
-            let (put, gone) = diff(&old, &held(watches, &channel));
+            let (mut put, gone) = diff(&old, &held(watches, &channel));
+            // A change event names people from the cache alone: a name a history read has looked up, never a request.
+            if let Ok(api) = self.service.api() {
+                api.cached_names(&mut put);
+            }
             let Some(workspace) = lock(&self.hub.table).slots.iter().find(|(_, t)| t.channel.as_str() == channel).map(|(_, t)| t.workspace.clone()) else {
                 continue;
             };

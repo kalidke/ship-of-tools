@@ -94,8 +94,11 @@ hanging indent.
 These rules, too, are the drawer's reading of Slack's and have not yet been compared with the desktop app side by side.
 
 Links and mentions show as Slack shows them, in blue. A link shows its label, or its address when it has none; the address
-is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's id (the drawer does not look
-names up yet) on a tinted slug, or `@` and the label when the message carries one; a channel shows `#` and its label or id;
+is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's name on a tinted slug, else `@` and the label when the message carries one, else
+`@` and the person's id. The daemon looks the names up when the drawer reads a page of the channel (within ten seconds,
+so a name it could not reach in time shows as the label or the id); a message that arrives live is named only from what
+the daemon already looked up, never by a request of its own, and so is its author's name; a person not yet read shows as the label or the id
+(an author as no name) until the page is read again. A channel shows `#` and its label or id;
 `@here`, `@channel` and `@everyone` show by name, and a group shows its label. A date shows the plain text Slack sends with it.
 A label is one line, whatever it holds. Any other markup the drawer does not read is shown as the markup text in blue. Text
 that looks like a header or a badge inside a message stays body text, however it is styled.

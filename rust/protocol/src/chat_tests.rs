@@ -54,6 +54,7 @@ fn the_record_wire_shape_is_stable() {
     r.omitted = true;
     r.files_omitted = 2;
     r.edited = true;
+    r.names = vec![ChatName { id: "U2".into(), name: "Grace".into() }];
     r.latest_reply = Some(Ts::parse("1700000001.000000").unwrap());
     r.files.push(ChatFile {
         id: "F1".into(),
@@ -64,7 +65,7 @@ fn the_record_wire_shape_is_stable() {
     });
     assert_eq!(
         serde_json::to_string(&r).unwrap(),
-        r#"{"workspace":"W1","channel":"C1","ts":"1700000000.000100","thread_ts":"1700000000.000100","author":{"id":"U1","name":"Ada"},"origin":"drawer","text":"hi","truncated":true,"reply_count":0,"files":[{"id":"F1","name":"a.png","mime":"image/png","bytes":7,"thumbnail":true}],"latest_reply":"1700000001.000000","limited":true,"omitted":true,"files_omitted":2,"edited":true}"#
+        r#"{"workspace":"W1","channel":"C1","ts":"1700000000.000100","thread_ts":"1700000000.000100","author":{"id":"U1","name":"Ada"},"origin":"drawer","text":"hi","truncated":true,"reply_count":0,"files":[{"id":"F1","name":"a.png","mime":"image/png","bytes":7,"thumbnail":true}],"latest_reply":"1700000001.000000","limited":true,"omitted":true,"files_omitted":2,"edited":true,"names":[{"id":"U2","name":"Grace"}]}"#
     );
 }
 
@@ -77,7 +78,7 @@ fn a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses() 
     assert_eq!(back, r);
     let bare = r#"{"workspace":"W1","channel":"C1","ts":"1.000001","thread_ts":"1.000001","author":{"id":"U1","name":""},"origin":"bot","text":"","reply_count":3,"files":[]}"#;
     let parsed: ChatRecord = serde_json::from_str(bare).unwrap();
-    assert!(!parsed.truncated && !parsed.limited && !parsed.omitted);
+    assert!(!parsed.truncated && !parsed.limited && !parsed.omitted && parsed.names.is_empty());
     assert_eq!((parsed.files_omitted, parsed.latest_reply), (0, None));
     assert_eq!(parsed.origin, Origin::Bot);
 }
@@ -169,4 +170,26 @@ fn an_edited_flag_is_additive() {
     let mut v = serde_json::to_value(&r).unwrap();
     v["edited"] = "yes".into();
     assert!(serde_json::from_value::<ChatRecord>(v).is_err());
+    // A newer peer's record carries a key this one does not know: it is ignored, so an older window reads a newer daemon.
+    let mut v = serde_json::to_value(&r).unwrap();
+    v["zz"] = 1.into();
+    assert_eq!(serde_json::from_value::<ChatRecord>(v).unwrap(), r);
+}
+
+#[test]
+fn a_records_names_are_bounded_at_decode() {
+    let name = |id: &str, name: &str| ChatName { id: id.into(), name: name.into() };
+    let with = |names: Vec<ChatName>| decode(&ChatRecord { names, ..record() });
+    // Absent parses, and is left out of the encoding; the bound is 16 entries, the seventeenth refused.
+    assert!(!serde_json::to_string(&record()).unwrap().contains("names"));
+    assert!(with(Vec::new()).is_ok());
+    assert!(with((0..MAX_MENTIONS).map(|i| name(&format!("U{i}"), "n")).collect()).is_ok());
+    assert!(with((0..=MAX_MENTIONS).map(|i| name(&format!("U{i}"), "n")).collect()).is_err());
+    // An id is `is_id`: a bad character, empty and too long are refused; a name may be 160 bytes and no more.
+    assert!(with(vec![name(&"u".repeat(MAX_ID), "n")]).is_ok());
+    for bad in ["", "U 1", "U<1>", "U1|x", &"u".repeat(MAX_ID + 1)] {
+        assert!(with(vec![name(bad, "n")]).is_err(), "id {bad:?} must be refused");
+    }
+    assert!(with(vec![name("U1", &"n".repeat(MAX_NAME))]).is_ok());
+    assert!(with(vec![name("U1", &"n".repeat(MAX_NAME + 1))]).is_err());
 }

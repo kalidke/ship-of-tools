@@ -127,7 +127,7 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
     }
     let segments = text_segments(&r.text).into_iter().map(|seg| match seg {
         TextSegment::Text(t) => TextSegment::Text(literal(&t)),
-        TextSegment::Markup(t) => TextSegment::Markup(literal(&t)),
+        TextSegment::Markup(t) => TextSegment::Markup(literal(&named(&t, r))),
     });
     let kind = |role| match role { Role::Text => Kind::Body, Role::Link => Kind::Link, Role::Mention => Kind::Mention, Role::Markup => Kind::Markup };
     out.extend(styled(segments).into_iter().map(|p| Span { kind: kind(p.role), style: p.style, text: p.text }));
@@ -176,6 +176,17 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
         }
     }
     out
+}
+
+/// A person's token (`<@U…>`, `<@W…>`) with the name the record carries for it as its label, which `resolve` shows after
+/// `@` through `header_text`'s filter; a token without a name, or whose name nothing visible is left of, keeps its own label
+/// (else the id).
+fn named(token: &str, r: &ChatRecord) -> String {
+    let id = token.strip_prefix("<@").and_then(|t| t.strip_suffix('>')).map(|t| t.split('|').next().unwrap_or(t));
+    match id.and_then(|id| r.names.iter().find(|n| n.id == id)) {
+        Some(n) if !header_text(&n.name).is_empty() => format!("<@{}|{}>", n.id, n.name),
+        _ => token.to_string(),
+    }
 }
 
 /// A name or file name on one line: the wire's one predicate removes controls, line separators and direction or other

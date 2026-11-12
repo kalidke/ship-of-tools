@@ -4,7 +4,13 @@
 use serde_json::{Map, Value};
 use sot_protocol::chat::{ChatAuthor, ChatFile, ChatRecord, Origin, Ts};
 
-pub use sot_protocol::chat::{MAX_FILENAME, MAX_FILES, MAX_ID, MAX_MIME, MAX_NAME, MAX_RECORD_BYTES, MAX_TEXT};
+pub use sot_protocol::chat::{MAX_FILENAME, MAX_FILES, MAX_ID, MAX_MENTIONS, MAX_MIME, MAX_NAME, MAX_RECORD_BYTES, MAX_TEXT};
+
+/// What filling names can add to an encoded record, at its worst: sixteen entries of a 64-byte id and a 160-byte name
+/// whose every byte is escaped to two (a looked-up name has no control character, so `"` and `\` are the worst), with
+/// their commas and the key, and the author's name, 160 bytes escaped the same way. `build` holds the record to
+/// `MAX_RECORD_BYTES` less this, so the filled record is within the bound.
+const FILL_RESERVE: usize = MAX_MENTIONS * (7 + MAX_ID + 10 + 2 * MAX_NAME + 2) + (MAX_MENTIONS - 1) + 11 + 2 * MAX_NAME;
 pub(crate) use sot_protocol::chat::is_id as valid_id;
 
 /// What the caller knows that the message does not. The own-app identity is the caller's (from `auth.test`): an own
@@ -161,9 +167,10 @@ fn build(
         Err(()) => identity_only(ctx, channel, o, &ts),
     };
     rec.limited = ctx.limited;
-    // Escaped control characters can multiply text six-fold, so the text alone is cut until the record fits.
+    // Escaped control characters can multiply text six-fold, so the text alone is cut until the record fits, with room
+    // for the names a later fill adds.
     while !rec.text.is_empty()
-        && serde_json::to_string(&rec).map_or(usize::MAX, |s| s.len()) > MAX_RECORD_BYTES
+        && serde_json::to_string(&rec).map_or(usize::MAX, |s| s.len()) > MAX_RECORD_BYTES - FILL_RESERVE
     {
         let (t, _) = cut(&rec.text, rec.text.len() / 2);
         rec.text = t.to_string();
@@ -220,6 +227,7 @@ fn identity_only(ctx: &Context, channel: &str, o: &Map<String, Value>, ts: &Ts) 
         omitted: true,
         files_omitted: 0,
         edited: false,
+        names: Vec::new(),
     }
 }
 
@@ -275,6 +283,7 @@ fn content(
         omitted: false,
         files_omitted,
         edited: o.get("edited").is_some_and(Value::is_object),
+        names: Vec::new(),
     })
 }
 

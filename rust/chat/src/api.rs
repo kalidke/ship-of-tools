@@ -11,11 +11,11 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde_json::{json, Value};
-use sot_protocol::chat::{escape_text, post_text_fits, ChatRecord, Origin, Ts};
+use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
-use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_NAME};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_MENTIONS, MAX_NAME};
 
 /// A read (`auth.test`, history, replies, `users.info`): Slack answers in well under a second, so fifteen seconds
 /// covers a slow link and still frees a drawer waiting on a stalled page.
@@ -655,14 +655,15 @@ impl Api {
         }
     }
 
-    /// Give each member record without a name its display name, all lookups within `NAMES_DEADLINE`; what could not
-    /// be looked up shows the id.
+    /// Give each member record without a name its display name, and each record the names of the people its text
+    /// mentions (`mentioned`), all lookups within `NAMES_DEADLINE`: authors first, then mentions. What could not be
+    /// looked up shows the id for an author and adds no entry for a mention.
     pub async fn fill_names(&self, records: &mut [ChatRecord]) {
         let mut ids: Vec<String> = Vec::new();
-        for r in records.iter() {
-            let wanted = r.origin == Origin::Member && r.author.name.is_empty();
-            if wanted && !r.author.id.is_empty() && !ids.contains(&r.author.id) {
-                ids.push(r.author.id.clone());
+        let mentions: Vec<String> = records.iter().flat_map(|r| mentioned(&r.text)).collect();
+        for id in records.iter().filter(|r| unnamed(r)).map(|r| r.author.id.clone()).chain(mentions) {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
         }
         let lookups = async {
@@ -671,15 +672,24 @@ impl Api {
             }
         };
         let _ = tokio::time::timeout(self.deadlines.names, lookups).await;
+        self.cached_names(records);
+        for r in records.iter_mut().filter(|r| unnamed(r)) {
+            r.author.name = r.author.id.clone();
+        }
+    }
+
+    /// The names the cache holds, with no request: a member's empty author name, and the `names` of the people the
+    /// text mentions, replaced.
+    pub fn cached_names(&self, records: &mut [ChatRecord]) {
         let names = self.names.lock().unwrap();
         for r in records.iter_mut() {
-            if r.origin == Origin::Member && r.author.name.is_empty() && !r.author.id.is_empty() {
-                r.author.name = names
-                    .by_id
-                    .get(&r.author.id)
-                    .cloned()
-                    .unwrap_or_else(|| r.author.id.clone());
+            if unnamed(r) {
+                r.author.name = names.by_id.get(&r.author.id).cloned().unwrap_or_default();
             }
+            r.names = mentioned(&r.text)
+                .into_iter()
+                .filter_map(|id| names.by_id.get(&id).map(|name| ChatName { name: name.clone(), id }))
+                .collect();
         }
     }
 
@@ -779,6 +789,26 @@ impl Api {
             None => Err(ApiError::Malformed),
         }
     }
+}
+
+/// A member's record with an author id and no name yet.
+fn unnamed(r: &ChatRecord) -> bool {
+    r.origin == Origin::Member && r.author.name.is_empty() && !r.author.id.is_empty()
+}
+
+/// The distinct ids of the `<@U…>` and `<@W…>` tokens in a text, at most `MAX_MENTIONS`, in order. A token a byte cut
+/// left open has no id.
+fn mentioned(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for seg in text_segments(text) {
+        let TextSegment::Markup(t) = seg else { continue };
+        let Some(inner) = t.strip_prefix("<@").and_then(|t| t.strip_suffix('>')) else { continue };
+        let id = inner.split('|').next().unwrap_or_default();
+        if id.starts_with(['U', 'W']) && valid_id(id) && !ids.iter().any(|i| i == id) && ids.len() < MAX_MENTIONS {
+            ids.push(id.to_string());
+        }
+    }
+    ids
 }
 
 /// A history or replies answer's `messages` (at most `capacity`), `has_more` and `is_limited`; anything else is

@@ -413,3 +413,29 @@ fn an_edited_message_ends_with_edited() {
     let tomb = project(&edited("hello"), None, NOW, utc(), true).into_iter().map(|s| s.text).collect::<String>();
     assert!(!tomb.contains("(edited)"), "{tomb}");
 }
+
+/// A person's mention shows the name the record carries for its id, else the token's label, else the id; the name loses the
+/// invisible and direction characters a header's name loses, and nothing a poster types in a label or a text makes a name.
+#[test]
+fn a_mention_shows_its_name_or_its_label_or_its_id() {
+    let mut r = rec("");
+    let name = |id: &str, name: &str| sot_protocol::chat::ChatName { id: id.into(), name: name.into() };
+    r.names = vec![name("U1", "Ada Lovelace"), name("W2", "Grace"), name("U5", "\u{200b}\u{202e}"), name("U6", "Gr\u{202e}ace"), name("C1", "Chan")];
+    let at = |text: &str| { let mut r = r.clone(); r.text = text.into(); body(&r) };
+    let shown = |t: &str| [(Kind::Mention, t.to_string())];
+    assert_eq!(at("<@U1>"), shown("@Ada Lovelace"));
+    assert_eq!(at("<@U1|label>"), shown("@Ada Lovelace"), "the name beats the label");
+    assert_eq!(at("<@W2>"), shown("@Grace"));
+    assert_eq!(at("<@U3|label>"), shown("@label"));
+    assert_eq!(at("<@U4>"), shown("@U4"));
+    assert_eq!(at("<@U5|label>"), shown("@label"), "a name nothing visible is left of is no name");
+    assert_eq!(at("<@U6>"), shown("@Grace"));
+    // A name belongs to its id alone, and only to a person's token: a channel, a group or typed text is never renamed.
+    assert_eq!(at("<#C1>"), shown("#C1"));
+    assert_eq!(at("<!here>"), shown("@here"));
+    assert_eq!(at("&lt;@U1&gt;"), [(Kind::Body, "<@U1>".to_string())]);
+    assert_eq!(at("hi <@U1>, <@U1|x>!"), [
+        (Kind::Body, "hi ".to_string()), (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, ", ".to_string()),
+        (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, "!".to_string()),
+    ]);
+}

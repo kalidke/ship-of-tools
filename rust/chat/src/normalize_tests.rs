@@ -490,11 +490,32 @@ fn the_edited_flag_counts_inside_the_record_bound() {
         }
         v
     };
-    let want = MAX_RECORD_BYTES - json_len(&new(m("", false)));
+    let bound = MAX_RECORD_BYTES - FILL_RESERVE;
+    let want = bound - json_len(&new(m("", false)));
     // Each control character escapes to six bytes; the remainder is plain.
     let text = format!("{}{}", "\u{1}".repeat(want / 6), "a".repeat(want % 6));
     let plain = new(m(&text, false));
-    assert!(!plain.truncated && json_len(&plain) == MAX_RECORD_BYTES);
+    assert!(!plain.truncated && json_len(&plain) == bound);
     let flagged = new(m(&text, true));
-    assert!(flagged.truncated && json_len(&flagged) <= MAX_RECORD_BYTES);
+    assert!(flagged.truncated && json_len(&flagged) <= bound);
+}
+
+/// Filling adds the author's name and sixteen names, each as long as a looked-up one can be and escaped as far as it can
+/// be: a record held to its bound before the fill is exactly within `MAX_RECORD_BYTES` after it, and no more.
+#[test]
+fn a_filled_record_stays_within_the_record_bound() {
+    let bound = MAX_RECORD_BYTES - FILL_RESERVE;
+    let m = |text: &str| json!({"ts": "1.000001", "user": "U1", "text": text});
+    let want = bound - json_len(&new(m("")));
+    let text = format!("{}{}", "\u{1}".repeat(want / 6), "a".repeat(want % 6));
+    let mut r = new(m(&text));
+    assert!(!r.truncated && json_len(&r) == bound);
+    r.author.name = "\"".repeat(MAX_NAME);
+    r.names = (0..MAX_MENTIONS)
+        .map(|i| sot_protocol::chat::ChatName { id: format!("U{i:0>63}"), name: "\\".repeat(MAX_NAME) })
+        .collect();
+    assert_eq!(json_len(&r), MAX_RECORD_BYTES);
+    // A text that needs the cut is cut to the same bound, whatever it holds.
+    let over = new(m(&"\u{1}".repeat(MAX_TEXT)));
+    assert!(over.truncated && json_len(&over) <= bound);
 }

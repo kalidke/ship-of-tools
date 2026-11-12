@@ -69,6 +69,10 @@ async fn live() -> (FakeSlack, Levers) {
         if path.ends_with("/auth.test") {
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
         }
+        if path.ends_with("/users.info") {
+            let user = seen.param("user").unwrap_or_default();
+            return Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}));
+        }
         if path.ends_with("/apps.connections.open") {
             let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
             return Reply::json(&json!({"ok": true, "url": url}));
@@ -115,10 +119,14 @@ fn stamp(n: u32) -> String {
 
 /// A new message in `channel`, as Slack's socket delivers it.
 fn message(channel: &str, n: u32) -> Value {
+    message_saying(channel, n, "hello")
+}
+
+fn message_saying(channel: &str, n: u32, text: &str) -> Value {
     json!({
         "type": "events_api",
         "envelope_id": format!("env-{n}"),
-        "payload": {"team_id": "T0AAAA", "event": {"type": "message", "channel": channel, "user": "U0MEMBER", "ts": stamp(n), "text": "hello"}},
+        "payload": {"team_id": "T0AAAA", "event": {"type": "message", "channel": channel, "user": "U0MEMBER", "ts": stamp(n), "text": text}},
     })
 }
 
@@ -278,6 +286,31 @@ async fn chat_events_reach_only_the_connections_that_watch() {
     let evt = sot_protocol::ops::ChatChangedEvt { workspace: "T0AAAA".into(), channel, put: Vec::new(), deleted: Vec::new() };
     let wrote = super::super::events::write_chat_event(&mut written, Ok(Evt::Changed(evt)), &never.conn).await.unwrap();
     assert!(!wrote && written.is_empty(), "a connection that never watched was written a chat event");
+}
+
+/// A live record names its author and the people its text mentions from the names a history read already looked up, and
+/// asks Slack for no more.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_event_carries_the_names_the_cache_holds() {
+    let (fake, lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let mut a = connect(rig.services.clone()).await;
+    assert!(ok_watch(&a.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    let api = rig.services.chat.admit(&rig.rows, &alpha_target(&rig)).expect("the service runs").api().expect("it runs");
+    for id in ["U0MEMBER", "U0KNOWN"] {
+        api.author_name(id).await;
+    }
+    let lookups = || fake.seen().iter().filter(|s| s.path().ends_with("/users.info")).count();
+    let before = lookups();
+    lv.feed.send(message_saying("C0AAAA", 1, "hello <@U0KNOWN> and <@U0STRANGER>")).unwrap();
+    let (name, payload) = a.evt("the chat.changed").await;
+    assert_eq!(name, op::CHAT_CHANGED, "{payload}");
+    let put = &payload["put"][0];
+    assert_eq!(put["author"]["name"], "Name-U0MEMBER", "{payload}");
+    assert_eq!(put["names"], json!([{"id": "U0KNOWN", "name": "Name-U0KNOWN"}]), "{payload}");
+    assert_eq!(lookups(), before, "a change event asked Slack for a name");
 }
 
 #[tokio::test(flavor = "multi_thread")]

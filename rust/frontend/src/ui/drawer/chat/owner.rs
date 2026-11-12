@@ -184,7 +184,7 @@ impl Watch {
         for ts in &c.deleted {
             if let Some(e) = self.records.get_mut(ts) {
                 let r = &e.0;
-                let gone = ChatRecord { workspace: r.workspace.clone(), channel: r.channel.clone(), ts: r.ts.clone(), thread_ts: r.thread_ts.clone(), author: r.author.clone(), origin: r.origin, text: String::new(), truncated: false, reply_count: 0, files: Vec::new(), latest_reply: None, limited: false, omitted: false, files_omitted: 0, edited: false };
+                let gone = ChatRecord { workspace: r.workspace.clone(), channel: r.channel.clone(), ts: r.ts.clone(), thread_ts: r.thread_ts.clone(), author: r.author.clone(), origin: r.origin, text: String::new(), truncated: false, reply_count: 0, files: Vec::new(), latest_reply: None, limited: false, omitted: false, files_omitted: 0, edited: false, names: Vec::new() };
                 *e = (gone, true);
             }
         }

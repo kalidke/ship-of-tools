@@ -13,6 +13,7 @@ pub const MAX_ID: usize = 64;
 pub const MAX_TEXT: usize = 8 * 1024;
 pub const MAX_FILES: usize = 8;
 pub const MAX_NAME: usize = 160;
+pub const MAX_MENTIONS: usize = 16;
 pub const MAX_FILENAME: usize = 256;
 pub const MAX_MIME: usize = 128;
 
@@ -115,6 +116,24 @@ pub struct ChatAuthor {
     pub name: String,
 }
 
+/// A person a message's text mentions, by the name the daemon looked up: `id` is the `<@U…>` token's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatName {
+    #[serde(deserialize_with = "an_id")]
+    pub id: String,
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
+    pub name: String,
+}
+
+/// `deserialize_with` for an id: `is_id`, which the length bound is part of.
+fn an_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    if !is_id(&s) {
+        return Err(D::Error::custom("not an id"));
+    }
+    Ok(s)
+}
+
 /// A file's summary: no URL. A stub (a shared-channel file Slack sent as an id alone) has an empty name and MIME and
 /// no size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +180,10 @@ pub struct ChatRecord {
     /// Slack marked the message edited (its `edited` object); the record carries the fact, not who or when.
     #[serde(default, skip_serializing_if = "is_false")]
     pub edited: bool,
+    /// The people the text mentions whose names are known, at most `MAX_MENTIONS`, one per id; a mention not here shows
+    /// its label or its id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
+    pub names: Vec<ChatName>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -185,6 +208,7 @@ impl ChatRecord {
             omitted: false,
             files_omitted: 0,
             edited: false,
+            names: Vec::new(),
         }
     }
 }
