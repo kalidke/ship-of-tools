@@ -2156,3 +2156,15 @@ A landing's record goes here, with its measured times; the package page holds on
   hub check, on the session's acceptance of the builder's reasons: a step-down ends it within a minute, it writes
   nothing, and every filing asks first. B3i2's three landings took about 2 h 40 min for about 255 product lines against
   the plan's 55.
+- B3j, the row replies, 2026-11-12: builder handed the landing at 11:46, main 12:41 (43d37777f, 7a0028139, fe0ace161,
+  d607bcb83), 55 minutes, a miss. About 155 product lines (115 of code: the verb 105 with comments, the dispatch 32,
+  the post's checks 16) against the plan's 100, and about 520 test lines against its 270, with the stage's done test (a
+  channel post filed as marked mail with no window open, across a restart and a lost state folder, and the row's reply
+  reaching its thread). Where the minutes went: the build 25 minutes, the gate 3, one review round 13, one fix commit
+  11, the gate 4. Review round 1 (no blockers; no path sent a second post, and none let a row post as a person or as
+  another row): one exit code covered both "nothing was posted" and "the post may exist", so a caller looping on it
+  could resend (now 3 for the second); the handle compare, free text kept off every command line, and the done test's
+  first step were unpinned (a trimmed or case-folded compare, a body passed as an argument and a failed pass that
+  commits all passed); a redundant empty-name check, deleted. The plan's done test listed an old parent above the
+  floor as not mail, which would itself be mail; the builder made it a bot's post. Each skill change needs its own
+  legacy-list commit after it, so the fix round was two commits.
