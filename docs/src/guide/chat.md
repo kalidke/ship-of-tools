@@ -187,6 +187,6 @@ row cannot reply from the shell yet.
 
 The chat listens on one computer for the whole comm folder: the daemon that holds the lock in `chat/` of the comm folder
 (`~/.sot-comm/chat/` by default). To move the hub, edit `hosts.toml` and start the new hub's daemon; nothing else. The old
-hub's chat notices the new topology within a minute and stops listening, and a new hub whose start finds the lock still
+hub's chat notices the new topology within a minute, finishes the one message it is filing, and stops listening, and a new hub whose start finds the lock still
 held tries again each minute and listens once it is free. A computer that was lost should free its lock when the file server's
 lease runs out, in about two minutes; that rests on the lease and has not been measured. A computer that becomes the hub starts its chat when its daemon next starts.

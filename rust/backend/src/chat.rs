@@ -436,8 +436,10 @@ impl<L: Listener> Chat<L> {
             }
             Phase::Running(l) => {
                 drop(phase);
-                let shared = self.shared.clone();
+                let (shared, hub) = (self.shared.clone(), self.hub.clone());
                 let stop = async move {
+                    // The delivery ends first, its filing in flight returned, while the lock is still held.
+                    hub.end_mail().await;
                     l.stop(STOP_WITHIN).await;
                     shared.set_off(ended);
                 };

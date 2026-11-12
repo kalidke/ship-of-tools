@@ -4,15 +4,17 @@
 use super::chat_ops_tests::{running, starter};
 use super::chat_watch_tests::{live, message, stamp, until, Levers};
 use crate::chat::tests::{Home, SELF};
-use crate::chat::{Chat, HUB_CHECK};
+use crate::chat::{Chat, Status, HUB_CHECK};
 use crate::comm::registry::registry::{iso8601_utc_from_secs, unix_now_secs};
 use crate::comm::test_home::TestHome;
-use crate::lifecycle::retire::{Participant, Registry};
+use crate::lifecycle::retire::{retire, Participant, Registry};
 use crate::rows::{Workspace, Workspaces};
 use serde_json::{json, Value};
 use sot_chat::config;
 use sot_chat::delivery::Timing;
 use sot_chat::fake_slack::{FakeSlack, History};
+use sot_chat::service::{Service, Status as ServiceStatus};
+use sot_platform::test_hold::Holds;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{ChatChannel, ChatTarget};
 use std::sync::atomic::Ordering;
@@ -61,13 +63,24 @@ impl World {
 
     /// The chat as the daemon boots it against `fake`, once its socket has said hello.
     async fn start(&self, fake: &FakeSlack) -> Arc<Chat> {
+        self.start_in(fake, &Registry::new(), HUB_CHECK).await
+    }
+
+    /// [`World::start`] registered with `registry`, the hub fact asked every `check`.
+    async fn start_in(&self, fake: &FakeSlack, registry: &Registry, check: Duration) -> Arc<Chat> {
         let read = |p: &std::path::Path| config::read_file(p);
-        let chat = Chat::boot(&self.home.env, &self.rows, &read, &Registry::new(), starter(fake), HUB_CHECK, TIMING);
+        let chat = Chat::boot(&self.home.env, &self.rows, &read, registry, starter(fake), check, TIMING);
         running(&chat).await;
         let alpha = self.rows.list()[0].workspace_id.clone();
         let target = ChatTarget { row: alpha, workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
         super::chat_watch_tests::after_hello(&chat, &self.rows, &target).await;
         chat
+    }
+
+    /// The chat's running service, to watch it stop.
+    fn service(&self, chat: &Chat) -> Arc<Service> {
+        let target = ChatTarget { row: self.rows.list()[0].workspace_id.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
+        chat.admit(&self.rows, &target).expect("the service runs")
     }
 
     /// The inbox of `alpha-h`: each line's message.
@@ -316,6 +329,43 @@ async fn a_pass_job_that_panics_answers_skipped_and_the_next_pass_runs() {
     assert_eq!(w.boundary(), None);
     crate::chat::watch::PANIC_PASS_IN.lock().unwrap().retain(|f| *f != w.folder);
     assert!(soon(|| w.boundary().is_some()).await, "a pass that panicked left the delivery waiting on it");
+}
+
+/// A filing in flight, held in its job; the first post is sent and the test returns once the job is there.
+async fn hold_a_filing(w: &World, chat: &Chat) -> (sot_platform::test_hold::Arm, Arc<Service>) {
+    let arm = Holds::here().arm("chat.mail.filing").key(&w.folder).hold(1);
+    let service = w.service(chat);
+    send(&w.lv, 1, "e1");
+    arm.reached_async(0).await;
+    (arm, service)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_step_down_returns_the_filing_in_flight_before_the_service_stops() {
+    let w = world(true).await;
+    let chat = w.start_in(&w.fake, &Registry::new(), Duration::from_millis(50)).await;
+    let (arm, service) = hold_a_filing(&w, &chat).await;
+    // The topology names another computer the hub: the chat steps down at its next look, while the filing is held.
+    w.home.list("elsewhere");
+    assert!(soon(|| chat.status() == Status::Stopping).await, "the chat did not step down");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(matches!(service.status(), ServiceStatus::Running { .. }), "the service stopped under a filing in flight: {:?}", service.status());
+    arm.release(0);
+    assert!(soon(|| chat.status() == Status::NotHub).await, "the chat did not finish stepping down");
+    assert!(matches!(service.status(), ServiceStatus::Stopped));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_waits_for_the_filing_in_flight_and_reports_itself_incomplete_when_that_outlasts_its_bound() {
+    let w = world(true).await;
+    let registry = Registry::new();
+    let chat = w.start_in(&w.fake, &registry, HUB_CHECK).await;
+    let (arm, service) = hold_a_filing(&w, &chat).await;
+    assert_eq!(retire(&registry, Duration::from_millis(300)).incomplete, vec!["chat"], "a retirement that outlasted its bound said it was complete");
+    assert!(matches!(service.status(), ServiceStatus::Running { .. }), "the service stopped under a filing in flight");
+    arm.release(0);
+    assert!(soon(|| chat.status() == Status::Stopped).await, "the chat never stopped");
+    assert_eq!(w.filed(), vec![stamp(1)], "the filing in flight was appended before the service stopped");
 }
 
 #[tokio::test(flavor = "multi_thread")]

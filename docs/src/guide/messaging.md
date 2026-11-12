@@ -46,7 +46,11 @@ session at its prompt, it is typed into that session's row. A Claude Code
 session gets one short wake line and reads the messages itself with
 `comm-poll.sh`, so a burst of messages costs one wake (and one poll for each 16,000 bytes of it). A Codex session is not
 typed into (no Codex screen has been captured yet), so it reads its mail when it
-next runs `comm-poll.sh`. The wake is refused while the row shows a
+next runs `comm-poll.sh`. A post from a mapped Slack channel
+(a line from `#chat`, filed by the hub's daemon, see
+[the project chat](chat.md#Mail-to-the-row)) wakes a Claude row in the same way,
+with the same one fixed line: none of the post's words is typed into the row.
+The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident, and while
 the prompt holds anything you have typed and not sent, so it never touches your
 line.

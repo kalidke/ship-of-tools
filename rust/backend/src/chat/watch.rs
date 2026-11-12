@@ -23,6 +23,7 @@ use sot_protocol::ops::{
     ChatChangedEvt, ChatChannel, ChatCode, ChatService, ChatStatusEvt, ChatTarget, ChatWatchState, MAX_PAGE, MAX_PAGE_RECORDS,
 };
 use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::task::JoinHandle;
 
 use super::ops::{admitted, code_of};
 use super::{mail, Chat};
@@ -36,6 +37,9 @@ const BUSY_ATTEMPTS: u32 = 8;
 const LOOK: Duration = Duration::from_secs(30);
 /// Events a connection may fall behind by before it is told it lost some (`bus.lost`).
 const EVENTS_QUEUE: usize = 256;
+/// How long a stop waits for the delivery's filing in flight (a name lookup and a guarded append, each bounded) before it
+/// goes on; the retirement's own bound reports a longer wait and never extends the daemon's end.
+const MAIL_END: Duration = Duration::from_secs(15);
 
 /// One event for the connections that watch.
 #[derive(Clone)]
@@ -86,6 +90,9 @@ pub(crate) struct Hub {
     events: broadcast::Sender<Evt>,
     owner: Mutex<Owner>,
     conns: AtomicU64,
+    /// The stop asks the owner to end its delivery; the owner says when it has.
+    ending: Notify,
+    mail_over: Notify,
     /// The delivery's timings, read when the owner starts.
     timing: Mutex<Timing>,
 }
@@ -102,6 +109,8 @@ impl Hub {
             events: broadcast::channel(EVENTS_QUEUE).0,
             owner: Mutex::new(Owner::Idle),
             conns: AtomicU64::new(0),
+            ending: Notify::new(),
+            mail_over: Notify::new(),
             timing: Mutex::new(Timing::PRODUCT),
         })
     }
@@ -109,6 +118,15 @@ impl Hub {
     /// The delivery's timings, read when the owner starts.
     pub(super) fn set_timing(&self, timing: Timing) {
         *lock(&self.timing) = timing;
+    }
+
+    /// Ask a running owner to end its delivery and wait until it has (bounded): the stop calls it before the service's, so
+    /// the lock outlives the last filing.
+    pub(super) async fn end_mail(&self) {
+        if matches!(*lock(&self.owner), Owner::Running) {
+            self.ending.notify_one();
+            let _ = tokio::time::timeout(MAIL_END, self.mail_over.notified()).await;
+        }
     }
 
     /// A connection's side, subscribed before its first request is read.
@@ -278,6 +296,17 @@ struct Mail {
     folders: Vec<(String, String)>,
     tx: mpsc::Sender<Done>,
     wake: Option<tokio::time::Instant>,
+    /// The start's read, the filing in flight and the pass in flight.
+    read: JoinHandle<()>,
+    filing: Option<JoinHandle<()>>,
+    pass: Option<JoinHandle<()>>,
+}
+
+impl Drop for Mail {
+    fn drop(&mut self) {
+        self.read.abort();
+        self.pass.iter().for_each(JoinHandle::abort);
+    }
 }
 
 /// The start's read of every inbox, tried again on the backoff while it fails; nothing is filed or passed before it succeeds.
@@ -303,6 +332,7 @@ pub(crate) static PANIC_ON: Mutex<Vec<String>> = Mutex::new(Vec::new());
 async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing) -> Done {
     #[cfg(test)]
     assert!(!PANIC_ON.lock().unwrap().contains(&f.record.ts.as_str().to_string()), "a test's filing job fails here");
+    sot_platform::hold_point_async!("chat.mail.filing", folder);
     if let Ok(api) = service.api() {
         api.fill_names(std::slice::from_mut(&mut f.record)).await;
     }
@@ -330,14 +360,14 @@ async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
 
 /// Runs `job` on a task of its own and sends its answer; a job that panics or is cancelled answers `failed`, so the
 /// delivery's one filing or pass in flight always returns.
-fn run_job(tx: mpsc::Sender<Done>, job: impl Future<Output = Done> + Send + 'static, failed: Done) {
-    drop(tokio::spawn(async move {
+fn run_job(tx: mpsc::Sender<Done>, job: impl Future<Output = Done> + Send + 'static, failed: Done) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let done = tokio::spawn(job).await.unwrap_or_else(|e| {
             tracing::warn!(cancelled = e.is_cancelled(), "project chat: a delivery job did not finish");
             failed
         });
         drop(tx.send(done).await)
-    }));
+    })
 }
 
 fn held(w: &Watches, channel: &str) -> Vec<ChatRecord> {
@@ -404,6 +434,7 @@ impl Own {
                 _ = self.hub.kick.notified() => self.sync(&mut watches, &done_tx),
                 Some(f) = done_rx.recv() => self.finish(&mut watches, f),
                 Some(d) = mail_rx.recv() => self.returned(d),
+                _ = self.hub.ending.notified() => self.end_mail().await,
                 _ = async { match at { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => {}
                 wake = watches.wait(&self.service, LOOK) => match wake {
                     Wake::Stopped => break,
@@ -448,8 +479,8 @@ impl Own {
             return None;
         }
         let timing = *lock(&self.hub.timing);
-        drop(tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing)));
-        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: config.workspace().into(), dir, folders, tx, wake: None })
+        let read = tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing));
+        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: config.workspace().into(), dir, folders, tx, wake: None, read, filing: None, pass: None })
     }
 
     /// A job came back: the delivery learns its result, and the daemon's log gets one line (fixed codes and ids, no text).
@@ -484,6 +515,15 @@ impl Own {
         }
     }
 
+    /// The stop's first step: the delivery ends. Its filing in flight returns (bounded), its pass is dropped (its reads end
+    /// with the service's API, which the stop closes next) and so is the start's read; then the stop is told.
+    async fn end_mail(&mut self) {
+        if let Some(filing) = self.mail.take().and_then(|mut m| m.filing.take()) {
+            let _ = tokio::time::timeout(MAIL_END, filing).await;
+        }
+        self.hub.mail_over.notify_one();
+    }
+
     /// Ask the delivery what to do next and start it, until it has nothing to do now. A commit is not answered: the
     /// delivery has moved its boundary in memory, a write that fails leaves the old file (a stale file only costs the next
     /// start reads), and the task that writes it logs the failure.
@@ -495,11 +535,11 @@ impl Own {
             match m.delivery.poll(std::time::Instant::now()) {
                 Action::File(f) => {
                     let (folder, failed) = (folder(&f.channel), Done::Filed { channel: f.channel.clone(), ts: f.record.ts.clone(), live: f.live, result: Err("job_failed".into()) });
-                    run_job(tx, file_job(env, rows, service, folder, f), failed);
+                    m.filing = Some(run_job(tx, file_job(env, rows, service, folder, f), failed));
                 }
                 Action::Pass { order, pace } => {
                     let channel = order.state.channel().to_string();
-                    run_job(tx, pass_job(env, rows, service, folder(&channel), order, pace), Done::Skipped(channel, "job_failed"));
+                    m.pass = Some(run_job(tx, pass_job(env, rows, service, folder(&channel), order, pace), Done::Skipped(channel, "job_failed")));
                 }
                 Action::Commit { channel, boundary } => {
                     let (dir, workspace) = (m.dir.clone(), m.workspace.clone());
