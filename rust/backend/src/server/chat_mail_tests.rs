@@ -27,6 +27,8 @@ const LONG: Duration = Duration::from_secs(30);
 /// itself, and a fake Slack with a live socket. The chat's environment names the test's comm folder, never the process's.
 struct World {
     th: TestHome,
+    /// The mapped folder, as the chat names it.
+    folder: String,
     home: Home,
     rows: Workspaces,
     fake: FakeSlack,
@@ -43,13 +45,20 @@ async fn world(delivers: bool) -> World {
     if delivers { home.delivering_toml(&own) } else { home.chat_toml(&own) }
     home.secrets();
     let rows = Workspaces::new();
-    let alpha = rows.insert(Workspace::from_label("claude-alpha", folder, false, "claude".into(), "alpha-h".into(), String::new()));
-    th.put("alpha-h", json!({"host": SELF, "workspace_id": alpha.workspace_id, "repo": "r", "root": "/", "last_seen": iso8601_utc_from_secs(unix_now_secs())}));
+    rows.insert(Workspace::from_label("claude-alpha", folder.clone(), false, "claude".into(), "alpha-h".into(), String::new()));
     let (fake, lv) = live().await;
-    World { th, home, rows, fake, lv }
+    let w = World { th, folder: folder.to_string_lossy().into_owned(), home, rows, fake, lv };
+    w.session(0);
+    w
 }
 
 impl World {
+    /// The registry's entry for `alpha-h`: this computer's, bound to alpha, last seen `age` seconds ago.
+    fn session(&self, age: u64) {
+        let id = self.rows.list()[0].workspace_id.clone();
+        self.th.put("alpha-h", json!({"host": SELF, "workspace_id": id, "repo": "r", "root": "/", "last_seen": iso8601_utc_from_secs(unix_now_secs() - age)}));
+    }
+
     /// The chat as the daemon boots it against `fake`, once its socket has said hello.
     async fn start(&self, fake: &FakeSlack) -> Arc<Chat> {
         let read = |p: &std::path::Path| config::read_file(p);
@@ -96,6 +105,25 @@ impl World {
 fn send(lv: &Levers, n: u32, envelope: &str) {
     let mut event = message("C0AAAA", n);
     event["envelope_id"] = json!(envelope);
+    lv.feed.send(event).unwrap();
+}
+
+/// Whether `check` holds within 5 s: a test that asserts a thing happens says so by this, not by a wait that runs out.
+async fn soon(mut check: impl FnMut() -> bool) -> bool {
+    for _ in 0..500 {
+        if check() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// A post as Slack sends it at `ts`, under an envelope id of its own.
+fn send_at(lv: &Levers, ts: &str, envelope: &str) {
+    let mut event = message("C0AAAA", 1);
+    event["envelope_id"] = json!(envelope);
+    event["payload"]["event"]["ts"] = json!(ts);
     lv.feed.send(event).unwrap();
 }
 
@@ -260,6 +288,37 @@ async fn a_state_file_older_than_the_inboxes_files_nothing_twice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_pass_with_no_recipient_reads_nothing_and_a_refused_post_is_found_once_the_row_returns() {
+    let w = world(true).await;
+    let channel = serve(&w.lv, posts(&[1, 2]));
+    // The row's session has lapsed: the live post is refused, and the pass it owes is skipped before any read.
+    w.session(10_000);
+    let _chat = w.start(&w.fake).await;
+    send(&w.lv, 1, "e1");
+    until("the event taken", || w.lv.acked.load(Ordering::SeqCst) >= 1).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!((w.inbox(), w.boundary(), channel.asked().len()), (Vec::<String>::new(), None, 0), "a pass read the channel with no row to give its mail to");
+    // The row returns: the next pass finds the refused post and the other, once each.
+    w.session(0);
+    assert!(soon(|| w.boundary().is_some()).await, "no pass completed once the row returned");
+    send(&w.lv, 3, "e3");
+    until("the new post", || w.filed().contains(&stamp(3))).await;
+    assert_eq!(w.filed(), vec![stamp(1), stamp(2), stamp(3)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pass_job_that_panics_answers_skipped_and_the_next_pass_runs() {
+    let w = world(true).await;
+    serve(&w.lv, posts(&[1, 2]));
+    crate::chat::watch::PANIC_PASS_IN.lock().unwrap().push(w.folder.clone());
+    let _chat = w.start(&w.fake).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(w.boundary(), None);
+    crate::chat::watch::PANIC_PASS_IN.lock().unwrap().retain(|f| *f != w.folder);
+    assert!(soon(|| w.boundary().is_some()).await, "a pass that panicked left the delivery waiting on it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_channel_of_50000_roots_completes_its_passes_moves_the_boundary_and_files_an_old_threads_reply() {
     let w = world(true).await;
     // 50,000 roots since the floor; the state file's boundary is at the 49,999th; the newest root and a reply under the
@@ -275,13 +334,17 @@ async fn a_channel_of_50000_roots_completes_its_passes_moves_the_boundary_and_fi
     let old = Ts::parse(&at(49_999)).unwrap();
     sot_chat::state::write(&w.state_dir(), "T0AAAA", "C0AAAA", &old).unwrap();
     let _chat = w.start(&w.fake).await;
-    until("the pass's commit", || w.boundary().is_some_and(|b| b != old.as_str())).await;
-    w.filed_count(2).await;
-    assert_eq!(w.boundary().as_deref(), Some("1700250008.000100"), "the boundary moves to the horizon, two seconds below the newest post");
-    assert_eq!(w.filed(), vec![reply.to_string(), newest.to_string()]);
-    assert!(w.inbox()[0].contains(&format!("in the thread of {}", at(1))), "{}", w.inbox()[0]);
+    // A pass that reads in small pages reads on and on: it is stopped at the read count, not waited out.
+    let done = || w.boundary().is_some_and(|b| b != old.as_str()) || channel.asked().len() > 60;
+    assert!(soon(done).await, "no pass completed");
     let reads = channel.asked().len();
     assert!(reads <= 53, "{reads} reads for a channel of 50,000 roots");
+    assert_eq!(w.boundary().as_deref(), Some("1700250008.000100"), "the boundary moves to the horizon, two seconds below the newest post");
+    // A post sent after the commit, filed last, says the two the pass found were filed once.
+    send_at(&w.lv, "1700250100.000100", "e-last");
+    until("the last post", || w.filed().contains(&"1700250100.000100".to_string())).await;
+    assert_eq!(w.filed(), vec![reply.to_string(), newest.to_string(), "1700250100.000100".to_string()]);
+    assert!(w.inbox()[0].contains(&format!("in the thread of {}", at(1))), "{}", w.inbox()[0]);
 }
 
 /// The record a member's first post makes, as the daemon files it.

@@ -309,8 +309,14 @@ async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
     Done::Filed { result: mail::file(&env, &rows, &folder, &f.record).await, channel: f.channel, ts: f.record.ts, live: f.live }
 }
 
+/// The mapped folders whose pass job panics, so a test can prove a failed pass still answers.
+#[cfg(test)]
+pub(crate) static PANIC_PASS_IN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// One pass: the recipient first (an absent one costs no read), then the walk to the clock's reading now.
 async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, order: Order, pace: Duration) -> Done {
+    #[cfg(test)]
+    assert!(!PANIC_PASS_IN.lock().unwrap().contains(&folder), "a test's pass job fails here");
     let channel = order.state.channel().to_string();
     match tokio::task::spawn_blocking(move || mail::recipient(&rows, &folder, &env, unix_now_secs())).await {
         Ok(Ok(_)) => {}
@@ -318,7 +324,7 @@ async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
         Err(_) => return Done::Skipped(channel, "recipient_failed"),
     }
     let (Ok(api), Ok(now)) = (service.api(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)) else { return Done::Skipped(channel, "stopped") };
-    let Ok(upper) = Ts::parse(&format!("{}.{:06}", now.as_secs(), now.subsec_micros())) else { return Done::Skipped(channel, "clock") };
+    let upper = Ts::parse(&format!("{}.{:06}", now.as_secs(), now.subsec_micros())).expect("seconds and six digits are a timestamp");
     Done::Passed(channel, traverse::pass(&api, &order, &upper, pace).await)
 }
 

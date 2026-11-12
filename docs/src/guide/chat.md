@@ -178,7 +178,8 @@ pass reads the channel back from now to the channel's floor (about one read a se
 thread with a reply since), files at most 200 posts and goes again at once for more. Slack hides older history on some
 plans, and a pass reads what Slack gives. Slack hands each event to one connection, so any other program that opens a
 connection with the chat app's token while the hub delivers (a probe, or a daemon from before the single listener) takes
-some events from it, and those posts arrive late, at the next pass, not at once.
+some events from it with no sign that any was lost, and those posts wait for the next hello (a few hours) or the
+6-hour sweep, whichever comes first, not for the next pass of any kind.
 A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has. The
 row cannot reply from the shell yet.
 
