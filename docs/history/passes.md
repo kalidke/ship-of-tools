@@ -2042,3 +2042,12 @@ A landing's record goes here, with its measured times; the package page holds on
   returns so, or a commit could pass a live post whose filing is then refused. Review round 1 (no blockers; four rules
   had no failing test, among them the channel in the queue's key, whose loss would drop mail when two channels share a
   `ts`). One fix commit, tests and one product line; no second review.
+- B3g2, delivery's pass half, 2026-11-12: builder handed the brief at 03:50, main 04:35 (56f664ca1, 4a883182c,
+  fc9704724), 45 minutes, a miss. About 120 product lines and 390 test lines. Where the minutes went: the build took 7
+  minutes, two review rounds of about 15 and 10, and three fix commits. Review round 1 (one blocker: the backoff and
+  its retry instant were global, so one channel whose passes failed or were skipped, as an absent row or a thread Slack
+  will not serve makes them, starved every channel after it, 100 passes to 0 over about 16 simulated hours; now each
+  channel backs off alone under one pacing instant; six rules had no failing test; a randomized model of Slack, the
+  socket, the owner and the rows, 960 runs, found no lost post a pass could see, no double filing and no boundary moved
+  back). Round 2 (no blockers): the pace was set only after a completed pass, and a channel truncated at every pass
+  could hold another's owed pass; ready channels now go least recently passed first.

@@ -224,10 +224,10 @@ alone refused), each delivering channel's boundary file and its filed set in mem
 most 32 channels each with its own floor, one chat listener per comm folder, the watch model handing every new record
 of a delivering channel over once, in order, and the recovery traversal, the channel walk with its horizon and the
 walk of every thread with a reply after the boundary (a caller may commit to the horizon from a complete pass, once a
-thread Slack may not serve is settled: `docs/defects.md`, CHAT-DELETED-PARENT-THREAD-UNSERVED), and delivery's filing
-half (one queue for live and recovered mail, nothing filed before the start's read, a post counted filed only when its
-filing returns so); delivery's pass half (passes owed, backoff, the commit), the daemon's filing and the row replies
-are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
+thread Slack may not serve is settled: `docs/defects.md`, CHAT-DELETED-PARENT-THREAD-UNSERVED), and delivery's
+decisions, pure (one queue for live and recovered mail, nothing filed before the start's read, a post counted filed
+only when its filing returns so; passes owed and paced, each channel's own backoff, and the boundary's commit, which
+never reaches a post still pending); the daemon's filing and the row replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
