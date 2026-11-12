@@ -2069,3 +2069,11 @@ A landing's record goes here, with its measured times; the package page holds on
   extent over a range of widths, leaves a run's trailing blank out of its rectangle, and makes the rectangles hold in
   right-to-left lines (L4a's code boxes had the same fault); the gate then passed where it had failed. No second
   review: the fix was tests and ten product lines, and the failing environment proved it.
+- The chat drawer's look, L5 (fenced code blocks and quotes), 2026-11-12: builder launched 05:59, main 06:36
+  (ec0621859, 1bd59a437), 37 minutes, a miss. About 112 product lines (the plan said 100; the builder stopped at 120 and
+  the landing was kept whole, since both halves share the empty line's fill and its copy) and 145 test lines. Where the
+  minutes went: the build 13 minutes with a stop at the line limit, one review round 16, one fix commit 4. Review round 1
+  (no blockers: a plain line between two quote runs or two blocks had no test of its two bars or two panels; the
+  drawer's copy repeated the shared selection's join loop to leave out an empty line's shaped space, and the shared
+  owner now takes a `shown` text per line instead). The gate passed first time in the container where L4b's test had
+  failed, the brief having carried that lesson.
