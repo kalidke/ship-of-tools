@@ -1952,3 +1952,11 @@ A landing's record goes here, with its measured times; the package page holds on
   (its continuation rows indented two columns), so the terminal's wrap flag is not set there and no copy can tell the
   break from the program's own; the item stays open for that half. The round also found a wide character's second cell
   copied as a space. One fix commit and two gates.
+- v0.7.1-rc.4, 2026-11-11, on the maintainer's word (cut once the runbook and copy fixes landed; drawing on PDF pages
+  goes to 0.7.2): the full local gate at 3292f8dd8 passed in 4 minutes (18:30 to 18:34); the cut at 18:37 from a fresh
+  clone (release e04294f97, the line's next stamp after it); the release run green on every leg, the draft ready about
+  18:57; installed by archive on the hub (pass, the daemon restarted by the installer, every window reattached) and on
+  one window computer by its own session (pass, its rows unchanged); the cross-computer mail matrix 6 lines, 0 failures,
+  after a first run with the hub's responders not started. Named consumer: the maintainer at that window computer;
+  named checks: rows switched quickly each show their own file, a long line the terminal wrapped copies as one line,
+  the chat drawer's look, and the chat's name prompt at the first post.

@@ -174,9 +174,10 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.3 (2026-11-10) is an
-unpublished draft, installed by archive on the hub and two window computers for a person's first use of the project
-chat's drawer (rc.1 and rc.2, the day before, carried selection and drawing); `main` carries 0.7.1-rc.4-dev, and the
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.4 (2026-11-11) is an
+unpublished draft, installed by archive on the hub and one window computer for a person's use of the preview that
+follows its row, the pane's copy and the chat drawer's look (rc.3, the day before, carried the drawer; rc.1 and rc.2
+selection and drawing); `main` carries 0.7.1-rc.5-dev, and the
 `release/0.6.6` branch is closed to all but fixes found in use. A new release candidate waits until a person has used
 the last one and carries everything that use found. In progress is the project chat (the daemon speaks Slack itself,
 in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
