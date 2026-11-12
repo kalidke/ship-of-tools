@@ -25,9 +25,9 @@ to pin one).
   `juliaup default 1.12`. `SOT_JULIA_BIN`, if set, names the daemon's Julia and
   must be 1.12 or newer too.
 - Optional, on the backend machine: **node/npm** (typeset math in markdown
-  previews renders in a node process; without it math is not typeset),
-  **poppler-utils** (`pdftoppm` and `pdfinfo`, for PDF previews) and
-  **ffmpeg** (the poster frame of a video preview).
+  previews renders in a node process; without it math is not typeset). PDF
+  pages and a video's poster frame need nothing installed: the previews bring
+  their own poppler and ffmpeg.
 
 !!! warning "Try it in a VM or a separate account"
     The installer changes your own agent setup (the Codex skills and plugin
