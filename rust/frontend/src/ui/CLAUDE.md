@@ -685,7 +685,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling`, `an_embedded_png_image_still_draws`.
 - The drawing child, `sot --draw-svg <heap bytes> <cpu seconds> --version` (preview/image/svg_child.rs, whose numbers
   are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
-  or spin only a process the window can lose. It has no caller yet: the runner that starts it, and every caller, are unbuilt. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
+  or spin only a process the window can lose. It has no caller yet: its runner is built in parts (the next bullet) and every caller is unbuilt. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
   and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
   it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), stdout taken
   for the replies (`take_stdout`), crashes as exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
@@ -724,6 +724,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
   can show neither); until then that is unknown.
+- The runner's start (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; nothing calls
+  it yet): `start` runs the drawing child under a cleared environment that holds only what the font code reads
+  (`child_env`: `HOME`, `FONTCONFIG_FILE` and the `XDG_` config, data and cache folders on Unix; `SYSTEMROOT` and
+  `USERPROFILE` on Windows, in any case), with stderr null and stdin and stdout piped, around `fork_guard` (macOS's birth
+  lock) and with no `pre_exec`, so std keeps `posix_spawn` and the start's cost does not grow with the window's memory. On
+  Windows the child is started with `CREATE_NO_WINDOW` (`sot.exe` is a console program) and assigned to a kill-on-close
+  `AnonymousJob` before `start` returns, so before any input byte; an assignment that fails kills the child and is an
+  error. The program is the window's own binary (`own_program`: `/proc/self/exe` on Linux, so a computer with no `/proc`
+  cannot start it; elsewhere `current_exe`), with `Bounds::args` for its arguments. `SVG_BOUNDS` is a wall of 10 s (about
+  twice the dearest lawful drawing measured, 4.7 s), a heap of 2 GiB (twice the allocator's high-water mark of the
+  dearest of three drawings measured at 16 Mpx, 0.58 GB, rounded up to a power of two) and a CPU bound of 11 s, the
+  bound of a child whose window died mid-draw on macOS. Limits: the child starts no process, and the start's
+  `#[allow(clippy::disallowed_methods)]` says why it stands (containment's guarantee 9); on Windows the child runs for a
+  moment outside its job, before it is assigned and given any input. Tests (`rust/frontend/tests/svg_child.rs`):
+  `the_childs_environment_is_the_font_list`, `a_child_reads_no_descriptor_of_the_window` (Linux: the real child, drawing,
+  holds no descriptor the window left open), `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

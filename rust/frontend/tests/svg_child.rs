@@ -1,20 +1,28 @@
 //! The drawing child, `sot --draw-svg`: the built binary started the way the window starts it (a cleared environment
 //! with `HOME`, stderr null), a request on stdin, and its replies and its end read back. Each bound has the file that
 //! meets it. A child that crashes or spins runs under a core limit and in a scratch folder, so nothing it ends by can
-//! leave a core or a report outside that folder.
+//! leave a core or a report outside that folder. The runner (`svg_run`, the window's half) is tested here too.
 
+// The two files side by side at the root, as they are in the crate, so that the runner's `super::svg_wire` resolves.
 #[path = "../src/ui/preview/image/svg_wire.rs"]
-mod wire;
+mod svg_wire;
+#[path = "../src/ui/preview/image/svg_run.rs"]
+#[allow(dead_code, reason = "what the window uses and this target does not: the program's path and the real bounds")]
+mod svg_run;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use wire::*;
+use svg_run::{child_env, start, Bounds};
+use svg_wire::*;
 
 const MIB: usize = 1 << 20;
 const WAIT: Duration = Duration::from_secs(60);
+/// Run under a core limit of one byte, which also stops a piped crash handler (zero does not on every system).
+#[cfg(unix)]
+const WRAP: &str = "ulimit -c 1; exec \"$0\" \"$@\"";
 const SVG_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">"#;
 
 /// A scratch folder: the child's working directory and `HOME`, removed with this value.
@@ -63,7 +71,7 @@ fn run_with_env(wait: Duration, heap: usize, cpu: u64, input: Vec<u8>, extra: &[
     #[cfg(unix)]
     let mut command = {
         let mut command = Command::new("/bin/sh");
-        command.args(["-c", "ulimit -c 1; exec \"$0\" \"$@\"", bin]);
+        command.args(["-c", WRAP, bin]);
         command
     };
     #[cfg(not(unix))]
@@ -306,7 +314,6 @@ fn an_error_text_is_cut_at_a_kilobyte() {
 }
 
 /// 100 million octaves of noise: a few hundred bytes that spin for weeks.
-#[cfg(any(unix, debug_assertions))]
 const SPIN: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><filter id="f">
 <feTurbulence baseFrequency="0.05" numOctaves="100000000"/></filter><rect width="100" height="100" filter="url(#f)"/></svg>"##;
 
@@ -329,4 +336,63 @@ fn a_panic_on_the_draw_thread_is_the_crash_code() {
     let ran = run_within(Duration::from_secs(30), ROOMY, 60, request(&[(100, 100, SPIN.as_bytes())]));
     assert_eq!(ran.status.code(), Some(EXIT_CRASH));
     assert_eq!(replies(&ran.out).len(), 0, "nothing was answered before the panic");
+}
+
+// The start: the child's environment, its descriptors and, on Windows, its job.
+
+#[test]
+fn the_childs_environment_is_the_font_list() {
+    let os = |names: &[&str]| names.iter().map(|name| (name.into(), "x".into())).collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>();
+    let kept = child_env(os(&["SOT_TOKEN", "DISPLAY", "HOME", "USERPROFILE", "SystemRoot", "XDG_DATA_HOME", "PATH"]).into_iter());
+    let kept: Vec<_> = kept.iter().map(|(name, _)| name.to_str().unwrap()).collect();
+    if cfg!(windows) {
+        assert_eq!(kept, ["USERPROFILE", "SystemRoot"], "Windows spells them in any case");
+    } else {
+        assert_eq!(kept, ["HOME", "XDG_DATA_HOME"]);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_reads_no_descriptor_of_the_window() {
+    // A descriptor the window left open without close-on-exec, which the shell stands in for by opening one on its way
+    // to `exec`. The child is handed a request that spins and its magic is awaited, so that it has bounded itself and
+    // is drawing when its descriptors are read.
+    let scratch = Scratch::new();
+    let held = scratch.0.join("held");
+    std::fs::write(&held, b"x").unwrap();
+    let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", &format!("{WRAP} 3<'{}'", held.display()), env!("CARGO_BIN_EXE_sot")])
+        .args(bounds.args())
+        .current_dir(&scratch.0);
+    let mut started = start(command).expect("start the child");
+    let mut stdin = started.child.stdin.take().unwrap();
+    stdin.write_all(&request(&[(100, 100, SPIN.as_bytes())])).unwrap();
+    let mut magic = [0; 4];
+    started.child.stdout.as_mut().unwrap().read_exact(&mut magic).unwrap();
+    assert_eq!(magic, MAGIC);
+    let held_by_child: Vec<_> = std::fs::read_dir(format!("/proc/{}/fd", started.child.id()))
+        .unwrap()
+        .map(|entry| std::fs::read_link(entry.unwrap().path()).unwrap())
+        .collect();
+    started.child.kill().unwrap();
+    started.child.wait().unwrap();
+    assert!(held_by_child.len() >= 3, "the listing reads the child's descriptors: {held_by_child:?}");
+    assert!(!held_by_child.contains(&held), "the window's descriptor is open in the child: {held_by_child:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_started_child_is_in_its_job_before_it_is_given_any_input() {
+    let scratch = Scratch::new();
+    let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
+    let mut command = svg_run::child_command(env!("CARGO_BIN_EXE_sot"), &bounds);
+    command.current_dir(&scratch.0);
+    let mut started = start(command).expect("start the child");
+    // The pipes are still unused here, so no input byte has been written.
+    assert_eq!(started.job.active_processes().unwrap(), 1, "the child is in the job");
+    started.child.kill().unwrap();
+    started.child.wait().unwrap();
 }

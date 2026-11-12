@@ -84,7 +84,8 @@ of each.
    the Windows capsule supervisors (`rows/spawn/detach.rs`), the installer's steps (`install/cmd.rs`), the capsule's
    ConPTY (`rust/capsule/src/capsule/producer/conpty/mod.rs`), the window's link login (`rust/topology/src/
    link/window.rs`), the window's updater and browser opener (`rust/frontend/src/selfupdate.rs`, `browser_open.rs`) and
-   its drawer shell (`ui/drawer/terminal/pty.rs`), and the native launcher's fork in C
+   its drawer shell (`ui/drawer/terminal/pty.rs`), the window's SVG drawing child (`ui/preview/image/svg_run.rs`: starts
+   nothing, CPU-limited on Unix, in a kill-on-close job on Windows), and the native launcher's fork in C
    (`rust/platform/src/host/process_tree/native_birth.c`), which no Rust lint sees. Not held either: libc's and
    windows-sys's other start functions (`popen`, `CreateProcessWithLogonW`, `ShellExecute*`, and the like, called nowhere
    today), a start inside a dependency (winresource's compile in a build script), and a raw `syscall`. The updater starts nothing: its caller's `Spawner` does.

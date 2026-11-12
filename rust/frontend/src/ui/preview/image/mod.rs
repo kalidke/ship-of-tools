@@ -14,6 +14,8 @@ pub(in crate::ui) mod figure_overlays;
 pub(in crate::ui) mod figure_store;
 pub(crate) mod svg;
 pub(crate) mod svg_child;
+#[expect(dead_code, reason = "the worker, the next landing, is its first caller")]
+pub(crate) mod svg_run;
 pub(crate) mod svg_wire;
 pub(crate) mod view;
 
