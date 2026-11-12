@@ -2108,3 +2108,14 @@ A landing's record goes here, with its measured times; the package page holds on
   reserve is exact at every bound; four more feature faults all caught): a name was put into tokens inside code, the
   authors-first order was untested, and a large fill could lose its own first names to the shared cache's eviction.
   No second review: three fixes, each with a test red against the old behavior.
+- The chat drawer's look, L8 (channels by name), 2026-11-12, the first landing after the session moved to another
+  account: builder launched 08:19, main 08:50 (05a793f7a, 2f2c722e9), 31 minutes, a miss by one. About 60 product
+  lines, almost all in chat's name fill (`conversations.info` through the same door, cache, deadline and cap), and 270
+  test lines. Where the minutes went: the build 10 minutes, one review round 9, one fix commit 7, the gates 4. Review
+  round 1 (no blockers; the new call goes only through the one door with its id validated, and no person's name can
+  land on a channel): a refused channel lookup was asked again for every channel of every fill, and a rate-limited
+  answer would pause every Slack read for its wait, so a fill now stops its channel lookups at the first scope,
+  authorization or rate-limit answer; people now come before channels under the shared cap of 16. The session decided
+  that a channel's name shows only when Slack says the channel is public, since Slack hides a private channel's name
+  from a reader who is not in it. The session removed the builder's scratch folder while the builder still used it,
+  which cost the builder one redo of its uncommitted fix; a lane's scratch goes only when the lane closes.
