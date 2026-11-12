@@ -104,20 +104,25 @@ it at the next launch, below.
 - Daemons move before windows. A window works only with a daemon of its own release line: a 0.7 window and a 0.6 daemon
   refuse each other, in either direction, and the window shows that computer as refused (for a 0.6 daemon reached over
   ssh, "the backend there predates the link; update it") with none of its rows; 0.7.0 and the 0.7.1 candidates work
-  together. So on a computer with a window the runbook reads the newest release and every daemon that window dials
-  before it changes anything: the daemons of a group (`sotd topology plan` and `sotd status`), or, with no `hosts.toml`,
-  the one daemon a `--backend` install names (the alias in `~/.local/bin/sot-launch` or the record's `hub`), read through
-  the same ssh the window uses. When one is on another line, or cannot be read, it stops with nothing changed and names
-  the computers to update first (the hub, then the others, then this one); it never updates another computer itself,
-  because an agent on each does that with that person's yes. After the update it reads the daemons again, and asks for
-  the windows to be started only when every one answers on the new line. A computer with no window is not held by this.
-  Two computers that each run a window and a daemon the other's window dials cannot both go first: the person keeps
-  both windows closed until both are updated.
+  together. So on a computer with a window (the `self` row of `sotd status` declares `frontend`; the record is one per
+  home, so it cannot say) the runbook reads the newest release and every daemon of the group (`sotd topology plan` and
+  `sotd status`) before it changes anything. When one is on another line, or cannot be read, it stops with nothing
+  changed and names the computers to update first (the hub, then the others, then this one); it never updates another
+  computer itself, because an agent on each does that with that person's yes. It also tells the person not to restart
+  the window or the daemon until then, since either may apply an update the daemon already staged (the daemon checks
+  daily and applies at its next start). After the update it reads the daemons again, and asks for the windows to be
+  started only when every one answers on the new line. A computer with no window is not held by this. Computers that
+  each run a window and a daemon that the others' windows dial cannot all go first: the person keeps those windows
+  closed until all are updated, and the runbook goes on once every named computer without a window is on the new line.
+- A `--backend` laptop and its server with no `hosts.toml` on either computer (an install from before 0.6.6-rc9.13) is
+  not moved by the update, from either computer: a 0.7 window dials only the hosts of a group file kept on its hub, so
+  moving either computer leaves the window with no host (`FAIL: enroll` on the laptop). The runbook stops with nothing
+  changed and tells the person to declare the group on the server (a three-block `hosts.toml`) and sync it on the laptop;
+  with that file the same message moves the pair, the server first.
 - The same message can be sent again from any state an earlier run left: a window computer already on 0.7 whose daemon
   still runs 0.6 stops and names the daemon's computer (a repair there changes nothing); the daemon's computer updates
   and ends `PASS`; a 0.7 daemon with a 0.6 window lets the window's computer update; both on 0.7 is a repair that changes
-  nothing. A `--backend` laptop with no `hosts.toml` on its hub still needs the hub to declare it before its window shows
-  any host (`docs/ENROLLING-A-HOST.md`); the runbook reports that `FAIL: enroll` and creates nothing on the hub.
+  nothing. A pair with no group file is the exception above.
 - A hub and the computers linked to it move in one sitting. A computer on 0.6 and one on 0.7 carry no mail between them.
   Computers that share one comm folder keep their mail across the line.
 - The move is one way. A rollback to 0.6 restores the binaries, links, unit and record, not the agent comm and not the

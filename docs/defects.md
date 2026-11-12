@@ -739,18 +739,31 @@ owned by `docs/CLAUDE.md`.
   last 0.6.6 candidate, and part 1 of the interop script in the local gate while a 0.6 computer exists.
 - **UPDATE-ORDER-UNRUN** [note] `docs/UPDATE-AGENT.md` step 2 ("Daemons before windows") and the check in step 5 were run
   in Linux test containers with a stand-in `ssh` and a stand-in service manager (several computers, each a scratch home
-  with its own host name), and their commands on hosted macOS and Windows runners against a 0.6.6 daemon on the same
-  computer, read by 0.6.6's and by 0.7.0's `sotd`. Not run: reading a far daemon through a real ssh login from macOS or
-  Windows, a window computer on a home several computers share, and a 0.6.6 install older than rc9.13, whose plan names
-  `tcp:` addresses nothing listens on, so every daemon reads as unknown and the runbook asks the person (run on Linux
-  with 0.6.6-rc1). The runbook never updates another computer: it stops and names the order.
+  with its own host name; a home shared by two computers, with a state folder of its own per computer), and their
+  commands on hosted macOS and Windows runners against a 0.6.6 daemon on the same computer, read by 0.6.6's and by
+  0.7.0's `sotd`. Not run: reading a far daemon through a real ssh login from any system (a slow login reads as unknown
+  in step 2 and as not answering in step 5, which the runbook says to read twice), a real systemd unit, a home shared by
+  computers that also share one daemon state folder (the daemon takes one lock per state folder, so the stand-in gave
+  each computer its own), Windows or macOS updating by the runbook with older daemons, and a 0.6.6 install older than
+  rc9.13, whose plan names `tcp:` addresses nothing listens on, so every daemon reads as unknown and the runbook asks
+  the person (run on Linux with 0.6.6-rc1). The runbook never updates another computer: it stops and names the order.
 - **BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML** [session] A `--backend <alias>` laptop installed before 0.6.6-rc9.13 (the window
   dials `SOT_HOST` through a tunnel) has no `hosts.toml`, and neither has its server. 0.7's installer on the laptop ends
   `FAIL: enroll: could not read the hosts.toml on '<alias>'`, and the 0.7 window dials only the plan's hosts, so even with
-  both computers on 0.7 the window opens with no host until the server declares a group (`sotd topology set add ...` needs
-  a file to edit; `docs/ENROLLING-A-HOST.md`). Seen in test containers (0.6.6-rc1 pair, both orders, every rerun); the
-  runbook's `FAIL: enroll` row now says so and tells the agent to create nothing on the hub. Fix: the installer on the
-  server (or `sotd topology set add` on a hub with no file) writes the one-hub file, which is a design for review.
+  both computers on 0.7 the window opens with no host until the server declares a group (nothing writes a first
+  `hosts.toml`: `sotd topology set` edits one, `sync` fetches one). Seen in test containers (a 0.6.6-rc1 pair, both
+  orders). The update runbook therefore stops on both computers of such a pair with nothing changed, and tells the person
+  to write the three-block file on the server and run `sotd topology sync --hub <server>` on the laptop; with that file
+  the same message moved the pair in a test (names equal to the ssh aliases). Fix: the installer on the server, or `sotd
+  topology set add` on a hub with no file, writes the one-hub file, which is a design for review.
+- **AUTO-UPDATE-SPLITS-A-PAIR** [session] A release daemon checks for the newest release daily, stages it, and applies it
+  at its next start; a window-only install updates itself at its next launch (`rust/frontend/src/selfupdate.rs`). Neither
+  asks the other computers, so a restart of one computer's daemon or window can move it to a release its pair does not
+  speak, with no agent involved. Seen in test containers: a 0.6.6 hub that had run for a few minutes had staged 0.7.0,
+  and its next start applied it, with no agent having updated it. The runbook's stop tells the
+  person not to restart the window or the daemon until the named computers are updated. Fix: the daemon applies a staged
+  update only when no daemon it serves would be left on another protocol, or the staging stays off until the group is
+  updated; a design for review.
 - **UPDATE-OTHER-COMPUTERS-BY-SSH** [feature] When step 2 of the update runbook finds older daemons on other computers it
   stops and names them, and an agent on each computer runs the same runbook. Updating them from the one run, over ssh
   with each person's yes, is not built: it needs a proof per system (a Windows daemon over ssh has none) and ends the
@@ -1004,16 +1017,15 @@ An item closes by moving here as one line: id, subsystem, the fixing commit or l
 
 - **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
 - **UPDATE-WINDOW-BEFORE-ITS-DAEMONS** (distribution) closed by this records commit, 2026-11-11, seen by a person using
-  the runbook: it updated only the computer its agent ran on, so a window moved to 0.7.0 while the daemons it dials (the
-  hub and the group's other computers) still ran 0.6.6, and the window refused them ("the backend there predates the link; update it") with none
-  of their rows; step 2 told a person on a computer other than the hub that they "may still go on" when nobody knew
-  whether the hub had moved. Reproduced in Linux test containers (the old text left a window computer unable to use a
-  0.6.6 hub and server). Step 2 now reads the newest release and every daemon the window dials (`sotd topology plan`,
-  `sotd status`) before step 3, stops with nothing changed and names the computers to update first (the hub, the others,
-  then this one) when one is on another line or cannot be read, and step 5 reads them again before it asks for a window
-  to start. With no `hosts.toml` it reads the one daemon a `--backend` install names, through the same ssh, and a rerun of
-  the message from any state the old text left (window on 0.7 and daemon on 0.6, either computer; daemon on 0.7 and window
-  on 0.6; both on 0.7) ends in a usable pair or a repair that changes nothing. What was not run is UPDATE-ORDER-UNRUN.
+  the runbook: it updated only the computer its agent ran on, so a window moved to 0.7.0 while the daemons it dials
+  still ran 0.6.6, and the window refused them ("the backend there predates the link; update it") with none of their
+  rows. Reproduced in Linux test containers (a window computer unable to use a 0.6 hub and server, in a group and in a
+  pair). Step 2 now reads the newest release and every daemon of the group (`sotd topology plan`, `sotd status`) before
+  step 3, stops with nothing changed and names the computers to update first when one is on another line or cannot be
+  read, and step 5 reads them again before it asks for a window to start; a rerun of the message from each state the old
+  text left, in a group, ends in a usable pair or a repair that changes nothing. Not closed by it: a `--backend` pair
+  with no `hosts.toml` (BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML: the runbook stops on both computers), what was not run
+  (UPDATE-ORDER-UNRUN) and the daemon's own staging of updates (AUTO-UPDATE-SPLITS-A-PAIR).
 - **SVG-IMAGE-HREF-READS-LOCAL-FILES** (fe-ui) closed by the landing that fixes it, 2026-11-11, known by a review's probes of the SVG draw: an `<image href>` in an SVG went to usvg's default resolver, which read any path that exists on the window's computer, so a FIFO hung the window's thread and a local PNG was drawn into the picture of a file served by a daemon; reachable through a markdown figure (known by reading). `svg_tree`'s resolver (`embedded_images_only`) now draws an image only from embedded `data:` data; a path or URL reads nothing.
 - **RETIRE-06-DELETION-STRANDS-ROWS** (rows) closed by this records commit, 2026-11-10, known by reading: the rows
   contract planned `spawn/retire_06.rs` "deleted in the release after 0.7.0", but a 0.6 computer updates straight to the

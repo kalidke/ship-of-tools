@@ -111,7 +111,7 @@ On Windows, from PowerShell:
 ```
 
 - `plan` says `no hosts.toml at`: there is no group file here, but the window can still dial one daemon on another
-  computer, the one an install made with `--backend <alias>` names. Look for its alias: the line `export SOT_HOST="..."`
+  computer, the one an install made with `--backend <alias>` names. Look for that alias: the line `export SOT_HOST="..."`
   in `~/.local/bin/sot-launch` (Linux and macOS) and the `"hub"` value of the record (any system, when it is not
   empty).
 
@@ -119,29 +119,38 @@ On Windows, from PowerShell:
   grep '^export SOT_HOST=' ~/.local/bin/sot-launch; grep '"hub"' ~/.local/share/sot/install.json
   ```
 
-  With no alias, the only daemon this window uses is this computer's own, which the update moves (when the record says
-  `"daemon": false` and there is no alias, ask the person which computer holds the daemon, and stop): go on to "The one
-  question". With an alias, read its daemon the way `status` reads a group's, through the same ssh the window uses: put
-  the alias in place of `ALIAS` below, which writes a one-computer group file that only this command reads.
+  - **There is an alias.** This computer and the one the alias names are a pair with no group file, and the pair cannot
+    move to 0.7 as it is: a 0.7 window dials only the hosts of a group file kept on its hub, and the installer on this
+    computer ends `FAIL: enroll`. Updating either computer, or both, leaves the window with no host or with a daemon it
+    cannot use. Stop and change nothing; tell the person this, with the names filled in:
 
-  ```bash
-  d=$(mktemp -d) && printf 'hub = "ALIAS"\n[host.ALIAS]\ndaemon = true\n' > "$d/hosts.toml"
-  SOT_HOSTS="$d/hosts.toml" ~/.local/share/sot/bin/sotd status
-  ```
+    ```text
+    Not updated, on purpose. <laptop> and <server> are a pair with no group file: the window on <laptop> reaches the
+    daemon on <server> by --backend, and Ship of Tools 0.7 needs <server> to declare a group first. Changing either
+    computer now would leave the window with no host. Nothing was changed. To move the pair: on <server> write
+    ~/.config/sot/hosts.toml holding the three blocks below (each name is what `hostname` prints, first part, lower
+    case; <server>'s must also be the name <laptop> reaches it by in ssh), on <laptop> run
+    `~/.local/share/sot/bin/sotd topology sync --hub <server>`, then send the same message again on <server> and on
+    <laptop>, <server> first. Until then do not restart the window or the daemon on either computer: a restart may
+    apply an update that is already staged.
 
-  On Windows:
+    hub = "<server>"
+    [host.<server>]
+    daemon = true
+    [host.<laptop>]
+    frontend = true
+    ```
 
-  ```powershell
-  $f = Join-Path $env:TEMP 'sot-one-daemon.toml'
-  Set-Content -LiteralPath $f -Encoding ascii -Value 'hub = "ALIAS"', '[host.ALIAS]', 'daemon = true'
-  $env:SOT_HOSTS = $f; & "$env:LOCALAPPDATA\sot\bin\sotd.exe" status; Remove-Item Env:SOT_HOSTS
-  ```
-
-  Its table has one row, ALIAS: read it as below, and treat that daemon as the group's only one.
+  - **No alias, and a window here.** The only daemon this window uses is this computer's own, which the update moves:
+    go on to "The one question". When the record says `"daemon": false`, ask the person which computer holds the daemon,
+    and stop.
+  - **No alias, and no window here** (the record says `"frontend": false`). Ask: "Does a window on another computer
+    reach this computer's daemon by `--backend`?" On a yes, the same stop, with this computer as the server. On a no, go
+    on to "The one question".
 - `plan` fails any other way (a bad `hosts.toml`, no `self` line): show the person its words and wait.
 - `plan` prints `self`, `hub` and `dial` lines: the group's daemons are the `status` table's rows whose DECLARED column
-  holds `daemon`, except the row named on the `self` line, whose daemon this update moves. For each of those rows read
-  the DAEMON column:
+  holds `daemon`, except the row named on the `self` line, whose daemon this update moves. If `status` printed an error
+  in place of a table, those daemons are unknown. For each of those rows read the DAEMON column:
 
 | DAEMON column of the row | What that daemon runs |
 |---|---|
@@ -151,9 +160,9 @@ On Windows, from PowerShell:
 | any other `unreachable: ...`, or `not dialable here` | unknown: it is down, or ssh to the hub fails, or this install is older than rc9.13, whose plan names `tcp:` addresses nothing listens on |
 
 A version is on the release's line when its first two numbers equal the release's (a pre-release of the line counts).
-Does this computer run a window? The record step 1 printed says: `"frontend": false` is a daemon only (installed with
-`--be-only`), with no window here; anything else (`"frontend": true`, a record with no such key, and every Windows
-computer) is a window.
+Does this computer run a window? Look at the row named on the `self` line: when its DECLARED column holds `frontend`,
+it does; when it does not, this computer is a daemon only, with no window here. (The record is one per home, and
+several computers can share a home, so it cannot say.)
 
 **A window here.** Decide by the rows:
 
@@ -165,41 +174,34 @@ computer) is a window.
   Not updated. This computer's window uses the daemons on <A> (<version>) and <B> (<version>), which are older than
   <release>, and a window on <release> cannot use them. Update <A> first, then <B>, then this computer: on each, tell an
   agent "Update Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md
-  and follow it". Nothing was changed here.
+  and follow it". Until then do not restart the window or the daemon on this computer: either may apply an update that
+  is already staged, and move ahead of the others. Nothing was changed here.
   ```
 
   The order is the hub first (when it is not this computer), then the others in the table's order, then this computer.
-  If this computer already runs the release (step 1's version is on its line), begin the message "This computer is
-  already on <release>, but its window uses the daemons on ..." and end it after naming the computers: nothing is left
-  to do here once they are updated.
   For an unknown daemon ask instead: "I could not read the version of the daemon on <C> (<the reason>). Does it
   already run <release>?" Go on only if the person says it does; if they say no or do not know, give the message above
   naming it.
 - **One is on a higher line than the release.** The release is the older side. Tell the person, and stop.
 
-If a computer the message names also shows `frontend` in its DECLARED column, its own window dials this computer's
-daemon, and the agent there will stop with the same message naming this computer: neither can go first. Then ask the
-person to keep the windows on both closed until both are updated, and to tell the agent on each that they agreed: only
-on that yes, update the daemon-only computers first and then these two, one at a time, and at step 5 do not ask for a
-window to start before every one of them is done.
+When a computer the message names also shows `frontend` in its DECLARED column, and the `self` row's DECLARED column
+holds `daemon`, that computer's window dials this computer's daemon in turn, and its agent will stop naming this
+computer: nobody can go first. Ask the person to keep every window on this computer and on those computers closed until
+all of them are updated, and to tell the agent on each of those computers that they agreed. On that yes, run `status`
+again and go on only when every named computer whose DECLARED column lacks `frontend` is on the release's line;
+otherwise give the message above naming those computers only. At step 5, do not ask for a window to start before every
+one of them is done.
 
-**No window here.** Nothing stops this update on account of a window. If this computer is not the hub, the hub should
-move first so that mail flows: when its row reads a lower line than the release, or cannot be read, ask "The hub <name> still runs
-<version>. Until it is updated, this computer shows no rows or mail of the group. Update the hub first?", and go on
-only if the person says to go on.
+**No window here.** Nothing stops this update on account of a window: go on to "The group".
 
 ### The group
 
 If `plan` printed a `self` line and a `hub` line, this computer belongs to a group that shares rows and mail through that
 hub, and when the two names are the same, this computer is the hub. A computer on 0.6 and one on 0.7 carry no mail
-between them and do not show each other's rows, so the group moves in one sitting.
-
-- When a window on another computer dials this computer's daemon (this computer is the hub or declares `daemon`): tell
-  the person the other computers of the group (the HOST column of the `status` table) need the same update right after,
-  and that until each moves, its window shows no rows or mail of this computer.
-- On a home shared by several computers, an update on one replaces the binaries for all of them, but each computer's
-  daemon keeps the old one until it restarts: run the update on each computer anyway, one computer at a time. If
-  another update is running on this home (its `~/sot-update.log` is still growing), wait for it to end.
+between them and do not show each other's rows, so the group moves in one sitting. On a home shared by several
+computers, an update on one replaces the binaries for all of them, but each computer's daemon keeps the old one until it
+restarts: run the update on each computer anyway, one computer at a time. If another update is running on this home
+(its `~/sot-update.log` is still growing), wait for it to end.
 
 ### The one question
 
@@ -339,7 +341,8 @@ step 4. Then:
   ```
 
   Every row whose DECLARED column holds `daemon`, except this computer's own, must read `<version> up` with a version of
-  the new release's line. Anything else is a daemon the window cannot use: tell the person which computer and what its
+  the new release's line. A row that reads unreachable may be a slow login: run `status` once more before you decide.
+  Anything else is a daemon the window cannot use: tell the person which computer and what its
   row says, and that this computer's window should not be started until that computer is updated.
 - Ask the person to quit and start again every open Ship of Tools window, on every computer of the group, once the
   daemons all answer. Never quit or end a window yourself.
