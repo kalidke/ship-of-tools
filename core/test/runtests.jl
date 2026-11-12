@@ -111,7 +111,7 @@ struct TestNoMatches <: FileType end
             @test timedwait(() -> istaskdone(task), 10) == :ok
             if istaskdone(task)
                 err = fetch(task)
-                @test err isa ErrorException
+                @test err isa ConceptExplorerCore.ToolFailure
                 @test occursin("sleep did not finish within 1 s", sprint(showerror, err))
                 @test time() - began < 3
             end
@@ -142,7 +142,27 @@ struct TestNoMatches <: FileType end
                 @test time() - began < 3
             end
             @test ConceptExplorerCore.read_within(`echo hi`, 5) == b"hi\n"
-            @test_throws ProcessFailedException ConceptExplorerCore.read_within(`false`, 5)
+            # No failure shows the command, its environment or its output: the commands carry a fake environment with
+            # a marker, as a JLL's command form carries the whole one, and the words are fixed.
+            marker = "marker-4c1e8a"
+            fake(cmd) = setenv(cmd, Dict("SOT_TEST_MARKER" => marker, "PATH" => "/usr/bin:/bin"))
+            for (cmd, words) in ((`false`, "false exited with code 1"),
+                                 (`sh -c "echo $marker >&2; exit 3"`, "sh exited with code 3"),
+                                 (`sh -c "kill -9 \$\$"`, "sh was ended by signal 9"),
+                                 (`/no/such/tool`, "tool could not start"),
+                                 (`sleep 600`, "sleep did not finish within 1 s"))
+                err = try
+                    ConceptExplorerCore.read_within(fake(cmd), 1)
+                    nothing
+                catch e
+                    e
+                end
+                text = err === nothing ? "" : sprint(showerror, err)
+                leaked = occursin(marker, text) || occursin("setenv", text) || occursin("Process(", text)
+                @test !leaked
+                @test text == words
+            end
+            @test_throws ConceptExplorerCore.ToolFailure ConceptExplorerCore.read_within(`false`, 5)
         end
     end
 end
