@@ -28,7 +28,8 @@ impl State {
         // lands — for now showing it here was overriding the actual
         // file content the user navigated to.
         let preview_rect = cells_to_px(preview_cells);
-        let (show_fatal, show_png, show_edit, show_md, show_canvas) = self.preview_shows();
+        let crate::ui::preview::layout::PreviewShows { fatal: show_fatal, png: show_png, edit: show_edit, md: show_md, canvas: show_canvas } =
+            self.preview_shows();
         let (caption_draw, image_rect, png_rect) = self.layout_figure(preview_rect, show_png);
         let md_rect = self.layout_markdown(preview_rect, cell_w, cell_h);
         // The chat's rectangles come back from its layout, so they are this frame's.

@@ -66,7 +66,7 @@ impl SelectionContext for State {
     fn agent_cell(&self) -> Option<(u16, u16)> { self.llm_cell_at_px(self.pointer.at_px(), true) }
     fn preview_cursor(&self) -> Option<cosmic_text::Cursor> {
         let pane = self.pane_rects.preview;
-        if pane.width == 0 || pane.height == 0 || self.editor.is_editing() || !self.preview_shows().3 { return None; }
+        if pane.width == 0 || pane.height == 0 || self.editor.is_editing() || !self.preview_shows().md { return None; }
         self.shaped.hit(self.pointer.at_px(), true)
     }
     fn draw_press(&mut self) -> bool { self.press_ink() }
@@ -191,7 +191,7 @@ impl WheelContext for State {
     fn report_wheel_presence(&mut self) { self.report_presence(true); }
     fn wheel_geometry(&mut self) -> WheelGeometry {
         let shows = self.preview_shows();
-        WheelGeometry { cell_w: self.canvas.cell_w(), cell_h: self.canvas.cell_h(), focus: self.focus_prompts.focus(), residue: self.pointer.residue(), preview_hidden: !(shows.2 || shows.3) }
+        WheelGeometry { cell_w: self.canvas.cell_w(), cell_h: self.canvas.cell_h(), focus: self.focus_prompts.focus(), residue: self.pointer.residue(), preview_hidden: !(shows.edit || shows.md) }
     }
     fn scroll_preview_horizontal(&mut self, pixels: f32) {
         self.md_media.scroll_tables(pixels);

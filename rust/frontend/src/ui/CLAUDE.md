@@ -276,7 +276,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   definition-line anchor, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
   `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
   selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
-  Installing a buffer clears selection, scrolls to the top. A row switch, Escape in the preview
+  Installing a buffer clears selection and scrolls to the top. A row switch, Escape in the preview
   and opening edit mode also clear selection. `released_selection` answers the file's text: a plain or token buffer's
   own range and text, rendered markdown's source lines whole (`TextOrigin::Rendered`), and nothing for a rendered buffer
   with no map (`TextOrigin::Unshared`). The text scope's `preview.copy_selection` copies rendered text on
