@@ -68,7 +68,7 @@ row. Its title is `chat · <channel id>` (the id shows only while a channel is w
 | `not up to date: <reason>` | the channel could not be read whole (`no snapshot` when the hub never answered) | each minute |
 | `the row is gone or was replaced`, `the row now maps to another channel` or `the row's folder maps to no channel`, after the channel | the hub refused the watch for good | at a row or link change |
 
-## Markup shows as markup
+## Slack's markup
 
 Slack's inline styles show as styles. `*bold*`, `_italic_` and `~strike~` are drawn bold, slanted and struck through, and
 `` `code` `` is drawn in a monospace face, in orange, on a bordered box; the marks themselves are not shown, and a

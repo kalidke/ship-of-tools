@@ -60,22 +60,23 @@ pub(crate) fn set_buffer_rich_text<'r, 's, I>(
 }
 
 /// The runs of glyphs whose `Attrs::metadata` `flag` accepts, as `(x, y, w, h)` in the buffer's own coordinates: one per
-/// layout line and unbroken stretch of flagged glyphs, `y` and `h` the line's top and height.
+/// layout line and unbroken stretch of flagged glyphs, `y` and `h` the line's top and height. A run is the extent of its
+/// glyphs that are not a space, so it holds whichever way the line runs (a right-to-left stretch descends in x) and carries
+/// nothing for the space that ends a wrapped line, which can hang past the width.
 pub(crate) fn flagged_runs(buffer: &Buffer, flag: impl Fn(usize) -> bool) -> Vec<(f32, f32, f32, f32)> {
     let mut rects = Vec::new();
     for run in buffer.layout_runs() {
         let mut current: Option<(f32, f32)> = None;
+        let mut end = |current: &mut Option<(f32, f32)>| rects.extend(current.take().map(|(s, e)| (s, run.line_top, e - s, run.line_height)));
         for g in run.glyphs.iter() {
-            if flag(g.metadata) {
-                let end = g.x + g.w.max(0.0);
-                current = Some((current.map_or(g.x, |(s, _)| s), end));
-            } else if let Some((s, e)) = current.take() {
-                rects.push((s, run.line_top, e - s, run.line_height));
+            if !flag(g.metadata) {
+                end(&mut current);
+            } else if &run.text[g.start..g.end] != " " {
+                let (s, e) = (g.x, g.x + g.w.max(0.0));
+                current = Some(current.map_or((s, e), |(a, b)| (a.min(s), b.max(e))));
             }
         }
-        if let Some((s, e)) = current {
-            rects.push((s, run.line_top, e - s, run.line_height));
-        }
+        end(&mut current);
     }
     rects
 }

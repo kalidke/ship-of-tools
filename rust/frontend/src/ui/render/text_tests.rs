@@ -69,3 +69,55 @@ fn flagged_runs_are_found_mid_line_at_a_lines_end_and_across_a_wrap() {
     }
     assert!(wrapped.len() >= 2 && wrapped[0].1 < wrapped[1].1, "the run continues on the next visual line: {wrapped:?}");
 }
+
+/// A run is the extent of the flagged glyphs of one stretch, whichever way the line runs (the glyphs of a right-to-left
+/// paragraph descend in x, and a name's glyphs can split into two stretches around text that is not flagged), and it leaves
+/// out the blanks that end a stretch: the space that ends a wrapped line, which can hang past the width, carries no rectangle.
+#[test]
+fn a_flagged_run_covers_its_glyphs_in_a_right_to_left_line_and_leaves_out_a_trailing_blank() {
+    let mut fonts = FontSystem::new();
+    let flag = Attrs::new().metadata(1);
+    let plain = Attrs::new();
+    // The runs of a text shaped at `width`, each checked against the glyphs of its layout line: it has a width, its edges are the
+    // edges of flagged glyphs that are not blank, it holds every one of the stretch's glyphs, and it holds no glyph that is not
+    // flagged. Every flagged glyph that is not blank lies in a run. The runs and the number of lines that hold flagged glyphs.
+    let check = |fonts: &mut FontSystem, width: f32, spans: &[(&str, Attrs)]| -> (usize, usize) {
+        let mut buffer = Buffer::new(fonts, Metrics::new(14.0, 18.0));
+        buffer.set_size(fonts, Some(width), None);
+        set_buffer_rich_text(&mut buffer, fonts, spans.iter().copied(), Attrs::new(), Shaping::Advanced);
+        buffer.shape_until_scroll(fonts, false);
+        let runs = flagged_runs(&buffer, |m| m & 1 != 0);
+        let (mut found, mut lines) = (0, 0);
+        for line in buffer.layout_runs() {
+            let solid = |g: &&cosmic_text::LayoutGlyph| &line.text[g.start..g.end] != " ";
+            let flagged: Vec<_> = line.glyphs.iter().filter(|g| g.metadata & 1 != 0).filter(solid).collect();
+            let mine: Vec<_> = runs.iter().filter(|r| r.1 == line.line_top).collect();
+            lines += usize::from(!flagged.is_empty());
+            found += mine.len();
+            for r in &mine {
+                let (x0, x1) = (r.0, r.0 + r.2);
+                assert!(r.2 > 0.0, "{spans:?}: {r:?}");
+                assert!(flagged.iter().any(|g| (g.x - x0).abs() < 0.01) && flagged.iter().any(|g| (g.x + g.w - x1).abs() < 0.01), "{spans:?}: {r:?} is not bounded by glyphs");
+                assert!(line.glyphs.iter().filter(solid).filter(|g| g.metadata & 1 == 0).all(|g| g.x + g.w / 2.0 < x0 || g.x + g.w / 2.0 > x1), "{spans:?}: {r:?} holds a glyph that is not flagged");
+            }
+            assert!(flagged.iter().all(|g| mine.iter().any(|r| g.x >= r.0 - 0.01 && g.x + g.w <= r.0 + r.2 + 0.01)), "{spans:?}: a flagged glyph is in no run: {mine:?}");
+        }
+        assert_eq!(found, runs.len(), "{spans:?}");
+        (runs.len(), lines)
+    };
+    // Right to left: the paragraph's first strong character is Hebrew, so the glyphs descend in x, and the `@` of `@ada` (a
+    // neutral between the two) lies right of ` x` while `ada` lies left of it: two runs around the text between.
+    assert_eq!(check(&mut fonts, 300.0, &[("שלום ", plain), ("@ada", flag), (" x", plain)]), (2, 1));
+    assert_eq!(check(&mut fonts, 300.0, &[("שלום ", plain), ("@ada", flag)]).0, 1);
+    assert_eq!(check(&mut fonts, 300.0, &[("hi ", plain), ("@דוד", flag), (" first", plain)]).0, 1);
+    assert_eq!(check(&mut fonts, 300.0, &[("דוד ", plain), ("@ada", flag), (" x", plain)]).0, 2);
+    // Blanks that end a stretch, at a line's end or before text that is not flagged, carry no rectangle.
+    assert_eq!(check(&mut fonts, 300.0, &[("ab  ", flag), ("\ncd", plain)]), (1, 1));
+    assert_eq!(check(&mut fonts, 300.0, &[("ab  ", flag), ("cd", plain)]), (1, 1));
+    assert_eq!(check(&mut fonts, 300.0, &[("a b", flag), ("  ", flag)]), (1, 1));
+    // A flagged line that wraps ends in a space; the run stops at the last word, whether or not the space fits the width.
+    for width in [60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 120.0] {
+        let (runs, lines) = check(&mut fonts, width, &[("alpha beta gamma delta epsilon zeta eta theta", flag)]);
+        assert!(runs >= 2 && runs == lines, "{width}: {runs} runs on {lines} lines");
+    }
+}
