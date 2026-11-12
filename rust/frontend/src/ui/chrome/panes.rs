@@ -142,6 +142,10 @@ pub(in crate::ui) struct PaneRects {
     /// closed. Consumers using `.repl.height` already handle zero
     /// safely (clamp to 1 / no-op).
     pub(in crate::ui) repl: ratatui::layout::Rect,
+    /// The preview pane's size in physical pixels at the layout that produced these cells (the cells times that
+    /// frame's cell size), so a size read between a text-scale change and the next layout is the pane's own, not the
+    /// old cell count at the new cell size. Zero before the first layout.
+    pub(in crate::ui) preview_px: (u32, u32),
 }
 
 impl State {

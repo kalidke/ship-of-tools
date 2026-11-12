@@ -295,28 +295,37 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
   An SVG file (`image/svg+xml`, `preview_route`'s `Svg`) is drawn by the worker into the same `RasterView`, never on the
   window's thread: `show_svg_preview` asks `SvgPreview` (preview/image/svg_preview.rs) for a `Fit` job (the pane's size
-  in physical pixels, `NO_PANE` (1024 square) before a layout or while another pane is maximized, and the GPU's texture
-  limit), the child works the size out from the file's own (`svg_fit_dims`: the SVG's aspect, the pane's limiting side,
+  in physical pixels as of the last layout (`PaneRects::preview_px`, the cells times that frame's cell size, so a read
+  between a text-scale change and the next layout is the pane's own), `NO_PANE` (1024 square) before a layout, and the
+  GPU's texture limit), the child works the size out from the file's own (`svg_fit_dims`: the SVG's aspect, the pane's limiting side,
   no side past the limit and no more than `MAX_RASTER_PIXELS` in all), and the runner refuses a reply past either
   limit at its header (`Ask::accepts`). Until the picture is drawn the SVG's text is shown, as any text file's; then
   `apply_svg_step` uploads the picture (filtered Linear, view at fit, no carry) into the `RasterView`. `SvgPreview`
-  keeps the last two outcomes, a picture or a refusal, each with the bytes and the ask it came from: an equal preview
-  (equal bytes and ask, whatever the generation) is installed from them with no child, so a switch between two rows that
-  each show an SVG draws neither again and a refused file costs one child, not one per return. One job is in flight,
+  keeps the last two outcomes, each with a digest of the file's bytes (SHA-256 and the length), never the bytes: a
+  drawn picture with the ask it was drawn for, a refusal for the file alone. An equal preview (equal digest and ask,
+  whatever the generation) is installed from a picture with no child, so a switch between two rows that each show an
+  SVG draws neither again; a refused file costs one child, not one per return or per size. While a picture of the
+  shown source is installed, a render of that source at another size (a text-scale change, a layout that moved the
+  pane) leaves it up (`Step::Held`) until the new picture replaces it: the SVG's text never replaces a picture. One job is in flight,
   keyed `PREVIEW_KEY` (a key no figure URL holds), of the pane's generation; a second `show` of the same generation
   while it is in flight submits nothing, and an outcome of another generation (a departed source's `Stale` or a late
   outcome after a resubmit) is ignored. The frame's one step, `settle_frame`, tells the worker the pane's generation,
   drains it once and hands each outcome to its owner (the preview by key, else `FigureStore`); the window keeps the
   upload (`settle_svg_draws`, called by `frame_upkeep`, and `apply_svg_step`). A refusal says `svg not drawn: <the
   drawing's or the runner's first line>` on the status line (`svg_not_drawn`, no control character) and the text
-  stays, the old raster hidden (a non-UTF-8 `.svg` shows as text too). An SVG is not an image node
+  stays, the old raster hidden (a picture of the same source that is already up stays, with the line); a file that is
+  not UTF-8 shows one line saying so (`render_preview_source`'s last branch, which every non-UTF-8 text reaches), never
+  an earlier file's text. An SVG is not an image node
   (`is_image_node_id`): it has no ROI, crop (`c` says an SVG cannot be cropped), scale bar, caption or drawing, since
   the daemon can decode none of them (drawing over an SVG is not built).
   Limits: a zoom past fit enlarges the raster's pixels (no re-raster at zoom); a pane resized after the draw scales the
-  picture until the preview is next rendered; a text-scale change draws it again only when its fit size changed; a row
-  switch back shows the kept picture (view at fit, no carry); the kept pictures are held as RGBA on the window's heap,
-  up to two of at most 64 MiB each; `.svgz` is not served as `image/svg+xml` by the daemon (`mime_for_path`) so it is
-  not drawn; the file's bytes are copied once for the job and kept with the outcome. Tests:
+  picture until the preview is next rendered; a text-scale change shows the kept picture when the pane's pixel size is unchanged and otherwise draws
+  again with the old picture up; a row switch back shows the kept picture (view at fit, no carry); the window's heap
+  holds up to two kept pictures of at most 64 MiB each (RGBA, 16 Mpx), and no kept file bytes; each submit copies the
+  file's bytes once for the job (up to `PREVIEW_BINARY_CAP`, 512 MiB, for a file the daemon serves as `image/svg+xml`),
+  which the worker holds until its draw ends, and the digest reads every byte once per source on the window's thread
+  (SHA-256, not timed); `.svgz` is not served as `image/svg+xml` by the daemon (`mime_for_path`) so it is
+  not drawn; an SVG over `PREVIEW_TEXT_CAP` shows the large-file line, not its text, until its picture is drawn. Tests:
   `a_preview_is_routed_by_its_mime_an_svg_to_the_picture_not_the_raster_decoder_or_the_text`,
   `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit`,
   `the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small`,
@@ -324,14 +333,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_capture_of_a_shown_svg_says_it_cannot_be_cropped`, and in svg_preview_tests.rs (a stand-in draw)
   `a_current_preview_installs_its_raster_and_a_stale_one_does_not`,
   `an_equal_preview_is_installed_from_the_cache_without_a_draw`, `two_outcomes_are_kept_and_the_oldest_goes`,
-  `a_refused_preview_is_not_drawn_again_on_return`,
+  `a_refused_preview_is_not_drawn_again_on_return`, `a_refused_file_is_not_drawn_again_at_another_size`,
+  `a_picture_stays_up_while_its_redraw_is_with_the_worker_and_never_across_sources`,
+  `a_second_request_of_one_generation_starts_no_second_job`, `files_of_one_length_are_not_taken_for_each_other`,
   `a_late_outcome_of_a_departed_generation_does_not_undo_the_job_in_flight`,
   `a_figure_and_the_preview_each_settle_through_the_one_drain` and
   `a_preview_the_worker_will_not_take_is_refused_at_once`; the child's fit ask in tests/svg_child.rs
   (`a_fit_ask_is_drawn_at_the_size_the_child_works_out`, `the_runner_returns_a_fit_ask_at_the_childs_size`,
   `a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header`); and the native fixture
   `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text` (through the real child, the frame's own `frame_upkeep`:
-  the text shows until the picture is installed, the same file again is installed at once, a broken one says why).
+  after a layout, the text shows until the picture is installed at the pane's size, the same file again is installed at
+  once, a text-size change leaves the picture up, a file that is not UTF-8 says so over the previous file's text, a
+  broken one says why).
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint

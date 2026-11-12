@@ -4325,6 +4325,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "sha2",
  "sot-capsule",
  "sot-platform",
  "sot-protocol",

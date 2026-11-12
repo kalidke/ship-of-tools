@@ -258,8 +258,7 @@ impl State {
     /// before the first layout pass (pane rect still zero), in which case
     /// the plugin falls back to its fixed DPI.
     pub(in crate::ui) fn preview_fit_px(&self) -> (Option<u32>, Option<u32>) {
-        let w = (self.pane_rects.preview.width as f32 * self.canvas.cell_w()) as u32;
-        let h = (self.pane_rects.preview.height as f32 * self.canvas.cell_h()) as u32;
+        let (w, h) = self.pane_rects.preview_px;
         if w == 0 || h == 0 {
             (None, None)
         } else {
@@ -289,8 +288,7 @@ impl State {
                     return;
                 }
                 // The pane stays useful: the SVG's text is shown below, as any text file's, until its picture is
-                // drawn, and for good when it is refused; the old raster is gone either way.
-                self.raster.hide();
+                // drawn, and for good when it is refused (every text route hides the old raster).
                 PreviewRoute::Other
             }
             route @ (PreviewRoute::Raster | PreviewRoute::Other) => route,
@@ -439,11 +437,11 @@ impl State {
             self.shaped.install(md);
             self.raster.hide();
         } else {
-            tracing::debug!(
-                %mime,
-                len = bytes.len(),
-                "preview blob is not UTF-8 and not an image — skipping"
-            );
+            // Not UTF-8 and no image: one line says so, so no earlier file's text or picture stays under this title.
+            let msg = format!("not UTF-8, {} bytes\n\nNot previewed as text (mime: {mime}).", bytes.len());
+            let md = self.canvas.shape(|fs| MarkdownPreview::new_plain(fs, &msg, self.shaped.rect().w.max(1.0), scale));
+            self.shaped.install(md);
+            self.raster.hide();
         }
     }
 
@@ -458,8 +456,8 @@ impl State {
     }
 
     /// An SVG preview's step: a picture is uploaded and installed into the `RasterView` as a PNG is, the view at fit
-    /// with no carry (true); a refusal says why on the status line; a job in flight says nothing. False when no picture
-    /// is shown.
+    /// with no carry (true); a picture of this source already up while its redraw is with the worker stays (true); a
+    /// refusal says why on the status line; a job in flight says nothing. False when no picture is shown.
     pub(in crate::ui) fn apply_svg_step(&mut self, step: Step) -> bool {
         let why = match step {
             Step::Picture(picture) => {
@@ -471,10 +469,14 @@ impl State {
                         self.window.request_redraw();
                         return true;
                     }
-                    Err(why) => format!("{why:#}"),
+                    Err(why) => {
+                        self.svg_preview.not_installed();
+                        format!("{why:#}")
+                    }
                 }
             }
             Step::Refused(why) => why,
+            Step::Held => return true,
             Step::Pending => return false,
         };
         tracing::warn!(why, "svg preview not drawn");

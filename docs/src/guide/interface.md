@@ -169,7 +169,7 @@ use; the bytes are opaque to Rust, so adding a format is a **Julia-only** change
 | `.jl` | syntax-highlighted source (tokenized kernel-side, no client re-parsing) |
 | `.md` | rendered markdown, including inline math |
 | `.json` / `.toml` / `.txt` | plain text (JSON/TOML pretty-print / colour planned) |
-| `.svg` | its picture, fitted to the pane; zoom and pan as on a PNG (zoom past fit enlarges the picture's pixels, it is not drawn again); its text shows until the picture is drawn, and a file that will not draw (too large, too slow, or not valid SVG) stays as text, with the reason on the status line; no crop, scale bar, caption or drawing |
+| `.svg` | its picture, fitted to the pane; zoom and pan as on a PNG (zoom past fit enlarges the picture's pixels, it is not drawn again); its text (a summary line for a file over 512 KiB) shows until the picture is drawn, and a file that will not draw (too large, too slow, or not valid SVG) stays as text, with the reason on the status line; no crop, scale bar, caption or drawing |
 | `.pdf` | one rasterized page; with the preview focused (`Ctrl+Right`) `n` / `p` turn pages |
 | video (`.mp4`, `.webm`, …) | a poster frame; `o` opens playback in the browser |
 

@@ -256,12 +256,15 @@ fn a_refused_preview_says_so_in_the_pane_title() {
 }
 
 impl State {
-    /// An SVG file's preview is drawn through the real child: its text shows until the picture is installed by the
-    /// frame's step, filling the pane on its limiting side at the SVG's aspect; the same file again is installed
-    /// from the kept outcome at once; one that will not parse leaves no raster, shows its text and says why.
+    /// An SVG file's preview is drawn through the real child at the size of the pane as laid out (a layout runs
+    /// first): its text shows until the picture is installed by the frame's step, filling the pane on its limiting
+    /// side at the SVG's aspect; the same file again is installed from the kept outcome at once; a text-size change
+    /// leaves the picture up; a file that is not UTF-8 shows one line saying so and no picture; one that will not
+    /// parse leaves no raster, shows its text and says why.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
     pub(in crate::ui) fn an_svg_preview_is_a_raster_and_a_broken_one_is_its_text(&mut self) -> anyhow::Result<()> {
-        let pane = self.preview_fit_px();
+        self.draw_chrome()?;
+        let (Some(pw), Some(ph)) = self.preview_fit_px() else { anyhow::bail!("no pane after a layout") };
         let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100"/></svg>"#;
         self.raster.hide();
         self.show_svg_source(svg);
@@ -270,13 +273,31 @@ impl State {
         let (w, h) = self.raster.quad_size().ok_or_else(|| anyhow::anyhow!("an SVG preview installed no raster"))?;
         let near = |a: u32, b: u32| a.abs_diff(b) <= 1;
         anyhow::ensure!(near(w, 2 * h), "the raster {w}x{h} lost the SVG's 2:1 aspect");
-        if let (Some(pw), Some(ph)) = pane {
-            anyhow::ensure!(near(w, pw.min(2 * ph)), "the raster {w}x{h} does not fill the {pw}x{ph} pane on its limiting side");
-        }
+        anyhow::ensure!(near(w, pw.min(2 * ph)), "the raster {w}x{h} does not fill the {pw}x{ph} pane on its limiting side");
+        // A text-size change replays the same source: the picture stays up, at the same size, and no text takes its place.
+        let mult = self.canvas.text_scale_mult();
+        self.apply_text_scale(mult + 0.1);
+        anyhow::ensure!(self.preview_fit_px() == (Some(pw), Some(ph)), "the pane's size changed before its layout did");
+        anyhow::ensure!(self.raster.quad_size() == Some((w, h)), "a text-size change took the picture down");
+        self.draw_chrome()?;
+        self.render_preview_source("image/svg+xml", svg);
+        anyhow::ensure!(self.raster.is_shown(), "a text-size change and its layout took the picture down");
+        self.apply_text_scale(mult);
+        self.draw_chrome()?;
         self.raster.hide();
         self.show_svg_source(svg);
         anyhow::ensure!(self.raster.is_shown(), "the same file again was not installed from its kept outcome");
+        // Another file's text takes the pane and the picture goes; this one is not UTF-8 and says so.
+        self.show_text_source("the previous file's words");
+        self.show_svg_source(b"<svg><title>caf\xe9</title></svg>");
+        anyhow::ensure!(!self.raster.is_shown(), "a file that is not UTF-8 kept the last raster");
+        anyhow::ensure!(
+            self.shown_text().contains("not UTF-8"),
+            "a file that is not UTF-8 left the previous file's text in the pane"
+        );
         self.status.set(String::new());
+        self.show_svg_source(svg);
+        self.frames_until(|state| state.raster.is_shown(), "the SVG drew no picture again")?;
         self.show_svg_source(b"<svg><not closed");
         anyhow::ensure!(!self.raster.is_shown(), "a broken SVG kept the last raster");
         self.frames_until(|state| state.status.text().starts_with("svg not drawn: "), "the status line never said why")?;
@@ -289,6 +310,16 @@ impl State {
     fn show_svg_source(&mut self, bytes: &[u8]) {
         self.preview_source.install("image/svg+xml".into(), bytes.to_vec(), Some("files:a.svg".into()), None, None);
         self.render_preview_source("image/svg+xml", bytes);
+    }
+
+    /// The pane's flowed text.
+    fn shown_text(&self) -> String {
+        self.shaped.md().buffer.lines.iter().map(|line| line.text()).collect::<Vec<_>>().join("\n")
+    }
+
+    fn show_text_source(&mut self, text: &str) {
+        self.preview_source.install("text/plain".into(), text.as_bytes().to_vec(), Some("files:a.txt".into()), None, None);
+        self.render_preview_source("text/plain", text.as_bytes());
     }
 
     /// The window's frame steps until `done`, which the worker's outcome brings.

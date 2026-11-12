@@ -173,7 +173,11 @@ impl State {
         // ratatui draw API takes a &mut self method, not self.
         self.nav.set_scroll(nav_scroll);
         self.repl_model.commit_rendered_scroll(new_repl_scroll);
-        self.pane_rects = new_pane_rects;
+        let preview_px = (
+            (new_pane_rects.preview.width as f32 * self.canvas.cell_w()) as u32,
+            (new_pane_rects.preview.height as f32 * self.canvas.cell_h()) as u32,
+        );
+        self.pane_rects = PaneRects { preview_px, ..new_pane_rects };
         self.chat.set_foot(chat_foot);
         self.nav_spill.publish(nav_spill_segs_out);
 

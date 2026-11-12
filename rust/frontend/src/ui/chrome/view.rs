@@ -336,6 +336,7 @@ impl ChromeView<'_> {
             preview: preview_rect,
             llm: llm_rect,
             repl: repl_rect,
+            preview_px: (0, 0),
         };
         self.preview_cells = preview_cells;
         self.repl_cells = repl_cells;
