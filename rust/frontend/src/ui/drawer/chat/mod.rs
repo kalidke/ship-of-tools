@@ -14,6 +14,7 @@ use sot_platform::host::env::Env;
 
 mod compose;
 mod drawer;
+mod mrkdwn;
 mod owner;
 mod project;
 mod row_channel;
@@ -27,6 +28,8 @@ pub(in crate::ui) use view::ChatView;
 use owner::Out;
 #[cfg(test)]
 mod compose_tests;
+#[cfg(test)]
+mod mrkdwn_tests;
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]

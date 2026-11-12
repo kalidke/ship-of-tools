@@ -2,6 +2,7 @@
 //! to make a line read as another message's header or badge. Pure; the view that shapes the spans styles each kind.
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime};
+use super::mrkdwn::styled;
 use sot_protocol::page_reply::unsafe_char;
 use sot_protocol::chat::{ChatRecord, Origin, TextSegment, text_segments};
 
@@ -30,6 +31,8 @@ pub(super) enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct Span {
     pub kind: Kind,
+    /// Slack's inline styles (`mrkdwn`'s bits), only ever on a body's text and tokens.
+    pub style: u8,
     pub text: String,
 }
 
@@ -95,7 +98,7 @@ fn last_reply(ts: &str, now: i64, offset: FixedOffset) -> String {
 /// continuation, which has none, and a divider's line comes first when the record starts a local day; the body follows, then each meta item on its own line. A deleted message (the owner
 /// knows it) is its header, if any, and `(message deleted)` alone.
 pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offset: FixedOffset, deleted: bool) -> Vec<Span> {
-    let span = |kind, text: String| Span { kind, text };
+    let span = |kind, text: String| Span { kind, style: 0, text };
     let mut out = Vec::new();
     if !continues(r, prev, offset) {
         if starts_day(r, prev, offset) {
@@ -116,12 +119,11 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
         out.push(span(Kind::Meta, "(message deleted)".to_string()));
         return out;
     }
-    for seg in text_segments(&r.text) {
-        out.push(match seg {
-            TextSegment::Text(t) => span(Kind::Body, literal(&t)),
-            TextSegment::Markup(t) => span(Kind::Markup, literal(&t)),
-        });
-    }
+    let segments = text_segments(&r.text).into_iter().map(|seg| match seg {
+        TextSegment::Text(t) => TextSegment::Text(literal(&t)),
+        TextSegment::Markup(t) => TextSegment::Markup(literal(&t)),
+    });
+    out.extend(styled(segments).into_iter().map(|p| Span { kind: if p.markup { Kind::Markup } else { Kind::Body }, style: p.style, text: p.text }));
     // Each meta item is one line of spans: its kinds, in order.
     let mut meta: Vec<Vec<(Kind, String)>> = Vec::new();
     for f in &r.files {

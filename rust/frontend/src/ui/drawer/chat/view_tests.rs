@@ -1,4 +1,5 @@
 use super::owner::{ChatOwner, Out};
+use super::mrkdwn::{BOLD, CODE, ITALIC, STRIKE};
 use super::project::{project, Kind};
 use super::view::*;
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;
@@ -1462,4 +1463,59 @@ fn a_divider_wrapped_in_a_narrow_drawer_keeps_the_tile_below_it() {
     let quads = view.backs(DRAWER);
     let tile = quads.iter().find(|q| TILES.contains(&q.color)).unwrap();
     assert!(near(tile.y, body_of_drawer().y + view.placed_tops()[0] + lines.iter().sum::<f32>() + 2.0), "{tile:?} {lines:?}");
+}
+
+/// Inline code is monospace and orange on a filled, bordered rectangle padded 3 px, and strike is a 1 px rule through its run:
+/// both rectangles come from the glyphs' flags, so no text draws one without the styles, and the markers are gone from the
+/// shown text and from the copy.
+#[test]
+fn code_and_strike_draw_their_rects_from_glyph_flags() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "plain `code` and ~struck~ *bold* _it_")];
+    for scale in [1.0_f32, 1.5] {
+        let records: Vec<&ChatRecord> = held.iter().collect();
+        let mut view = ChatView::default();
+        view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        let quads = view.backs(DRAWER);
+        let buffers = view.placed_buffers();
+        let shown: Vec<&str> = buffers[0].lines.iter().map(|l| l.text()).collect();
+        assert_eq!(shown[2], "plain code and struck bold it", "the markers leave the shown text");
+        let body = body_of_drawer();
+        let top = body.y + view.placed_tops()[0];
+        let run = buffers[0].layout_runs().find(|r| r.line_i == 2).expect("the body line");
+        // The glyphs of a flag: their left edge, their right edge and their count.
+        let flagged = |flag: usize| {
+            let g: Vec<_> = run.glyphs.iter().filter(|g| g.metadata & flag != 0).collect();
+            (g.iter().map(|g| g.x).fold(f32::MAX, f32::min), g.iter().map(|g| g.x + g.w).fold(0.0, f32::max), g)
+        };
+        let text_x = body.x + GUTTER_PX * scale;
+        let (code, strike) = (styled_attrs(Kind::Body, CODE, scale), styled_attrs(Kind::Body, STRIKE, scale));
+        assert_ne!(code.metadata, strike.metadata);
+        assert_eq!(styled_attrs(Kind::Body, 0, scale).metadata, 0, "no style, no flag");
+        let (left, right, glyphs) = flagged(code.metadata);
+        assert_eq!(glyphs.len(), 4);
+        assert!(glyphs.iter().all(|g| near(g.font_size, 14.0 * scale) && g.color_opt == Some(cosmic_text::Color::rgb(0xE8, 0x91, 0x2D))));
+        let border = badges_in(&view, &quads);
+        assert_eq!(border.len(), 1, "{border:?}");
+        let pad = 3.0 * scale;
+        assert!(near(border[0].x, text_x + left - pad) && near(border[0].w, right - left + 2.0 * pad), "{:?}", border[0]);
+        assert!(border[0].y >= top + run.line_top && border[0].y + border[0].h <= top + run.line_top + run.line_height, "{:?}", border[0]);
+        let fill = of_color(&quads, BAND);
+        assert_eq!(fill.len(), 1, "no mark: the fill alone");
+        assert!(near(fill[0].x, border[0].x + scale) && near(fill[0].y, border[0].y + scale) && near(fill[0].w, border[0].w - 2.0 * scale) && near(fill[0].h, border[0].h - 2.0 * scale), "{:?}", fill[0]);
+        let (left, right, glyphs) = flagged(strike.metadata);
+        assert_eq!(glyphs.len(), 6);
+        let rule = of_color(&quads, (0xD1, 0xD2, 0xD3));
+        assert_eq!(rule.len(), 1, "{rule:?}");
+        assert!(near(rule[0].x, text_x + left) && near(rule[0].w, right - left) && near(rule[0].h, scale), "{:?}", rule[0]);
+        assert!(near(rule[0].y + rule[0].h / 2.0, top + run.line_top + run.line_height / 2.0), "{:?}", rule[0]);
+        // Bold and italic are the font's weight and style.
+        assert_eq!(styled_attrs(Kind::Body, BOLD, scale).weight, cosmic_text::Weight::BOLD);
+        assert_eq!(styled_attrs(Kind::Body, ITALIC, scale).style, cosmic_text::Style::Italic);
+        assert_ne!(styled_attrs(Kind::Body, 0, scale).weight, cosmic_text::Weight::BOLD);
+        // The copy follows the shown text.
+        view.mark = Some(held[0].ts.clone());
+        view.layout(&mut fonts, &plain(&records), body_of_drawer(), scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        assert_eq!(view.marked_text().as_deref(), Some("plain code and struck bold it"));
+    }
 }

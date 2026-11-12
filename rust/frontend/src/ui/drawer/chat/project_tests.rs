@@ -1,3 +1,4 @@
+use super::mrkdwn::{BOLD, CODE, ITALIC};
 use super::project::*;
 use sot_protocol::chat::ChatRecord;
 
@@ -30,7 +31,10 @@ fn chat_markup_and_hostile_text_remain_literal() {
     assert_eq!(b("<@U1>"), [(Kind::Markup, "<@U1>".to_string())]);
     assert_eq!(b("<https://x?a=1&amp;b=2|y>"), [(Kind::Markup, "<https://x?a=1&b=2|y>".to_string())]);
     assert_eq!(b("<@U1|a\0b>"), [(Kind::Markup, "<@U1|a\u{fffd}b>".to_string())]);
-    assert_eq!(b("*bold*\ta\r\nb\rc\0d\u{85}e"), [(Kind::Body, "*bold*\ta\nb\nc\u{fffd}d\u{fffd}e".to_string())]);
+    // Styled text loses its markers; the controls and line ends around it are as ever.
+    assert_eq!(b("*bold*\ta\r\nb\rc\0d\u{85}e"), [(Kind::Body, "bold".to_string()), (Kind::Body, "\ta\nb\nc\u{fffd}d\u{fffd}e".to_string())]);
+    assert_eq!(b("*bold\ta\r\nb*"), [(Kind::Body, "*bold\ta\nb*".to_string())]);
+    assert_eq!(b("`<@U1|a\0b>` &lt;@U1&gt;"), [(Kind::Body, "<@U1|a\u{fffd}b>".to_string()), (Kind::Body, " <@U1>".to_string())]);
 
     let mut r = rec("hi");
     r.author.name = "Eve\u{202e}\nAda 12:00".to_string();
@@ -48,6 +52,22 @@ fn chat_markup_and_hostile_text_remain_literal() {
     assert!(fake.iter().all(|(k, _)| *k == Kind::Body));
     let all = spans(&rec("Ada 12:00\nx"));
     assert!(matches!(all[0].kind, Kind::Name) && all[2..].iter().all(|s| !is_header(s.kind)));
+}
+
+/// No markup makes a header: a body that styles its first words like a header's has the body's kind, never the name's or
+/// the time's, and its styles are bits on body spans.
+#[test]
+fn no_body_markup_makes_a_header() {
+    let first = at("1700000000.000000");
+    let mut next = at("1700000060.000000");
+    next.text = "*Ada* _2:14 PM_ `ROW`".to_string();
+    let spans = project(&next, Some(&first), NOW, utc(), false);
+    assert!(spans.iter().all(|s| s.kind == Kind::Body && !is_header(s.kind)), "{spans:?}");
+    let shown: Vec<_> = spans.iter().map(|s| (s.text.as_str(), s.style)).collect();
+    assert_eq!(shown, [("Ada", BOLD), (" ", 0), ("2:14 PM", ITALIC), (" ", 0), ("ROW", CODE)]);
+    // Alone, the record has one header, and the styled body follows it.
+    let all = project(&next, None, NOW, utc(), false);
+    assert_eq!(all.iter().filter(|s| is_header(s.kind)).count(), 2);
 }
 
 /// The kinds only a header has.

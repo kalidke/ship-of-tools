@@ -8,6 +8,7 @@ use cosmic_text::{Align, Attrs, Buffer, Color, Cursor, Family, FontSystem, Metri
 use sot_protocol::chat::{ChatAuthor, ChatRecord, Ts};
 
 use super::owner::ts_order;
+use super::mrkdwn::{BOLD, CODE, ITALIC, STRIKE};
 use super::project::{clock, project, Kind, Span};
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
@@ -25,10 +26,12 @@ const TEXT: (u8, u8, u8) = (0xD1, 0xD2, 0xD3);
 const MUTED: (u8, u8, u8) = (0x9A, 0x9C, 0x9E);
 /// The badge's fill.
 const LOW: (u8, u8, u8) = (0x32, 0x35, 0x38);
-/// The mark's band.
+/// The mark's band, and an inline code's fill.
 const BAND: (u8, u8, u8) = (0x21, 0x24, 0x28);
 const SKY: (u8, u8, u8) = (0x1D, 0x9B, 0xD1);
 const SELECTION: (u8, u8, u8) = (0x1B, 0x43, 0x56);
+/// Inline code's text: the one value here that is not the chart's, chosen to read as code on `BAND`.
+const CODE_TEXT: (u8, u8, u8) = (0xE8, 0x91, 0x2D);
 /// The mark's bar at the record's left edge, in pixels at text scale 1.
 const MARK_BAR_PX: f32 = 2.0;
 /// A badge's rectangle spans this part of the header line, starting this far down it (the rest is above and below).
@@ -38,6 +41,14 @@ const BADGE_HEIGHT: f32 = 0.6;
 const BADGE: usize = 0x01;
 /// The same for a day divider's label, which its pill is drawn around.
 const DAY: usize = 0x02;
+/// The glyph flags of inline code, whose rectangle is drawn behind it, and of strike, which a rule is drawn through.
+const CODE_RUN: usize = 0x04;
+const STRIKE_RUN: usize = 0x08;
+/// Inline code's size (of the body's 15), and its rectangle's padding left and right and its inset top and bottom, in pixels
+/// at text scale 1.
+const CODE_SIZE: f32 = 14.0;
+const CODE_PAD_PX: f32 = 3.0;
+const CODE_INSET_PX: f32 = 2.0;
 /// A divider's line, in pixels at text scale 1: its height, and the label's size (of the body's 15). The pill is a body line
 /// tall and centered in it, and the rule runs from the tile's left edge to the pill and from it to the same distance from the
 /// right edge.
@@ -152,6 +163,25 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
         Kind::Markup => a.color(rgb(SKY)),
         Kind::Meta => a.style(Style::Italic).color(rgb(MUTED)),
     }
+}
+
+/// `attrs`, and a span's inline styles: weight, slant, the strike's glyph flag, and code's monospace face, size, color and
+/// glyph flag. Code takes no other style.
+pub(super) fn styled_attrs(kind: Kind, style: u8, scale: f32) -> Attrs<'static> {
+    let mut a = attrs(kind, scale);
+    if style & CODE != 0 {
+        return a.family(Family::Monospace).color(rgb(CODE_TEXT)).metrics(Metrics::new(BODY_SIZE * scale * CODE_SIZE / 15.0, BODY_LINE_H * scale)).metadata(CODE_RUN);
+    }
+    if style & BOLD != 0 {
+        a = a.weight(Weight::BOLD);
+    }
+    if style & ITALIC != 0 {
+        a = a.style(Style::Italic);
+    }
+    if style & STRIKE != 0 {
+        a = a.metadata(a.metadata | STRIKE_RUN);
+    }
+    a
 }
 
 /// A buffer is shaped for its spans at a width and text scale (the floats' bits).
@@ -468,6 +498,15 @@ impl ChatView {
                 out.extend(quad(pill, LOW));
                 out.extend(quad(ScreenRect { x: pill.x + scale, y: pill.y + scale, w: w - 2.0 * scale, h: line - 2.0 * scale }, BG));
             }
+            // Inline code is a bordered fill around its run, padded left and right; strike is a rule through the middle of its.
+            for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & CODE_RUN != 0) {
+                let outer = ScreenRect { x: text.x + x - CODE_PAD_PX * scale, y: all.y + y + CODE_INSET_PX * scale, w: w + 2.0 * CODE_PAD_PX * scale, h: h - 2.0 * CODE_INSET_PX * scale };
+                out.extend(quad(outer, LOW));
+                out.extend(quad(ScreenRect { x: outer.x + scale, y: outer.y + scale, w: outer.w - 2.0 * scale, h: outer.h - 2.0 * scale }, BAND));
+            }
+            for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & STRIKE_RUN != 0) {
+                out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + (h - scale) / 2.0, w, h: scale }, TEXT));
+            }
             // A badge's rectangle is its run of glyphs, which include its padding (`project`), so a wrapped line never cuts it.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & BADGE != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
@@ -532,7 +571,7 @@ fn shape(fonts: &mut FontSystem, spans: &[Span], width: f32, scale: f32) -> Shap
     let mut buffer = Buffer::new(fonts, Metrics::new(BODY_SIZE * scale, BODY_LINE_H * scale));
     buffer.set_size(fonts, Some(width), None);
     let default = Attrs::new().family(Family::SansSerif);
-    set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), attrs(s.kind, scale))), default, Shaping::Advanced);
+    set_buffer_rich_text(&mut buffer, fonts, spans.iter().map(|s| (s.text.as_str(), styled_attrs(s.kind, s.style, scale))), default, Shaping::Advanced);
     if spans.first().is_some_and(|s| s.kind == Kind::Day) {
         buffer.lines[0].set_align(Some(Align::Center));
     }
