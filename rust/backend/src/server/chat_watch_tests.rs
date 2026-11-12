@@ -8,7 +8,7 @@ use crate::chat::{row_facts, Chat, Status};
 use crate::lifecycle::retire::{Participant, Registry};
 use serde_json::{json, Value};
 use sot_chat::config::{self, CONFIG_FILE};
-use sot_chat::fake_slack::{eventually, FakeSlack, Identity, Reply};
+use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Reply};
 use sot_chat::service::Status as ServiceStatus;
 use sot_platform::test_hold::Holds;
 use sot_protocol::ops::{ChatChannel, ChatTarget, ChatWatchState};
@@ -43,6 +43,9 @@ pub(super) struct Levers {
     pub(super) feed: tokio::sync::mpsc::UnboundedSender<Value>,
     /// Envelopes the socket's client acknowledged.
     pub(super) acked: Arc<AtomicUsize>,
+    /// When set, the channel the fake's history and replies answer as measured (`fake_slack::History`), in place of the
+    /// empty page.
+    pub(super) channel: Arc<Mutex<Option<Arc<History>>>>,
     /// History calls that reached the fake, counted before the gate.
     histories: Arc<AtomicUsize>,
     /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
@@ -60,10 +63,11 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         gate: Arc::new(Mutex::new(None)),
         feed,
         acked: Arc::new(AtomicUsize::new(0)),
+        channel: Arc::new(Mutex::new(None)),
         histories: Arc::new(AtomicUsize::new(0)),
         hello: Arc::new(tokio::sync::Semaphore::new(1000)),
     };
-    let (mode, gate, acked, histories, hello) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone());
+    let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -76,6 +80,10 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         if path.ends_with("/apps.connections.open") {
             let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
             return Reply::json(&json!({"ok": true, "url": url}));
+        }
+        let played = channel.lock().unwrap().clone();
+        if let (Some(h), true) = (played, path.ends_with("/conversations.history") || path.ends_with("/conversations.replies")) {
+            return h.answer(seen);
         }
         if path.ends_with("/conversations.history") {
             histories.fetch_add(1, Ordering::SeqCst);

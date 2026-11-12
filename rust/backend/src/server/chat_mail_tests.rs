@@ -12,7 +12,8 @@ use crate::rows::{Workspace, Workspaces};
 use serde_json::{json, Value};
 use sot_chat::config;
 use sot_chat::delivery::Timing;
-use sot_chat::fake_slack::FakeSlack;
+use sot_chat::fake_slack::{FakeSlack, History};
+use sot_protocol::chat::Ts;
 use sot_protocol::ops::{ChatChannel, ChatTarget};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -71,6 +72,21 @@ impl World {
         self.inbox().iter().filter_map(|m| m.lines().nth(1)?.strip_prefix("ts=")?.split(' ').next().map(str::to_string)).collect()
     }
 
+    /// The chat's state folder, on this daemon's disk.
+    fn state_dir(&self) -> std::path::PathBuf {
+        sot_platform::host::state_dir::daemon_state_dir_in(&self.home.env).join("chat")
+    }
+
+    /// The boundary the channel's state file holds, once a pass has committed one.
+    fn boundary(&self) -> Option<String> {
+        std::fs::read_to_string(self.state_dir().join("delivery-T0AAAA-C0AAAA")).ok().map(|t| t.trim().to_string())
+    }
+
+    /// The inbox of `handle`, as it is on disk now: how many filings it holds.
+    fn count_in(&self, handle: &str) -> usize {
+        std::fs::read_to_string(self.th.home.join("inbox").join(format!("{handle}.jsonl"))).map_or(0, |t| t.lines().count())
+    }
+
     async fn filed_count(&self, n: usize) {
         until("the filings", || self.inbox().len() >= n).await;
     }
@@ -81,6 +97,17 @@ fn send(lv: &Levers, n: u32, envelope: &str) {
     let mut event = message("C0AAAA", n);
     event["envelope_id"] = json!(envelope);
     lv.feed.send(event).unwrap();
+}
+
+/// The channel the fake's history plays: the posts `ns` of `stamp`.
+fn posts(ns: &[u32]) -> History {
+    ns.iter().fold(History::new(), |h, n| h.post(&stamp(*n)))
+}
+
+fn serve(lv: &Levers, channel: History) -> Arc<History> {
+    let channel = Arc::new(channel);
+    *lv.channel.lock().unwrap() = Some(channel.clone());
+    channel
 }
 
 /// Retire the chat, wait until its service has stopped (its lock freed), and let it go.
@@ -160,6 +187,8 @@ async fn a_restart_after_live_filings_files_nothing_again() {
 async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     let w = world(true).await;
     // The other computer's filing of the first post is in an inbox that cannot be read now (a directory in its place).
+    // The first post is in the channel's history only: a pass is the one thing that could file it again.
+    serve(&w.lv, posts(&[1, 2]));
     let inbox = w.th.home.join("inbox").join("b.jsonl");
     let before = sot_chat::mail::body(&post_record(1));
     std::fs::write(&inbox, format!("{}\n", json!({"from": "#chat", "to": "b", "repo": "daemon", "msg": before, "ts": "2026-01-01T00:00:00Z"}))).unwrap();
@@ -167,18 +196,92 @@ async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     std::fs::remove_file(&inbox).unwrap();
     std::fs::create_dir(&inbox).unwrap();
     let _chat = w.start(&w.fake).await;
-    send(&w.lv, 1, "e1");
     send(&w.lv, 2, "e2");
-    until("both events taken", || w.lv.acked.load(Ordering::SeqCst) >= 2).await;
-    // Several tries on the backoff go by, and nothing is filed.
+    until("the event taken", || w.lv.acked.load(Ordering::SeqCst) >= 1).await;
+    // Several tries on the backoff go by, and nothing is filed and no pass is made.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(w.inbox(), Vec::<String>::new(), "a post was filed while an inbox could not be read");
-    // Once it reads, the post it holds is not filed again, and the other is.
+    assert_eq!((w.inbox(), w.boundary()), (Vec::<String>::new(), None), "a post was filed or passed while an inbox could not be read");
+    // Once it reads, the first pass files nothing the inbox holds, and files the other post once.
     std::fs::remove_dir(&inbox).unwrap();
     std::fs::write(&inbox, kept).unwrap();
-    w.filed_count(1).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(w.filed(), vec![stamp(2)]);
+    until("the first pass's commit", || w.boundary().is_some()).await;
+    send(&w.lv, 3, "e3");
+    until("the new post", || w.filed().contains(&stamp(3))).await;
+    assert_eq!(w.filed(), vec![stamp(2), stamp(3)]);
+}
+
+/// A first run on `w` against `fake`: the channel holds posts 1 and 2, the socket sends 1, and the first pass files what
+/// the socket did not; returns once the first pass has committed.
+async fn first_run(w: &World) {
+    let (fake, lv) = live().await;
+    serve(&lv, posts(&[1, 2]));
+    let chat = w.start(&fake).await;
+    send(&lv, 1, "e1");
+    w.filed_count(2).await;
+    until("the first pass's commit", || w.boundary().is_some()).await;
+    stop(chat);
+}
+
+/// A new chat on the same folders, against a fake that holds the same channel and then a new post; returns once its first
+/// pass has committed a boundary other than `not` and the new post is filed.
+async fn second_run(w: &World, not: Option<String>) -> Arc<Chat> {
+    let (fake, lv) = live().await;
+    serve(&lv, posts(&[1, 2]));
+    let chat = w.start(&fake).await;
+    until("the second run's first pass's commit", || w.boundary().is_some() && w.boundary() != not).await;
+    // The pass committed below the posts, before any filing of its own would have returned. A new post, filed last, says
+    // the pass's candidates (queued before it) have been filed, if they were going to be.
+    send(&lv, 3, "e3");
+    until("the new post", || w.filed().contains(&stamp(3))).await;
+    chat
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_state_folder_after_live_filings_files_nothing_twice() {
+    let w = world(true).await;
+    first_run(&w).await;
+    // The row's handle changed since, so its filings are in the inbox of one no row holds now; the state folder is new.
+    let inbox = w.th.home.join("inbox");
+    std::fs::rename(inbox.join("alpha-h.jsonl"), inbox.join("gone-h.jsonl")).unwrap();
+    std::fs::remove_dir_all(w.state_dir()).unwrap();
+    let _chat = second_run(&w, None).await;
+    assert_eq!((w.count_in("alpha-h"), w.count_in("gone-h")), (1, 2), "the first pass of a new state folder filed a post again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_file_older_than_the_inboxes_files_nothing_twice() {
+    let w = world(true).await;
+    first_run(&w).await;
+    // The state folder restored from a copy that is older than the filings: its boundary lies below both posts.
+    let old = Ts::parse("1700000000.000000").unwrap();
+    sot_chat::state::write(&w.state_dir(), "T0AAAA", "C0AAAA", &old).unwrap();
+    let _chat = second_run(&w, Some(old.as_str().to_string())).await;
+    assert_eq!(w.count_in("alpha-h"), 3, "the first pass of an old state file filed a post again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_of_50000_roots_completes_its_passes_moves_the_boundary_and_files_an_old_threads_reply() {
+    let w = world(true).await;
+    // 50,000 roots since the floor; the state file's boundary is at the 49,999th; the newest root and a reply under the
+    // first root, which lies at the floor's end of the walk, are the only mail past it.
+    let at = |i: u64| format!("{}.000100", 1_700_200_000 + i);
+    let (reply, newest) = ("1700250005.000100", "1700250010.000100");
+    let mut channel = History::new().parent(&at(1), reply).reply(&at(1), reply);
+    for i in 2..50_000 {
+        channel = channel.post(&at(i));
+    }
+    let channel = serve(&w.lv, channel.post(newest));
+    std::fs::create_dir_all(w.state_dir()).unwrap();
+    let old = Ts::parse(&at(49_999)).unwrap();
+    sot_chat::state::write(&w.state_dir(), "T0AAAA", "C0AAAA", &old).unwrap();
+    let _chat = w.start(&w.fake).await;
+    until("the pass's commit", || w.boundary().is_some_and(|b| b != old.as_str())).await;
+    w.filed_count(2).await;
+    assert_eq!(w.boundary().as_deref(), Some("1700250008.000100"), "the boundary moves to the horizon, two seconds below the newest post");
+    assert_eq!(w.filed(), vec![reply.to_string(), newest.to_string()]);
+    assert!(w.inbox()[0].contains(&format!("in the thread of {}", at(1))), "{}", w.inbox()[0]);
+    let reads = channel.asked().len();
+    assert!(reads <= 53, "{reads} reads for a channel of 50,000 roots");
 }
 
 /// The record a member's first post makes, as the daemon files it.

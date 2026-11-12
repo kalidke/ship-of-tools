@@ -73,7 +73,6 @@ pub(crate) async fn append(env: &Env, to: &Recipient, record: &ChatRecord) -> Re
 
 /// The commit: `boundary` written durably to the channel's file in `dir`, which is made private first. A failed write
 /// leaves the old file, which only costs the next start reads; the owner logs the code and goes on. Blocking.
-#[allow(dead_code, reason = "the pass landing commits a boundary")]
 pub(crate) fn commit(dir: &Path, workspace: &str, channel: &str, boundary: &Ts) -> Result<(), StateError> {
     sot_platform::host::paths::ensure_private_dir(dir).map_err(|_| StateError::Unwritable)?;
     state::write(dir, workspace, channel, boundary)

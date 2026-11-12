@@ -15,6 +15,7 @@ use sot_chat::api::{Bounds, HistoryQuery};
 use sot_chat::delivery::{Action, Delivery, Filing, Timing, Verdict};
 use sot_chat::mail::Filed;
 use sot_chat::service::{Service, Status};
+use sot_chat::traverse::{self, Order, Passed};
 use sot_chat::watch::{Arrived, Loaded, State, Wake, Watches, MAX_CHANNELS, MAX_KEPT};
 use sot_platform::host::env::Env;
 use sot_protocol::chat::{ChatRecord, Ts};
@@ -25,6 +26,7 @@ use tokio::sync::{broadcast, mpsc, Notify};
 
 use super::ops::{admitted, code_of};
 use super::{mail, Chat};
+use crate::comm::registry::registry::unix_now_secs;
 use crate::rows::Workspaces;
 
 /// The wait between a snapshot refused `busy` and its next attempt, and the attempts before the watch is told to resync.
@@ -261,11 +263,17 @@ enum Done {
     /// The start's read of the inboxes.
     Read(Vec<Filed>),
     Filed { channel: String, ts: Ts, live: bool, result: Result<(), String> },
+    Passed(String, Passed),
+    /// The pass was not made, for a fixed code (no recipient, a stopped service, a job that did not finish).
+    Skipped(String, &'static str),
 }
 
 /// The pure `Delivery` and what its owner keeps to run it: each job's handle and the instant to ask again.
 struct Mail {
     delivery: Delivery,
+    workspace: String,
+    /// The state folder, on this computer's disk.
+    dir: std::path::PathBuf,
     /// Channel and its mapped folder.
     folders: Vec<(String, String)>,
     tx: mpsc::Sender<Done>,
@@ -299,6 +307,31 @@ async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
         api.fill_names(std::slice::from_mut(&mut f.record)).await;
     }
     Done::Filed { result: mail::file(&env, &rows, &folder, &f.record).await, channel: f.channel, ts: f.record.ts, live: f.live }
+}
+
+/// One pass: the recipient first (an absent one costs no read), then the walk to the clock's reading now.
+async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, order: Order, pace: Duration) -> Done {
+    let channel = order.state.channel().to_string();
+    match tokio::task::spawn_blocking(move || mail::recipient(&rows, &folder, &env, unix_now_secs())).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(code)) => return Done::Skipped(channel, code),
+        Err(_) => return Done::Skipped(channel, "recipient_failed"),
+    }
+    let (Ok(api), Ok(now)) = (service.api(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)) else { return Done::Skipped(channel, "stopped") };
+    let Ok(upper) = Ts::parse(&format!("{}.{:06}", now.as_secs(), now.subsec_micros())) else { return Done::Skipped(channel, "clock") };
+    Done::Passed(channel, traverse::pass(&api, &order, &upper, pace).await)
+}
+
+/// Runs `job` on a task of its own and sends its answer; a job that panics or is cancelled answers `failed`, so the
+/// delivery's one filing or pass in flight always returns.
+fn run_job(tx: mpsc::Sender<Done>, job: impl Future<Output = Done> + Send + 'static, failed: Done) {
+    drop(tokio::spawn(async move {
+        let done = tokio::spawn(job).await.unwrap_or_else(|e| {
+            tracing::warn!(cancelled = e.is_cancelled(), "project chat: a delivery job did not finish");
+            failed
+        });
+        drop(tx.send(done).await)
+    }));
 }
 
 fn held(w: &Watches, channel: &str) -> Vec<ChatRecord> {
@@ -410,12 +443,13 @@ impl Own {
         }
         let timing = *lock(&self.hub.timing);
         drop(tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing)));
-        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), folders, tx, wake: None })
+        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: config.workspace().into(), dir, folders, tx, wake: None })
     }
 
     /// A job came back: the delivery learns its result, and the daemon's log gets one line (fixed codes and ids, no text).
     fn returned(&mut self, done: Done) {
         let Some(m) = &mut self.mail else { return };
+        let now = std::time::Instant::now();
         let over = match done {
             Done::Read(filings) => {
                 for (channel, _) in &m.folders {
@@ -426,7 +460,17 @@ impl Own {
             Done::Filed { channel, ts, live, result } => {
                 let reason = result.as_ref().err().map(|e| e.split(':').next().unwrap_or_default().to_string());
                 tracing::info!(channel, ts = ts.as_str(), source = if live { "live" } else { "pass" }, filed = result.is_ok(), reason, "project chat: mail");
-                m.delivery.filed(std::time::Instant::now(), if result.is_ok() { Verdict::Filed } else { Verdict::Refused })
+                m.delivery.filed(now, if result.is_ok() { Verdict::Filed } else { Verdict::Refused })
+            }
+            Done::Passed(channel, p) => {
+                tracing::info!(channel, outcome = ?p.outcome, reads = p.reads, mail = p.mail.len(), limited = p.limited, skipped = p.skipped, "project chat: pass");
+                m.delivery.passed(now, p);
+                false
+            }
+            Done::Skipped(channel, code) => {
+                tracing::info!(channel, code, "project chat: pass skipped");
+                m.delivery.pass_skipped(now);
+                false
             }
         };
         if over {
@@ -434,27 +478,31 @@ impl Own {
         }
     }
 
-    /// Ask the delivery what to do next and start it, until it has nothing to do now. Passes and the boundary's commit are
-    /// not built yet: a pass is answered as skipped, so no read is made, and no pass settles into a commit.
+    /// Ask the delivery what to do next and start it, until it has nothing to do now. A commit is not answered: the
+    /// delivery has moved its boundary in memory, a write that fails leaves the old file (a stale file only costs the next
+    /// start reads), and the task that writes it logs the failure.
     fn drive(&mut self) {
         let Some(m) = &mut self.mail else { return };
         loop {
+            let folder = |channel: &str| m.folders.iter().find(|(c, _)| c == channel).map(|(_, folder)| folder.clone()).unwrap_or_default();
+            let (env, rows, service, tx) = (self.chat.env.clone(), self.rows.clone(), self.service.clone(), m.tx.clone());
             match m.delivery.poll(std::time::Instant::now()) {
                 Action::File(f) => {
-                    let folder = m.folders.iter().find(|(c, _)| *c == f.channel).map(|(_, folder)| folder.clone()).unwrap_or_default();
-                    let (env, rows, service, tx) = (self.chat.env.clone(), self.rows.clone(), self.service.clone(), m.tx.clone());
-                    let (channel, ts, live) = (f.channel.clone(), f.record.ts.clone(), f.live);
-                    // A job that panics or is cancelled still answers, so the delivery's one filing in flight returns.
-                    drop(tokio::spawn(async move {
-                        let done = tokio::spawn(file_job(env, rows, service, folder, f)).await.unwrap_or_else(|e| {
-                            tracing::warn!(channel, ts = ts.as_str(), cancelled = e.is_cancelled(), "project chat: a filing job did not finish");
-                            Done::Filed { channel, ts, live, result: Err("job_failed".into()) }
-                        });
-                        drop(tx.send(done).await)
+                    let (folder, failed) = (folder(&f.channel), Done::Filed { channel: f.channel.clone(), ts: f.record.ts.clone(), live: f.live, result: Err("job_failed".into()) });
+                    run_job(tx, file_job(env, rows, service, folder, f), failed);
+                }
+                Action::Pass { order, pace } => {
+                    let channel = order.state.channel().to_string();
+                    run_job(tx, pass_job(env, rows, service, folder(&channel), order, pace), Done::Skipped(channel, "job_failed"));
+                }
+                Action::Commit { channel, boundary } => {
+                    let (dir, workspace) = (m.dir.clone(), m.workspace.clone());
+                    drop(tokio::task::spawn_blocking(move || {
+                        if let Err(code) = mail::commit(&dir, &workspace, &channel, &boundary) {
+                            tracing::warn!(?code, channel, "project chat: a boundary was not written");
+                        }
                     }));
                 }
-                Action::Pass { .. } => m.delivery.pass_skipped(std::time::Instant::now()),
-                Action::Commit { .. } => {}
                 Action::Idle(at) => return m.wake = at.map(tokio::time::Instant::from_std),
             }
         }
