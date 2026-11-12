@@ -234,16 +234,16 @@ async fn a_refusal_names_the_file_it_came_from() {
     let status = |home: &Home| begin(home, &[fact(&row, false)], &Observed::new(), &registry, never(&called)).status().to_string();
 
     home.secrets();
-    home.write(CONFIG_FILE, "workspace = \"T0AAAA\"\nchannels = []\nid = \"T0AAAA\"\n");
+    home.write(CONFIG_FILE, "workspace = \"T0AAAA\"\nchannels = []\nbot_token = \"T0AAAA\"\n");
     let toml = status(&home);
     home.chat_toml(&[row.to_string_lossy().into_owned()]);
-    home.write(SECRETS_FILE, "workspace = \"T0AAAA\"\nbot_token = \"xoxb-1111-2222-aaaa\"\nid = \"T0AAAA\"\n");
+    home.write(SECRETS_FILE, "workspace = \"T0AAAA\"\nbot_token = \"xoxb-1111-2222-aaaa\"\nchannels = []\n");
     let secrets = status(&home);
     assert!(toml.contains(CONFIG_FILE) && !toml.contains(SECRETS_FILE), "{toml}");
     assert!(secrets.contains(SECRETS_FILE) && !secrets.contains(CONFIG_FILE), "{secrets}");
     // A key the file must not hold is named; no value from either file is.
-    for shown in [&toml, &secrets] {
-        assert!(shown.contains("\"id\"") && !shown.contains("xoxb") && !shown.contains("T0AAAA"), "{shown}");
+    for (shown, key) in [(&toml, "bot_token"), (&secrets, "channels")] {
+        assert!(shown.contains(&format!("\"{key}\"")) && !shown.contains("xoxb") && !shown.contains("T0AAAA"), "{shown}");
     }
 }
 

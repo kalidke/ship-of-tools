@@ -1,7 +1,7 @@
 //! The chat's configuration: `chat.toml` (the one workspace, its channels, the folder-to-channel mappings, an optional
 //! `mail_after`) and `chat-secrets.toml` (the workspace and its two tokens). Both sit in platform's config folder. Every
 //! refusal is a fixed code with a fixed explanation: a value from either file is never quoted, a key is quoted only
-//! from a fixed list of documented names (the caller says which file refused), and the library's own parse errors
+//! when a table of these files accepts it (the caller says which file refused), and the library's own parse errors
 //! (which quote the source) are never formatted. Reading the secrets is its own call, so a caller that is
 //! not the hub never opens that file.
 
@@ -68,7 +68,7 @@ pub enum ConfigError {
     BadId,
     BadMailAfter(Option<usize>),
     BadToken,
-    /// A key the file does not take: named when it is one of [`NAMED_KEYS`], else not named at all.
+    /// A key the file does not take: named when a table of the chat's files accepts it, else not named at all.
     UnknownKey(Option<&'static str>),
     SecondWorkspace,
     DuplicateChannel,
@@ -89,7 +89,7 @@ impl ConfigError {
             ConfigError::Malformed(_) => "a chat file is not valid: it must be text of at most 64 KiB, hold only the documented keys, each of the documented type",
             ConfigError::BadId => "a workspace or channel id is not a Slack id (capital letters and digits)",
             ConfigError::BadMailAfter(_) => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
-            ConfigError::BadToken => "a token in chat-secrets.toml is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
+            ConfigError::BadToken => "a token is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
             ConfigError::UnknownKey(_) => "a key this file does not take is present: each chat file holds only its own documented keys",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
@@ -157,18 +157,19 @@ fn parse_table(text: &str) -> Result<toml::Table, ConfigError> {
     })
 }
 
-/// The only key names a refusal may quote: every documented key of either file and a mapping, and the names a file of
-/// another form uses. A key from a file is otherwise as untrusted as a value, so any other is refused unnamed.
-const NAMED_KEYS: [&str; 12] = [
-    "workspace", "channels", "mail_after", "mapping", "folder", "channel", "bot_token", "app_token", "id", "token",
-    "bot", "app",
-];
+/// The keys each table accepts: `chat.toml`, one of its mappings, `chat-secrets.toml`.
+const CONFIG_KEYS: [&str; 4] = ["workspace", "channels", "mail_after", "mapping"];
+const MAPPING_KEYS: [&str; 4] = ["folder", "channel", "workspace", "mail_after"];
+const SECRETS_KEYS: [&str; 3] = ["workspace", "bot_token", "app_token"];
 
-/// Only the named keys may be present.
+/// Only the accepted keys may be present. A refusal names the stray key only when another table accepts it (a key of
+/// one file found in the other); a key from a file is otherwise as untrusted as a value, so it is refused unnamed.
 fn only(t: &toml::Table, keys: &[&str]) -> Result<(), ConfigError> {
     match t.keys().find(|k| !keys.contains(&k.as_str())) {
         None => Ok(()),
-        Some(k) => Err(ConfigError::UnknownKey(NAMED_KEYS.iter().copied().find(|n| n == k))),
+        Some(k) => Err(ConfigError::UnknownKey(
+            [&CONFIG_KEYS[..], &MAPPING_KEYS, &SECRETS_KEYS].into_iter().flatten().copied().find(|n| n == k),
+        )),
     }
 }
 
@@ -225,7 +226,7 @@ impl Config {
 
     pub fn parse(text: &str, rows: Rows) -> Result<Config, ConfigError> {
         let t = parse_table(text)?;
-        only(&t, &["workspace", "channels", "mail_after", "mapping"])?;
+        only(&t, &CONFIG_KEYS)?;
         let workspace = workspace(&t)?;
         let mut channels = Vec::new();
         for v in t
@@ -254,7 +255,7 @@ impl Config {
         for (i, m) in entries.iter().enumerate() {
             let at = i + 1;
             let m = m.as_table().ok_or(ConfigError::Malformed(None))?;
-            only(m, &["folder", "channel", "workspace", "mail_after"])?;
+            only(m, &MAPPING_KEYS)?;
             if let Some(w) = m.get("workspace") {
                 if id(w)? != workspace {
                     return Err(ConfigError::SecondWorkspace);
@@ -398,7 +399,7 @@ impl Credentials {
 
     pub fn parse(text: &str, config: &Config) -> Result<Credentials, ConfigError> {
         let t = parse_table(text)?;
-        only(&t, &["workspace", "bot_token", "app_token"])?;
+        only(&t, &SECRETS_KEYS)?;
         if workspace(&t)? != config.workspace {
             return Err(ConfigError::SecondWorkspace);
         }

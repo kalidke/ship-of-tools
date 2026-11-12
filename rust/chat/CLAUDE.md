@@ -196,9 +196,9 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    daemon's own `NotHub` (M2: the daemon decided it is not the hub before any load, because another daemon on a shared
    home has other rows and would read every mapping as unknown). A refusal is a `ConfigError` code: a
    mapping refusal carries the mapping's ordinal and a parse failure its line, and no value from either file is
-   quoted. A key the file does not take is `UnknownKey`, which names the key only when it is one of `NAMED_KEYS` (every
-   documented key of either file and a mapping, and `id`, `token`, `bot`, `app`), so a key chat.toml takes found in the
-   secrets file is named, and any other key, a token-shaped one included, is not; the library's parse errors, which
+   quoted. A key the file does not take is `UnknownKey`, which names the key only when a table of these files accepts it (the
+   lists `CONFIG_KEYS`, `MAPPING_KEYS` and `SECRETS_KEYS` that `only` checks are the only source), so a key chat.toml
+   takes found in the secrets file is named, and any other key, a token-shaped one included, is not; the library's parse errors, which
    quote the source, are never formatted. The code does not know its file: the daemon's `Status` display starts a
    refusal with the file it came from (`chat.toml: ...`, `chat-secrets.toml: ...`), the one text the log line carries
    (`chat.status` and `chat.resolve` carry no words). `chat-secrets.toml` has one form, the three top-level keys; the

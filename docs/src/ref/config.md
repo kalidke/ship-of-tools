@@ -287,8 +287,9 @@ editing either file, or adding a row for a mapped folder, restart the daemon (on
 rows keep running). A missing or refused `chat.toml`, or a missing or refused `chat-secrets.toml`, leaves the chat off.
 One refused mapping, such as a folder with no row at start, turns the chat off for every project. The reason is in the
 daemon's log, on the "project chat" line, as a fixed explanation that starts with the name of the file that was refused
-(`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a documented key that
-file does not take (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that Slack refuses or cannot reach (a rejected token, no network)
+(`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a key that the other
+file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that
+Slack refuses or cannot reach (a rejected token, no network)
 is logged as "project chat did not start" and stays failed until the daemon restarts.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.

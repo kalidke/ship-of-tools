@@ -428,7 +428,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         E::BadId,
         E::BadMailAfter(Some(2)),
         E::BadToken,
-        E::UnknownKey(Some("id")),
+        E::UnknownKey(Some("channels")),
         E::SecondWorkspace,
         E::DuplicateChannel,
         E::UnknownFolder(2),
@@ -449,7 +449,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
     }
     assert!(E::Malformed(Some(3)).to_string().ends_with("(line 3)"));
     assert!(E::UnknownFolder(2).to_string().ends_with("(mapping 2)"));
-    assert!(E::UnknownKey(Some("id")).to_string().ends_with("(key \"id\")"));
+    assert!(E::UnknownKey(Some("channels")).to_string().ends_with("(key \"channels\")"));
     assert_eq!(E::UnknownKey(None).to_string(), E::UnknownKey(None).explain());
     assert_eq!(E::Missing.to_string(), E::Missing.explain());
     // The files are named as the contract names them.
@@ -553,18 +553,24 @@ fn the_reference_samples_are_accepted_by_the_parsers() {
 #[test]
 fn a_secrets_refusal_names_the_key_the_file_must_not_hold_and_never_a_value() {
     let b = bot();
-    // A key chat.toml takes, and the live-test harness's `id`, in the secrets file: named, by the key alone.
-    for key in ["channels", "id", "mail_after"] {
+    // A key chat.toml takes, in the secrets file: named, by the key alone.
+    for key in ["channels", "mail_after"] {
         let shown = creds(&(secrets() + &format!("{key} = \"{b}\"\n"))).unwrap_err().to_string();
         assert!(shown.contains(&format!("\"{key}\"")), "{shown}");
         assert!(!shown.contains("sentinel"), "{shown}");
     }
-    // A key no one documents is never quoted, even when it looks like a token.
-    let shown = creds(&(secrets() + &format!("{b} = 1\n"))).unwrap_err().to_string();
-    assert!(!shown.contains("sentinel"), "{shown}");
-    // A mapping's stray key is named too.
-    let text = chat(&(mapping("/work/a", "C0AAAA") + "id = \"C0AAAA\"\n"));
-    assert!(parse(&text).unwrap_err().to_string().contains("\"id\""));
+    // A key of the secrets file, in chat.toml and in one of its mappings, is named too.
+    let top = parse(&chat("bot_token = \"x\"\n")).unwrap_err();
+    assert_eq!(top.to_string(), format!("{} (key \"bot_token\")", top.explain()));
+    let text = chat(&(mapping("/work/a", "C0AAAA") + "bot_token = \"x\"\n"));
+    assert!(parse(&text).unwrap_err().to_string().contains("\"bot_token\""));
+    // A key no file accepts is never quoted, whether it looks like a token or like a form another tool writes.
+    for key in [b.as_str(), "id", "token", "bot", "app"] {
+        let shown = creds(&(secrets() + &format!("{key} = 1\n"))).unwrap_err();
+        assert_eq!(shown, E::UnknownKey(None), "{key}");
+        assert_eq!(shown.to_string(), shown.explain());
+        assert_eq!(parse(&chat(&format!("{key} = 1\n"))).unwrap_err(), E::UnknownKey(None), "{key}");
+    }
 }
 
 #[test]
