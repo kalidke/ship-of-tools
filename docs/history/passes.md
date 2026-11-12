@@ -2146,3 +2146,13 @@ A landing's record goes here, with its measured times; the package page holds on
   50,000-root test failed by its wait rather than an assertion, and the guide and requirements said too little about
   what waits for what. Left as notes in the contract: two commits of one channel can fail on their shared temporary
   name, and a pass does not ask the hub check until the delivery's end order exists (B3i2c).
+- B3i2c, the delivery's end before the service stops, 2026-11-12: builder handed the landing at 10:52, main 11:43
+  (ce9737b9e, e136cb610), 51 minutes, a miss. About 60 product lines and 140 test lines, with the plan's comm_wake
+  characterization (a `#chat` line with a hostile body wakes a free Claude row with the fixed line alone), which the
+  plan had called green on main but which did not exist. Where the minutes went: the build 18 minutes, the gate 3, one
+  review round 11, one fix commit 15. Review round 1 (no blockers): aborting a pass detached its inner job, which kept
+  reading Slack up to 15 s after the end; a dead owner made every stop wait its full 15 s; the contract named the wrong
+  guarantee for a filing cut off by the daemon's exit (the next start's first pass finds it). A pass does not ask the
+  hub check, on the session's acceptance of the builder's reasons: a step-down ends it within a minute, it writes
+  nothing, and every filing asks first. B3i2's three landings took about 2 h 40 min for about 255 product lines against
+  the plan's 55.

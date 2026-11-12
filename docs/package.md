@@ -234,7 +234,9 @@ only when its filing returns so; passes owed and paced, each channel's own backo
 never reaches a post still pending), and the mail jobs (the recipient, the guarded filing behind the hub check, the
 boundary's write and the start's read of every inbox), and the daemon's live delivery (each new post of a delivering
 channel filed to its row after the start's read, one filing at a time) and its passes (posts refused or missed found
-and filed once, the boundary written after); the delivery's end before a step-down and the row replies are unbuilt;
+and filed once, the boundary written after), and the delivery's end before a step-down or a retirement (its filing in
+flight returned, its pass and read stopped), which completes the daemon's delivery; the row replies are unbuilt, and
+no hub maps a delivering channel yet;
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
