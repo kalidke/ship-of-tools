@@ -487,6 +487,47 @@ async fn a_failed_thread_read_keeps_the_mail_already_read_and_the_pass_incomplet
 }
 
 #[tokio::test]
+async fn a_thread_slack_says_is_not_found_reads_as_empty_and_is_counted() {
+    bounded(async {
+        // Two parents with a reply each; Slack has no thread for the newer parent (a deleted parent's, say) and serves the
+        // older one's. The pass goes on to the older thread, ends `Complete`, hands over its reply and counts the skip.
+        let h = History::new().parent(&at(1), &at(800)).parent(&at(2), &at(900)).reply(&at(1), &at(800));
+        let history = Arc::new(h);
+        let served = history.clone();
+        let (fake, api) = start(move |seen| match (seen.path().as_str(), seen.param("ts")) {
+            ("/api/conversations.replies", Some(parent)) if parent == at(2) => Reply::json(&json!({"ok": false, "error": "thread_not_found"})),
+            _ => served.answer(seen),
+        })
+        .await;
+        let got = pass(&api, &order(None, &[], None), &ts(U), NO_PACE).await;
+        assert_eq!((got.outcome.clone(), got.reads, got.skipped), (Outcome::Complete, 3, 1));
+        assert_eq!(mail_ts(&got), [at(1), at(2), at(800)], "the served thread's reply is handed over");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn any_other_slack_error_on_a_thread_read_still_ends_the_pass() {
+    bounded(async {
+        for code in ["channel_not_found", "internal_error"] {
+            let h = History::new().parent(&at(1), &at(800)).reply(&at(1), &at(800));
+            let history = Arc::new(h);
+            let served = history.clone();
+            let (fake, api) = start(move |seen| match seen.path().as_str() {
+                "/api/conversations.replies" => Reply::json(&json!({"ok": false, "error": code})),
+                _ => served.answer(seen),
+            })
+            .await;
+            let got = pass(&api, &order(None, &[], None), &ts(U), NO_PACE).await;
+            assert_eq!((got.outcome.clone(), got.skipped), (Outcome::ReadFailed, 0), "{code}");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn thread_reads_are_paced_and_counted_by_the_guard() {
     bounded(async {
         // A channel page and two threads: three reads, each at least the pace after the one before, and a guard of two

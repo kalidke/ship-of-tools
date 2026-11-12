@@ -390,7 +390,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    boundary back to the boundary, in fresh reads, and files and commits nothing.**
    `traverse::pass(api, order, upper, pace)` takes an `Order` (a snapshot of the channel's `State`, its floor, and the
    greatest `ts` the delivery was handed for it before the first read), the pass's upper bound U (the caller's clock,
-   passed in) and the pace between reads, and returns `Passed { horizon, mail, outcome, reads, limited }`. Every read is
+   passed in) and the pace between reads, and returns `Passed { horizon, mail, outcome, reads, limited, skipped }`. Every read is
    `Api::scan` at 999 with `oldest` = the floor, and `latest` = U on the first read and the oldest raw `ts` of the page
    before on each next one (the walk guarantee 11 records with its measurements), so a page of joins or tombstones moves it
    too. It ends at the first page that says `has_more: false`, full or not, never at an empty read after it, and reads on
@@ -403,8 +403,12 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    and 999 and with posts arriving). A thread ends at its first page with `has_more: false`, as the channel does, and a
    thread page that says more and lowers nothing is `ReadFailed`. A thread read is a read of the pass in every rule here:
    paced by `pace`, counted by `MAX_PASS_READS`, halved and made again when too large or slow, a 429 or `ratelimited`
-   ending the pass `RateLimited`, any other failure `ReadFailed` (a thread Slack will not serve ends the pass the same
-   way; that case was not measured, docs/defects.md: CHAT-DELETED-PARENT-THREAD-UNSERVED), `is_limited` ending nothing. The records of a thread join the one candidate set,
+   ending the pass `RateLimited`, any other failure `ReadFailed`, `is_limited` ending nothing. One answer is no failure on
+   a thread read: Slack's `thread_not_found` reads as an empty thread, the walk goes on to the next parent, the pass can
+   still end `Complete`, and `skipped` counts each such read. A channel read's `thread_not_found` is no special case (it
+   ends the pass `ReadFailed`). A reply under a thread Slack calls not found is never read, which loses nothing that
+   could be read; whether Slack serves a deleted parent's thread is unmeasured, so the rule's firing is not shown
+   (docs/defects.md: CHAT-DELETED-PARENT-THREAD-UNSERVED, closed). The records of a thread join the one candidate set,
    one record a `ts`: a broadcast reply, which the channel and its thread both list, is one candidate.
    `is_limited` is information only (`Passed.limited`): it ends
    nothing and fails nothing, so Slack's plan horizon is the walk's own bound. A page that passes its response bound

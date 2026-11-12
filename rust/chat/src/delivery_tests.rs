@@ -82,7 +82,7 @@ fn fresh_of(t0: Instant, boundary: Option<u64>, channels: &[&str]) -> Delivery {
 
 /// A pass's result: `mail` found, `horizon` seconds after the floor.
 fn passed(outcome: Outcome, horizon: u64, mail: &[u64]) -> Passed {
-    Passed { horizon: ts(&at(horizon)), mail: mail.iter().map(|n| post(*n)).collect(), outcome, reads: 1, limited: false }
+    Passed { horizon: ts(&at(horizon)), mail: mail.iter().map(|n| post(*n)).collect(), outcome, reads: 1, limited: false, skipped: 0 }
 }
 
 /// The first socket hello, which owes every channel its start's pass.

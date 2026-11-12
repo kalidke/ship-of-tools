@@ -68,6 +68,9 @@ pub struct Passed {
     pub reads: u32,
     /// Some page carried Slack's `is_limited`; information only, it ends nothing.
     pub limited: bool,
+    /// Thread reads Slack answered `thread_not_found`, each read as an empty thread: a reply under such a thread is
+    /// never read.
+    pub skipped: u32,
 }
 
 /// Walks the channel back from `upper` to the floor, and the thread of every parent it sees with a reply after the
@@ -111,7 +114,7 @@ struct Run<'a> {
 }
 
 pub(crate) async fn walk(api: &Api, order: &Order, upper: &Ts, pace: Duration, max_reads: u32) -> Passed {
-    let got = Passed { horizon: order.state.boundary().clone(), mail: Vec::new(), outcome: Outcome::Complete, reads: 0, limited: false };
+    let got = Passed { horizon: order.state.boundary().clone(), mail: Vec::new(), outcome: Outcome::Complete, reads: 0, limited: false, skipped: 0 };
     let mut run = Run { api, order, pace, max_reads, last: None, limit: MAX_SCAN, kept: BTreeMap::new(), cut: false, got };
     if ts_key(&order.floor) < ts_key(upper) {
         run.got.outcome = match run.channel(upper).await {
@@ -183,6 +186,12 @@ impl Run<'_> {
                 Err(ApiError::Http(HttpError::TooLarge | HttpError::Timeout)) if self.limit > 1 => {
                     self.limit /= 2;
                     continue;
+                }
+                // Slack has no such thread (a deleted parent's, say), so it has no reply anyone can read; a channel read
+                // never gets this answer, and any other error stays fatal.
+                Err(ApiError::Slack(code)) if code == "thread_not_found" && at.parent.is_some() => {
+                    self.got.skipped += 1;
+                    Ok(ScanPage::default())
                 }
                 Err(ApiError::Limited { retry_after, .. }) => Err(Outcome::RateLimited { retry_after }),
                 Err(ApiError::Closed) => Err(Outcome::Stopped),
