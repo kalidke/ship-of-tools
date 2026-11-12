@@ -118,11 +118,13 @@ job_julia() {
       fin julia-root 101
     fi
   fi
+  # Pkg.resolve first: the scratch clone keeps the untracked manifests of earlier runs, and instantiate alone refuses one
+  # older than its project (a dependency the tree gained since).
   for p in "${JULIA_PKGS[@]}"; do
     want julia "$p" || continue
     s=julia-${p//\//-}
     [ -f "$D/$p/Project.toml" ] || { fin "$s" 101; continue; }
-    logged "$L/$s.log" "$L/$s.log" "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+    logged "$L/$s.log" "$L/$s.log" "${TO[@]}" "${JE[@]}" julia --project="$D/$p" -e 'using Pkg; Pkg.resolve(); Pkg.instantiate(); Pkg.test()'
     fin "$s" $?
   done
 }

@@ -510,6 +510,10 @@ julia --project=julia/repl      -e 'using Pkg; Pkg.instantiate()'
 julia --project=julia/pluto     -e 'using Pkg; Pkg.instantiate()'
 ```
 
+A checkout that was updated keeps the untracked `Manifest.toml` files of its earlier
+version, and `Pkg.instantiate()` refuses one that predates a dependency the project
+gained; run `Pkg.resolve()` in that environment first.
+
 `core/` is `ConceptExplorerCore`, the abstract types and dispatch contract that
 make up the [extension ABI](../extend/abi.md). The standard plugins live under
 `julia/plugins/*`; instantiate any plugin environment you intend to load the
