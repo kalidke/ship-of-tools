@@ -138,7 +138,6 @@ impl State {
         preview_rect: ScreenRect,
         scalebar_draw: &Option<crate::ui::preview::image::overlay::ScalebarDraw>,
         caption_draw: &Option<crate::ui::preview::image::overlay::CaptionDraw>,
-        svg_rect: Option<ScreenRect>,
     ) -> Result<()> {
         // ADR 0034: dynamic scalebar overlay, drawn after the image quad so
         // it sits on top, re-scissored to the pane so it can't bleed. Black
@@ -170,15 +169,6 @@ impl State {
             rpass.set_scissor_rect(sx, sy, sw, sh);
             self.brushes.paint(Solid::CaptionBack, &self.gpu, &mut rpass, std::slice::from_ref(&cap.backing))?;
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
-        }
-        if let (Some(quad), Some(rect)) = (self.shaped.svg(), svg_rect) {
-            quad.render(
-                self.gpu.queue(),
-                self.brushes.pipeline(),
-                &mut rpass,
-                rect,
-                (self.gpu.config().width, self.gpu.config().height),
-            )?;
         }
         Ok(())
     }

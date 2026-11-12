@@ -3,19 +3,19 @@
 
 use crate::ui::*;
 
-/// What the pane shows, as `(fatal, png, svg, edit, md, canvas)`. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
+/// What the pane shows, as `(fatal, png, edit, md, canvas)`. ADR 0030 §2, ADR 0049: the refused-hello overlay is a
 /// hard block: it takes the pane over everything until a clean reconnect clears it. Edit mode owns the pane after it, so
 /// the editable annotation body has the whole rect. `canvas` arrives decided (`InkLayer::shown_base`, which yields it
 /// only outside both); it takes the pane from the image and the text, and the installed preview stays installed under it.
-pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> (bool, bool, bool, bool, bool, bool) {
+pub(in crate::ui) fn shows(refused: bool, raster: bool, edit: bool, canvas: bool) -> (bool, bool, bool, bool, bool) {
     let show_edit = !refused && edit;
     let show_png = raster && !refused && !canvas;
     let show_md = !refused && !show_png && !show_edit && !canvas;
-    (refused, show_png, false, show_edit, show_md, canvas)
+    (refused, show_png, show_edit, show_md, canvas)
 }
 
 impl State {
-    pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool, bool) {
+    pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool) {
         let show_fatal = self.hello_refused.refused(self.selected.host());
         let edit = self.editor.is_editing() && self.editor.shaped().is_some();
         let canvas = self.shown_ink_base() == Some(sot_protocol::ops::InkBase::Canvas);
@@ -26,8 +26,7 @@ impl State {
         &mut self,
         preview_rect: ScreenRect,
         show_png: bool,
-        show_svg: bool,
-    ) -> (Option<crate::ui::preview::image::overlay::CaptionDraw>, ScreenRect, Option<ScreenRect>, Option<ScreenRect>) {
+    ) -> (Option<crate::ui::preview::image::overlay::CaptionDraw>, ScreenRect, Option<ScreenRect>) {
         // Figure caption (agent-supplied, ADR 0025): a band RESERVED at the
         // bottom of the preview pane. Computed here, before `png_rect`, because
         // every piece of image geometry downstream — letterbox fit, the zoom
@@ -56,14 +55,7 @@ impl State {
         } else {
             None
         };
-        let svg_rect = if show_svg {
-            self.shaped
-                .svg()
-                .map(|q| letterbox(preview_rect, q.size_px))
-        } else {
-            None
-        };
-        (caption_draw, image_rect, png_rect, svg_rect)
+        (caption_draw, image_rect, png_rect)
     }
 
     pub(in crate::ui) fn layout_markdown(&mut self, preview_rect: ScreenRect, cell_w: f32, cell_h: f32) -> ScreenRect {

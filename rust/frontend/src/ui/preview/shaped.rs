@@ -2,19 +2,16 @@
 //! beside it, the refused-hello overlay, and the highlighter every markdown shape uses.
 
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
-use crate::ui::render::quad::Quad;
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;
 use crate::ui::*;
 use crate::ui::preview::markdown::TextOrigin;
 use cosmic_text::Cursor;
 
 /// What the preview pane's flowed text is: one buffer, shaped for the rect the last layout pass gave it. A new
-/// installation clears selection, drops the math SVG and resets the scroll to the top; the anchor scrolls a code
+/// installation clears selection and resets the scroll to the top; the anchor scrolls a code
 /// preview to the definition a modules row names, once per request.
 pub(in crate::ui) struct ShapedPreview {
     md: MarkdownPreview,
-    /// The math SVG rendered for the shown markdown; `None` until a `math.render` reply rasterizes.
-    svg: Option<Quad>,
     /// Pixel rect of the markdown pane from the most recent layout pass, so a resize re-shapes only on a real change.
     rect: ScreenRect,
     /// Tree-sitter-backed syntax highlighter for fenced code blocks. Constructed once, since
@@ -40,7 +37,7 @@ impl ShapedPreview {
     pub(in crate::ui) fn new(
         md: MarkdownPreview, highlight: crate::ui::preview::markdown::highlight::HighlightService, rect: ScreenRect,
     ) -> Self {
-        Self { md, svg: None, rect, highlight, anchor_line: None, anchored_to: None, scroll: 0,
+        Self { md, rect, highlight, anchor_line: None, anchored_to: None, scroll: 0,
             selection: FlowedSelection::default(), fatal: None }
     }
 
@@ -49,15 +46,13 @@ impl ShapedPreview {
     pub(in crate::ui) fn highlighter(&self) -> &crate::ui::preview::markdown::highlight::HighlightService {
         &self.highlight
     }
-    pub(in crate::ui) fn svg(&self) -> Option<&Quad> { self.svg.as_ref() }
     pub(in crate::ui) fn fatal(&self) -> Option<&MarkdownPreview> { self.fatal.as_ref() }
     pub(in crate::ui) fn scroll(&self) -> u16 { self.scroll }
 
-    /// A freshly shaped buffer replaces the shown one: selection and the math SVG go, and scroll returns to the top.
+    /// A freshly shaped buffer replaces the shown one: selection goes, and scroll returns to the top.
     pub(in crate::ui) fn install(&mut self, md: MarkdownPreview) {
         self.clear_selection();
         self.md = md;
-        self.svg = None;
         self.scroll = 0;
     }
 
@@ -119,8 +114,6 @@ impl ShapedPreview {
         if self.selection.is_empty() { return Vec::new(); }
         self.selection.rects(&self.flowed())
     }
-
-    pub(in crate::ui) fn clear_svg(&mut self) { self.svg = None; }
 
     pub(in crate::ui) fn show_fatal(&mut self, fatal: Option<MarkdownPreview>) { self.fatal = fatal; }
     pub(in crate::ui) fn clear_fatal(&mut self) { self.fatal = None; }

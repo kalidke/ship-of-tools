@@ -7,7 +7,7 @@ use sot_protocol::ops::InkBase;
 /// `(png, edit, md, canvas)` of what the pane decides: the canvas comes from the one decider, `shown_base`.
 fn pane(ink: &InkLayer, raster_node: Option<&str>, edit: bool, refused: bool) -> (bool, bool, bool, bool) {
     let canvas = ink.shown_base(raster_node, edit, refused) == Some(InkBase::Canvas);
-    let (_, png, _, edit, md, canvas) = shows(refused, raster_node.is_some(), edit, canvas);
+    let (_, png, edit, md, canvas) = shows(refused, raster_node.is_some(), edit, canvas);
     (png, edit, md, canvas)
 }
 

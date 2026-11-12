@@ -296,7 +296,6 @@ impl State {
             self.pages.set_page(None);
             self.figures.clear_failed();
             self.raster.hide();
-            self.shaped.clear_svg();
             self.concept.clear();
             self.preview_requests.reset_concept_follow();
             self.drift.clear();

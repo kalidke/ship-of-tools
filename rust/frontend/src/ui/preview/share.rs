@@ -191,7 +191,7 @@ impl super::super::State {
     /// The released text selection over the installed preview, gated on the predicate the paint and the press use
     /// (`preview_shows`), for the selected row; the drawing wins over it in `step`.
     fn desired_text(&self) -> Option<Want> {
-        let shown = self.preview_shows().4;
+        let shown = self.preview_shows().3;
         wanted(shown, self.selected.host(), self.selected.workspace_id().clone(), self.preview_source.node_id(), self.shaped.released_selection())
     }
 
