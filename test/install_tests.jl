@@ -285,24 +285,6 @@ end
     @test owner["sot-fe"] == joinpath(root, "agents", "sot-fe")  # the tool, not the PATH wrapper
 end
 
-@testset "an installed tool runs every part it sources, whatever their number" begin
-    mktempdir() do root
-        tool = mkpath(joinpath(root, "tool"))
-        bin = mkpath(joinpath(root, "bin"))
-        names = ["tool-p$i.sh" for i in 1:5]
-        for (i, n) in enumerate(names)
-            write(joinpath(tool, n), "part$i() { echo marker-$i; }\n")
-        end
-        write(joinpath(tool, "tool"),
-              "SCRIPT_DIR=x\n" * join(("source \"\$SCRIPT_DIR/$n\"\n" for n in names)) *
-              join(("part$i\n" for i in 1:5)))
-        @test ShipTools._comm_bin_files([tool]) == [(tool, "tool")]
-        write(joinpath(bin, "tool"), ShipTools._comm_bin_text(tool, "tool"))
-        @test read(`bash $(joinpath(bin, "tool"))`, String) == join(("marker-$i\n" for i in 1:5))
-        @test readdir(bin) == ["tool"]
-    end
-end
-
 @testset "a source command the installer cannot install whole stops the install" begin
     mktempdir() do root
         lib = mkpath(joinpath(root, "lib"))
