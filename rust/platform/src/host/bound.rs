@@ -1,7 +1,7 @@
 //! A process bounds itself: the OS mechanisms a program that reads untrusted input sets on itself before it reads a
 //! byte (guarantee 18). `exit_now` and the two Unix handlers (`exit_on_crash`, `limit_cpu`) end the process by an exit
 //! code the parent can read; `end_with_parent` and `limit_cpu`'s hard limit end it by `SIGKILL`; on Windows
-//! `exit_on_crash` only keeps a dialog away and the status is the OS's. `close_inherited` ends nothing. The capped
+//! `exit_on_crash` only keeps a dialog away and the status is the OS's. `close_inherited` ends nothing; `take_stdout` gives the process's stdout to its caller alone. The capped
 //! allocator is `host::heap_cap`. Nothing here allocates once it has returned, and `exit_now` and the signal handlers
 //! use `_exit`, which runs no handler and takes no lock.
 
@@ -126,6 +126,68 @@ pub fn end_with_parent() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Takes this process's stdout for the caller alone: the returned file is a duplicate of descriptor 1 (Windows: of the
+/// standard output handle) that no child inherits, and descriptor 1, the standard output handle and the C runtime's
+/// descriptor 1 then lead to the null device, so a print, a `write(1, ..)` or a library's `printf` after this call
+/// reaches nobody. A process whose stdout carries a protocol calls it before it reads, and writes only to the file. A
+/// writer that opened the console or the terminal by name before this call is not caught.
+pub fn take_stdout() -> io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // SAFETY: fcntl on descriptor 1 returns a new descriptor this function owns, or -1.
+        let private = unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) };
+        if private < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `private` is open and owned by nothing else.
+        let private = unsafe { std::fs::File::from_raw_fd(private) };
+        let null = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+        // SAFETY: both descriptors are open; descriptor 1 is open (the duplicate above), so `null` is not it.
+        match unsafe { libc::dup2(null.as_raw_fd(), 1) } {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(private),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+        use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Console::{GetStdHandle, SetStdHandle, STD_OUTPUT_HANDLE};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        extern "C" {
+            fn _open_osfhandle(handle: isize, flags: i32) -> i32;
+            fn _get_osfhandle(fd: i32) -> isize;
+            fn _dup2(from: i32, to: i32) -> i32;
+            fn _close(fd: i32) -> i32;
+        }
+        // SAFETY: the handle calls take values this block produced; the new file owns the duplicate it wraps.
+        unsafe {
+            let (me, out) = (GetCurrentProcess(), GetStdHandle(STD_OUTPUT_HANDLE));
+            if out.is_null() || out == INVALID_HANDLE_VALUE {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "no standard output handle"));
+            }
+            let mut copy: HANDLE = std::ptr::null_mut();
+            if DuplicateHandle(me, out, me, &mut copy, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let private = std::fs::File::from_raw_handle(copy as _);
+            let null = std::fs::OpenOptions::new().write(true).open("NUL")?;
+            // The runtime's descriptor 1 takes the null device (its fd owns the handle until closed), then the
+            // standard output handle follows it.
+            let fd = _open_osfhandle(null.into_raw_handle() as isize, 0);
+            if fd < 0 || _dup2(fd, 1) != 0 {
+                return Err(io::Error::other("the C runtime would not take the null device"));
+            }
+            _close(fd);
+            if SetStdHandle(STD_OUTPUT_HANDLE, _get_osfhandle(1) as HANDLE) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(private)
+        }
+    }
 }
 
 #[cfg(test)]

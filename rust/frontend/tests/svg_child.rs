@@ -52,6 +52,11 @@ fn run(heap: usize, cpu: u64, input: Vec<u8>) -> Ran {
 
 /// `run`, with the child killed (and the test failed) if it has not ended within `wait`.
 fn run_within(wait: Duration, heap: usize, cpu: u64, input: Vec<u8>) -> Ran {
+    run_with_env(wait, heap, cpu, input, &[])
+}
+
+/// `run_within`, with `extra` added to the child's cleared environment.
+fn run_with_env(wait: Duration, heap: usize, cpu: u64, input: Vec<u8>, extra: &[(&str, &str)]) -> Ran {
     let scratch = Scratch::new();
     let args = ["--draw-svg", &heap.to_string(), &cpu.to_string(), "--version"].map(String::from);
     let bin = env!("CARGO_BIN_EXE_sot");
@@ -67,6 +72,7 @@ fn run_within(wait: Duration, heap: usize, cpu: u64, input: Vec<u8>) -> Ran {
         .args(&args)
         .env_clear()
         .env("HOME", &scratch.0)
+        .envs(extra.iter().copied())
         .current_dir(&scratch.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -269,6 +275,23 @@ fn replies_before_a_crash_arrive_whole() {
     assert_eq!(replies.len(), 2, "the two jobs before the crash were answered");
     assert!(matches!(&replies[0], Reply::Error(text) if text.starts_with("svg parse failed")));
     assert_eq!(pixel(&replies[1], 0, 0), [255, 0, 0, 255]);
+}
+
+/// The child prints a line to its own stdout between replies, as usvg does for some color-font text (a debug build's
+/// hook, `SOT_SVG_CHILD_STRAY`): the replies still parse whole, and the line is nowhere in them.
+#[cfg(debug_assertions)]
+#[test]
+fn a_library_print_never_reaches_the_reply_stream() {
+    let (red, blue) = (rect("red"), rect("blue"));
+    let input = request(&[(4, 4, red.as_bytes()), (6, 2, b"this is no SVG"), (4, 4, blue.as_bytes())]);
+    let ran = run_with_env(WAIT, ROOMY, 30, input, &[("SOT_SVG_CHILD_STRAY", "1")]);
+    assert_eq!(ran.status.code(), Some(0));
+    assert!(!String::from_utf8_lossy(&ran.out).contains("Warning"), "the stray line reached the reply stream");
+    let replies = replies(&ran.out);
+    assert_eq!(replies.len(), 3, "one reply per job");
+    assert_eq!(pixel(&replies[0], 2, 2), [255, 0, 0, 255]);
+    assert!(matches!(&replies[1], Reply::Error(_)));
+    assert_eq!(pixel(&replies[2], 2, 2), [0, 0, 255, 255]);
 }
 
 #[test]

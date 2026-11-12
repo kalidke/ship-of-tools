@@ -5,16 +5,17 @@
 //!
 //! The child bounds itself before it reads a byte (`bound_self`), reads one request from stdin (`svg_wire`: the magic,
 //! a u32 job count, then per job an ask and a u64 length with that many bytes of SVG, at most `PREVIEW_BINARY_CAP` in
-//! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to stdout, each flushed
-//! as it is whole, so a later job that crashes the child costs only itself. The child's own code writes nothing else
-//! there; usvg prints a fixed warning line for some color-font text (usvg-0.44.0 text/colr.rs:185, :285), a known
-//! writer until a platform primitive gives the reply a private descriptor. Stderr is the window's to close. It ends
-//! with exit 0, or by a bound's code (`svg_wire`).
+//! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to the process's stdout,
+//! taken for the reply alone before the read (`take_stdout`: descriptor 1 then leads to the null device), each written
+//! as it is whole, so a later job that crashes the child costs only itself. usvg prints a fixed warning line for some
+//! color-font text (usvg-0.44.0 text/colr.rs:185, :285); that, and any other library's print, goes to the null device.
+//! Stderr is the window's to close. It ends with exit 0, or by a bound's code (`svg_wire`).
 
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::{self, Read, Write};
 
-use sot_platform::host::bound::{end_with_parent, exit_now, exit_on_crash};
+use sot_platform::host::bound::{end_with_parent, exit_now, exit_on_crash, take_stdout};
 use sot_platform::host::heap_cap::HeapCap;
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
@@ -36,20 +37,23 @@ struct Job {
 pub(crate) fn child_main(heap: &HeapCap, args: &[OsString]) -> ! {
     let number = |at: usize| args.get(at)?.to_str()?.parse::<u64>().ok();
     let ended = match (number(2), number(3)) {
-        (Some(heap_bytes), Some(cpu_seconds)) => bound_self(heap, heap_bytes as usize, cpu_seconds)
-            .and_then(|()| read_request(io::stdin().lock()))
-            .and_then(draw_all),
+        (Some(heap_bytes), Some(cpu_seconds)) => bound_self(heap, heap_bytes as usize, cpu_seconds).and_then(|out| {
+            let jobs = read_request(io::stdin().lock())?;
+            draw_all(jobs, out)
+        }),
         _ => Err(invalid("--draw-svg takes a heap size and a CPU bound")),
     };
     exit_now(if ended.is_ok() { 0 } else { EXIT_REFUSED })
 }
 
 /// The child's bounds, in the order that matters: no inherited descriptor first (the first act, before any thread or
-/// library holds one it keeps), then crashes as exits, the death of the parent, the CPU bound, and the heap armed
-/// last of the lot, before the first byte of input.
-fn bound_self(heap: &HeapCap, heap_bytes: usize, cpu_seconds: u64) -> io::Result<()> {
+/// library holds one it keeps), then stdout taken for the reply (after the close, which would take its copy), crashes
+/// as exits, the death of the parent, the CPU bound, and the heap armed last of the lot, before the first byte of
+/// input. Returns the file the replies are written to.
+fn bound_self(heap: &HeapCap, heap_bytes: usize, cpu_seconds: u64) -> io::Result<File> {
     #[cfg(unix)]
     sot_platform::host::bound::close_inherited();
+    let out = take_stdout()?;
     exit_on_crash(EXIT_CRASH)?;
     end_with_parent()?;
     #[cfg(unix)]
@@ -57,7 +61,7 @@ fn bound_self(heap: &HeapCap, heap_bytes: usize, cpu_seconds: u64) -> io::Result
     #[cfg(windows)]
     let _ = cpu_seconds;
     heap.arm(heap_bytes, EXIT_HEAP);
-    Ok(())
+    Ok(out)
 }
 
 fn invalid(what: &str) -> io::Error {
@@ -94,20 +98,29 @@ fn read_request(mut from: impl Read) -> io::Result<Vec<Job>> {
     Ok(jobs)
 }
 
-/// Every job drawn in order on a thread of `SVG_STACK`, one reply each, flushed as it is whole (the child ends by
-/// `_exit`, which flushes nothing). A panic on that thread ends the child with `EXIT_CRASH` at once, on every system.
-fn draw_all(jobs: Vec<Job>) -> io::Result<()> {
+/// Every job drawn in order on a thread of `SVG_STACK`, one reply each written to `out` (a file, so unbuffered: the
+/// child ends by `_exit`, which flushes nothing). A panic on that thread ends the child with `EXIT_CRASH` at once, on
+/// every system.
+fn draw_all(jobs: Vec<Job>, mut out: File) -> io::Result<()> {
     let thread = std::thread::Builder::new().name("svg".into()).stack_size(SVG_STACK).spawn(move || {
-        let mut out = io::stdout().lock();
         out.write_all(&MAGIC)?;
-        out.flush()?;
         for job in &jobs {
+            #[cfg(debug_assertions)]
+            stray_print();
             reply(&mut out, job)?;
-            out.flush()?;
         }
         Ok(())
     });
     thread?.join().unwrap_or_else(|_| exit_now(EXIT_CRASH))
+}
+
+/// Test only (a debug build): `SOT_SVG_CHILD_STRAY` makes the child print to its stdout between replies, as usvg does
+/// for some color-font text, so the test can see the line never reach the reply stream.
+#[cfg(debug_assertions)]
+fn stray_print() {
+    if std::env::var_os("SOT_SVG_CHILD_STRAY").is_some() {
+        println!("Warning: a stray line between two replies");
+    }
 }
 
 fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {

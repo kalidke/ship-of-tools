@@ -687,20 +687,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
   or spin only a process the window can lose. It has no caller yet: the runner that starts it, and every caller, are unbuilt. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
   and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
-  it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), crashes as
-  exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
+  it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), stdout taken
+  for the replies (`take_stdout`), crashes as exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
   `HeapCap` that costs a load and a compare per allocation while disarmed, which is every other mode). Request on
   stdin: `SVG1`, a u32 job count, then per job `S` (a stretch ask), `w` and `h` as u32, a u64 length and that many bytes
   of SVG; the SVG bytes' sum is at most `PREVIEW_BINARY_CAP` (the headers are not counted) and each job's bytes are
   allocated at their declared length, so the cap sees an input before it is read. Reply on stdout: `SVG1`, then per job
   in order `R`, `w` and `h` as u32 and `4 * w * h` premultiplied RGBA bytes (a zero side is drawn as one), or `E`, a u16
   length and at most 1 KiB of the error's first line, cut at a character boundary; an SVG that does not parse is that
-  job's `E` and the next job still draws. Each reply is flushed when whole, so a later job that ends the child costs
+  job's `E` and the next job still draws. Each reply is written when whole, so a later job that ends the child costs
   only itself. The error text holds the file's own bytes (a parser message names an unknown entity) and is untrusted
-  where it is shown. The child's own code writes nothing else to stdout and stderr is the window's to close, but usvg
-  prints a fixed warning line for some color-font text (usvg-0.44.0 text/colr.rs:185 and :285), which would arrive
-  between two replies: a known writer until a platform primitive gives the reply a private descriptor and points
-  stdout at the null device (to be added to platform before anything calls the child). Jobs draw on one thread of 32 MiB
+  where it is shown. The replies are written only to the private copy of stdout that `take_stdout` returned, and
+  descriptor 1 leads to the null device, so a library's print (usvg prints a fixed warning line for some color-font
+  text, usvg-0.44.0 text/colr.rs:185 and :285) is lost and cannot arrive between two replies; stderr is the window's to
+  close. A writer that opened the terminal by name before the call is not caught (platform's guarantee 18). Jobs draw on one thread of 32 MiB
   (`SVG_STACK`, the same on every system; Windows gives a main thread 1 MiB); a panic there ends the child with 73 at
   once. The child exits 0, or: 71 at its heap cap, 72 at its CPU bound (Unix), 73 in a crash (on Unix an abort, Rust's
   stack-overflow report or a panic on the draw thread; on Windows only a panic on the draw thread), 74 when its
@@ -719,7 +719,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_request_that_is_no_request_is_refused_with_its_code`, `an_input_past_the_heap_ends_with_its_code`,
   `a_draw_past_its_heap_ends_with_its_code`, `an_entity_expansion_past_its_heap_ends_with_its_code`,
   `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
-  (Unix), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
+  (Unix), `a_library_print_never_reaches_the_reply_stream` (debug builds: a hook prints between replies, as usvg does), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
   assertions exists), and in svg_child_tests.rs `an_error_is_its_first_line` and
   `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner

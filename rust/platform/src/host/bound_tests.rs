@@ -169,3 +169,44 @@ fn exit_on_crash_sets_the_windows_error_mode() {
     exit_on_crash(CODE).unwrap();
     assert_eq!(unsafe { GetErrorMode() } & both, both);
 }
+
+/// After `take_stdout`, every route to stdout the process has is dead and the private file is the one that reaches the
+/// parent: Rust's `print!`, a raw write to descriptor 1 (Windows: the standard output handle and the C runtime's), and
+/// the private file's marker arrive as the marker alone. The harness's own opening line precedes the body.
+#[test]
+fn only_the_private_copy_reaches_the_parents_stdout() {
+    use std::io::Write;
+    const NAME: &str = "host::bound::tests::only_the_private_copy_reaches_the_parents_stdout";
+    const MARKER: &str = "<the marker>";
+    if child_role().is_some() {
+        enter(NAME);
+        let mut private = take_stdout().unwrap();
+        print!("stray print ");
+        println!("stray println");
+        std::io::stdout().flush().unwrap();
+        let stray = b"stray write ";
+        #[cfg(unix)]
+        // SAFETY: a plain write of a live buffer to descriptor 1.
+        unsafe {
+            libc::write(1, stray.as_ptr().cast(), stray.len());
+        }
+        #[cfg(windows)]
+        // SAFETY: a plain write of a live buffer to the standard output handle and to the runtime's descriptor 1.
+        unsafe {
+            use windows_sys::Win32::Storage::FileSystem::WriteFile;
+            use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE};
+            extern "C" {
+                fn _write(fd: i32, buffer: *const u8, count: u32) -> i32;
+            }
+            let mut written = 0;
+            WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), stray.as_ptr(), stray.len() as u32, &mut written, std::ptr::null_mut());
+            _write(1, stray.as_ptr(), stray.len() as u32);
+        }
+        private.write_all(MARKER.as_bytes()).unwrap();
+        return;
+    }
+    let (status, out) = run_child(NAME, "take");
+    assert_eq!(status.code(), Some(0));
+    assert!(!out.contains("stray"), "a stray write reached the parent: {out:?}");
+    assert!(out.ends_with(MARKER), "the private copy's marker did not arrive last: {out:?}");
+}
