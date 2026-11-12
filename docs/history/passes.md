@@ -2138,3 +2138,11 @@ A landing's record goes here, with its measured times; the package page holds on
   log line, now answered as a refusal and logged; the non-delivering test did not pin that no inbox is read; the
   records missed what waits for the passes. The plan's comm_wake characterization does not exist on main and is
   owed. No hub maps a delivering channel, so nothing on any computer runs this until a person configures one.
+- B3i2b, the daemon's passes and its boundary commit, 2026-11-12: builder handed the landing at 10:02, main 10:51
+  (0c456d990, 32816bdfb), 49 minutes, a miss. About 60 product lines and 290 test lines. Where the minutes went: the
+  build 18 minutes, the gate 3, one review round 10, one fix commit 14. Review round 1 (no blockers; no probe lost mail
+  or filed it twice, and a commit never outran its filings): three rules had no failing test (an absent recipient
+  costs no read, a refused live post is filed once by the next pass, a pass job's panic still answers), the
+  50,000-root test failed by its wait rather than an assertion, and the guide and requirements said too little about
+  what waits for what. Left as notes in the contract: two commits of one channel can fail on their shared temporary
+  name, and a pass does not ask the hub check until the delivery's end order exists (B3i2c).

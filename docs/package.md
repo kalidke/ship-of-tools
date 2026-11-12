@@ -233,8 +233,8 @@ decisions, pure (one queue for live and recovered mail, nothing filed before the
 only when its filing returns so; passes owed and paced, each channel's own backoff, and the boundary's commit, which
 never reaches a post still pending), and the mail jobs (the recipient, the guarded filing behind the hub check, the
 boundary's write and the start's read of every inbox), and the daemon's live delivery (each new post of a delivering
-channel filed to its row after the start's read, one filing at a time); the daemon's passes and its boundary commit,
-the delivery's end before a step-down, and the row replies are unbuilt;
+channel filed to its row after the start's read, one filing at a time) and its passes (posts refused or missed found
+and filed once, the boundary written after); the delivery's end before a step-down and the row replies are unbuilt;
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
