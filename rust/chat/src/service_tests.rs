@@ -462,6 +462,7 @@ fn edit() -> crate::normalize::Normalized {
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     })
 }
 

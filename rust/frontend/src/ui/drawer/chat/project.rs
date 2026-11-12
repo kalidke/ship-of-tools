@@ -2,7 +2,7 @@
 //! to make a line read as another message's header or badge. Pure; the view that shapes the spans styles each kind.
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime};
-use super::mrkdwn::{styled, Role};
+use super::mrkdwn::{styled, Role, BLOCK, QUOTE};
 use sot_protocol::page_reply::unsafe_char;
 use sot_protocol::chat::{ChatRecord, Origin, TextSegment, text_segments};
 
@@ -27,6 +27,8 @@ pub(super) enum Kind {
     Link,
     Mention,
     Meta,
+    /// ` (edited)`, the end of a body Slack marked edited.
+    Edited,
     /// A thread summary's reply count, and what follows it on the line.
     Replies,
     Last,
@@ -129,6 +131,14 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
     });
     let kind = |role| match role { Role::Text => Kind::Body, Role::Link => Kind::Link, Role::Mention => Kind::Mention, Role::Markup => Kind::Markup };
     out.extend(styled(segments).into_iter().map(|p| Span { kind: kind(p.role), style: p.style, text: p.text }));
+    // Slack's `(edited)` follows the last word, on its own line after a block or a quote (inside it, it would read as code).
+    if r.edited {
+        let lead = match out.last() {
+            Some(l) if !l.text.ends_with('\n') => if l.style & (BLOCK | QUOTE) != 0 { "\n" } else { " " },
+            _ => "",
+        };
+        out.push(span(Kind::Edited, format!("{lead}(edited)")));
+    }
     // Each meta item is one line of spans: its kinds, in order.
     let mut meta: Vec<Vec<(Kind, String)>> = Vec::new();
     for f in &r.files {

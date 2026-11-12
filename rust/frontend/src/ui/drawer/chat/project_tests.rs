@@ -388,3 +388,28 @@ fn the_thread_summary_reads_as_slacks() {
     let s: Vec<_> = project(&r, Some(&at("1699999990.000000")), NOW, utc(), false).into_iter().map(|s| (s.kind, s.text)).collect();
     assert_eq!(s, [(Kind::Body, "x".to_string()), (Kind::Replies, "\n2 replies".to_string()), (Kind::Meta, "\n(cut)".to_string())]);
 }
+
+/// `(edited)` ends the body of a message Slack marked edited, on the line of its last word, or on its own line after a
+/// block or a quote; never on a deleted message, and never from what a poster typed.
+#[test]
+fn an_edited_message_ends_with_edited() {
+    let edited = |text: &str| {
+        let mut v = serde_json::to_value(rec(text)).unwrap();
+        v["edited"] = true.into();
+        serde_json::from_value::<ChatRecord>(v).unwrap()
+    };
+    let all = |r: &ChatRecord| spans(r).into_iter().map(|s| s.text).collect::<String>();
+    assert_eq!(all(&edited("hello")), "Ada  10:13 PM\nhello (edited)");
+    assert_eq!(spans(&edited("hello")).last().map(|s| s.kind), Some(Kind::Edited));
+    assert_eq!(all(&rec("hello (edited)")), "Ada  10:13 PM\nhello (edited)");
+    assert!(spans(&rec("hello (edited)")).iter().all(|s| s.kind != Kind::Edited));
+    assert_eq!(all(&edited("")), "Ada  10:13 PM\n(edited)");
+    assert_eq!(all(&edited("two\nlines\n")), "Ada  10:13 PM\ntwo\nlines\n(edited)");
+    assert_eq!(all(&edited("```code```")), "Ada  10:13 PM\ncode\n(edited)");
+    assert_eq!(all(&edited("&gt; quoted")), "Ada  10:13 PM\nquoted\n(edited)");
+    let mut cut = edited("hello");
+    cut.truncated = true;
+    assert_eq!(all(&cut), "Ada  10:13 PM\nhello (edited)\n(cut)");
+    let tomb = project(&edited("hello"), None, NOW, utc(), true).into_iter().map(|s| s.text).collect::<String>();
+    assert!(!tomb.contains("(edited)"), "{tomb}");
+}

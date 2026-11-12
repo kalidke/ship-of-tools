@@ -219,6 +219,7 @@ fn identity_only(ctx: &Context, channel: &str, o: &Map<String, Value>, ts: &Ts) 
         limited: false,
         omitted: true,
         files_omitted: 0,
+        edited: false,
     }
 }
 
@@ -273,6 +274,7 @@ fn content(
         limited: false,
         omitted: false,
         files_omitted,
+        edited: o.get("edited").is_some_and(Value::is_object),
     })
 }
 

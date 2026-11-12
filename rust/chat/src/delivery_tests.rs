@@ -41,6 +41,7 @@ fn rec(channel: &str, origin: Origin, at: &str, thread: &str) -> ChatRecord {
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     }
 }
 

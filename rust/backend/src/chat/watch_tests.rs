@@ -19,6 +19,7 @@ fn record(ts: &str, text: &str) -> ChatRecord {
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     }
 }
 

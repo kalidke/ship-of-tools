@@ -179,6 +179,7 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
         Kind::Markup | Kind::Link => a.color(rgb(SKY)),
         Kind::Mention => a.color(rgb(SKY)).metadata(MENTION_RUN),
         Kind::Meta => a.style(Style::Italic).color(rgb(MUTED)),
+        Kind::Edited => a.color(rgb(MUTED)).metrics(small(12.0)),
     }
 }
 

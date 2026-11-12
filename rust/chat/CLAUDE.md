@@ -14,7 +14,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    subtype is not on the list of displayed ones (none, `thread_broadcast`, `file_share`, `bot_message`, `me_message`;
    joins, tombstones and any subtype Slack adds later), and the caller skips it and logs the raw subtype. A message with a valid `ts` whose other fields cannot be read becomes
    a record with `omitted` set and no content, not a dropped message; it keeps its author id, its origin (an own post or any message with a `bot_id` key, even an unreadable one, is `Bot`, never
-   `Member`) and its thread, each read on its own; an unreadable `thread_ts` falls back to `ts`. Limit: the author's display name is the event's own
+   `Member`) and its thread, each read on its own; an unreadable `thread_ts` falls back to `ts`. `edited` is set when the message, or a `message_changed`'s inner message, has an `edited` object (Slack's form, not yet seen live: look plan premise PC); the key with any other value, and an `omitted` record, are not edited. The flag is in the encoded record the 32 KiB bound of guarantee 3 measures (`normalize_tests::an_edited_message_says_so`). Limit: the author's display name is the event's own
    profile name or empty; `Api::fill_names` (guarantee 16) resolves it.
 2. **Own posts are decided only by the supplied bot identity, and a forged marker never makes one.** Own-app is
    `Context.own_bot_id` or `own_user_id` matching the message; an identity not supplied matches nothing. Only an own

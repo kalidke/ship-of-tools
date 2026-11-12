@@ -19,6 +19,7 @@ fn record() -> ChatRecord {
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     }
 }
 
@@ -71,6 +72,7 @@ fn the_record_wire_shape_is_stable() {
     r.limited = true;
     r.omitted = true;
     r.files_omitted = 2;
+    r.edited = true;
     r.latest_reply = Some(Ts::parse("1700000001.000000").unwrap());
     r.files.push(ChatFile {
         id: "F1".into(),
@@ -81,7 +83,7 @@ fn the_record_wire_shape_is_stable() {
     });
     assert_eq!(
         serde_json::to_string(&r).unwrap(),
-        r#"{"workspace":"W1","channel":"C1","ts":"1700000000.000100","thread_ts":"1700000000.000100","author":{"id":"U1","name":"Ada"},"origin":"drawer","text":"hi","truncated":true,"reply_count":0,"files":[{"id":"F1","name":"a.png","mime":"image/png","bytes":7,"thumbnail":true}],"latest_reply":"1700000001.000000","limited":true,"omitted":true,"files_omitted":2}"#
+        r#"{"workspace":"W1","channel":"C1","ts":"1700000000.000100","thread_ts":"1700000000.000100","author":{"id":"U1","name":"Ada"},"origin":"drawer","text":"hi","truncated":true,"reply_count":0,"files":[{"id":"F1","name":"a.png","mime":"image/png","bytes":7,"thumbnail":true}],"latest_reply":"1700000001.000000","limited":true,"omitted":true,"files_omitted":2,"edited":true}"#
     );
 }
 
@@ -168,4 +170,22 @@ fn slack_text_decodes_entities_once_delimited_and_escape_inverts_it() {
     assert!(post_text_fits(&"a".repeat(8192)));
     assert!(!post_text_fits(&"a".repeat(8193)));
     assert!(!post_text_fits(&format!("{}a", "\u{e9}".repeat(4096))));
+}
+
+#[test]
+fn an_edited_flag_is_additive() {
+    let r = record();
+    let key = |r: &ChatRecord| serde_json::to_value(r).unwrap().get("edited").cloned();
+    assert_eq!(key(&r), None);
+    assert!(!r.edited);
+    let mut v = serde_json::to_value(&r).unwrap();
+    v["edited"] = true.into();
+    let parsed: ChatRecord = serde_json::from_value(v).unwrap();
+    assert_eq!(key(&parsed), Some(true.into()));
+    assert!(parsed.edited);
+    // An older peer's record has no key and reads as not edited; a key of another type is refused.
+    assert_eq!(key(&decode(&r).unwrap()), None);
+    let mut v = serde_json::to_value(&r).unwrap();
+    v["edited"] = "yes".into();
+    assert!(serde_json::from_value::<ChatRecord>(v).is_err());
 }

@@ -158,6 +158,9 @@ pub struct ChatRecord {
     /// File entries not summarized: those past the eighth, and any entry that is not an object or has no valid id.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub files_omitted: u32,
+    /// Slack marked the message edited (its `edited` object); the record carries the fact, not who or when.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub edited: bool,
 }
 
 /// One piece of a record's text: a token Slack delimited with `<` and `>`, or the words around it. Both are decoded.

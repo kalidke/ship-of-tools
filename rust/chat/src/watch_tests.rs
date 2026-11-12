@@ -37,6 +37,7 @@ fn rec_in(channel: &str, at: &str, thread: &str, text: &str) -> ChatRecord {
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     }
 }
 

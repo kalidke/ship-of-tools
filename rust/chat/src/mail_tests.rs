@@ -25,6 +25,7 @@ fn rec(origin: Origin, at: &str, thread: &str, name: &str, text: &str) -> ChatRe
         limited: false,
         omitted: false,
         files_omitted: 0,
+        edited: false,
     }
 }
 

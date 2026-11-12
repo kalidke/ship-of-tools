@@ -37,6 +37,9 @@ The day is your local day, found with one fixed offset from UTC for every messag
 A message that has replies has a line in Slack's style: `2 replies` (`1 reply`) in blue and, when the daemon knows it, the
 last reply in gray (`Last reply today at 2:44 PM`, `yesterday at …`, `Nov 9 at …`, with the year for another year).
 
+A message that Slack marks as edited ends with `(edited)` in small gray type, after its last word (on its own line after a code
+block or a quote). A deleted message shows none.
+
 Messages from one author in a row share one header, as in Slack: a message with the same author and origin as the one before
 it, on the same local day and less than five minutes after it, has no header of its own and its text follows the last one's. The
 first message of each group has a small colored square in the margin at the left, a color chosen from eight by the author (so two authors can
@@ -156,7 +159,7 @@ selection is never shared with the agent; only the preview's text and your drawi
 `Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
 exactly as shown: a link's label, a mention's name and a style's text without its marks, a code block's lines without its fences and a quote's without its `>` (an empty line in either copies as an empty line, with no added space), markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
-message's text, not its name and time line (a message without a header copies its whole text). With neither, the status line says there is nothing to copy. Ctrl+C in the
+message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is shown text, so a copy that reaches it includes it. With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
 ## Moving the hub

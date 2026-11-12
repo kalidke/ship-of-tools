@@ -454,3 +454,31 @@ fn an_unreadable_bot_id_is_still_a_bot() {
 fn chat_and_wire_agree_on_the_numbers_they_share() {
     assert_eq!(crate::watch::MAX_CHANNELS, sot_protocol::ops::MAX_WATCHED);
 }
+
+#[test]
+fn an_edited_message_says_so() {
+    let edited = |r: &ChatRecord| serde_json::to_value(r).unwrap().get("edited") == Some(&json!(true));
+    let marker = json!({"user": "U1", "ts": "1700000009.000000"});
+    // From history: Slack's `edited` object. No object, or anything else in its place, is not an edit.
+    let at = |extra: Value| {
+        let mut m = json!({"ts": "1700000000.000100", "user": "U1", "text": "hi"});
+        m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        m
+    };
+    assert!(edited(&new(at(json!({"edited": marker})))));
+    assert!(!edited(&new(at(json!({})))));
+    assert!(!edited(&new(at(json!({"edited": null})))));
+    assert!(!edited(&new(at(json!({"edited": true})))));
+    // From a change event: the inner message's object, not the event's own.
+    match norm(json!({"subtype": "message_changed", "message": at(json!({"edited": marker})), "edited": marker})) {
+        Normalized::Edited(r) => assert!(edited(&r)),
+        other => panic!("{other:?}"),
+    }
+    match norm(json!({"subtype": "message_changed", "message": at(json!({})), "edited": marker})) {
+        Normalized::Edited(r) => assert!(!edited(&r)),
+        other => panic!("{other:?}"),
+    }
+    // The flag is in the encoded record the bound measures.
+    let r = new(at(json!({"edited": marker, "text": "\u{1}".repeat(MAX_TEXT)})));
+    assert!(edited(&r) && r.truncated && json_len(&r) <= MAX_RECORD_BYTES);
+}
