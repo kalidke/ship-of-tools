@@ -2129,3 +2129,12 @@ A landing's record goes here, with its measured times; the package page holds on
   session's judgment that the rule loses nothing a reader could have read; the measurement stays owed and says only
   whether the rule ever fires. No review: ten lines read by the session, with a red test. It clears the way for the
   daemon to deliver from the pass (B3i2).
+- B3i2a, the daemon's live delivery, 2026-11-12: builder launched 09:03, main 10:00 (5e0622c61, 045457cbb), 57
+  minutes, a miss. About 135 product lines (the plan sized all of B3i2 at 55) and 200 test lines. Where the minutes
+  went: the builder stopped at the line limit after 6 minutes with a whole draft of about 190 lines (the owner holds,
+  runs and logs four kinds of job, which the plan never counted), the session split it in three (this live path; the
+  passes and the commit; the delivery's end before a step-down), the live path took 24 minutes, one review round 14,
+  one fix commit 8. Review round 1 (no blockers): a filing job that panicked left the delivery waiting forever with no
+  log line, now answered as a refusal and logged; the non-delivering test did not pin that no inbox is read; the
+  records missed what waits for the passes. The plan's comm_wake characterization does not exist on main and is
+  owed. No hub maps a delivering channel, so nothing on any computer runs this until a person configures one.
