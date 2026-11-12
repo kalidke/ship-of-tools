@@ -22,7 +22,7 @@ use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{
     ChatChangedEvt, ChatChannel, ChatCode, ChatService, ChatStatusEvt, ChatTarget, ChatWatchState, MAX_PAGE, MAX_PAGE_RECORDS,
 };
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 use tokio::task::JoinHandle;
 
 use super::ops::{admitted, code_of};
@@ -90,9 +90,9 @@ pub(crate) struct Hub {
     events: broadcast::Sender<Evt>,
     owner: Mutex<Owner>,
     conns: AtomicU64,
-    /// The stop asks the owner to end its delivery; the owner says when it has.
-    ending: Notify,
-    mail_over: Notify,
+    /// The stop's way to the owner: a request to end the delivery, carrying the answer's sender. `None` until an owner
+    /// runs; a send that fails, or an answer dropped unsent, means no owner is left to wait for.
+    ending: Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>,
     /// The delivery's timings, read when the owner starts.
     timing: Mutex<Timing>,
 }
@@ -109,8 +109,7 @@ impl Hub {
             events: broadcast::channel(EVENTS_QUEUE).0,
             owner: Mutex::new(Owner::Idle),
             conns: AtomicU64::new(0),
-            ending: Notify::new(),
-            mail_over: Notify::new(),
+            ending: Mutex::new(None),
             timing: Mutex::new(Timing::PRODUCT),
         })
     }
@@ -123,9 +122,10 @@ impl Hub {
     /// Ask a running owner to end its delivery and wait until it has (bounded): the stop calls it before the service's, so
     /// the lock outlives the last filing.
     pub(super) async fn end_mail(&self) {
-        if matches!(*lock(&self.owner), Owner::Running) {
-            self.ending.notify_one();
-            let _ = tokio::time::timeout(MAIL_END, self.mail_over.notified()).await;
+        let Some(ask) = lock(&self.ending).clone() else { return };
+        let (done, over) = oneshot::channel();
+        if ask.send(done).is_ok() {
+            let _ = tokio::time::timeout(MAIL_END, over).await;
         }
     }
 
@@ -167,7 +167,9 @@ impl Hub {
                 let watches = service.watches().ok_or(ChatCode::Unavailable)?;
                 *owner = Owner::Running;
                 let own = Own { hub: self.clone(), service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new(), mail: None };
-                tokio::spawn(own.run(watches));
+                let (ask, ending) = mpsc::unbounded_channel();
+                *lock(&self.ending) = Some(ask);
+                tokio::spawn(own.run(watches, ending));
                 Ok(())
             }
         }
@@ -347,6 +349,7 @@ pub(crate) static PANIC_PASS_IN: Mutex<Vec<String>> = Mutex::new(Vec::new());
 async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, order: Order, pace: Duration) -> Done {
     #[cfg(test)]
     assert!(!PANIC_PASS_IN.lock().unwrap().contains(&folder), "a test's pass job fails here");
+    sot_platform::hold_point_async!("chat.mail.pass", folder);
     let channel = order.state.channel().to_string();
     match tokio::task::spawn_blocking(move || mail::recipient(&rows, &folder, &env, unix_now_secs())).await {
         Ok(Ok(_)) => {}
@@ -358,11 +361,22 @@ async fn pass_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
     Done::Passed(channel, traverse::pass(&api, &order, &upper, pace).await)
 }
 
+/// Ends a task when it is dropped, so the job a `run_job` task waits on goes with it.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Runs `job` on a task of its own and sends its answer; a job that panics or is cancelled answers `failed`, so the
-/// delivery's one filing or pass in flight always returns.
+/// delivery's one filing or pass in flight always returns. Aborting the returned task ends the job with it.
 fn run_job(tx: mpsc::Sender<Done>, job: impl Future<Output = Done> + Send + 'static, failed: Done) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let done = tokio::spawn(job).await.unwrap_or_else(|e| {
+        let job = tokio::spawn(job);
+        let _ends_with_us = AbortOnDrop(job.abort_handle());
+        let done = job.await.unwrap_or_else(|e| {
             tracing::warn!(cancelled = e.is_cancelled(), "project chat: a delivery job did not finish");
             failed
         });
@@ -424,7 +438,7 @@ pub(crate) async fn snapshot(chat: &Arc<Chat>, rows: &Workspaces, targets: &[(u6
 }
 
 impl Own {
-    async fn run(mut self, mut watches: Watches) {
+    async fn run(mut self, mut watches: Watches, mut ending: mpsc::UnboundedReceiver<oneshot::Sender<()>>) {
         let (done_tx, mut done_rx) = mpsc::channel::<Fetched>(MAX_CHANNELS);
         let (mail_tx, mut mail_rx) = mpsc::channel::<Done>(8);
         self.mail = self.open_mail(&mut watches, mail_tx);
@@ -434,7 +448,7 @@ impl Own {
                 _ = self.hub.kick.notified() => self.sync(&mut watches, &done_tx),
                 Some(f) = done_rx.recv() => self.finish(&mut watches, f),
                 Some(d) = mail_rx.recv() => self.returned(d),
-                _ = self.hub.ending.notified() => self.end_mail().await,
+                Some(done) = ending.recv() => self.end_mail(done).await,
                 _ = async { match at { Some(t) => tokio::time::sleep_until(t).await, None => std::future::pending().await } } => {}
                 wake = watches.wait(&self.service, LOOK) => match wake {
                     Wake::Stopped => break,
@@ -517,11 +531,11 @@ impl Own {
 
     /// The stop's first step: the delivery ends. Its filing in flight returns (bounded), its pass is dropped (its reads end
     /// with the service's API, which the stop closes next) and so is the start's read; then the stop is told.
-    async fn end_mail(&mut self) {
+    async fn end_mail(&mut self, done: oneshot::Sender<()>) {
         if let Some(filing) = self.mail.take().and_then(|mut m| m.filing.take()) {
             let _ = tokio::time::timeout(MAIL_END, filing).await;
         }
-        self.hub.mail_over.notify_one();
+        drop(done.send(()));
     }
 
     /// Ask the delivery what to do next and start it, until it has nothing to do now. A commit is not answered: the

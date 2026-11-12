@@ -25,8 +25,9 @@ pub(crate) mod watch;
 use crate::lifecycle::retire::{Participant, Registry, RETIRE_WAIT};
 use crate::rows::{Workspace, Workspaces};
 
-/// How long the service's own stop may take before it aborts the listener: inside lifecycle's bound, so a retirement
-/// that completes is reported complete.
+/// How long the service's own stop may take before it aborts the listener: inside lifecycle's bound, so a stop with no
+/// delivery to end is reported complete. A filing in flight is waited for first (`Hub::end_mail`, up to 15 s), and a
+/// retirement that outlasts its bound says so.
 pub(crate) const STOP_WITHIN: Duration = Duration::from_millis(500);
 const _: () = assert!(STOP_WITHIN.as_millis() < RETIRE_WAIT.as_millis());
 

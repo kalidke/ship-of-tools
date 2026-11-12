@@ -356,6 +356,39 @@ async fn a_step_down_returns_the_filing_in_flight_before_the_service_stops() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_pass_in_flight_at_a_step_down_ends_with_the_delivery() {
+    let w = world(true).await;
+    serve(&w.lv, posts(&[1, 2]));
+    let arm = Holds::here().arm("chat.mail.pass").key(&w.folder).hold(1);
+    let chat = w.start_in(&w.fake, &Registry::new(), Duration::from_millis(50)).await;
+    let service = w.service(&chat);
+    arm.reached_async(0).await;
+    w.home.list("elsewhere");
+    assert!(soon(|| chat.status() == Status::NotHub).await, "the chat did not step down");
+    // The held pass's job owns a clone of the service: an ended job gives it back, a detached one keeps it.
+    assert!(soon(|| Arc::strong_count(&service) == 1).await, "{} holders of the service remain: a pass outlived the delivery", Arc::strong_count(&service));
+    arm.release(0);
+    assert_eq!((w.inbox(), w.boundary()), (Vec::<String>::new(), None));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_starts_read_in_flight_does_not_hold_the_end_and_nothing_is_filed_after_it() {
+    let w = world(true).await;
+    std::fs::create_dir(w.th.home.join("inbox").join("trapnoread.jsonl")).unwrap();
+    let chat = w.start_in(&w.fake, &Registry::new(), Duration::from_millis(50)).await;
+    let service = w.service(&chat);
+    send(&w.lv, 1, "e1");
+    until("the event taken", || w.lv.acked.load(Ordering::SeqCst) >= 1).await;
+    w.home.list("elsewhere");
+    assert!(soon(|| chat.status() == Status::NotHub).await, "the chat did not step down");
+    assert!(matches!(service.status(), ServiceStatus::Stopped));
+    // The inbox is readable now; nothing reads it for a chat that has ended.
+    std::fs::remove_dir(w.th.home.join("inbox").join("trapnoread.jsonl")).unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(w.inbox(), Vec::<String>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_retirement_waits_for_the_filing_in_flight_and_reports_itself_incomplete_when_that_outlasts_its_bound() {
     let w = world(true).await;
     let registry = Registry::new();

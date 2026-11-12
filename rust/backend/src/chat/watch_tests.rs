@@ -95,3 +95,21 @@ fn a_watch_is_bounded_per_connection_and_in_all() {
     one.release("C0002");
     assert_eq!(one.claim(target("C9999")), Ok(()), "a released slot is free again");
 }
+
+#[tokio::test]
+async fn ending_a_delivery_whose_owner_is_gone_returns_at_once() {
+    let end = |hub: Arc<Hub>| async move { tokio::time::timeout(Duration::from_secs(2), hub.end_mail()).await.expect("end_mail waited for an owner that is gone") };
+    // No owner has run: nothing to wait for.
+    end(Hub::new()).await;
+    // An owner that dropped its receiver, and one that took the request and died before answering.
+    let hub = Hub::new();
+    let (ask, gone) = mpsc::unbounded_channel();
+    *lock(&hub.ending) = Some(ask);
+    drop(gone);
+    end(hub).await;
+    let hub = Hub::new();
+    let (ask, mut owner) = mpsc::unbounded_channel::<oneshot::Sender<()>>();
+    *lock(&hub.ending) = Some(ask);
+    drop(tokio::spawn(async move { drop(owner.recv().await) }));
+    end(hub).await;
+}
