@@ -783,28 +783,42 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - The drawing worker (preview/image/svg_draws.rs): `SvgDraws`, owned by `State`, is the one owner of the window's SVG
   draws, and nothing yet submits to it (the figures are the next landing). One worker thread, started at the first
   submit, draws one batch at a time (a batch of one for now; the draw takes a list of jobs, so a generation's math
-  jobs can go to one child later without a change to the queue's rules) on a helper thread of its own, so the worker
-  waits on one inbox that carries jobs, generation advances and the finished draw, and wakes for any of them without
-  polling. Rules:
+  jobs can go to one child later without a change to the queue's rules). The window's thread and the worker share one
+  lock over the queue, the bytes waiting and the running draw's `Stop`; the window's thread never waits on the worker.
+  Rules:
   - A job carries the generation of the preview pane's source (above). `frame_upkeep` tells the worker the current
-    generation after `drain_events`.
-  - A job whose generation is not current at its turn is skipped, never given to the draw; a running draw whose
-    generation goes stale is stopped (`Stop`), and the outcome of every job of a generation that is not current when
-    its draw ends is `Stale`, whatever the draw said. The owner submits a stale key again under the new generation.
-  - One draw at a time; the queue holds at most `QUEUED_BYTES` (`PREVIEW_BINARY_CAP`) of input from its submit to its
-    start, and a submit past it is `too many pictures waiting`.
-  - After `SVG_STRIKES` (2) draws of one generation end `Ended` (a bound or a crash; the drawing's own parse error is
-    not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new generation
-    starts clean.
+    generation after `drain_events`, and `submit` first advances to its own job's (a submitter has just read the pane's,
+    so a newer one than the frame's last is current), so a job is never stale for being early. A job of an older
+    generation is `Stale` at once.
+  - The queue holds the current generation alone: `advance` hands every waiting job of an older one back as `Stale` at
+    once and stops the running draw (`Stop`), so a worker slow to return holds none of the old queue's memory, and a
+    hostile file's pictures neither wait nor count against the next file's bound. A job is never given to the draw
+    after its generation went stale. An outcome of a generation that is no longer current when `drain` reads it is
+    `Stale`, whatever its draw said (`drain` holds the pane's generation). The owner submits a stale key again under
+    the new generation.
+  - One draw at a time (the worker's own thread draws); the queue holds at most `QUEUED_BYTES` (`PREVIEW_BINARY_CAP`)
+    of the current generation's input from its submit to its start, and a submit past it is `too many pictures
+    waiting`.
+  - After `SVG_STRIKES` (2) draws of one generation end `Ended` (a bound or a crash; the drawing's own parse error
+    is not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new
+    generation starts clean.
   - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, which has no reader
-    until the figures), each followed by one `MainWake::wake`. A draw that panics, or a thread the OS refuses, gives no
-    outcomes, and each of its jobs is refused in `cannot start the drawing` words. The `State` never waits on the worker; dropping `SvgDraws` stops the
-    running draw and ends the worker without joining it. A child left running when the window exits ends with its
-    helper thread on Linux (`end_with_parent`), at its CPU bound on macOS and with the job's last handle on Windows.
+    until the figures); each the worker sends is followed by one `MainWake::wake` (the stale ones `advance` and
+    `submit` hand back are read by the window's own thread and wake nothing). A draw that panics, or a worker thread the
+    OS refuses, gives no outcomes, and each of its jobs is refused in `cannot start the drawing` words. Dropping
+    `SvgDraws` stops the running draw and ends the worker without joining it. A child left running when the window
+    exits ends with the worker thread that started it on Linux (`end_with_parent`), at its CPU bound on macOS and with
+    the job's last handle on Windows. Limit: the reap after a kill is the runner's one unbounded wait, and while the
+    worker waits in it no later job is drawn.
   - Tests (preview/image/svg_draws_tests.rs, a stand-in draw held until released or stopped, no child):
     `a_new_generation_starts_after_at_most_the_stale_run_is_killed`, `a_stale_job_is_skipped_before_it_starts`,
-    `one_draw_runs_at_a_time`, `a_submit_past_the_queued_bytes_is_refused`, `after_two_strikes_a_generation_draws_no_more`,
-    `an_outcome_reaches_the_drain_and_wakes_once`, `a_draw_that_panics_refuses_its_jobs_and_the_worker_goes_on`.
+    `one_draw_runs_at_a_time`, `a_submit_past_the_queued_bytes_is_refused`,
+    `a_stale_generations_queue_does_not_refuse_the_current_one`, `after_two_strikes_a_generation_draws_no_more`,
+    `only_a_bounds_end_is_a_strike`, `an_outcome_reaches_the_drain_and_wakes_once`,
+    `a_job_of_a_newer_generation_than_the_frames_is_drawn_and_an_older_one_is_stale`,
+    `the_first_submit_before_any_advance_is_drawn`, `a_draw_that_outlives_its_generation_is_stale_whatever_it_says`,
+    `an_outcome_already_queued_is_stale_once_the_pane_moves_on`, `dropping_the_draws_stops_the_draw_and_ends_the_worker`
+    and `a_draw_that_panics_refuses_its_jobs_and_the_worker_goes_on`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),
   `resumed` (app/handler.rs); a relaunch command is refused for them (control/dispatch.rs).

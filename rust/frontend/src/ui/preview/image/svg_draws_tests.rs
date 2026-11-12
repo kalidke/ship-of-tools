@@ -23,7 +23,7 @@ impl Stand {
             self.most.fetch_max(self.now.fetch_add(1, SeqCst) + 1, SeqCst);
             let begun = Instant::now();
             assert_ne!(label, "boom", "a draw that panics");
-            let held = !label.starts_with("end") && !label.starts_with("ok");
+            let held = !label.starts_with("end") && !label.starts_with("ok") && !label.starts_with("refused");
             while held && !self.released.load(SeqCst) && !stop.is_stopped() && begun.elapsed() < Duration::from_secs(20) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -32,6 +32,8 @@ impl Stand {
                 Outcome::Stale
             } else if label.starts_with("end") {
                 Outcome::Ended("took past 10 s".into())
+            } else if label.starts_with("refused") {
+                Outcome::Refused("svg parse failed".into())
             } else {
                 Outcome::Drawn { w: 1, h: 1, rgba: vec![0; 4] }
             });
@@ -93,7 +95,10 @@ fn a_new_generation_starts_after_at_most_the_stale_run_is_killed() {
     assert_eq!(stand.seen(), ["a0", "b"], "the waiting 19 were never drawn");
     stand.release();
     let got = outcomes(&mut draws, 21);
-    assert!(got[..20].iter().enumerate().all(|(n, (key, outcome))| *key == format!("a{n}") && *outcome == Outcome::Stale), "{got:?}");
+    // The stopped draw's own outcome comes when it returns, after the 19 flushed at the advance.
+    let stale: Vec<_> = got.iter().filter(|(_, outcome)| *outcome == Outcome::Stale).map(|(key, _)| key.clone()).collect();
+    assert_eq!(stale.len(), 20, "{got:?}");
+    assert!((0..20).all(|n| stale.contains(&format!("a{n}"))), "{got:?}");
     assert!(matches!(&got[20], (key, Outcome::Drawn { .. }) if key == "b"), "{got:?}");
 }
 
@@ -106,7 +111,8 @@ fn a_stale_job_is_skipped_before_it_starts() {
     draws.submit("b".into(), 1, job("b")).unwrap();
     within("the first draw to start", || stand.seen() == ["a"]);
     draws.advance(2);
-    let got = outcomes(&mut draws, 2);
+    let mut got = outcomes(&mut draws, 2);
+    got.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(got, [("a".to_owned(), Outcome::Stale), ("b".to_owned(), Outcome::Stale)]);
     assert_eq!(stand.seen(), ["a"], "b was never given to the draw");
 }
@@ -186,4 +192,95 @@ fn a_draw_that_panics_refuses_its_jobs_and_the_worker_goes_on() {
     let got = outcomes(&mut draws, 2);
     assert_eq!(got[0], ("boom".to_owned(), Outcome::Refused("cannot start the drawing".into())));
     assert!(matches!(got[1].1, Outcome::Drawn { .. }), "{got:?}");
+}
+
+#[test]
+fn a_stale_generations_queue_does_not_refuse_the_current_one() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 10);
+    draws.advance(1);
+    draws.submit("a".into(), 1, job("a")).unwrap();
+    within("the first draw to start", || stand.seen() == ["a"]);
+    draws.submit("b".into(), 1, job("bbbbbbbbb")).unwrap();
+    draws.advance(2);
+    assert_eq!(draws.submit("c".into(), 2, job("okc")), Ok(()), "the new source's first picture");
+}
+
+#[test]
+fn a_job_of_a_newer_generation_than_the_frames_is_drawn_and_an_older_one_is_stale() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    draws.submit("new".into(), 2, job("okn")).unwrap();
+    draws.submit("old".into(), 1, job("oko")).unwrap();
+    let got = outcomes(&mut draws, 2);
+    let of = |key: &str| &got.iter().find(|(k, _)| k == key).unwrap().1;
+    assert!(matches!(of("new"), Outcome::Drawn { .. }), "{got:?}");
+    assert_eq!(*of("old"), Outcome::Stale);
+    assert_eq!(stand.seen(), ["okn"], "the older job was never given to the draw");
+}
+
+#[test]
+fn the_first_submit_before_any_advance_is_drawn() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.submit("ok".into(), 7, job("ok")).unwrap();
+    assert!(matches!(outcomes(&mut draws, 1)[0].1, Outcome::Drawn { .. }));
+}
+
+#[test]
+fn only_a_bounds_end_is_a_strike() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    for key in ["refused0", "refused1", "ok"] {
+        draws.submit(key.into(), 1, job(key)).unwrap();
+    }
+    let got = outcomes(&mut draws, 3);
+    assert!(matches!(got[0].1, Outcome::Refused(_)) && matches!(got[1].1, Outcome::Refused(_)), "{got:?}");
+    assert!(matches!(got[2].1, Outcome::Drawn { .. }), "two refusals are not two strikes: {got:?}");
+}
+
+#[test]
+fn a_draw_that_outlives_its_generation_is_stale_whatever_it_says() {
+    let (gate, started) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
+    let (held, begun) = (gate.clone(), started.clone());
+    let draw: Draw = Arc::new(move |jobs: Vec<Job>, _stop: &Stop| {
+        begun.fetch_add(1, SeqCst);
+        while !held.load(SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        jobs.iter().map(|_| Outcome::Drawn { w: 1, h: 1, rgba: vec![0; 4] }).collect()
+    });
+    let mut draws = SvgDraws::new(1 << 20, || {}, draw);
+    draws.advance(1);
+    draws.submit("a".into(), 1, job("a")).unwrap();
+    within("the draw to start", || started.load(SeqCst) == 1);
+    draws.advance(2);
+    gate.store(true, SeqCst);
+    assert_eq!(outcomes(&mut draws, 1)[0].1, Outcome::Stale, "the draw ignored its stop and drew");
+}
+
+#[test]
+fn an_outcome_already_queued_is_stale_once_the_pane_moves_on() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, wakes) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    draws.submit("ok".into(), 1, job("ok")).unwrap();
+    within("the outcome to be queued", || wakes.load(SeqCst) == 1);
+    draws.advance(2);
+    assert_eq!(outcomes(&mut draws, 1)[0].1, Outcome::Stale, "a drawn picture of the source before");
+}
+
+#[test]
+fn dropping_the_draws_stops_the_draw_and_ends_the_worker() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    draws.submit("a".into(), 1, job("a")).unwrap();
+    within("the first draw to start", || stand.seen() == ["a"]);
+    drop(draws);
+    // The held draw saw its stop, and the worker, which held the draw function, is gone with it.
+    within("the held draw to end", || stand.now.load(SeqCst) == 0);
+    within("the worker to end", || Arc::strong_count(&stand) == 1);
 }

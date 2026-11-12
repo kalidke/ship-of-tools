@@ -1,16 +1,17 @@
 //! The drawing worker: the one thread that owns the window's SVG draws. Each job carries the generation of the preview
-//! pane's source (`InstalledPreviewSource::generation`); the worker draws one batch at a time, skips a job whose
-//! generation is not current when its turn comes, stops a running draw whose generation goes stale (that job is
-//! `Outcome::Stale`, and its owner submits it again under the new generation), refuses past `QUEUED_BYTES` of input
-//! waiting, and after `SVG_STRIKES` draws of one generation that ended at a bound refuses the rest of it without a
-//! child. Outcomes go back on a channel the window drains at the top of each frame, each followed by one wake. The draw
-//! is a function the worker is given (`draw_in_own_child` in the window), so its tests use a stand-in.
+//! pane's source (`InstalledPreviewSource::generation`). The queue holds only the current generation: `advance` (the
+//! window's thread, which never waits on the worker) hands every waiting job of an older one back as `Outcome::Stale`
+//! at once and stops the running draw, so a hostile file's queue neither holds memory nor counts against the next
+//! file's `QUEUED_BYTES`. The worker draws one batch at a time on its own thread and, after `SVG_STRIKES` draws of one
+//! generation that ended at a bound, refuses the rest of it without a child. Outcomes go back on a channel the window
+//! drains at the top of each frame (an outcome of a generation no longer current is `Stale` there), each of the
+//! worker's followed by one wake. The draw is a function the worker is given (`draw_in_own_child` in the window), so
+//! its tests use a stand-in.
 
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
@@ -42,76 +43,103 @@ struct Entry {
     job: Job,
 }
 
-enum Msg {
-    Job(Entry),
-    Advance(u64),
-    Drew(Vec<Outcome>),
-    Quit,
+/// What the window's thread and the worker share, under one lock. The queue holds the current generation alone, and a
+/// running draw is always of it, so `advance` stops whatever runs.
+#[derive(Default)]
+struct Held {
+    queue: VecDeque<Entry>,
+    /// The bytes of SVG in `queue`.
+    waiting: usize,
+    running: Option<Stop>,
+    quit: bool,
 }
 
-/// The window's end of the worker, owned by the State. The worker starts at the first submit; dropping this ends it
-/// without waiting for it.
+#[derive(Default)]
+struct Shared {
+    held: Mutex<Held>,
+    ready: Condvar,
+}
+
+impl Shared {
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The window's end of the worker, owned by the State. The worker starts at the first submit; dropping this stops its
+/// draw and ends it without waiting for it.
 pub(crate) struct SvgDraws {
     draw: Draw,
     wake: Wake,
     cap: usize,
+    /// The newest generation told to it, which is the pane's.
     generation: u64,
-    waiting: Arc<AtomicUsize>,
+    shared: Arc<Shared>,
     done: (Sender<Done>, Receiver<Done>),
-    inbox: Option<Sender<Msg>>,
+    started: bool,
 }
 
 impl SvgDraws {
     pub(crate) fn new(cap: usize, wake: impl Fn() + Send + Sync + 'static, draw: Draw) -> Self {
-        Self { draw, wake: Arc::new(wake), cap, generation: 0, waiting: Arc::default(), done: mpsc::channel(), inbox: None }
+        Self { draw, wake: Arc::new(wake), cap, generation: 0, shared: Arc::default(), done: mpsc::channel(), started: false }
     }
 
-    /// The pane's source is now `generation`; a draw of any other is stopped and every waiting job of it skipped.
+    /// The pane's source is now `generation`, if that is newer: the jobs waiting for an older one are `Stale` at once
+    /// and a draw running for it is stopped.
     pub(crate) fn advance(&mut self, generation: u64) {
-        if generation != self.generation {
-            self.generation = generation;
-            if let Some(inbox) = &self.inbox {
-                let _ = inbox.send(Msg::Advance(generation));
-            }
+        if generation <= self.generation {
+            return;
+        }
+        self.generation = generation;
+        let mut held = self.shared.held();
+        held.waiting = 0;
+        for entry in held.queue.drain(..) {
+            let _ = self.done.0.send(Done { key: entry.key, generation: entry.generation, outcome: Outcome::Stale });
+        }
+        if let Some(stop) = &held.running {
+            stop.stop();
         }
     }
 
-    /// Queues `job` for `key` under `generation`, or says why not. Each key is submitted once per generation by its
-    /// owner; a refusal is terminal for it.
+    /// Queues `job` for `key` under `generation` (the pane's, which a submitter has just read, so a newer one than the
+    /// frame's last `advance` becomes current here), or says why not. A job of an older generation is `Stale` at once.
+    /// Each key is submitted once per generation by its owner; a refusal is terminal for it.
     #[cfg_attr(not(test), expect(dead_code, reason = "the figures, the first submitters, are the next landing"))]
     pub(crate) fn submit(&mut self, key: String, generation: u64, job: Job) -> Result<(), &'static str> {
+        self.advance(generation);
+        if generation < self.generation {
+            let _ = self.done.0.send(Done { key, generation, outcome: Outcome::Stale });
+            return Ok(());
+        }
+        self.start()?;
         let len = job.svg.len();
-        if self.waiting.load(Relaxed).saturating_add(len) > self.cap {
+        let mut held = self.shared.held();
+        if held.waiting.saturating_add(len) > self.cap {
             return Err(TOO_MANY);
         }
-        let inbox = self.started().ok_or(NO_START)?;
-        self.waiting.fetch_add(len, Relaxed);
-        inbox.send(Msg::Job(Entry { key, generation, job })).map_err(|_| NO_START)
+        held.waiting += len;
+        held.queue.push_back(Entry { key, generation, job });
+        drop(held);
+        self.shared.ready.notify_one();
+        Ok(())
     }
 
-    fn started(&mut self) -> Option<Sender<Msg>> {
-        if self.inbox.is_none() {
-            let (tx, rx) = mpsc::channel();
-            let worker = Worker {
-                generation: self.generation,
-                queue: VecDeque::new(),
-                running: None,
-                strikes: (0, 0),
-                waiting: self.waiting.clone(),
-                done: self.done.0.clone(),
-                wake: self.wake.clone(),
-                draw: self.draw.clone(),
-                inbox: tx.clone(),
-            };
-            std::thread::Builder::new().spawn(move || worker.run(rx)).ok()?;
-            self.inbox = Some(tx);
+    fn start(&mut self) -> Result<(), &'static str> {
+        if !self.started {
+            let worker = Worker { shared: self.shared.clone(), done: self.done.0.clone(), wake: self.wake.clone(), draw: self.draw.clone() };
+            std::thread::Builder::new().spawn(move || worker.run()).map_err(|_| NO_START)?;
+            self.started = true;
         }
-        self.inbox.clone()
+        Ok(())
     }
 
-    /// Every outcome that has arrived, in order; the top of each frame.
+    /// Every outcome that has arrived, in order, the top of each frame; one of a generation that is no longer the
+    /// pane's is `Stale`, whatever its draw said.
     pub(crate) fn drain(&mut self, mut each: impl FnMut(Done)) {
-        while let Ok(done) = self.done.1.try_recv() {
+        while let Ok(mut done) = self.done.1.try_recv() {
+            if done.generation != self.generation {
+                done.outcome = Outcome::Stale;
+            }
             each(done);
         }
     }
@@ -119,108 +147,63 @@ impl SvgDraws {
 
 impl Drop for SvgDraws {
     fn drop(&mut self) {
-        if let Some(inbox) = &self.inbox {
-            let _ = inbox.send(Msg::Quit);
+        let mut held = self.shared.held();
+        held.quit = true;
+        if let Some(stop) = &held.running {
+            stop.stop();
         }
+        drop(held);
+        self.shared.ready.notify_all();
     }
-}
-
-/// The batch being drawn: its generation, the keys of its jobs in order, and its off switch.
-struct Running {
-    generation: u64,
-    keys: Vec<String>,
-    stop: Stop,
 }
 
 struct Worker {
-    generation: u64,
-    queue: VecDeque<Entry>,
-    running: Option<Running>,
-    /// The generation that has struck, and how many of its draws ended at a bound.
-    strikes: (u64, u32),
-    waiting: Arc<AtomicUsize>,
+    shared: Arc<Shared>,
     done: Sender<Done>,
     wake: Wake,
     draw: Draw,
-    /// The helper's way back: the worker waits on its inbox alone, so a new generation and a finished draw wake it alike.
-    inbox: Sender<Msg>,
 }
 
 impl Worker {
-    fn run(mut self, inbox: Receiver<Msg>) {
-        while let Ok(msg) = inbox.recv() {
-            match msg {
-                Msg::Job(entry) => self.queue.push_back(entry),
-                Msg::Advance(generation) => {
-                    self.generation = generation;
-                    if let Some(running) = self.running.as_ref().filter(|running| running.generation != generation) {
-                        running.stop.stop();
+    fn run(self) {
+        // The generation that has struck, and how many of its draws ended at a bound.
+        let mut strikes = (0u64, 0u32);
+        loop {
+            let (entry, stop) = {
+                let mut held = self.shared.held();
+                loop {
+                    if held.quit {
+                        return;
                     }
-                }
-                Msg::Drew(outcomes) => self.settle(outcomes),
-                Msg::Quit => {
-                    if let Some(running) = &self.running {
-                        running.stop.stop();
+                    if let Some(entry) = held.queue.pop_front() {
+                        held.waiting -= entry.job.svg.len();
+                        if strikes.0 == entry.generation && strikes.1 >= SVG_STRIKES {
+                            self.report(entry.key, entry.generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
+                            continue;
+                        }
+                        let stop = Stop::default();
+                        held.running = Some(stop.clone());
+                        break (entry, stop);
                     }
-                    return;
+                    held = self.shared.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
                 }
-            }
-            self.pump();
-        }
-    }
-
-    /// Starts the next job that is current and not refused, giving each other its outcome at once.
-    fn pump(&mut self) {
-        while self.running.is_none() {
-            let Some(entry) = self.queue.pop_front() else { return };
-            self.waiting.fetch_sub(entry.job.svg.len(), Relaxed);
-            if entry.generation != self.generation {
-                self.report(entry.key, entry.generation, Outcome::Stale);
-            } else if self.strikes.0 == entry.generation && self.strikes.1 >= SVG_STRIKES {
-                self.report(entry.key, entry.generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
-            } else {
-                self.begin(vec![entry]);
+            };
+            // A batch of one: a later landing pops the jobs of one generation that wait together.
+            let (generation, keys, jobs) = (entry.generation, vec![entry.key], vec![entry.job]);
+            // A draw that panics answers with no outcomes, which are refused below.
+            let mut outcomes = catch_unwind(AssertUnwindSafe(|| (self.draw)(jobs, &stop))).unwrap_or_default().into_iter();
+            self.shared.held().running = None;
+            for key in keys {
+                let outcome = outcomes.next().unwrap_or_else(|| Outcome::Refused(NO_START.to_owned()));
+                if matches!(outcome, Outcome::Ended(_)) {
+                    strikes = (generation, if strikes.0 == generation { strikes.1 + 1 } else { 1 });
+                }
+                self.report(key, generation, outcome);
             }
         }
     }
 
-    /// Draws `batch`, jobs of one generation, on a thread of its own, so the worker stays awake to a new generation.
-    fn begin(&mut self, batch: Vec<Entry>) {
-        let generation = batch[0].generation;
-        let (keys, jobs): (Vec<_>, Vec<_>) = batch.into_iter().map(|entry| (entry.key, entry.job)).unzip();
-        let (stop, draw, inbox) = (Stop::default(), self.draw.clone(), self.inbox.clone());
-        let helper_stop = stop.clone();
-        // A draw that panics, or a thread the OS refuses, answers with no outcomes, which `settle` refuses.
-        let spawned = std::thread::Builder::new().spawn(move || {
-            let outcomes = catch_unwind(AssertUnwindSafe(|| draw(jobs, &helper_stop))).unwrap_or_default();
-            let _ = inbox.send(Msg::Drew(outcomes));
-        });
-        if spawned.is_err() {
-            let _ = self.inbox.send(Msg::Drew(Vec::new()));
-        }
-        self.running = Some(Running { generation, keys, stop });
-    }
-
-    fn settle(&mut self, outcomes: Vec<Outcome>) {
-        let Some(Running { generation, keys, .. }) = self.running.take() else { return };
-        let mut outcomes = outcomes.into_iter();
-        for key in keys {
-            let outcome = outcomes.next().unwrap_or_else(|| Outcome::Refused(NO_START.to_owned()));
-            self.report(key, generation, outcome);
-        }
-    }
-
-    /// An outcome of a generation that is no longer current is `Stale`, whatever the draw said; one that ended at a
-    /// bound is a strike against its generation.
-    fn report(&mut self, key: String, generation: u64, outcome: Outcome) {
-        let outcome = if generation != self.generation {
-            Outcome::Stale
-        } else {
-            if matches!(outcome, Outcome::Ended(_)) {
-                self.strikes = (generation, if self.strikes.0 == generation { self.strikes.1 + 1 } else { 1 });
-            }
-            outcome
-        };
+    fn report(&self, key: String, generation: u64, outcome: Outcome) {
         let _ = self.done.send(Done { key, generation, outcome });
         (self.wake)();
     }
