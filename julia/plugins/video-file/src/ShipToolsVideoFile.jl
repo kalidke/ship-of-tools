@@ -57,7 +57,7 @@ function _poster(path::AbstractString, bound::Real)
     poster = try
         ConceptExplorerCore.read_within(`$(FFMPEG[]()) -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, bound)
     catch e
-        return _note("Couldn't extract a poster frame: $(sprint(showerror, e))\n\nPlayback still opens in the browser with `o`.")
+        return _note("Couldn't extract a poster frame: $(ConceptExplorerCore.tool_failure_words(e))\n\nPlayback still opens in the browser with `o`.")
     end
     isempty(poster) && return _note("Poster extraction produced no frame. Playback opens in the browser with `o`.")
     ConceptExplorerCore.PreviewPayload("image/png", poster)

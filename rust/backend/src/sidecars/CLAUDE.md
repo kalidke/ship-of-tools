@@ -203,7 +203,10 @@ of each.
     kernel's environment is instantiated (x86_64 Linux, both macOS architectures, x86_64 Windows; elsewhere the plugin
     answers a note saying no ready-built tool exists). The bounds fit inside guarantee 3's wait: a PDF page's two tools
     share `PREVIEW_BOUND` (8 s), the poster's `ffmpeg` has `TOOL_BOUND` (8 s), and a request that runs past answers with
-    the plugin's own note, never `kernel_unavailable`. The PDF plugin keeps rendered pages in memory up to
+    the plugin's own note, never `kernel_unavailable`. A failed tool is a `ToolFailure` (`read_within`): its text is the
+    program's name and what happened (could not start, did not finish within the bound, exit code or signal), so no
+    note, log line or error a plugin returns holds a command, an environment (a JLL's command carries the kernel's
+    whole one) or text taken from one; the plugins' notes show only that text. The PDF plugin keeps rendered pages in memory up to
     `PAGE_CACHE_LIMIT` (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime,
     page and render size. It reads `pdfinfo` once per path and mtime and never prefetches. The existing package suite,
     `julia/plugins/pdf-file/test/runtests.jl`, checks hits, path/mtime/size misses and byte eviction through `preview`, a

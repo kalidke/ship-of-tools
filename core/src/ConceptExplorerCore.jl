@@ -196,14 +196,44 @@ end
 PreviewPayload(mime, data) = PreviewPayload(mime, data, Dict{String,Any}())
 
 """
+    ToolFailure(program, what, exited)
+
+What `read_within` throws when a process gives no output: it did not start, ran past the bound, or ended badly. Its
+text is fixed words (the program's name and what happened), never the command, its environment or its output, because
+a plugin puts it in a note a person reads and a command built from a JLL carries the whole environment. `exited` is
+true when the process ran and ended with a failing status.
+"""
+struct ToolFailure <: Exception
+    program::String
+    what::String
+    exited::Bool
+end
+
+Base.showerror(io::IO, e::ToolFailure) = print(io, e.program, " ", e.what)
+
+"""
+    tool_failure_words(e) -> String
+
+The words a note may show for a caught exception: a `ToolFailure`'s text, and for anything else only that the tool
+could not be run, since another exception's text may hold a command.
+"""
+tool_failure_words(e) = e isa ToolFailure ? sprint(showerror, e) : "the tool could not be run"
+
+"""
     read_within(cmd, seconds) -> Vector{UInt8}
 
 `read(cmd)` with a bound: when `seconds` pass the process is killed (KILL, so a tool that ignores TERM ends too) and
-its output pipe is closed, so a descendant still holding that pipe cannot hold the call; the error names the program
-and the bound. As `read(cmd)` does, it reads through `open(cmd)`, whose stdin is `devnull`.
+its output pipe is closed, so a descendant still holding that pipe cannot hold the call. Every failure is a
+[`ToolFailure`](@ref) naming the program and what happened (could not start, did not finish within the bound, exit
+code or signal). As `read(cmd)` does, it reads through `open(cmd)`, whose stdin is `devnull`.
 """
 function read_within(cmd::Cmd, seconds::Real)
-    p = open(cmd)
+    program = basename(cmd.exec[1])
+    p = try
+        open(cmd)
+    catch
+        throw(ToolFailure(program, "could not start", false))
+    end
     done, timedout = Ref(false), Ref(false)
     timer = Timer(seconds) do _
         done[] && return
@@ -222,8 +252,11 @@ function read_within(cmd::Cmd, seconds::Real)
         done[] = true
         close(timer)
     end
-    timedout[] && error("$(basename(cmd.exec[1])) did not finish within $(seconds) s")
-    success(p) || throw(ProcessFailedException(p))
+    timedout[] && throw(ToolFailure(program, "did not finish within $(seconds) s", false))
+    if !success(p)
+        throw(ToolFailure(program, p.termsignal != 0 ? "was ended by signal $(p.termsignal)" :
+                                                       "exited with code $(p.exitcode)", true))
+    end
     out
 end
 
