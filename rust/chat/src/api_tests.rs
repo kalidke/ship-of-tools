@@ -893,6 +893,72 @@ async fn fill_names_resolves_mentions_within_the_deadline_and_the_cache() {
     .await;
 }
 
+/// A fake whose `users.info` hangs for a mention (`U0M..`) and names every other user at once.
+async fn slow_mentions() -> FakeSlack {
+    FakeSlack::start(Identity::Trusted, |seen, _| {
+        if let Some(r) = auth(seen) {
+            return r;
+        }
+        let user = seen.param("user").unwrap_or_default();
+        if user.starts_with("U0M") {
+            return Reply::Hang;
+        }
+        Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
+    })
+    .await
+}
+
+/// Authors are looked up before mentions, so a mention that hangs the names' deadline cannot cost an author its name.
+#[tokio::test]
+async fn fill_names_looks_up_authors_before_mentions() {
+    bounded(async {
+        let fake = slow_mentions().await;
+        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(400));
+        let mut records = vec![member_record("U0AUTH")];
+        records[0].text = mentions(5);
+        api.fill_names(&mut records).await;
+        assert_eq!(records[0].author.name, "Name-U0AUTH");
+        assert!(records[0].names.is_empty());
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A fill sets names from what its own lookups found, not from the cache, which holds `MAX_NAMES` entries and drops its
+/// oldest: when other lookups push the fill's own first names out before it ends, it keeps them.
+#[tokio::test]
+async fn fill_names_keeps_what_it_found_when_the_cache_cannot() {
+    bounded(async {
+        let slot: Arc<Mutex<Option<Arc<Api>>>> = Arc::new(Mutex::new(None));
+        let held = slot.clone();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            let user = seen.param("user").unwrap_or_default();
+            if user == "U0LAST" {
+                // While the last lookup is being answered, other reads fill the cache and push out the fill's first names.
+                let api = held.lock().unwrap().clone().unwrap();
+                for i in 0..MAX_NAMES + 10 {
+                    api.remember(&format!("U1X{i}"), "n");
+                }
+            }
+            Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
+        })
+        .await;
+        let api = Arc::new(new_api(&fake));
+        *slot.lock().unwrap() = Some(api.clone());
+        let mut records = vec![member_record("U0FIRST")];
+        records[0].text = "<@U0ONE> <@U0LAST>".into();
+        api.fill_names(&mut records).await;
+        assert!(!api.is_cached("U0FIRST") && !api.is_cached("U0ONE"), "the cache did not push them out");
+        assert_eq!(records[0].author.name, "Name-U0FIRST");
+        assert_eq!(named(&records[0]), ["U0ONE", "U0LAST"]);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 fn member_record(id: &str) -> sot_protocol::chat::ChatRecord {
     let ctx = crate::normalize::Context {
         workspace: WS,

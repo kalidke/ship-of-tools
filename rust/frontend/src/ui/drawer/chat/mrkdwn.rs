@@ -3,7 +3,7 @@
 //! (`resolve`); and its blocks, a fenced code block and a quote (`>` lines, or `>>>` and the rest), whose pieces carry the bits
 //! below. Styling is the window's presentation, so it is this module's and no other reader's. Pure.
 
-use sot_protocol::chat::TextSegment;
+use sot_protocol::chat::{ChatName, TextSegment};
 use sot_protocol::page_reply::unsafe_char;
 
 pub(super) const BOLD: u8 = 1;
@@ -35,9 +35,10 @@ pub(super) struct Piece {
     pub style: u8,
 }
 
+/// A token carries, for a person's, the name the record holds for its id, cleaned (`named`).
 enum Atom {
     Ch(char),
-    Tok(String),
+    Tok(String, Option<String>),
 }
 
 fn space(a: &Atom) -> bool {
@@ -52,10 +53,10 @@ fn edge(a: Option<&Atom>) -> bool {
 /// The text's pieces: blocks found first (a fence opens a code block and the next closes it, across lines; an unclosed one is
 /// as typed), then each line outside them read as a quote or as text with its inline styles applied. The markers leave, and a
 /// marker no rule styles stays as typed. A block starts and ends its own line.
-pub(super) fn styled(segments: impl IntoIterator<Item = TextSegment>) -> Vec<Piece> {
+pub(super) fn styled(segments: impl IntoIterator<Item = TextSegment>, names: &[ChatName]) -> Vec<Piece> {
     let atoms: Vec<Atom> = segments.into_iter().flat_map(|s| match s {
         TextSegment::Text(t) => t.chars().map(Atom::Ch).collect(),
-        TextSegment::Markup(t) => vec![Atom::Tok(t)],
+        TextSegment::Markup(t) => { let name = named(&t, names); vec![Atom::Tok(t, name)] }
     }).collect();
     let mut out = Vec::new();
     // `at` starts the text not yet shown, `quoted` is whether a `>>>` quotes the rest, and `blocks` counts the blocks shown.
@@ -144,11 +145,19 @@ fn one_line(s: &str) -> String {
     s.chars().map(|c| match c { '\n' | '\r' => ' ', c if c.is_control() => '\u{fffd}', c => c }).collect()
 }
 
-/// A token as Slack shows it, with its role: a link its label or its URL; a user (`<@U..>`, `<@W..>`) `@` and the label or the
-/// id; a channel `#` and the label or the id; `<!here>`, `<!channel>` and `<!everyone>` by name; a group its label; a date its
+/// The name `names` holds for a person's token (`<@U..>`, `<@W..>`), without the invisible and direction characters a
+/// header's name loses and trimmed; `None` for any other token, an id with no entry, or a name nothing visible is left of.
+fn named(tok: &str, names: &[ChatName]) -> Option<String> {
+    let id = tok.strip_prefix("<@")?.strip_suffix('>')?.split('|').next()?;
+    let name: String = names.iter().find(|n| n.id == id)?.name.chars().filter(|c| !unsafe_char(*c)).collect();
+    Some(name.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+/// A token as Slack shows it, with its role: a link its label or its URL; a user (`<@U..>`, `<@W..>`) `@` and the name, else
+/// the label, else the id; a channel `#` and the label or the id; `<!here>`, `<!channel>` and `<!everyone>` by name; a group its label; a date its
 /// fallback. A name loses the invisible and direction characters a header's name loses, and one left empty shows the id. A
 /// token not so (or one without what it shows) is its decoded text, as typed.
-fn resolve(tok: &str) -> (String, Role) {
+fn resolve(tok: &str, name: Option<&str>) -> (String, Role) {
     let shown = || {
         let inner = tok.strip_prefix('<')?.strip_suffix('>')?;
         let (head, label) = inner.split_once('|').map_or((inner, None), |(h, l)| (h, Some(l)));
@@ -158,10 +167,10 @@ fn resolve(tok: &str) -> (String, Role) {
             (!l.is_empty()).then_some(l)
         };
         let id = |i: &str, first: &[char]| i.starts_with(first) && i.bytes().all(|b| b.is_ascii_alphanumeric());
-        let mention = |sigil, i: &str| (format!("{sigil}{}", line(true).as_deref().unwrap_or(i)), Role::Mention);
+        let mention = |sigil, i: &str, name: Option<&str>| (format!("{sigil}{}", name.or(line(true).as_deref()).unwrap_or(i)), Role::Mention);
         Some(match (head.get(..1)?, head.get(1..)?) {
-            ("@", i) if id(i, &['U', 'W']) => mention('@', i),
-            ("#", i) if id(i, &['C']) => mention('#', i),
+            ("@", i) if id(i, &['U', 'W']) => mention('@', i, name),
+            ("#", i) if id(i, &['C']) => mention('#', i, None),
             ("!", s @ ("here" | "channel" | "everyone")) => (format!("@{s}"), Role::Mention),
             ("!", s) if s.starts_with("subteam^") => (line(true)?, Role::Mention),
             ("!", s) if s.starts_with("date^") => (line(false)?, Role::Text),
@@ -178,8 +187,8 @@ fn resolve(tok: &str) -> (String, Role) {
 fn push(out: &mut Vec<Piece>, a: &Atom, style: u8, flat: bool) {
     let (text, role) = match a {
         Atom::Ch(c) => (c.to_string(), Role::Text),
-        Atom::Tok(t) if flat => (t.clone(), Role::Text),
-        Atom::Tok(t) => resolve(t),
+        Atom::Tok(t, _) if flat => (t.clone(), Role::Text),
+        Atom::Tok(t, name) => resolve(t, name.as_deref()),
     };
     match out.last_mut() {
         Some(p) if role == Role::Text && p.role == Role::Text && p.style == style => p.text.push_str(&text),

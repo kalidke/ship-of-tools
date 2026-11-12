@@ -643,21 +643,24 @@ impl Api {
     /// A member's display name: `display_name`, then `real_name`, then `name`, from the cache or `users.info`. Any
     /// failure gives the id, and a failure is not remembered.
     pub async fn author_name(&self, user: &str) -> String {
+        self.name_of(user).await.unwrap_or_else(|| user.to_string())
+    }
+
+    /// The name from the cache or `users.info`, remembered on a success; `None` on any failure.
+    async fn name_of(&self, user: &str) -> Option<String> {
         if let Some(name) = self.names.lock().unwrap().by_id.get(user) {
-            return name.clone();
+            return Some(name.clone());
         }
-        match self.lookup(user).await {
-            Ok(name) => {
-                self.remember(user, &name);
-                name
-            }
-            Err(_) => user.to_string(),
-        }
+        let name = self.lookup(user).await.ok()?;
+        self.remember(user, &name);
+        Some(name)
     }
 
     /// Give each member record without a name its display name, and each record the names of the people its text
-    /// mentions (`mentioned`), all lookups within `NAMES_DEADLINE`: authors first, then mentions. What could not be
-    /// looked up shows the id for an author and adds no entry for a mention.
+    /// mentions (`mentioned`), all lookups within `NAMES_DEADLINE`: authors first, then mentions. The records are filled
+    /// from what these lookups found, held here and not read back from the cache, whose 1,024 entries a large fill can
+    /// push its own first names out of. What could not be looked up shows the id for an author and adds no entry for a
+    /// mention.
     pub async fn fill_names(&self, records: &mut [ChatRecord]) {
         let mut ids: Vec<String> = Vec::new();
         let mentions: Vec<String> = records.iter().flat_map(|r| mentioned(&r.text)).collect();
@@ -666,13 +669,17 @@ impl Api {
                 ids.push(id);
             }
         }
+        let found: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         let lookups = async {
             for id in &ids {
-                self.author_name(id).await;
+                if let Some(name) = self.name_of(id).await {
+                    found.lock().unwrap().insert(id.clone(), name);
+                }
             }
         };
         let _ = tokio::time::timeout(self.deadlines.names, lookups).await;
-        self.cached_names(records);
+        let found = found.into_inner().unwrap();
+        name_records(records, |id| found.get(id).cloned());
         for r in records.iter_mut().filter(|r| unnamed(r)) {
             r.author.name = r.author.id.clone();
         }
@@ -682,15 +689,7 @@ impl Api {
     /// text mentions, replaced.
     pub fn cached_names(&self, records: &mut [ChatRecord]) {
         let names = self.names.lock().unwrap();
-        for r in records.iter_mut() {
-            if unnamed(r) {
-                r.author.name = names.by_id.get(&r.author.id).cloned().unwrap_or_default();
-            }
-            r.names = mentioned(&r.text)
-                .into_iter()
-                .filter_map(|id| names.by_id.get(&id).map(|name| ChatName { name: name.clone(), id }))
-                .collect();
-        }
+        name_records(records, |id| names.by_id.get(id).cloned());
     }
 
     async fn lookup(&self, user: &str) -> Result<String, ApiError> {
@@ -788,6 +787,19 @@ impl Api {
             },
             None => Err(ApiError::Malformed),
         }
+    }
+}
+
+/// Each unnamed member's author name, and each record's `names`, from `get`; what it lacks stays empty or has no entry.
+fn name_records(records: &mut [ChatRecord], get: impl Fn(&str) -> Option<String>) {
+    for r in records.iter_mut() {
+        if unnamed(r) {
+            r.author.name = get(&r.author.id).unwrap_or_default();
+        }
+        r.names = mentioned(&r.text)
+            .into_iter()
+            .filter_map(|id| get(&id).map(|name| ChatName { name, id }))
+            .collect();
     }
 }
 

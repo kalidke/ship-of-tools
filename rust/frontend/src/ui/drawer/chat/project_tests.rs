@@ -420,7 +420,7 @@ fn an_edited_message_ends_with_edited() {
 fn a_mention_shows_its_name_or_its_label_or_its_id() {
     let mut r = rec("");
     let name = |id: &str, name: &str| sot_protocol::chat::ChatName { id: id.into(), name: name.into() };
-    r.names = vec![name("U1", "Ada Lovelace"), name("W2", "Grace"), name("U5", "\u{200b}\u{202e}"), name("U6", "Gr\u{202e}ace"), name("C1", "Chan")];
+    r.names = vec![name("U1", "Ada Lovelace"), name("W2", "Grace"), name("U5", "\u{200b}\u{202e}"), name("U6", "Gr\u{202e}ace"), name("C1", "Chan"), name("U7", "   ")];
     let at = |text: &str| { let mut r = r.clone(); r.text = text.into(); body(&r) };
     let shown = |t: &str| [(Kind::Mention, t.to_string())];
     assert_eq!(at("<@U1>"), shown("@Ada Lovelace"));
@@ -434,6 +434,12 @@ fn a_mention_shows_its_name_or_its_label_or_its_id() {
     assert_eq!(at("<#C1>"), shown("#C1"));
     assert_eq!(at("<!here>"), shown("@here"));
     assert_eq!(at("&lt;@U1&gt;"), [(Kind::Body, "<@U1>".to_string())]);
+    assert_eq!(at("<@U7|label>"), shown("@label"), "a name of spaces is no name");
+    // Inside code a token stays as typed, whatever the record holds for its id.
+    assert_eq!(at("`<@U1>`"), [(Kind::Body, "<@U1>".to_string())]);
+    assert_eq!(at("`<@U1|label>`"), [(Kind::Body, "<@U1|label>".to_string())]);
+    let fenced = at("```\n<@U1>\n```");
+    assert!(fenced.iter().any(|(_, t)| t.contains("<@U1>")) && fenced.iter().all(|(_, t)| !t.contains("Lovelace")), "{fenced:?}");
     assert_eq!(at("hi <@U1>, <@U1|x>!"), [
         (Kind::Body, "hi ".to_string()), (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, ", ".to_string()),
         (Kind::Mention, "@Ada Lovelace".to_string()), (Kind::Body, "!".to_string()),

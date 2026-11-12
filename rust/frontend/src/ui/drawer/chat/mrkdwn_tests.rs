@@ -4,7 +4,7 @@ use sot_protocol::chat::text_segments;
 /// The shown pieces of Slack's text as `(text, style)`; a token not read is marked with `<>` around its text in the table, a
 /// link with `[]` and a mention with `{}`.
 fn shown(text: &str) -> Vec<(String, u8)> {
-    styled(text_segments(text)).into_iter().map(|p| (match p.role {
+    styled(text_segments(text), &[]).into_iter().map(|p| (match p.role {
         Role::Text => p.text,
         Role::Markup => format!("<{}>", p.text),
         Role::Link => format!("[{}]", p.text),

@@ -124,7 +124,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    `fill_names` take `display_name`, then `real_name`, then `name`; only a success is cached, at most 1,024 entries,
    the oldest leaving first. `fill_names` looks up, in one 10 s deadline and through the same cache, each member author
    with no name, then the distinct ids of the `<@U…>` and `<@W…>` tokens in each record's text (at most `MAX_MENTIONS`,
-   16, a token a byte cut left open has none), and sets each record's `names` from what it holds, in the text's order; a
+   16, a token a byte cut left open has none), and sets each record's `names` (and an author's name) from what its own lookups found, held in the fill and not read back from the cache, which a fill of more than 1,024 lookups would push its first names out of (`api_tests::fill_names_keeps_what_it_found_when_the_cache_cannot`; `fill_names_looks_up_authors_before_mentions` pins the order), in the text's order; a
    failed lookup adds no entry, and a lookup past the deadline is none, so the window shows the token's label or the id.
    `cached_names` does the same from the cache alone, with no request: the daemon calls it on every put of a
    `chat.changed`, so a live record carries any name a history read has looked up, its author's included (empty
