@@ -123,6 +123,9 @@ impl<C: PaneClient> AgentPane<C> {
                 match screen.cell(row, col) {
                     Some(cell) => {
                         let g = cell.contents();
+                        if cell.is_wide_continuation() {
+                            continue;
+                        }
                         if g.is_empty() {
                             line.push(' ');
                         } else {

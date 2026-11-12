@@ -1022,3 +1022,8 @@ fn a_cold_neighbor_attaches_over_an_empty_pane_after_the_gone_row_is_cleared() {
     select(&mut q, "a", "next", t, 16);
     assert_eq!(pixels(&mut q).0, PaneScreen::Hold);
 }
+
+#[test]
+fn a_wide_character_copies_without_a_space_for_its_second_cell() {
+    assert_eq!(copy_of("世世".as_bytes(), (0, 0), (0, 3)).as_deref(), Some("世世"));
+}

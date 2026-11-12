@@ -631,6 +631,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   A copy joins a row the terminal wrapped onto the next (no newline, trailing spaces kept) and ends a row the program
   ended with a newline (`copy_joins_a_wrapped_row_and_breaks_where_the_program_did`,
   `a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined`, `a_wrapped_row_keeps_the_spaces_at_its_wrap_point`).
+  Limits: it rests on the terminal's per-row wrap flag; a width change clears the flags until the program redraws; the
+  vt100 fork does not flag a wrap a wide character causes, so that row still ends in a newline (a wide character's
+  second cell adds no space, `a_wide_character_copies_without_a_space_for_its_second_cell`); and a program's own line
+  breaks are kept, Claude Code's word wrap of its replies included (continuation rows indented, the break's space
+  dropped), since the window cannot tell them from the program's newlines (PANE-COPY-KEEPS-WRAPS stays open).
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
   backlog is an earlier view of the row), and a copy whose sequence began in that backlog is dropped too
