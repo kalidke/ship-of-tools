@@ -1,6 +1,9 @@
 //! Image replies: markdown figure bytes and their failures, the ROI crop pasted to the agent pane,
 //! crop failures, a rejected pixel-size save.
 
+use super::figure_store::Settled;
+use super::figures::{FigureCacheEntry, FIGURE_SVG_SIZE};
+use super::svg_draws;
 use crate::ui::*;
 
 impl State {
@@ -14,6 +17,15 @@ impl State {
         // — without it the FFFC stays at the
         // FIGURE_BLOCK_H_DEFAULT fallback even after the
         // bytes land.
+        if mime == "image/svg+xml" {
+            // Drawn by the worker, never on this thread: the URL stays pending until its outcome (`on_svg_drawn`).
+            let generation = self.preview_source.generation();
+            if !self.figures.submit_svg(&mut self.svg_draws, url, generation, bytes) {
+                self.md_media.request_reflow();
+                self.window.request_redraw();
+            }
+            return;
+        }
         self.figures.settle(&url);
         match decode_figure_bytes(
             self.gpu.device(),
@@ -45,6 +57,32 @@ impl State {
                 self.window.request_redraw();
             }
         }
+    }
+
+    /// A drawing outcome the worker gave back, at the top of a frame: a figure's picture is installed, a refusal fails
+    /// the figure, a stale job leaves it unhandled so the next walk fetches it again. One reflow follows each.
+    pub(in crate::ui) fn on_svg_drawn(&mut self, done: svg_draws::Done) {
+        let url = done.key.clone();
+        match self.figures.settle_drawing(done) {
+            Settled::Ignored => return,
+            Settled::Drawn { w, h, rgba } => {
+                let quad = Quad::from_rgba8(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline(), &rgba, w, h);
+                match quad {
+                    Ok(quad) => {
+                        let (natural_w_px, natural_h_px) = FIGURE_SVG_SIZE;
+                        self.figures.install(url, FigureCacheEntry { quad, natural_w_px, natural_h_px });
+                    }
+                    Err(e) => {
+                        tracing::warn!(%url, error = %e, "figure svg upload failed");
+                        self.figures.fail(url);
+                    }
+                }
+            }
+            Settled::Failed(why) => tracing::warn!(%url, why, "figure svg not drawn"),
+            Settled::Unhandled => {}
+        }
+        self.md_media.request_reflow();
+        self.window.request_redraw();
     }
 
     pub(crate) fn on_figure_get_failed(&mut self, url: String) {

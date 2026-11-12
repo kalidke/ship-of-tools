@@ -13,13 +13,18 @@ pub(in crate::ui) struct FigureCacheEntry {
     pub(in crate::ui) natural_h_px: u32,
 }
 
+/// The pixels an SVG figure is drawn onto, whatever its own size: SVG has no intrinsic pixel dimensions, so we pick
+/// something sensible and the paint pass downscales to fit the preview pane. 800x600 is plenty for figures in
+/// markdown; tighter than the 2k x 2k that resvg would happily render if we let it scale to an arbitrary target.
+pub(in crate::ui) const FIGURE_SVG_SIZE: (u32, u32) = (800, 600);
+
 /// Decode the bytes from a `figure.get` reply into a FigureCacheEntry
 /// — a GPU quad sized to the source bitmap's natural dimensions plus
 /// the dimensions themselves (so the markdown walk can reserve the
 /// right placeholder height on the next reflow). Routes raster mimes
-/// through the `image` crate and SVG through resvg's pipeline; any
-/// other mime is rejected so an unknown response doesn't silently
-/// upload garbage.
+/// through the `image` crate; any other mime is rejected so an unknown
+/// response doesn't silently upload garbage. An SVG never comes here: its bytes are drawn by the worker
+/// (`FigureStore::submit_svg`).
 pub(in crate::ui) fn decode_figure_bytes(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -27,22 +32,7 @@ pub(in crate::ui) fn decode_figure_bytes(
     mime: &str,
     bytes: &[u8],
 ) -> anyhow::Result<FigureCacheEntry> {
-    if mime == "image/svg+xml" {
-        // Rasterise at a reasonable natural size — SVG has no
-        // intrinsic pixel dimensions, so we pick something sensible
-        // and the paint pass downscales to fit the preview pane.
-        // 800×600 is plenty for figures in markdown; tighter than the
-        // 2k×2k that resvg would happily render if we let it scale to
-        // an arbitrary target.
-        let w: u32 = 800;
-        let h: u32 = 600;
-        let quad = crate::ui::preview::image::svg::quad_from_svg_bytes(device, queue, pipeline, bytes, w, h)?;
-        Ok(FigureCacheEntry {
-            quad,
-            natural_w_px: w,
-            natural_h_px: h,
-        })
-    } else if mime.starts_with("image/") {
+    if mime.starts_with("image/") && mime != "image/svg+xml" {
         let (quad, w, h) =
             crate::ui::preview::image::png::quad_and_dims_from_bytes(device, queue, pipeline, bytes)?;
         Ok(FigureCacheEntry {

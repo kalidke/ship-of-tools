@@ -2,7 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::figures::{fail_figure, figure_already_handled, FigureCacheEntry};
+use super::figures::{fail_figure, figure_already_handled, FigureCacheEntry, FIGURE_SVG_SIZE};
+use super::svg_draws::{Done, SvgDraws};
+use super::svg_run::{Job, Outcome};
 use crate::ui::preview::markdown::{FigureMetrics, FigureMetricsMap};
 
 /// Every figure URL is in at most one of three states: cached, pending or failed. A fetch is sent only for a URL in
@@ -27,6 +29,21 @@ pub(in crate::ui) struct FigureStore {
     /// text fallback instead of holding an empty FIGURE_BLOCK_H_DEFAULT
     /// box forever.
     failed: HashSet<String>,
+    /// SVG figures with the drawing worker, and the generation each was submitted under. A URL here is also in
+    /// `pending`: it stays there until its outcome settles it.
+    drawing: HashMap<String, u64>,
+}
+
+/// What a drawing outcome did to its figure; the window acts on all but `Ignored`.
+pub(in crate::ui) enum Settled {
+    /// The key is not a figure drawing, or the outcome is of a generation that is not the one pending.
+    Ignored,
+    /// Drawn: the pixels for the window to upload and `install`; the URL is pending until it does.
+    Drawn { w: u32, h: u32, rgba: Vec<u8> },
+    /// Refused: the figure failed, terminally until a fresh markdown reply. The words are for the log.
+    Failed(String),
+    /// Stale: the URL is unhandled again, so the next walk fetches it under the pane's current generation.
+    Unhandled,
 }
 
 impl FigureStore {
@@ -73,7 +90,47 @@ impl FigureStore {
     /// A reply for `url` arrived; it is no longer in flight.
     pub(in crate::ui) fn settle(&mut self, url: &str) { self.pending.remove(url); }
 
-    pub(in crate::ui) fn install(&mut self, url: String, entry: FigureCacheEntry) { self.cache.insert(url, entry); }
+    pub(in crate::ui) fn install(&mut self, url: String, entry: FigureCacheEntry) {
+        self.pending.remove(&url);
+        self.cache.insert(url, entry);
+    }
+
+    /// An SVG reply: one job for the worker keyed by `url`, which stays pending until its outcome. Refused by the
+    /// worker (a full queue, no thread), the figure fails at once.
+    pub(in crate::ui) fn submit_svg(&mut self, draws: &mut SvgDraws, url: String, generation: u64, svg: Vec<u8>) -> bool {
+        let job = Job { size: FIGURE_SVG_SIZE, svg: svg.into() };
+        match draws.submit(url.clone(), generation, job) {
+            Ok(()) => {
+                self.drawing.insert(url, generation);
+                true
+            }
+            Err(why) => {
+                tracing::warn!(%url, why, "figure svg not drawn");
+                self.fail(url);
+                false
+            }
+        }
+    }
+
+    /// One outcome from the worker. Only the outcome of the generation this URL's job was submitted under counts: a
+    /// departed generation's `Stale` can arrive after the new one has submitted the same URL, and must not undo it.
+    pub(in crate::ui) fn settle_drawing(&mut self, done: Done) -> Settled {
+        if self.drawing.get(&done.key) != Some(&done.generation) {
+            return Settled::Ignored;
+        }
+        self.drawing.remove(&done.key);
+        match done.outcome {
+            Outcome::Drawn { w, h, rgba } => Settled::Drawn { w, h, rgba },
+            Outcome::Refused(why) | Outcome::Ended(why) => {
+                self.fail(done.key);
+                Settled::Failed(why)
+            }
+            Outcome::Stale => {
+                self.pending.remove(&done.key);
+                Settled::Unhandled
+            }
+        }
+    }
 
     /// The fetch or decode failed terminally.
     pub(in crate::ui) fn fail(&mut self, url: String) { fail_figure(&mut self.pending, &mut self.failed, url); }

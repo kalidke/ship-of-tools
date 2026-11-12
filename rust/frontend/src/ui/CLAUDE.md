@@ -302,9 +302,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the keyboard zoom ceiling uses the same reduced pane.
 - `FigureStore` privately owns the markdown figures by literal URL: the decoded bitmaps (kept across navigation),
   the fetches in flight and the terminal failures. A fetch is sent only for a URL that is none of the three; a reply
-  settles its URL, then installs or fails it; an unresolvable local URL fails at once. Failures report to the walk as
-  zero-size metrics, are cleared only by a fresh markdown reply or a first visit, and a row parks and restores its
-  own.
+  settles its URL, then installs or fails it; an unresolvable local URL fails at once. An SVG reply is the exception:
+  it is never drawn on the window's thread but submitted as one job to the drawing worker, keyed by its URL under the
+  pane's generation, and the URL stays pending until the outcome (`submit_svg`, `settle_drawing`, `on_svg_drawn`).
+  Drawn, it is installed onto 800 by 600 pixels (`FIGURE_SVG_SIZE`); refused (the worker's words, a bound's end, a
+  full queue or no worker thread), it fails like an undecodable figure, terminally until a fresh markdown reply;
+  stale, it leaves `pending` and one reflow lets the walk fetch it again under the new generation. Only the outcome of
+  the generation a URL's job was submitted under counts: a departed generation's `Stale` can arrive after the new one
+  submitted the same URL, and is ignored. Tests (preview/image/figures_tests.rs, a stand-in draw):
+  `a_figure_stays_pending_until_its_drawing_settles`, `a_refused_figure_is_not_drawn_again_until_a_fresh_reply`,
+  `a_stale_figure_is_fetched_again_under_the_new_generation`,
+  `a_late_stale_after_a_resubmit_does_not_undo_the_pending_job` and `a_figure_the_worker_will_not_take_fails_at_once`.
+  Failures report to the walk as zero-size metrics, are cleared only by a fresh markdown reply or a first visit, and a
+  row parks and restores its own.
 - `MarkdownMedia` privately owns the rest of the markdown media. Math and token requests go out only for keys
   neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
   no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
@@ -781,7 +791,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   text-scale change, keeps it. Tests, in source.rs: `a_new_source_is_a_new_generation_and_the_same_source_is_not`,
   `a_restored_or_emptied_source_never_reuses_a_generation`.
 - The drawing worker (preview/image/svg_draws.rs): `SvgDraws`, owned by `State`, is the one owner of the window's SVG
-  draws, and nothing yet submits to it (the figures are the next landing). One worker thread, started at the first
+  draws; the markdown figures are its one submitter so far (math and the file preview are later landings). One worker thread, started at the first
   submit, draws one batch at a time (a batch of one for now; the draw takes a list of jobs, so a generation's math
   jobs can go to one child later without a change to the queue's rules). The window's thread and the worker share one
   lock over the queue, the bytes waiting and the running draw's `Stop`, never held across a draw or the wake, so the
@@ -805,8 +815,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   - After `SVG_STRIKES` (2) draws of one generation end `Ended` (a bound or a crash; the drawing's own parse error
     is not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new
     generation starts clean.
-  - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, which has no reader
-    until the figures); each the worker sends is followed by one `MainWake::wake` (the stale ones `advance` and
+  - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, read in `frame_upkeep`, each
+    outcome to `State::on_svg_drawn`, which only the figures answer so far); each the worker sends is followed by one `MainWake::wake` (the stale ones `advance` and
     `submit` hand back are read by the window's own thread and wake nothing). A draw that panics gives no outcomes, and each
     of its jobs is refused in `cannot start the drawing` words; a worker thread the OS refuses makes `submit` itself
     answer `cannot start the drawing`, with nothing queued and no outcome to follow. Dropping

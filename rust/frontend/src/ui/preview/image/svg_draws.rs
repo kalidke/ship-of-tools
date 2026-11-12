@@ -26,7 +26,6 @@ const AFTER_STRIKES: &str = "an earlier picture in this file was refused";
 const NO_START: &str = "cannot start the drawing";
 
 /// One job's end, for the owner of `key` under `generation`.
-#[cfg_attr(not(test), expect(dead_code, reason = "the figures, the first to read an outcome, are the next landing"))]
 pub(crate) struct Done {
     pub key: String,
     pub generation: u64,
@@ -104,7 +103,6 @@ impl SvgDraws {
     /// Queues `job` for `key` under `generation` (the pane's, which a submitter has just read, so a newer one than the
     /// frame's last `advance` becomes current here), or says why not. A job of an older generation is `Stale` at once.
     /// Each key is submitted once per generation by its owner; a refusal is terminal for it.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the figures, the first submitters, are the next landing"))]
     pub(crate) fn submit(&mut self, key: String, generation: u64, job: Job) -> Result<(), &'static str> {
         self.advance(generation);
         if generation < self.generation {

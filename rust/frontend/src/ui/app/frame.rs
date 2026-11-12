@@ -116,7 +116,11 @@ impl State {
 
         self.drain_events();
         self.svg_draws.advance(self.preview_source.generation());
-        self.svg_draws.drain(|_settled| {}); // no owner yet: the figures are the first
+        let mut settled = Vec::new();
+        self.svg_draws.drain(|done| settled.push(done));
+        for done in settled {
+            self.on_svg_drawn(done);
+        }
         self.reconcile_selection_share();
         // Prune finished status-change flashes; while any is still fading,
         // mark dirty so the frame loop keeps animating it (the fast-repaint
