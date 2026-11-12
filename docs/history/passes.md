@@ -1960,3 +1960,9 @@ A landing's record goes here, with its measured times; the package page holds on
   after a first run with the hub's responders not started. Named consumer: the maintainer at that window computer;
   named checks: rows switched quickly each show their own file, a long line the terminal wrapped copies as one line,
   the chat drawer's look, and the chat's name prompt at the first post.
+- The SVG child's replies on a private stdout, its fourth landing (2c), 2026-11-11: builder launched about 19:12, main
+  19:40 (b9cc2c29c, 1c7e7b281, e231c0ba3), about 28 minutes. About 85 product lines and 85 test lines. One hosted probe
+  on macOS and Windows before review (the first run of the Windows duplicate-and-redirect sequence, green), review
+  round 1 (no blockers: nothing tested that the private copy is not inherited, and a grandchild holding it stalled the
+  parent's read 5 s; the records named a console writer as the limit, which never reaches a pipe, in place of a copy
+  made before the call), one fix commit, a second probe and two gates.
