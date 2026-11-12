@@ -55,6 +55,8 @@ const QUOTE_RUN: usize = 0x20;
 const BLOCK_RUN: usize = 0x40;
 const ALT_RUN: usize = 0x80;
 const FILL_RUN: usize = 0x100;
+/// The flag of `(edited)`, which a copy leaves out: it is Slack's mark, not the poster's text.
+const EDITED_RUN: usize = 0x200;
 /// A code block's panel starts this far left of the text (in the gutter) and runs to the body's right edge; a quote's bar is
 /// this wide, this far left of the text. In pixels at text scale 1.
 const BLOCK_LEFT_PX: f32 = 6.0;
@@ -179,7 +181,7 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
         Kind::Markup | Kind::Link => a.color(rgb(SKY)),
         Kind::Mention => a.color(rgb(SKY)).metadata(MENTION_RUN),
         Kind::Meta => a.style(Style::Italic).color(rgb(MUTED)),
-        Kind::Edited => a.color(rgb(MUTED)).metrics(small(12.0)),
+        Kind::Edited => a.color(rgb(MUTED)).metrics(small(12.0)).metadata(EDITED_RUN),
     }
 }
 
@@ -209,9 +211,14 @@ pub(super) fn styled_attrs(kind: Kind, style: u8, scale: f32) -> Attrs<'static> 
     a.metadata(a.metadata | flags)
 }
 
-/// A line as a copy shows it: the space an empty line in a block or a quote is shaped as is no part of the text.
+/// A line as a copy shows it: the space an empty line in a block or a quote is shaped as is no part of the text, nor is
+/// `(edited)` with its space (a line is cut at the first span carrying the flag).
 fn shown_line(line: &BufferLine) -> &str {
-    if line.text() == " " && line.attrs_list().get_span(0).metadata & FILL_RUN != 0 { "" } else { line.text() }
+    let (text, list) = (line.text(), line.attrs_list());
+    if text == " " && list.get_span(0).metadata & FILL_RUN != 0 {
+        return "";
+    }
+    list.spans().iter().filter(|(_, a)| a.metadata & EDITED_RUN != 0).map(|(r, _)| r.start).min().map_or(text, |at| &text[..at])
 }
 
 /// The stretches of consecutive buffer lines whose first span carries `flag`, one block's lines together, as `(top, height)`
@@ -443,7 +450,9 @@ impl ChatView {
     pub(in crate::ui) fn marked_text(&self) -> Option<String> {
         let ts = self.mark.as_ref()?;
         let key = &self.placed.iter().find(|p| &p.2 == ts)?.0;
-        let text = self.cache[key].buffer.lines.iter().skip(self.cache[key].lead).map(shown_line).collect::<Vec<_>>().join("\n");
+        // The line `(edited)` alone is on, after a block or a quote, is no line of the text.
+        let alone = |l: &&BufferLine| l.attrs_list().get_span(0).metadata & EDITED_RUN != 0;
+        let text = self.cache[key].buffer.lines.iter().skip(self.cache[key].lead).filter(|l| !alone(l)).map(shown_line).collect::<Vec<_>>().join("\n");
         (!text.is_empty()).then_some(text)
     }
 

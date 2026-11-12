@@ -1008,6 +1008,24 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
         assert_eq!(time.color_opt, Some(cosmic_text::Color::rgb(0x9A, 0x9C, 0x9E)));
         assert_eq!(name.color_opt, Some(cosmic_text::Color::rgb(0xD1, 0xD2, 0xD3)));
     }
+    // `(edited)` is the time's color and size on a body line's height, and on its own line after a block it is outside the panel.
+    for (text, own_line) in [("hi", false), ("```\nc\n```", true)] {
+        let held = [edited_by_ada(0, text)];
+        let mut view = ChatView::default();
+        lay_drawer(&mut view, &mut fonts, &held);
+        let buffer = view.placed_buffers()[0];
+        let run = buffer.layout_runs().filter(|r| r.line_i >= 2).last().unwrap();
+        let name = buffer.layout_runs().find(|r| r.line_i == 1).unwrap().glyphs[0].font_size;
+        let last = run.glyphs.last().unwrap();
+        assert_eq!(last.color_opt, Some(cosmic_text::Color::rgb(0x9A, 0x9C, 0x9E)), "{text:?}");
+        assert!(near(last.font_size, name * 12.0 / 15.0), "{text:?}: {} against {name}", last.font_size);
+        assert!(near(run.line_height, BODY_LINE_H), "{}", run.line_height);
+        // The line's flags are the mark's own: a block's panel is not drawn behind it.
+        if own_line {
+            assert_eq!(buffer.lines[run.line_i].attrs_list().get_span(0).metadata, styled_attrs(Kind::Edited, 0, 1.0).metadata);
+        }
+        assert_eq!(run.text.trim() == "(edited)", own_line, "{:?}", run.text);
+    }
     // Every visual line of a header, wrapped or not, is a body line tall: one that holds only the badge (the time wrapped off
     // it) or only the time takes its height from those glyphs alone.
     let drawer = [rec_by("1700000001.000100", "Ada Lovelace", "drawer", "x")];
@@ -1744,4 +1762,34 @@ fn a_copy_of_a_code_block_is_its_text() {
     assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (9, 0)).as_deref(), Some("a\n\nb\nx\n\ny\n \n"));
     // A drag over the empty lines alone is their line ends.
     assert_eq!(drag(&mut view, &held[0].ts, (3, 0), (4, 0)).as_deref(), Some("\n"));
+}
+
+/// A record Slack marked edited.
+fn edited_by_ada(secs: i64, text: &str) -> ChatRecord {
+    let mut v = serde_json::to_value(by_ada(secs, text)).unwrap();
+    v["edited"] = true.into();
+    serde_json::from_value(v).unwrap()
+}
+
+/// `(edited)` is not the poster's text: neither the marked message's copy nor a drag over its line holds it, and a message
+/// with nothing else has nothing to copy.
+#[test]
+fn a_copy_leaves_out_edited() {
+    let mut fonts = FontSystem::new();
+    let mut marked = |text: &str| {
+        let held = [edited_by_ada(0, text)];
+        let mut view = ChatView::default();
+        lay_drawer(&mut view, &mut fonts, &held);
+        view.mark(true);
+        lay_drawer(&mut view, &mut fonts, &held);
+        view.copy_text()
+    };
+    assert_eq!(marked("hello").as_deref(), Some("hello"));
+    assert_eq!(marked("```\nc1\nc2\n```").as_deref(), Some("c1\nc2"));
+    assert_eq!(marked("&gt; q1\n&gt; q2").as_deref(), Some("q1\nq2"));
+    assert_eq!(marked(""), None);
+    let held = [edited_by_ada(0, "hello")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (2, 13)).as_deref(), Some("hello"));
 }

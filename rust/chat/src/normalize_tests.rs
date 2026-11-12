@@ -478,7 +478,23 @@ fn an_edited_message_says_so() {
         Normalized::Edited(r) => assert!(!edited(&r)),
         other => panic!("{other:?}"),
     }
-    // The flag is in the encoded record the bound measures.
-    let r = new(at(json!({"edited": marker, "text": "\u{1}".repeat(MAX_TEXT)})));
-    assert!(edited(&r) && r.truncated && json_len(&r) <= MAX_RECORD_BYTES);
+}
+
+/// A record that is exactly the bound without the flag is over it with the flag, so the flag is measured: the text is cut.
+#[test]
+fn the_edited_flag_counts_inside_the_record_bound() {
+    let m = |text: &str, edited: bool| {
+        let mut v = json!({"ts": "1.000001", "user": "U1", "text": text});
+        if edited {
+            v["edited"] = json!({"user": "U1", "ts": "2.000000"});
+        }
+        v
+    };
+    let want = MAX_RECORD_BYTES - json_len(&new(m("", false)));
+    // Each control character escapes to six bytes; the remainder is plain.
+    let text = format!("{}{}", "\u{1}".repeat(want / 6), "a".repeat(want % 6));
+    let plain = new(m(&text, false));
+    assert!(!plain.truncated && json_len(&plain) == MAX_RECORD_BYTES);
+    let flagged = new(m(&text, true));
+    assert!(flagged.truncated && json_len(&flagged) <= MAX_RECORD_BYTES);
 }

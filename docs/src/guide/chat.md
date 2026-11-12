@@ -159,7 +159,7 @@ selection is never shared with the agent; only the preview's text and your drawi
 `Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
 exactly as shown: a link's label, a mention's name and a style's text without its marks, a code block's lines without its fences and a quote's without its `>` (an empty line in either copies as an empty line, with no added space), markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
-message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is shown text, so a copy that reaches it includes it. With neither, the status line says there is nothing to copy. Ctrl+C in the
+message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
 ## Moving the hub
