@@ -195,6 +195,11 @@ end
 
 PreviewPayload(mime, data) = PreviewPayload(mime, data, Dict{String,Any}())
 
+# The longest a plugin's tools may run for one request, in seconds, all of them together. The kernel serves one request
+# at a time and the daemon gives up on a kernel answer at 10 s (`KERNEL_REQUEST_TIMEOUT`), so a request's tools end with
+# room left to answer.
+const TOOL_WAIT = 8
+
 """
     ToolFailure(program, what, exited)
 
@@ -212,12 +217,17 @@ end
 Base.showerror(io::IO, e::ToolFailure) = print(io, e.program, " ", e.what)
 
 """
-    tool_failure_words(e) -> String
+    error_words(e) -> String
 
-The words a note may show for a caught exception: a `ToolFailure`'s text, and for anything else only that the tool
-could not be run, since another exception's text may hold a command.
+The words a note, a reply or a log line may show for a caught exception, never the exception itself: a `ToolFailure`'s
+text; a fixed sentence for a failed process or an I/O error, whose text may hold a command and with a JLL's command the
+whole environment; the exception's type name for anything else. It does not cover a message someone built from a
+command and wrapped in an `ErrorException`, so no code interpolates a command into a message.
 """
-tool_failure_words(e) = e isa ToolFailure ? sprint(showerror, e) : "the tool could not be run"
+error_words(e) = e isa ToolFailure ? sprint(showerror, e) :
+                 e isa ProcessFailedException ? "a process failed" :
+                 e isa Base.IOError || e isa SystemError ? "an input/output error" :
+                 "$(nameof(typeof(e)))"
 
 """
     read_within(cmd, seconds) -> Vector{UInt8}

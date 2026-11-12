@@ -350,9 +350,9 @@ check, pinning a version, and rolling back are in
 - PDF pages and video poster frames in previews need nothing installed: the
   kernel's Julia environment brings its own poppler (`Poppler_jll`) and ffmpeg
   (`FFMPEG_jll`), downloaded into the user's Julia depot (about 250 MB unpacked on
-  x86_64 Linux) when the installer instantiates it, with no administrator rights. They
-  exist for x86_64 Linux, both macOS architectures and x86_64 Windows; on another
-  platform the preview shows a note saying so.
+  x86_64 Linux) when the installer instantiates it, with no administrator rights (the install needs the network for it).
+  They exist for the platforms the release ships (Linux x86_64, Windows x86_64 and
+  macOS aarch64); on a platform with none the preview shows a note saying so.
 - Frontend roles need **glibc 2.35** or newer (Ubuntu 22.04 or newer) and a
   desktop session (X11 or Wayland): the frontend is a native window. It
   renders with `wgpu` through Vulkan on Linux, Metal on macOS and DirectX 12

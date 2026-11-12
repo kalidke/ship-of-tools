@@ -98,6 +98,11 @@ struct TestNoMatches <: FileType end
         @test isempty(methods(applicable_annotations))
     end
 
+    @testset "a request's tools end inside the daemon's wait for a kernel answer" begin
+        # KERNEL_REQUEST_TIMEOUT is 10 s (the sidecars contract, guarantee 3); the plugins' tools share TOOL_WAIT.
+        @test ConceptExplorerCore.TOOL_WAIT < 10
+    end
+
     @testset "read_within bounds an external tool" begin
         # The bound is the test's own: a read_within with no timer would leave the task running, and the test fails
         # at its 10 s instead of hanging.

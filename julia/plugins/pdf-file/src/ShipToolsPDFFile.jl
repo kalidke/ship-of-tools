@@ -29,10 +29,6 @@ struct PDFFile <: ConceptExplorerCore.FileType end
 # (zoom-triggered re-rasterize, deferred in ADR 0021).
 const RASTER_DPI = 144
 
-# The longest one page request may spend in pdfinfo and pdftoppm together, in seconds; the kernel serves one request at
-# a time, so a stuck tool must end, and the daemon gives up on a kernel answer at 10 s (`KERNEL_REQUEST_TIMEOUT`).
-const PREVIEW_BOUND = 8
-
 # The tools as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
 # poppler still loads this module; a test stands other commands in here.
 const PDFTOPPM = Ref{Function}(() -> Poppler_jll.pdftoppm())
@@ -101,7 +97,7 @@ end
 function _preview_page(path::AbstractString, page::Int;
                        fit_w::Union{Int,Nothing}=nothing,
                        fit_h::Union{Int,Nothing}=nothing,
-                       bound::Real=PREVIEW_BOUND)
+                       bound::Real=ConceptExplorerCore.TOOL_WAIT)
     if !Poppler_jll.is_available()
         return _note("no ready-built poppler exists for this platform.")
     end
@@ -117,7 +113,7 @@ function _preview_page(path::AbstractString, page::Int;
             _pdf_info(path, left())
         catch e
             # A tool that ran out of time says nothing about the file, so it is not remembered.
-            return _note("Couldn't read this file's page count: $(ConceptExplorerCore.tool_failure_words(e))")
+            return _note("Couldn't read this file's page count: $(ConceptExplorerCore.error_words(e))")
         end
         PDF_INFO[path] = (modified, read_info)
         read_info
@@ -155,7 +151,7 @@ function _preview_page(path::AbstractString, page::Int;
             # keeps the frontend's existing image path.
             ConceptExplorerCore.read_within(`$(PDFTOPPM[]()) -png $scale_args -f $p -l $p -singlefile $path`, left())
         catch e
-            return _note("Couldn't rasterize page $p: $(ConceptExplorerCore.tool_failure_words(e))")
+            return _note("Couldn't rasterize page $p: $(ConceptExplorerCore.error_words(e))")
         end
         isempty(png) && return _note("Rasterizing page $p produced no output.")
         _cache_page(key, png)
