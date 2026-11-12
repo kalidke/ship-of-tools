@@ -1651,3 +1651,89 @@ fn a_copy_gives_the_shown_text() {
     assert_eq!(view.copy_text().as_deref(), Some(shown), "the marked message's shown text");
     assert!(!view.copy_text().unwrap().contains("x.test"));
 }
+
+/// A code block is one bordered `BAND` panel across its lines, a blank line inside it included, from 6 px into the gutter to the
+/// body's right edge, in 14/15 monospace with no style; two blocks that meet are two panels. Consecutive quote lines are one 4 px
+/// `LOW` bar 8 px left of the text, an empty quote line included, with styles working inside. Both are found by line, so the blank
+/// line (one shaped space) holds its place. Widths run from 200 to 392 so no font's wrap point decides it, and each rectangle is
+/// compared as the product draws it, clipped to the body.
+#[test]
+fn a_code_block_is_one_panel_and_a_quote_one_bar() {
+    let mut fonts = FontSystem::new();
+    let lay = |fonts: &mut FontSystem, text: &str, width: f32, scale: f32| {
+        let held = [by_ada(0, text)];
+        let records: Vec<&ChatRecord> = held.iter().collect();
+        let mut view = ChatView::default();
+        let body = ScreenRect { w: width + GUTTER_PX * scale, ..body_of_drawer() };
+        view.layout(fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        let quads = view.backs(DRAWER);
+        (view, quads, body)
+    };
+    // The layout lines of buffer lines `from..=to`, as the one stretch their runs cover: top and bottom, unclipped, in the screen's y.
+    let stretch = |view: &ChatView, body: ScreenRect, from: usize, to: usize| {
+        let top = body.y + view.placed_tops()[0];
+        let runs: Vec<_> = view.placed_buffers()[0].layout_runs().filter(|r| (from..=to).contains(&r.line_i)).map(|r| (top + r.line_top, top + r.line_top + r.line_height)).collect();
+        (runs.iter().map(|r| r.0).fold(f32::MAX, f32::min), runs.iter().map(|r| r.1).fold(0.0, f32::max))
+    };
+    let clip = |body: ScreenRect, (a, b): (f32, f32)| (a.max(body.y), b.min(body.y + body.h));
+    let at = |view: &ChatView, shown: &str| view.placed_buffers()[0].lines.iter().position(|l| l.text() == shown);
+    let text = "intro\n```\nfirst\n\nthird\n```\n> q *b*\n> two\n>\n> three\nafter";
+    for scale in [1.0_f32, 1.5] {
+        for width in (0..=16).map(|i| 200.0 + 12.0 * i as f32) {
+            let (view, quads, body) = lay(&mut fonts, text, width, scale);
+            let (text_x, right) = (body.x + GUTTER_PX * scale, body.x + body.w);
+            let fills = of_color(&quads, BAND);
+            assert_eq!(fills.len(), 1, "w {width}: one panel across the block's lines, the blank one included");
+            let (first, quote) = (at(&view, "first").expect("the block's first line"), at(&view, "q b").expect("the quote's first line"));
+            let lines = &view.placed_buffers()[0].lines;
+            assert_eq!((lines[first + 1].text(), lines[first + 2].text()), (" ", "third"), "the blank line is one space");
+            assert_eq!((lines[quote + 1].text(), lines[quote + 2].text(), lines[quote + 3].text()), ("two", " ", "three"));
+            let block = stretch(&view, body, first, first + 2);
+            let (y0, y1) = clip(body, block);
+            let border = of_color(&quads, LOW).into_iter().filter(|q| near(q.x, text_x - 6.0 * scale)).collect::<Vec<_>>();
+            assert_eq!(border.len(), 1, "w {width}");
+            assert!(near(border[0].x + border[0].w, right) && near(border[0].y, y0) && near(border[0].y + border[0].h, y1), "{:?}", border[0]);
+            let (f0, f1) = clip(body, (block.0 + scale, block.1 - scale));
+            let f = fills[0];
+            assert!(near(f.x, text_x - 5.0 * scale) && near(f.x + f.w, right - scale) && near(f.y, f0) && near(f.y + f.h, f1), "{f:?}");
+            // One bar across the four quote lines.
+            let (q0, q1) = clip(body, stretch(&view, body, quote, quote + 3));
+            let bars = of_color(&quads, LOW).into_iter().filter(|q| near(q.x, text_x - 8.0 * scale) && near(q.w, 4.0 * scale)).collect::<Vec<_>>();
+            assert_eq!(bars.len(), 1, "w {width}: one bar for consecutive quote lines");
+            assert!(near(bars[0].y, q0) && near(bars[0].y + bars[0].h, q1), "{:?}", bars[0]);
+            // The block's glyphs are 14/15 monospace in the body's color; the quote's keep the body's size and bold works inside.
+            let glyph = |line: usize| view.placed_buffers()[0].layout_runs().find(|r| r.line_i == line).and_then(|r| r.glyphs.first().cloned());
+            let code = glyph(first).expect("a glyph");
+            assert!(near(code.font_size, 14.0 * scale) && code.color_opt == Some(cosmic_text::Color::rgb(0xD1, 0xD2, 0xD3)));
+            assert!(near(glyph(quote).expect("a glyph").font_size, 15.0 * scale));
+            assert_eq!(glyph(first + 1).expect("the blank line's space").font_size, code.font_size);
+        }
+        // Two blocks that meet are two panels, one a line below the other.
+        let (view, quads, body) = lay(&mut fonts, "```a```\n```b```", 320.0, scale);
+        let fills = of_color(&quads, BAND);
+        assert_eq!(fills.len(), 2, "two panels");
+        assert!(near(fills[1].y - (fills[0].y + fills[0].h), 2.0 * scale), "{fills:?}");
+        let b = at(&view, "b").expect("the second block");
+        assert!(near(fills[1].y, stretch(&view, body, b, b).0 + scale));
+    }
+}
+
+/// A copy of a code block, or of a quote, is its text as typed: the fences and the markers are gone, and the space an empty line
+/// is shaped as is in no copy, of a drag or of the marked message, while a space the poster typed on a line is kept.
+#[test]
+fn a_copy_of_a_code_block_is_its_text() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "```\na\n\nb\n```\n> x\n>\n> y\n```\n \nz\n```")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    let lines: Vec<String> = view.placed_buffers()[0].lines.iter().map(|l| l.text().to_string()).collect();
+    assert_eq!(lines[2..].join("|"), "a| |b|x| |y| |z", "every empty line is one space in the buffer");
+    view.mark(true);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.copy_text().as_deref(), Some("a\n\nb\nx\n\ny\n \nz"), "the marked message's text");
+    view.clear_selection();
+    // The drag from the first line to the line of `z` copies the lines before it, no space on an empty one.
+    assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (9, 0)).as_deref(), Some("a\n\nb\nx\n\ny\n \n"));
+    // A drag over the empty lines alone is their line ends.
+    assert_eq!(drag(&mut view, &held[0].ts, (3, 0), (4, 0)).as_deref(), Some("\n"));
+}

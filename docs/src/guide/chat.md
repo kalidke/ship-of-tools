@@ -81,6 +81,14 @@ no code span is open (two that end one span and begin the next disappear: `` `a`
 followed by the same mark does not start a style, so `**x**` shows `x` in bold between two asterisks. Code shows no other style inside it, and a
 style around code is dropped.
 
+A fenced code block (three backticks, then three again) shows its lines in a monospace face on one bordered panel that runs
+from just left of the text to the drawer's right edge; the fences are not shown, and nothing inside is read as a style or a
+mention. A fence that is never closed stays as typed. A line that starts with `>` is a quote and shows without it, beside a
+gray bar left of the text, one bar for consecutive quote lines; `>>>` quotes its line and all that follow, and styles and
+mentions work inside a quote. An empty line inside a block or a quote keeps its place in the panel or the bar. Neither indents
+its text, so a line that wraps starts at the text's left edge, and a list shows as Slack sends it (`• `, `1. `) with no
+hanging indent.
+
 Links and mentions show as Slack shows them, in blue. A link shows its label, or its address when it has none; the address
 is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's id (the drawer does not look
 names up yet) on a tinted slug, or `@` and the label when the message carries one; a channel shows `#` and its label or id;
@@ -145,7 +153,7 @@ selection is never shared with the agent; only the preview's text and your drawi
 ## Copying
 
 `Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
-exactly as shown: a link's label, a mention's name and a style's text without its marks, markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
+exactly as shown: a link's label, a mention's name and a style's text without its marks, a code block's lines without its fences and a quote's without its `>` (an empty line in either copies as an empty line, with no added space), markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
 message's text, not its name and time line (a message without a header copies its whole text). With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.

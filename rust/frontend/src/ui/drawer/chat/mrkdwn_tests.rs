@@ -63,15 +63,18 @@ fn slacks_inline_styles_follow_its_boundary_rules() {
     for t in ["*a*\u{201d}", "\u{201c}*a*", "*a*\u{2014}x", "x*\u{65e5}\u{672c}*y"] {
         assert_eq!(shown(t), plain(t), "{t}");
     }
-    // A fenced run stays literal until code blocks are drawn.
-    assert_eq!(shown("```code```"), plain("```code```"));
-    assert_eq!(shown("```\nx\n```"), plain("```\nx\n```"));
+    // A fence with no closing one is literal.
+    assert_eq!(shown("```code"), plain("```code"));
 }
 
-/// The closer scans a parse makes, counted by `close`: a line of openers that never close costs one scan, not one a marker.
+/// The scans a parse makes, counted by `close` and `fence`: a line of openers that never close costs one scan, not one a marker,
+/// and a line of fences, of quote markers or of tokens costs a pass.
 #[test]
 fn the_parse_is_linear_on_a_line_of_openers() {
-    for unit in ["*a ", "_a ", "~a ", "`a ", "*a_", "*a* ", "*<@U1> ", "<!here>*a ", "`<https://x.test|a> ", "<#C1|d>_a_ "] {
+    for unit in [
+        "*a ", "_a ", "~a ", "`a ", "*a_", "*a* ", "*<@U1> ", "<!here>*a ", "`<https://x.test|a> ", "<#C1|d>_a_ ",
+        "``` ", "```a ", "```\n> ", "`` ", "````", "> ", "> *a ", ">>> ", ">\n", "\n> `a ", "```*a ``` *a ", "a``` ```b *c ",
+    ] {
         let text = unit.repeat(8192 / unit.len());
         scanned_reset();
         let pieces = shown(&text);
@@ -79,4 +82,40 @@ fn the_parse_is_linear_on_a_line_of_openers() {
         assert!(!pieces.is_empty());
         assert!(steps <= 4 * text.len(), "{unit:?}: {steps} atoms stepped over for {} of text", text.len());
     }
+}
+
+/// Slack's blocks: a fence opens a code block and the next closes it, across lines or not, one line end dropped after the opening
+/// and before the closing, nothing inside read; a quote is a line of `>` (`&gt;`) and an optional space, or `>>>` and the rest;
+/// an empty line in either is one space that is flagged, and an unclosed fence is literal.
+#[test]
+fn code_blocks_and_quotes_are_found_as_slack_writes_them() {
+    let s = |t: &str, st: u8| (t.to_string(), st);
+    let (b, q, f) = (BLOCK, QUOTE, FILL);
+    // Code blocks: inline, across lines with the two line ends dropped, with text round them, one after another, empty.
+    assert_eq!(shown("```code```"), [s("code", b)]);
+    assert_eq!(shown("```\nx\ny\n```"), [s("x\ny", b)]);
+    assert_eq!(shown("a ```b``` c"), [s("a \n", 0), s("b", b), s("\n c", 0)]);
+    assert_eq!(shown("```x```\nrest"), [s("x", b), s("\nrest", 0)]);
+    assert_eq!(shown("```x```\n"), [s("x", b)]);
+    assert_eq!(shown("```a```\n```b```"), [s("a", b), s("\n", 0), s("b", b | ALT)]);
+    assert_eq!(shown("``````"), [s(" ", b | f)]);
+    assert_eq!(shown("```\na\n\nb\n```"), [s("a\n", b), s(" ", b | f), s("\nb", b)]);
+    // Nothing inside is read: no style, no token, no quote; a token shows as its text.
+    assert_eq!(shown("```*a* <@U1> `x` _y_\n```"), [s("*a* <@U1> `x` _y_", b)]);
+    assert_eq!(shown("```\n> a\n```"), [s("> a", b)]);
+    // An unclosed fence stays as typed.
+    for t in ["```a", "x ``` y", "``a``"] {
+        assert_eq!(shown(t), plain(t), "{t}");
+    }
+    // Quotes: one line, as `&gt;` decodes, with and without the space, one a line, an empty line, and styles and tokens inside.
+    assert_eq!(shown("> a"), [s("a", q)]);
+    assert_eq!(shown("&gt;a"), [s("a", q)]);
+    assert_eq!(shown("> a\n> b\nc"), [s("a", q), s("\n", 0), s("b", q), s("\nc", 0)]);
+    assert_eq!(shown(">\n> b"), [s(" ", q | f), s("\n", 0), s("b", q)]);
+    assert_eq!(shown("> *b* <@U1> `c`"), [s("b", q | BOLD), s(" ", q), s("{@U1}", q), s(" ", q), s("c", q | CODE)]);
+    assert_eq!(shown("a > b\n x"), plain("a > b\n x"));
+    // `>>>` quotes the rest, empty lines included, and a block still ends it as a block.
+    assert_eq!(shown(">>> a\nb\n\nc"), [s("a", q), s("\n", 0), s("b", q), s("\n", 0), s(" ", q | f), s("\n", 0), s("c", q)]);
+    assert_eq!(shown("x\n>>> a\n> b"), [s("x\n", 0), s("a", q), s("\n", 0), s("> b", q)]);
+    assert_eq!(shown("```x```> y"), [s("x", b), s("\n", 0), s("y", q)]);
 }

@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 
 use chrono::FixedOffset;
-use cosmic_text::{Align, Attrs, Buffer, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
+use cosmic_text::{Align, Attrs, Buffer, BufferLine, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
 use sot_protocol::chat::{ChatAuthor, ChatRecord, Ts};
 
 use super::owner::ts_order;
-use super::mrkdwn::{BOLD, CODE, ITALIC, STRIKE};
+use super::mrkdwn::{ALT, BLOCK, BOLD, CODE, FILL, ITALIC, QUOTE, STRIKE};
 use super::project::{clock, project, Kind, Span};
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
@@ -49,6 +49,17 @@ const STRIKE_RUN: usize = 0x08;
 /// The same for a mention, whose slug is drawn behind it: a rectangle 1 px wider each side than its run, inset like code's.
 const MENTION_RUN: usize = 0x10;
 const MENTION_PAD_PX: f32 = 1.0;
+/// The flags of a quote line, a code block (and every other one), and the one space of an empty line in either. A line's flag is
+/// its first span's, which is how a block's panel and a quote's bar find a line.
+const QUOTE_RUN: usize = 0x20;
+const BLOCK_RUN: usize = 0x40;
+const ALT_RUN: usize = 0x80;
+const FILL_RUN: usize = 0x100;
+/// A code block's panel starts this far left of the text (in the gutter) and runs to the body's right edge; a quote's bar is
+/// this wide, this far left of the text. In pixels at text scale 1.
+const BLOCK_LEFT_PX: f32 = 6.0;
+const QUOTE_BAR_PX: f32 = 4.0;
+const QUOTE_GAP_PX: f32 = 8.0;
 /// Inline code's size (of the body's 15), and its rectangle's padding left and right and its inset top and bottom, in pixels
 /// at text scale 1.
 const CODE_SIZE: f32 = 14.0;
@@ -172,22 +183,56 @@ pub(super) fn attrs(kind: Kind, scale: f32) -> Attrs<'static> {
 }
 
 /// `attrs`, and a span's inline styles: weight, slant, the strike's glyph flag, and code's monospace face, size, color and
-/// glyph flag. Code takes no other style.
+/// glyph flag. Code takes no other style; a code block's text is monospace at code's size in the body's color, with no style.
+/// A quote's, a block's and a block's empty line's flags go on whatever the rest is.
 pub(super) fn styled_attrs(kind: Kind, style: u8, scale: f32) -> Attrs<'static> {
     let mut a = attrs(kind, scale);
-    if style & CODE != 0 {
-        return a.family(Family::Monospace).color(rgb(CODE_TEXT)).metrics(Metrics::new(BODY_SIZE * scale * CODE_SIZE / 15.0, BODY_LINE_H * scale)).metadata(CODE_RUN);
+    let mono = Metrics::new(BODY_SIZE * scale * CODE_SIZE / 15.0, BODY_LINE_H * scale);
+    if style & BLOCK != 0 {
+        a = a.family(Family::Monospace).metrics(mono);
+    } else if style & CODE != 0 {
+        a = a.family(Family::Monospace).color(rgb(CODE_TEXT)).metrics(mono).metadata(CODE_RUN);
+    } else {
+        if style & BOLD != 0 {
+            a = a.weight(Weight::BOLD);
+        }
+        if style & ITALIC != 0 {
+            a = a.style(Style::Italic);
+        }
+        if style & STRIKE != 0 {
+            a = a.metadata(a.metadata | STRIKE_RUN);
+        }
     }
-    if style & BOLD != 0 {
-        a = a.weight(Weight::BOLD);
+    let flag = |bit, run| if style & bit != 0 { run } else { 0 };
+    a.metadata(a.metadata | flag(QUOTE, QUOTE_RUN) | flag(BLOCK, BLOCK_RUN) | flag(ALT, ALT_RUN) | flag(FILL, FILL_RUN))
+}
+
+/// The space an empty line in a block or a quote is shaped as: it has no place in a copy.
+fn pad(line: &BufferLine) -> bool {
+    line.text() == " " && line.attrs_list().get_span(0).metadata & FILL_RUN != 0
+}
+
+/// A line as a copy shows it.
+fn shown_line(line: &BufferLine) -> &str {
+    if pad(line) { "" } else { line.text() }
+}
+
+/// The stretches of consecutive buffer lines whose first span carries `flag`, one block's lines together, as `(top, height)`
+/// in the buffer's coordinates. By line, not by glyph: an empty line is one space, which holds its place but no run's extent.
+fn line_blocks(buffer: &Buffer, flag: usize) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    let mut before = None;
+    for run in buffer.layout_runs() {
+        let m = buffer.lines[run.line_i].attrs_list().get_span(0).metadata;
+        let key = (m & flag != 0).then_some(m & ALT_RUN);
+        match out.last_mut() {
+            Some(last) if key.is_some() && key == before => last.1 = run.line_top + run.line_height - last.0,
+            _ if key.is_some() => out.push((run.line_top, run.line_height)),
+            _ => {}
+        }
+        before = key;
     }
-    if style & ITALIC != 0 {
-        a = a.style(Style::Italic);
-    }
-    if style & STRIKE != 0 {
-        a = a.metadata(a.metadata | STRIKE_RUN);
-    }
-    a
+    out
 }
 
 /// A buffer is shaped for its spans at a width and text scale (the floats' bits).
@@ -392,16 +437,26 @@ impl ChatView {
         self.selected = None;
     }
 
-    /// The selected bytes of the record's buffer.
+    /// The selected bytes of the record's buffer, but for the space of an empty line in a block or a quote.
     pub(in crate::ui) fn selected_text(&self) -> Option<String> {
-        self.selection.text(&self.lent()?)
+        let ((from, a), (to, b)) = self.selection.range()?;
+        let buffer = self.lent()?.buffer;
+        let mut out = String::new();
+        for i in from..=to {
+            let line = buffer.lines.get(i)?;
+            let text = line.text();
+            let (s, e) = (if i == from { a } else { 0 }, if i == to { b } else { text.len() });
+            out.push_str(if i == from { "" } else { "\n" });
+            out.push_str(if pad(line) { "" } else { text.get(s..e)? });
+        }
+        (!out.is_empty()).then_some(out)
     }
 
     /// The marked record's shown text: its buffer after its lead (the header line, if it has one).
     pub(in crate::ui) fn marked_text(&self) -> Option<String> {
         let ts = self.mark.as_ref()?;
         let key = &self.placed.iter().find(|p| &p.2 == ts)?.0;
-        let text = self.cache[key].buffer.lines.iter().skip(self.cache[key].lead).map(|l| l.text()).collect::<Vec<_>>().join("\n");
+        let text = self.cache[key].buffer.lines.iter().skip(self.cache[key].lead).map(shown_line).collect::<Vec<_>>().join("\n");
         (!text.is_empty()).then_some(text)
     }
 
@@ -515,6 +570,15 @@ impl ChatView {
             }
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & STRIKE_RUN != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + (h - scale) / 2.0, w, h: scale }, TEXT));
+            }
+            // A code block is one bordered panel across its lines, from the gutter to the right edge, and consecutive quote lines are
+            // one bar in the gutter.
+            for (y, h) in line_blocks(&shaped.buffer, BLOCK_RUN) {
+                let left = text.x - BLOCK_LEFT_PX * scale;
+                out.extend(boxed(ScreenRect { x: left, y: all.y + y, w: body.x + body.w - left, h }, BAND));
+            }
+            for (y, h) in line_blocks(&shaped.buffer, QUOTE_RUN) {
+                out.extend(quad(ScreenRect { x: text.x - QUOTE_GAP_PX * scale, y: all.y + y, w: QUOTE_BAR_PX * scale, h }, LOW));
             }
             // A badge's rectangle is its run of glyphs, which include its padding (`project`), so a wrapped line never cuts it.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & BADGE != 0) {
