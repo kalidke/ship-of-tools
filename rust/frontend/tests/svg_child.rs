@@ -470,16 +470,21 @@ fn a_draw_past_its_wall_bound_is_killed_and_refused() {
 
 #[test]
 fn a_child_that_ends_early_refuses_the_rest_of_its_batch_in_its_words() {
-    // A batch is one child: the job that holds it past the wall ends it, and the jobs after it, never begun, are
-    // refused in the wall's words; the one before it was answered whole.
+    // A batch is one child: the job that ends it, and the jobs after it, never begun, are refused in the words of its
+    // end; the one before it was answered whole. It ends at its heap, not at the wall: a hosted Windows child's cold
+    // first start (the binary and the system fonts) takes about 3 s, so any wall short of `WAIT` would end the child
+    // before its first job is drawn and say the wall's words, which is not what this test is about.
+    let mut bomb = format!("<!DOCTYPE svg [<!ENTITY a \"{}\">]>{SVG_OPEN}<rect width=\"10\" height=\"10\" id=\"", "x".repeat(MIB));
+    bomb.push_str(&"&a;".repeat(200));
+    bomb.push_str("\"/></svg>");
     let red = rect("red");
     let scratch = Scratch::new();
-    let (command, bounds) = real_child(Duration::from_secs(1), ROOMY, &scratch);
-    let jobs = vec![job(4, 4, red.as_bytes()), job(100, 100, SPIN.as_bytes()), job(4, 4, red.as_bytes()), job(4, 4, red.as_bytes())];
+    let (command, bounds) = real_child(WAIT, 64 * MIB, &scratch);
+    let jobs = vec![job(4, 4, red.as_bytes()), job(2, 2, bomb.as_bytes()), job(4, 4, red.as_bytes()), job(4, 4, red.as_bytes())];
     let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
     assert_eq!(outcomes.len(), 4);
     assert!(matches!(&outcomes[0], Outcome::Drawn { w: 4, h: 4, .. }), "{:?}", outcomes[0]);
-    assert_eq!(outcomes[1..], [ended("took past 1 s"), ended("took past 1 s"), ended("took past 1 s")]);
+    assert_eq!(outcomes[1..], [ended("needed more than 64 MiB"), ended("needed more than 64 MiB"), ended("needed more than 64 MiB")]);
 }
 
 #[test]
