@@ -259,7 +259,7 @@ fn the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_lim
     assert_eq!(fit((600, 100), 16384), (200, 100), "height limits");
     assert_eq!(fit((100, 800), 16384), (100, 50));
     assert_eq!(fit((20000, 20000), 4096), (4096, 2048), "the texture limit wins, aspect kept");
-    assert_eq!(fit((1024, 1024), 16384), (1024, 512), "no pane yet: a small fixed bound, not the SVG's own size");
+    assert_eq!(fit(NO_PANE, 16384), (1024, 512), "no pane yet: a small fixed bound, not the SVG's own size");
     assert_eq!(svg_fit_dims((1.0, 1000.0), (50, 50), 16384), (1, 50), "a side is never under one pixel");
 }
 
@@ -268,7 +268,19 @@ fn the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_lim
 #[test]
 fn the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small() {
     let area = |(w, h): (u32, u32)| u64::from(w) * u64::from(h);
-    assert!(area(svg_fit_dims((1e30, 1e30), (1024, 1024), 16384)) <= 1024 * 1024);
+    assert!(area(svg_fit_dims((1e30, 1e30), NO_PANE, 16384)) <= 1024 * 1024);
     assert!(area(svg_fit_dims((100.0, 100.0), (60000, 60000), 65535)) <= MAX_RASTER_PIXELS);
     assert!(area(svg_fit_dims((100.0, 25.0), (30000, 60000), 65535)) <= MAX_RASTER_PIXELS);
+}
+
+/// An SVG that will not parse says why for the status line, which says it was not drawn.
+#[test]
+fn an_svg_that_will_not_parse_says_why_for_the_status_line() {
+    let why = format!("{:#}", svg_tree(b"<svg><not closed").err().expect("not an SVG"));
+    let line = svg_not_drawn(&why);
+    assert!(line.starts_with("svg not drawn: "), "{line}");
+    assert!(line.contains("svg parse failed"), "{line}");
+    assert!(!line.contains('\n'), "one line: {line}");
+    // Only the first line, and no control character of the file's own bytes, reaches the line.
+    assert_eq!(svg_not_drawn("first \u{7}line\nsecond line"), "svg not drawn: first line");
 }

@@ -1,6 +1,9 @@
 //! The preview pane's subject: which node is shown, how its bytes route to a renderer, and its pin.
 
 use crate::ui::*;
+use crate::ui::preview::image::svg::{svg_not_drawn, NO_PANE};
+use crate::ui::preview::image::svg_preview::Step;
+use crate::ui::preview::image::svg_wire::Ask;
 
 /// Pure resolution behind `State::previewed_files_path`: routes from
 /// `installed` alone — never a merely-REQUESTED node id, which is the
@@ -177,6 +180,23 @@ pub(in crate::ui) fn is_raster_preview_mime(mime: &str) -> bool {
     )
 }
 
+/// How `render_preview_source` takes a blob by its mime: an SVG is drawn as a picture (and shown as text when it will
+/// not draw), a raster is decoded, anything else is text, tokens or a summary.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::ui) enum PreviewRoute {
+    Svg,
+    Raster,
+    Other,
+}
+
+pub(in crate::ui) fn preview_route(mime: &str) -> PreviewRoute {
+    match mime {
+        "image/svg+xml" => PreviewRoute::Svg,
+        m if is_raster_preview_mime(m) => PreviewRoute::Raster,
+        _ => PreviewRoute::Other,
+    }
+}
+
 impl State {
     /// C2 pin-and-leave toggle. If a preview is pinned, `p` (from any row)
     /// UNPINS it and jumps the cursor to the formerly-pinned row, so the user
@@ -262,7 +282,20 @@ impl State {
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         self.shaped.clear_selection();
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
-        if is_raster_preview_mime(mime) {
+        let route = match preview_route(mime) {
+            PreviewRoute::Svg => {
+                let step = self.show_svg_preview(bytes);
+                if self.apply_svg_step(step) {
+                    return;
+                }
+                // The pane stays useful: the SVG's text is shown below, as any text file's, until its picture is
+                // drawn, and for good when it is refused; the old raster is gone either way.
+                self.raster.hide();
+                PreviewRoute::Other
+            }
+            route @ (PreviewRoute::Raster | PreviewRoute::Other) => route,
+        };
+        if route == PreviewRoute::Raster {
             // Paginated document pages (preview_page set from this reply's
             // extras) filter Linear — rasterized text aliases hard under
             // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
@@ -412,6 +445,42 @@ impl State {
                 "preview blob is not UTF-8 and not an image — skipping"
             );
         }
+    }
+
+    /// The preview of an SVG file's bytes, drawn to fill the pane (physical pixels, `NO_PANE` before a layout) at its
+    /// own aspect, no side past the GPU's texture limit: a kept outcome, the job in flight, or a new job.
+    fn show_svg_preview(&mut self, bytes: &[u8]) -> Step {
+        let (w, h) = self.preview_fit_px();
+        let pane = w.zip(h).unwrap_or(NO_PANE);
+        let cap = self.gpu.device().limits().max_texture_dimension_2d;
+        let generation = self.preview_source.generation();
+        self.svg_preview.show(&mut self.svg_draws, generation, bytes, Ask::Fit { pane, cap })
+    }
+
+    /// An SVG preview's step: a picture is uploaded and installed into the `RasterView` as a PNG is, the view at fit
+    /// with no carry (true); a refusal says why on the status line; a job in flight says nothing. False when no picture
+    /// is shown.
+    pub(in crate::ui) fn apply_svg_step(&mut self, step: Step) -> bool {
+        let why = match step {
+            Step::Picture(picture) => {
+                let (device, queue, pipeline) = (self.gpu.device(), self.gpu.queue(), self.brushes.pipeline());
+                match Quad::from_rgba8(device, queue, pipeline, &picture.rgba, picture.w, picture.h) {
+                    Ok(quad) => {
+                        self.raster.install(quad, (picture.w, picture.h), self.preview_source.node_id());
+                        self.raster.reset_view(None);
+                        self.window.request_redraw();
+                        return true;
+                    }
+                    Err(why) => format!("{why:#}"),
+                }
+            }
+            Step::Refused(why) => why,
+            Step::Pending => return false,
+        };
+        tracing::warn!(why, "svg preview not drawn");
+        self.status.set(svg_not_drawn(&why));
+        self.window.request_redraw();
+        false
     }
 
     /// Rebuild the refused-hello overlay buffer (ADR 0030 protocol mismatch, ADR 0049 account refusals) from

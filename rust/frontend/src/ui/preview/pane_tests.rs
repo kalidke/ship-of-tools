@@ -20,6 +20,17 @@ fn raster_preview_mimes_route_jpeg_and_kin_not_svg() {
     assert!(!is_raster_preview_mime("application/json"));
 }
 
+#[test]
+fn a_preview_is_routed_by_its_mime_an_svg_to_the_picture_not_the_raster_decoder_or_the_text() {
+    assert_eq!(preview_route("image/svg+xml"), PreviewRoute::Svg);
+    for m in ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"] {
+        assert_eq!(preview_route(m), PreviewRoute::Raster, "{m}");
+    }
+    for m in ["text/plain; charset=utf-8", "text/html", "application/json", "text/markdown"] {
+        assert_eq!(preview_route(m), PreviewRoute::Other, "{m}");
+    }
+}
+
 // --- Bug 2 / round 2 provenance fix: `o`/`W`/`O` must route against
 // the node the INSTALLED preview reply answered — never the most
 // recently REQUESTED one (which can outrun its own reply), and never
@@ -242,4 +253,52 @@ fn preview_scroll_target_measures_only_the_buffer_on_screen() {
 fn a_refused_preview_says_so_in_the_pane_title() {
     assert_eq!(pane_name("a.pdf", Some((2, 5)), false), "a.pdf · p 2/5 · n/p");
     assert_eq!(pane_name("a.pdf", None, true), "a.pdf · REFUSED, view not updated");
+}
+
+impl State {
+    /// An SVG file's preview is drawn through the real child: its text shows until the picture is installed by the
+    /// frame's step, filling the pane on its limiting side at the SVG's aspect; the same file again is installed
+    /// from the kept outcome at once; one that will not parse leaves no raster, shows its text and says why.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn an_svg_preview_is_a_raster_and_a_broken_one_is_its_text(&mut self) -> anyhow::Result<()> {
+        let pane = self.preview_fit_px();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100"/></svg>"#;
+        self.raster.hide();
+        self.show_svg_source(svg);
+        anyhow::ensure!(!self.raster.is_shown(), "the picture was installed before its drawing settled");
+        self.frames_until(|state| state.raster.is_shown(), "an SVG preview installed no raster")?;
+        let (w, h) = self.raster.quad_size().ok_or_else(|| anyhow::anyhow!("an SVG preview installed no raster"))?;
+        let near = |a: u32, b: u32| a.abs_diff(b) <= 1;
+        anyhow::ensure!(near(w, 2 * h), "the raster {w}x{h} lost the SVG's 2:1 aspect");
+        if let (Some(pw), Some(ph)) = pane {
+            anyhow::ensure!(near(w, pw.min(2 * ph)), "the raster {w}x{h} does not fill the {pw}x{ph} pane on its limiting side");
+        }
+        self.raster.hide();
+        self.show_svg_source(svg);
+        anyhow::ensure!(self.raster.is_shown(), "the same file again was not installed from its kept outcome");
+        self.status.set(String::new());
+        self.show_svg_source(b"<svg><not closed");
+        anyhow::ensure!(!self.raster.is_shown(), "a broken SVG kept the last raster");
+        self.frames_until(|state| state.status.text().starts_with("svg not drawn: "), "the status line never said why")?;
+        anyhow::ensure!(!self.raster.is_shown(), "a broken SVG drew a raster");
+        anyhow::ensure!(self.status.text().contains("svg parse failed"), "the status line says `{}`", self.status.text());
+        Ok(())
+    }
+
+    /// `bytes` installed as a new preview source and rendered, as a preview reply does.
+    fn show_svg_source(&mut self, bytes: &[u8]) {
+        self.preview_source.install("image/svg+xml".into(), bytes.to_vec(), Some("files:a.svg".into()), None, None);
+        self.render_preview_source("image/svg+xml", bytes);
+    }
+
+    /// The window's frame steps until `done`, which the worker's outcome brings.
+    fn frames_until(&mut self, done: impl Fn(&State) -> bool, what: &str) -> anyhow::Result<()> {
+        let begun = std::time::Instant::now();
+        while !done(self) {
+            anyhow::ensure!(begun.elapsed() < std::time::Duration::from_secs(30), "{what}");
+            self.frame_upkeep();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Ok(())
+    }
 }

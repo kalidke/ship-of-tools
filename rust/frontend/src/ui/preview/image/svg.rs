@@ -116,6 +116,9 @@ fn embedded_images_only() -> ImageHrefResolver<'static> {
     }
 }
 
+/// The pane a picture fills with none laid out: a small fixed size, never the SVG's own, which the file declares.
+pub(crate) const NO_PANE: (u32, u32) = (1024, 1024);
+
 /// The raster size of an SVG `svg` units across, drawn to fill `pane` (physical pixels) on its limiting side with its
 /// own aspect ratio, no side under one pixel or over `cap` (the GPU's texture limit) and no more than
 /// `MAX_RASTER_PIXELS` in all.
@@ -129,6 +132,13 @@ pub(super) fn svg_fit_dims((sw, sh): (f32, f32), (pw, ph): (u32, u32), cap: u32)
     }
     let shrink = (MAX_RASTER_PIXELS as f64 / (f64::from(w) * f64::from(h))).sqrt();
     (((f64::from(w) * shrink).floor() as u32).max(1), ((f64::from(h) * shrink).floor() as u32).max(1))
+}
+
+/// The status line for an SVG the pane could not draw (its text is shown instead): the first line of `why`, which is
+/// the drawing's or the runner's words, with no control character of the file's own bytes.
+pub(crate) fn svg_not_drawn(why: &str) -> String {
+    let reason: String = why.lines().next().unwrap_or_default().chars().filter(|c| !c.is_control()).collect();
+    format!("svg not drawn: {reason}")
 }
 
 /// The SVG's tree as the window draws it: system fonts, `currentColor` as white, its text with no bidi paragraph

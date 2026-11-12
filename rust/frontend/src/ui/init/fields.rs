@@ -156,6 +156,7 @@ impl State {
                 move || draws_wake.wake(),
                 Arc::new(preview::image::svg_run::draw_in_own_child),
             ),
+            svg_preview: Default::default(),
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
             proxies: crate::ui::proxy_arms::ProxyArms::default(),

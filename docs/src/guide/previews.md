@@ -42,7 +42,9 @@ The plugin module and MIME type behind each row are listed under
 [Built-in preview plugins](@ref builtin-preview-plugins).
 
 PNG (and other raster images) render directly through the frontend's image quad
-path — the same path the PDF and video plugins reuse by returning `image/png`.
+path — the same path the PDF and video plugins reuse by returning `image/png`. An SVG file is drawn (resvg) by a
+helper process of the window, so a file that is too large or too slow to draw ends only that helper; its text shows until the
+picture is drawn, and the picture takes the same path, so it zooms and pans as a PNG does.
 
 A PNG's embedded pHYs density supplies a scale bar only when both axes have the same metre-unit density of at least
 100,000 pixels per metre (10 micrometres per pixel at the cutoff). Lower densities, including CairoMakie's print DPI,

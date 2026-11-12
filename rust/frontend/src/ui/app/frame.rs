@@ -110,7 +110,7 @@ impl State {
         Ok(())
     }
 
-    fn frame_upkeep(&mut self) {
+    pub(in crate::ui) fn frame_upkeep(&mut self) {
         let requests = self.layout_help.take_startup_requests();
         layout_help::start_pending(requests, self);
 

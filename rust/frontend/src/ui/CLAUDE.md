@@ -47,6 +47,7 @@ the preview pass draws the overlay quad right after the raster's, at the same ca
 `preview::image::ink_input` wires it (D4c1): a left press inside the image rectangle with drawing on over the shown base (`State::shown_ink_base`, which calls `InkLayer::shown_base`; no second decider) focuses the preview first, begins a stroke and starts no text selection but still clears the agent pane's selection (`SelectionContext::draw_press`, first in `press_selections`; `a_press_the_drawing_takes_focuses_the_preview_and_starts_no_selection`); the layer owns that routing (`left_press`, `moved`, `right`, `focus_lost`; `the_window_routes_a_left_press_motion_and_the_right_button_through_the_layer`): motion extends a live stroke, else a right drag erases, release commits, the window losing focus commits a live stroke and ends a held erase; a right press goes through the quit question and the stayed notice as a left press does and a release of either button never does (`a_right_press_answers_a_question_or_a_notice_and_a_right_release_always_reaches_the_eraser`); `sync` keeps a live stroke over a size change (`a_size_change_keeps_the_live_stroke_and_paints_it`) and drops it with its base (`a_base_no_longer_shown_drops_the_live_stroke_and_the_same_base_stays`), and a size change repaints the raster (`the_same_node_at_another_size_rebuilds_the_raster_at_once`); `preview.draw` (`d`, Image scope), `preview.ink_undo` (`u`, `Primary+z`) and `preview.ink_clear` (`Delete`) in the `Drawing` scope, live in the focused, not editing preview while drawing is on over a shown base (`Context::drawing`), resolve only there (R-D15, `the_drawing_keys_resolve_only_where_drawing_is`); the status line says `drawing on: ...`, `drawing off`, `drawing cleared: u brings it back`, `drawing: no image to draw on`, and the layer's own `the drawing on <name> was replaced` and `the drawing is full: undo or clear`;
 limits: the draw order, the scissor and the texture upload are in the render pass and no pure test reaches them, and neither does the State routing: the node `RasterView` records at install (cleared with the quad at hide) and the argument the gate reads are unpinned, so a slow or failed reply or a failed decode keeping one figure's ink off another's rests on reading, and `write_region`'s transcription of origin, extent and row length into `write_texture`, and the overlay's resize and its dirty rectangle's clearing in `upload`, are unpinned; the window repaints the whole raster on the UI thread (the wire's `mask`, 36 to 243 ms at the point bound for a hand-drawn drawing on a 2000 x 2000 raster, 620 ms for 300 px steps, measured at the earlier 1/200 ink width; the 1/300 width visits about a quarter fewer pixels, so these are upper bounds), once per undo, clear, erase hit or new base and each return to a row whose drawing's base is shown; the canvas's white rectangle and its overlay (`paint_canvas`) are in the render pass and unpinned like the figure's; unpinned in D4c1: the State handlers (`press_ink`, `ink_moved`, `ink_released`, `ink_right`, the focus loss, the key handler) the render pass's `ink_sync` and `set_frame`, and the press handler's setting of focus, which rest on reading, as does `sync`'s call from each handler; D4c2: the row's drawing rides its parked view (`WorkspaceUiSnapshot::ink`, the layer's own `Drawing`; `park` and `restore`): leaving a row parks it, entering restores it (a first visit restores the default, so the layer starts clean), a destroyed row's view drops it with the rest; a restore keeps nothing else of the row left: no live stroke, held button, frame, raster or overlay (`sync` repaints the raster at the next frame), and raises `revision` (`a_parked_drawing_keeps_the_cleared_copy_and_the_undo_history`, `a_switch_drops_the_live_stroke_the_held_button_and_the_raster_and_raises_the_revision`, `a_restored_drawing_keeps_its_own_mode`, `a_rows_drawing_comes_back_with_its_view`); the State's three calls (the park, the first-visit restore, the return's restore) and the destroy's order are pinned by the native fixture `a_rows_drawing_stays_with_its_row`, which runs only under a display; a window's close, and a restart, lose every row's drawing (nothing persists it); the canvas's State wiring rests on reading: `preview_shows` taking `shown_base` as its canvas, `ink_src` handing `source_dims` the served size, the drawer's `canvas` and `drawing` fields, the Shift+d handler's refusal under the overlay, and the status lines `canvas: draw with the pointer; u undo, Delete clear, Shift+D back` and `canvas hidden`; not built: a source past 6000 px and over 20 MB (`PREVIEW_DOWNSAMPLE_TRIGGER`) is served downsampled and the preview reply carries no source size (`files/preview/mod.rs` folds the factor into `physical_scale` alone), so the raster is `raster_dims` of the served size and differs from the daemon's for such a source (the D4b review's N3)
 `preview::image::figure_store::FigureStore` owns the markdown figures' bitmaps, requests in flight and failures;
+`preview::image::svg_preview::SvgPreview` owns the SVG file preview's two kept outcomes and its one job in flight;
 `preview::markdown::media_store::MarkdownMedia` owns the table buffers and their scroll, the math and token caches
 with their requests in flight, and the pending reflow; `control::ControlChannel` owns the fe-commands queue and the
 last `fe-state.json` signature; `control::ReplyBar` owns the one reply a page offered, held for its person's word, whether
@@ -292,6 +293,45 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   geometry. State computes the ROI for an image node, which the owner records and writes through to the carry
   outside the quantization window; State echoes an applied aim and draws the quad. Keys reset, pan and step the
   zoom (1.25x below 1.5, whole steps above, pan scaled to keep the center).
+  An SVG file (`image/svg+xml`, `preview_route`'s `Svg`) is drawn by the worker into the same `RasterView`, never on the
+  window's thread: `show_svg_preview` asks `SvgPreview` (preview/image/svg_preview.rs) for a `Fit` job (the pane's size
+  in physical pixels, `NO_PANE` (1024 square) before a layout or while another pane is maximized, and the GPU's texture
+  limit), the child works the size out from the file's own (`svg_fit_dims`: the SVG's aspect, the pane's limiting side,
+  no side past the limit and no more than `MAX_RASTER_PIXELS` in all), and the runner refuses a reply past either
+  limit at its header (`Ask::accepts`). Until the picture is drawn the SVG's text is shown, as any text file's; then
+  `apply_svg_step` uploads the picture (filtered Linear, view at fit, no carry) into the `RasterView`. `SvgPreview`
+  keeps the last two outcomes, a picture or a refusal, each with the bytes and the ask it came from: an equal preview
+  (equal bytes and ask, whatever the generation) is installed from them with no child, so a switch between two rows that
+  each show an SVG draws neither again and a refused file costs one child, not one per return. One job is in flight,
+  keyed `PREVIEW_KEY` (a key no figure URL holds), of the pane's generation; a second `show` of the same generation
+  while it is in flight submits nothing, and an outcome of another generation (a departed source's `Stale` or a late
+  outcome after a resubmit) is ignored. The frame's one step, `settle_frame`, tells the worker the pane's generation,
+  drains it once and hands each outcome to its owner (the preview by key, else `FigureStore`); the window keeps the
+  upload (`settle_svg_draws`, called by `frame_upkeep`, and `apply_svg_step`). A refusal says `svg not drawn: <the
+  drawing's or the runner's first line>` on the status line (`svg_not_drawn`, no control character) and the text
+  stays, the old raster hidden (a non-UTF-8 `.svg` shows as text too). An SVG is not an image node
+  (`is_image_node_id`): it has no ROI, crop (`c` says an SVG cannot be cropped), scale bar, caption or drawing, since
+  the daemon can decode none of them (drawing over an SVG is not built).
+  Limits: a zoom past fit enlarges the raster's pixels (no re-raster at zoom); a pane resized after the draw scales the
+  picture until the preview is next rendered; a text-scale change draws it again only when its fit size changed; a row
+  switch back shows the kept picture (view at fit, no carry); the kept pictures are held as RGBA on the window's heap,
+  up to two of at most 64 MiB each; `.svgz` is not served as `image/svg+xml` by the daemon (`mime_for_path`) so it is
+  not drawn; the file's bytes are copied once for the job and kept with the outcome. Tests:
+  `a_preview_is_routed_by_its_mime_an_svg_to_the_picture_not_the_raster_decoder_or_the_text`,
+  `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit`,
+  `the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small`,
+  `an_svg_that_will_not_parse_says_why_for_the_status_line`, `an_svg_is_not_an_image_node`,
+  `a_capture_of_a_shown_svg_says_it_cannot_be_cropped`, and in svg_preview_tests.rs (a stand-in draw)
+  `a_current_preview_installs_its_raster_and_a_stale_one_does_not`,
+  `an_equal_preview_is_installed_from_the_cache_without_a_draw`, `two_outcomes_are_kept_and_the_oldest_goes`,
+  `a_refused_preview_is_not_drawn_again_on_return`,
+  `a_late_outcome_of_a_departed_generation_does_not_undo_the_job_in_flight`,
+  `a_figure_and_the_preview_each_settle_through_the_one_drain` and
+  `a_preview_the_worker_will_not_take_is_refused_at_once`; the child's fit ask in tests/svg_child.rs
+  (`a_fit_ask_is_drawn_at_the_size_the_child_works_out`, `the_runner_returns_a_fit_ask_at_the_childs_size`,
+  `a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header`); and the native fixture
+  `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text` (through the real child, the frame's own `frame_upkeep`:
+  the text shows until the picture is installed, the same file again is installed at once, a broken one says why).
 - `PageView` privately owns pagination (ADR 0021): a reply's page extras set the page or clear it; a reply that
   re-rastered the page on screen records its zoom and arms a one-shot keep-view the raster install takes; any other
   resets the raster zoom to fit. A row's parked view keeps its page, and its restore applies it before the repaint
@@ -305,10 +345,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   settles its URL, then installs or fails it; an unresolvable local URL fails at once. An SVG reply is the exception:
   `route_reply` never draws it on the window's thread but submits one job to the drawing worker, keyed by its URL under
   the pane's generation, and the URL stays pending until the outcome; the window decodes only what `route_reply` hands
-  back (`Reply::Raster`). Each frame `svg_preview::settle_frame` tells the worker the pane's generation, drains it once and hands every outcome
-  to its owner by key (a figure's to `settle_drawing`; a key no figure URL can hold, `PREVIEW_KEY`, is the SVG file
-  preview's, which has no owner yet and is dropped), and the window (`settle_svg_draws`, called by `frame_upkeep`, and
-  `on_svg_settled`) uploads a picture or reflows. Drawn, it is installed onto 800 by 600
+  back (`Reply::Raster`). Each frame `svg_preview::settle_frame` tells the worker the pane's generation and hands every outcome it
+  returned to its owner (a figure's to `settle_drawing`), and the window (`on_svg_settled`) uploads a picture or reflows. Drawn, it is installed onto 800 by 600
   pixels (`FIGURE_SVG_SIZE`); refused (the worker's words, a bound's end, a full queue or no worker thread), it fails
   like an undecodable figure, terminally until a fresh markdown reply; stale, it leaves `pending` and one reflow lets
   the walk fetch it again under the new generation. Only the outcome of the generation a URL's job was submitted under
@@ -703,7 +741,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_href_naming_a_fifo_draws_nothing_through_every_element_and_spelling`, `an_embedded_png_image_still_draws`.
 - The drawing child, `sot --draw-svg <heap bytes> <cpu seconds> --version` (preview/image/svg_child.rs, whose numbers
   are preview/image/svg_wire.rs): the window's own binary, so that SVG whose bytes the window received can crash, exhaust
-  or spin only a process the window can lose. Its one caller so far is the markdown figure, through the worker (below); the fit ask has none yet. The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
+  or spin only a process the window can lose. Its callers are the markdown figure and the SVG file preview, through the worker (the bullets below). The first statement of `window_entry` (main.rs, which both `main`s call) dispatches on the first argument
   and never reads the last, so a binary without the mode prints its version and exits 0. The child bounds itself before
   it reads a byte (`bound_self`, in this order, platform's guarantee 18): no descriptor above stderr (Unix), stdout taken
   for the replies (`take_stdout`), crashes as exits, `end_with_parent` (Linux), `limit_cpu` (Unix), the heap armed (`HEAP`, main.rs's `#[global_allocator]`, a
@@ -711,7 +749,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   stdin: `SVG1`, a u32 job count, then per job an ask, a u64 length and that many bytes of SVG (the ask is `S` and `w` and
   `h` as u32, draw onto exactly that, or `F` and a pane's `w` and `h` and a texture limit `cap` as u32, draw to fill
   the pane, the size being the child's to work out from the file's own: aspect kept, no side past `cap`, at most
-  `MAX_RASTER_PIXELS`, 16 Mpx, in all (`svg_fit_dims`)); the SVG bytes' sum is at most `PREVIEW_BINARY_CAP` (the headers are not counted) and each job's bytes are
+  `MAX_RASTER_PIXELS`, 16 Mpx, in all); the SVG bytes' sum is at most `PREVIEW_BINARY_CAP` (the headers are not counted) and each job's bytes are
   allocated at their declared length, so the cap sees an input before it is read. Reply on stdout: `SVG1`, then per job
   in order `R`, `w` and `h` as u32 and `4 * w * h` premultiplied RGBA bytes (a zero side is drawn as one), or `E`, a u16
   length and at most 1 KiB of the error's first line, cut at a character boundary; an SVG that does not parse is that
@@ -741,9 +779,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_reference_cycle_across_two_kinds_ends_the_child_and_not_the_caller`, `a_child_past_its_cpu_bound_ends_itself`
   (Unix), `a_library_print_never_reaches_the_reply_stream` (debug builds: a hook prints between replies, as usvg does), `a_panic_on_the_draw_thread_is_the_crash_code` (debug builds, where a file that panics in resvg's debug
   assertions exists), and in svg_child_tests.rs `an_error_is_its_first_line` and
-  `an_error_is_cut_at_its_limit_and_never_inside_a_character`; the fit ask: `a_fit_ask_is_drawn_at_the_size_the_child_works_out`
-  (and, in the fit's size, `the_svg_raster_fits_the_pane_keeps_its_aspect_and_stays_under_the_texture_limit` and
-  `the_svg_raster_is_bounded_by_area_and_a_huge_declared_size_draws_small`, preview/image/svg_tests.rs). Open: before this child's drawing is shown to a person, a
+  `an_error_is_cut_at_its_limit_and_never_inside_a_character`. Open: before this child's drawing is shown to a person, a
   crash of it on a lab Windows computer has to be seen to show no error dialog and leave no crash dump (a hosted runner
   can show neither); until then that is unknown.
 - The runner (preview/image/svg_run.rs, a leaf on std and platform that the test target includes; its caller is the
@@ -795,15 +831,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (Linux: the real child, drawing, holds no descriptor the window left open, has the null device for stderr and only the
     font variables, plus the few its shell adds, in its environment) and
     `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows) and
-    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it),
-    `the_runner_returns_a_fit_ask_at_the_childs_size` and `a_fit_reply_past_its_cap_or_the_pixel_budget_is_refused_at_its_header`.
+    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it).
 - The preview source's generation (`InstalledPreviewSource::generation`, preview/source.rs) says which source the pane
   shows, for the drawing worker: a process-wide counter, so a number is never reused. An install, a snapshot's restore
   (`renewed`) and an emptied source (`Default`) each take a fresh one; a repaint of the same source, a reflow or a
   text-scale change, keeps it. Tests, in source.rs: `a_new_source_is_a_new_generation_and_the_same_source_is_not`,
   `a_restored_or_emptied_source_never_reuses_a_generation`.
 - The drawing worker (preview/image/svg_draws.rs): `SvgDraws`, owned by `State`, is the one owner of the window's SVG
-  draws; the markdown figures are its one submitter so far (math and the file preview are later landings). One worker
+  draws; the markdown figures and the SVG file preview are its submitters so far (math is a later landing). One worker
   thread, started at the first submit, draws one batch at a time (a batch of one for now; the draw takes a list of
   jobs, so a generation's math jobs can go to one child later without a change to the queue's rules). The window's
   thread and the worker share one lock over the queue, the bytes waiting and the running draw's `Stop`, never held
@@ -828,7 +863,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     is not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new
     generation starts clean.
   - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, read in `frame_upkeep`
-    through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the figures so far); each the worker sends is followed by one
+    through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the preview or a figure); each the worker sends is followed by one
     `MainWake::wake` (the stale ones `advance` and
     `submit` hand back are read by the window's own thread and wake nothing). A draw that panics gives no outcomes, and each
     of its jobs is refused in `cannot start the drawing` words; a worker thread the OS refuses makes `submit` itself

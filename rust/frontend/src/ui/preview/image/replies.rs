@@ -62,11 +62,15 @@ impl State {
     }
 
     /// The top of a frame's step for the worker's outcomes (`svg_preview::settle_frame`): the worker is told the pane's
-    /// generation and each figure's outcome goes to `on_svg_settled`.
+    /// generation, a figure's outcome goes to `on_svg_settled` and the file preview's to `apply_svg_step`.
     pub(in crate::ui) fn settle_svg_draws(&mut self) {
         let generation = self.preview_source.generation();
-        for (url, settled) in settle_frame(&mut self.svg_draws, &mut self.figures, generation) {
+        let frame = settle_frame(&mut self.svg_draws, &mut self.figures, &mut self.svg_preview, generation);
+        for (url, settled) in frame.figures {
             self.on_svg_settled(url, settled);
+        }
+        if let Some(step) = frame.preview {
+            self.apply_svg_step(step);
         }
     }
 

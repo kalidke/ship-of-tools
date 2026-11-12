@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 16] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 17] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -161,6 +161,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_row_left_before_its_preview_came_back_shows_its_own",
             State::a_row_left_before_its_preview_came_back_shows_its_own,
+        ),
+        (
+            "an_svg_preview_is_a_raster_and_a_broken_one_is_its_text",
+            State::an_svg_preview_is_a_raster_and_a_broken_one_is_its_text,
         ),
         (
             "a_chat_of_200_messages_scrolls_posts_and_recovers",

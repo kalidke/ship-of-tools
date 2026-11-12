@@ -366,6 +366,8 @@ struct State {
     figures: FigureStore,
     /// The drawing worker: every SVG whose bytes the window received is drawn through it, by a child process.
     svg_draws: preview::image::svg_draws::SvgDraws,
+    /// The `.svg` file preview's outcomes kept and its one job in flight.
+    svg_preview: preview::image::svg_preview::SvgPreview,
     // ui/preview/markdown: tables, math and token caches, and reflow.
     /// The markdown media: table buffers and their scroll, math and token caches, and the pending reflow.
     md_media: MarkdownMedia,
