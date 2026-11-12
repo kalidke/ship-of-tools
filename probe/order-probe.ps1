@@ -75,8 +75,8 @@ if (-not ($s070 | Where-Object { $_ -match '^probehub hub,daemon unreachable: .*
 Say '--- step 5 status (PowerShell block)'
 Push-Location -LiteralPath $neutral
 try { @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $probeDir 'step5-1.ps1') 2>&1 | ForEach-Object { "$_" }) | ForEach-Object { Say $_ } } finally { Pop-Location }
-# no group file: the window's one daemon on another computer, named by an alias (a -Hub install records it). No ssh answers
-# here, so its row must read unreachable (unknown), and the blocks must run as written.
+# no group file: the hub the record names (a -Hub install) is fetched from with sotd topology sync. No ssh answers here, so the
+# fetch must fail naming ssh, and the blocks must run as written.
 Remove-Item Env:SOT_HOSTS -ErrorAction SilentlyContinue
 Push-Location -LiteralPath $neutral
 try {
@@ -84,10 +84,10 @@ try {
     Say '--- step 2 with no hosts.toml'; $nh | ForEach-Object { Say $_ }
     if (-not ($nh | Where-Object { $_ -match 'no hosts.toml at' })) { Bad 'plan does not say no hosts.toml' }
     $alias = Join-Path $out 'daemons-3-probealias.ps1'
-    [IO.File]::WriteAllText($alias, ((Get-Content -Raw -LiteralPath (Join-Path $probeDir 'daemons-3.ps1')) -replace 'ALIAS', 'probealias'))
+    [IO.File]::WriteAllText($alias, ((Get-Content -Raw -LiteralPath (Join-Path $probeDir 'daemons-3.ps1')) -replace 'HUB', 'probealias'))
     $as = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $alias 2>&1 | ForEach-Object { "$_" })
-    Say '--- status through a one-computer group file'; $as | ForEach-Object { Say $_ }
-    if (-not ($as | Where-Object { $_ -match '^probealias hub,daemon unreachable: ssh:probealias' })) { Bad 'the alias row does not read unreachable over ssh' }
+    Say '--- the record lookup and sync from an alias no ssh reaches'; $as | ForEach-Object { Say $_ }
+    if (-not ($as | Where-Object { $_ -match 'ssh probealias' })) { Bad 'the sync does not fail naming ssh' }
 } finally { Pop-Location }
 cmd /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ld`" -Stop > `"$out\daemon-stop.out`" 2>&1 < NUL"
 Say "RESULT $(if ($script:ok) { 'PASS' } else { 'FAIL' })"

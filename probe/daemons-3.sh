@@ -1,2 +1,2 @@
-  grep '^export SOT_HOST=' ~/.local/bin/sot-launch; grep '"hub"' ~/.local/share/sot/install.json
+  grep '"hub"' ~/.local/share/sot/install.json; grep '^export SOT_HOST=' ~/.local/bin/sot-launch
   

@@ -1,1 +1,2 @@
-~/.local/share/sot/bin/sotd same-version --endpoint "unix:$(~/.local/share/sot/bin/sotd session-socket-path sot)"
+    ssh -o BatchMode=yes ALIAS hostname
+    
