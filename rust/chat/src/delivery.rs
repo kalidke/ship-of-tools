@@ -75,9 +75,12 @@ impl Delivery {
     pub fn hand_over(&mut self, arrived: Arrived) {
         for rec in arrived.records {
             let Some(i) = self.chans.iter().position(|c| c.state.channel() == rec.channel) else { continue };
-            if is_mail(&rec, &self.chans[i].floor) && (rec.omitted || !self.enqueue(i, rec)) {
-                self.chans[i].owed = true;
+            if !is_mail(&rec, &self.chans[i].floor) {
+                continue;
             }
+            // An omitted record is never queued, and owes a pass only if it is not settled already.
+            let owes = if rec.omitted { !self.chans[i].state.contains(&rec.ts) } else { !self.enqueue(i, rec) };
+            self.chans[i].owed |= owes;
         }
     }
 

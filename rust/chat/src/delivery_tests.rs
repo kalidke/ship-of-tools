@@ -64,9 +64,20 @@ fn started(t0: Instant) -> Delivery {
 }
 
 fn fresh(t0: Instant) -> Delivery {
+    fresh_from(t0, None)
+}
+
+/// A delivery whose channel `CH` has committed its boundary to `n` seconds after the floor.
+fn fresh_from(t0: Instant, boundary: Option<u64>) -> Delivery {
     // No state file exists in the folder, so each state is its channel's floor.
     let dir = Path::new("/nonexistent-sot-chat-delivery-tests");
-    let state = |channel: &str| (State::load(dir, WS, channel, &ts(FLOOR)).unwrap(), ts(FLOOR));
+    let state = |channel: &str| {
+        let mut state = State::load(dir, WS, channel, &ts(FLOOR)).unwrap();
+        if let (CH, Some(n)) = (channel, boundary) {
+            state.commit(&ts(&at(n)));
+        }
+        (state, ts(FLOOR))
+    };
     Delivery::new(t0, [state(CH), state("C0BBBB")])
 }
 
@@ -98,6 +109,9 @@ fn a_post_seen_live_and_by_a_pass_is_filed_once() {
     // Events out of ts order, each twice, are each filed once, in the order they were taken.
     d.hand_over(arrived(vec![post(30), post(10), post(20), post(10), post(30), post(20)]));
     assert_eq!(drain(&mut d, t0 + Duration::from_secs(20)), [at(30), at(10), at(20)]);
+    // The same ts in two channels is two posts: a ts is unique within a channel only.
+    d.hand_over(arrived(vec![post(50), rec("C0BBBB", Origin::Member, &at(50), &at(50))]));
+    assert_eq!(drain(&mut d, t0 + Duration::from_secs(40)), [at(50), at(50)]);
 }
 
 #[test]
@@ -139,6 +153,44 @@ fn an_omitted_live_record_owes_a_pass_and_is_not_filed() {
     d.hand_over(arrived(vec![cut]));
     assert!(drain(&mut d, t0).is_empty());
     assert!(d.owed(CH));
+    // One already settled (at or below the boundary) owes nothing: a pass would find it filed or passed.
+    let mut d = fresh_from(t0, Some(10));
+    d.start(&[]);
+    let mut settled = post(8);
+    settled.omitted = true;
+    d.hand_over(arrived(vec![settled]));
+    assert!(!d.owed(CH));
+}
+
+#[test]
+fn a_post_at_or_below_the_boundary_is_never_queued_and_owes_nothing() {
+    let t0 = Instant::now();
+    let mut d = fresh_from(t0, Some(10));
+    d.start(&[]);
+    d.hand_over(arrived(vec![post(5), post(10), post(11)]));
+    assert!(!d.owed(CH));
+    assert_eq!(drain(&mut d, t0), [at(11)]);
+    // Settled, it is no loss to a queue that is full: nothing is dropped, so no pass is owed.
+    d.hand_over(arrived((0..MAX_QUEUED as u64).map(|n| post(20 + n)).collect()));
+    d.hand_over(arrived(vec![post(5), post(10), post(11)]));
+    assert!(!d.owed(CH));
+}
+
+#[test]
+fn a_returns_report_is_true_once_when_it_takes_the_set_past_its_bound() {
+    let t0 = Instant::now();
+    let mut d = fresh(t0);
+    let almost: Vec<Filed> = (0..MAX_FILED as u64 - 1).map(|n| filed(1 + n)).collect();
+    d.start(&almost);
+    // Both enter below the bound; the second's return is the one that takes the set past it.
+    d.hand_over(arrived(vec![post(MAX_FILED as u64 + 10), post(MAX_FILED as u64 + 11)]));
+    let mut now = t0;
+    let mut reports = Vec::new();
+    while let Action::File(_) = d.poll(now) {
+        reports.push(d.filed(now, Verdict::Filed));
+        now += FILE_GAP;
+    }
+    assert_eq!(reports, [false, true]);
 }
 
 #[test]
