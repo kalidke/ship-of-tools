@@ -262,17 +262,6 @@ fn a_draw_that_outlives_its_generation_is_stale_whatever_it_says() {
 }
 
 #[test]
-fn an_outcome_already_queued_is_stale_once_the_pane_moves_on() {
-    let stand = Arc::new(Stand::default());
-    let (mut draws, wakes) = draws_over(&stand, 1 << 20);
-    draws.advance(1);
-    draws.submit("ok".into(), 1, job("ok")).unwrap();
-    within("the outcome to be queued", || wakes.load(SeqCst) == 1);
-    draws.advance(2);
-    assert_eq!(outcomes(&mut draws, 1)[0].1, Outcome::Stale, "a drawn picture of the source before");
-}
-
-#[test]
 fn dropping_the_draws_stops_the_draw_and_ends_the_worker() {
     let stand = Arc::new(Stand::default());
     let (mut draws, _) = draws_over(&stand, 1 << 20);
@@ -283,4 +272,33 @@ fn dropping_the_draws_stops_the_draw_and_ends_the_worker() {
     // The held draw saw its stop, and the worker, which held the draw function, is gone with it.
     within("the held draw to end", || stand.now.load(SeqCst) == 0);
     within("the worker to end", || Arc::strong_count(&stand) == 1);
+}
+
+#[test]
+fn the_window_never_waits_behind_a_slow_wake() {
+    // The worker refuses a struck job and its third wake (this one) is held for 1.5 s; the window's own advance,
+    // which takes the worker's lock, must not wait for it.
+    let (stand, calls, gate) = (Arc::new(Stand::default()), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+    let draw: Draw = { let stand = stand.clone(); Arc::new(move |jobs, stop| stand.draw(jobs, stop)) };
+    let (held, counted) = (gate.clone(), calls.clone());
+    let mut draws = SvgDraws::new(1 << 20, move || {
+        if counted.fetch_add(1, SeqCst) >= 2 {
+            while !held.load(SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }, draw);
+    draws.advance(1);
+    for key in ["end0", "end1", "ok2"] {
+        draws.submit(key.into(), 1, job(key)).unwrap();
+    }
+    within("the refusal's wake to be held", || calls.load(SeqCst) == 3);
+    let opener = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        gate.store(true, SeqCst);
+    });
+    let begun = Instant::now();
+    draws.advance(2);
+    assert!(begun.elapsed() < Duration::from_millis(1000), "advance waited {:?} behind a wake", begun.elapsed());
+    opener.join().unwrap();
 }

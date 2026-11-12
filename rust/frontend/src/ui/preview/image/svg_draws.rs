@@ -169,7 +169,7 @@ impl Worker {
         // The generation that has struck, and how many of its draws ended at a bound.
         let mut strikes = (0u64, 0u32);
         loop {
-            let (entry, stop) = {
+            let (entry, stop, struck) = {
                 let mut held = self.shared.held();
                 loop {
                     if held.quit {
@@ -177,17 +177,21 @@ impl Worker {
                     }
                     if let Some(entry) = held.queue.pop_front() {
                         held.waiting -= entry.job.svg.len();
-                        if strikes.0 == entry.generation && strikes.1 >= SVG_STRIKES {
-                            self.report(entry.key, entry.generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
-                            continue;
-                        }
+                        let struck = strikes.0 == entry.generation && strikes.1 >= SVG_STRIKES;
                         let stop = Stop::default();
-                        held.running = Some(stop.clone());
-                        break (entry, stop);
+                        if !struck {
+                            held.running = Some(stop.clone());
+                        }
+                        break (entry, stop, struck);
                     }
                     held = self.shared.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
                 }
             };
+            // The lock is never held across a call out (the wake), so the window's thread never waits behind one.
+            if struck {
+                self.report(entry.key, entry.generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
+                continue;
+            }
             // A batch of one: a later landing pops the jobs of one generation that wait together.
             let (generation, keys, jobs) = (entry.generation, vec![entry.key], vec![entry.job]);
             // A draw that panics answers with no outcomes, which are refused below.
