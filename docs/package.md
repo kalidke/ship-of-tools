@@ -204,21 +204,14 @@ virtual display), which closes B5's plan; a person's first use of the drawer wai
 hub's chat configuration. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
 bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection,
 an author's messages grouped under one header with a tile in a gutter, and day dividers with the time alone in the
-header and Slack's thread summary, have landed. Also in progress: an SVG file previewed as its picture, by drawing a file's SVG in a bounded child process; its
-first landing, an SVG's image read only from embedded data (never a file or a URL), is on main, and so are platform's
-primitives that child bounds itself with (a capped allocator that exits with its code, closing inherited descriptors,
-crashes as exits, a CPU limit, ending with its parent on Linux, and a Windows job that takes an assigned child), and so
-is the child itself (the window's binary started to draw: it bounds itself before it reads, draws each job of a
-bounded request and answers each on a private copy of stdout, so nothing a library prints reaches its replies), and
-so is the window's runner for it (it starts the child with the font settings alone and in a Windows job before any
-input, checks every reply's size against its ask before reading it, and kills and reaps it at the 10 s wall), and so
-is the one worker thread that will run every SVG draw (one at a time, each job tagged with the shown source's
-generation, a stale draw stopped at once, waiting input bounded per generation, two strikes per generation); a
-markdown figure's SVG is drawn through them (its URL pending until the outcome), and so is an `.svg` file's own
-preview, which shows the file as its picture fitted to the pane (the picture held through a text-size change, a refused
-file shown as its text with the reason on the status line); the math is not yet. Before a person sees these in a
-release, a crash on a lab Windows computer must be seen to show no dialog and leave no dump. Also in progress, built
-alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
+header and Slack's thread summary, have landed. An `.svg` file now previews as its picture fitted to the pane, and every
+SVG that comes from a file (an `.svg` file, a markdown figure, a page's math, the last in one batch per frame) is drawn
+in a bounded child of the window's own binary (it bounds its memory, CPU, crashes and inherited descriptors before it
+reads, and answers on a private stdout) through one worker thread (one draw at a time, each job tagged with the shown
+source's generation, a stale draw stopped at once, waiting input bounded, two strikes per generation) and a runner that
+holds it to a 10 s wall; the window's own process draws only the Monitor's chart, its text clamped. Before a person sees
+this in a release, a crash on a lab Windows computer must be seen to show no dialog and leave no dump. Also in progress,
+built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the

@@ -1997,3 +1997,11 @@ A landing's record goes here, with its measured times; the package page holds on
   asked a stale layout's size; a file not UTF-8 showed the previous file's text; the cache kept up to 1 GiB of file
   bytes, now a digest); round 2 (no blockers: the not-UTF-8 line missed the markdown route); two fix commits and five
   gates, one widened to the whole run by a lock change.
+- Math through the worker in one batch per frame, and the Monitor's clamp, the SVG child's ninth and last planned
+  landing (7), 2026-11-12: builder launched about 00:45, main 01:20 (0e79eec01, 4d5f5b06b), 35 minutes, a miss by five.
+  About 100 product lines net (the plan said 70) and 400 test lines. A page of 50 equations whose replies had all
+  arrived drew in one child in about 180 ms, against about 3 s with one child per equation (measured with that mutant);
+  replies that arrive one at a time cost one child per worker pop. Review round 1 (no blockers: nothing asserted that a
+  page went to one child, so the per-equation mutant passed every test; a batch refused at submit was untested); one
+  fix commit and two gates. The standalone math pane's draw that it deleted filled a slot no frame showed; that slot's
+  plumbing is a deletion of its own.
