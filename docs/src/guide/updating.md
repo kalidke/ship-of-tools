@@ -117,8 +117,8 @@ it at the next launch, below.
 - A `--backend` laptop and its server with no `hosts.toml` on either computer (an install from before 0.6.6-rc9.13) is
   not moved by the update, from either computer: a 0.7 window dials only the hosts of a group file kept on its hub, so
   moving either computer leaves the window with no host (`FAIL: enroll` on the laptop). The runbook first fetches the
-  hub's group file when the record or the launcher names a hub (a group member whose copy is missing needs nothing
-  more); if the hub holds a file that does not list the laptop, the hub's owner adds it with `sotd topology set add`; if
+  hub's group file when the record or the launcher names a hub (a group member whose copy is missing needs no file
+  written, only the order check); if the hub holds a file that does not list the laptop, the hub's owner adds it with `sotd topology set add`; if
   the server holds no file at all, it stops with nothing changed and tells the person to write a three-block
   `hosts.toml` on the server and sync it on the laptop, after which the same message moves the pair, the server first.
   That works only when the server's host name is also the name the laptop reaches it by; otherwise the pair stays as

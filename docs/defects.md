@@ -749,7 +749,9 @@ owned by `docs/CLAUDE.md`.
   the person (run on Linux with 0.6.6-rc1), and a Windows computer (the page counts every one as a window; the Linux
   rule that a computer's declaration and its install agree is read from the installer, not run). The stand-in `ssh`
   and `hostname` print each computer's test name, so the host-name check of a `--backend` pair ran against them, not a
-  real login. The runbook never updates another computer: it stops and names the order.
+  real login. A hub that
+  is not the alias the sync named (a group member's copy naming a third computer) has an ssh check in the page that no case
+  ran, and a failing `ssh ALIAS hostname` is shown, not tried. The runbook never updates another computer: it stops and names the order.
 - **BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML** [session] A `--backend <alias>` laptop installed before 0.6.6-rc9.13 (the window
   dials `SOT_HOST` through a tunnel) has no `hosts.toml`, and neither has its server. 0.7's installer on the laptop ends
   `FAIL: enroll: could not read the hosts.toml on '<alias>'`, and the 0.7 window dials only the plan's hosts, so even with
@@ -758,7 +760,7 @@ owned by `docs/CLAUDE.md`.
   orders). The update runbook therefore stops on both computers of such a pair with nothing changed, and tells the person
   to write the three-block file on the server and run `sotd topology sync --hub <server>` on the laptop; with that file
   the same message moved the pair in a test. A server that holds a group file not listing the laptop is the hub owner's
-  `sotd topology set add <laptop> --frontend`, and the runbook says so (also tested). The group file's names are
+  `sotd topology set add <laptop> <flags>`, the flags taken from the laptop's record, and the runbook says so (also tested). The group file's names are
   each computer's own host name and the window reaches the hub by that name in ssh, so a pair whose server prints another
   name than the alias the laptop uses (`lab` against `srv`) has no way through that the runs could show: the runbook
   leaves it as it is and says so. Fix: the installer on the server, or `sotd

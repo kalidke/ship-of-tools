@@ -77,7 +77,8 @@ direction, and the window then shows that computer as refused ("the backend ther
 0.6 daemon reached over ssh) with none of its rows. (A 0.6.6 candidate before rc9.13 speaks a third protocol.) So
 daemons move before windows: a computer's window moves to a release only when every daemon it dials already runs that
 release's line, and the computer with the window goes last. Do this part first, before the question further down and
-before step 3 changes anything.
+before step 3 updates anything. Its only write is the sync below, which puts this computer's own copy of a group file in
+place, as the installer would.
 
 ### Daemons before windows
 
@@ -113,23 +114,27 @@ On Windows, from PowerShell:
 
 - `plan` says `no hosts.toml at`: this computer has no copy of a group file. It may still belong to a group, or be the
   window of a `--backend` install. Look for the one computer it would fetch the file from: the record's `"hub"` value
-  (any system; the alias a `--hub` or `-Hub` install was given) and, on Linux and macOS, the line
+  when it is not empty (any system; the alias a `--hub` or `-Hub` install was given) and, on Linux and macOS, the line
   `export SOT_HOST="..."` in `~/.local/bin/sot-launch` (the alias a `--backend` install was given).
 
   ```bash
   grep '"hub"' ~/.local/share/sot/install.json; grep '^export SOT_HOST=' ~/.local/bin/sot-launch
   ```
 
-  With neither: a computer with a window uses only its own daemon, which the update moves, so go on to "The one
-  question" (when the record says `"daemon": false`, ask the person which computer holds the daemon, and stop). A
+  With neither (an empty `"hub": ""` counts as none, and most records have that line): a computer with a window uses
+  only its own daemon, which the update moves, so go on to "The one question" (when the record says
+  `"daemon": false`, ask the person which computer holds the daemon, and stop). A
   computer with no window (the record says `"frontend": false`) is asked: "Does a window on another computer reach this
   computer's daemon by `--backend`?" On a no, go on to "The one question". On a yes, ask what `hostname` prints on that
   computer and what name it uses for this one in ssh. When the second is not what `hostname` prints here (first part,
-  lower case), the pair stays as it is (the message below, with these names); otherwise give the stop below with this
-  computer as <server> and the first name as <laptop>.
+  lower case), the pair stays as it is: give the message that begins "Not updated: this pair stays on its version."
+  below, with these names. Otherwise give the one that begins "Not updated, on purpose." below, with this computer as
+  <server> and the first name as <laptop>. (Both sit in the `hosts.toml: No such file or directory` bullet below; use
+  them from there, whatever it says about Windows.)
 
-  With one of them (the record's hub when both are there), fetch that computer's group file into this computer's own copy, putting its alias in place of `HUB`;
-  this writes nothing on any other computer, and it is what step 3's installer does too:
+  With one of them (the record's hub when both are there), fetch that computer's group file into this computer's own
+  copy, putting its alias in place of `HUB`; this writes nothing on any other computer, and it is what step 3's
+  installer does too:
 
   ```bash
   ~/.local/share/sot/bin/sotd topology sync --hub HUB
@@ -142,13 +147,18 @@ On Windows, from PowerShell:
   & "$env:LOCALAPPDATA\sot\bin\sotd.exe" topology sync --hub HUB
   ```
 
-  - **It says `synced` or `is current`.** This computer is in a group after all: run `plan` and `status` again and go on
-    from "`plan` prints `self`, `hub` and `dial` lines".
+  Read what it prints in this order, and stop at the first that fits:
+
+  - **It says `synced`.** This computer is in a group after all: run `plan` and `status` again and go on from "`plan`
+    prints `self`, `hub` and `dial` lines". If `plan`'s `hub` line is not the name you fetched from, run
+    `ssh -o BatchMode=yes <that hub> true` first; if it fails, show the person its words and stop.
   - **It says `does not list this box`.** The hub has a group file that does not name this computer. Stop and change
-    nothing: the hub's owner runs `sotd topology set add <this computer> --frontend` on the hub (the installer says the
-    same), then you send the message again. Never write or replace a `hosts.toml` on the hub.
-  - **Any other words** (ssh failed, "this box is the hub"): show them to the person and stop.
-  - **It says `No such file or directory`** (the hub holds no file at all). On Windows, or with an alias that is not
+    nothing here: the hub's owner runs `sotd topology set add <this computer> <flags>` on the hub, with the flags this
+    computer's record gives (`--daemon` when it says `"daemon": true`, `--frontend` when it says `"frontend": true`; a
+    daemon-only computer gets `--daemon` alone), then you send the message again. Never write or replace a `hosts.toml`
+    on the hub.
+  - **Its last line ends `hosts.toml: No such file or directory`** (the hub holds no file at all; ssh's own warnings
+    can carry those words too, so only a last line that ends so counts). On Windows, or with an alias that is not
     `SOT_HOST`, show the person the words and stop. With the `SOT_HOST` alias, this computer and the one it names are a
     pair with no group file, and the pair cannot move to 0.7 as it is: a 0.7 window dials only the hosts of a group
     file kept on its hub, and the installer on this computer ends `FAIL: enroll`. Before you tell the person how to
@@ -158,19 +168,20 @@ On Windows, from PowerShell:
     ssh -o BatchMode=yes ALIAS hostname
     ```
 
-    If its first part, lower case, is not the alias, the pair stays as it is: the group file's names must be the
-    server's own host name, which is also the name the window reaches it by, and nothing here can make the two agree.
-    Say so ("Not updated: this pair stays on its version. <server> prints a host name other than the name <laptop>
-    uses for it, and the update cannot declare a group for such a pair yet; docs/defects.md names it,
-    BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML. Do not restart or reboot either computer."), and change nothing. When the
-    names agree, tell the person this, with the names filled in, and change nothing:
+    If it fails or prints no name, show its words and stop. If its first part, lower case, is not the alias, the pair
+    stays as it is: the group file's names must be the server's own host name, which is also the name the window
+    reaches it by, and nothing here can make the two agree. Say so ("Not updated: this pair stays on its version.
+    <server> prints a host name other than the name <laptop> uses for it, and the update cannot declare a group for such
+    a pair yet; docs/defects.md names it, BACKEND-PAIR-NEEDS-HUB-HOSTS-TOML. Do not restart or reboot either
+    computer."), and change nothing. When the names agree, tell the person this, with the names filled in, and change
+    nothing:
 
     ```text
     Not updated, on purpose. <laptop> and <server> are a pair with no group file: the window on <laptop> reaches the
     daemon on <server> by --backend, and Ship of Tools 0.7 needs <server> to declare a group first. Changing either
-    computer now would leave the window with no host. Nothing was changed. To move the pair: on <server> write
-    ~/.config/sot/hosts.toml holding the three blocks below (each name is what `hostname` prints, first part, lower
-    case), on <laptop> run `~/.local/share/sot/bin/sotd topology sync --hub <server>`, then send the same message
+    computer now would leave the window with no host. Nothing was changed. To move the pair: on <server>, if it has no
+    ~/.config/sot/hosts.toml yet, write one holding the three blocks below (each name is what `hostname` prints, first
+    part, lower case), on <laptop> run `~/.local/share/sot/bin/sotd topology sync --hub <server>`, then send the same message
     again on <server> and on <laptop>, <server> first. Until then do not restart or reboot either computer: a restart
     may apply an update that is already staged.
 
@@ -180,6 +191,7 @@ On Windows, from PowerShell:
     [host.<laptop>]
     frontend = true
     ```
+  - **Any other words** (ssh failed, "this box is the hub", a file that does not parse): show them to the person and stop.
 - `plan` fails any other way (a bad `hosts.toml`, no `self` line): show the person its words and wait.
 - `plan` prints `self`, `hub` and `dial` lines: the group's daemons are the `status` table's rows whose DECLARED column
   holds `daemon`, except the row named on the `self` line, whose daemon this update moves. If `status` printed an error
@@ -201,7 +213,7 @@ here. (The record is one per home, and several computers can share a home, so it
 **A window here.** Decide by the rows:
 
 - **Every one is on the release's line.** The daemons are ready. Go on to "The group".
-- **One is on a lower line, or unknown.** Stop: do not run step 3, and nothing has changed on this computer. Tell the
+- **One is on a lower line, or unknown.** Stop: do not run step 3, and nothing has been updated on this computer. Tell the
   person this, with the names and versions filled in, in these words:
 
   ```text
@@ -345,7 +357,7 @@ It ends with exactly one line.
 | `FAIL: target: ...` | This computer runs a build of the line (a `+` in its version), not a release. Nothing was changed. Ask the person what they want: a pack of the line, or the release the line names. Change nothing yourself. |
 | `FAIL: direction: ...` | This computer runs a newer pre-release than the newest release (for example 0.7.1-rc.3 against 0.7.0). Nothing was changed, and there is nothing to update. Tell the person. Only if they name a version to go back to, run step 3 with `--version <that tag>` (Windows: `-Version`), which pins the install. |
 | a `FAIL:` line ending `no such choice: ''` | The installer wanted to ask which role this computer has (nothing here records one), and had no one to ask. Ask the person: everything on this computer (`--local`), the window here and the daemon on a server they reach by ssh (`--backend <alias>`), or the daemon only (`--be-only`). Run step 3 again with that option. |
-| `FAIL: enroll: ...` | The hub's group file does not list this computer, or the hub has none ("could not read the hosts.toml on ..."). Nothing on the hub is yours to write. When it holds a file that does not list this computer, the hub's owner runs `sotd topology set add <this computer> --frontend` on the hub, as the line says. When it holds none, follow step 2's pair stop (the three-block file the person writes on the hub), then run step 3 again. Until then this computer's window opens with no hosts, whatever the versions. |
+| `FAIL: enroll: ...` | The installer could not read or could not use the hub's group file, and this row decides nothing about why: go back to step 2, run its `plan` and `status`, and follow whatever the `sync` there says. Never write a `hosts.toml` on the hub from here. Until a group file serves this computer its window opens with no hosts, whatever the versions. |
 | `FAIL: <anything else>` | Report the line to the person. If the run was cut short (a lost connection, an interrupt), run step 3 once more: a repeat repairs. |
 | `STOP: ...` or a `curl:` error | This computer could not reach GitHub, or could not fetch the installer. Nothing was changed. Tell the person, and run step 3 again once it can. |
 
