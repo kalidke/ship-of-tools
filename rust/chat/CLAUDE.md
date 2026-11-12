@@ -3,7 +3,7 @@
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
 the first stage needs (`auth.test`, history and replies, `chat.postMessage`, `users.info`), and `socket`, the Socket Mode
-listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel (the thread walk is unbuilt). The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
+listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel and its threads. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and has no delivery. `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
@@ -380,7 +380,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    link to nothing reads as missing, and a link to another file gives that file's boundary), which takes this account's
    own hand in a private folder; a write that fails leaves the in-memory boundary where `commit` put it, so the caller
    writes `boundary()` again; `read_regular` ends a FIFO's wait only, as its guarantee says.
-26. **A pass walks one channel back from its upper bound to its floor in fresh reads, and files and commits nothing.**
+26. **A pass walks one channel back from its upper bound to its floor, and each thread with a reply after the boundary back to the boundary, in fresh reads, and files and commits nothing.**
    `traverse::pass(api, order, upper, pace)` takes an `Order` (a snapshot of the channel's `State`, its floor, and the
    greatest `ts` the delivery was handed for it before the first read), the pass's upper bound U (the caller's clock,
    passed in) and the pace between reads, and returns `Passed { horizon, mail, outcome, reads, limited }`. Every read is
@@ -388,7 +388,18 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    before on each next one (the walk guarantee 11 records with its measurements), so a page of joins or tombstones moves it
    too. It ends at the first page that says `has_more: false`, full or not, never at an empty read after it, and reads on
    past a short page that says more is behind it (`has_more` decides, not the count). A page that does not lower `latest`
-   ends the pass `ReadFailed` instead of reading it again. `is_limited` is information only (`Passed.limited`): it ends
+   ends the pass `ReadFailed` instead of reading it again. After each channel page, every parent on it (whatever its
+   subtype, a tombstone included) whose `latest_reply` is after the boundary has its thread read, when the boundary is
+   below U: `Api::scan` of the thread at 999 with `oldest` = the boundary and `latest` = U on the first read and the
+   oldest raw `ts` of the page's replies on each next one, the parent, which a replies page holds on top of its limit and
+   alone on the otherwise empty last one, never the next `latest` (the walk guarantee 11 records, measured at limits 2
+   and 999 and with posts arriving). A thread ends at its first page with `has_more: false`, as the channel does, and a
+   thread page that says more and lowers nothing is `ReadFailed`. A thread read is a read of the pass in every rule here:
+   paced by `pace`, counted by `MAX_PASS_READS`, halved and made again when too large or slow, a 429 or `ratelimited`
+   ending the pass `RateLimited`, any other failure `ReadFailed` (a thread Slack will not serve ends the pass the same
+   way; that case was not measured), `is_limited` ending nothing. The records of a thread join the one candidate set,
+   one record a `ts`: a broadcast reply, which the channel and its thread both list, is one candidate.
+   `is_limited` is information only (`Passed.limited`): it ends
    nothing and fails nothing, so Slack's plan horizon is the walk's own bound. A page that passes its response bound
    (`TooLarge`) or the read deadline (`Timeout`) halves the limit, down to 1, and is read again for the rest of the pass;
    at 1 it is `ReadFailed`. Reads are at least `pace` apart, the halved ones included, and no read waits out a
@@ -403,17 +414,24 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    as `mail` either way. A parent's `latest_reply` was measured above the read's own `latest` (by a fraction of a second),
    which the margin covers and the cap at U covers beyond it. `MAX_PASS_READS` (10,000) ends a runaway pass `TooLong`; a
    closed client is `Stopped`. Every outcome but `Complete` and `Truncated` commits nothing, and keeps the mail already
-   read. **Until the thread walk lands, `Complete` covers the channel's top level only, and no caller commits from
-   `pass`:** a parent's `latest_reply` (or a reply event's `ts` in `seen`) can raise the horizon over replies not read,
-   and a commit would put them at or below the boundary for good.
-   Limits: a full page of 999 with more behind it (no measured channel held more than 999) is inferred to be the newest
-   999; a daemon clock behind Slack's by d leaves a post made while the socket was down in the last d before the pass to
-   the next pass; a visibility window shorter than the gap between a post's `ts` and the next read was not resolved by
-   the measurement (the margin is its reserve); a limit halved by one slow read stays halved for the pass, and a path
-   that accepts requests and never answers costs about ten deadlines before `ReadFailed`, on every pass; replies are
-   not walked here, so a reply under an older parent is not found (the thread walk is unbuilt, and the parents whose
-   `latest_reply` is after the boundary are for it to collect); the first read of a pass is not paced against the pass
-   before, which is the caller's.
+   read, the threads read so far included. **A `Complete` or `Truncated` pass has read the channel from its floor to U
+   and the thread of every parent in it whose `latest_reply` is after the boundary, so a caller may commit the boundary
+   to `horizon` from it, with these limits.** It can still miss, and the horizon can still rise over, a reply under a
+   parent it never sees: one Slack's plan hides (older than its history window, which no page returns; whether such a
+   thread can be replied in, or its replies read, was not measured), and one at or below the floor, which is not mail
+   (`mail::is_mail` needs the thread's parent after the floor) and so no miss. It does not read a reply above U (a
+   later pass or the live event files it, and `horizon` never passes U), and a reply made after its thread was read
+   is above U or within the visibility limit below. Nothing else lies under the horizon unread: a parent whose
+   newest reply is at or below the boundary has no reply to read, and a reply the pass cannot read ends it
+   incomplete rather than passing.
+   Limits: a full page of 999 with more behind it, of history or of a thread (no measured channel held more than 999, no
+   thread more than 9 replies at that limit), is inferred to be the newest 999; a daemon clock behind Slack's by d
+   leaves a post made while the socket was down in the last d before the pass to the next pass; a visibility window
+   shorter than the gap between a post's `ts` and the next read was not resolved by the measurement (the margin is its
+   reserve); a limit halved by one slow read stays halved for the pass, and a path that accepts requests and never
+   answers costs about ten deadlines before `ReadFailed`, on every pass; each parent with a new reply costs a read at
+   least, which `MAX_PASS_READS` bounds (`TooLong`); the first read of a pass is not paced against the pass before,
+   which is the caller's.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.

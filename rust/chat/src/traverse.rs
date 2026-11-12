@@ -1,6 +1,6 @@
 //! The recovery traversal of one channel: the channel read back from the pass's upper bound to the channel's floor in
-//! fresh reads, and what to hand over (the mail not yet filed) and how far the boundary may move (the horizon). It
-//! files nothing and commits nothing: the caller's delivery decides both from `Passed`. The thread walk is not here.
+//! fresh reads, each thread with a reply after the boundary read back to the boundary the same way, and what to hand over (the mail not yet filed) and how far the boundary may move (the horizon). It
+//! files nothing and commits nothing: the caller's delivery decides both from `Passed`.
 //! The walk is the one SlackClaw measured (its facts note, "The walk back with no cursor, measured" and "Posts arriving
 //! during reads and the walk (P-ORDER), measured"): every read carries both bounds and no cursor, the first with the
 //! upper bound U, each next with `latest` set to the oldest raw `ts` of the page before.
@@ -55,8 +55,9 @@ pub enum Outcome {
 #[derive(Clone, Debug)]
 pub struct Passed {
     /// The latest the boundary may be committed to, fixed from the first page alone: the greatest `ts` or `latest_reply`
-    /// seen less `MARGIN`, capped at U, and never below the boundary, which wins when it is above U. Until the thread walk
-    /// is built no caller commits from it: a `latest_reply` can raise it over replies not read.
+    /// seen less `MARGIN`, capped at U, and never below the boundary, which wins when it is above U. A `Complete` pass has
+    /// read the thread of every parent it saw, so the horizon rises over no reply of those; the replies it can still pass
+    /// are the ones the pass cannot see (the crate contract's guarantee 26 lists them).
     pub horizon: Ts,
     /// Every mail record read above the boundary and not in the filed set, oldest first, at most `MAX_PASS_MAIL`.
     pub mail: Vec<ChatRecord>,
@@ -66,65 +67,140 @@ pub struct Passed {
     pub limited: bool,
 }
 
-/// Walks the channel back from `upper` to the floor, one read at least `pace` after the one before.
+/// Walks the channel back from `upper` to the floor, and the thread of every parent it sees with a reply after the
+/// boundary, one read at least `pace` after the one before.
 pub async fn pass(api: &Api, order: &Order, upper: &Ts, pace: Duration) -> Passed {
     walk(api, order, upper, pace, MAX_PASS_READS).await
 }
 
-pub(crate) async fn walk(api: &Api, order: &Order, upper: &Ts, pace: Duration, max_reads: u32) -> Passed {
-    let (state, floor) = (&order.state, &order.floor);
-    let mut got = Passed { horizon: state.boundary().clone(), mail: Vec::new(), outcome: Outcome::Complete, reads: 0, limited: false };
-    if ts_key(floor) >= ts_key(upper) {
-        return got;
-    }
-    let (mut kept, mut cut) = (BTreeMap::new(), false);
-    let (mut latest, mut limit, mut first, mut last) = (upper.clone(), MAX_SCAN, true, None);
-    got.outcome = loop {
-        if got.reads >= max_reads {
-            break Outcome::TooLong;
-        }
-        let Ok(query) = Bounds::new(Some(floor.as_str()), Some(latest.as_str()), None).and_then(|b| ScanQuery::new(state.channel(), None, b, limit)) else {
-            break Outcome::ReadFailed;
-        };
-        if let Some(at) = last {
-            sleep_until(at + pace).await;
-        }
-        (last, got.reads) = (Some(Instant::now()), got.reads + 1);
-        let page = match api.scan(&query).await {
-            Ok(page) => page,
-            // A page too large to arrive in time or in size is asked for again at half the size.
-            Err(ApiError::Http(HttpError::TooLarge | HttpError::Timeout)) if limit > 1 => {
-                limit /= 2;
-                continue;
+/// One walk's place: the thread it reads (none: the channel) and the `latest` of its next read.
+struct Back {
+    parent: Option<Ts>,
+    latest: Ts,
+}
+
+impl Back {
+    /// Moves on from `page`: whether there is more behind it. A page that says so and does not lower `latest` would read
+    /// the same page forever, so the pass fails instead.
+    fn onward(&mut self, has_more: bool, oldest: Option<Ts>) -> Result<bool, Outcome> {
+        match oldest {
+            _ if !has_more => Ok(false),
+            Some(oldest) if ts_key(&oldest) < ts_key(&self.latest) => {
+                self.latest = oldest;
+                Ok(true)
             }
-            Err(ApiError::Limited { retry_after, .. }) => break Outcome::RateLimited { retry_after },
-            Err(ApiError::Closed) => break Outcome::Stopped,
-            Err(_) => break Outcome::ReadFailed,
-        };
-        if first {
-            (first, got.horizon) = (false, horizon(order, upper, &page));
+            _ => Err(Outcome::ReadFailed),
         }
-        got.limited |= page.limited;
-        for rec in page.records {
-            if is_mail(&rec, floor) && !state.contains(&rec.ts) {
-                kept.entry(ts_key(&rec.ts)).or_insert(rec);
-                if kept.len() > MAX_PASS_MAIL {
-                    kept.pop_last();
-                    cut = true;
+    }
+}
+
+/// A pass in progress: the reads made, their pace and guard, and the candidates kept so far.
+struct Run<'a> {
+    api: &'a Api,
+    order: &'a Order,
+    pace: Duration,
+    max_reads: u32,
+    last: Option<Instant>,
+    limit: u16,
+    kept: BTreeMap<(u128, u32), ChatRecord>,
+    cut: bool,
+    got: Passed,
+}
+
+pub(crate) async fn walk(api: &Api, order: &Order, upper: &Ts, pace: Duration, max_reads: u32) -> Passed {
+    let got = Passed { horizon: order.state.boundary().clone(), mail: Vec::new(), outcome: Outcome::Complete, reads: 0, limited: false };
+    let mut run = Run { api, order, pace, max_reads, last: None, limit: MAX_SCAN, kept: BTreeMap::new(), cut: false, got };
+    if ts_key(&order.floor) < ts_key(upper) {
+        run.got.outcome = match run.channel(upper).await {
+            Ok(()) if run.cut => Outcome::Truncated,
+            Ok(()) => Outcome::Complete,
+            Err(outcome) => outcome,
+        };
+    }
+    run.got.mail = run.kept.into_values().collect();
+    run.got
+}
+
+impl Run<'_> {
+    /// The channel back to the floor; after each page, the threads of its parents with a reply after the boundary.
+    async fn channel(&mut self, upper: &Ts) -> Result<(), Outcome> {
+        let (order, mut at, mut first) = (self.order, Back { parent: None, latest: upper.clone() }, true);
+        let boundary = ts_key(order.state.boundary());
+        loop {
+            let page = self.read(&mut at, &order.floor).await?;
+            if first {
+                (first, self.got.horizon) = (false, horizon(order, upper, &page));
+            }
+            self.keep(page.records);
+            let more = at.onward(page.has_more, page.oldest)?;
+            // A reply is mail only after the boundary, so a parent whose newest reply is not after it has none to read,
+            // and none lies below U when the boundary is not below it.
+            for (parent, _) in page.threads.iter().filter(|(_, newest)| boundary < ts_key(upper) && ts_key(newest) > boundary) {
+                self.thread(parent, upper).await?;
+            }
+            if !more {
+                return Ok(());
+            }
+        }
+    }
+
+    /// One thread back from `upper` to the boundary, its parent never the next `latest`.
+    async fn thread(&mut self, parent: &Ts, upper: &Ts) -> Result<(), Outcome> {
+        let (order, mut at) = (self.order, Back { parent: Some(parent.clone()), latest: upper.clone() });
+        loop {
+            let page = self.read(&mut at, order.state.boundary()).await?;
+            self.keep(page.records);
+            if !at.onward(page.has_more, page.oldest)? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// One read for `at` above `oldest`, at least `pace` after the one before and counted by the guard; a page too large
+    /// to arrive in time or in size is asked for again at half the size, for the rest of the pass.
+    async fn read(&mut self, at: &mut Back, oldest: &Ts) -> Result<ScanPage, Outcome> {
+        loop {
+            if self.got.reads >= self.max_reads {
+                return Err(Outcome::TooLong);
+            }
+            let parent = at.parent.as_ref().map(Ts::as_str);
+            let bounds = Bounds::new(Some(oldest.as_str()), Some(at.latest.as_str()), None);
+            let Ok(query) = bounds.and_then(|b| ScanQuery::new(self.order.state.channel(), parent, b, self.limit)) else {
+                return Err(Outcome::ReadFailed);
+            };
+            if let Some(last) = self.last {
+                sleep_until(last + self.pace).await;
+            }
+            (self.last, self.got.reads) = (Some(Instant::now()), self.got.reads + 1);
+            return match self.api.scan(&query).await {
+                Ok(page) => {
+                    self.got.limited |= page.limited;
+                    Ok(page)
+                }
+                Err(ApiError::Http(HttpError::TooLarge | HttpError::Timeout)) if self.limit > 1 => {
+                    self.limit /= 2;
+                    continue;
+                }
+                Err(ApiError::Limited { retry_after, .. }) => Err(Outcome::RateLimited { retry_after }),
+                Err(ApiError::Closed) => Err(Outcome::Stopped),
+                Err(_) => Err(Outcome::ReadFailed),
+            };
+        }
+    }
+
+    /// Keeps the page's mail not yet filed, one record a `ts` (a broadcast comes back in the channel and in its thread),
+    /// the oldest `MAX_PASS_MAIL`.
+    fn keep(&mut self, records: Vec<ChatRecord>) {
+        for rec in records {
+            if is_mail(&rec, &self.order.floor) && !self.order.state.contains(&rec.ts) {
+                self.kept.entry(ts_key(&rec.ts)).or_insert(rec);
+                if self.kept.len() > MAX_PASS_MAIL {
+                    self.kept.pop_last();
+                    self.cut = true;
                 }
             }
         }
-        if !page.has_more {
-            break if cut { Outcome::Truncated } else { Outcome::Complete };
-        }
-        // The walk moves back to the page's oldest raw `ts`; a page that does not lower it would read the same page forever.
-        match page.oldest {
-            Some(oldest) if ts_key(&oldest) < ts_key(&latest) => latest = oldest,
-            _ => break Outcome::ReadFailed,
-        }
-    };
-    got.mail = kept.into_values().collect();
-    got
+    }
 }
 
 /// The greatest of the delivery's `seen` and the first page's `ts` and `latest_reply` values, less `MARGIN`, capped at

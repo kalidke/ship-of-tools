@@ -1,4 +1,4 @@
-//! Tests of `traverse`'s channel walk against the fake Slack's `History`, which plays the measured forms (its own header
+//! Tests of `traverse`'s channel and thread walks against the fake Slack's `History`, which plays the measured forms (its own header
 //! names the sections of SlackClaw's facts note and says what it infers). Every id, name and timestamp is synthetic.
 
 use std::future::Future;
@@ -78,6 +78,10 @@ fn history_reads(fake: &FakeSlack) -> Vec<crate::fake_slack::Seen> {
     fake.seen().into_iter().filter(|s| s.path() == "/api/conversations.history").collect()
 }
 
+fn replies_reads(fake: &FakeSlack) -> Vec<crate::fake_slack::Seen> {
+    fake.seen().into_iter().filter(|s| s.path() == "/api/conversations.replies").collect()
+}
+
 #[tokio::test]
 async fn a_quiet_channels_one_post_made_while_the_socket_was_down_is_filed_at_the_product_margin() {
     bounded(async {
@@ -152,18 +156,70 @@ async fn h_is_never_below_the_boundary_and_a_floor_at_or_above_u_reads_nothing()
 }
 
 #[tokio::test]
-async fn fifty_thousand_roots_take_51_reads() {
+async fn fifty_thousand_roots_take_51_reads_and_an_old_threads_reply_is_found() {
     bounded(async {
-        // All at or below the boundary, one parent near the floor (its thread is the thread walk's): the channel is read
-        // 999 at a time, 51 reads, where a pass at the display page would make 2,500.
+        // All roots at or below the boundary, one parent near the floor with a reply made with no socket: the channel is
+        // read 999 at a time, 51 reads, where a pass at the display page would make 2,500, and the one thread is one more.
         let big = "1700100000.000000";
-        let h = posts(History::new().parent(&at(5), &at(60_000)), 10..50_000);
+        let h = posts(History::new().parent(&at(5), &at(60_000)).reply(&at(5), &at(60_000)), 10..50_000);
         let (fake, api, _) = serve(h).await;
         // The guard is 53 reads here, so a pass at the display page fails at once instead of making its 2,500.
         let got = walk(&api, &order(Some(&at(55_000)), &[], None), &ts(big), NO_PACE, 53).await;
-        assert_eq!((got.outcome, got.mail.len(), got.reads), (Outcome::Complete, 0, 51));
+        assert_eq!((got.outcome.clone(), mail_ts(&got), got.reads), (Outcome::Complete, vec![at(60_000)], 52));
         let limits: Vec<_> = history_reads(&fake).iter().map(|s| s.param("limit").unwrap()).collect();
         assert!(limits.iter().all(|l| l == "999"), "{limits:?} is not the display page of {MAX_PAGE}");
+        let threads = replies_reads(&fake);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].param("limit").as_deref(), Some("999"));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn recovery_finds_disconnected_untracked_old_thread_reply() {
+    bounded(async {
+        // A parent older than the boundary gets a reply while no socket is open, so no event names it and the filed set
+        // does not hold it. The channel page shows only the parent's `latest_reply`; the thread is read for the reply. A
+        // parent whose newest reply is not after the boundary is not read, and the thread's read is bounded as the
+        // channel's: the boundary below, U above, `inclusive=false`, no cursor.
+        let h = History::new()
+            .parent(&at(10), &at(600))
+            .reply(&at(10), &at(300))
+            .reply(&at(10), &at(600))
+            .parent(&at(20), &at(400))
+            .reply(&at(20), &at(400))
+            .post(&at(450));
+        let (fake, api, _) = serve(h).await;
+        let got = pass(&api, &order(Some(&at(500)), &[], None), &ts(U), NO_PACE).await;
+        assert_eq!((got.outcome.clone(), got.reads), (Outcome::Complete, 2));
+        assert_eq!(mail_ts(&got), [at(600)], "the reply made while disconnected is the pass's mail, and only it");
+        let threads = replies_reads(&fake);
+        assert_eq!(threads.len(), 1, "a parent whose newest reply is not after the boundary is not read");
+        let t = &threads[0];
+        let key = |name: &str| t.param(name);
+        assert_eq!(key("ts"), Some(at(10)));
+        assert_eq!((key("oldest"), key("latest"), key("inclusive")), (Some(at(500)), Some(U.into()), Some("false".into())));
+        assert_eq!((key("cursor"), key("limit")), (None, Some("999".into())));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thread_longer_than_a_page_is_read_whole() {
+    bounded(async {
+        // 2,500 replies after the boundary, all filed but the one in the middle page. The thread comes back newest page
+        // first, 999 replies and the parent a page, `latest` lowered to each page's oldest reply and never to the parent
+        // (which lies below the boundary here: a walk that took it would end at once); three pages hold the reply.
+        let reply = |i: u64| at(11_000 + i);
+        let h = (0..2_500).fold(History::new().parent(&at(5), &reply(2_499)), |h, i| h.reply(&at(5), &reply(i)));
+        let filed: Vec<String> = (0..2_500).filter(|&i| i != 1_000).map(reply).collect();
+        let (fake, api, _) = serve(h).await;
+        let got = pass(&api, &order(Some(&at(10_000)), &filed, None), &ts("1700100000.000000"), NO_PACE).await;
+        assert_eq!((got.outcome.clone(), mail_ts(&got), got.reads), (Outcome::Complete, vec![reply(1_000)], 4));
+        let latest: Vec<_> = replies_reads(&fake).iter().map(|s| s.param("latest").unwrap()).collect();
+        assert_eq!(latest, ["1700100000.000000".to_string(), reply(1_501), reply(502)], "each read starts at the page before's oldest reply");
         fake.shutdown().await;
     })
     .await;
@@ -179,6 +235,17 @@ async fn a_walk_ends_at_the_first_page_with_no_more() {
             assert_eq!((got.outcome, got.reads), (Outcome::Complete, reads), "{count} posts");
             fake.shutdown().await;
         }
+        // The same of a thread, whose page holds its parent on top of the limit: its 999 replies are one read, and the
+        // parent alone, the read after the last, is never made. One more reply is a second page.
+        for (count, reads) in [(999, 2), (1_000, 3)] {
+            let h = (1..count + 1).fold(History::new().parent(&at(5), &at(9_000)), |h, n| h.reply(&at(5), &at(10 + n)));
+            let (fake, api, _) = serve(h).await;
+            // All filed, so the cap is not what ends the pass.
+            let filed: Vec<String> = (1..count + 1).map(|n| at(10 + n)).collect();
+            let got = pass(&api, &order(Some(&at(8)), &filed, None), &ts("1700100000.000000"), NO_PACE).await;
+            assert_eq!((got.outcome, got.reads), (Outcome::Complete, reads), "{count} replies");
+            fake.shutdown().await;
+        }
     })
     .await;
 }
@@ -186,12 +253,14 @@ async fn a_walk_ends_at_the_first_page_with_no_more() {
 #[tokio::test]
 async fn a_channel_slack_limits_is_read_to_its_last_page_and_counts_complete() {
     bounded(async {
-        // Every page of a three-page channel is `is_limited`; an old parent on the last page has a reply after the boundary.
-        let h = History::new().parent(&at(1), &at(900)).post(&at(2)).post(&at(3)).post(&at(4)).post(&at(5)).cap(2).limited();
+        // Every page of a three-page channel is `is_limited`; an old parent on the last page has three replies after the
+        // boundary, two pages of its thread, each `is_limited` too.
+        let h = History::new().parent(&at(1), &at(900)).post(&at(2)).post(&at(3)).post(&at(4)).post(&at(5));
+        let h = [800, 850, 900].iter().fold(h, |h, n| h.reply(&at(1), &at(*n))).cap(2).limited();
         let (fake, api, _) = serve(h).await;
         let got = pass(&api, &order(Some(&at(2)), &[], None), &ts(U), NO_PACE).await;
-        assert_eq!((got.outcome.clone(), got.reads, got.limited), (Outcome::Complete, 3, true));
-        assert_eq!(mail_ts(&got), [at(3), at(4), at(5)]);
+        assert_eq!((got.outcome.clone(), got.reads, got.limited), (Outcome::Complete, 5, true));
+        assert_eq!(mail_ts(&got), [at(3), at(4), at(5), at(800), at(850), at(900)]);
         // H comes from the first page, [5, 4], alone: the old parent's later `latest_reply` on page 3 does not raise it.
         assert_eq!(got.horizon, ts(&at(3)));
         fake.shutdown().await;
@@ -329,6 +398,113 @@ async fn a_pass_paces_its_reads() {
             let least = if i == 0 { pace / 4 } else { pace * 3 / 4 };
             assert!(gap >= least, "gap {i} between reads was {gap:?}, pace {pace:?}");
         }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_broadcast_is_filed_once_though_the_channel_and_its_thread_both_list_it() {
+    bounded(async {
+        // The broadcast reply is in the channel's history and in its parent's thread: one candidate, from either read.
+        let h = History::new().parent(&at(10), &at(600)).broadcast(&at(10), &at(600)).reply(&at(10), &at(650));
+        let (fake, api, _) = serve(h).await;
+        let got = pass(&api, &order(Some(&at(500)), &[], None), &ts(U), NO_PACE).await;
+        assert_eq!((got.outcome.clone(), got.reads, mail_ts(&got)), (Outcome::Complete, 2, vec![at(600), at(650)]));
+        let listed = |reads: Vec<crate::fake_slack::Seen>| reads.len();
+        assert_eq!((listed(history_reads(&fake)), listed(replies_reads(&fake))), (1, 1), "both reads were made");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_failed_thread_read_keeps_the_mail_already_read_and_the_pass_incomplete() {
+    bounded(async {
+        // Two parents with a reply each. The channel page lists the newer first, so the newer's thread is read on call 2
+        // and the older's on call 3, which fails: the channel's mail and the newer thread's reply are kept, no reply of the
+        // older one is, and the pass is not `Complete`.
+        let limited = Reply::Status { code: 429, headers: vec![("Retry-After".into(), "7".into())], body: Vec::new() };
+        // A thread page with more behind it whose oldest reply is not below `latest`: it cannot move the walk.
+        let stuck = json!({"ok": true, "has_more": true, "messages": [
+            {"ts": at(1), "thread_ts": at(1), "user": "U0MEM", "text": "x"},
+            {"ts": U, "thread_ts": at(1), "user": "U0MEM", "text": "x"}]});
+        let cases: Vec<(&str, Reply, Outcome)> = vec![
+            ("a 500", Reply::Status { code: 500, headers: Vec::new(), body: Vec::new() }, Outcome::ReadFailed),
+            ("a 429", limited, Outcome::RateLimited { retry_after: Duration::from_secs(7) }),
+            (
+                "ratelimited",
+                Reply::json(&json!({"ok": false, "error": "ratelimited"})),
+                Outcome::RateLimited { retry_after: Duration::from_secs(30) },
+            ),
+            ("a thread page that cannot move the walk", Reply::json(&stuck), Outcome::ReadFailed),
+        ];
+        for (what, third, outcome) in cases {
+            let h = History::new().parent(&at(1), &at(800)).parent(&at(2), &at(900)).reply(&at(1), &at(800)).reply(&at(2), &at(900));
+            let history = Arc::new(h);
+            let (calls, served, third) = (AtomicUsize::new(0), history.clone(), std::sync::Mutex::new(Some(third)));
+            let (fake, api) = start(move |seen| match calls.fetch_add(1, Ordering::SeqCst) {
+                2 => third.lock().unwrap().take().unwrap_or_else(|| Reply::Drop),
+                _ => served.answer(seen),
+            })
+            .await;
+            let got = pass(&api, &order(None, &[], None), &ts(U), NO_PACE).await;
+            assert_eq!(got.outcome, outcome, "{what}");
+            assert_eq!((got.reads, mail_ts(&got)), (3, vec![at(1), at(2), at(900)]), "{what}: what was read is kept");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn thread_reads_are_paced_and_counted_by_the_guard() {
+    bounded(async {
+        // A channel page and two threads: three reads, each at least the pace after the one before, and a guard of two
+        // reads ends the pass at the second thread with what the first gave.
+        let h = History::new().parent(&at(1), &at(800)).parent(&at(2), &at(900)).reply(&at(1), &at(800)).reply(&at(2), &at(900));
+        let (fake, api, history) = serve(h).await;
+        let pace = Duration::from_millis(400);
+        let got = pass(&api, &order(Some(&at(5)), &[], None), &ts(U), pace).await;
+        assert_eq!((got.outcome.clone(), got.reads, mail_ts(&got)), (Outcome::Complete, 3, vec![at(800), at(900)]));
+        let asked = history.asked();
+        assert_eq!(asked.len(), 3);
+        // The first gap is held to a quarter of the pace (the connection's handshake is not the test's), the next to
+        // three quarters, as `a_pass_paces_its_reads` does.
+        for (i, gap) in asked.windows(2).map(|w| w[1] - w[0]).enumerate() {
+            let least = if i == 0 { pace / 4 } else { pace * 3 / 4 };
+            assert!(gap >= least, "gap {i} between reads was {gap:?}, pace {pace:?}");
+        }
+        let got = walk(&api, &order(Some(&at(5)), &[], None), &ts(U), NO_PACE, 2).await;
+        assert_eq!((got.outcome.clone(), got.reads, mail_ts(&got)), (Outcome::TooLong, 2, vec![at(900)]), "the thread read is one of the guard's");
+        assert_eq!(replies_reads(&fake).len(), 3, "two threads, then the first of the second pass, and no more");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_fakes_replies_cursor_under_oldest_alone_drops_a_reply_at_each_boundary() {
+    bounded(async {
+        // The measured defect the walk never meets (it sends no cursor): of 8 replies at limit 2 the cursor form returns
+        // 1-2, 4-5, 7-8, where both bounds return every one.
+        let h = (1..9).fold(History::new().parent(&at(5), &at(100)), |h, n| h.reply(&at(5), &at(10 + n))).cap(2);
+        let (fake, _api, _) = serve(h).await;
+        let http = fake.http();
+        let (mut got, mut cursor) = (Vec::new(), String::new());
+        loop {
+            let url = fake.url("slack.com", &format!("/api/conversations.replies?channel={CHANNEL}&ts={}&limit=2&oldest={}{cursor}", at(5), at(5)));
+            let response = http.send(crate::http::Request::get(url, Duration::from_secs(5))).await.unwrap();
+            let v: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+            let page = v["messages"].as_array().unwrap();
+            assert_eq!(page[0]["ts"], at(5), "the parent leads every page");
+            got.extend(page.iter().skip(1).map(|m| m["ts"].as_str().unwrap().to_string()));
+            match v.pointer("/response_metadata/next_cursor").and_then(|c| c.as_str()) {
+                Some(next) => cursor = format!("&cursor={next}"),
+                None => break,
+            }
+        }
+        assert_eq!(got, [1, 2, 4, 5, 7, 8].map(|n| at(10 + n)));
         fake.shutdown().await;
     })
     .await;
