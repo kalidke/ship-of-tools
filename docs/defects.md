@@ -698,10 +698,6 @@ owned by `docs/CLAUDE.md`.
   that is a link into other storage); and it splits on `/` only, so a Windows daemon's `a\b.pdf` is accepted but never
   equals the tree's `a/b.pdf` and never refreshes, and `a\..\b.pdf` is refused and marked. Found by the review of the
   landing that closed PREVIEW-PDF-STALE, probing the first and reading the second; the second never seen.
-- **PANE-COPY-KEEPS-WRAPS** [person] Text copied from an agent's pane carries the pane's soft wraps as real line
-  breaks. A one-line command of about 260 characters, wrapped at the pane's width, pasted into the agent's shell
-  prompt as two lines: its first part ran alone and the rest failed (2026-11-11). Copy should join a row that the
-  terminal wrapped onto the next, as a terminal's own copy does; the wrap is known per row in the screen the pane draws.
 - **FIGURE-CACHE-KEYED-BY-LINK** [note] The markdown figure cache (`preview/image/figure_store.rs`) is keyed by the
   figure's link text alone, and a figure reply carries no host or row, so two markdown files, in two rows or two
   folders of one row, that name the same relative image share one picture. Known by reading only.
@@ -1027,6 +1023,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **PANE-COPY-KEEPS-WRAPS** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a copy from the agent's pane turned the terminal's soft wraps into newlines; `AgentPane::copy_text` now joins a row the terminal wrapped onto the next, keeping its trailing spaces, and breaks only where the program did.
 - **PREVIEW-NOT-FOLLOWING-ROW** (fe-ui) closed by the landing that fixes it, 2026-11-11, seen in use by a person: a row left before its preview came back kept its request as the target it showed, so no return asked again, and its pane kept another row's text; a restore keeps a target only when its bytes answered it or the daemon refused it, and a row with no bytes shows no text. The other reading of the report is PARKED-ROW-PREVIEW-STALE.
 - **UPDATE-WINDOW-BEFORE-ITS-DAEMONS** (distribution) closed by this records commit, 2026-11-11, seen by a person using
   the runbook: it updated only the computer its agent ran on, so a window moved to 0.7.0 while the daemons it dials

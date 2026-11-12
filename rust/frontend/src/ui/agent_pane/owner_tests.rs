@@ -805,7 +805,33 @@ fn copy_uses_client_or_blank_and_clears_only_after_success() {
     install(&mut wrapped, "h", "wrapped", Scripted::at_size(b"abcdefgh", true, 5, 3).0, t);
     wrapped.press(Some((0, 3)));
     wrapped.extend_drag(Some((1, 1)));
-    assert_eq!(wrapped.copy_text(5).as_deref(), Some("de\nfg"));
+    assert_eq!(wrapped.copy_text(5).as_deref(), Some("defg"), "a row the terminal wrapped joins the next");
+}
+
+fn copy_of(feed: &[u8], from: (u16, u16), to: (u16, u16)) -> Option<String> {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "w", t, 2);
+    p.sync_size((5, 4));
+    install(&mut p, "h", "w", Scripted::at_size(feed, true, 5, 4).0, t);
+    p.press(Some(from));
+    p.extend_drag(Some(to));
+    p.copy_text(5)
+}
+
+#[test]
+fn copy_joins_a_wrapped_row_and_breaks_where_the_program_did() {
+    assert_eq!(copy_of(b"abcdefgh\r\nxy", (0, 0), (2, 1)).as_deref(), Some("abcdefgh\nxy"));
+}
+
+#[test]
+fn a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined() {
+    assert_eq!(copy_of(b"abcde\r\nxy", (0, 0), (1, 1)).as_deref(), Some("abcde\nxy"));
+}
+
+#[test]
+fn a_wrapped_row_keeps_the_spaces_at_its_wrap_point() {
+    assert_eq!(copy_of(b"ab   cd", (0, 0), (1, 1)).as_deref(), Some("ab   cd"));
 }
 
 #[test]

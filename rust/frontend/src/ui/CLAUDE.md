@@ -628,6 +628,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `ordinary_input_and_wheel_name_the_shown_run`, `pruning_drops_only_the_removed_hosts_held_rows` and
   `kept_row_invalidation_preserves_the_existing_scope`.
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
+  A copy joins a row the terminal wrapped onto the next (no newline, trailing spaces kept) and ends a row the program
+  ended with a newline (`copy_joins_a_wrapped_row_and_breaks_where_the_program_did`,
+  `a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined`, `a_wrapped_row_keeps_the_spaces_at_its_wrap_point`).
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
   backlog is an earlier view of the row), and a copy whose sequence began in that backlog is dropped too

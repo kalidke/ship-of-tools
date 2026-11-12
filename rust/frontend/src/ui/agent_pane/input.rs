@@ -83,7 +83,8 @@ impl<C: PaneClient> AgentPane<C> {
         self.live_since.is_some_and(|since| now.saturating_duration_since(since) >= HELD_SEND_DWELL)
     }
 
-    /// Inclusive linear range from client-or-blank, with each line's trailing spaces trimmed.
+    /// Inclusive linear range from client-or-blank. A row the terminal wrapped joins the next with no newline and
+    /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline.
     /// State writes the owned text to the clipboard, then reports success through `copy_finished`.
     pub(in crate::ui) fn copy_text(&self, pane_cols: u16) -> Option<String> {
         let Some(sel) = self.llm_selection else {
@@ -108,7 +109,7 @@ impl<C: PaneClient> AgentPane<C> {
         };
         let mut out = String::new();
         for row in sr..=er {
-            if row != sr {
+            if row != sr && !screen.row_wrapped(row - 1) {
                 out.push('\n');
             }
             let cs = if row == sr { sc } else { 0 };
@@ -131,8 +132,8 @@ impl<C: PaneClient> AgentPane<C> {
                     None => line.push(' '),
                 }
             }
-            while line.ends_with(' ') {
-                line.pop();
+            if row == er || !screen.row_wrapped(row) {
+                line.truncate(line.trim_end_matches(' ').len());
             }
             out.push_str(&line);
         }
