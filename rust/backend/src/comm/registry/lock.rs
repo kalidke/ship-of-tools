@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
-const POLL: Duration = Duration::from_millis(50);
+pub(crate) const POLL: Duration = Duration::from_millis(50);
 
 /// After taking a marker: a dead shell holder's orphaned `jq`/`mv`/`rm`, and a
 /// dead holder's in-flight calls, land within it.

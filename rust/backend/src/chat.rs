@@ -17,6 +17,7 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
 
+pub(crate) mod mail;
 pub(crate) mod ops;
 pub(crate) mod watch;
 

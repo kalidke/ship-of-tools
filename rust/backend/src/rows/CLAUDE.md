@@ -368,7 +368,7 @@ volume checks `qualified_state_root` also calls on the resolved state root); the
 (`agents/spawn/`, `sot-fe`) through the ops above; lifecycle (`end_every`,
 `forget`, `resume_all`, `close_gate_and_settle`, `claim_create`, `list`); the server (`row_or_reply`, `resolve`,
 `capsule_guard`, `seed_default_row`, the bus setters, and page-channel `work_state::states` and `handle::row_of_handle`);
-files and sidecars (a row's lazy handles); messaging's wake
+files and sidecars (a row's lazy handles); the chat's recipient (`chat/mail.rs`: `Workspaces::list`, `bound_handle`, `agent()`, `project_root` and the row id, to choose the folder's one Claude row else its one Codex row; not yet called by the running daemon); messaging's wake
 (the declared handle, the headless client, `state_dir_for`, the probe); every session's hooks and declarations
 (`comm-status.sh`, which runs `sotd work-state`). The interfaces kept: every op's payload, `comm-status.sh`'s verbs and
 exit codes, and the registry entry's fields. Gone: `SOT_COMM_ROW_HANDLE`, the daemon's own entry into `comm-status.sh`,

@@ -261,7 +261,7 @@ worktree status and sync scripts, `comm-status.sh`, the turn auditor and both ho
 `sot_require_routable_identity` (`sot-nav.sh`, the bootstrap, the comm matrix). `sot_canonical_path`, which runs no
 sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
-`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), the chat's rebuild of which channel posts were filed (`lines_from`; not yet built), and the chat's lock folder (`home::chat_dir`, which makes the comm folder whole and then `chat/` private, so chat never creates the comm folder itself).
+`handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), the chat's filing (`chat/mail.rs`: `file_comm` with the expected row, and `heartbeat_fresh`, `entry_row` and `read_registry_fresh` for the recipient's liveness), the chat's start read of which channel posts were filed (`lines_from`, called from `chat/mail.rs`), the registry lock's `POLL` (a const assertion holds the chat's `FILE_GAP` at four of them or more); the owner that runs these is unbuilt, so the running daemon calls none yet, and the chat's lock folder (`home::chat_dir`, which makes the comm folder whole and then `chat/` private, so chat never creates the comm folder itself).
 
 Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); the package page's target puts the
 wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist
