@@ -2186,3 +2186,9 @@ A landing's record goes here, with its measured times; the package page holds on
   round 1 (no blockers): the first list of nameable keys held four names no file accepts; it is now built from the
   parsers' own lists. Where the minutes went: the build 12, the review 8, one fix commit 4, and about 10 lost to two
   gates started at once on the one scratch clone, which voided both; the rerun passed alone.
+- The reference-sample test on a Windows checkout, 2026-11-12, fixed forward in two landings after main's hosted run
+  went red on Windows: the test that reads the reference's samples searched for an LF fence in a file Windows checks
+  out with CRLF (1a9f96c17, main 14:07), and the first fix's own test then built a CRLF copy from a text already CRLF
+  there (a8c3c13bb, main 14:27; the test now normalizes first and builds both forms from that). A test that reads a
+  tracked non-TOML file must not assume its line endings; the local gate cannot show it, so the first fix went out
+  checked on Linux alone, which is how the second was needed.

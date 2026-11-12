@@ -61,6 +61,12 @@ owned by `docs/CLAUDE.md`.
 - **CHILD-RENAMES-NO-RETRY** [note] Three test children rename a file into place with `std::fs::rename`, which does not
   retry on Windows while a scanner holds the new file, as platform's renames do: `test_barrier.rs`, the capsule's
   `tests/supervisor/main.rs` and `contained_job.rs`. Route each through `publish_noreplace`.
+- **BENEATH-TWO-WRITERS-WINDOWS-RECURS** [session] `two_writers_of_one_name_each_publish_a_whole_file` failed again on a
+  hosted Windows run after BENEATH-TWO-WRITERS-WINDOWS was closed (run 43306919232, 2026-11-12, at main 1a9f96c17, whose
+  change touched no platform code): a writer's `write_beneath` answered access denied (`beneath_tests.rs:524`). The
+  earlier fix closed the renamed file's handle before the folder's sync; another holder of the name is still possible
+  (a scanner, or the other writer's rename), so the retry window or the share mode does not cover every case. The
+  passing runs before it say it is intermittent; its cause is unknown.
 
 ## wire
 
