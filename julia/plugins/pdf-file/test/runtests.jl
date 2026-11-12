@@ -221,6 +221,51 @@ end
         end
     end
 
+    @testset "no note carries a command, an environment or text taken from one" begin
+        # The JLL's command form holds the kernel's whole environment, and a process error shows its command. The
+        # stand-in commands carry a small fake environment with a marker, so a leak shows without exposing a real one.
+        marker = "marker-4c1e8a"
+        fake(path) = setenv(`$path`, Dict("SOT_TEST_MARKER" => marker, "PATH" => "/usr/bin:/bin"))
+        mktempdir() do dir
+            # One stand-in folder per behavior, so each is named pdfinfo or pdftoppm as the tool is.
+            function tool(folder, name, body)
+                mkpath(joinpath(dir, folder))
+                path = joinpath(dir, folder, name)
+                write(path, "#!/bin/sh\n$body\n")
+                chmod(path, 0o755)
+                path
+            end
+            info_ok = tool("ok", "pdfinfo", "printf 'Pages: 2\\nPage size: 612 x 792 pts\\n'")
+            info_exit = tool("exit", "pdfinfo", "exit 3")
+            info_hang = tool("hang", "pdfinfo", "exec sleep 600")
+            render_exit = tool("exit", "pdftoppm", "exit 5")
+            render_hang = tool("hang", "pdftoppm", "exec sleep 600")
+            absent(name) = joinpath(dir, "absent", name)
+            n = Ref(0)
+            function note_for(info, render; bound=2)
+                doc = joinpath(dir, "doc$(n[] += 1).pdf")
+                write(doc, "x")
+                stand_in_tools(fake(info), fake(render)) do
+                    pp = ShipToolsPDFFile._preview_page(doc, 1; bound)
+                    pp.mime == "text/markdown" ? String(copy(pp.data)) : ""
+                end
+            end
+            for (note, words) in (
+                    (note_for(info_exit, render_exit), "couldn't read this file"),
+                    (note_for(absent("pdfinfo"), render_exit), "pdfinfo could not start"),
+                    (note_for(info_hang, render_exit; bound=1), "pdfinfo did not finish within"),
+                    (note_for(info_ok, render_exit), "pdftoppm exited with code 5"),
+                    (note_for(info_ok, absent("pdftoppm")), "pdftoppm could not start"),
+                    (note_for(info_ok, render_hang), "pdftoppm did not finish within"))
+                # Booleans first: a failed @test prints its operands, and a leaking note must not be one of them.
+                leaked = occursin(marker, note) || occursin("setenv", note) || occursin("Process(", note)
+                said = occursin(words, note)
+                @test !leaked
+                @test said
+            end
+        end
+    end
+
     @testset "3-arg fallback exists for non-paged plugins" begin
         # Core's fallback drops params for plugins that only define 2-arg.
         @test hasmethod(ConceptExplorerCore.preview,

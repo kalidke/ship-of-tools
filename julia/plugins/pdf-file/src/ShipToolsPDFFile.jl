@@ -117,7 +117,7 @@ function _preview_page(path::AbstractString, page::Int;
             _pdf_info(path, left())
         catch e
             # A tool that ran out of time says nothing about the file, so it is not remembered.
-            return _note("Couldn't read this file's page count: $(sprint(showerror, e))")
+            return _note("Couldn't read this file's page count: $(ConceptExplorerCore.tool_failure_words(e))")
         end
         PDF_INFO[path] = (modified, read_info)
         read_info
@@ -155,7 +155,7 @@ function _preview_page(path::AbstractString, page::Int;
             # keeps the frontend's existing image path.
             ConceptExplorerCore.read_within(`$(PDFTOPPM[]()) -png $scale_args -f $p -l $p -singlefile $path`, left())
         catch e
-            return _note("Couldn't rasterize page $p: $(sprint(showerror, e))")
+            return _note("Couldn't rasterize page $p: $(ConceptExplorerCore.tool_failure_words(e))")
         end
         isempty(png) && return _note("Rasterizing page $p produced no output.")
         _cache_page(key, png)
@@ -179,7 +179,7 @@ function _pdf_info(path::AbstractString, bound::Real)
     out = try
         String(ConceptExplorerCore.read_within(`$(PDFINFO[]()) $path`, bound))
     catch e
-        e isa ProcessFailedException && return nothing
+        e isa ConceptExplorerCore.ToolFailure && e.exited && return nothing
         rethrow()
     end
     pages = match(r"^Pages:\s+(\d+)"m, out)

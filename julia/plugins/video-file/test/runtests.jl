@@ -81,4 +81,36 @@ const V = ShipToolsVideoFile.VideoFile
             end
         end
     end
+
+    @testset "no note carries a command, an environment or text taken from one" begin
+        # The JLL's command form holds the kernel's whole environment, and a process error shows its command. The
+        # stand-in commands carry a small fake environment with a marker, so a leak shows without exposing a real one.
+        marker = "marker-4c1e8a"
+        fake(path) = setenv(`$path`, Dict("SOT_TEST_MARKER" => marker, "PATH" => "/usr/bin:/bin"))
+        mktempdir() do dir
+            function tool(name, body)
+                path = joinpath(dir, name)
+                write(path, "#!/bin/sh\n$body\n")
+                chmod(path, 0o755)
+                path
+            end
+            old = ShipToolsVideoFile.FFMPEG[]
+            try
+                for (cmd, words) in ((tool("exit", "exit 3"), "ffmpeg exited with code 3"),
+                                     (joinpath(dir, "absent"), "ffmpeg could not start"),
+                                     (tool("hang", "exec sleep 600"), "ffmpeg did not finish within"))
+                    # The note names the tool in fixed words, whatever the stand-in is called.
+                    ShipToolsVideoFile.FFMPEG[] = () -> fake(cmd)
+                    note = String(copy(ShipToolsVideoFile._poster("clip.mp4", 1).data))
+                    # Booleans first: a failed @test prints its operands, and a leaking note must not be one of them.
+                    leaked = occursin(marker, note) || occursin("setenv", note) || occursin("Process(", note)
+                    said = occursin(replace(words, "ffmpeg" => basename(cmd)), note)
+                    @test !leaked
+                    @test said
+                end
+            finally
+                ShipToolsVideoFile.FFMPEG[] = old
+            end
+        end
+    end
 end
