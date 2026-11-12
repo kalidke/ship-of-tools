@@ -2034,3 +2034,11 @@ A landing's record goes here, with its measured times; the package page holds on
   commits). No second review: the fix changed no product line. The first gate of the fix was run on a mistyped commit
   id, failed its checkout and still printed its pass line; it was run again on the right commit, and the session's
   gate script now stops when its checkout fails.
+- B3g1, delivery's filing half, 2026-11-12: builder launched 03:21, main 03:46 (929e34120, 059ce507f), 25 minutes,
+  inside the half hour. About 100 product lines and 245 test lines. The plan's B3g came to about 220 code lines in one
+  draft, so the builder stopped at the line limit four minutes in and the landing was split along the plan's own rule:
+  this half is the one queue, the start's gate, pacing, the live `omitted` rule and the bounds; the pass half follows.
+  The builder's draft corrected the plan's D5: a candidate queued or in flight counts as filed only once its filing
+  returns so, or a commit could pass a live post whose filing is then refused. Review round 1 (no blockers; four rules
+  had no failing test, among them the channel in the queue's key, whose loss would drop mail when two channels share a
+  `ts`). One fix commit, tests and one product line; no second review.
