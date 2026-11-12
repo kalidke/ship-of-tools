@@ -2090,3 +2090,11 @@ A landing's record goes here, with its measured times; the package page holds on
   daemons before windows; one test that the skill names the runbook and holds no installer command of its own, red
   10 of 10 before. No review: a text change with its test, read by the session. Found on the way:
   LEGACY-SKILL-LIST-BEHIND.
+- The chat drawer's look, L6 (`(edited)`), 2026-11-12: builder launched 06:56, main 07:28 (4972afaf9, 5e2b6bd58), 32
+  minutes, a miss by two. About 30 product lines across wire (the record's `edited`, last and left out when false),
+  chat's normalization and the drawer, and 150 test lines. Where the minutes went: the build 11 minutes, one review
+  round 11, one fix commit 6, the gates 4. Review round 1 (no blockers; a window of the last candidate reads the new
+  key in every reply and event, since nothing in the tree denies unknown fields): `(edited)` was in every copy, so a
+  copied code block pasted into the REPL would run it as a line; the session decided it stays out of every copy, by a
+  glyph flag the copy cuts at, as L5's empty-line space; the record bound's test and the mark's color and size were
+  unpinned. Slack's `edited` object is as Slack documents it; the plan's premise PC is unmeasured.
