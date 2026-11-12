@@ -1,7 +1,7 @@
 # Preview op: file.preview, with lazy loading of built-in plugins that are not loaded at startup.
 
 # Built-in plugins that are NOT eagerly `using`d at kernel startup (to keep
-# their heavy deps out of the base image), keyed by the file extension they
+# their heavy deps (HDF5_jll, Poppler_jll, FFMPEG_jll) out of every row's kernel), keyed by the file extension they
 # claim. On a `file.preview` miss we `using` the registered plugin once and
 # re-resolve. Extensions lowercase, with leading dot. Add a row here when a new
 # lazy plugin lands; the plugin must be a dep of the kernel env (Pkg.develop'd)
@@ -10,6 +10,12 @@ const LAZY_PLUGIN_FOR_EXT = Dict{String,String}(
     ".h5"   => "HDF5Preview",
     ".hdf5" => "HDF5Preview",
     ".hdf"  => "HDF5Preview",
+    ".pdf"  => "ShipToolsPDFFile",
+    ".mp4"  => "ShipToolsVideoFile",
+    ".webm" => "ShipToolsVideoFile",
+    ".mov"  => "ShipToolsVideoFile",
+    ".mkv"  => "ShipToolsVideoFile",
+    ".m4v"  => "ShipToolsVideoFile",
 )
 
 # Plugins we've already attempted to lazy-load this session, so a broken load
@@ -38,7 +44,7 @@ function maybe_lazy_load_plugin(fullpath::AbstractString)
         return true
     catch e
         println(stderr, "sot-kernel: lazy plugin load failed ($name): ",
-                sprint(showerror, e))
+                ConceptExplorerCore.error_words(e))
         return false
     end
 end
@@ -102,7 +108,7 @@ function handle_file_preview(io::IO, state::KernelState, id, payload)
         Base.invokelatest(ConceptExplorerCore.preview, T, fullpath, params)
     catch e
         write_envelope(io, "res", id, "file.preview",
-            Dict(:error => sprint(showerror, e), :code => "plugin_threw",
+            Dict(:error => ConceptExplorerCore.error_words(e), :code => "plugin_threw",
                  :file_type => string(nameof(T))))
         return
     end

@@ -61,8 +61,6 @@ const V = ShipToolsVideoFile.VideoFile
     end
 
     @testset "a stuck ffmpeg ends inside the bound with the plugin's own note" begin
-        # The daemon waits 10 s for a kernel answer; the tool's bound stays under it.
-        @test ShipToolsVideoFile.TOOL_BOUND < 10
         mktempdir() do dir
             hung = joinpath(dir, "ffmpeg")
             write(hung, "#!/bin/sh\nexec sleep 600\n")

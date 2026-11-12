@@ -89,7 +89,7 @@ Needs on every machine:
 - **Frontend only:** Linux with glibc 2.35 or newer and a desktop session with a Vulkan driver (a `--be-only` backend is a static binary with no glibc floor).
 - **A home directory on NFS** (or another remote filesystem) needs a systemd drop-in pointing the daemon's state root at local disk before sessions will start; see [A session will not start on a shared home](https://kalidke.github.io/ship-of-tools/stable/guide/troubleshooting#A-session-will-not-start-on-a-shared-home).
 
-Optional on the backend machine: node/npm for typeset math, poppler-utils for PDF previews and ffmpeg for video poster frames.
+Optional on the backend machine: node/npm for typeset math. PDF and video previews bring their own poppler and ffmpeg.
 
 What it touches:
 - Everything goes under your home directory, mostly `~/.local/share/sot`, plus user lingering (`loginctl enable-linger`) so the user-level `sotd` systemd service keeps the backend running after logout on Linux.

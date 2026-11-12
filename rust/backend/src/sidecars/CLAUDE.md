@@ -194,19 +194,24 @@ of each.
 19. **The kernel loads only the plugins its own project names, gives a file to the first that matches, and bounds the
     external tools they run.** The kernel's project names the built-in
     `FileType` plugins as dependencies and `ShipToolsKernel.jl` imports them eagerly (`julia/kernel/Project.toml`,
-    `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, attempted at most once per kernel (`preview.jl:29`, the
-    `LAZY_PLUGIN_FOR_EXT` table); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
+    `ShipToolsKernel.jl:9`); the heavy ones load lazily, at the first preview of a file they claim, attempted at most
+    once per kernel (`preview.jl:29`, the `LAZY_PLUGIN_FOR_EXT` table: HDF5, and the PDF and video plugins, whose JLLs
+    would add about 37 MiB to every row's kernel); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
     a preview answers a payload or an error, never an exception to the wire (`preview.jl:99`); an external tool a plugin
     runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). The tools are the plugins' own, never a program on the
     search path: the PDF plugin runs `pdftoppm` and `pdfinfo` from `Poppler_jll`, the video plugin `ffmpeg` from
     `FFMPEG_jll`, each through the JLL's command form, and the JLLs' artifacts come into the user's Julia depot when the
-    kernel's environment is instantiated (x86_64 Linux, both macOS architectures, x86_64 Windows; elsewhere the plugin
-    answers a note saying no ready-built tool exists). The bounds fit inside guarantee 3's wait: a PDF page's two tools
-    share `PREVIEW_BOUND` (8 s), the poster's `ffmpeg` has `TOOL_BOUND` (8 s), and a request that runs past answers with
-    the plugin's own note, never `kernel_unavailable`. A failed tool is a `ToolFailure` (`read_within`): its text is the
-    program's name and what happened (could not start, did not finish within the bound, exit code or signal), so no
-    note, log line or error a plugin returns holds a command, an environment (a JLL's command carries the kernel's
-    whole one) or text taken from one; the plugins' notes show only that text. The PDF plugin keeps rendered pages in memory up to
+    kernel's environment is instantiated (artifacts exist for the platforms the release ships: Linux x86_64, Windows
+    x86_64 and macOS aarch64; on a platform with none the plugin answers a note saying so). The bounds fit inside
+    guarantee 3's wait: a request's tools share `ConceptExplorerCore.TOOL_WAIT` (8 s; a PDF page's `pdfinfo` and
+    `pdftoppm` together, the poster's `ffmpeg` alone), and a request that runs past answers with the plugin's own note
+    (the kernel serves one request at a time, so one queued behind it can still wait past the daemon's 10 s). A failed
+    tool is a `ToolFailure` (`read_within`), and `ConceptExplorerCore.error_words` is the one way an exception becomes
+    text: the kernel's replies and stderr lines and the plugins' notes show a `ToolFailure`'s words (the program's name
+    and what happened: could not start, did not finish within the bound, exit code or signal), a fixed sentence for a
+    failed process or an I/O error, and the type name of anything else, so none holds a command, an environment (a JLL's
+    command carries the kernel's whole one) or text taken from one. It does not cover an `ErrorException` whose message
+    someone built from a command. The PDF plugin keeps rendered pages in memory up to
     `PAGE_CACHE_LIMIT` (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime,
     page and render size. It reads `pdfinfo` once per path and mtime and never prefetches. The existing package suite,
     `julia/plugins/pdf-file/test/runtests.jl`, checks hits, path/mtime/size misses and byte eviction through `preview`, a

@@ -29,10 +29,6 @@ struct VideoFile <: ConceptExplorerCore.FileType end
 
 const VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv", ".m4v")
 
-# The longest ffmpeg may run, in seconds; the kernel serves one request at a time, so a stuck tool must end, and the
-# daemon gives up on a kernel answer at 10 s (`KERNEL_REQUEST_TIMEOUT`).
-const TOOL_BOUND = 8
-
 # The tool as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
 # ffmpeg still loads this module; a test stands another command in here.
 const FFMPEG = Ref{Function}(() -> FFMPEG_jll.ffmpeg())
@@ -45,10 +41,10 @@ ConceptExplorerCore.matches(::Type{VideoFile}, path::AbstractString) =
 
 Returns the first frame as a lossless `image/png` poster (full resolution; the
 frontend downsamples if it exceeds the GPU texture cap). When extraction fails
-or outlasts `TOOL_BOUND`, returns a `text/markdown` note explaining how to view
+or outlasts `ConceptExplorerCore.TOOL_WAIT`, returns a `text/markdown` note explaining how to view
 the video — never a silent blank pane.
 """
-ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString) = _poster(path, TOOL_BOUND)
+ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString) = _poster(path, ConceptExplorerCore.TOOL_WAIT)
 
 function _poster(path::AbstractString, bound::Real)
     if !FFMPEG_jll.is_available()
@@ -57,7 +53,7 @@ function _poster(path::AbstractString, bound::Real)
     poster = try
         ConceptExplorerCore.read_within(`$(FFMPEG[]()) -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, bound)
     catch e
-        return _note("Couldn't extract a poster frame: $(ConceptExplorerCore.tool_failure_words(e))\n\nPlayback still opens in the browser with `o`.")
+        return _note("Couldn't extract a poster frame: $(ConceptExplorerCore.error_words(e))\n\nPlayback still opens in the browser with `o`.")
     end
     isempty(poster) && return _note("Poster extraction produced no frame. Playback opens in the browser with `o`.")
     ConceptExplorerCore.PreviewPayload("image/png", poster)

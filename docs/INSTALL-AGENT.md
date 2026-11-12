@@ -91,8 +91,6 @@ case "$(uname -s)" in
 esac
 command -v git curl tar jq   # all required
 command -v node npm       # OPTIONAL — math rendering in markdown previews
-command -v pdftoppm pdfinfo  # OPTIONAL (poppler-utils) — PDF previews
-command -v ffmpeg         # OPTIONAL — video poster frames in previews
 ```
 
 - **jq absent** → a blocker: the comm scripts read and write JSON with it,
@@ -103,10 +101,9 @@ command -v ffmpeg         # OPTIONAL — video poster frames in previews
   sidecar deps with a warning and math in markdown previews shows raw LaTeX.
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
-- **poppler-utils or ffmpeg absent** → not a blocker: the installer does not
-  check for them. A PDF or video preview then shows a note naming the missing
-  tool. Tell the human; install them with the system package manager on the
-  backend machine if they want those previews.
+- **poppler and ffmpeg** need no check and no install: the PDF and video
+  previews run their own copies, which the installer downloads with the kernel's
+  Julia environment (about 250 MB, no administrator rights).
 - An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
   itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.

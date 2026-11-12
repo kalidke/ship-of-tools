@@ -5,14 +5,13 @@ using ConceptExplorerCore
 # Built-in "core ships as plugins to itself" plugins. Loaded eagerly so
 # the standard FileType subtypes are present from the first request. If a kernel
 # image ever wants to start without these (e.g. a minimal sandbox), the
-# `using` here is the only thing to drop.
+# `using` here is the only thing to drop. The PDF and video plugins are not here: their tools are JLLs, loaded at the
+# first preview of a PDF or a video (`LAZY_PLUGIN_FOR_EXT` in preview.jl).
 using ShipToolsJsonDoc
 using ShipToolsJuliaSource
 using ShipToolsMarkdown
-using ShipToolsPDFFile
 using ShipToolsPlainText
 using ShipToolsTomlDoc
-using ShipToolsVideoFile
 using JSON3
 using JuliaSyntax
 using JuliaSyntax: @K_str
@@ -49,7 +48,7 @@ function serve(io_in::IO, io_out::IO; project_root::AbstractString = pwd())
             JSON3.read(line)
         catch e
             write_envelope(io_out, "res", 0, "kernel.parse_error",
-                Dict(:error => "bad request: $(e)"))
+                Dict(:error => "bad request: $(ConceptExplorerCore.error_words(e))"))
             continue
         end
 
@@ -62,11 +61,11 @@ function serve(io_in::IO, io_out::IO; project_root::AbstractString = pwd())
             # subsequent ops in the same serve loop.
             Base.invokelatest(dispatch, io_out, state, id, op, payload)
         catch e
-            bt = sprint(showerror, e, catch_backtrace())
-            println(stderr, "kernel exception in op=$op: $bt")
+            bt = sprint(Base.show_backtrace, catch_backtrace())
+            println(stderr, "kernel exception in op=$op: $(ConceptExplorerCore.error_words(e))\n$bt")
             flush(stderr)
             write_envelope(io_out, "res", id, op,
-                Dict(:error => sprint(showerror, e), :code => "kernel_exception"))
+                Dict(:error => ConceptExplorerCore.error_words(e), :code => "kernel_exception"))
         end
     end
 end
@@ -169,7 +168,7 @@ function handle_file_parse(io::IO, state::KernelState, id, payload)
         JuliaSyntax.parseall(JuliaSyntax.SyntaxNode, src; filename = fullpath)
     catch e
         write_envelope(io, "res", id, "file.parse",
-            Dict(:error => sprint(showerror, e), :code => "parse_error",
+            Dict(:error => ConceptExplorerCore.error_words(e), :code => "parse_error",
                  :ast_hash => ast_hash))
         return
     end
@@ -229,7 +228,7 @@ function handle_function_methods(io::IO, state::KernelState, id, payload)
         getfield(mod, Symbol(fn_name))
     catch e
         write_envelope(io, "res", id, "function.methods",
-            Dict(:error => sprint(showerror, e), :code => "function_not_found",
+            Dict(:error => ConceptExplorerCore.error_words(e), :code => "function_not_found",
                  :module => mod_name, :name => fn_name))
         return
     end

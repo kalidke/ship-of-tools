@@ -187,8 +187,7 @@ end
     end
 
     @testset "a slow tool ends inside the bound with the plugin's own note" begin
-        # The daemon waits 10 s for a kernel answer; the two tools together stay under it.
-        @test ShipToolsPDFFile.PREVIEW_BOUND < 10
+        # A page's two tools share the core's bound for a request's tools.
         mktempdir() do dir
             slow_info = joinpath(dir, "pdfinfo")
             write(slow_info, "#!/bin/sh\nsleep 1\nprintf 'Pages: 2\\nPage size: 612 x 792 pts\\n'\n")
