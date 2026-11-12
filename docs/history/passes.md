@@ -2051,3 +2051,12 @@ A landing's record goes here, with its measured times; the package page holds on
   socket, the owner and the rows, 960 runs, found no lost post a pass could see, no double filing and no boundary moved
   back). Round 2 (no blockers): the pace was set only after a completed pass, and a channel truncated at every pass
   could hold another's owed pass; ready channels now go least recently passed first.
+- B3i1, the mail jobs (the recipient, the filing job, the commit job and the start's read), 2026-11-12: builder
+  launched 04:36, main 05:14 (6f734cad9, b8a9ac9b2), 38 minutes, a miss. About 65 product lines and 220 test lines.
+  Where the minutes went: the build took 16 minutes with the landing's measurement (50 guarded filings at the filing
+  gap on the shared home while another thread took the registry lock with a 1 s bound 20 times: all 50 filed in
+  11.3 s, all 20 takes in, the slowest 133 ms), one review round 13, one fix commit 4. Review round 1 (no blockers: a
+  Claude row whose session is gone falling through to a Codex row had no failing test; the liveness check copied the
+  filing's own admission and now calls it; the start's read grouped what delivery already filters; a refusal's
+  sentence was dropped from the log). One run of the rows suite on the builder's scratch host failed 22 tests and was
+  not kept; three later runs, and the reviewer's, were green; its cause is unknown.
