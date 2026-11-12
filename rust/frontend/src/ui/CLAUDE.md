@@ -700,7 +700,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   where it is shown. The replies are written only to the private copy of stdout that `take_stdout` returned, and
   descriptor 1 leads to the null device, so a library's print (usvg prints a fixed warning line for some color-font
   text, usvg-0.44.0 text/colr.rs:185 and :285) is lost and cannot arrive between two replies; stderr is the window's to
-  close. A writer that opened the terminal by name before the call is not caught (platform's guarantee 18). Jobs draw on one thread of 32 MiB
+  close. Only a descriptor or handle copied before `take_stdout` could still reach the replies, and `bound_self` calls it second, before anything else runs (platform's guarantee 18). Jobs draw on one thread of 32 MiB
   (`SVG_STACK`, the same on every system; Windows gives a main thread 1 MiB); a panic there ends the child with 73 at
   once. The child exits 0, or: 71 at its heap cap, 72 at its CPU bound (Unix), 73 in a crash (on Unix an abort, Rust's
   stack-overflow report or a panic on the draw thread; on Windows only a panic on the draw thread), 74 when its

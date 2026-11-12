@@ -131,8 +131,12 @@ pub fn end_with_parent() -> io::Result<()> {
 /// Takes this process's stdout for the caller alone: the returned file is a duplicate of descriptor 1 (Windows: of the
 /// standard output handle) that no child inherits, and descriptor 1, the standard output handle and the C runtime's
 /// descriptor 1 then lead to the null device, so a print, a `write(1, ..)` or a library's `printf` after this call
-/// reaches nobody. A process whose stdout carries a protocol calls it before it reads, and writes only to the file. A
-/// writer that opened the console or the terminal by name before this call is not caught.
+/// reaches nobody. A process whose stdout carries a protocol calls it before it reads, and writes only to the file.
+/// On an error the caller writes nothing to stdout: on Unix stdout is unchanged and the copy closed; on Windows it may
+/// already lead to the null device. What still reaches the old stdout: a copy of descriptor 1 or of the handle made
+/// before this call, a Unix process forked without an exec (close-on-exec acts at exec), and on Windows a raw handle
+/// value cached before the call (the runtime's `_dup2` closes the original handle). A console or terminal opened by
+/// name is not stdout, whatever stdout is, and is not touched.
 pub fn take_stdout() -> io::Result<std::fs::File> {
     #[cfg(unix)]
     {
@@ -176,7 +180,8 @@ pub fn take_stdout() -> io::Result<std::fs::File> {
             let private = std::fs::File::from_raw_handle(copy as _);
             let null = std::fs::OpenOptions::new().write(true).open("NUL")?;
             // The runtime's descriptor 1 takes the null device (its fd owns the handle until closed), then the
-            // standard output handle follows it.
+            // standard output handle follows it. In a console program `_dup2` already sets that handle; the explicit
+            // call is for a GUI-subsystem caller, where the runtime leaves it naming the handle it just closed. Keep it.
             let fd = _open_osfhandle(null.into_raw_handle() as isize, 0);
             if fd < 0 || _dup2(fd, 1) != 0 {
                 return Err(io::Error::other("the C runtime would not take the null device"));

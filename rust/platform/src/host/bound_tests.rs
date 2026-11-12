@@ -172,7 +172,8 @@ fn exit_on_crash_sets_the_windows_error_mode() {
 
 /// After `take_stdout`, every route to stdout the process has is dead and the private file is the one that reaches the
 /// parent: Rust's `print!`, a raw write to descriptor 1 (Windows: the standard output handle and the C runtime's), and
-/// the private file's marker arrive as the marker alone. The harness's own opening line precedes the body.
+/// the private file's marker arrive as the marker alone; the file is not inherited by a process this one starts. The
+/// harness's own opening line precedes the body.
 #[test]
 fn only_the_private_copy_reaches_the_parents_stdout() {
     use std::io::Write;
@@ -181,6 +182,22 @@ fn only_the_private_copy_reaches_the_parents_stdout() {
     if child_role().is_some() {
         enter(NAME);
         let mut private = take_stdout().unwrap();
+        // No process this one starts may inherit the copy: it would hold the parent's read open past this one's end.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: fcntl on an open descriptor.
+            assert_ne!(unsafe { libc::fcntl(private.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC, 0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+            let mut flags = 0;
+            // SAFETY: an open handle and a live out-pointer.
+            assert_ne!(unsafe { GetHandleInformation(private.as_raw_handle() as _, &mut flags) }, 0);
+            assert_eq!(flags & HANDLE_FLAG_INHERIT, 0, "the private copy is inheritable");
+        }
         print!("stray print ");
         println!("stray println");
         std::io::stdout().flush().unwrap();
