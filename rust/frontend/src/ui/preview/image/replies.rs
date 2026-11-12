@@ -65,9 +65,12 @@ impl State {
     /// generation, a figure's outcome goes to `on_svg_settled` and the file preview's to `apply_svg_step`.
     pub(in crate::ui) fn settle_svg_draws(&mut self) {
         let generation = self.preview_source.generation();
-        let frame = settle_frame(&mut self.svg_draws, &mut self.figures, &mut self.svg_preview, generation);
+        let frame = settle_frame(&mut self.svg_draws, &mut self.figures, &mut self.svg_preview, &mut self.md_media, generation);
         for (url, settled) in frame.figures {
             self.on_svg_settled(url, settled);
+        }
+        for (key, settled) in frame.math {
+            self.on_math_settled(key, settled);
         }
         if let Some(step) = frame.preview {
             self.apply_svg_step(step);
@@ -97,6 +100,20 @@ impl State {
             Settled::Unhandled => {}
         }
         self.md_media.request_reflow();
+        self.window.request_redraw();
+    }
+
+    /// A math snippet's SVG settled: a picture is uploaded and kept as its raster, a refusal is logged (the snippet is
+    /// not drawn again under this generation), a stale job asks again at the next prepare.
+    fn on_math_settled(&mut self, key: (String, bool), settled: Settled) {
+        match settled {
+            Settled::Drawn { w, h, rgba } => match Quad::from_rgba8(self.gpu.device(), self.gpu.queue(), self.brushes.pipeline(), &rgba, w, h) {
+                Ok(quad) => self.md_media.set_math_raster(&key, quad),
+                Err(e) => tracing::warn!(error = %e, "math svg upload failed"),
+            },
+            Settled::Failed(why) => tracing::warn!(why, "math svg not drawn"),
+            Settled::Ignored | Settled::Unhandled => {}
+        }
         self.window.request_redraw();
     }
 

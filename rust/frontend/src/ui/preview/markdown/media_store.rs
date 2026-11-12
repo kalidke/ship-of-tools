@@ -4,8 +4,33 @@
 use std::collections::{HashMap, HashSet};
 
 use super::media::{MathSvg, TableBufferEntry, MATHJAX_EX_FACTOR};
+use crate::ui::preview::image::figure_store::Settled;
+use crate::ui::preview::image::svg_draws::{Done, SvgDraws};
+use crate::ui::preview::image::svg_run::{Job, Outcome};
+use crate::ui::preview::image::svg_wire::Ask;
 use super::{MathMetrics, MathMetricsMap, BODY_SIZE as MD_BODY_SIZE};
 use crate::net::transport::MarkdownToken;
+
+/// A math snippet's key at the drawing worker. A figure's is a URL that resolved to a project file, none of which holds
+/// `://` (`resolve_figure_node_id`), so the two never meet.
+const JOB_PREFIX: &str = "://math/";
+
+fn job_key((latex, display): &(String, bool)) -> String {
+    format!("{JOB_PREFIX}{}{latex}", if *display { 'd' } else { 'i' })
+}
+
+/// Whether `job` is a math snippet's key at the worker.
+pub(in crate::ui) fn is_math_job(job: &str) -> bool { job.starts_with(JOB_PREFIX) }
+
+fn math_key(job: &str) -> Option<(String, bool)> {
+    let rest = job.strip_prefix(JOB_PREFIX)?;
+    let display = match rest.chars().next()? {
+        'd' => true,
+        'i' => false,
+        _ => return None,
+    };
+    Some((rest[1..].to_owned(), display))
+}
 
 /// Math and token requests go out only for keys neither cached nor in flight; a reply caches its entry, settles the
 /// key and asks for one reflow, which the frame takes once.
@@ -144,9 +169,44 @@ impl MarkdownMedia {
     /// A render that will not come: the key is settled with no reflow, so it cannot loop.
     pub(in crate::ui) fn math_failed(&mut self, key: &(String, bool)) { self.math_pending.remove(key); }
 
-    /// A cached SVG not yet rasterized at the pane's size.
-    pub(in crate::ui) fn math_to_rasterise(&self, key: &(String, bool)) -> Option<&MathSvg> {
-        self.math.get(key).filter(|entry| entry.rasterised.is_none())
+    /// A cached SVG whose raster is neither drawn nor asked of the worker under `generation`.
+    pub(in crate::ui) fn math_to_rasterise(&self, key: &(String, bool), generation: u64) -> Option<&MathSvg> {
+        self.math.get(key).filter(|entry| entry.wants_raster(generation))
+    }
+
+    /// Asks the worker, in one batch, for each of `wanted` (a key and its pixel size) not yet drawn or asked under
+    /// `generation`; the keys are then asked, so a refusal, a resize or a later frame submits nothing again.
+    pub(in crate::ui) fn request_rasters(&mut self, draws: &mut SvgDraws, generation: u64, wanted: Vec<((String, bool), (u32, u32))>) {
+        let mut jobs = Vec::new();
+        for (key, (w, h)) in wanted {
+            if let Some(entry) = self.math.get_mut(&key).filter(|entry| entry.wants_raster(generation)) {
+                entry.asked = Some(generation);
+                jobs.push((job_key(&key), Job { ask: Ask::Stretch(w, h), svg: entry.svg_bytes.as_slice().into() }));
+            }
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        if let Err(why) = draws.submit_batch(generation, jobs) {
+            tracing::warn!(why, "math svg not drawn");
+        }
+    }
+
+    /// One outcome from the worker for a math job, or `None` for another owner's. Only the outcome of the generation
+    /// the snippet was asked under counts: a departed generation's `Stale` can arrive after the new one has asked
+    /// again, and a replaced entry was asked of nothing.
+    pub(in crate::ui) fn settle_drawing(&mut self, done: Done) -> Option<((String, bool), Settled)> {
+        let key = math_key(&done.key)?;
+        let entry = self.math.get_mut(&key).filter(|entry| entry.asked == Some(done.generation))?;
+        let settled = match done.outcome {
+            Outcome::Drawn { w, h, rgba } => Settled::Drawn { w, h, rgba },
+            Outcome::Refused(why) | Outcome::Ended(why) => Settled::Failed(why),
+            Outcome::Stale => {
+                entry.asked = None;
+                Settled::Unhandled
+            }
+        };
+        Some((key, settled))
     }
 
     pub(in crate::ui) fn set_math_raster(&mut self, key: &(String, bool), quad: crate::ui::render::quad::Quad) {
@@ -174,3 +234,7 @@ impl MarkdownMedia {
     /// The frame's one reflow, taken.
     pub(in crate::ui) fn take_reflow(&mut self) -> bool { std::mem::take(&mut self.reflow) }
 }
+
+#[cfg(test)]
+#[path = "media_store_tests.rs"]
+mod tests;

@@ -44,6 +44,8 @@ impl State {
         let table_max_scroll = (widest_table_w - md_rect.w).max(0.0);
         self.md_media.clamp_table_scroll(table_max_scroll);
         let body_em_px = self.shaped.md().body_em().max(1.0);
+        let generation = self.preview_source.generation();
+        let mut wanted = Vec::new();
         for (block_idx, rect) in &media_paint_targets {
             let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
                 continue;
@@ -52,7 +54,7 @@ impl State {
                 continue;
             };
             let key = (latex.clone(), *display);
-            let Some(entry) = self.md_media.math_to_rasterise(&key) else {
+            let Some(entry) = self.md_media.math_to_rasterise(&key, generation) else {
                 continue;
             };
             // Natural pixel size, derived from the SVG's ex-unit
@@ -60,40 +62,25 @@ impl State {
             // reservation so a malformed `<svg>` tag (or an
             // exceptionally tall `aligned` block) can't overflow the
             // letterbox and trample neighbouring paragraphs. The fit-
-            // scale used to happen inside `quad_from_svg_bytes`; doing
+            // scale used to happen inside the draw; doing
             // it here lets short equations rasterise at their actual
             // size (e.g. ~3ex tall) instead of being stretched to fill
             // the slab.
-            let (target_w, target_h) = match (entry.width_ex, entry.height_ex) {
+            let size = match (entry.width_ex, entry.height_ex) {
                 (Some(w_ex), Some(h_ex)) => {
                     let nat_w = (w_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
                     let nat_h = (h_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
                     math_raster_size(nat_w, nat_h, rect.w.min(md_rect.w), rect.h)
                 }
-                _ => {
-                    // Pre-fix fallback: no parsed dims, letterbox into
-                    // the row reservation. Should be rare — the SVG's
-                    // root tag is well-formed in every observed case.
-                    (
-                        (rect.w.min(md_rect.w) as u32).max(1),
-                        (rect.h as u32).max(1),
-                    )
-                }
+                // Pre-fix fallback: no parsed dims, letterbox into
+                // the row reservation. Should be rare — the SVG's
+                // root tag is well-formed in every observed case.
+                _ => ((rect.w.min(md_rect.w) as u32).max(1), (rect.h as u32).max(1)),
             };
-            match quad_from_svg_bytes(
-                self.gpu.device(),
-                self.gpu.queue(),
-                self.brushes.pipeline(),
-                &entry.svg_bytes,
-                target_w,
-                target_h,
-            ) {
-                Ok(q) => self.md_media.set_math_raster(&key, q),
-                Err(e) => tracing::warn!(error = %e,
-                    latex_len = entry.svg_bytes.len(),
-                    "math svg rasterise failed"),
-            }
+            wanted.push((key, size));
         }
+        // The worker draws them, one child for the frame's batch (`MarkdownMedia::request_rasters`).
+        self.md_media.request_rasters(&mut self.svg_draws, generation, wanted);
         media_paint_targets
     }
 

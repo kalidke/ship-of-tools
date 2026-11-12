@@ -1,13 +1,9 @@
-// ui/preview/image/svg.rs — SVG bytes → RGBA8 bitmap via resvg → quad.
+// ui/preview/image/svg.rs — SVG bytes → RGBA8 bitmap via resvg, and the quad for the window's own SVG.
 //
-// This is the path inline-math takes: the backend's MathJax sidecar produces
-// SVG for each math snippet (per ADR 0012); we rasterise here at the size the
-// preview-layer assigns and upload as a quad. resvg supports MathJax-shape
-// SVG natively; complex CSS-styled SVGs may need tweaks later.
-//
-// Render scale is keyed off the target rect's pixel size so math stays crisp
-// at HiDPI without us tracking DPR explicitly — the caller passes the target
-// pixel dimensions, we rasterise to those.
+// An SVG whose bytes the window received (a file's preview, a markdown figure, a math snippet) is drawn by the drawing
+// child (`svg_child`, through the worker `svg_draws`), never here. This file holds what both draw with (the tree, the
+// fonts, `draw`) and `quad_from_own_svg`, the one in-process draw left: for an SVG the window composed itself.
+// The caller passes the target pixel dimensions, we rasterise to those.
 
 use std::borrow::Cow;
 use std::io::Read;
@@ -73,16 +69,11 @@ fn held_generic_families(db: &mut fontdb::Database) {
     }
 }
 
-/// Rasterise SVG bytes into an RGBA8 bitmap of exactly `(target_w,
-/// target_h)` and upload as a quad. Non-uniform scaling: the caller is
-/// expected to have computed `target_*` from the SVG's intrinsic ex-unit
-/// dimensions (see `ui/preview/markdown/media.rs::parse_math_svg_dims` /
-/// `MATHJAX_EX_FACTOR`), so the aspect ratio is already correct. If the
-/// caller passes an aspect that disagrees with the SVG, the output will
-/// stretch — that's a caller bug, not a fit-recovery concern. Doing the
-/// scale-to-fit inside this function used to silently turn short
-/// equations into letterbox-tall slabs.
-pub fn quad_from_svg_bytes(
+/// Rasterise an SVG the window composed itself (the Monitor's chart, whose text the window clamps) into an RGBA8
+/// bitmap of exactly `(target_w, target_h)` and upload it as a quad. The window's process draws only SVG it composes:
+/// bytes it received go to the drawing child, because a hostile file can hold or end the process that draws it, so a
+/// caller of this function states where its bytes came from.
+pub fn quad_from_own_svg(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &QuadPipeline,
@@ -94,7 +85,7 @@ pub fn quad_from_svg_bytes(
     Quad::from_rgba8(device, queue, pipeline, pixmap.data(), pixmap.width(), pixmap.height())
 }
 
-/// `tree` stretched onto a pixmap of exactly `w` by `h` (a zero side is one): the draw of `quad_from_svg_bytes` and of
+/// `tree` stretched onto a pixmap of exactly `w` by `h` (a zero side is one): the draw of `quad_from_own_svg` and of
 /// the drawing child (`svg_child`).
 pub(super) fn draw(tree: &Tree, w: u32, h: u32) -> Result<Pixmap> {
     let size = tree.size();

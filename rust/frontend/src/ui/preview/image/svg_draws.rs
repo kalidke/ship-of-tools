@@ -2,8 +2,11 @@
 //! pane's source (`InstalledPreviewSource::generation`). The queue holds only the current generation: `advance` (the
 //! window's thread, which never waits on the worker) hands every waiting job of an older one back as `Outcome::Stale`
 //! at once and stops the running draw, so a hostile file's queue neither holds memory nor counts against the next
-//! file's `QUEUED_BYTES`. The worker draws one batch at a time on its own thread and, after `SVG_STRIKES` draws of one
-//! generation that ended at a bound, refuses the rest of it without a child. Outcomes go back on a channel the window
+//! file's `QUEUED_BYTES`. The worker draws one batch at a time on its own thread, each batch one call of the draw, so
+//! one child (a child's start costs 74 ms on Windows): a job queued by `submit_batch` (math) joins every other waiting
+//! one of its kind, which a job from `submit` does not. After `SVG_STRIKES` draws of one generation that ended at a
+//! bound (one strike for a batch, whatever number of its jobs ended with its child), the rest of it is refused without a
+//! child. Outcomes go back on a channel the window
 //! drains at the top of each frame (an outcome of a generation no longer current is `Stale` there), each of the
 //! worker's followed by one wake. The draw is a function the worker is given (`draw_in_own_child` in the window), so
 //! its tests use a stand-in.
@@ -32,7 +35,7 @@ pub(crate) struct Done {
     pub outcome: Outcome,
 }
 
-/// One draw of a batch of jobs of one generation (a batch of one for now), and its off switch.
+/// One draw of a batch of jobs of one generation, and its off switch.
 pub(crate) type Draw = Arc<dyn Fn(Vec<Job>, &Stop) -> Vec<Outcome> + Send + Sync>;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
@@ -40,6 +43,8 @@ struct Entry {
     key: String,
     generation: u64,
     job: Job,
+    /// Drawn with every other waiting entry that is, by one draw.
+    batched: bool,
 }
 
 /// What the window's thread and the worker share, under one lock. The queue holds the current generation alone, and a
@@ -104,19 +109,31 @@ impl SvgDraws {
     /// frame's last `advance` becomes current here), or says why not. A job of an older generation is `Stale` at once.
     /// Each key is submitted once per generation by its owner; a refusal is terminal for it.
     pub(crate) fn submit(&mut self, key: String, generation: u64, job: Job) -> Result<(), &'static str> {
+        self.enqueue(generation, vec![(key, job)], false)
+    }
+
+    /// `submit` for jobs the worker draws together with every other waiting one submitted this way, in one child.
+    /// Refused whole, or queued whole.
+    pub(crate) fn submit_batch(&mut self, generation: u64, jobs: Vec<(String, Job)>) -> Result<(), &'static str> {
+        self.enqueue(generation, jobs, true)
+    }
+
+    fn enqueue(&mut self, generation: u64, jobs: Vec<(String, Job)>, batched: bool) -> Result<(), &'static str> {
         self.advance(generation);
         if generation < self.generation {
-            let _ = self.done.0.send(Done { key, generation, outcome: Outcome::Stale });
+            for (key, _) in jobs {
+                let _ = self.done.0.send(Done { key, generation, outcome: Outcome::Stale });
+            }
             return Ok(());
         }
         self.start()?;
-        let len = job.svg.len();
+        let len = jobs.iter().fold(0usize, |sum, (_, job)| sum.saturating_add(job.svg.len()));
         let mut held = self.shared.held();
         if held.waiting.saturating_add(len) > self.cap {
             return Err(TOO_MANY);
         }
         held.waiting += len;
-        held.queue.push_back(Entry { key, generation, job });
+        held.queue.extend(jobs.into_iter().map(|(key, job)| Entry { key, generation, job, batched }));
         drop(held);
         self.shared.ready.notify_one();
         Ok(())
@@ -167,40 +184,50 @@ impl Worker {
         // The generation that has struck, and how many of its draws ended at a bound.
         let mut strikes = (0u64, 0u32);
         loop {
-            let (entry, stop, struck) = {
+            let (batch, stop, struck) = {
                 let mut held = self.shared.held();
                 loop {
                     if held.quit {
                         return;
                     }
-                    if let Some(entry) = held.queue.pop_front() {
-                        held.waiting -= entry.job.svg.len();
-                        let struck = strikes.0 == entry.generation && strikes.1 >= SVG_STRIKES;
+                    if let Some(first) = held.queue.pop_front() {
+                        // A batched job takes every other waiting one with it (the queue is of one generation).
+                        let mut batch = vec![first];
+                        if batch[0].batched {
+                            let (with, rest): (VecDeque<Entry>, VecDeque<Entry>) = std::mem::take(&mut held.queue).into_iter().partition(|entry| entry.batched);
+                            held.queue = rest;
+                            batch.extend(with);
+                        }
+                        held.waiting -= batch.iter().map(|entry| entry.job.svg.len()).sum::<usize>();
+                        let struck = strikes.0 == batch[0].generation && strikes.1 >= SVG_STRIKES;
                         let stop = Stop::default();
                         if !struck {
                             held.running = Some(stop.clone());
                         }
-                        break (entry, stop, struck);
+                        break (batch, stop, struck);
                     }
                     held = self.shared.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
                 }
             };
             // The lock is never held across a call out (the wake), so the window's thread never waits behind one.
+            let generation = batch[0].generation;
             if struck {
-                self.report(entry.key, entry.generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
+                for entry in batch {
+                    self.report(entry.key, generation, Outcome::Refused(AFTER_STRIKES.to_owned()));
+                }
                 continue;
             }
-            // A batch of one: a later landing pops the jobs of one generation that wait together.
-            let (generation, keys, jobs) = (entry.generation, vec![entry.key], vec![entry.job]);
+            let (keys, jobs): (Vec<_>, Vec<_>) = batch.into_iter().map(|entry| (entry.key, entry.job)).unzip();
             // A draw that panics answers with no outcomes, which are refused below.
-            let mut outcomes = catch_unwind(AssertUnwindSafe(|| (self.draw)(jobs, &stop))).unwrap_or_default().into_iter();
+            let outcomes = catch_unwind(AssertUnwindSafe(|| (self.draw)(jobs, &stop))).unwrap_or_default();
             self.shared.held().running = None;
+            // One child, one strike, however many of its jobs ended with it.
+            if outcomes.iter().any(|outcome| matches!(outcome, Outcome::Ended(_))) {
+                strikes = (generation, if strikes.0 == generation { strikes.1 + 1 } else { 1 });
+            }
+            let mut outcomes = outcomes.into_iter();
             for key in keys {
-                let outcome = outcomes.next().unwrap_or_else(|| Outcome::Refused(NO_START.to_owned()));
-                if matches!(outcome, Outcome::Ended(_)) {
-                    strikes = (generation, if strikes.0 == generation { strikes.1 + 1 } else { 1 });
-                }
-                self.report(key, generation, outcome);
+                self.report(key, generation, outcomes.next().unwrap_or_else(|| Outcome::Refused(NO_START.to_owned())));
             }
         }
     }

@@ -17,6 +17,11 @@ use crate::ui::*;
 
 const RING_CAP: usize = 900; // ~15 min of 1 Hz live tail
 const WINDOW_S: f64 = 300.0; // default visible window (5 min)
+/// What of a tick the window composes into its chart: the first processes, and the first characters of a host's, a
+/// process's or a user's name. The chart is SVG the window draws in process, so its size is the window's to hold and not
+/// the sampler's (a name is the file a process ran from, a host name is the daemon's).
+const MAX_PROCS: usize = 16;
+const MAX_NAME_CHARS: usize = 64;
 const GAP_S: f64 = 5.0; // break the trace across gaps wider than this, and mark a host whose last reading is older (stale)
 
 // Trace colors. CPU warm, RAM dim, GPUs a distinct palette (a shared multi-GPU host has two).
@@ -189,12 +194,13 @@ impl MonitorView {
         let sw = 1.6 * s; // data-line stroke width
         let panel_h = (h - pad) / n as f64;
 
-        for (i, host) in self.hosts.iter().enumerate() {
+        for (i, name) in self.hosts.iter().enumerate() {
             let py0 = pad + i as f64 * panel_h;
             let py1 = py0 + panel_h - pad;
-            let Some(buf) = self.bufs.get(host) else {
+            let Some(buf) = self.bufs.get(name) else {
                 continue;
             };
+            let host = &clamped(name);
 
             // ── Header line: host name (bold) + colored current-value readout.
             // The readout shows absolute cpu/ram % and per-GPU util/mem %, and
@@ -265,7 +271,8 @@ impl MonitorView {
                 let txt = buf
                     .top_procs
                     .iter()
-                    .map(|p| format!("{}\u{b7}{} {:.0}%", p.name, p.user, p.cpu_pct))
+                    .take(MAX_PROCS)
+                    .map(|p| format!("{}\u{b7}{} {:.0}%", clamped(&p.name), clamped(&p.user), p.cpu_pct))
                     .collect::<Vec<_>>()
                     .join("  ");
                 out.push_str(&format!(
@@ -412,6 +419,11 @@ fn flush_seg(out: &mut String, seg: &mut Vec<(f64, f64)>, color: &str, sw: f64, 
 pub(super) fn clocks() -> (Instant, f64) {
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     (Instant::now(), epoch)
+}
+
+/// The first `MAX_NAME_CHARS` characters of a name from the daemon.
+fn clamped(name: &str) -> String {
+    name.chars().take(MAX_NAME_CHARS).collect()
 }
 
 /// Text from the daemon (a host, a process or a user name) as the chart's SVG text: one row (`cell_row`), with U+FFFE

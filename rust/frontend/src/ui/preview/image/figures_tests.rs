@@ -55,6 +55,7 @@ mod worker {
     use super::super::super::svg_preview::{settle_frame, SvgPreview, PREVIEW_KEY};
     use super::super::super::svg_run::{Job, Outcome, Stop};
     use super::super::super::svg_wire::Ask;
+    use crate::ui::preview::markdown::media_store::MarkdownMedia;
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -96,7 +97,7 @@ mod worker {
     fn frames(figures: &mut FigureStore, draws: &mut SvgDraws, generation: u64) -> Settled {
         let begun = Instant::now();
         loop {
-            let mut settled = settle_frame(draws, figures, &mut SvgPreview::default(), generation).figures;
+            let mut settled = settle_frame(draws, figures, &mut SvgPreview::default(), &mut MarkdownMedia::default(), generation).figures;
             if let Some((url, one)) = settled.pop() {
                 assert!(settled.is_empty() && url == URL, "one figure settles, once");
                 return one;
@@ -113,7 +114,7 @@ mod worker {
         let mut figures = FigureStore::default();
         assert!(matches!(reply(&mut figures, &mut draws, 1, b"<svg/>"), Reply::Submitted), "an SVG is not decoded here");
         // The stand-in holds the job until released, so nothing has settled and nothing is installed.
-        assert!(settle_frame(&mut draws, &mut figures, &mut SvgPreview::default(), 1).figures.is_empty());
+        assert!(settle_frame(&mut draws, &mut figures, &mut SvgPreview::default(), &mut MarkdownMedia::default(), 1).figures.is_empty());
         assert!(figures.handled(URL), "a figure being drawn is not fetched again");
         assert!(figures.get(URL).is_none() && figures.metrics().is_empty(), "nothing is installed by the reply");
         release.store(true, SeqCst);

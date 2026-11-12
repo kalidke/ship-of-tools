@@ -469,6 +469,20 @@ fn a_draw_past_its_wall_bound_is_killed_and_refused() {
 }
 
 #[test]
+fn a_child_that_ends_early_refuses_the_rest_of_its_batch_in_its_words() {
+    // A batch is one child: the job that holds it past the wall ends it, and the jobs after it, never begun, are
+    // refused in the wall's words; the one before it was answered whole.
+    let red = rect("red");
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(Duration::from_secs(1), ROOMY, &scratch);
+    let jobs = vec![job(4, 4, red.as_bytes()), job(100, 100, SPIN.as_bytes()), job(4, 4, red.as_bytes()), job(4, 4, red.as_bytes())];
+    let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
+    assert_eq!(outcomes.len(), 4);
+    assert!(matches!(&outcomes[0], Outcome::Drawn { w: 4, h: 4, .. }), "{:?}", outcomes[0]);
+    assert_eq!(outcomes[1..], [ended("took past 1 s"), ended("took past 1 s"), ended("took past 1 s")]);
+}
+
+#[test]
 fn a_heap_end_during_the_input_write_says_heap() {
     // 200 MiB against a 64 MiB heap: the child ends while its input is still being written, so the writer meets a
     // closed pipe, and the words are the exit status's.

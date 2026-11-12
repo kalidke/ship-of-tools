@@ -17,6 +17,7 @@ use super::figure_store::{FigureStore, Settled};
 use super::svg_draws::{Done, SvgDraws};
 use super::svg_run::{Job, Outcome};
 use super::svg_wire::Ask;
+use crate::ui::preview::markdown::media_store::{is_math_job, MarkdownMedia};
 
 /// The preview's key at the worker. A figure's key is a URL that resolved to a project file, and none holds `://`
 /// (`resolve_figure_node_id`), so no figure has this one.
@@ -168,24 +169,29 @@ impl SvgPreview {
     }
 }
 
-/// What a frame's step settled: each figure's outcome, and the preview's.
+/// What a frame's step settled: each figure's outcome, each math snippet's, and the preview's.
 pub(in crate::ui) struct Frame {
     pub figures: Vec<(String, Settled)>,
+    pub math: Vec<((String, bool), Settled)>,
     pub preview: Option<Step>,
 }
 
 /// The top of a frame: the worker is told the pane's `generation`, then every outcome it has returned goes to its
-/// owner (the preview by `PREVIEW_KEY`, else a figure), and the window acts on what settled.
+/// owner (the preview by `PREVIEW_KEY`, a math snippet by its prefix, else a figure), and the window acts on what settled.
 pub(in crate::ui) fn settle_frame(
-    draws: &mut SvgDraws, figures: &mut FigureStore, preview: &mut SvgPreview, generation: u64,
+    draws: &mut SvgDraws, figures: &mut FigureStore, preview: &mut SvgPreview, media: &mut MarkdownMedia, generation: u64,
 ) -> Frame {
     draws.advance(generation);
     let mut done = Vec::new();
     draws.drain(|each| done.push(each));
-    let mut frame = Frame { figures: Vec::new(), preview: None };
+    let mut frame = Frame { figures: Vec::new(), math: Vec::new(), preview: None };
     for each in done {
         if each.key == PREVIEW_KEY {
             frame.preview = preview.settle(each).or(frame.preview);
+            continue;
+        }
+        if is_math_job(&each.key) {
+            frame.math.extend(media.settle_drawing(each));
             continue;
         }
         let url = each.key.clone();

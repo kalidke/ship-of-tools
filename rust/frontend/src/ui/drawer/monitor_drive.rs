@@ -96,7 +96,7 @@ impl State {
         let mon_scale = (self.canvas.cell_h() / BASE_CELL_H) as f64;
         let shown = self.layout_help.drawer() == DrawerContent::Monitor;
         if let Some(draw) = self.monitor.plan(cells_to_px(repl_cells), shown, mon_scale) {
-            let quad = quad_from_svg_bytes(
+            let quad = quad_from_own_svg(
                 self.gpu.device(),
                 self.gpu.queue(),
                 self.brushes.pipeline(),

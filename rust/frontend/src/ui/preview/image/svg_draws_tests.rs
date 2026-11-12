@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 struct Stand {
     seen: Mutex<Vec<String>>,
+    /// The size of each batch the draw was given.
+    calls: Mutex<Vec<usize>>,
     released: AtomicBool,
     now: AtomicUsize,
     most: AtomicUsize,
@@ -18,6 +20,7 @@ struct Stand {
 impl Stand {
     fn draw(&self, jobs: Vec<Job>, stop: &Stop) -> Vec<Outcome> {
         let mut outcomes = Vec::new();
+        self.calls.lock().unwrap().push(jobs.len());
         for job in jobs {
             let label = String::from_utf8(job.svg.to_vec()).unwrap();
             self.seen.lock().unwrap().push(label.clone());
@@ -302,4 +305,68 @@ fn the_window_never_waits_behind_a_slow_wake() {
     draws.advance(2);
     assert!(begun.elapsed() < Duration::from_millis(1000), "advance waited {:?} behind a wake", begun.elapsed());
     opener.join().unwrap();
+}
+
+fn batch(labels: &[&str]) -> Vec<(String, Job)> {
+    labels.iter().map(|label| (label.to_string(), job(label))).collect()
+}
+
+#[test]
+fn the_waiting_jobs_of_a_generation_that_batch_are_drawn_by_one_draw() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    draws.submit("a".into(), 1, job("a")).unwrap();
+    within("the first draw to start", || stand.seen() == ["a"]);
+    // Behind the held draw: a batch, a job that does not batch, and a second batch.
+    draws.submit_batch(1, batch(&["ok1", "ok2", "ok3"])).unwrap();
+    draws.submit("ok4".into(), 1, job("ok4")).unwrap();
+    draws.submit_batch(1, batch(&["ok5", "ok6"])).unwrap();
+    stand.release();
+    let got = outcomes(&mut draws, 7);
+    assert_eq!(*stand.calls.lock().unwrap(), [1, 5, 1], "one child for every waiting batched job, in order: {got:?}");
+    assert_eq!(stand.seen(), ["a", "ok1", "ok2", "ok3", "ok5", "ok6", "ok4"]);
+    assert!(got.iter().all(|(_, outcome)| matches!(outcome, Outcome::Drawn { .. })), "{got:?}");
+}
+
+#[test]
+fn a_batch_that_ends_early_refuses_the_rest_in_its_words_and_strikes_once() {
+    let words = "the drawing ended (exit status: 73)";
+    // One child per call: the first job labeled `end` and every job after it end with the child.
+    let draw: Draw = Arc::new(move |jobs: Vec<Job>, _stop: &Stop| {
+        let mut over = false;
+        jobs.iter()
+            .map(|job| {
+                over |= job.svg.starts_with(b"end");
+                if over { Outcome::Ended(words.into()) } else { Outcome::Drawn { w: 1, h: 1, rgba: vec![0; 4] } }
+            })
+            .collect()
+    });
+    let mut draws = SvgDraws::new(1 << 20, || {}, draw);
+    draws.advance(1);
+    draws.submit_batch(1, batch(&["ok0", "end1", "ok2", "ok3"])).unwrap();
+    let got = outcomes(&mut draws, 4);
+    assert!(matches!(got[0].1, Outcome::Drawn { .. }), "{got:?}");
+    assert!(got[1..].iter().all(|(_, outcome)| *outcome == Outcome::Ended(words.into())), "the rest end in the child's words: {got:?}");
+    // Three jobs ended, but one child did: one strike, so the next draw is made.
+    draws.submit("ok4".into(), 1, job("ok4")).unwrap();
+    assert!(matches!(outcomes(&mut draws, 1)[0].1, Outcome::Drawn { .. }), "a batch is one strike, not one per job");
+    draws.submit_batch(1, batch(&["end5", "ok6"])).unwrap();
+    outcomes(&mut draws, 2);
+    draws.submit_batch(1, batch(&["ok7", "ok8"])).unwrap();
+    let got = outcomes(&mut draws, 2);
+    let refusal = Outcome::Refused("an earlier picture in this file was refused".into());
+    assert!(got.iter().all(|(_, outcome)| *outcome == refusal), "the second strike refuses the next batch whole: {got:?}");
+}
+
+#[test]
+fn a_batch_past_the_queued_bytes_is_refused_whole() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 10);
+    draws.advance(1);
+    draws.submit("a".into(), 1, job("a")).unwrap();
+    within("the first draw to start", || stand.seen() == ["a"]);
+    assert_eq!(draws.submit_batch(1, batch(&["okaaaa", "okbbbb", "okcccc"])), Err("too many pictures waiting"));
+    // None of it was queued or counted: the room is whole.
+    assert_eq!(draws.submit_batch(1, batch(&["okdd", "okee"])), Ok(()));
 }

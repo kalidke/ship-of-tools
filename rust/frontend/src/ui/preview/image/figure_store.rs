@@ -45,7 +45,8 @@ pub(in crate::ui) enum Reply {
     Raster { url: String, bytes: Vec<u8> },
 }
 
-/// What a drawing outcome did to its figure; the window acts on all but `Ignored`.
+/// What a drawing outcome did to its figure (or, from `MarkdownMedia`, its math snippet); the window acts on all but
+/// `Ignored`.
 pub(in crate::ui) enum Settled {
     /// The key is not a figure drawing, or the outcome is of a generation that is not the one pending.
     Ignored,

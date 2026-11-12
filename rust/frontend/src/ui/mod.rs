@@ -36,7 +36,7 @@ use crate::ui::preview::markdown::{
 };
 use crate::ui::preview::image::png::quad_from_png_bytes;
 use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
-use crate::ui::preview::image::svg::quad_from_svg_bytes;
+use crate::ui::preview::image::svg::quad_from_own_svg;
 use crate::ui::preview::markdown::media::{
     parse_math_svg_dims, whole_row_bottom, MathSvg, MATHJAX_EX_FACTOR,
 };

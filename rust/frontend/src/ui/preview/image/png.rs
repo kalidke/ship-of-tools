@@ -137,8 +137,8 @@ pub fn quad_and_source_dims_from_png_bytes(
 /// BMP / TIFF — anything `image` recognises) into an RGBA8 bitmap at
 /// its native size, returning the quad alongside its `(w, h)` so the
 /// caller can size placeholder reservations. Errors propagate up — the
-/// chrome already swallows + logs them. SVG goes through
-/// `quad_from_svg_bytes`; this helper rejects it via mime check at the
+/// chrome already swallows + logs them. SVG goes to the drawing worker
+/// (`svg_draws`); this helper rejects it via mime check at the
 /// call site.
 pub fn quad_and_dims_from_bytes(
     device: &wgpu::Device,

@@ -183,6 +183,33 @@ fn a_control_character_in_a_name_leaves_the_chart_drawable() {
 }
 
 #[test]
+fn a_monitor_chart_holds_at_most_its_clamp() {
+    // The window composes this SVG itself, so the daemon's tick does not bound it: a thousand processes with names and
+    // users of 10 KB and a host name as long compose a chart of at most 16 processes of 64 characters each.
+    let long = |c: char| c.to_string().repeat(10_000);
+    let mut v = MonitorView::new();
+    let mut s = sample(1.0, 50.0, &[]);
+    s.top_procs = (0..1000)
+        .map(|n| sot_protocol::ProcSample { name: format!("{n:04}{}", long('n')), user: format!("u{n:04}{}", long('u')), cpu_pct: 1.0 })
+        .collect();
+    let host = long('h');
+    v.apply_tick(HostLatest { host: host.clone(), stale: false, sample: Some(s) });
+    let svg = v.render_svg(800, 240, 1.0, &marks_now(&v));
+    let line = svg.split("<text").find(|t| t.contains(">top ")).expect("the top-processes line");
+    let line = &line[line.find(">top ").unwrap() + 5..line.find("</text>").unwrap()];
+    let procs: Vec<_> = line.split("  ").collect();
+    assert_eq!(procs.len(), 16, "at most 16 processes: {}", procs.len());
+    for p in &procs {
+        let (name, rest) = p.split_once('\u{b7}').unwrap();
+        let user = rest.rsplit_once(' ').unwrap().0;
+        assert_eq!((name.chars().count(), user.chars().count()), (64, 64), "each name and user is cut at 64 characters");
+    }
+    assert!(procs[0].starts_with("0000") && procs[15].starts_with("0015"), "the first 16 are the ones kept");
+    assert!(!svg.contains(&"h".repeat(65)), "the host name is cut at 64 characters too");
+    assert!(svg.len() < 20_000, "the whole chart is bounded by the clamp: {} bytes", svg.len());
+}
+
+#[test]
 fn empty_view_still_renders_a_frame() {
     let v = MonitorView::new();
     let svg = v.render_svg(200, 80, 1.0, &[]);

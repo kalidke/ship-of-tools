@@ -23,7 +23,7 @@ upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file par
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
 `flowed_selection::FlowedSelection` owns mouse selection over flowed text; `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
-anchor, the math SVG, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
+anchor, the SVG slot (no producer since math went to the worker; a deletion candidate), the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
@@ -272,7 +272,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   text) and clip the tint to the paint bounds. Tested by `flowed_selection_tests.rs`, where a fixture pane that is not
   the preview gets the preview's copied text and rectangles for the same wrapped Unicode text.
 - `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
-  (resized only when the rect moved by more than half a pixel), the math SVG beside it, the scroll in body lines, the
+  (resized only when the rect moved by more than half a pixel), an SVG slot beside it (nothing fills it now), the scroll in body lines, the
   definition-line anchor, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
   `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
   selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
@@ -381,9 +381,24 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
   no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
   buffers are rebuilt only when their sources change, which also returns the shared horizontal scroll to the left;
-  the scroll is clamped each frame to the widest table. A math SVG rasterizes once, at the pane's size; an inline
-  math raster is sized to fit the preview pane's width and its reservation's height, never wider than the pane
-  (`a_formula_wider_than_the_pane_rasterizes_at_the_pane_width`).
+  the scroll is clamped each frame to the widest table. A math SVG is drawn by the worker, never on the window's
+  thread: the paint pass (`prepare_media`) collects the shown snippets that want a raster (`MathSvg::wants_raster`: not
+  drawn, and not asked under the pane's generation) with each one's pixel size, and `request_rasters` asks for them as
+  one batch (`SvgDraws::submit_batch`: one child for the frame's snippets, and for every other batched job waiting),
+  marking each asked under that generation. A snippet is asked once per generation: a refusal is terminal for it
+  until the source is installed anew (a later generation asks again) or its entry is replaced by a fresh reply, and a
+  resize or a later frame asks nothing. An outcome counts only if the snippet was asked under the generation it
+  carries (`settle_drawing`): a departed generation's `Stale` can arrive after the new one asked again, and changes
+  nothing; a current `Stale` leaves the snippet unasked, so the next paint asks again. The window keeps only the
+  upload (`on_math_settled`). An inline math raster is sized to fit the preview pane's width and its reservation's
+  height, never wider than the pane (`a_formula_wider_than_the_pane_rasterizes_at_the_pane_width`). Tests, in
+  media_store_tests.rs (a stand-in draw): `a_math_snippet_is_submitted_once`,
+  `a_refused_math_snippet_is_not_submitted_on_later_frames`, `the_snippets_of_a_frame_go_to_the_worker_together`,
+  `a_departed_generations_outcome_does_not_undo_a_new_ask`,
+  `a_stale_snippet_is_asked_again_under_the_current_generation`; the native fixture
+  `a_page_of_math_is_drawn_by_the_worker_in_one_batch` draws 50 inline equations through the real child. Limit: a
+  batch has the one wall (`SVG_WALL`) for all its snippets, so a page whose snippets together take longer is cut at
+  it, the rest refused in its words; the old standalone math pane's draw is gone (the SVG slot above is what it filled).
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
@@ -444,7 +459,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
   live tail; a wheel the shell's app tracks is forwarded as is.
 - `MonitorPane` privately owns the Monitor drawer (ADR 0020): its chart model, the raster, the drawer rect, the
-  readings' dirty mark, the subscription this window holds and the declared hub it asks. Each reply marks the
+  readings' dirty mark, the subscription this window holds and the declared hub it asks. The chart is the one SVG the
+  window still draws in its own process (`quad_from_own_svg`): the window's process draws only SVG it composes, and
+  the chart's text is clamped before it is composed, to the first 16 processes and the first 64 characters of each
+  host, process and user name (`MAX_PROCS`, `MAX_NAME_CHARS`; `a_monitor_chart_holds_at_most_its_clamp`), so the
+  sampler does not bound it. Limit: the number of hosts in a roster is not clamped. Each reply marks the
   readings dirty; the layout pass plans a chart when they changed or it was drawn for another size, text scale or set
   of marks, State rasterizes it and installs the result (a failed raster still records what it was drawn for, so it
   is not retried every frame), and another tenant drops it. The subscription's lifecycle (toggle, `--start-monitor`,
@@ -848,16 +867,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (Linux: the real child, drawing, holds no descriptor the window left open, has the null device for stderr and only the
     font variables, plus the few its shell adds, in its environment) and
     `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows) and
-    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it).
+    `a_stopped_draw_is_killed_at_once_and_stale` (a stop during the wait and one before it) and
+    `a_child_that_ends_early_refuses_the_rest_of_its_batch_in_its_words`.
 - The preview source's generation (`InstalledPreviewSource::generation`, preview/source.rs) says which source the pane
   shows, for the drawing worker: a process-wide counter, so a number is never reused. An install, a snapshot's restore
   (`renewed`) and an emptied source (`Default`) each take a fresh one; a repaint of the same source, a reflow or a
   text-scale change, keeps it. Tests, in source.rs: `a_new_source_is_a_new_generation_and_the_same_source_is_not`,
   `a_restored_or_emptied_source_never_reuses_a_generation`.
 - The drawing worker (preview/image/svg_draws.rs): `SvgDraws`, owned by `State`, is the one owner of the window's SVG
-  draws; the markdown figures and the SVG file preview are its submitters so far (math is a later landing). One worker
-  thread, started at the first submit, draws one batch at a time (a batch of one for now; the draw takes a list of
-  jobs, so a generation's math jobs can go to one child later without a change to the queue's rules). The window's
+  draws; the markdown figures, the SVG file preview and the math snippets are its submitters, so no SVG whose bytes the
+  window received is drawn in its own process. One worker thread, started at the first submit, draws one batch at a
+  time: a job from `submit` is a batch of one, and the jobs from `submit_batch` (math) join every other waiting one of
+  their kind in one draw, so one child (a child's start costs about 74 ms on Windows). A batch is queued whole or
+  refused whole (`too many pictures waiting`). The window's
   thread and the worker share one lock over the queue, the bytes waiting and the running draw's `Stop`, never held
   across a draw or the wake, so the window's thread never waits on the worker.
   Rules:
@@ -878,7 +900,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     waiting`.
   - After `SVG_STRIKES` (2) draws of one generation end `Ended` (a bound or a crash; the drawing's own parse error
     is not a strike), its later jobs are `an earlier picture in this file was refused`, without a child; a new
-    generation starts clean.
+    generation starts clean. A strike is one child's end, not one job's: a batch whose child ended early (the
+    jobs it had not answered come back `Ended` in its end's words) is one strike.
   - Outcomes go on a channel that `State` drains at the top of each frame (`SvgDraws::drain`, read in `frame_upkeep`
     through `svg_preview::settle_frame`, which hands each outcome to its owner by key: the preview or a figure); each the worker sends is followed by one
     `MainWake::wake` (the stale ones `advance` and
@@ -897,7 +920,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `the_window_never_waits_behind_a_slow_wake`,
     `a_job_of_a_newer_generation_than_the_frames_is_drawn_and_an_older_one_is_stale`,
     `the_first_submit_before_any_advance_is_drawn`, `a_draw_that_outlives_its_generation_is_stale_whatever_it_says`,
-    `dropping_the_draws_stops_the_draw_and_ends_the_worker`
+    `dropping_the_draws_stops_the_draw_and_ends_the_worker`,
+    `the_waiting_jobs_of_a_generation_that_batch_are_drawn_by_one_draw`,
+    `a_batch_that_ends_early_refuses_the_rest_in_its_words_and_strikes_once`, `a_batch_past_the_queued_bytes_is_refused_whole`
     and `a_draw_that_panics_refuses_its_jobs_and_the_worker_goes_on`.
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),

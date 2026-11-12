@@ -120,7 +120,6 @@ impl ShapedPreview {
         self.selection.rects(&self.flowed())
     }
 
-    pub(in crate::ui) fn show_svg(&mut self, quad: Quad) { self.svg = Some(quad); }
     pub(in crate::ui) fn clear_svg(&mut self) { self.svg = None; }
 
     pub(in crate::ui) fn show_fatal(&mut self, fatal: Option<MarkdownPreview>) { self.fatal = fatal; }

@@ -56,7 +56,7 @@ impl Stand {
 fn frames(draws: &mut SvgDraws, figures: &mut FigureStore, preview: &mut SvgPreview, generation: u64) -> Frame {
     let begun = Instant::now();
     loop {
-        let frame = settle_frame(draws, figures, preview, generation);
+        let frame = settle_frame(draws, figures, preview, &mut MarkdownMedia::default(), generation);
         if frame.preview.is_some() || !frame.figures.is_empty() {
             return frame;
         }
@@ -89,7 +89,7 @@ fn a_current_preview_installs_its_raster_and_a_stale_one_does_not() {
     while stand.given() == 0 && begun.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert!(settle_frame(&mut draws, &mut figures, &mut preview, 2).preview.is_none(), "the departed job is not shown");
+    assert!(settle_frame(&mut draws, &mut figures, &mut preview, &mut MarkdownMedia::default(), 2).preview.is_none(), "the departed job is not shown");
     stand.release();
     assert!(matches!(preview.show(&mut draws, 2, b"\x06", FIT), Step::Pending));
     assert_eq!(picture_width(frames(&mut draws, &mut figures, &mut preview, 2).preview), 6, "the new source, never the old");
@@ -241,7 +241,7 @@ fn a_figure_and_the_preview_each_settle_through_the_one_drain() {
     let begun = Instant::now();
     while figure.is_none() || shown.is_none() {
         assert!(begun.elapsed() < Duration::from_secs(10), "both settle");
-        let frame = settle_frame(&mut draws, &mut figures, &mut preview, 1);
+        let frame = settle_frame(&mut draws, &mut figures, &mut preview, &mut MarkdownMedia::default(), 1);
         figure = figure.or(frame.figures.into_iter().next());
         shown = shown.or(frame.preview);
         std::thread::sleep(Duration::from_millis(1));

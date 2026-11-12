@@ -387,8 +387,9 @@ If the drawer is missing a host you just added, restart the hub.
 
 ### On-philosophy rendering
 
-Traces are drawn as **real SVG**, rasterized through the same `resvg` → wgpu-quad
-pipeline that renders typeset math — not braille/cell plotting, which is the same
+Traces are drawn as **real SVG**, rasterized by `resvg` into a wgpu quad (the one SVG
+the window draws in its own process, since it composes it; typeset math is drawn by the
+window's helper process, as any SVG it receives is) — not braille/cell plotting, which is the same
 class of degraded hack the project rejects for images. A host whose SSH or sampler
 dies renders an explicit **gap**, never a silent flatline or a quiet fallback to
 "looks fine."

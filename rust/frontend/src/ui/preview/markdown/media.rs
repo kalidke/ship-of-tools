@@ -91,6 +91,17 @@ pub(in crate::ui) struct MathSvg {
     /// (response superseded by a re-render) so the next frame
     /// re-rasterises at the current pixel size.
     pub(in crate::ui) rasterised: Option<Quad>,
+    /// The generation of the pane's source this snippet's raster was last asked of the drawing worker under. A raster
+    /// is asked once per generation, so a refusal ends it until the source is installed anew, and a resize draws
+    /// nothing again.
+    pub(in crate::ui) asked: Option<u64>,
+}
+
+impl MathSvg {
+    /// Whether the worker is to be asked for this raster under `generation`: not drawn, and not asked already.
+    pub(in crate::ui) fn wants_raster(&self, generation: u64) -> bool {
+        self.rasterised.is_none() && self.asked != Some(generation)
+    }
 }
 
 /// MathJax's `ex_factor` — the ratio of x-height to em-height for its

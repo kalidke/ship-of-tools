@@ -32,35 +32,16 @@ impl State {
         self.md_media.install_math(
             key,
             MathSvg {
-                svg_bytes: svg_bytes.clone(),
+                svg_bytes,
                 ex,
                 width_ex,
                 height_ex,
                 vertical_align_ex,
                 rasterised: None,
+                asked: None,
             },
         );
         self.window.request_redraw();
-        // Also keep the old standalone math-pane preview
-        // path alive for the M1 acceptance test fixture
-        // (`requirements.md` has a canonical integral
-        // expectation against the math SVG). Soon the
-        // pane will be retired in favour of inline
-        // markdown placement.
-        match quad_from_svg_bytes(
-            self.gpu.device(),
-            self.gpu.queue(),
-            self.brushes.pipeline(),
-            &svg_bytes,
-            1024,
-            256,
-        ) {
-            Ok(q) => {
-                tracing::info!(bytes = svg_bytes.len(), "math SVG rasterised");
-                self.shaped.show_svg(q);
-            }
-            Err(e) => tracing::warn!(error = %e, "math SVG rasterise failed"),
-        }
     }
 
     pub(crate) fn on_markdown_tokens(
