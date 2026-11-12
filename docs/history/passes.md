@@ -1982,3 +1982,10 @@ A landing's record goes here, with its measured times; the package page holds on
   bound counted every generation, so a hostile file's queue would refuse the next file's own preview for good; three
   rules untested; a simpler worker in which a new generation stops the running draw itself, which the fix took, 19 lines
   fewer); review round 2 (no blockers: a lock held across the wake); two fix commits and four gates.
+- A markdown figure's SVG drawn by the worker, the SVG child's seventh landing (5), 2026-11-11: builder launched about
+  22:51, main 23:18 (823a118a0, 9b9a0b453), 27 minutes. About 110 product lines (the plan said 35) and 190 test lines.
+  The builder first added a public open entry naming a weakness that is still open through math; it was taken out
+  before the push, since the list holds no unfixed weakness. Review round 1 (no blockers: the window's code that
+  collects outcomes was untested, so dropping the loop left every SVG figure pending forever and passed; the routing
+  moved into the figure store, where its mutants go red; the frame's one call to it still needs a real window to pin);
+  one fix commit and two gates.
