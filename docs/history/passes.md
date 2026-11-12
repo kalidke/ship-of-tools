@@ -2077,3 +2077,10 @@ A landing's record goes here, with its measured times; the package page holds on
   drawer's copy repeated the shared selection's join loop to leave out an empty line's shaped space, and the shared
   owner now takes a `shown` text per line instead). The gate passed first time in the container where L4b's test had
   failed, the brief having carried that lesson.
+- INSTALLER-ASKS-A-ROWS-TERMINAL, the installer asks only where a person watches, 2026-11-12: builder launched 06:38,
+  main 06:47 (b1ed6e40e), 9 minutes. About 12 product lines and 33 test lines. On Unix the questions go to the file
+  `SOT_INSTALL_TTY` names, else to `/dev/tty` only when standard output or error is a terminal; an agent's shell tool
+  captures both, so it gets the stop line at once instead of a question on its row's terminal. No review: the session
+  read the diff and checked the one case it could break (the bootstrap starts the installer in the background with the
+  person's terminal as its output, so `curl | bash` still asks); the gate's install smoke passed. The Windows witness
+  stays owed (INSTALLER-WINDOWS-ASK-UNWITNESSED).
