@@ -2,7 +2,8 @@
 //! with `HOME`, stderr null), a request on stdin, and its replies and its end read back. Each bound has the file that
 //! meets it. A child that crashes or spins runs under a core limit and in a scratch folder, so nothing it ends by can
 //! leave a core or a report outside that folder. The runner (`svg_run`, the window's half) is tested here too, on the
-//! real child and on stand-ins for it.
+//! real child and on stand-ins for it. On Unix the runner's child is started through a shell that sets `HOME` to the
+//! scratch folder and applies the core limit; on Windows `start` passes the test's own `SYSTEMROOT` and `USERPROFILE`.
 
 // The two files side by side at the root, as they are in the crate, so that the runner's `super::svg_wire` resolves.
 #[path = "../src/ui/preview/image/svg_wire.rs"]
@@ -17,7 +18,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use svg_run::{child_env, draw_in_child, finish, start, Bounds, Job, Outcome};
+use svg_run::{child_env, draw_in_child, finish, killed_by_us, start, Bounds, Job, Outcome};
 use svg_wire::*;
 
 const MIB: usize = 1 << 20;
@@ -25,6 +26,9 @@ const WAIT: Duration = Duration::from_secs(60);
 /// Run under a core limit of one byte, which also stops a piped crash handler (zero does not on every system).
 #[cfg(unix)]
 const WRAP: &str = "ulimit -c 1; exec \"$0\" \"$@\"";
+/// What the runner says of a reply that breaks its form.
+#[cfg(unix)]
+const BAD_REPLY: &str = "the drawing's reply was not what was asked";
 const SVG_OPEN: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">"#;
 
 /// A scratch folder: the child's working directory and `HOME`, removed with this value.
@@ -351,6 +355,12 @@ fn refused(words: &str) -> Outcome {
     Outcome::Refused(words.to_owned())
 }
 
+/// The shell script that starts the real child under the core limit with `HOME` in `scratch`.
+#[cfg(unix)]
+fn wrap(scratch: &Scratch) -> String {
+    format!("HOME='{}'; export HOME; {WRAP}", scratch.0.display())
+}
+
 /// The real child with `heap` bytes of heap and a wall of `wall`; on Unix under a core limit, in `scratch`.
 fn real_child(wall: Duration, heap: usize, scratch: &Scratch) -> (Command, Bounds) {
     let bounds = Bounds { wall, heap: heap as u64, cpu: 30 };
@@ -358,7 +368,7 @@ fn real_child(wall: Duration, heap: usize, scratch: &Scratch) -> (Command, Bound
     #[cfg(unix)]
     let mut command = {
         let mut command = Command::new("/bin/sh");
-        command.args(["-c", WRAP, bin]).args(bounds.args());
+        command.args(["-c", &wrap(scratch), bin]).args(bounds.args());
         command
     };
     #[cfg(not(unix))]
@@ -479,7 +489,7 @@ fn bytes_after_the_last_reply_are_refused() {
     let ask = |script: String| draw_in_child(stand_in(&script), vec![job(1, 1, b"<svg/>")], &bounds);
     // The control: the reply alone is drawn.
     assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}'")), [Outcome::Drawn { w: 1, h: 1, rgba: vec![255, 0, 0, 255] }]);
-    assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}X'")), [refused("the drawing's reply was not what was asked")]);
+    assert_eq!(ask(format!("/usr/bin/printf '{ONE_RED_PIXEL}X'")), [refused(BAD_REPLY)]);
 }
 
 #[cfg(unix)]
@@ -490,8 +500,64 @@ fn a_reply_past_its_ask_is_refused() {
     let begun = Instant::now();
     let command = stand_in(r"/usr/bin/printf 'SVG1R\210\023\000\000\210\023\000\000'; exec /bin/sleep 30");
     let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
-    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused("the drawing's reply was not what was asked")]);
+    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused(BAD_REPLY)]);
     assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reply_that_breaks_its_form_is_refused() {
+    let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
+    for (what, reply) in [
+        ("an error text past 1 KiB", r"SVG1E\001\004"),
+        ("an error text that is not UTF-8", r"SVG1E\002\000\377\376"),
+        ("a tag the runner does not know", "SVG1Z"),
+    ] {
+        let command = stand_in(&format!("/usr/bin/printf '{reply}'"));
+        assert_eq!(draw_in_child(command, vec![job(1, 1, b"<svg/>")], &bounds), [refused(BAD_REPLY)], "{what}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_the_runner_has_to_kill_is_refused_in_the_walls_words() {
+    // It closes its stdout and lives: the runner ends it, and says what the wall says, not that a signal ended it.
+    let begun = Instant::now();
+    let command = stand_in("/usr/bin/printf 'SVG1'; exec /bin/sleep 30 >&-");
+    let bounds = Bounds { wall: Duration::from_secs(5), heap: ROOMY as u64, cpu: 30 };
+    assert_eq!(draw_in_child(command, vec![job(2, 2, b"<svg/>")], &bounds), [refused("took past 5 s")]);
+    assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dropped_start_ends_its_child() {
+    let started = start(stand_in("exec /bin/sleep 30")).expect("start the child");
+    let pid = started.child.id();
+    drop(started);
+    assert!(process_gone(pid), "dropping the start killed and reaped the child");
+}
+
+/// A program that lives for 30 s, and one that ends at once with code 74, on each system.
+fn long_and_short() -> (Command, Command) {
+    #[cfg(unix)]
+    let ((long, long_args), (short, short_args)) = (("/bin/sleep", ["30"].as_slice()), ("/bin/sh", ["-c", "exit 74"].as_slice()));
+    #[cfg(windows)]
+    let ((long, long_args), (short, short_args)) = (("ping", ["-n", "30", "127.0.0.1"].as_slice()), ("cmd", ["/c", "exit", "74"].as_slice()));
+    let mut commands = (Command::new(long), Command::new(short));
+    commands.0.args(long_args);
+    commands.1.args(short_args);
+    commands
+}
+
+#[test]
+fn the_runners_own_kill_is_known_by_its_status() {
+    let (mut long, mut short) = long_and_short();
+    let spawn = |command: &mut Command| command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = spawn(&mut long);
+    child.kill().unwrap();
+    assert!(killed_by_us(&child.wait().unwrap()), "a killed child");
+    assert!(!killed_by_us(&spawn(&mut short).wait().unwrap()), "a child that ended by its own code");
 }
 
 #[cfg(target_os = "linux")]
@@ -499,15 +565,17 @@ fn a_reply_past_its_ask_is_refused() {
 fn a_child_reads_no_descriptor_of_the_window() {
     // A descriptor the window left open without close-on-exec, which the shell stands in for by opening one on its way
     // to `exec`. The child is handed a request that spins and its magic is awaited, so that it has bounded itself and
-    // is drawing when its descriptors are read.
+    // is drawing when its descriptors are read, which also holds what `start` applied: the child's descriptor 2 is the
+    // null device, and its environment is the font list (a token the test sets does not arrive).
     let scratch = Scratch::new();
     let held = scratch.0.join("held");
     std::fs::write(&held, b"x").unwrap();
     let bounds = Bounds { wall: WAIT, heap: ROOMY as u64, cpu: 30 };
     let mut command = Command::new("/bin/sh");
     command
-        .args(["-c", &format!("{WRAP} 3<'{}'", held.display()), env!("CARGO_BIN_EXE_sot")])
+        .args(["-c", &format!("{} 3<'{}'", wrap(&scratch), held.display()), env!("CARGO_BIN_EXE_sot")])
         .args(bounds.args())
+        .env("SOT_SVG_TEST_TOKEN", "secret")
         .current_dir(&scratch.0);
     let mut started = start(command).expect("start the child");
     let mut stdin = started.child.stdin.take().unwrap();
@@ -515,14 +583,28 @@ fn a_child_reads_no_descriptor_of_the_window() {
     let mut magic = [0; 4];
     started.child.stdout.as_mut().unwrap().read_exact(&mut magic).unwrap();
     assert_eq!(magic, MAGIC);
-    let held_by_child: Vec<_> = std::fs::read_dir(format!("/proc/{}/fd", started.child.id()))
+    let pid = started.child.id();
+    // The child closes the fonts it loads while it is drawn, so an entry can vanish between the listing and its read.
+    let held_by_child: Vec<_> = std::fs::read_dir(format!("/proc/{pid}/fd"))
         .unwrap()
-        .map(|entry| std::fs::read_link(entry.unwrap().path()).unwrap())
+        .filter_map(|entry| match std::fs::read_link(entry.unwrap().path()) {
+            Ok(link) => Some(link),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("{error}"),
+        })
         .collect();
+    let stderr = std::fs::read_link(format!("/proc/{pid}/fd/2")).unwrap();
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).unwrap();
     started.child.kill().unwrap();
     started.child.wait().unwrap();
     assert!(held_by_child.len() >= 3, "the listing reads the child's descriptors: {held_by_child:?}");
     assert!(!held_by_child.contains(&held), "the window's descriptor is open in the child: {held_by_child:?}");
+    assert_eq!(stderr, std::path::Path::new("/dev/null"), "the child's stderr is the null device");
+    // The shell adds a few variables of its own (bash exports these) before it execs the child.
+    let names = environ.split(|byte| *byte == 0).filter(|var| !var.is_empty()).map(|var| String::from_utf8_lossy(var.split(|b| *b == b'=').next().unwrap()).into_owned());
+    for name in names.filter(|name| !["PWD", "OLDPWD", "SHLVL", "_"].contains(&name.as_str())) {
+        assert_eq!(child_env([(name.clone().into(), "".into())].into_iter()).len(), 1, "{name} is not a font variable");
+    }
 }
 
 #[cfg(windows)]

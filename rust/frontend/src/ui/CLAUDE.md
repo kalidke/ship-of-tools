@@ -732,7 +732,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     in any case), stderr null, stdin and stdout piped, around `fork_guard` (macOS's birth lock) and with no `pre_exec`,
     so std keeps `posix_spawn` and the start's cost does not grow with the window's memory. On Windows the child gets
     `CREATE_NO_WINDOW` (`sot.exe` is a console program) and is assigned to a kill-on-close `AnonymousJob` before `start`
-    returns, so before any input byte; an assignment that fails kills the child and is an error. The program is the
+    returns, so before any input byte; an assignment that fails is an error. `Started` kills and reaps its child when dropped,
+    so no return or unwind (a panic, a thread the OS refuses) leaves one running. The program is the
     window's own binary (`own_program`: `/proc/self/exe` on Linux, so a computer with no `/proc` cannot start it and
     every draw is `cannot start the drawing`; elsewhere `current_exe`), its arguments `Bounds::args`. `SVG_BOUNDS`: a
     wall of 10 s (about twice the dearest lawful drawing measured, 4.7 s), a heap of 2 GiB (twice the allocator's
@@ -746,9 +747,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     of UTF-8; after the last reply the stream must end. A reply that breaks its form refuses every job with `the drawing's
     reply was not what was asked`. The child is always killed and reaped when `finish` returns, the reap being the one
     unbounded wait (an uninterruptible sleep), as in containment's guarantee 4. Jobs a child did not answer get the words
-    of its end: `took past 10 s` at the wall, `needed more than 2048 MiB` at exit 71 (the exit status wins over a pipe
-    error, so a child that ends at its heap while its input is being written says so), else `the drawing ended (<exit
-    status>)`. Replies already read stay: a hostile job spoils only the jobs after it in its request.
+    of its end: `took past 10 s` at the wall, and also for a child that closed its stdout and lived, which the runner then
+    kills (told by its status: SIGKILL, or code 1 on Windows, where the child's own codes are 71 to 74); `needed more than
+    2048 MiB` at exit 71 (the exit status wins over a pipe error, so a child that ends at its heap while its input is
+    being written says so), else `the drawing ended (<exit status>)`. Replies already read stay: a hostile job spoils only
+    the jobs after it in its request. The two threads are not joined: each ends when its pipe reports the child's end,
+    which is at once unless another process holds a pipe end (a start elsewhere in the window that inherits it); then
+    the reader waits for that process, `finish` still returns at the wall, and the thread lingers until that process
+    lets go.
   - Limits: the child starts no process, and the start's `#[allow(clippy::disallowed_methods)]` says why it stands
     (containment's guarantee 9); on Windows the child runs for a moment outside its job, before it is assigned and given
     any input; a refusal does not say whether the child ended at a bound or the file failed to parse (the worker's
@@ -757,8 +763,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `the_runner_returns_each_job_as_its_pixels_or_its_error`, `a_program_that_cannot_be_started_is_refused_in_words`,
     `a_draw_past_its_wall_bound_is_killed_and_refused` (the pid is gone after), `a_heap_end_during_the_input_write_says_heap`,
     `the_childs_environment_is_the_font_list`, `a_binary_without_the_mode_is_refused_at_once` (a 1 MiB input),
-    `bytes_after_the_last_reply_are_refused`, `a_reply_past_its_ask_is_refused`, `a_child_reads_no_descriptor_of_the_window`
-    (Linux: the real child, drawing, holds no descriptor the window left open) and
+    `bytes_after_the_last_reply_are_refused`, `a_reply_past_its_ask_is_refused`, `a_reply_that_breaks_its_form_is_refused`
+    (an error text past 1 KiB, one not UTF-8, an unknown tag), `a_child_the_runner_has_to_kill_is_refused_in_the_walls_words`,
+    `a_dropped_start_ends_its_child`, `the_runners_own_kill_is_known_by_its_status`, `a_child_reads_no_descriptor_of_the_window`
+    (Linux: the real child, drawing, holds no descriptor the window left open, has the null device for stderr and only the
+    font variables, plus the few its shell adds, in its environment) and
     `a_started_child_is_in_its_job_before_it_is_given_any_input` (Windows).
 - Harness instances (`ephemeral`: `--ephemeral`, any `--capture`) write no shared file and arm no watcher:
   `persist_resume_state` (persist/mod.rs), `maybe_write_fe_state` and the command watcher (control/file_channel.rs),

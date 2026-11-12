@@ -9,7 +9,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -78,12 +78,20 @@ pub(crate) fn child_env(vars: impl Iterator<Item = (OsString, OsString)>) -> Vec
     vars.filter(|(name, _)| name.to_str().is_some_and(font)).collect()
 }
 
-/// A started child; its pipes are still in `child`.
+/// A started child; its pipes are still in `child`. Dropping it kills and reaps the child, so no return or unwind
+/// leaves one running (a kill after the reap is harmless).
 pub(crate) struct Started {
     pub child: Child,
     /// Windows: the kill-on-close job the child was assigned to before it was given any input.
     #[cfg(windows)]
     pub job: sot_platform::host::winjob::AnonymousJob,
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// Starts `command` as the child (`child_command`'s, or a stand-in under test).
@@ -101,18 +109,13 @@ pub(crate) fn start(mut command: Command) -> io::Result<Started> {
         let _fork = sot_platform::host::fd::fork_guard();
         command.spawn()?
     };
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut started = Started {
+    let started = Started {
         child,
         #[cfg(windows)]
         job,
     };
     #[cfg(windows)]
-    if let Err(error) = started.job.assign(&started.child) {
-        let _ = started.child.kill();
-        let _ = started.child.wait();
-        return Err(io::Error::other(error));
-    }
+    started.job.assign(&started.child).map_err(io::Error::other)?;
     Ok(started)
 }
 
@@ -130,15 +133,16 @@ fn refusals(count: usize, words: &str) -> Vec<Outcome> {
 
 /// Writes `jobs` to `started`'s child and reads its replies, to the end of the stream or `bounds.wall`; the child is
 /// dead and reaped when this returns. A reply that breaks its form refuses every job; a child that ends early costs the
-/// jobs it did not answer, in the words of its end.
+/// jobs it did not answer, in the words of its end, and one the runner had to kill (it closed its stdout and lived) in
+/// the wall's. The two threads are not joined: each ends when its pipe reports the child's end.
 pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> Vec<Outcome> {
     let count = jobs.len();
     let asks: Vec<_> = jobs.iter().map(|job| job.size).collect();
     let (stdin, stdout) = (started.child.stdin.take().unwrap(), started.child.stdout.take().unwrap());
     let (tx, rx) = mpsc::channel();
     // Two threads, so that a child that never reads its input (a binary without the mode) is still read from.
-    std::thread::spawn(move || drop(write_request(stdin, &jobs)));
-    std::thread::spawn(move || {
+    let writer = std::thread::Builder::new().spawn(move || drop(write_request(stdin, &jobs)));
+    let reader = std::thread::Builder::new().spawn(move || {
         // Only a reply that broke its form is told; a pipe that ended is the exit status's to explain.
         if let Err(error) = read_replies(stdout, &asks, &tx) {
             if error.kind() == io::ErrorKind::InvalidData {
@@ -146,6 +150,9 @@ pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> V
             }
         }
     });
+    if writer.is_err() || reader.is_err() {
+        return refusals(count, "cannot start the drawing");
+    }
     let deadline = Instant::now() + bounds.wall;
     let (mut outcomes, mut violation, mut timed_out) = (Vec::new(), None, false);
     loop {
@@ -166,7 +173,7 @@ pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> V
     }
     if outcomes.len() < count {
         let words = match status {
-            _ if timed_out => format!("took past {} s", bounds.wall.as_secs()),
+            _ if timed_out || status.as_ref().is_ok_and(killed_by_us) => format!("took past {} s", bounds.wall.as_secs()),
             Ok(status) if status.code() == Some(EXIT_HEAP) => format!("needed more than {} MiB", bounds.heap >> 20),
             Ok(status) => format!("the drawing ended ({status})"),
             Err(error) => format!("the drawing ended ({error})"),
@@ -174,6 +181,15 @@ pub(crate) fn finish(mut started: Started, jobs: Vec<Job>, bounds: &Bounds) -> V
         outcomes.extend(refusals(count - outcomes.len(), &words));
     }
     outcomes
+}
+
+/// Whether `status` is the end the runner's own kill gives: the child had not ended when it was killed.
+pub(crate) fn killed_by_us(status: &ExitStatus) -> bool {
+    #[cfg(unix)]
+    return std::os::unix::process::ExitStatusExt::signal(status) == Some(9);
+    // `Child::kill` terminates a process with code 1; the child's own codes are 71 to 74.
+    #[cfg(windows)]
+    return status.code() == Some(1);
 }
 
 fn write_request(mut to: impl Write, jobs: &[Job]) -> io::Result<()> {
