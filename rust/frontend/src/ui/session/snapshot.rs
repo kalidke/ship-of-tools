@@ -164,7 +164,6 @@ impl State {
         // restored mime; the switch emptied the text pane before this
         // restore, so a row with nothing installed shows none.
         self.raster.hide();
-        self.shaped.clear_svg();
         // The installed source travels whole: restored BEFORE
         // render_preview_source so the repaint (and any scalebar drawn on
         // it) uses THIS workspace's calibration (ADR 0034), `o`/`W`/`O`

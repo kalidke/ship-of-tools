@@ -26,12 +26,10 @@ impl State {
         // PNG > markdown (or any text mime, rendered as markdown). The
         // concept annotation gets its own home once concept-mode-nav
         // lands — for now showing it here was overriding the actual
-        // file content the user navigated to. SVG (math) also drops out
-        // of the cascade by default; it comes back when inline math
-        // placement is wired through the markdown buffer.
+        // file content the user navigated to.
         let preview_rect = cells_to_px(preview_cells);
-        let (show_fatal, show_png, show_svg, show_edit, show_md, show_canvas) = self.preview_shows();
-        let (caption_draw, image_rect, png_rect, svg_rect) = self.layout_figure(preview_rect, show_png, show_svg);
+        let (show_fatal, show_png, show_edit, show_md, show_canvas) = self.preview_shows();
+        let (caption_draw, image_rect, png_rect) = self.layout_figure(preview_rect, show_png);
         let md_rect = self.layout_markdown(preview_rect, cell_w, cell_h);
         // The chat's rectangles come back from its layout, so they are this frame's.
         cell_backs.extend(self.layout_drawer_px(cells_to_px, repl_scrollback_cells, repl_window, repl_cells));
@@ -75,7 +73,7 @@ impl State {
             self.paint_cell_backs(&mut rpass, &cell_backs)?;
             self.paint_preview_png(&mut rpass, png_rect, image_rect)?;
             self.paint_canvas(&mut rpass, show_canvas, image_rect)?;
-            self.paint_figure_bands(&mut rpass, image_rect, preview_rect, &scalebar_draw, &caption_draw, svg_rect)?;
+            self.paint_figure_bands(&mut rpass, image_rect, preview_rect, &scalebar_draw, &caption_draw)?;
             self.paint_monitor_chart(&mut rpass)?;
             self.paint_repl_figures(&mut rpass)?;
             self.paint_code_panels(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;

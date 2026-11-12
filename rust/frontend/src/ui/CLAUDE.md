@@ -23,7 +23,7 @@ upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file par
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
 `flowed_selection::FlowedSelection` owns mouse selection over flowed text; `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
-anchor, the SVG slot (no producer since math went to the worker; a deletion candidate), the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
+anchor, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
 owns the scalebar toggle and label, the caption store and label, and the caption band the last frame reserved;
@@ -272,11 +272,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   text) and clip the tint to the paint bounds. Tested by `flowed_selection_tests.rs`, where a fixture pane that is not
   the preview gets the preview's copied text and rectangles for the same wrapped Unicode text.
 - `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
-  (resized only when the rect moved by more than half a pixel), an SVG slot beside it (nothing fills it now), the scroll in body lines, the
+  (resized only when the rect moved by more than half a pixel), the scroll in body lines, the
   definition-line anchor, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
   `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
   selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
-  Installing a buffer clears selection, drops the SVG and scrolls to the top. A row switch, Escape in the preview
+  Installing a buffer clears selection, scrolls to the top. A row switch, Escape in the preview
   and opening edit mode also clear selection. `released_selection` answers the file's text: a plain or token buffer's
   own range and text, rendered markdown's source lines whole (`TextOrigin::Rendered`), and nothing for a rendered buffer
   with no map (`TextOrigin::Unshared`). The text scope's `preview.copy_selection` copies rendered text on
@@ -403,7 +403,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the worker pops, and each `math.render` reply arrives on its own, so a page costs one child per pop (a pop takes every
   snippet waiting then), not one per page; the 50-equation figure is the all-arrived case. Limit: a
   batch has the one wall (`SVG_WALL`) for all its snippets, so a page whose snippets together take longer is cut at
-  it, the rest refused in its words; the old standalone math pane's draw is gone (the SVG slot above is what it filled).
+  it, the rest refused in its words; the old standalone math pane's draw is gone.
 - `ControlChannel` privately owns the window half of the control channel (ADR 0019): the queue the command-file
   watcher fills through its producer end, drained whole under the lock alone so dispatch never holds it, and the
   signature of the last `fe-state.json` written, so the file is rewritten only when the state it reports changes.
