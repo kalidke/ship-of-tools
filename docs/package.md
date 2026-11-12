@@ -222,9 +222,10 @@ owner running from the service's start (delivery can run with no window open), o
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound
 alone refused), each delivering channel's boundary file and its filed set in memory, a delivering configuration of at
 most 32 channels each with its own floor, one chat listener per comm folder, the watch model handing every new record
-of a delivering channel over once, in order, and the recovery traversal's channel walk and its horizon (no caller
-commits from it until the thread walk lands); the thread walk, delivery's decisions, the daemon's filing and the row
-replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
+of a delivering channel over once, in order, and the recovery traversal, the channel walk with its horizon and the
+walk of every thread with a reply after the boundary (a caller may commit to the horizon from a complete pass, once a
+thread Slack may not serve is settled: `docs/defects.md`, CHAT-DELETED-PARENT-THREAD-UNSERVED); delivery's decisions,
+the daemon's filing and the row replies are unbuilt; SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
 platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,

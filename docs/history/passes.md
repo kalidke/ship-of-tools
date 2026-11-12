@@ -2024,3 +2024,13 @@ A landing's record goes here, with its measured times; the package page holds on
   three drawing and copy claims had no test. Round 2 (no blockers): the scan's memory per marker and per line had no
   row that failed when either scope was dropped. The builder ran its first suite with the real home folder, against
   its brief; nothing under the window's folders changed, and the one daemon test sets its own.
+- B3h2, the recovery traversal's thread walk, 2026-11-12: builder launched 02:47, main 03:19 (18bd75845, 91de4d807,
+  c76ce99b5), 32 minutes, a miss by two. About 76 product lines net (126 added, 50 removed: the channel and thread
+  walks now share one read and one candidate routine) and 230 test lines. Where the minutes went: the build took 11
+  minutes, one review round 12, one fix commit 6 (tests and contract only), the gates 4. Review round 1 (one blocker:
+  the contract let a caller commit to the horizon from a pass cut short at its mail cap, which loses the mail past the
+  cap; the thread reads' halving and the boundary-above-U guard had no failing test; a thread Slack will not serve
+  ends every pass on that channel, recorded as CHAT-DELETED-PARENT-THREAD-UNSERVED, to settle before any caller
+  commits). No second review: the fix changed no product line. The first gate of the fix was run on a mistyped commit
+  id, failed its checkout and still printed its pass line; it was run again on the right commit, and the session's
+  gate script now stops when its checkout fails.
