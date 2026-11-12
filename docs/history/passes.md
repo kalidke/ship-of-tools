@@ -1946,3 +1946,9 @@ A landing's record goes here, with its measured times; the package page holds on
   pointed at each other; a pair with no group file left broken; a lookup that could lead a person to overwrite a
   group's file on its hub; flags that would declare every window computer a dialed daemon) and nine should-fixes.
   The maintainer asked during it that the same message, sent again, take people from wherever the old text left them.
+- A copy from the agent's pane joins the rows the terminal wrapped, PANE-COPY-KEEPS-WRAPS in part, 2026-11-11: builder
+  launched 18:08, main 18:26 (d6816fd1a, 16d271b44), 18 minutes. About 8 product lines and 33 test lines. Review round
+  1 found that the person's case was not this one: the command broke at a space, where Claude Code wraps its own lines
+  (its continuation rows indented two columns), so the terminal's wrap flag is not set there and no copy can tell the
+  break from the program's own; the item stays open for that half. The round also found a wide character's second cell
+  copied as a space. One fix commit and two gates.
