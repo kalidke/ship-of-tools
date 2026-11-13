@@ -2192,3 +2192,21 @@ A landing's record goes here, with its measured times; the package page holds on
   there (a8c3c13bb, main 14:27; the test now normalizes first and builds both forms from that). A test that reads a
   tracked non-TOML file must not assume its line endings; the local gate cannot show it, so the first fix went out
   checked on Linux alone, which is how the second was needed.
+- The previews' poppler and ffmpeg, 2026-11-12, one landing of seven commits (7b910c75f, 3db811924, 120d22329,
+  8ff0c2084, b933d75ff, ac3ef29fe, 609a772fd; main 21:41). A person saw no PDF page on a lab computer running rows that
+  had no poppler (PDF-PREVIEW-NEEDS-POPPLER). The first four commits ran Julia's own builds of the tools from the
+  plugins (built in about 13 minutes from 13:55, gate green 14:39) and held for the maintainer's word once the download
+  was measured at about 246 MB a user, five to ten times my estimate. Their review found the class that matters most
+  here: a JLL's command carries the whole environment and Julia's display of it, or of a process error holding it,
+  prints that environment, so every failure a note or the kernel reports is now fixed words (`ToolFailure`,
+  `error_words`), red by a marker value; the builder's own probe had printed one into its transcript. The gate went
+  red once on the scratch clone's stale manifests, and its Julia step now resolves first. The maintainer's rule
+  (about 20:10): fetch a copy only where the computer lacks the tool. The last three commits: the computer's own tool
+  on the kernel's search path wins, and otherwise the first preview that needs it fetches Julia's copy in a child
+  process into the user's depot, once per tool per user per computer, under one lock, with a note at once, a bound, a
+  paced retry, and nothing at install; a new hosted job fetches and runs both copies on Linux, macOS and Windows. Build
+  20:14 to 20:47, review round 1 11 minutes (0 blockers; a start-up race that started three children from five
+  previews, two rules no test held), fixes 11, round 2 14 (0 blockers; a start that failed and a copy the preview
+  refused were both retried at every preview), fixes 8, then the gate and the hosted run; 87 minutes from the second
+  build's launch, a miss: two review rounds, each finding behavior worth fixing before the landing. The removal of the
+  plugins' lazy load is right once no JLL loads in the kernel (4.5 ms, 2 MiB).
