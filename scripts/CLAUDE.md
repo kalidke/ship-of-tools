@@ -109,7 +109,7 @@ Guarantees, each with the mechanism it rests on:
   Each job is bound by `timeout-minutes`, with a check that every test of a named target runs in
   exactly one shard (`tests/shards.py check`), in five to seven minutes. In the build+test job every step has its own
   bound and the job's is their sum plus two minutes, so a slow runner fails in the step it slowed, named, never as a
-  job ceiling with every step green (seen 2026-11-03 on a macOS runner at a quarter speed). The preview plugins' suites need no system tools (poppler and ffmpeg are the JLLs'), so CI.yml installs none. release-gate.yml, dispatched by hand at the
+  job ceiling with every step green (seen 2026-11-03 on a macOS runner at a quarter speed). The preview plugins' suites use stand-ins and run a real tool only where the runner has it, so CI.yml installs none; the `preview-tools` job runs the real fetch of Julia's poppler and ffmpeg and a real page and poster through it on all three systems. release-gate.yml, dispatched by hand at the
   release gate (pass 11 and before each final release), never on a tag, holds the rest: the `gate-*` shards (the tests
   that sleep, the WGL page test with its depot), the native window proofs (minimized, closed, pane timing), the daemon
   lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, Windows' slow installer publish

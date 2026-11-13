@@ -10,12 +10,12 @@ module ShipToolsVideoFile
 # frontend's existing image preview path renders directly.
 #
 # Poster extraction runs `ffmpeg` on the host where the file lives (often a
-# remote backend), consistent with the backend-side-decode model. It is
-# `FFMPEG_jll`'s own build, run through its command form; nothing is looked up
-# on the search path.
+# remote backend), consistent with the backend-side-decode model. The tool is
+# the computer's own `ffmpeg` if its search path has one, else Julia's copy
+# (`FFMPEG_jll`), fetched at the first preview that needs it
+# (`ConceptExplorerCore.find_tools`).
 
 using ConceptExplorerCore
-using FFMPEG_jll
 
 export VideoFile
 
@@ -29,9 +29,9 @@ struct VideoFile <: ConceptExplorerCore.FileType end
 
 const VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv", ".m4v")
 
-# The tool as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
-# ffmpeg still loads this module; a test stands another command in here.
-const FFMPEG = Ref{Function}(() -> FFMPEG_jll.ffmpeg())
+# About 212 MB with the libraries it needs.
+const FFMPEG_TOOLS = ConceptExplorerCore.ToolSet("ffmpeg", "FFMPEG_jll", "b22a6f82-2f65-5046-a5b2-351ab43fb4e5", "9",
+                                                 ["ffmpeg"], "210 MB")
 
 ConceptExplorerCore.matches(::Type{VideoFile}, path::AbstractString) =
     any(endswith(lowercase(path), ext) for ext in VIDEO_EXTENSIONS)
@@ -47,11 +47,10 @@ the video — never a silent blank pane.
 ConceptExplorerCore.preview(::Type{VideoFile}, path::AbstractString) = _poster(path, ConceptExplorerCore.TOOL_WAIT)
 
 function _poster(path::AbstractString, bound::Real)
-    if !FFMPEG_jll.is_available()
-        return _note("no ready-built ffmpeg exists for this platform. Playback opens in the browser with `o`.")
-    end
+    tools = ConceptExplorerCore.find_tools(FFMPEG_TOOLS)
+    tools isa AbstractString && return _note("$tools Playback opens in the browser with `o`.")
     poster = try
-        ConceptExplorerCore.read_within(`$(FFMPEG[]()) -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, bound)
+        ConceptExplorerCore.read_within(`$(tools["ffmpeg"]) -loglevel error -ss 0 -i $path -frames:v 1 -f image2pipe -vcodec png -`, bound)
     catch e
         return _note("Couldn't extract a poster frame: $(ConceptExplorerCore.error_words(e))\n\nPlayback still opens in the browser with `o`.")
     end

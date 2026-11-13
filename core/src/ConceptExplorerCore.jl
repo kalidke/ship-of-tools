@@ -32,6 +32,7 @@ using InteractiveUtils: subtypes
 using JSON3
 using JuliaSyntax
 using SHA
+using FileWatching.Pidfile: trymkpidlock
 
 export FileType, ConceptEntity, AnnotationKind
 export TreeNode, PreviewPayload
@@ -268,6 +269,92 @@ function read_within(cmd::Cmd, seconds::Real)
                                                        "exited with code $(p.exitcode)", true))
     end
     out
+end
+
+"""
+    ToolSet(name, jll, uuid, compat, programs, size)
+
+External programs a plugin runs, and Julia's copy of them for a computer that has none: the JLL package `jll` (with its
+`uuid` and `compat`) holding every program in `programs`, `size` its download in words ("about 160 MB"), `name` what the
+person's note calls it. See [`find_tools`](@ref).
+"""
+struct ToolSet
+    name::String
+    jll::String
+    uuid::String
+    compat::String
+    programs::Vector{String}
+    size::String
+end
+
+# The longest a fetch may run, in seconds, and the wait after a failed one before the next is tried.
+const FETCH_BOUND = 600
+const FETCH_PACE = Ref(600)
+
+# Seams a test stands other things in: the kernel's own lookup, the folder holding every copy ("" is the user's depot),
+# and the command that fetches one.
+const WHICH = Ref{Function}(Sys.which)
+const TOOL_HOME = Ref("")
+const TOOL_FETCH = Ref{Function}((dir, set) -> addenv(
+    `$(Base.julia_cmd()) --startup-file=no --project=$dir $(joinpath(@__DIR__, "fetch_tool.jl")) $dir $(set.jll) $(set.uuid) $(set.compat) $FETCH_BOUND $(set.programs)`,
+    "JULIA_LOAD_PATH" => Sys.iswindows() ? "@;@stdlib" : "@:@stdlib"))   # the fetch's own: its folder and the standard library
+
+tool_dir(set::ToolSet) = joinpath(isempty(TOOL_HOME[]) ? joinpath(first(DEPOT_PATH), "ship-of-tools") : TOOL_HOME[], set.jll)
+
+# The fetch holds a pidfile lock for its life. A dead holder's lock is reclaimed once its file is 2 s old (the holder
+# touches it every 0.5 s; a live one silent for 10 s counts as dead). The same numbers are in fetch_tool.jl.
+fetching(dir) = (l = trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = 2, refresh = 0.5); l === false || close(l); l === false)
+
+# What the fetch recorded in `copy.txt` (lines `key=value`: the library path variable and its value, then each
+# program's file), as one command per program with the library path ahead of the process's own; `nothing` if there is
+# no record or a program's file is gone.
+function fetched_copy(dir, set::ToolSet)
+    try
+        pairs = (split(l, "="; limit = 2) for l in eachline(joinpath(dir, "copy.txt")) if occursin('=', l))
+        kv = Dict(String(k) => String(v) for (k, v) in pairs)
+        all(p -> isfile(get(kv, p, "")), set.programs) || return nothing
+        env = kv["libpath_env"]
+        libs = join(filter(!isempty, [kv["libpath"], get(ENV, env, "")]), Sys.iswindows() ? ';' : ':')
+        Dict(p => addenv(Cmd([kv[p]]), env => libs) for p in set.programs)
+    catch
+        nothing
+    end
+end
+
+"""
+    find_tools(set) -> Union{Dict{String,Cmd}, String}
+
+Where a plugin's tools come from, decided at each preview and never remembered past a fetch's end or a miss: the programs
+on the kernel's search path if all of `set.programs` are there; else Julia's copy, once fetched; else a string, the words
+of a note saying why there is no tool yet. The fetch is a child process started here and never waited for: the first
+preview that finds neither tool starts it and answers at once with the note, a preview while it runs says so and starts
+none, one at a time per tool for this user on this computer whatever number of kernels run (the lock is the child's own,
+so a child that died holds nothing). It is bounded by `FETCH_BOUND` seconds; a failure is kept as fixed words, shown by
+every preview until `FETCH_PACE[]` seconds have passed, after which the next preview tries again. The copy is the JLL's
+files in the user's depot, run as its own processes with the JLL's library path: nothing is loaded into this process.
+"""
+function find_tools(set::ToolSet)
+    found = [WHICH[](p) for p in set.programs]
+    all(!isnothing, found) && return Dict(p => Cmd([f]) for (p, f) in zip(set.programs, found))
+    dir = tool_dir(set)
+    copy = fetched_copy(dir, set)
+    copy === nothing || return copy
+    what = "Julia's copy of $(set.name) (about $(set.size))"
+    mkpath(dir)
+    fetching(dir) && return "$what is still being downloaded. Select the file again when it ends."
+    failed = joinpath(dir, "failed.txt")
+    left = FETCH_PACE[] - (time() - mtime(failed))
+    if isfile(failed) && left > 0
+        return "$what could not be downloaded: $(first(readline(failed), 200)). The next try is in $(ceil(Int, left / 60)) minutes."
+    end
+    try
+        open(joinpath(dir, "fetch.log"), "w") do log
+            run(pipeline(TOOL_FETCH[](dir, set); stdin = devnull, stdout = log, stderr = log); wait = false)
+        end
+    catch
+        return "$what could not be downloaded: the download could not start."
+    end
+    "$(set.name) was not found on this computer, so $what is being downloaded now, once for this computer. Select the file again when it ends."
 end
 
 end # module

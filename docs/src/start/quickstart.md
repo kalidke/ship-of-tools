@@ -26,8 +26,9 @@ to pin one).
   must be 1.12 or newer too.
 - Optional, on the backend machine: **node/npm** (typeset math in markdown
   previews renders in a node process; without it math is not typeset). PDF
-  pages and a video's poster frame need nothing installed: the previews bring
-  their own poppler and ffmpeg.
+  pages and a video's poster frame use the computer's poppler and ffmpeg if it
+  has them; where it has none, the first such preview downloads a copy once
+  (about 160 MB and 210 MB, no administrator rights).
 
 !!! warning "Try it in a VM or a separate account"
     The installer changes your own agent setup (the Codex skills and plugin

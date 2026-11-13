@@ -113,27 +113,13 @@ ConceptExplorerCore.matches(::Type{BoomMatchFile}, path::AbstractString) =
         @test unk.payload.code == "unknown_op"
     end
 
-    @testset "the PDF and video plugins load at their first preview" begin
-        # Their tools are JLLs (about 37 MiB), so a kernel that never previews one does not load them.
-        loaded(name) = any(m -> nameof(m) === name, values(Base.loaded_modules))
-        @test !loaded(:ShipToolsPDFFile) && !loaded(:ShipToolsVideoFile)
-        examples = joinpath(@__DIR__, "..", "..", "..", "examples", "preview")
-        function preview_mime(file)
-            req = JSON3.write(Dict(:v => 1, :id => 3, :kind => "req", :op => "file.preview",
-                                   :payload => Dict(:path => joinpath(examples, file))))
-            output = IOBuffer()
-            SK.serve(IOBuffer(req * "\n"), output; project_root = examples)
-            JSON3.read(String(take!(output))).payload.mime
-        end
-        @test preview_mime("sample.pdf") == "image/png"
-        @test loaded(:ShipToolsPDFFile) && !loaded(:ShipToolsVideoFile)
-        @test preview_mime("sample.mp4") == "image/png"
-        @test loaded(:ShipToolsVideoFile)
-        # Every extension a lazy plugin claims has its row.
-        for ext in Main.ShipToolsVideoFile.VIDEO_EXTENSIONS
-            @test get(SK.LAZY_PLUGIN_FOR_EXT, ext, nothing) == "ShipToolsVideoFile"
-        end
-        @test SK.LAZY_PLUGIN_FOR_EXT[".pdf"] == "ShipToolsPDFFile"
+    @testset "the kernel's environment holds no JLL of a preview tool" begin
+        # Nothing is downloaded at instantiate: Julia's copy of poppler or ffmpeg is fetched at the first preview that
+        # finds the tool nowhere (ConceptExplorerCore.find_tools).
+        # Boolean first: a failed @test prints its operands, and the manifest is long.
+        manifest = read(joinpath(dirname(Base.active_project()), "Manifest.toml"), String)
+        held = occursin("[[deps.Poppler_jll]]", manifest) || occursin("[[deps.FFMPEG_jll]]", manifest)
+        @test !held
     end
 
     @testset "no reply or stderr line holds a command's environment" begin

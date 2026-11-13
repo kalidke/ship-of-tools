@@ -102,8 +102,10 @@ command -v node npm       # OPTIONAL — math rendering in markdown previews
   Tell the human; if they want math, install node and re-run (or run
   `npm ci` in `<checkout>/rust/backend/sidecars/mathjax`).
 - **poppler and ffmpeg** need no check and no install: the PDF and video
-  previews run their own copies, which the installer downloads with the kernel's
-  Julia environment (about 250 MB, no administrator rights).
+  previews use the computer's own if it has them, and otherwise the first such
+  preview downloads Julia's copy into the user's Julia depot, once (about 160 MB
+  for poppler, 210 MB for ffmpeg, no administrator rights, the network needed
+  then). The installer downloads nothing for them.
 - An upgrade to a tmux-free tag removes the old sot-tmux.service unit by
   itself.
 - **Linux x86_64, glibc ≥ 2.35** → full install works.

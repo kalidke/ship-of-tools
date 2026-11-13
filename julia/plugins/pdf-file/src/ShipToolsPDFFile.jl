@@ -7,11 +7,11 @@ module ShipToolsPDFFile
 # via the 3-arg `preview` form. Rasterization shells out to poppler
 # (`pdftoppm` for the page bitmap, `pdfinfo` for the page count) on the
 # host where the file lives — same backend-side-decode model as the
-# ffmpeg poster path (ADR 0018). Both tools are `Poppler_jll`'s own build,
-# run through its command form; nothing is looked up on the search path.
+# ffmpeg poster path (ADR 0018). The tools are the computer's own where its
+# search path has both, else Julia's copy (`Poppler_jll`), fetched at the first
+# preview that needs it (`ConceptExplorerCore.find_tools`).
 
 using ConceptExplorerCore
-using Poppler_jll
 
 export PDFFile
 
@@ -29,10 +29,9 @@ struct PDFFile <: ConceptExplorerCore.FileType end
 # (zoom-triggered re-rasterize, deferred in ADR 0021).
 const RASTER_DPI = 144
 
-# The tools as the JLL's command form (a `Cmd` with its library path set). A function, so a platform with no ready-built
-# poppler still loads this module; a test stands other commands in here.
-const PDFTOPPM = Ref{Function}(() -> Poppler_jll.pdftoppm())
-const PDFINFO = Ref{Function}(() -> Poppler_jll.pdfinfo())
+# The two programs are one build, so Julia's copy holds both. About 158 MB with the libraries it needs.
+const POPPLER = ConceptExplorerCore.ToolSet("poppler", "Poppler_jll", "9c32591e-4766-534b-9725-b71a8799265b", "25",
+                                            ["pdftoppm", "pdfinfo"], "160 MB")
 
 ConceptExplorerCore.matches(::Type{PDFFile}, path::AbstractString) =
     endswith(lowercase(path), ".pdf")
@@ -98,9 +97,8 @@ function _preview_page(path::AbstractString, page::Int;
                        fit_w::Union{Int,Nothing}=nothing,
                        fit_h::Union{Int,Nothing}=nothing,
                        bound::Real=ConceptExplorerCore.TOOL_WAIT)
-    if !Poppler_jll.is_available()
-        return _note("no ready-built poppler exists for this platform.")
-    end
+    tools = ConceptExplorerCore.find_tools(POPPLER)
+    tools isa AbstractString && return _note(tools)
     deadline = time() + bound
     left() = max(deadline - time(), 0.1)
     path = abspath(path)
@@ -110,7 +108,7 @@ function _preview_page(path::AbstractString, page::Int;
         last(cached_info)
     else
         read_info = try
-            _pdf_info(path, left())
+            _pdf_info(tools["pdfinfo"], path, left())
         catch e
             # A tool that ran out of time says nothing about the file, so it is not remembered.
             return _note("Couldn't read this file's page count: $(ConceptExplorerCore.error_words(e))")
@@ -149,7 +147,7 @@ function _preview_page(path::AbstractString, page::Int;
             # root yields 0 bytes silently, and without `-singlefile` the `-`
             # is treated as a filename prefix (`./--1.png` in the cwd). `-png`
             # keeps the frontend's existing image path.
-            ConceptExplorerCore.read_within(`$(PDFTOPPM[]()) -png $scale_args -f $p -l $p -singlefile $path`, left())
+            ConceptExplorerCore.read_within(`$(tools["pdftoppm"]) -png $scale_args -f $p -l $p -singlefile $path`, left())
         catch e
             return _note("Couldn't rasterize page $p: $(ConceptExplorerCore.error_words(e))")
         end
@@ -163,7 +161,7 @@ function _preview_page(path::AbstractString, page::Int;
 end
 
 """
-    _pdf_info(path, bound) -> Union{Tuple{Int,Float64,Float64}, Nothing}
+    _pdf_info(pdfinfo, path, bound) -> Union{Tuple{Int,Float64,Float64}, Nothing}
 
 `(page_count, page_w_pts, page_h_pts)` from one `pdfinfo` run, or `nothing`
 when the tool fails or the Pages field is absent (corrupt/encrypted file).
@@ -171,9 +169,9 @@ A run that outlasts `bound` seconds throws.
 Page size falls back to 0×0 when unparsable — callers treat that as "no
 geometry" and use the fixed-DPI path.
 """
-function _pdf_info(path::AbstractString, bound::Real)
+function _pdf_info(pdfinfo::Cmd, path::AbstractString, bound::Real)
     out = try
-        String(ConceptExplorerCore.read_within(`$(PDFINFO[]()) $path`, bound))
+        String(ConceptExplorerCore.read_within(`$pdfinfo $path`, bound))
     catch e
         e isa ConceptExplorerCore.ToolFailure && e.exited && return nothing
         rethrow()

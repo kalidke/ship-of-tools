@@ -347,12 +347,15 @@ check, pinning a version, and rolling back are in
   continues, and math renders as raw LaTeX. To add math later, install node
   and re-run the installer (or `npm ci` in
   `<checkout>/rust/backend/sidecars/mathjax`).
-- PDF pages and video poster frames in previews need nothing installed: the
-  kernel's Julia environment brings its own poppler (`Poppler_jll`) and ffmpeg
-  (`FFMPEG_jll`), downloaded into the user's Julia depot (about 250 MB unpacked on
-  x86_64 Linux) when the installer instantiates it, with no administrator rights (the install needs the network for it).
-  They exist for the platforms the release ships (Linux x86_64, Windows x86_64 and
-  macOS aarch64); on a platform with none the preview shows a note saying so.
+- **poppler** (`pdftoppm`, `pdfinfo`) and **ffmpeg**, optional, on the backend machine:
+  PDF pages and video poster frames in previews use the computer's own if its search
+  path has them. The installer does not check for them or install them. Where one is
+  missing, the first preview that needs it downloads Julia's copy (`Poppler_jll`, about
+  160 MB, or `FFMPEG_jll`, about 210 MB) into the user's Julia depot, once, with no
+  administrator rights (that computer needs the network at that moment); the preview
+  says so and the file is selected again when the download ends. The copies exist for
+  the platforms the release ships (Linux x86_64, Windows x86_64 and macOS aarch64); on
+  a platform with none the preview shows a note saying so.
 - Frontend roles need **glibc 2.35** or newer (Ubuntu 22.04 or newer) and a
   desktop session (X11 or Wayland): the frontend is a native window. It
   renders with `wgpu` through Vulkan on Linux, Metal on macOS and DirectX 12

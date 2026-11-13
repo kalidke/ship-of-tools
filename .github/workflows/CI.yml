@@ -165,8 +165,9 @@ jobs:
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
-      # pdf-file and video-file run poppler and ffmpeg from Poppler_jll and FFMPEG_jll, which the
-      # instantiate below downloads: no system package is installed for their suites.
+      # pdf-file and video-file run the computer's own poppler and ffmpeg, else a copy fetched at the first preview
+      # (the preview-tools job runs that on all three systems). Their suites use stand-ins and run the real tools
+      # only where the runner has them, so no system package is installed here.
       - name: Test ConceptExplorerCore
         timeout-minutes: 5
         run: julia --project=core -e 'using Pkg; Pkg.instantiate(); Pkg.test(coverage=true)'
@@ -193,6 +194,43 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+  # The PDF and video previews run Julia's poppler and ffmpeg where the computer has none, fetched at the first preview
+  # that needs it (ConceptExplorerCore.find_tools). The real fetch and a real page and poster through the copy run on
+  # all three systems: this is the only path a Windows or macOS user gets. Each run starts a new tool folder, so the
+  # fetch always runs; julia-actions/cache restores the depot's registry and artifacts, so after the first run on a
+  # system it downloads nothing and the job takes a few minutes.
+  preview-tools:
+    name: Preview tools fetch - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v3
+      - name: Instantiate the PDF plugin
+        timeout-minutes: 5
+        run: julia --project=julia/plugins/pdf-file -e 'using Pkg; Pkg.instantiate()'
+      - name: Fetch poppler and rasterize a page through it
+        timeout-minutes: 10
+        run: julia --project=julia/plugins/pdf-file julia/plugins/pdf-file/test/real_fetch.jl
+      - name: Instantiate the video plugin
+        timeout-minutes: 5
+        run: julia --project=julia/plugins/video-file -e 'using Pkg; Pkg.instantiate()'
+      - name: Fetch ffmpeg and take a poster frame through it
+        timeout-minutes: 10
+        run: julia --project=julia/plugins/video-file julia/plugins/video-file/test/real_fetch.jl
   docs:
     name: Documentation
     runs-on: ubuntu-24.04

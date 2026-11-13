@@ -171,3 +171,5 @@ struct TestNoMatches <: FileType end
         end
     end
 end
+
+include("tools.jl")

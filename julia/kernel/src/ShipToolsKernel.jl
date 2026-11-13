@@ -5,13 +5,14 @@ using ConceptExplorerCore
 # Built-in "core ships as plugins to itself" plugins. Loaded eagerly so
 # the standard FileType subtypes are present from the first request. If a kernel
 # image ever wants to start without these (e.g. a minimal sandbox), the
-# `using` here is the only thing to drop. The PDF and video plugins are not here: their tools are JLLs, loaded at the
-# first preview of a PDF or a video (`LAZY_PLUGIN_FOR_EXT` in preview.jl).
+# `using` here is the only thing to drop.
 using ShipToolsJsonDoc
 using ShipToolsJuliaSource
 using ShipToolsMarkdown
+using ShipToolsPDFFile
 using ShipToolsPlainText
 using ShipToolsTomlDoc
+using ShipToolsVideoFile
 using JSON3
 using JuliaSyntax
 using JuliaSyntax: @K_str
