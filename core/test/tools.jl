@@ -13,6 +13,12 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
     julia = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.active_project()))`
     old = (CE.WHICH[], CE.TOOL_HOME[], CE.TOOL_FETCH[], CE.FETCH_PACE[])
     words(r) = r isa AbstractString ? r : ""
+    # A function of the script's `FetchTool`, loaded into this process under a module of its own.
+    function fetch_tool(name)
+        m = Module()
+        Base.include(m, joinpath(pkgdir(CE), "src", "fetch_tool.jl"))
+        Base.invokelatest(() -> getfield(getfield(m, :FetchTool), name))
+    end
     until(f) = timedwait(f, 60; pollint = 0.05) == :ok
 
     # A scratch tool folder, a search path holding `found`, and a fetch command whose download is `work(release)`:
@@ -96,16 +102,93 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
         end
     end
 
-    @testset "a child that never took the lock holds the next preview back only for the start-up age" begin
+    @testset "a start that never reached the lock is a failure, paced like any other" begin
         scenario(ends("nothing")) do s
             CE.TOOL_FETCH[] = (d, st) -> (open(io -> println(io, "x"), joinpath(s.home, "starts"), "a"); `true`)
             @test occursin("being downloaded", words(CE.find_tools(set)))
             @test occursin("still being downloaded", words(CE.find_tools(set)))
             @test s.starts() == 1
+            # The stamp outlives its age with no lock held: the words are fixed, and no child starts inside the pace.
             run(`touch -m -t 200001010000 $(joinpath(s.dir, "started"))`)
+            for _ in 1:2
+                @test occursin("could not be downloaded: the download did not start", words(CE.find_tools(set)))
+            end
+            @test s.starts() == 1 && !isfile(joinpath(s.dir, "started"))
+            run(`touch -m -t 200001010000 $(joinpath(s.dir, "failed.txt"))`)
             @test occursin("not found on this computer", words(CE.find_tools(set)))
             @test s.starts() == 2
             rm(joinpath(s.dir, "started"))
+        end
+    end
+
+    @testset "a clock stepped back leaves a stamp or a failure counting for nothing" begin
+        scenario(ends("nothing")) do s
+            CE.TOOL_FETCH[] = (d, st) -> (open(io -> println(io, "x"), joinpath(s.home, "starts"), "a"); `true`)
+            mkpath(s.dir)
+            # A stamp from the future is no running fetch (and no child answered it); a failure from the future paces nothing.
+            write(joinpath(s.dir, "started"), "")
+            run(`touch -m -t 209901010000 $(joinpath(s.dir, "started"))`)
+            @test occursin("could not be downloaded: the download did not start", words(CE.find_tools(set)))
+            run(`touch -m -t 209901010000 $(joinpath(s.dir, "failed.txt"))`)
+            @test occursin("not found on this computer", words(CE.find_tools(set)))
+            @test s.starts() == 1
+            rm(joinpath(s.dir, "started"))
+        end
+    end
+
+    @testset "a spawn error removes the stamp, and the log is appended to until it is large" begin
+        scenario(ends("nothing")) do s
+            CE.TOOL_FETCH[] = (d, st) -> error("no julia")
+            @test occursin("could not be downloaded: the download could not start", words(CE.find_tools(set)))
+            @test !isfile(joinpath(s.dir, "started"))
+            @test !occursin("still being downloaded", words(CE.find_tools(set)))
+            CE.TOOL_FETCH[] = (d, st) -> `true`
+            log = joinpath(s.dir, "fetch.log")
+            write(log, "an earlier line\n")
+            CE.find_tools(set)
+            @test read(log, String) == "an earlier line\n"
+            rm(joinpath(s.dir, "started"))
+            write(log, repeat("x", CE.LOG_MAX + 1))
+            CE.find_tools(set)
+            @test filesize(log) == 0
+            rm(joinpath(s.dir, "started"))
+        end
+    end
+
+    @testset "the child tries the lock for about half a second before it gives up" begin
+        mktempdir() do dir
+            held = CE.trymkpidlock(joinpath(dir, "fetch.lock"))   # the parent's probe holds it for a moment
+            @async (sleep(0.25); close(held))
+            ran = Ref(false)
+            args = [dir, "J", "u", "1", "60", string(CE.LOCK_STALE), string(CE.LOCK_REFRESH)]
+            Base.invokelatest(fetch_tool(:main), args; install = (args...) -> (ran[] = true; nothing))
+            @test ran[]
+        end
+    end
+
+    @testset "a copy the preview would refuse is the fetch's failure, paced, never a refetch at every preview" begin
+        # The real `record` (the child's writer and checker) with a library folder that was never created.
+        work = r -> """begin
+            foreach(p -> write(joinpath(dir, p), ""), ("wid", "get"))
+            FetchTool.record(dir, "SOT_TEST_LIBS", joinpath(dir, "never-created"),
+                             ["wid" => joinpath(dir, "wid"), "get" => joinpath(dir, "get")])
+        end"""
+        scenario(work) do s
+            CE.find_tools(set)
+            @test s.ended()
+            @test readline(joinpath(s.dir, "failed.txt")) == "the downloaded copy would not run"
+            for _ in 1:2
+                @test occursin("could not be downloaded: the downloaded copy would not run", words(CE.find_tools(set)))
+            end
+            @test s.starts() == 1
+        end
+        # And the same record with its folder is accepted.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "lib"))
+            foreach(p -> write(joinpath(dir, p), ""), ("wid", "get"))
+            files = ["wid" => joinpath(dir, "wid"), "get" => joinpath(dir, "get")]
+            @test Base.invokelatest(fetch_tool(:record), dir, "SOT_TEST_LIBS", joinpath(dir, "lib"), files) === nothing
+            @test CE.read_copy(dir, ["wid", "get"]) !== nothing
         end
     end
 
@@ -140,8 +223,9 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
             logs, running = Test.collect_test_logs(() -> CE.fetching(joinpath(home, "a")))
             @test isempty(logs) && !running
             # The class is real: the same reclaim, unguarded, logs.
-            logs, _ = Test.collect_test_logs(() -> CE.trymkpidlock(joinpath(home, "b", "fetch.lock"); stale_age = 2, refresh = 0.5))
+            logs, control = Test.collect_test_logs(() -> CE.trymkpidlock(joinpath(home, "b", "fetch.lock"); stale_age = 2, refresh = 0.5))
             @test !isempty(logs)
+            control === false || close(control)
         end
     end
 

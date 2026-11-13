@@ -73,7 +73,7 @@ administrator rights and nothing installed system-wide. That preview shows a not
 so, and you select the file again when the download ends. A failed download shows the
 reason in the note and is tried again after ten minutes. The copy lives in your Julia
 depot (its record in a `ship-of-tools` folder there, the files in the depot's artifacts);
-deleting that folder makes the next preview fetch again, and `Pkg.gc()` frees the files.
+deleting that folder makes the next preview fetch again.
 A tool you install later is used from the next preview. When a page or poster cannot be
 made (the tool fails or takes longer than its bound of 8 seconds), the plugin returns a
 `text/markdown` note explaining why — never a silent blank pane.

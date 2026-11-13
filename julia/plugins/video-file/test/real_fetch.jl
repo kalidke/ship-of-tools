@@ -1,6 +1,6 @@
 # The real fetch, run by the hosted CI on Linux, macOS and Windows (the `preview-tools` job): a computer with no
 # ffmpeg, Julia's copy downloaded by the real `fetch_tool.jl` into a scratch folder, and a real poster frame taken
-# through it. Not part of `Pkg.test()`, which would download about 210 MB on every run.
+# through it. Not part of `Pkg.test()`, which would download the copy on every run.
 #   julia --project=julia/plugins/video-file julia/plugins/video-file/test/real_fetch.jl
 
 using ConceptExplorerCore

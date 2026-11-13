@@ -275,7 +275,7 @@ end
     ToolSet(name, jll, uuid, compat, programs, size)
 
 External programs a plugin runs, and Julia's copy of them for a computer that has none: the JLL package `jll` (with its
-`uuid` and `compat`) holding every program in `programs`, `size` its download in words ("160 MB"), `name` what the
+`uuid` and `compat`) holding every program in `programs`, `size` its download in words (such as "N MB"), `name` what the
 person's note calls it. See [`find_tools`](@ref).
 """
 struct ToolSet
@@ -296,6 +296,10 @@ const FETCH_PACE = Ref(600)
 const LOCK_STALE = 2
 const LOCK_REFRESH = 0.5
 const START_AGE = 15
+# A `fetch.log` past this many bytes is started afresh by the next fetch; below it a fetch appends.
+const LOG_MAX = 65536
+
+include("copy_record.jl")
 
 # The arguments of `fetch_tool.jl` (its path first), whose `main` reads them in this order.
 fetch_args(dir, set::ToolSet; bound = FETCH_BOUND) =
@@ -319,25 +323,17 @@ function fetching(dir)
         trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = LOCK_STALE, refresh = LOCK_REFRESH)
     end
     lock === false || close(lock)
-    lock === false || time() - mtime(joinpath(dir, "started")) < START_AGE
+    lock === false || 0 <= time() - mtime(joinpath(dir, "started")) < START_AGE
 end
 
-# What the fetch recorded in `copy.txt` (lines `key=value`: the library path variable and its value, then each
-# program's file), as one command per program with the library path ahead of the process's own; `nothing` if there is
-# no record, or a program's file or a folder of its library path is gone (a deleted artifact, or the library folder of
-# a Julia since replaced).
+# The record `copy.txt` as one command per program, the library path ahead of the process's own; `nothing` unless the
+# record is valid (`read_copy`).
 function fetched_copy(dir, set::ToolSet)
-    try
-        pairs = (split(l, "="; limit = 2) for l in eachline(joinpath(dir, "copy.txt")) if occursin('=', l))
-        kv = Dict(String(k) => String(v) for (k, v) in pairs)
-        all(p -> isfile(get(kv, p, "")), set.programs) || return nothing
-        all(isdir, filter(!isempty, split(kv["libpath"], Sys.iswindows() ? ';' : ':'))) || return nothing
-        env = kv["libpath_env"]
-        libs = join(filter(!isempty, [kv["libpath"], get(ENV, env, "")]), Sys.iswindows() ? ';' : ':')
-        Dict(p => addenv(Cmd([kv[p]]), env => libs) for p in set.programs)
-    catch
-        nothing
-    end
+    kv = read_copy(dir, set.programs)
+    kv === nothing && return nothing
+    env = kv["libpath_env"]
+    libs = join(filter(!isempty, [kv["libpath"], get(ENV, env, "")]), COPY_PATHSEP)
+    Dict(p => addenv(Cmd([kv[p]]), env => libs) for p in set.programs)
 end
 
 """
@@ -348,8 +344,10 @@ on the kernel's search path if all of `set.programs` are there; else Julia's cop
 of a note saying why there is no tool yet. The fetch is a child process started here and never waited for: the first
 preview that finds neither tool starts it and answers at once with the note, a preview while it runs says so and starts
 none (the parent stamps the start before it spawns, so the child's start-up counts), one at a time per tool for this
-user on this computer whatever number of kernels run (the lock is the child's own, so a child that died holds nothing). It is bounded by `FETCH_BOUND` seconds; a failure is kept as fixed words, shown by
-every preview until `FETCH_PACE[]` seconds have passed, after which the next preview tries again. The copy is the JLL's
+user on this computer whatever number of kernels run (the lock is the child's own, so a child that died holds nothing).
+A start that never reached the lock is a failure. A fetch is bounded by `FETCH_BOUND` seconds; a failure is kept as
+fixed words, shown by every preview until `FETCH_PACE[]` seconds have passed, after which the next preview tries
+again. The copy is the JLL's
 files in the user's depot, run as its own processes with the JLL's library path: nothing is loaded into this process.
 """
 function find_tools(set::ToolSet)
@@ -361,18 +359,22 @@ function find_tools(set::ToolSet)
     what = "Julia's copy of $(set.name) (about $(set.size))"
     mkpath(dir)
     fetching(dir) && return "$what is still being downloaded. Select the file again when it ends."
-    failed = joinpath(dir, "failed.txt")
-    left = FETCH_PACE[] - (time() - mtime(failed))
-    if isfile(failed) && left > 0
-        return "$what could not be downloaded: $(first(readline(failed), 200)). The next try is in $(ceil(Int, left / 60)) minutes."
+    failed, stamp, log = joinpath(dir, "failed.txt"), joinpath(dir, "started"), joinpath(dir, "fetch.log")
+    if isfile(stamp)   # a start no child answered: the child never took the lock
+        isfile(failed) && mtime(failed) >= mtime(stamp) || write(failed, "the download did not start\n")
+        rm(stamp; force = true)
+    end
+    age = time() - mtime(failed)   # a clock stepped back leaves a negative age, which paces nothing
+    if isfile(failed) && 0 <= age < FETCH_PACE[]
+        return "$what could not be downloaded: $(first(readline(failed), 200)). The next try is in $(ceil(Int, (FETCH_PACE[] - age) / 60)) minutes."
     end
     try
-        touch(joinpath(dir, "started"))
-        open(joinpath(dir, "fetch.log"), "a") do log
-            run(pipeline(TOOL_FETCH[](dir, set); stdin = devnull, stdout = log, stderr = log); wait = false)
+        touch(stamp)
+        open(log, isfile(log) && filesize(log) > LOG_MAX ? "w" : "a") do io
+            run(pipeline(TOOL_FETCH[](dir, set); stdin = devnull, stdout = io, stderr = io); wait = false)
         end
     catch
-        rm(joinpath(dir, "started"); force = true)
+        rm(stamp; force = true)
         return "$what could not be downloaded: the download could not start."
     end
     "$(set.name) was not found on this computer, so $what is being downloaded now, once for this computer. Select the file again when it ends."

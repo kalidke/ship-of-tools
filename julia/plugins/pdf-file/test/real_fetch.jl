@@ -1,6 +1,6 @@
 # The real fetch, run by the hosted CI on Linux, macOS and Windows (the `preview-tools` job): a computer with no
 # poppler, Julia's copy downloaded by the real `fetch_tool.jl` into a scratch folder, and a real page rasterized
-# through it. Not part of `Pkg.test()`, which would download about 160 MB on every run.
+# through it. Not part of `Pkg.test()`, which would download the copy on every run.
 #   julia --project=julia/plugins/pdf-file julia/plugins/pdf-file/test/real_fetch.jl
 
 using ConceptExplorerCore
