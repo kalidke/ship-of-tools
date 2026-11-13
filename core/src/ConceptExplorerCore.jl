@@ -275,7 +275,7 @@ end
     ToolSet(name, jll, uuid, compat, programs, size)
 
 External programs a plugin runs, and Julia's copy of them for a computer that has none: the JLL package `jll` (with its
-`uuid` and `compat`) holding every program in `programs`, `size` its download in words ("about 160 MB"), `name` what the
+`uuid` and `compat`) holding every program in `programs`, `size` its download in words ("160 MB"), `name` what the
 person's note calls it. See [`find_tools`](@ref).
 """
 struct ToolSet
@@ -290,29 +290,48 @@ end
 # The longest a fetch may run, in seconds, and the wait after a failed one before the next is tried.
 const FETCH_BOUND = 600
 const FETCH_PACE = Ref(600)
+# The fetch's lock: a dead holder's lock is reclaimed once its file is LOCK_STALE s old; the holder touches it every
+# LOCK_REFRESH s, and a live one silent for 5 * LOCK_STALE s counts as dead. The child gets both from `fetch_args`.
+# START_AGE is how long a started fetch counts as running before its child has taken the lock.
+const LOCK_STALE = 2
+const LOCK_REFRESH = 0.5
+const START_AGE = 15
+
+# The arguments of `fetch_tool.jl` (its path first), whose `main` reads them in this order.
+fetch_args(dir, set::ToolSet; bound = FETCH_BOUND) =
+    string.([joinpath(@__DIR__, "fetch_tool.jl"), dir, set.jll, set.uuid, set.compat, bound, LOCK_STALE, LOCK_REFRESH, set.programs...])
 
 # Seams a test stands other things in: the kernel's own lookup, the folder holding every copy ("" is the user's depot),
 # and the command that fetches one.
 const WHICH = Ref{Function}(Sys.which)
 const TOOL_HOME = Ref("")
 const TOOL_FETCH = Ref{Function}((dir, set) -> addenv(
-    `$(Base.julia_cmd()) --startup-file=no --project=$dir $(joinpath(@__DIR__, "fetch_tool.jl")) $dir $(set.jll) $(set.uuid) $(set.compat) $FETCH_BOUND $(set.programs)`,
+    `$(Base.julia_cmd()) --startup-file=no --project=$dir $(fetch_args(dir, set))`,
     "JULIA_LOAD_PATH" => Sys.iswindows() ? "@;@stdlib" : "@:@stdlib"))   # the fetch's own: its folder and the standard library
 
 tool_dir(set::ToolSet) = joinpath(isempty(TOOL_HOME[]) ? joinpath(first(DEPOT_PATH), "ship-of-tools") : TOOL_HOME[], set.jll)
 
-# The fetch holds a pidfile lock for its life. A dead holder's lock is reclaimed once its file is 2 s old (the holder
-# touches it every 0.5 s; a live one silent for 10 s counts as dead). The same numbers are in fetch_tool.jl.
-fetching(dir) = (l = trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = 2, refresh = 0.5); l === false || close(l); l === false)
+# Whether a fetch is running: its child holds the pidfile lock for its life, and the parent's stamp covers the start-up
+# before the child has taken it (the child removes the stamp when it has). Reclaiming a dead holder's lock logs the
+# lock's path, so the probe logs nothing: the kernel's stderr lines are fixed words.
+function fetching(dir)
+    lock = Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+        trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = LOCK_STALE, refresh = LOCK_REFRESH)
+    end
+    lock === false || close(lock)
+    lock === false || time() - mtime(joinpath(dir, "started")) < START_AGE
+end
 
 # What the fetch recorded in `copy.txt` (lines `key=value`: the library path variable and its value, then each
 # program's file), as one command per program with the library path ahead of the process's own; `nothing` if there is
-# no record or a program's file is gone.
+# no record, or a program's file or a folder of its library path is gone (a deleted artifact, or the library folder of
+# a Julia since replaced).
 function fetched_copy(dir, set::ToolSet)
     try
         pairs = (split(l, "="; limit = 2) for l in eachline(joinpath(dir, "copy.txt")) if occursin('=', l))
         kv = Dict(String(k) => String(v) for (k, v) in pairs)
         all(p -> isfile(get(kv, p, "")), set.programs) || return nothing
+        all(isdir, filter(!isempty, split(kv["libpath"], Sys.iswindows() ? ';' : ':'))) || return nothing
         env = kv["libpath_env"]
         libs = join(filter(!isempty, [kv["libpath"], get(ENV, env, "")]), Sys.iswindows() ? ';' : ':')
         Dict(p => addenv(Cmd([kv[p]]), env => libs) for p in set.programs)
@@ -328,8 +347,8 @@ Where a plugin's tools come from, decided at each preview and never remembered p
 on the kernel's search path if all of `set.programs` are there; else Julia's copy, once fetched; else a string, the words
 of a note saying why there is no tool yet. The fetch is a child process started here and never waited for: the first
 preview that finds neither tool starts it and answers at once with the note, a preview while it runs says so and starts
-none, one at a time per tool for this user on this computer whatever number of kernels run (the lock is the child's own,
-so a child that died holds nothing). It is bounded by `FETCH_BOUND` seconds; a failure is kept as fixed words, shown by
+none (the parent stamps the start before it spawns, so the child's start-up counts), one at a time per tool for this
+user on this computer whatever number of kernels run (the lock is the child's own, so a child that died holds nothing). It is bounded by `FETCH_BOUND` seconds; a failure is kept as fixed words, shown by
 every preview until `FETCH_PACE[]` seconds have passed, after which the next preview tries again. The copy is the JLL's
 files in the user's depot, run as its own processes with the JLL's library path: nothing is loaded into this process.
 """
@@ -348,10 +367,12 @@ function find_tools(set::ToolSet)
         return "$what could not be downloaded: $(first(readline(failed), 200)). The next try is in $(ceil(Int, left / 60)) minutes."
     end
     try
-        open(joinpath(dir, "fetch.log"), "w") do log
+        touch(joinpath(dir, "started"))
+        open(joinpath(dir, "fetch.log"), "a") do log
             run(pipeline(TOOL_FETCH[](dir, set); stdin = devnull, stdout = log, stderr = log); wait = false)
         end
     catch
+        rm(joinpath(dir, "started"); force = true)
         return "$what could not be downloaded: the download could not start."
     end
     "$(set.name) was not found on this computer, so $what is being downloaded now, once for this computer. Select the file again when it ends."

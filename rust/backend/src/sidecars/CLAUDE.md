@@ -192,52 +192,46 @@ of each.
     as node.
 
 19. **The kernel loads only the plugins its own project names, gives a file to the first that matches, and bounds the
-    external tools they run.** The kernel's project names the built-in
-    `FileType` plugins as dependencies and `ShipToolsKernel.jl` imports them eagerly (`julia/kernel/Project.toml`,
-    `ShipToolsKernel.jl:9`); the one heavy plugin loads lazily, attempted at most once per kernel (`preview.jl:29`, the
-    `LAZY_PLUGIN_FOR_EXT` table); a file goes to the first `FileType` that matches (`core/src/ConceptExplorerCore.jl:169`);
-    a preview answers a payload or an error, never an exception to the wire (`preview.jl:99`); an external tool a plugin
-    runs has a wall-clock bound (`ConceptExplorerCore.jl:240`). The PDF and video plugins run the computer's own
-    `pdftoppm` and `pdfinfo`, or `ffmpeg`, when the kernel's search path has them, and otherwise Julia's copy
-    (`Poppler_jll`, `FFMPEG_jll`), decided at each preview by `ConceptExplorerCore.find_tools` for the tool's whole set
-    (both poppler programs or neither), never remembered past a fetch's end or a miss. Nothing is downloaded at install
-    or at the kernel's instantiate: neither JLL is a dependency of the kernel or the plugins (a test reads the resolved
-    manifest). The first preview that finds no tool starts one fetch and answers at once with the plugin's note (what
-    is downloaded, about 160 MB for poppler and 210 MB for ffmpeg, once for this computer, select the file again when it
-    ends); the fetch never runs inside a request. It is a child `julia` (`core/src/fetch_tool.jl`, its own
-    environment under `ship-of-tools/<jll>/` in the user's own depot, loaded with its folder and the standard library
-    only) that holds a pidfile lock for its life, so one fetch runs per tool per user per computer across every row's
-    kernel (a preview during it says it is still running), and a child that died holds nothing (its lock is reclaimed
-    once 2 s old; a live holder that stays silent for 10 s counts as dead). It records the programs' files and the
-    JLL's library path in `copy.txt`, and the kernel runs each program as its own process with that path ahead of its
-    own: no JLL is loaded into the kernel, so no kernel dependency changes version because a copy was fetched. A fetch
-    ends within 600 s (its own timer); a failure leaves one line of fixed words (the download or install failed, the
-    copy would not load, no copy is built for this platform, it did not finish within the bound) that every preview
-    shows until 10 minutes have passed, then the next preview tries again; Pkg's messages stay in `fetch.log` beside
-    it. The copy exists for the platforms the release ships (Linux x86_64, Windows x86_64, macOS aarch64). The child
-    is the kernel's own, so it ends with the kernel's tree. The bounds fit inside
-    guarantee 3's wait: a request's tools share `ConceptExplorerCore.TOOL_WAIT` (8 s; a PDF page's `pdfinfo` and
-    `pdftoppm` together, the poster's `ffmpeg` alone), and a request that runs past answers with the plugin's own note
-    (the kernel serves one request at a time, so one queued behind it can still wait past the daemon's 10 s). A failed
-    tool is a `ToolFailure` (`read_within`), and `ConceptExplorerCore.error_words` is the one way an exception becomes
-    text: the kernel's replies and stderr lines and the plugins' notes show a `ToolFailure`'s words (the program's name
-    and what happened: could not start, did not finish within the bound, exit code or signal), a fixed sentence for a
-    failed process or an I/O error, and the type name of anything else, so none holds a command, an environment (a
-    fetched copy's command carries the kernel's whole one) or text taken from one. It does not cover an `ErrorException` whose message
-    someone built from a command. The PDF plugin keeps rendered pages in memory up to
-    `PAGE_CACHE_LIMIT` (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime,
-    page and render size. It reads `pdfinfo` once per path and mtime and never prefetches. The tests:
-    `core/test/tools.jl` (a system tool used and none fetched; one fetch and its note; a second preview in this process
-    and in another starting none; a copy used, the process's library path behind the copy's; a failure's words, the
-    pace and the retry; the bound; a killed fetch blocking nothing; all with the real `fetch_tool.jl` and a stand-in
-    download), the plugin suites (`julia/plugins/pdf-file/test/runtests.jl` hits, path/mtime/size misses and byte
-    eviction through `preview`, the system tool, the copy and the note, the shared bound, no note holding a command or
-    environment; the video suite the same for the poster) and `julia/kernel/test/runtests.jl` (the resolved manifest
-    holds neither JLL). The real fetch and a real page and poster through it run in the hosted `preview-tools` job on
-    all three systems (`julia/plugins/*/test/real_fetch.jl`), not in `Pkg.test`.
-    Limits: a lazy load that failed is not retried until the
-    kernel restarts; nothing discovers a user's packages as plugins (see the root CLAUDE.md); a plugin's own code is the
-    plugin's.
+    external tools they run.** The kernel's project names the built-in `FileType` plugins as dependencies and
+    `ShipToolsKernel.jl` imports them eagerly; the one heavy plugin loads lazily, attempted at most once per kernel (the
+    `LAZY_PLUGIN_FOR_EXT` table in `preview.jl`); a file goes to the first `FileType` that matches; a preview answers a
+    payload or an error, never an exception to the wire; an external tool a plugin runs has a wall-clock bound.
+    The PDF and video plugins run the computer's own `pdftoppm` and `pdfinfo`, or `ffmpeg`, when the kernel's search
+    path has all of the tool's programs, and otherwise Julia's copy (`Poppler_jll`, `FFMPEG_jll`), decided at each
+    preview by `ConceptExplorerCore.find_tools` and never remembered past a fetch's end or a miss. Nothing is
+    downloaded at install or at the kernel's instantiate: neither JLL is a dependency of the kernel or the plugins. The
+    first preview that finds no tool starts one fetch and answers at once with the plugin's note (what is downloaded,
+    how large, once for this computer, select the file again when it ends); a preview during it says it is still
+    running and starts none, including one in the child's start-up (the parent stamps the start before it spawns). The
+    fetch never runs inside a request. It is a child `julia` (`core/src/fetch_tool.jl`, its own environment under
+    `ship-of-tools/<jll>/` in the user's own depot, loaded with its folder and the standard library only) that holds a
+    pidfile lock for its life, so one fetch runs per tool per user per computer across every row's kernel, and a child
+    that died holds nothing (its lock is reclaimed once 2 s old; the reclaim logs nothing). It records the programs'
+    files and the JLL's library path in `copy.txt`, and the kernel runs each program as its own process with that path
+    ahead of its own: no JLL is loaded into the kernel, so no kernel dependency changes version because a copy was
+    fetched. A copy whose program file or library folder is gone is fetched again. A fetch ends within 600 s; a failure
+    leaves one line of fixed words (the download or install failed, the copy would not load, no copy is built for this
+    platform, it did not finish within the bound) that every preview shows until 10 minutes have passed, then the next
+    preview tries again; Pkg's messages stay in `fetch.log` beside it. The copy exists for the platforms the release
+    ships (Linux x86_64, Windows x86_64, macOS aarch64). The bounds fit inside guarantee 3's wait: a request's tools
+    share `ConceptExplorerCore.TOOL_WAIT` (8 s; a PDF page's `pdfinfo` and `pdftoppm` together, the poster's `ffmpeg`
+    alone), and a request that runs past answers with the plugin's own note (the kernel serves one request at a time,
+    so one queued behind it can still wait past the daemon's 10 s). A failed tool is a `ToolFailure` (`read_within`),
+    and `ConceptExplorerCore.error_words` is the one way an exception becomes text: the kernel's replies and stderr
+    lines and the plugins' notes show a `ToolFailure`'s words (the program's name and what happened: could not start,
+    did not finish within the bound, exit code or signal), a fixed sentence for a failed process or an I/O error, and
+    the type name of anything else, so none holds a command, an environment (a fetched copy's command carries the
+    kernel's whole one) or text taken from one. The PDF plugin keeps rendered pages in memory up to `PAGE_CACHE_LIMIT`
+    (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime, page and render
+    size. It reads `pdfinfo` once per path and mtime and never prefetches.
+    Limits: a lazy load that failed is not retried until the kernel restarts; nothing discovers a user's packages as
+    plugins (see the root CLAUDE.md); a plugin's own code is the plugin's; `error_words` does not cover an
+    `ErrorException` whose message someone built from a command. The fetch's 600 s bound and its lock's refresh are the
+    child's own timers on its own event loop, so they are cooperative: a child that never yields is not ended by its
+    parent, and a live holder silent for 10 s counts as dead, so a second child can then start in the same folder. The
+    child belongs to the kernel's tree and ends with it, a fetch cut short that way is begun again by the next preview,
+    and where a platform leaves a child running its kernel's successor says "still running". The real fetch is proved
+    only by the hosted `preview-tools` job, on all three systems, not by `Pkg.test`.
 
 ## The REPL
 The REPL is guarantees R1 to R7 (pass 8b settled them against the code; the Tests table holds each one's test). What it

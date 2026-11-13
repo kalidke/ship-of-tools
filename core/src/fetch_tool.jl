@@ -1,6 +1,6 @@
 # Fetches Julia's copy of an external tool (a JLL package) into a folder of its own and records where its programs are.
 # ConceptExplorerCore.find_tools starts it as a child of the kernel when a preview finds the tool nowhere:
-#   julia --project=<dir> fetch_tool.jl <dir> <jll> <uuid> <compat> <bound seconds> <program>...
+#   julia --project=<dir> fetch_tool.jl <dir> <jll> <uuid> <compat> <bound s> <lock stale s> <lock refresh s> <program>...
 # It touches only <dir> and the user's own depot (Pkg downloads the artifacts there), loads nothing of the kernel, holds
 # <dir>/fetch.lock while it runs (a second fetch finds the lock held and ends at once), and ends within the bound. Its
 # outcome is a file: copy.txt on success, failed.txt with one line of fixed words otherwise. Pkg's own messages go to
@@ -41,8 +41,9 @@ end
 
 function main(args; install = install)
     dir, jll, uuid, compat, bound = args[1:5]
-    lock = trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = 2, refresh = 0.5)
+    lock = trymkpidlock(joinpath(dir, "fetch.lock"); stale_age = parse(Float64, args[6]), refresh = parse(Float64, args[7]))
     lock === false && return
+    rm(joinpath(dir, "started"); force = true)   # the lock now says the fetch is running
     failed = joinpath(dir, "failed.txt")
     rm(failed; force = true)
     function fail(words)
@@ -52,7 +53,7 @@ function main(args; install = install)
     end
     timer = Timer(_ -> fail("it did not finish within $bound s"), parse(Int, bound))
     words = try
-        install(dir, jll, uuid, compat, args[6:end])
+        install(dir, jll, uuid, compat, args[8:end])
     catch e
         @error "fetch failed" exception = (e, catch_backtrace())
         "the fetch failed"

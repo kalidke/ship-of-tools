@@ -29,7 +29,7 @@ struct PDFFile <: ConceptExplorerCore.FileType end
 # (zoom-triggered re-rasterize, deferred in ADR 0021).
 const RASTER_DPI = 144
 
-# The two programs are one build, so Julia's copy holds both. About 158 MB with the libraries it needs.
+# The two programs are one build, so Julia's copy holds both.
 const POPPLER = ConceptExplorerCore.ToolSet("poppler", "Poppler_jll", "9c32591e-4766-534b-9725-b71a8799265b", "25",
                                             ["pdftoppm", "pdfinfo"], "160 MB")
 

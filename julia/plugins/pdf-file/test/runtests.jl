@@ -199,6 +199,27 @@ const SYSTEM_POPPLER = Sys.which("pdftoppm") !== nothing && Sys.which("pdfinfo")
         end
     end
 
+    Sys.isunix() && @testset "each program runs with the copy's library path" begin
+        mktempdir() do dir
+            lib = joinpath(dir, "lib")
+            mkpath(lib)
+            seen = joinpath(dir, "seen")
+            info = joinpath(dir, "pdfinfo")
+            write(info, "#!/bin/sh\nprintf '%s' \"\$SOT_TEST_LIBS\" > '$seen'\nprintf 'Pages: 1\\nPage size: 612 x 792 pts\\n'\n")
+            render = joinpath(dir, "pdftoppm")
+            write(render, "#!/bin/sh\nprintf '%s' \"\$SOT_TEST_LIBS\"\n")
+            chmod(info, 0o755)
+            chmod(render, 0o755)
+            doc = joinpath(dir, "libpath.pdf")
+            write(doc, "x")
+            stand_in_tools(info, render, "SOT_TEST_LIBS" => nothing; libpath = lib) do
+                pp = ConceptExplorerCore.preview(P, doc)
+                @test String(copy(pp.data)) == lib
+                @test read(seen, String) == lib
+            end
+        end
+    end
+
     Sys.isunix() && @testset "no poppler on the computer: a fetched copy is used, else one fetch starts and the note says so" begin
         mktempdir() do dir
             info = joinpath(dir, "pdfinfo")
@@ -222,10 +243,12 @@ const SYSTEM_POPPLER = Sys.which("pdftoppm") !== nothing && Sys.which("pdfinfo")
                 pp = ConceptExplorerCore.preview(P, doc)
                 note = String(copy(pp.data))
                 @test pp.mime == "text/markdown"
-                @test occursin("being downloaded", note) && occursin("poppler", note) && occursin("160 MB", note)
+                @test occursin("being downloaded", note) && occursin("poppler", note) && occursin(ShipToolsPDFFile.POPPLER.size, note)
                 @test occursin("once for this computer", note) && occursin("Select the file again", note)
                 @test starts[] == 1
-                # A failed fetch's fixed words are the next note's, and no new fetch starts inside the pace.
+                # The stand-in fetch ends having failed (the child removes the start stamp and writes the words): the fixed
+                # words are the next note's, and no new fetch starts inside the pace.
+                rm(joinpath(ConceptExplorerCore.tool_dir(ShipToolsPDFFile.POPPLER), "started"))
                 write(joinpath(ConceptExplorerCore.tool_dir(ShipToolsPDFFile.POPPLER), "failed.txt"), "the download failed\n")
                 note = String(copy(ConceptExplorerCore.preview(P, doc).data))
                 @test occursin("could not be downloaded: the download failed", note)
@@ -283,6 +306,8 @@ const SYSTEM_POPPLER = Sys.which("pdftoppm") !== nothing && Sys.which("pdfinfo")
         # a real environment.
         marker = "marker-4c1e8a"
         mktempdir() do dir
+            lib = joinpath(dir, marker)   # the copy's library path must exist, or the copy is no copy
+            mkpath(lib)
             # One stand-in folder per behavior, so each is named pdfinfo or pdftoppm as the tool is.
             function tool(folder, name, body; executable = true)
                 mkpath(joinpath(dir, folder))
@@ -302,7 +327,7 @@ const SYSTEM_POPPLER = Sys.which("pdftoppm") !== nothing && Sys.which("pdfinfo")
             function note_for(info, render; bound=2)
                 doc = joinpath(dir, "doc$(n[] += 1).pdf")
                 write(doc, "x")
-                stand_in_tools(info, render; libpath = "/" * marker) do
+                stand_in_tools(info, render; libpath = lib) do
                     pp = ShipToolsPDFFile._preview_page(doc, 1; bound)
                     pp.mime == "text/markdown" ? String(copy(pp.data)) : ""
                 end

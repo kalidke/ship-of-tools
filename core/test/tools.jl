@@ -10,7 +10,6 @@ const CE = ConceptExplorerCore
 
 Sys.isunix() && @testset "Julia's copy of an external tool" begin
     set = CE.ToolSet("widget", "Widget_jll", "00000000-0000-0000-0000-000000000001", "1", ["wid", "get"], "9 MB")
-    script = joinpath(pkgdir(CE), "src", "fetch_tool.jl")
     julia = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.active_project()))`
     old = (CE.WHICH[], CE.TOOL_HOME[], CE.TOOL_FETCH[], CE.FETCH_PACE[])
     words(r) = r isa AbstractString ? r : ""
@@ -28,7 +27,7 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
             CE.TOOL_FETCH[] = (d, s) -> begin
                 open(io -> println(io, "x"), joinpath(home, "starts"), "a")
                 code = "include(ARGS[1]); FetchTool.main(ARGS[2:end]; install = (dir, args...) -> ($(work(release))))"
-                addenv(`$julia -e $code $script $d $(s.jll) $(s.uuid) $(s.compat) $bound $(s.programs)`, "JULIA_LOAD_PATH" => "@:@stdlib")
+                addenv(`$julia -e $code $(CE.fetch_args(d, s; bound))`, "JULIA_LOAD_PATH" => "@:@stdlib")
             end
             starts() = isfile(joinpath(home, "starts")) ? countlines(joinpath(home, "starts")) : 0
             ended() = until(() -> !CE.fetching(dir) && (isfile(joinpath(dir, "failed.txt")) || isfile(joinpath(dir, "copy.txt"))))
@@ -45,7 +44,8 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
     waits(release) = """begin
         for _ in 1:600; isfile($(repr(release))) && break; sleep(0.1); end
         for p in ("wid", "get"); write(joinpath(dir, p), ""); end
-        write(joinpath(dir, "copy.txt"), "libpath_env=SOT_TEST_LIBS\\nlibpath=/copy/lib\\nwid=\$(joinpath(dir, "wid"))\\nget=\$(joinpath(dir, "get"))\\n")
+        mkpath(joinpath(dir, "lib"))
+        write(joinpath(dir, "copy.txt"), "libpath_env=SOT_TEST_LIBS\\nlibpath=\$(joinpath(dir, "lib"))\\nwid=\$(joinpath(dir, "wid"))\\nget=\$(joinpath(dir, "get"))\\n")
         nothing
     end"""
     # A download that ends at once with `outcome`, Julia source for the words of a failure, nothing, or a throw.
@@ -66,7 +66,7 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
             @test occursin("not found on this computer", note) && occursin("being downloaded", note)
             @test occursin("9 MB", note) && occursin("once", note) && occursin("Select the file again", note)
             @test s.starts() == 1
-            @test until(() -> CE.fetching(s.dir))
+            # At once, before the child has started: the parent's stamp says a fetch is running.
             @test occursin("still being downloaded", words(CE.find_tools(set)))
             # A second kernel is a second process with its own lookup, in the same folder.
             code = """
@@ -80,15 +80,68 @@ Sys.isunix() && @testset "Julia's copy of an external tool" begin
                 """
             @test occursin("still being downloaded", read(addenv(`$julia -e $code $(s.home)`, "JULIA_LOAD_PATH" => "@:@stdlib"), String))
             @test s.starts() == 1
+            # Once the child holds the lock the stamp is gone and the lock says so.
+            @test until(() -> CE.fetching(s.dir) && !isfile(joinpath(s.dir, "started")))
+            @test occursin("still being downloaded", words(CE.find_tools(set)))
+            @test s.starts() == 1
             # The fetch ends and its copy is used, the process's library path behind the copy's; a system tool wins.
             write(s.release, "")
             @test s.ended()
             withenv("SOT_TEST_LIBS" => "/own") do
                 cmds = CE.find_tools(set)
                 @test cmds["wid"].exec == [joinpath(s.dir, "wid")]
-                @test "SOT_TEST_LIBS=/copy/lib:/own" in cmds["wid"].env
+                @test "SOT_TEST_LIBS=$(joinpath(s.dir, "lib")):/own" in cmds["wid"].env
             end
             @test s.starts() == 1
+        end
+    end
+
+    @testset "a child that never took the lock holds the next preview back only for the start-up age" begin
+        scenario(ends("nothing")) do s
+            CE.TOOL_FETCH[] = (d, st) -> (open(io -> println(io, "x"), joinpath(s.home, "starts"), "a"); `true`)
+            @test occursin("being downloaded", words(CE.find_tools(set)))
+            @test occursin("still being downloaded", words(CE.find_tools(set)))
+            @test s.starts() == 1
+            run(`touch -m -t 200001010000 $(joinpath(s.dir, "started"))`)
+            @test occursin("not found on this computer", words(CE.find_tools(set)))
+            @test s.starts() == 2
+            rm(joinpath(s.dir, "started"))
+        end
+    end
+
+    @testset "a copy whose program or library folder is gone is no copy: a fetch starts" begin
+        for gone in ("get", "lib")
+            scenario(ends("nothing")) do s
+                mkpath(joinpath(s.dir, "lib"))
+                foreach(p -> write(joinpath(s.dir, p), ""), set.programs)
+                write(joinpath(s.dir, "copy.txt"), "libpath_env=SOT_TEST_LIBS\nlibpath=$(joinpath(s.dir, "lib"))\nwid=$(joinpath(s.dir, "wid"))\nget=$(joinpath(s.dir, "get"))\n")
+                @test CE.find_tools(set) isa Dict
+                @test s.starts() == 0
+                rm(joinpath(s.dir, gone); recursive = true)
+                @test occursin("being downloaded", words(CE.find_tools(set)))
+                @test s.starts() == 1
+            end
+        end
+    end
+
+    @testset "reclaiming a dead holder's lock logs nothing" begin
+        # The kernel's stderr lines are fixed words; Pidfile's own warning names the lock's path.
+        function dead_lock(dir)
+            proc = run(`true`; wait = false)
+            pid = getpid(proc)
+            wait(proc)
+            mkpath(dir)
+            write(joinpath(dir, "fetch.lock"), "$pid $(gethostname())")   # Pidfile's own format
+            run(`touch -m -t 200001010000 $(joinpath(dir, "fetch.lock"))`)
+        end
+        mktempdir() do home
+            dead_lock(joinpath(home, "a"))
+            dead_lock(joinpath(home, "b"))
+            logs, running = Test.collect_test_logs(() -> CE.fetching(joinpath(home, "a")))
+            @test isempty(logs) && !running
+            # The class is real: the same reclaim, unguarded, logs.
+            logs, _ = Test.collect_test_logs(() -> CE.trymkpidlock(joinpath(home, "b", "fetch.lock"); stale_age = 2, refresh = 0.5))
+            @test !isempty(logs)
         end
     end
 

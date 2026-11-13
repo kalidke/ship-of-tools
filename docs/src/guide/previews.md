@@ -67,14 +67,16 @@ A few notes on the table:
   the pane shows a poster and `o` pops the real file out to the browser.
 
 The previews use the computer's own poppler and ffmpeg when it has them on its search
-path. Where it has none, the first preview that needs one downloads Julia's copy,
-once for this computer and this user (about 160 MB for poppler, 210 MB for ffmpeg,
-into the Julia depot, with no administrator rights and nothing installed
-system-wide): that preview shows a note saying so, and you select the file again
-when the download ends. A failed download shows the reason in the note and is tried
-again after ten minutes. When a page or poster cannot be made (the tool fails or
-takes longer than its bound of 8 seconds), the plugin returns a `text/markdown`
-note explaining why — never a silent blank pane.
+path. Where it has none, the first preview that needs one downloads Julia's copy, once
+for this computer and this user: about 160 MB for poppler and 210 MB for ffmpeg, with no
+administrator rights and nothing installed system-wide. That preview shows a note saying
+so, and you select the file again when the download ends. A failed download shows the
+reason in the note and is tried again after ten minutes. The copy lives in your Julia
+depot (its record in a `ship-of-tools` folder there, the files in the depot's artifacts);
+deleting that folder makes the next preview fetch again, and `Pkg.gc()` frees the files.
+A tool you install later is used from the next preview. When a page or poster cannot be
+made (the tool fails or takes longer than its bound of 8 seconds), the plugin returns a
+`text/markdown` note explaining why — never a silent blank pane.
 
 ## Opens in the browser, not the pane
 

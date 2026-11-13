@@ -29,7 +29,6 @@ struct VideoFile <: ConceptExplorerCore.FileType end
 
 const VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".mkv", ".m4v")
 
-# About 212 MB with the libraries it needs.
 const FFMPEG_TOOLS = ConceptExplorerCore.ToolSet("ffmpeg", "FFMPEG_jll", "b22a6f82-2f65-5046-a5b2-351ab43fb4e5", "9",
                                                  ["ffmpeg"], "210 MB")
 

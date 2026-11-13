@@ -86,6 +86,21 @@ const PNG_MAGIC = UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         end
     end
 
+    Sys.isunix() && @testset "ffmpeg runs with the copy's library path" begin
+        mktempdir() do dir
+            lib = joinpath(dir, "lib")
+            mkpath(lib)
+            ffmpeg = joinpath(dir, "ffmpeg")
+            write(ffmpeg, "#!/bin/sh\nprintf '%s' \"\$SOT_TEST_LIBS\"\n")
+            chmod(ffmpeg, 0o755)
+            withenv("SOT_TEST_LIBS" => nothing) do
+                stand_in_ffmpeg(ffmpeg; libpath = lib) do
+                    @test String(copy(ConceptExplorerCore.preview(V, "clip.mp4").data)) == lib
+                end
+            end
+        end
+    end
+
     Sys.isunix() && @testset "no ffmpeg on the computer: a fetched copy is used, else one fetch starts and the note says so" begin
         mktempdir() do dir
             ffmpeg = joinpath(dir, "ffmpeg")
@@ -104,11 +119,13 @@ const PNG_MAGIC = UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
                 pp = ConceptExplorerCore.preview(V, "clip.mp4")
                 note = String(copy(pp.data))
                 @test pp.mime == "text/markdown"
-                @test occursin("being downloaded", note) && occursin("ffmpeg", note) && occursin("210 MB", note)
+                @test occursin("being downloaded", note) && occursin("ffmpeg", note) && occursin(ShipToolsVideoFile.FFMPEG_TOOLS.size, note)
                 @test occursin("once for this computer", note) && occursin("Select the file again", note)
                 @test occursin("Playback opens in the browser with `o`", note)
                 @test starts[] == 1
-                # A failed fetch's fixed words are the next note's, and no new fetch starts inside the pace.
+                # The stand-in fetch ends having failed (the child removes the start stamp and writes the words): the fixed
+                # words are the next note's, and no new fetch starts inside the pace.
+                rm(joinpath(ConceptExplorerCore.tool_dir(ShipToolsVideoFile.FFMPEG_TOOLS), "started"))
                 write(joinpath(ConceptExplorerCore.tool_dir(ShipToolsVideoFile.FFMPEG_TOOLS), "failed.txt"), "the download failed\n")
                 note = String(copy(ConceptExplorerCore.preview(V, "clip.mp4").data))
                 @test occursin("could not be downloaded: the download failed", note)
@@ -148,6 +165,8 @@ const PNG_MAGIC = UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
         # real environment.
         marker = "marker-4c1e8a"
         mktempdir() do dir
+            lib = joinpath(dir, marker)   # the copy's library path must exist, or the copy is no copy
+            mkpath(lib)
             # One stand-in folder per behavior, so each is named ffmpeg as the tool is.
             function tool(folder, body; executable = true)
                 mkpath(joinpath(dir, folder))
@@ -159,7 +178,7 @@ const PNG_MAGIC = UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
             for (cmd, words) in ((tool("exit", "exit 3"), "exited with code 3"),
                                  (tool("noexec", "exit 0"; executable = false), "could not start"),
                                  (tool("hang", "exec sleep 600"), "did not finish within"))
-                stand_in_ffmpeg(cmd; libpath = "/" * marker) do
+                stand_in_ffmpeg(cmd; libpath = lib) do
                     note = String(copy(ShipToolsVideoFile._poster("clip.mp4", 1).data))
                     # Booleans first: a failed @test prints its operands, and a leaking note must not be one of them.
                     leaked = occursin(marker, note) || occursin("setenv", note) || occursin("Process(", note)

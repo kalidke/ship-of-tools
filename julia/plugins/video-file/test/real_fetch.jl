@@ -17,11 +17,11 @@ sample = joinpath(@__DIR__, "..", "..", "..", "..", "examples", "preview", "samp
     poster() = CE.preview(ShipToolsVideoFile.VideoFile, sample)
     note = String(poster().data)
     @test occursin("being downloaded", note)
-    # Each preview while the fetch runs says so; the poster comes when it ends. 15 minutes is the job's own bound.
+    # Each preview while the fetch runs says so; the poster comes when it ends, within the fetch's own bound.
     pp = poster()
     failure = Ref("")
     began = time()
-    while pp.mime != "image/png" && time() - began < 900
+    while pp.mime != "image/png" && time() - began < CE.FETCH_BOUND + 60
         text = String(copy(pp.data))
         occursin("could not be downloaded", text) && (failure[] = text; break)
         sleep(5)
