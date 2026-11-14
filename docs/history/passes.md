@@ -2273,8 +2273,9 @@ A landing's record goes here, with its measured times; the package page holds on
   live REPL; on the maintainer's word it ran with the restart and passed (the rows unchanged, every window
   reattached). A second computer reached over ssh staged it for its next start at the desk. The cross-computer mail
   matrix, 6 lines, 0 failures, with the hub on rc.5 and the window computer still on rc.4. Named consumer: the
-  maintainer at the window computers; named checks: the four on the candidate's page (a wrapped line copied as one
-  line, a key typed while a mail notice is shown, rows switched quickly, the hub's links after its daemon restarts).
+  maintainer at the window computers; named checks: the four on the candidate's page (a long command copied as one
+  line, busy rows switched quickly while typing, a PDF page and a video frame previewed in a row on a Windows
+  computer's own daemon, and an SVG file, a markdown figure with math and the chat drawer's look).
   Seen while starting that second computer's daemon for a remote person: an ssh sign-in on Windows cannot follow the
   install's junctions (WIN-SSH-JUNCTION-UNTRUSTED), and the hub's spawn still refuses a folder only the far computer
   has (SPAWN-REMOTE-FOLDER).
