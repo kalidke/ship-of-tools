@@ -208,27 +208,6 @@ mod refusal_tests {
         w
     }
 
-    /// Pins the three folders the config and state roots resolve under (the two XDG ones, and the Windows local-app-data
-    /// one), and the comm folder, to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
-    pub(super) struct EnvPinned {
-        _guards: [crate::paths::EnvGuard; 4],
-        _serial: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvPinned {
-        pub(super) fn new(dir: &Path) -> Self {
-            let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA", "SOT_COMM_HOME"].map(crate::paths::EnvGuard::capture);
-            std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
-            std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
-            std::env::set_var("XDG_STATE_HOME", dir.join("state"));
-            std::env::set_var("LOCALAPPDATA", dir.join("local"));
-            let (state, config) = (sot_platform::host::state_dir::daemon_state_dir(), crate::rows::store::app_config_dir());
-            assert!(state.starts_with(dir) && config.starts_with(dir), "the pin missed a root: {state:?}, {config:?}");
-            EnvPinned { _guards: guards, _serial: serial }
-        }
-    }
-
     /// Calls the handler once and returns the single reply frame's payload; the registry's ids must not change.
     /// Every payload carries an account that cannot resolve, so a regressed gate stops at `unknown_account`
     /// (the account check comes after every gate these cases pin) before any row, file or capsule exists.
@@ -255,7 +234,7 @@ mod refusal_tests {
     #[tokio::test]
     async fn workspace_create_refusals_are_unchanged() {
         let env_dir = scratch_dir("env");
-        let _env = EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         // 1. missing root
         let gone = env_dir.path().join("gone");
         let got = refused(&Workspaces::new(), json!({"label": "c1", "project_root": gone.to_string_lossy()})).await;
@@ -386,7 +365,7 @@ mod rollback_tests {
     #[tokio::test]
     async fn failed_same_slug_create_restores_the_prior_row_and_toml() {
         let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         let old_root = env_dir.path().join("old");
         let new_root = env_dir.path().join("new");
         std::fs::create_dir_all(&old_root).unwrap();
@@ -415,7 +394,7 @@ mod rollback_tests {
     #[tokio::test]
     async fn failed_new_create_leaves_nothing() {
         let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         let root = env_dir.path().join("root");
         std::fs::create_dir_all(&root).unwrap();
         let reg = Workspaces::new();
@@ -469,7 +448,7 @@ mod rollback_tests {
     #[tokio::test]
     async fn a_destroy_during_a_failing_create_stays_destroyed() {
         let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         let reg = Workspaces::new();
         let (prior, _before, toml) = seed_prior(&reg, env_dir.path());
         let guard = reg.capsule_guard(&prior.workspace_id).unwrap();
@@ -490,7 +469,7 @@ mod rollback_tests {
     #[tokio::test]
     async fn two_same_slug_creates_leave_the_prior_row_when_both_fail() {
         let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         let reg = Workspaces::new();
         let (prior, before, toml) = seed_prior(&reg, env_dir.path());
         let guard = reg.capsule_guard(&prior.workspace_id).unwrap();
@@ -514,7 +493,7 @@ mod rollback_tests {
     async fn an_unreadable_toml_refuses_the_create_before_the_insert() {
         use std::os::unix::fs::PermissionsExt;
         let env_dir = tempfile::Builder::new().prefix("sot-createrb-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         let reg = Workspaces::new();
         let (_prior, _before, toml) = seed_prior(&reg, env_dir.path());
         std::fs::set_permissions(&toml, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -549,7 +528,7 @@ mod startup_cleanup_tests {
     #[tokio::test]
     async fn a_same_label_create_during_the_startup_cleanup_is_never_the_cleanups_to_end() {
         let env_dir = tempfile::Builder::new().prefix("sot-createcl-").tempdir().unwrap();
-        let _env = super::refusal_tests::EnvPinned::new(env_dir.path());
+        let _env = crate::paths::EnvPinned::new(env_dir.path());
         // The Cleanup's end prunes the comm registry, waiting 10 s for its turn, so it holds the turn shared.
         let _comm = crate::paths::EnvGuard::capture("SOT_COMM_HOME");
         std::env::set_var("SOT_COMM_HOME", env_dir.path().join("comm"));

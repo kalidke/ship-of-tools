@@ -39,6 +39,7 @@ fn oversized_payload_is_refused_before_any_attach() {
 
 #[test]
 fn exactly_the_cap_is_not_oversized() {
+    let _env = crate::paths::EnvPinned::fresh();
     // The cap itself is legal — only `CAP + 1` is refused. This
     // would attempt a real attach (and fail on the nonexistent path
     // some other way), which is enough to prove the size gate did
@@ -72,6 +73,7 @@ fn write_and_enter_oversized_payload_is_refused_before_any_attach() {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_attach_without_a_lane_is_phase_checkpoint() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = Path::new("/nonexistent/sot-lu6c-test-state-dir");
     let budget = Duration::from_secs(5);
     let errs = [

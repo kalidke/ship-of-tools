@@ -63,6 +63,7 @@ fn a_row_slot_never_comes_to_name_another_projects_session() {
 /// A row's start writes the handle it was created with into its pinned self file once, and never over a record.
 #[test]
 fn a_row_start_pins_its_handle_once_and_keeps_a_record() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("comm");
     let p = home.join("self").join("box1__ws-1.txt");

@@ -436,6 +436,7 @@ mod fe_sessions_tests {
     /// both attached and gone.
     #[tokio::test]
     async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
+        let _env = crate::paths::EnvPinned::fresh();
         let clients = Clients::new();
         let g1 = clients.register("c-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(

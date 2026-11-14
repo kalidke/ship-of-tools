@@ -69,6 +69,7 @@ fn only_names_the_registry_makes_are_row_folder_names() {
 
 #[test]
 fn a_close_renames_the_folder_and_a_thread_removes_the_tombstone() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (root, folder) = root_with(ID);
     close_row_folder(root.path(), ID);
     assert!(!folder.exists(), "the row's own folder is gone at once");
@@ -99,6 +100,7 @@ fn a_close_that_keeps_the_folder_logs_why_at_info() {
 
 #[test]
 fn a_held_lock_keeps_the_folder() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (root, folder) = root_with(ID);
     let held = sot_capsule::supervisor::fence::lock_supervisor(&folder).unwrap();
     for floor in [Some(AGE_FLOOR), None] {
@@ -111,6 +113,7 @@ fn a_held_lock_keeps_the_folder() {
 
 #[test]
 fn a_scopes_record_keeps_the_folder() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (root, folder) = root_with(ID);
     #[cfg(target_os = "linux")]
     {
@@ -125,6 +128,7 @@ fn a_scopes_record_keeps_the_folder() {
 
 #[test]
 fn a_row_folder_holding_only_a_fence_file_is_removed() {
+    let _env = crate::paths::EnvPinned::fresh();
     let root = tempfile::tempdir().unwrap();
     let folder = state_dir_for(root.path(), ID);
     std::fs::create_dir_all(&folder).unwrap();
@@ -180,6 +184,7 @@ fn the_sweep_removes_tombstones_without_a_registry_and_keeps_a_registered_row() 
 
 #[test]
 fn the_sweep_removes_an_unnamed_folder_and_keeps_one_another_registry_names() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (root, gone) = root_with("ws-gone-2");
     let named_elsewhere = state_dir_for(root.path(), "ws-elsewhere-3");
     std::fs::create_dir_all(&named_elsewhere).unwrap();
@@ -338,6 +343,7 @@ fn a_symlinked_folder_or_workspaces_folder_is_never_followed() {
 
 #[test]
 fn a_link_inside_is_unlinked_and_its_target_left_alone() {
+    let _env = crate::paths::EnvPinned::fresh();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("precious"), b"x").unwrap();
     let (root, folder) = root_with(ID);

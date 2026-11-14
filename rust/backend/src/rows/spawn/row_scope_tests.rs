@@ -220,6 +220,7 @@ fn every_not_ended_scope_path_keeps_the_file() {
 
 #[test]
 fn scope_file_left_by_a_killed_daemon_is_ended_by_the_next_end() {
+    let _env = crate::paths::EnvPinned::fresh();
     use crate::rows::run::end_run::EndRunOutcome;
     let root = tempfile::tempdir().unwrap();
     let _root = FakeRoot::at(root.path());

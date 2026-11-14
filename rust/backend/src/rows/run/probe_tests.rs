@@ -61,6 +61,7 @@ fn phase_for_missing_fence_only_fires_when_the_fence_file_is_absent() {
 
 #[test]
 fn a_folder_with_a_fence_file_and_no_supervisor_reads_unreachable_not_stopped() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = tempfile::tempdir().expect("tempdir");
     assert_eq!(phase_of(dir.path()), NEVER_STARTED_PHASE, "nothing was ever started here");
     std::fs::write(sot_capsule::supervisor::fence::supervisor_lock_path(dir.path()), b"").expect("the fence file");
