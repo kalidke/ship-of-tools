@@ -419,13 +419,10 @@ impl Screen {
             .unwrap();
 
         // it doesn't make any sense to wrap if the last column in a row
-        // didn't already have contents. don't try to handle the case where a
-        // character wraps because there was only one column left in the
-        // previous row - literally everything handles this case differently,
-        // and this is tmux behavior (and also the simplest). i'm open to
-        // reconsidering this behavior, but only with a really good reason
-        // (xterm handles this by introducing the concept of triple width
-        // cells, which i really don't want to do).
+        // didn't already have contents. FORK: except a wide character that
+        // finds one column left, which wraps and flags its row, so a copy
+        // joins the row to the next as it does any terminal wrap (the left
+        // over cell stays empty).
         let mut wrap = false;
         if pos.col > size.cols - width {
             let last_cell = self
@@ -438,7 +435,10 @@ impl Screen {
                 // self.grid().pos() which we assume to always have a valid
                 // row value. size.cols - 1 is also always a valid column.
                 .unwrap();
-            if last_cell.has_contents() || last_cell.is_wide_continuation() {
+            if last_cell.has_contents()
+                || last_cell.is_wide_continuation()
+                || (width > 1 && pos.col < size.cols)
+            {
                 wrap = true;
             }
         }

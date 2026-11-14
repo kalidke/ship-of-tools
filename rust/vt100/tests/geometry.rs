@@ -114,3 +114,16 @@ fn a_glyph_wider_than_the_model_does_not_panic() {
         );
     }
 }
+
+/// A wide glyph that finds one column left wraps like any other character:
+/// its row is flagged, so the two rows read back as the one line they are
+/// (the cell it left empty is no text).
+#[test]
+fn a_wide_glyph_that_does_not_fit_the_last_column_wraps_and_flags_its_row() {
+    let mut parser = vt100_ctt::Parser::new(4, 5, 0);
+    parser.process("abcd\u{4f60}".as_bytes());
+    assert!(parser.screen().row_wrapped(0));
+    assert!(!parser.screen().cell(0, 4).unwrap().has_contents());
+    assert_eq!(parser.screen().cell(1, 0).unwrap().contents(), "\u{4f60}");
+    assert_eq!(parser.screen().contents(), "abcd\u{4f60}");
+}

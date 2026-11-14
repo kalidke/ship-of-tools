@@ -84,7 +84,8 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     /// Inclusive linear range from client-or-blank. A row the terminal wrapped joins the next with no newline and
-    /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline.
+    /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline, unless the program
+    /// word-wrapped it (`word_wrap_join`), when the next row's text follows after one space.
     /// State writes the owned text to the clipboard, then reports success through `copy_finished`.
     pub(in crate::ui) fn copy_text(&self, pane_cols: u16) -> Option<String> {
         let Some(sel) = self.llm_selection else {
@@ -109,9 +110,6 @@ impl<C: PaneClient> AgentPane<C> {
         };
         let mut out = String::new();
         for row in sr..=er {
-            if row != sr && !screen.row_wrapped(row - 1) {
-                out.push('\n');
-            }
             let cs = if row == sr { sc } else { 0 };
             let ce = if row == er {
                 ec
@@ -127,7 +125,10 @@ impl<C: PaneClient> AgentPane<C> {
                             continue;
                         }
                         if g.is_empty() {
-                            line.push(' ');
+                            // The cell a wide character left empty at a wrap is no text.
+                            if col != pane_cols - 1 || row == er || !screen.row_wrapped(row) {
+                                line.push(' ');
+                            }
                         } else {
                             line.push_str(g);
                         }
@@ -137,6 +138,15 @@ impl<C: PaneClient> AgentPane<C> {
             }
             if row == er || !screen.row_wrapped(row) {
                 line.truncate(line.trim_end_matches(' ').len());
+            }
+            if row != sr && !screen.row_wrapped(row - 1) {
+                match word_wrap_join(screen, row - 1, pane_cols).filter(|_| !line.trim_start().is_empty() && out.ends_with(|c| c != '\n')) {
+                    Some(hard) => {
+                        if !hard { out.push(' '); }
+                        line = line.trim_start().to_owned();
+                    }
+                    None => out.push('\n'),
+                }
             }
             out.push_str(&line);
         }
@@ -241,4 +251,19 @@ impl State {
             }
         }
     }
+}
+
+/// Whether the program word-wrapped the break below `row` of a screen `cols` wide: the next row's first word
+/// would not have fit after the row's last text and one space (`Some`), where a program that wraps its own text
+/// (Claude Code's wrap-ansi, `trim: false, hard: true`) breaks. The flag says a word wider than the row, filling it
+/// to its last column and going on below, was one word (no space is put into it). A blank row or a blank next row
+/// is a real newline (`None`). A real newline that falls exactly where the next word would not fit reads as a wrap.
+fn word_wrap_join(screen: &vt100::Screen, row: u16, cols: u16) -> Option<bool> {
+    let solid = |r: u16, c: u16| screen.cell(r, c).is_some_and(|x| x.is_wide_continuation() || !x.contents().trim().is_empty());
+    let end = (0..cols).rev().find(|&c| solid(row, c))? + 1;
+    let lead = (0..cols).find(|&c| solid(row + 1, c))?;
+    let word = (lead..cols).take_while(|&c| solid(row + 1, c)).count();
+    if usize::from(end) + 1 + word <= usize::from(cols) { return None; }
+    let run = (0..end).rev().take_while(|&c| solid(row, c)).count();
+    Some(end == cols && run + word > usize::from(cols - lead))
 }

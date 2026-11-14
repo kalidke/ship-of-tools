@@ -27,8 +27,8 @@ cannot express the inactive grid or alternate-screen identity. Also removed:
 the `tui-term` feature and its ratatui glue, which the only consumer had
 already switched off.
 
-**Changed — four parser behaviors: three to stop a panic, one a scrollback
-correctness fix.**
+**Changed — five parser behaviors: three to stop a panic, one a scrollback
+correctness fix, one a wrap flag.**
 
 `Row::resize` now clears a wide character's leading cell when shrinking cuts
 off its continuation, which `Row::truncate` already did. Without it, shrinking
@@ -71,6 +71,13 @@ physical top of the screen still feeds scrollback for the lines it scrolls
 off, exactly as a full-screen scroll would. `scroll_up` now checks
 `scroll_top == 0` instead of "region spans the whole screen"; see
 `tests/scroll.rs::scrollback_with_pinned_footer_region`.
+
+A wide glyph that finds one column left wraps, and its row carries the wrap
+flag. Upstream (tmux's rule) wraps it without the flag, so `Screen::contents`
+and a selection's copy read the break as a newline although the terminal made
+it; the cell the glyph leaves empty at the row's end stays empty. Every other
+terminal wrap was already flagged. Pinned in `tests/geometry.rs`, and the two
+recorded `wrap` fixtures that showed the newline now show the joined line.
 
 Nothing else about parsing differs from the release this vendors — and that
 sentence is now checked rather than asserted; see below. (The fixture corpus

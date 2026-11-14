@@ -725,14 +725,25 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `ordinary_input_and_wheel_name_the_shown_run`, `pruning_drops_only_the_removed_hosts_held_rows` and
   `kept_row_invalidation_preserves_the_existing_scope`.
   Held pixels never receive input. Copy uses client-or-blank and clears selection only after clipboard success.
-  A copy joins a row the terminal wrapped onto the next (no newline, trailing spaces kept) and ends a row the program
-  ended with a newline (`copy_joins_a_wrapped_row_and_breaks_where_the_program_did`,
-  `a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined`, `a_wrapped_row_keeps_the_spaces_at_its_wrap_point`).
+  A copy joins a row the terminal wrapped onto the next (no newline, trailing spaces kept; a wide character that
+  found one column left wraps and flags its row in the vt100 fork, its empty cell no text) and ends a row the
+  program ended with a newline (`copy_joins_a_wrapped_row_and_breaks_where_the_program_did`,
+  `a_wrapped_row_keeps_the_spaces_at_its_wrap_point`,
+  `a_wide_character_that_did_not_fit_the_last_column_copies_joined`). Such a row is also joined, after one space with
+  the next row's indent dropped, when the program word-wrapped it (`word_wrap_join`): a wrapper breaks only where the
+  next word does not fit, so the break counts as the program's wrap when that row's first word would not have fit in the
+  columns left after the row's last text and one space; a word wider than the row, which the program fills the row with
+  and goes on below (Claude Code's wrap-ansi, `trim: false, hard: true`), joins with no space
+  (`a_line_the_program_word_wrapped_copies_as_one_line`, `a_break_where_the_next_word_would_have_fit_is_a_real_newline`,
+  `a_word_the_program_broke_at_the_width_rejoins_without_a_space`). Only the agent pane copies from a terminal screen.
   Limits: it rests on the terminal's per-row wrap flag; a width change clears the flags until the program redraws; the
-  vt100 fork does not flag a wrap a wide character causes, so that row still ends in a newline (a wide character's
-  second cell adds no space, `a_wide_character_copies_without_a_space_for_its_second_cell`); and a program's own line
-  breaks are kept, Claude Code's word wrap of its replies included (continuation rows indented, the break's space
-  dropped), since the window cannot tell them from the program's newlines (PANE-COPY-KEEPS-WRAPS stays open).
+  word-wrap test cannot tell a program's real newline that falls exactly where the next word would not fit (a row that
+  fills the width, a rule across the pane) from its wrap, so that newline is joined; it errs that way because a command
+  or a paragraph split at a wrap is the harm a copy is made to avoid, and a joined list item or code row is read at a
+  glance and mended by hand (`a_row_that_exactly_fills_the_width_and_ends_in_a_newline_reads_as_a_word_wrap`); and a
+  wide character's second cell adds no space (`a_wide_character_copies_without_a_space_for_its_second_cell`). The wrap
+  width is taken as the pane's, as Claude Code's is (read from one Claude Code row's screen: its text rows end within
+  the last columns, the continuation rows carry the paragraph's own indent).
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
   backlog is an earlier view of the row), and a copy whose sequence began in that backlog is dropped too
