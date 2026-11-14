@@ -22,6 +22,32 @@ fn defaults_parse_clean() {
     let _ = KeyBindings::defaults();
 }
 
+/// Ctrl with Alt is AltGr on Windows and types a character on several layouts; a bound chord wins over that rule, so no
+/// default may be one (Alt with Shift or Super is not AltGr).
+#[test]
+fn no_default_chord_is_ctrl_or_primary_with_alt() {
+    for spec in ACTIONS {
+        for chord in spec.defaults {
+            let parts: Vec<&str> = chord.split('+').collect();
+            let ctrl = parts.contains(&"Primary") || parts.contains(&"Ctrl");
+            assert!(!(ctrl && parts.contains(&"Alt")), "{} binds {chord}", spec.name);
+        }
+    }
+}
+
+#[test]
+fn copy_as_one_line_is_primary_shift_l_in_the_agent_pane() {
+    use crate::ui::input::help::{Context, Pane};
+    let b = KeyBindings::defaults();
+    let context = Context { pane: Pane::Agent, ..Context::default() };
+    let resolve = |key: &str| {
+        b.resolve(&Key::Character(key.into()), None, Modifiers { shift: true, ..primary() }, context.consumes_text(), |a| context.allows(a))
+            .map(|a| a.spec().name)
+    };
+    assert_eq!(resolve("L"), Some("agent.copy_line"));
+    assert_eq!(resolve("C"), Some("agent.copy"));
+}
+
 #[test]
 fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
     use crate::ui::input::help::{Context, Pane};

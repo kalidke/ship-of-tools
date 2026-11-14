@@ -733,22 +733,28 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined`, `a_wrapped_row_keeps_the_spaces_at_its_wrap_point`,
   `a_wide_character_that_did_not_fit_the_last_column_copies_joined`,
   `the_default_copy_keeps_every_break_the_program_made`: a rule, a table border, a path or a URL starting the next row is
-  not a wrap). `agent.copy_line` (Copy as one line, `Primary+Alt+c`, in the Agent pane's help beside Copy selection) is the
+  not a wrap). `agent.copy_line` (Copy as one line, `Primary+Shift+l`, in the Agent pane's help beside Copy selection) is the
   explicit gesture for a command or paragraph the person knows is one line: the same `copy_text` with `one_line`, where
   terminal wraps join as above and every other break is one space with the next row's indent dropped; a blank row is
   skipped (a gap between paragraphs is one space too, no trailing space); where the row above reaches the last column
-  and its last word with the next row's first would not fit one row, the program cut a word wider than its row (Claude
-  Code's wrap-ansi, `trim: false, hard: true`, read from the code's options) and the pieces join with no space, unless
-  the row is one whole word and the next starts one blank further in, which is how wrap-ansi starts the row after an
-  exactly full one (`cut_word`; `copy_as_one_line_joins_a_command_the_program_wrapped`,
-  `copy_as_one_line_keeps_a_word_cut_at_the_last_column_whole`,
+  the program may have cut a word wider than its row (Claude Code's wrap-ansi, `trim: false, hard: true`, read from the
+  code's options), and the selection's own continuation indent (the smallest first-text column of the rows after the
+  first) decides: a next row starting there continues the word (no space), one starting further in is the row wrap-ansi
+  starts with a space after an exactly full one (one space) (`cut_word`, `continuation_indent`;
+  `copy_as_one_line_joins_a_command_the_program_wrapped`, `copy_as_one_line_keeps_a_word_cut_at_the_last_column_whole`,
   `copy_as_one_line_adds_a_space_after_a_word_that_ended_exactly_at_the_edge`,
+  `copy_as_one_line_keeps_the_space_before_a_long_word_after_a_row_that_ends_at_the_last_column`,
   `copy_as_one_line_skips_blank_rows_and_text_the_selection_does_not_reach`). Only the agent pane copies from a terminal
-  screen. Limits: both rest on the terminal's per-row wrap flag, and a width change clears the flags until the program
-  redraws; the one-line copy joins every row in the selection, so a list, a table or a path list selected into it
-  becomes one line (the person chose it); its cut-word test assumes a row that reaches the last column is a cut word
-  or a full word row, so two long pieces (a rule row and a long word below) glue with no space; and a wide character's
-  second cell adds no space (`a_wide_character_copies_without_a_space_for_its_second_cell`).
+  screen. Limits: both copies rest on the terminal's per-row wrap flag, and a width change clears the flags until the
+  program redraws; the one-line copy joins every row in the selection, so a list, a table or a path list selected into
+  it becomes one line (the person chose it); the cut-word join assumes the program wraps at the pane's last column (the
+  pane's width less its indent), since the selection's widest row cannot tell that width from its longest ordinary
+  row, which would then read as a cut: a program wrapping narrower leaves a space inside a cut word
+  (`copy_as_one_line_needs_the_program_to_wrap_at_the_panes_width`); with fewer than two continuation rows there is no
+  indent to compare, and a row that reaches the last column joins with no space only when its last word and the next
+  row's first would not fit one row together; a real newline after a row that fills the pane exactly, followed by a row
+  at the indent, joins as a cut word; and a wide character's second cell adds no space
+  (`a_wide_character_copies_without_a_space_for_its_second_cell`).
   A copy the selected row's output asks for (OSC 52, Claude Code's `/copy`) is taken from the selected client
   alone, once that client has drained the output that waited for it at its install (`copy_quiet`: a warm client's
   backlog is an earlier view of the row), and a copy whose sequence began in that backlog is dropped too

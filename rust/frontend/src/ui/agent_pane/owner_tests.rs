@@ -1110,6 +1110,8 @@ fn copy_as_one_line_keeps_a_word_cut_at_the_last_column_whole() {
     assert_eq!(copy_line_at(20, b"aa ABCDEFGHIJKLMNOPQ\r\nRSTUVWXY", (0, 0), (1, 7)).as_deref(), Some("aa ABCDEFGHIJKLMNOPQRSTUVWXY"));
     // Terminal wraps join as in the default copy; the program's own break is one space.
     assert_eq!(copy_line_at(5, b"abcdefgh\r\nxy", (0, 0), (2, 1)).as_deref(), Some("abcdefgh xy"));
+    // One continuation row gives no indent to compare: a full row of short words and a short word keep their space.
+    assert_eq!(copy_line_at(6, b"ab cde\r\nxy", (0, 0), (1, 1)).as_deref(), Some("ab cde xy"));
 }
 
 #[test]
@@ -1127,4 +1129,29 @@ fn copy_as_one_line_skips_blank_rows_and_text_the_selection_does_not_reach() {
     // It starts after the first row's text: no leading space.
     assert_eq!(copy_line_at(20, b"  alpha\r\n  delta", (0, 10), (1, 6)).as_deref(), Some("delta"));
     assert_eq!(copy_line_at(20, b"alpha\r\n\r\n", (0, 0), (2, 5)).as_deref(), Some("alpha"));
+}
+
+#[test]
+fn copy_as_one_line_keeps_the_space_before_a_long_word_after_a_row_that_ends_at_the_last_column() {
+    // "aaaa bbbb cccc ddd" fills the 18 columns inside the indent exactly, so the long path's row starts with a space.
+    let text = "aaaa bbbb cccc ddd /srv/data/results/run_2026_11_11/analysis/output.txt tail";
+    let feed = claude_wrap(text, 20);
+    assert!(feed.starts_with("  aaaa bbbb cccc ddd\r\n   /srv"), "{feed:?}");
+    let rows = feed.matches("\r\n").count() as u16 + 1;
+    assert_eq!(copy_line_at(20, feed.as_bytes(), (0, 2), (rows - 1, 19)).as_deref(), Some(text));
+    let command = "cd /srv/data && julia --project=. -e 'using Pkg; Pkg.test()' --threads=4 --output=/srv/data/results/run_2026_11_11/long/path/that/is/cut/by/the/program/at/the/width/file.txt && echo done";
+    for cols in 22..=70 {
+        let feed = claude_wrap(command, cols);
+        let rows = feed.matches("\r\n").count() as u16 + 1;
+        assert_eq!(copy_line_at(cols as u16, feed.as_bytes(), (0, 2), (rows - 1, cols as u16 - 1)).as_deref(), Some(command), "{cols} columns");
+    }
+}
+
+#[test]
+fn copy_as_one_line_needs_the_program_to_wrap_at_the_panes_width() {
+    // Wrapped at 18 columns inside a 24-column pane, the rows never reach the last column, so a word it cut gets a space.
+    let feed = claude_wrap("see /srv/data/results/run_2026_11_11/analysis/output.txt tail", 20);
+    let rows = feed.matches("\r\n").count() as u16 + 1;
+    let copied = copy_line_at(24, feed.as_bytes(), (0, 2), (rows - 1, 23)).unwrap();
+    assert_eq!(copied, "see /srv/data/resu lts/run_2026_11_11 /analysis/output.t xt tail");
 }

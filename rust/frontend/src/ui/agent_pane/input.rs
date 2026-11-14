@@ -86,7 +86,7 @@ impl<C: PaneClient> AgentPane<C> {
     /// Inclusive linear range from client-or-blank. A row the terminal wrapped joins the next with no newline and
     /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline. `one_line` (Copy as
     /// one line) makes every other break one space with the next row's indent dropped, no space where the row
-    /// reached the last column and the word goes on below it (`cut_word`); a blank row is skipped, so a gap
+    /// reached the last column and the word goes on below it (`cut_word`, the selection's continuation indent); a blank row is skipped, so a gap
     /// between paragraphs is one space too.
     /// State writes the owned text to the clipboard, then reports success through `copy_finished`.
     pub(in crate::ui) fn copy_text(&self, pane_cols: u16, one_line: bool) -> Option<String> {
@@ -110,6 +110,7 @@ impl<C: PaneClient> AgentPane<C> {
                 &blank
             }
         };
+        let indent = if one_line { continuation_indent(screen, sr..=er, pane_cols) } else { None };
         let mut out = String::new();
         for row in sr..=er {
             let cs = if row == sr { sc } else { 0 };
@@ -147,7 +148,7 @@ impl<C: PaneClient> AgentPane<C> {
                 } else if line.trim_start().is_empty() {
                     continue;
                 } else {
-                    if !out.is_empty() && !cut_word(screen, row - 1, pane_cols) { out.push(' '); }
+                    if !out.is_empty() && !cut_word(screen, row - 1, pane_cols, indent) { out.push(' '); }
                     line = line.trim_start().to_owned();
                 }
             }
@@ -259,14 +260,32 @@ impl State {
 
 /// Whether the word that ends `row` of a screen `cols` wide goes on in the next row: the program cut a word wider
 /// than its row at the last column (Claude Code's wrap-ansi, `trim: false, hard: true`), so the two pieces are one
-/// word. The row's text reaches the last column and its last word with the next row's first would not fit one row.
-/// A row that is all one word and a next row starting one blank further in is not a cut: wrap-ansi starts the row
-/// after an exactly full one with a space, so the word ended at the edge and the next one begins.
-fn cut_word(screen: &vt100::Screen, row: u16, cols: u16) -> bool {
+/// word. Only a row that reaches the last column can be cut. `indent` is the selection's own continuation indent
+/// (`continuation_indent`): a next row starting there continues the cut word, and one starting a blank further in
+/// is the row wrap-ansi starts with a space after an exactly full one, so the word ended at the edge. Without an
+/// indent (one continuation row) the row's last word and the next row's first must not fit one row together.
+fn cut_word(screen: &vt100::Screen, row: u16, cols: u16, indent: Option<u16>) -> bool {
     let solid = |r: u16, c: u16| screen.cell(r, c).is_some_and(|x| x.is_wide_continuation() || !x.contents().trim().is_empty());
     let Some(end) = (0..cols).rev().find(|&c| solid(row, c)).map(|c| c + 1) else { return false };
-    let (Some(lead), Some(next)) = ((0..cols).find(|&c| solid(row, c)), (0..cols).find(|&c| solid(row + 1, c))) else { return false };
-    let run = (0..end).rev().take_while(|&c| solid(row, c)).count();
-    let word = (next..cols).take_while(|&c| solid(row + 1, c)).count();
-    end == cols && !(run == usize::from(end - lead) && next > lead) && run + word > usize::from(cols - next)
+    let Some(next) = (0..cols).find(|&c| solid(row + 1, c)) else { return false };
+    if end != cols { return false; }
+    match indent {
+        Some(indent) => next <= indent,
+        None => {
+            let run = (0..end).rev().take_while(|&c| solid(row, c)).count();
+            let word = (next..cols).take_while(|&c| solid(row + 1, c)).count();
+            run + word > usize::from(cols - next)
+        }
+    }
+}
+
+/// The first-text column the rows after the selection's first share: the smallest of them, when at least two rows
+/// are not blank (one row cannot be told from a row that starts one blank further in).
+fn continuation_indent(screen: &vt100::Screen, rows: std::ops::RangeInclusive<u16>, cols: u16) -> Option<u16> {
+    let leads: Vec<u16> = rows
+        .skip(1)
+        .filter_map(|r| (0..cols).find(|&c| screen.cell(r, c).is_some_and(|x| x.is_wide_continuation() || !x.contents().trim().is_empty())))
+        .collect();
+    if leads.len() < 2 { return None; }
+    leads.into_iter().min()
 }
