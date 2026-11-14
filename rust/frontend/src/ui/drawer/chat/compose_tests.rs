@@ -130,6 +130,8 @@ fn the_wired_draft_is_the_shown_rows_and_begins_in_its_own_watch() {
     d.on_evt(&"a".to_string(), answer("R", serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false })), at);
     d.edit(Some(&row("R")), Edit::Text("!")).unwrap();
     assert_eq!(d.draft(), Some(("hi!", "C1")));
+    // The title now names C2, so the foot says where this draft goes; for C1, the title's own channel, it did not.
+    assert_eq!(shown(&d, false, 40, 10), ["> hi!", "to C1"]);
 
     // A row a listing retires drops its draft.
     d.retire(&[row("R")]);
@@ -153,31 +155,31 @@ fn the_compose_rows_show_the_draft_wrapped_to_the_drawer_and_counted() {
     d.edit(Some(&row("R")), Edit::Text("a\r\nb\0c\x07d")).unwrap();
     d.edit(Some(&row("R")), Edit::Text("\r\te")).unwrap();
     assert_eq!(d.draft(), Some(("a\nbcd\n\te", "C1")), "the text, not only its rows");
-    assert_eq!(shown(&d, false, 40, 10), ["> a", "  bcd", "   e", "to C1"]);
-    assert_eq!(shown(&d, true, 40, 10), ["> a", "  bcd", "   e█", "to C1"], "the cursor block ends the last row while focused");
+    assert_eq!(shown(&d, false, 40, 10), ["> a", "  bcd", "   e"]);
+    assert_eq!(shown(&d, true, 40, 10), ["> a", "  bcd", "   e█"], "the cursor block ends the last row while focused");
 
     // Two or more rows past three are counted, one is counted in the singular.
     let (mut d, _) = watching();
     d.edit(Some(&row("R")), Edit::Text("1\n2\n3\n4")).unwrap();
-    assert_eq!(shown(&d, false, 40, 10), ["> 2", "  3", "  4", "to C1 · 1 line not shown"]);
+    assert_eq!(shown(&d, false, 40, 10), ["> 2", "  3", "  4", "1 line not shown"]);
     d.edit(Some(&row("R")), Edit::Text("\n5")).unwrap();
-    assert_eq!(shown(&d, false, 40, 10), ["> 3", "  4", "  5", "to C1 · 2 lines not shown"]);
+    assert_eq!(shown(&d, false, 40, 10), ["> 3", "  4", "  5", "2 lines not shown"]);
     d.edit(Some(&row("R")), Edit::Newline).unwrap();
-    assert_eq!(shown(&d, false, 40, 10)[3], "to C1 · 3 lines not shown", "a trailing LF is an empty row");
+    assert_eq!(shown(&d, false, 40, 10)[3], "3 lines not shown", "a trailing LF is an empty row");
 
     // A line wider than the drawer wraps, and its rows count toward the three and the count.
     let (mut d, _) = watching();
     d.edit(Some(&row("R")), Edit::Text("abcdefghijklmnopqrstuvwxy")).unwrap();
-    assert_eq!(shown(&d, false, 12, 10), ["> abcdefghij", "  klmnopqrst", "  uvwxy", "to C1"]);
+    assert_eq!(shown(&d, false, 12, 10), ["> abcdefghij", "  klmnopqrst", "  uvwxy"]);
     d.edit(Some(&row("R")), Edit::Text("z012345678")).unwrap();
-    assert_eq!(shown(&d, false, 12, 10), ["> klmnopqrst", "  uvwxyz0123", "  45678", "to C1 · 1 line not shown"]);
+    assert_eq!(shown(&d, false, 12, 10), ["> klmnopqrst", "  uvwxyz0123", "  45678", "1 line not shown"]);
 
     // A short drawer keeps fewer draft rows, counts the ones it dropped, and the first row it shows keeps its `> `; the
-    // destination is the last row dropped.
-    assert_eq!(shown(&d, false, 12, 4), ["> klmnopqrst", "  uvwxyz0123", "  45678", "to C1 · 1 line not shown"]);
-    assert_eq!(shown(&d, false, 12, 3), ["> uvwxyz0123", "  45678", "to C1 · 2 lines not shown"]);
-    assert_eq!(shown(&d, false, 12, 2), ["> 45678", "to C1 · 3 lines not shown"]);
-    assert_eq!(shown(&d, false, 12, 1), ["to C1 · 4 lines not shown"]);
+    // count is the last row dropped, and it is there only when something was.
+    assert_eq!(shown(&d, false, 12, 4), ["> klmnopqrst", "  uvwxyz0123", "  45678", "1 line not shown"]);
+    assert_eq!(shown(&d, false, 12, 3), ["> uvwxyz0123", "  45678", "2 lines not shown"]);
+    assert_eq!(shown(&d, false, 12, 2), ["> 45678", "3 lines not shown"]);
+    assert_eq!(shown(&d, false, 12, 1), ["4 lines not shown"]);
 }
 
 /// The one post `outs` holds.
@@ -325,7 +327,7 @@ fn the_name_prompt_edits_the_name_not_the_draft_and_escape_keeps_it() {
     d.cancel_name();
     assert_eq!(d.asking(), None);
     assert_eq!(d.draft(), Some(("hello", "C1")));
-    assert_eq!(foot(&d, 40), ["> hello█", "to C1"]);
+    assert_eq!(foot(&d, 40), ["> hello█"]);
 }
 
 #[test]

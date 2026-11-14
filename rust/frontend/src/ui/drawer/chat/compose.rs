@@ -89,9 +89,10 @@ impl Compose {
 }
 
 /// What the compose rows are made of: the draft's lines (the cursor block ends the last while the drawer has focus) and
-/// where it goes (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time with its date before it for another day).
+/// where it goes when the title does not say it (`reply in thread of h:mm AM`, the parent's time with its date before it
+/// for another day, or `to <channel>` for a channel the title does not name).
 pub(in crate::ui) enum ComposeText {
-    Draft { lines: Vec<String>, to: String },
+    Draft { lines: Vec<String>, to: Option<String> },
     /// The foot asks for the posting name: the name typed, with the cursor block while focused.
     Name(String),
 }
@@ -100,7 +101,7 @@ pub(in crate::ui) enum ComposeText {
 const ASK: &str = "Name for your chat posts: ";
 
 impl ComposeText {
-    pub(super) fn of(draft: Option<&str>, to: String, focused: bool) -> Self {
+    pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool) -> Self {
         let text = draft.unwrap_or("");
         let mut lines = cell_lines(text);
         if lines.is_empty() || text.ends_with('\n') {
@@ -118,8 +119,10 @@ impl ComposeText {
 }
 
 /// The compose rows for a drawer `width` cells wide and `height` rows tall: `> ` and the draft's last three rows, each
-/// line wrapped to the width, then its destination with how many rows are not shown. A drawer too short for three keeps
-/// one row fewer than its height, so the destination is the last row dropped and the count is true at every height.
+/// line wrapped to the width, then one row for its destination (when the title does not say it) with how many rows are
+/// not shown. That row is there only when it has something to say: a draft of three rows or fewer for the title's own
+/// channel has none. A drawer too short for three keeps one row fewer than its height whenever the row is needed, so the
+/// last row dropped is that row's room and the count is true at every height.
 pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
     let (lines, to) = match text {
         ComposeText::Draft { lines, to } => (lines, to),
@@ -133,12 +136,19 @@ pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usiz
     };
     let inner = width.saturating_sub(2).max(1);
     let wrapped: Vec<String> = lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
-    let hidden = wrapped.len().saturating_sub(DRAFT_ROWS.min(height.saturating_sub(1)));
+    let all_fit = to.is_none() && wrapped.len() <= DRAFT_ROWS.min(height);
+    let hidden = wrapped.len().saturating_sub(if all_fit { wrapped.len() } else { DRAFT_ROWS.min(height.saturating_sub(1)) });
     let mut out: Vec<String> = wrapped[hidden..].iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " })).collect();
-    out.push(match hidden {
-        0 => to.clone(),
-        1 => format!("{to} · 1 line not shown"),
-        n => format!("{to} · {n} lines not shown"),
-    });
+    let count = match hidden {
+        0 => None,
+        1 => Some("1 line not shown".to_string()),
+        n => Some(format!("{n} lines not shown")),
+    };
+    match (to, count) {
+        (None, None) => {}
+        (Some(to), None) => out.push(to.clone()),
+        (None, Some(count)) => out.push(count),
+        (Some(to), Some(count)) => out.push(format!("{to} · {count}")),
+    }
     out.split_off(out.len().saturating_sub(height))
 }

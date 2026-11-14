@@ -86,15 +86,19 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
         Ok(r) => r,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    let (chat, rows) = (chat.clone(), rows.clone());
-    let resolved = tokio::task::spawn_blocking(move || chat.resolve(&rows, &req.row)).await;
+    let (held, rows) = (chat.clone(), rows.clone());
+    let resolved = tokio::task::spawn_blocking(move || held.resolve(&rows, &req.row)).await;
     match resolved.unwrap_or(Err(ChatCode::Failed)) {
         Err(code) => Ok(refuse(req_id, NAME, code)),
         Ok((Resolution::NotHub, _)) => Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
         Ok((Resolution::Unmapped, _)) => reply(req_id, NAME, &ChatResolveRes::Unmapped),
         Ok((Resolution::Invalid(_), _)) => reply(req_id, NAME, &ChatResolveRes::Invalid),
         Ok((Resolution::Mapped { workspace, channel, .. }, delivers)) => match ChatChannel::try_from(channel) {
-            Ok(channel) => reply(req_id, NAME, &ChatResolveRes::Mapped { workspace, channel, delivers }),
+            Ok(channel) => {
+                // The cache alone: a resolve makes no Slack call, and a name not yet found leaves the id.
+                let name = chat.service().and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel.as_str()));
+                reply(req_id, NAME, &ChatResolveRes::Mapped { workspace, channel, delivers, name })
+            }
             Err(_) => reply(req_id, NAME, &ChatResolveRes::Invalid),
         },
     }

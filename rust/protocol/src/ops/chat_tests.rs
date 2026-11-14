@@ -44,8 +44,12 @@ fn the_chat_ops_are_declared_in_the_one_table() {
 fn every_request_reply_and_event_keeps_its_shape() {
     pinned(ChatResolveReq { row: "ws-a-1".into() }, json!({"row": "ws-a-1"}));
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false}),
+    );
+    pinned(
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("admiral".into()) },
+        json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "admiral"}),
     );
     pinned(ChatResolveRes::Unmapped, json!({"state": "unmapped"}));
     pinned(ChatWatchReq { target: target() }, json!({"target": target_json()}));
@@ -194,6 +198,27 @@ fn a_cursor_a_text_and_a_name_stop_at_their_bounds() {
     assert!(serde_json::from_value::<ChatPostReq>(post(161, 1)).is_err());
 }
 
+/// The resolve reply as the window before `name` decoded it: the new reply, with its name, still reads, and an older
+/// daemon's reply, with none, reads as a mapped channel with no name.
+#[test]
+fn an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    enum Before {
+        Mapped { workspace: String, channel: ChatChannel, delivers: bool },
+        Unmapped,
+        #[serde(other)]
+        Invalid,
+    }
+    let named = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": "admiral"});
+    assert_eq!(serde_json::from_value::<Before>(named).unwrap(), Before::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true });
+    let unnamed = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true});
+    assert_eq!(
+        serde_json::from_value::<ChatResolveRes>(unnamed).unwrap(),
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true, name: None }
+    );
+}
+
 #[test]
 fn a_target_names_a_real_channel_and_bounded_ids() {
     for good in ["C1", "c_1-X"] {
@@ -211,6 +236,9 @@ fn a_target_names_a_real_channel_and_bounded_ids() {
     let long = "W".repeat(65);
     let mapped = json!({"state": "mapped", "workspace": long, "channel": "C1", "delivers": true});
     assert!(serde_json::from_value::<ChatResolveRes>(mapped).is_err());
+    let named = |name: String| json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": name});
+    assert!(serde_json::from_value::<ChatResolveRes>(named("n".repeat(160))).is_ok());
+    assert!(serde_json::from_value::<ChatResolveRes>(named("n".repeat(161))).is_err());
     let changed = json!({"workspace": long, "channel": "C1", "put": [], "deleted": []});
     assert!(serde_json::from_value::<ChatChangedEvt>(changed).is_err());
 }
