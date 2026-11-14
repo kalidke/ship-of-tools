@@ -249,7 +249,10 @@ async fn a_resolve_carries_the_name_the_start_found_and_none_before_it() {
     let mut conn = connect_window(rig.services.clone()).await;
     let target = sot_protocol::ops::ChatTarget { row: rig.alpha.clone(), workspace: "T0AAAA".into(), channel: sot_protocol::ops::ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
     let api = rig.services.chat.admit(&rig.rows, &target).expect("the service runs").api().unwrap();
-    sot_chat::fake_slack::eventually("the start's lookup", || api.cached_name("C0AAAA").is_some()).await;
+    // The start looks up every configured channel (the rig maps two), one after another: the count below starts once it
+    // has ended, so a lookup still running is never taken for a resolve's call.
+    sot_chat::fake_slack::eventually("the start's lookup of both channels", || ["C0AAAA", "C0BBBB"].iter().all(|c| api.cached_name(c).is_some())).await;
+    assert_eq!(info_calls(&fake), 2, "the lookup asked once for each configured channel");
     let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
     assert_eq!((resolved["state"].as_str(), resolved["name"].as_str()), (Some("mapped"), Some("general")), "{resolved}");
     let before = info_calls(&fake);
