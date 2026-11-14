@@ -19,6 +19,8 @@ struct Wanted {
     asked: bool,
     /// What the last answer came to, and when; `None` while a resolve is owed or in flight.
     answer: Option<(Stand, Instant)>,
+    /// The last mapped answer's channel id and the name it carried, if any: the title says `#name` for that id.
+    name: Option<(String, String)>,
 }
 
 /// Where the wanted row stands, for the title (`ChatDrawer::title`).
@@ -73,7 +75,7 @@ impl RowChannel {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> Tick {
         let same = self.wanted.as_ref().map(|w| &w.id) == wanted.as_ref();
         if !same {
-            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None });
+            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None });
         }
         // Only a refusal that is neither the hub's nor the row's is asked again, after the pace.
         if let Some(w) = self.wanted.as_mut().filter(|w| matches!(w.answer, Some((Stand::Failed(_), at)) if now.duration_since(at) >= GAP_PACE)) {
@@ -109,7 +111,20 @@ impl RowChannel {
             ChatReply::Refused(ChatCode::StaleRow) => Stand::RowGone,
             ChatReply::Refused(code) => Stand::Failed(*code),
         };
-        self.wanted.iter_mut().for_each(|w| w.answer = Some((stand, now)));
+        let name = match reply {
+            ChatReply::Done(ChatResolveRes::Mapped { channel, name: Some(name), .. }) => Some((channel.as_str().to_string(), name.clone())),
+            _ => None,
+        };
+        self.wanted.iter_mut().for_each(|w| (w.answer, w.name) = (Some((stand, now)), name.clone()));
+    }
+
+    /// The watched channel as the title says it: `#name` when the last answer named this id, else the id. A name the
+    /// daemon sent is drawn without its control characters.
+    pub(super) fn label(&self, channel: &str) -> String {
+        match self.wanted.as_ref().and_then(|w| w.name.as_ref()) {
+            Some((id, name)) if id == channel => format!("#{}", name.chars().filter(|c| !c.is_control()).collect::<String>()),
+            _ => channel.to_string(),
+        }
     }
 
     /// The wanted row.

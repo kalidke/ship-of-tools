@@ -1020,6 +1020,31 @@ async fn people_come_before_channels_under_the_cap_of_names() {
     .await;
 }
 
+/// `cached_name` answers from the cache alone: a channel is in it once `author_name` found it, a private one never.
+#[tokio::test]
+async fn a_cached_channel_name_is_read_with_no_request() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            let private = seen.param("channel").as_deref() == Some("C0PRIV");
+            Reply::json(&json!({"ok": true, "channel": {"name": "admiral", "is_private": private}}))
+        })
+        .await;
+        let api = new_api(&fake);
+        assert_eq!(api.cached_name("C0PUB"), None);
+        assert_eq!(calls(&fake, "conversations.info"), 0, "a cache read asked Slack");
+        api.author_name("C0PUB").await;
+        api.author_name("C0PRIV").await;
+        let before = calls(&fake, "conversations.info");
+        assert_eq!((api.cached_name("C0PUB").as_deref(), api.cached_name("C0PRIV")), (Some("admiral"), None));
+        assert_eq!(calls(&fake, "conversations.info"), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 /// A label-less `<#C…>` or `<#G…>` token is looked up once with `conversations.info`, through the cache and within the
 /// names' deadline, after the authors and the people; a labeled one, a direct-message id and a failure are not, and a
 /// record's names stay within `MAX_MENTIONS` whatever their kind.

@@ -102,7 +102,8 @@ pub struct ChatResolveReq {
     pub row: String,
 }
 
-/// Reply to `chat.resolve`. `delivers`: mail may be delivered for the row (a `mail_after` is set).
+/// Reply to `chat.resolve`. `delivers`: mail may be delivered for the row (a `mail_after` is set). `name`: the channel's
+/// name as the daemon's cache holds it, a public channel's alone (a resolve makes no Slack call); absent, a reader shows the id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ChatResolveRes {
@@ -111,6 +112,8 @@ pub enum ChatResolveRes {
         workspace: String,
         channel: ChatChannel,
         delivers: bool,
+        #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     Unmapped,
     /// Also a state added later: a reader takes it as no usable mapping.
@@ -189,6 +192,12 @@ fn retry_wait<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
 fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     #[derive(Deserialize)]
     struct Bounded(#[serde(deserialize_with = "within::<_, MAX_CURSOR>")] String);
+    Ok(Option::<Bounded>::deserialize(d)?.map(|b| b.0))
+}
+
+fn channel_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    struct Bounded(#[serde(deserialize_with = "within::<_, MAX_NAME>")] String);
     Ok(Option::<Bounded>::deserialize(d)?.map(|b| b.0))
 }
 

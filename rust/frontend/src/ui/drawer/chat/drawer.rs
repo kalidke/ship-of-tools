@@ -278,7 +278,7 @@ impl ChatDrawer {
             (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no snapshot", ChatCode::text)),
             (stand, _) => stand.words(host),
         };
-        let channel = self.owner.channel().map(|c| format!("{c} ")).unwrap_or_default();
+        let channel = self.owner.channel().map(|c| format!("{} ", self.rows.label(c))).unwrap_or_default();
         // Each phrase is its own: the thread's, then the link's and the watch's.
         let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };
@@ -436,9 +436,10 @@ impl ChatDrawer {
         self.compose.retire(rows);
     }
 
-    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
-    /// (`to <channel>`, or `reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`), else where the next
-    /// draft would go: the open thread, or the watched channel.
+    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and, when the title
+    /// does not already say it, where it goes (`reply in thread of h:mm AM`, the parent's time with its date before it for
+    /// another day, `project::when`; `to <channel>` only for a draft of a channel the title does not name), else where the
+    /// next draft would go: the open thread, or nothing for the watched channel.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let now = chrono::Local::now();
         self.compose_text_at(focused, now.timestamp(), *now.offset())
@@ -454,8 +455,9 @@ impl ChatDrawer {
         // With no draft, the line names where the next one would go: the open thread's parent.
         let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
         let to = match thread {
-            Some(p) => format!("reply in thread of {}", super::project::when(p.as_str(), now, offset)),
-            None => format!("to {}", dest.channel.as_str()),
+            Some(p) => Some(format!("reply in thread of {}", super::project::when(p.as_str(), now, offset))),
+            None if self.owner.channel() == Some(dest.channel.as_str()) => None,
+            None => Some(format!("to {}", dest.channel.as_str())),
         };
         Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
     }

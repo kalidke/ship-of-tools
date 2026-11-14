@@ -700,6 +700,11 @@ impl Api {
         name_records(records, |id| names.by_id.get(id).cloned());
     }
 
+    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request.
+    pub fn cached_name(&self, id: &str) -> Option<String> {
+        self.names.lock().unwrap().by_id.get(id).cloned()
+    }
+
     /// A channel's name from `conversations.info`, cleaned.
     async fn channel_name(&self, channel: &str) -> Result<String, ApiError> {
         let v = self.read("conversations.info", &[("channel", channel.into())], MAX_BODY).await?;

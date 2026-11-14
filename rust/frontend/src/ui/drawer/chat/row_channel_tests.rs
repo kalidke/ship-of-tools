@@ -415,3 +415,29 @@ fn a_page_read_again_after_a_hide_and_show_waits_for_the_first_reply() {
     assert_eq!(history(&d.on_evt(&host(), late, at(500))), first, "then it goes");
     assert_eq!(d.held(), 1, "and the first reply fills nothing");
 }
+
+fn named_to(row: &str, channel: &str, name: &str) -> ChatEvt {
+    answer(row, serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": channel, "delivers": false, "name": name }))
+}
+
+/// The title says `#name` when the last answer named the watched channel, and the id when it did not: an older daemon's
+/// answer, a name for another channel, or a later answer without one.
+#[test]
+fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.tick(wanted("R"), t0);
+    d.tick(wanted("R"), t0 + Duration::from_millis(150));
+    d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(160));
+    assert_eq!(d.title(), " chat · C1 reading… ", "an answer with no name: the id");
+
+    d.on_evt(&host(), named_to("R", "C1", "admiral"), t0 + Duration::from_millis(200));
+    assert_eq!(d.title(), " chat · #admiral reading… ");
+    d.on_evt(&host(), named_to("R", "C1", "ad\u{7}mi\nral"), t0 + Duration::from_millis(210));
+    assert_eq!(d.title(), " chat · #admiral reading… ", "a control character is not drawn");
+
+    // A later answer with no name is what the daemon knows now: the id.
+    d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(220));
+    assert_eq!(d.title(), " chat · C1 reading… ");
+}

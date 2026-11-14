@@ -217,6 +217,59 @@ async fn a_current_row_reaches_slack_through_each_request_op() {
     assert_eq!(calls(&fake), 2, "one call for each of history and post");
 }
 
+/// A fake whose `conversations.info` answers `channel` (public) or never answers (`None`).
+async fn slack_naming(channel: Option<&'static str>) -> FakeSlack {
+    FakeSlack::start(Identity::Trusted, move |seen, _| {
+        let path = seen.path();
+        if path.ends_with("/auth.test") {
+            Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
+        } else if path.ends_with("/conversations.info") {
+            match channel {
+                Some(name) => Reply::json(&json!({"ok": true, "channel": {"name": name, "is_private": false}})),
+                None => Reply::Hang,
+            }
+        } else {
+            Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+        }
+    })
+    .await
+}
+
+fn info_calls(fake: &FakeSlack) -> usize {
+    fake.seen().iter().filter(|s| s.path().ends_with("/conversations.info")).count()
+}
+
+/// The service's start looks the mapped channels' names up once in the background, and a resolve carries what the cache
+/// then holds without a call of its own; a name not found (here a lookup that never answers) leaves the reply as it was,
+/// answered at once, with no `name`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resolve_carries_the_name_the_start_found_and_none_before_it() {
+    let fake = slack_naming(Some("admiral")).await;
+    let rig = rig_started(&fake, false).await;
+    let mut conn = connect_window(rig.services.clone()).await;
+    let mut resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    for n in 3..200u64 {
+        if resolved["name"].is_string() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        resolved = conn.ask(n, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    }
+    assert_eq!((resolved["state"].as_str(), resolved["name"].as_str()), (Some("mapped"), Some("admiral")), "{resolved}");
+    let before = info_calls(&fake);
+    conn.ask(300, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    assert_eq!(info_calls(&fake), before, "a resolve asked Slack for the name");
+    fake.shutdown().await;
+
+    let fake = slack_naming(None).await;
+    let rig = rig_started(&fake, false).await;
+    let mut conn = connect_window(rig.services.clone()).await;
+    let resolved = tokio::time::timeout(std::time::Duration::from_secs(5), conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha}))).await.expect("a resolve waited for the name");
+    assert_eq!(resolved["state"], "mapped");
+    assert!(resolved.get("name").is_none(), "{resolved}");
+    fake.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_removed_replaced_remapped_or_anchor_row_makes_no_call_through_any_request_op() {
     let mode = Arc::new(AtomicU8::new(OK));

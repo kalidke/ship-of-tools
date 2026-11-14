@@ -499,8 +499,13 @@ fn made(d: &mut ChatDrawer, req: &ChatPostReq, at: Instant) -> Vec<Out> {
 const PINNED_NOW: i64 = 1_700_200_000;
 const PARENT_STAMP: &str = "reply in thread of Nov 14 10:13 PM";
 
+fn foot(d: &ChatDrawer) -> Vec<String> {
+    compose_rows(&d.compose_text_at(false, PINNED_NOW, chrono::FixedOffset::east_opt(0).unwrap()).unwrap(), 60, 6)
+}
+
+/// The foot's last row: the thread's line, or the draft's own last row when nothing is said of where it goes.
 fn to_line(d: &ChatDrawer) -> String {
-    compose_rows(&d.compose_text_at(false, PINNED_NOW, chrono::FixedOffset::east_opt(0).unwrap()).unwrap(), 60, 6).pop().unwrap()
+    foot(d).pop().unwrap()
 }
 
 #[test]
@@ -534,7 +539,7 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
     open(&mut d, &mut fonts, &[true, true]);
     d.edit(shown("ROW1").as_ref(), Edit::Text("!")).unwrap();
-    assert_eq!(to_line(&d), "to CH1");
+    assert_eq!(foot(&d), ["> hi!"], "the title names the channel, so the foot says nothing of it");
     let req = send(&mut d, at);
     assert_eq!((req.thread.as_ref(), req.target.channel.as_str(), req.text.as_str()), (None, "CH1", "hi!"));
     assert_eq!(reads(&made(&mut d, &req, at)), 0, "a post to the channel reads no thread");
@@ -586,7 +591,7 @@ fn only_a_posted_reply_rereads_and_an_empty_draft_names_the_open_thread() {
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let parent = held[1].ts.clone();
     let (mut d, at) = channel(&held);
-    assert_eq!(to_line(&d), "to CH1");
+    assert_eq!(foot(&d), ["> "], "an empty draft for the title's channel has the prompt row alone");
     let outs = open(&mut d, &mut fonts, &[true, true]);
     assert!(to_line(&d).starts_with(PARENT_STAMP), "{}", to_line(&d));
     on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);
