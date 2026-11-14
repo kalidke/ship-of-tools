@@ -47,7 +47,8 @@ pub(in crate::ui) fn input_outcome_notice(outcome: Option<sot_capsule::attach_cl
     match outcome {
         Some(InputOutcome::DeliveryUnknown) => Some("delivery unknown: the last key may not have reached the agent; type it again if it did not"),
         Some(InputOutcome::RunEnded) => Some("run ended: keys typed before the agent restarted were not sent to the new run"),
-        Some(InputOutcome::Recorded | InputOutcome::RefusedStale) | None => None,
+        Some(InputOutcome::RefusedStale) => Some("not sent: another client holds the row's input; type the last keys again"),
+        Some(InputOutcome::Recorded) | None => None,
     }
 }
 

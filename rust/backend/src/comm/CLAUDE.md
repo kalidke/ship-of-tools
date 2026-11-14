@@ -148,13 +148,16 @@ Waking:
   reaches the row after the take and before the window has read its demotion is refused with nothing written, and the
   window takes the pen back and sends those bytes once (the capsule's guarantee 7,
   `fe_attach::a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it_back`); that retake
-  makes the wake's own typing, if it has not yet gone, refuse. Limit: the window holds keys typed while its row
-  connects and sends them as one input on a later Enter (the frontend contract's held input); the row's box reads empty
-  meanwhile, so the wake can type, and if that input reaches the row between the wake's text and its Enter, it lands
-  after the wake line and the wake's Enter is refused (the pen is the window's). Nothing is lost: if the held bytes end
-  in the person's own Enter (one pressed before the screen was live is held as CR), the agent receives the wake line
-  and the person's text as one message; otherwise the box holds both and no Enter is owed on it (the gate withholds it
-  while the box is more than the line). The wake cannot see held keys, so this stays open.
+  makes the wake's own typing, if it has not yet gone, refuse. Limit: a key a person types between the wake's text
+  and its Enter, or the input a window held while its row connected (the frontend contract's held input; the row's box
+  reads empty meanwhile, so the wake can type) and sends on a later Enter, lands after the wake line. The Enter the
+  wake owes is refused (the pen is the person's, `EnterRefused`) or withheld (the box is more than the line); it stays
+  owed (`enter_owed`) and is never sent while the box is more than the line, and it ends as any owed Enter does, below.
+  The person sees `[sot-comm] you have mail: run comm-poll.sh` at the head of their line, and their next Enter sends
+  both as one message; held bytes that end in a CR (an Enter pressed before the screen was live) send both at once.
+  Nothing a person typed is lost or sent apart from the wake line. The window is the gate's echo wait, tens of
+  milliseconds, up to `OP_BUDGET` for a slow echo. The wake cannot see a person's keys that have not reached the row,
+  so this stays open.
 - What a wake never touches: a dialog, a menu, a working session, and a person's unsent text. Text a person typed is not
   dim and is not free wherever the cursor sits, on one row or on several (a draft that wraps or holds a newline puts
   the cursor's row out of the box's one line), so the wake types nothing into it, appends nothing to it and sends no

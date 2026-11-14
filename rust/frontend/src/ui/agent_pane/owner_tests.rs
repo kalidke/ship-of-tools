@@ -457,7 +457,7 @@ fn unknown_delivery_is_reported_by_the_pump() {
     let mut p = Pane::new(None);
     let wire = ready(&mut p, "h", "row", b"", t);
     for (outcome, words) in [(InputOutcome::DeliveryUnknown, "delivery unknown"), (InputOutcome::RunEnded, "run ended"),
-                             (InputOutcome::Recorded, "attached"), (InputOutcome::RefusedStale, "attached")] {
+                             (InputOutcome::Recorded, "attached"), (InputOutcome::RefusedStale, "not sent")] {
         let effect = step(&mut p, &wire, Step { outcome: Some(outcome), ..Default::default() }, t);
         assert!(effect.status.unwrap().contains(words));
         assert!(p.pump(|| t).status.is_none());

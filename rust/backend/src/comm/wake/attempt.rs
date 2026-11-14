@@ -119,7 +119,7 @@ pub fn wake_if_free(
     } else if first_prompt.is_none() {
         Ok(not_free("prompt not free", &client, agent))
     } else if send_text(&mut client, b"", Some(&run), op_budget).is_err() {
-        Ok(not_free("the pen was not taken", &client, agent))
+        Ok(not_free("the empty write that takes the pen failed", &client, agent))
     } else {
         // Test points (platform's hold tool): `hold` when the hold begins (the screen was free), `final_ok` when the live
         // final check passes (before typing), `done` when the client is shut down. An attach or checkpoint failure

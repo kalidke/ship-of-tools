@@ -360,10 +360,10 @@ fn a_demotion_during_attach_leaves_a_watcher_whose_next_key_takes_the_pen() {
     win.shutdown(Duration::from_millis(500));
 }
 
-/// A row stand-in whose driver was changed under the client: it refuses the first `row.input` as from a connection that
-/// is not the driver (the wake took the pen, and the window has not read its demotion), and writes the bytes of every
-/// input it accepts. Returns the ops it was sent, in order, and what it wrote.
-fn demoted_unaware_standin(path: &std::path::Path) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u8>>>) {
+/// A row stand-in whose driver was changed under the client: it refuses the first `refusals` `row.input`s as from a
+/// connection that is not the driver (the wake took the pen, and the window has not read its demotion), and writes the
+/// bytes of every input it accepts. Returns the ops it was sent, in order, and what it wrote.
+fn demoted_unaware_standin(path: &std::path::Path, refusals: usize) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u8>>>) {
     use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
     use sot_protocol::Frame;
     let listener = std::os::unix::net::UnixListener::bind(path).expect("bind the stand-in");
@@ -374,7 +374,7 @@ fn demoted_unaware_standin(path: &std::path::Path) -> (Arc<Mutex<Vec<String>>>, 
         let (stream, _) = listener.accept().expect("accept");
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut out = stream;
-        let mut refused = false;
+        let mut refused = 0;
         while let Ok((frame, blob)) = read_frame_blocking_blob(&mut reader) {
             seen.lock().unwrap().push(frame.op.clone());
             let id = frame.id;
@@ -404,7 +404,8 @@ fn demoted_unaware_standin(path: &std::path::Path) -> (Arc<Mutex<Vec<String>>>, 
                             Some(&checkpoint),
                         )
                 }
-                "row.input" if !std::mem::replace(&mut refused, true) => {
+                "row.input" if refused < refusals => {
+                    refused += 1;
                     send(Frame::res(id, "row.input", serde_json::json!({"error": sot_capsule::row::NOT_DRIVER, "code": "refused"})), None)
                 }
                 "row.input" => {
@@ -428,7 +429,7 @@ fn demoted_unaware_standin(path: &std::path::Path) -> (Arc<Mutex<Vec<String>>>, 
 fn a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it_back() {
     use sot_capsule::attach_client::attach::InputOutcome;
     let row = fresh_row();
-    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap());
+    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), 1);
     let mut win = window(&row);
     pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
     win.send_input(b"ab");
@@ -444,6 +445,31 @@ fn a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it
     assert_eq!(win.last_input_outcome(), Some(InputOutcome::Recorded));
     let ops: Vec<String> = ops.lock().unwrap().iter().filter(|o| o.as_str() == "row.input" || o.as_str() == "row.take").cloned().collect();
     assert_eq!(ops, ["row.input", "row.take", "row.input", "row.input"], "the window did not take the pen back and send again");
+    win.shutdown(Duration::from_millis(500));
+}
+
+/// A row that refuses every input as not-driver: each frame is tried, the pen taken back and the bytes sent once more, then
+/// given up as `RefusedStale`, so the worker never retakes without end and is alive for the next frame.
+#[test]
+fn a_window_key_the_row_refuses_twice_is_given_up_after_one_retake() {
+    use sot_capsule::attach_client::attach::InputOutcome;
+    let row = fresh_row();
+    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), usize::MAX);
+    let mut win = window(&row);
+    pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
+    win.send_input(b"ab");
+    win.send_input(b"c");
+    let inputs = |ops: &Arc<Mutex<Vec<String>>>| ops.lock().unwrap().iter().filter(|o| o.as_str() == "row.input").count();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while inputs(&ops) < 4 && Instant::now() < deadline {
+        win.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    pump_until(&mut win, "the refusal settled", |c| c.last_input_outcome() == Some(InputOutcome::RefusedStale));
+    let ops: Vec<String> = ops.lock().unwrap().iter().filter(|o| o.as_str() == "row.input" || o.as_str() == "row.take").cloned().collect();
+    let expected = ["row.input", "row.take", "row.input", "row.take", "row.input", "row.take", "row.input"];
+    assert_eq!(ops, expected, "one retake per frame, the first frame's pen already taken, the second's taken at its start");
+    assert!(written.lock().unwrap().is_empty(), "a refused frame was written");
     win.shutdown(Duration::from_millis(500));
 }
 
