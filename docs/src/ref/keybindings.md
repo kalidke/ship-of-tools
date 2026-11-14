@@ -158,6 +158,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `repl.clear` | `Ctrl+l` | Clear the displayed REPL output; Julia's variables remain. |
 | `input.paste` | `Ctrl+v` / `Super+v` / `Shift+Insert` | Paste the clipboard into this pane. |
 | `agent.copy` | `Primary+Shift+c` | Copy selected agent output to the clipboard. |
+| `agent.copy_line` | `Primary+Alt+c` | Copy selected agent output as one line: a line break the program made becomes a space, a word it cut at the width stays whole. |
 | `preview.page_next` | `n` / `PageDown` | Show the next page of the displayed document. |
 | `preview.page_prev` | `p` / `PageUp` | Show the previous page of the displayed document. |
 | `preview.png.reset` | `r` / `0` | Reset zoom and pan to fit the image in the pane. |

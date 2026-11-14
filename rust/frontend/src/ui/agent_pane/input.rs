@@ -84,10 +84,12 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     /// Inclusive linear range from client-or-blank. A row the terminal wrapped joins the next with no newline and
-    /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline, unless the program
-    /// word-wrapped it (`word_wrap_join`), when the next row's text follows after one space.
+    /// keeps its trailing spaces; a row the program ended is trimmed and followed by a newline. `one_line` (Copy as
+    /// one line) makes every other break one space with the next row's indent dropped, no space where the row
+    /// reached the last column and the word goes on below it (`cut_word`); a blank row is skipped, so a gap
+    /// between paragraphs is one space too.
     /// State writes the owned text to the clipboard, then reports success through `copy_finished`.
-    pub(in crate::ui) fn copy_text(&self, pane_cols: u16) -> Option<String> {
+    pub(in crate::ui) fn copy_text(&self, pane_cols: u16, one_line: bool) -> Option<String> {
         let Some(sel) = self.llm_selection else {
             return None;
         };
@@ -140,16 +142,18 @@ impl<C: PaneClient> AgentPane<C> {
                 line.truncate(line.trim_end_matches(' ').len());
             }
             if row != sr && !screen.row_wrapped(row - 1) {
-                match word_wrap_join(screen, row - 1, pane_cols).filter(|_| !line.trim_start().is_empty() && out.ends_with(|c| c != '\n')) {
-                    Some(hard) => {
-                        if !hard { out.push(' '); }
-                        line = line.trim_start().to_owned();
-                    }
-                    None => out.push('\n'),
+                if !one_line {
+                    out.push('\n');
+                } else if line.trim_start().is_empty() {
+                    continue;
+                } else {
+                    if !out.is_empty() && !cut_word(screen, row - 1, pane_cols) { out.push(' '); }
+                    line = line.trim_start().to_owned();
                 }
             }
             out.push_str(&line);
         }
+        if one_line { out.truncate(out.trim_end_matches(' ').len()); }
         if out.is_empty() {
             return None;
         }
@@ -236,8 +240,8 @@ impl State {
         Some((row, col))
     }
 
-    pub(in crate::ui) fn copy_llm_selection(&mut self) -> bool {
-        let Some(out) = self.agent_pane.copy_text(self.pane_rects.llm.width) else { return false };
+    pub(in crate::ui) fn copy_llm_selection(&mut self, one_line: bool) -> bool {
+        let Some(out) = self.agent_pane.copy_text(self.pane_rects.llm.width, one_line) else { return false };
         match crate::ui::input::write_clipboard_text(out.clone()) {
             Ok(()) => {
                 tracing::info!(bytes = out.len(), "llm.copy → clipboard");
@@ -253,17 +257,16 @@ impl State {
     }
 }
 
-/// Whether the program word-wrapped the break below `row` of a screen `cols` wide: the next row's first word
-/// would not have fit after the row's last text and one space (`Some`), where a program that wraps its own text
-/// (Claude Code's wrap-ansi, `trim: false, hard: true`) breaks. The flag says a word wider than the row, filling it
-/// to its last column and going on below, was one word (no space is put into it). A blank row or a blank next row
-/// is a real newline (`None`). A real newline that falls exactly where the next word would not fit reads as a wrap.
-fn word_wrap_join(screen: &vt100::Screen, row: u16, cols: u16) -> Option<bool> {
+/// Whether the word that ends `row` of a screen `cols` wide goes on in the next row: the program cut a word wider
+/// than its row at the last column (Claude Code's wrap-ansi, `trim: false, hard: true`), so the two pieces are one
+/// word. The row's text reaches the last column and its last word with the next row's first would not fit one row.
+/// A row that is all one word and a next row starting one blank further in is not a cut: wrap-ansi starts the row
+/// after an exactly full one with a space, so the word ended at the edge and the next one begins.
+fn cut_word(screen: &vt100::Screen, row: u16, cols: u16) -> bool {
     let solid = |r: u16, c: u16| screen.cell(r, c).is_some_and(|x| x.is_wide_continuation() || !x.contents().trim().is_empty());
-    let end = (0..cols).rev().find(|&c| solid(row, c))? + 1;
-    let lead = (0..cols).find(|&c| solid(row + 1, c))?;
-    let word = (lead..cols).take_while(|&c| solid(row + 1, c)).count();
-    if usize::from(end) + 1 + word <= usize::from(cols) { return None; }
+    let Some(end) = (0..cols).rev().find(|&c| solid(row, c)).map(|c| c + 1) else { return false };
+    let (Some(lead), Some(next)) = ((0..cols).find(|&c| solid(row, c)), (0..cols).find(|&c| solid(row + 1, c))) else { return false };
     let run = (0..end).rev().take_while(|&c| solid(row, c)).count();
-    Some(end == cols && run + word > usize::from(cols - lead))
+    let word = (next..cols).take_while(|&c| solid(row + 1, c)).count();
+    end == cols && !(run == usize::from(end - lead) && next > lead) && run + word > usize::from(cols - next)
 }

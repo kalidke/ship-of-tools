@@ -139,6 +139,7 @@ actions! {
     ReplClear, "repl.clear", ["Ctrl+l"], "Clear scrollback", "Clear the displayed REPL output; Julia's variables remain.", "Julia", Repl;
     Paste, "input.paste", ["Ctrl+v", "Super+v", "Shift+Insert"], "Paste", "Paste the clipboard into this pane.", "Input", Pty;
     CopySelection, "agent.copy", ["Primary+Shift+c"], "Copy selection", "Copy selected agent output to the clipboard.", "Agent", Llm;
+    CopyOneLine, "agent.copy_line", ["Primary+Alt+c"], "Copy as one line", "Copy selected agent output as one line: a line break the program made becomes a space, a word it cut at the width stays whole.", "Agent", Llm;
     PageNext, "preview.page_next", ["n", "PageDown"], "Next page", "Show the next page of the displayed document.", "Pages", Pages;
     PagePrev, "preview.page_prev", ["p", "PageUp"], "Previous page", "Show the previous page of the displayed document.", "Pages", Pages;
     PreviewPngReset, "preview.png.reset", ["r", "0"], "Fit image", "Reset zoom and pan to fit the image in the pane.", "Image", Image;

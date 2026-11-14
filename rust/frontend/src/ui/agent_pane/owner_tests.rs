@@ -780,12 +780,12 @@ fn selection_drag_preserves_press_extend_release_rules() {
 fn copy_uses_client_or_blank_and_clears_only_after_success() {
     let t = Instant::now();
     let mut p = Pane::new(None);
-    ready(&mut p, "h", "a", b"abc  \r\nd fgh", t);
+    ready(&mut p, "h", "a", b"abc  \r\ndefgh", t);
     p.press(Some((1, 2)));
     p.extend_drag(Some((0, 1)));
     p.release();
-    assert_eq!(p.copy_text(5).as_deref(), Some("bc\nd f"));
-    assert!(p.copy_text(0).is_none());
+    assert_eq!(p.copy_text(5, false).as_deref(), Some("bc\ndef"));
+    assert!(p.copy_text(0, false).is_none());
     p.copy_finished(false);
     assert!(p.selection().is_some());
     p.copy_finished(true);
@@ -794,18 +794,18 @@ fn copy_uses_client_or_blank_and_clears_only_after_success() {
     p.press(Some((0, 0)));
     p.extend_drag(Some((0, 2)));
     assert_eq!(pixels(&mut p).0, PaneScreen::Hold);
-    assert!(p.copy_text(80).is_none(), "blank copy does not read the hold");
+    assert!(p.copy_text(80, false).is_none(), "blank copy does not read the hold");
     install(&mut p, "h", "b", Scripted::new(b"new", false).0, t);
     // Painting keeps the held screen's spaces; only clipboard text is trimmed.
-    assert_eq!(pixels(&mut p).1, "abc  \nd fgh");
-    assert_eq!(p.copy_text(80).as_deref(), Some("new"));
+    assert_eq!(pixels(&mut p).1, "abc  \ndefgh");
+    assert_eq!(p.copy_text(80, false).as_deref(), Some("new"));
     let mut wrapped = Pane::new(None);
     select(&mut wrapped, "h", "wrapped", t, 2);
     wrapped.sync_size((5, 3));
     install(&mut wrapped, "h", "wrapped", Scripted::at_size(b"abcdefgh", true, 5, 3).0, t);
     wrapped.press(Some((0, 3)));
     wrapped.extend_drag(Some((1, 1)));
-    assert_eq!(wrapped.copy_text(5).as_deref(), Some("defg"), "a row the terminal wrapped joins the next");
+    assert_eq!(wrapped.copy_text(5, false).as_deref(), Some("defg"), "a row the terminal wrapped joins the next");
 }
 
 fn copy_of(feed: &[u8], from: (u16, u16), to: (u16, u16)) -> Option<String> {
@@ -813,25 +813,32 @@ fn copy_of(feed: &[u8], from: (u16, u16), to: (u16, u16)) -> Option<String> {
 }
 
 fn copy_at(cols: u16, feed: &[u8], from: (u16, u16), to: (u16, u16)) -> Option<String> {
+    copy_with(cols, feed, from, to, false)
+}
+
+fn copy_line_at(cols: u16, feed: &[u8], from: (u16, u16), to: (u16, u16)) -> Option<String> {
+    copy_with(cols, feed, from, to, true)
+}
+
+fn copy_with(cols: u16, feed: &[u8], from: (u16, u16), to: (u16, u16), one_line: bool) -> Option<String> {
     let t = Instant::now();
     let mut p = Pane::new(None);
     select(&mut p, "h", "w", t, 2);
-    p.sync_size((cols, 4));
-    install(&mut p, "h", "w", Scripted::at_size(feed, true, cols, 4).0, t);
+    p.sync_size((cols, 12));
+    install(&mut p, "h", "w", Scripted::at_size(feed, true, cols, 12).0, t);
     p.press(Some(from));
     p.extend_drag(Some(to));
-    p.copy_text(cols)
+    p.copy_text(cols, one_line)
 }
 
 #[test]
 fn copy_joins_a_wrapped_row_and_breaks_where_the_program_did() {
-    assert_eq!(copy_at(8, b"abcdefghij\r\nxy", (0, 0), (2, 1)).as_deref(), Some("abcdefghij\nxy"));
+    assert_eq!(copy_of(b"abcdefgh\r\nxy", (0, 0), (2, 1)).as_deref(), Some("abcdefgh\nxy"));
 }
 
 #[test]
-fn a_row_that_exactly_fills_the_width_and_ends_in_a_newline_reads_as_a_word_wrap() {
-    // The limit of the word-wrap test: no next word fits after a full row, so the program's newline is joined.
-    assert_eq!(copy_at(6, b"ab cde\r\nxy", (0, 0), (1, 1)).as_deref(), Some("ab cde xy"));
+fn a_row_that_exactly_fills_the_width_and_ends_in_a_newline_is_not_joined() {
+    assert_eq!(copy_of(b"abcde\r\nxy", (0, 0), (1, 1)).as_deref(), Some("abcde\nxy"));
 }
 
 #[test]
@@ -1033,32 +1040,91 @@ fn a_wide_character_copies_without_a_space_for_its_second_cell() {
     assert_eq!(copy_of("世世".as_bytes(), (0, 0), (0, 3)).as_deref(), Some("世世"));
 }
 
+/// Breaks the program made stay newlines in the default copy, whatever the next row begins with: a rule or a table
+/// border is one long word, a path or a URL is one, and none of them is a word wrap.
 #[test]
-fn a_line_the_program_word_wrapped_copies_as_one_line() {
-    // Twenty columns: the next word "delta" does not fit after "gamma", so the newline is the program's wrap.
-    assert_eq!(copy_at(20, b"  alpha beta gamma\r\n  delta", (0, 0), (1, 6)).as_deref(), Some("  alpha beta gamma delta"));
-    assert_eq!(
-        copy_at(20, b"  one two three four\r\n  five six seven\r\n  eight", (0, 0), (2, 6)).as_deref(),
-        Some("  one two three four five six seven eight"),
-        "a row that fills the width, a continuation indent dropped, a last row cut short"
-    );
-}
-
-#[test]
-fn a_break_where_the_next_word_would_have_fit_is_a_real_newline() {
-    assert_eq!(copy_at(20, b"ab cd\r\nef gh", (0, 0), (1, 4)).as_deref(), Some("ab cd\nef gh"));
-    // "  alpha beta gamma" ends at column 18; "d" fits after one space (exactly the 20th), so the program did not wrap it.
-    assert_eq!(copy_at(20, b"  alpha beta gamma\r\n  d", (0, 0), (1, 2)).as_deref(), Some("  alpha beta gamma\n  d"));
-    assert_eq!(copy_at(20, b"alpha\r\n\r\nbeta", (0, 0), (2, 3)).as_deref(), Some("alpha\n\nbeta"));
-}
-
-#[test]
-fn a_word_the_program_broke_at_the_width_rejoins_without_a_space() {
-    // A 25-column word does not fit a 20-column row at all, so the program fills the row and goes on below.
-    assert_eq!(copy_at(20, b"aa ABCDEFGHIJKLMNOPQ\r\nRSTUVWXY", (0, 0), (1, 7)).as_deref(), Some("aa ABCDEFGHIJKLMNOPQRSTUVWXY"));
+fn the_default_copy_keeps_every_break_the_program_made() {
+    let rule = "\u{2500}".repeat(20);
+    let box_rows = format!("{rule}\r\n> run the tests\r\n{rule}\r\n? for shortcuts");
+    let table = "\u{2502} Name  \u{2502} Value \u{2502}\r\n\u{251c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2524}";
+    for (cols, feed, to, expected) in [
+        (20, box_rows.as_str(), (3, 14), box_rows.replace("\r\n", "\n")),
+        (20, table, (1, 16), table.replace("\r\n", "\n")),
+        (20, "/mnt/nas/lab/a/b.jl\r\n/mnt/nas/lab/c/d.jl", (1, 18), "/mnt/nas/lab/a/b.jl\n/mnt/nas/lab/c/d.jl".into()),
+        (30, "https://example.org/aaaa\r\nhttps://example.org/bbbb", (1, 23), "https://example.org/aaaa\nhttps://example.org/bbbb".into()),
+        (30, "$ pwd\r\n/mnt/nas/lab/results/run_01\r\n$ ", (2, 1), "$ pwd\n/mnt/nas/lab/results/run_01\n$".into()),
+        (20, "aaaa bbbb cccc dddd\r\nSo? yes.", (1, 7), "aaaa bbbb cccc dddd\nSo? yes.".into()),
+        (6, "ab cde\r\nxy", (1, 1), "ab cde\nxy".into()),
+    ] {
+        assert_eq!(copy_at(cols, feed.as_bytes(), (0, 0), to).as_deref(), Some(expected.as_str()), "{feed:?}");
+    }
 }
 
 #[test]
 fn a_wide_character_that_did_not_fit_the_last_column_copies_joined() {
     assert_eq!(copy_of("abcd世".as_bytes(), (0, 0), (1, 1)).as_deref(), Some("abcd世"));
+}
+
+/// `text` word-wrapped as Claude Code does it (wrap-ansi `trim: false, hard: true` inside a two-column indent):
+/// a break where the next word does not fit, a word wider than the row cut at the last column, and the row after an
+/// exactly full one starting with a space.
+fn claude_wrap(text: &str, cols: usize) -> String {
+    let width = cols - 2;
+    let mut rows = vec![String::new()];
+    for (i, word) in text.split(' ').enumerate() {
+        if i > 0 {
+            if rows.last().unwrap().len() >= width { rows.push(String::new()); }
+            rows.last_mut().unwrap().push(' ');
+        }
+        let mut rest = word;
+        if word.len() > width {
+            let take = width.saturating_sub(rows.last().unwrap().len());
+            rows.last_mut().unwrap().push_str(&rest[..take]);
+            rest = &rest[take..];
+            while rest.len() > width {
+                rows.push(rest[..width].to_string());
+                rest = &rest[width..];
+            }
+            if !rest.is_empty() { rows.push(String::new()); }
+        } else if rows.last().unwrap().len() + word.len() > width && !rows.last().unwrap().trim().is_empty() {
+            rows.push(String::new());
+        }
+        rows.last_mut().unwrap().push_str(rest);
+    }
+    rows.iter().map(|r| format!("  {r}")).collect::<Vec<_>>().join("\r\n")
+}
+
+#[test]
+fn copy_as_one_line_joins_a_command_the_program_wrapped() {
+    let command = "cd /srv/data && julia --project=. -e 'using Pkg; Pkg.test()' --threads=4 --output=/srv/data/results/run_2026_11_11/long/path/that/is/cut/by/the/program/at/the/width/file.txt && echo done";
+    for cols in [24, 40, 60] {
+        let feed = claude_wrap(command, cols);
+        let rows = feed.matches("\r\n").count() as u16 + 1;
+        assert_eq!(copy_line_at(cols as u16, feed.as_bytes(), (0, 2), (rows - 1, cols as u16 - 1)).as_deref(), Some(command), "{cols} columns");
+        assert!(copy_at(cols as u16, feed.as_bytes(), (0, 2), (rows - 1, cols as u16 - 1)).unwrap().contains('\n'), "the default copy keeps the breaks");
+    }
+}
+
+#[test]
+fn copy_as_one_line_keeps_a_word_cut_at_the_last_column_whole() {
+    assert_eq!(copy_line_at(20, b"aa ABCDEFGHIJKLMNOPQ\r\nRSTUVWXY", (0, 0), (1, 7)).as_deref(), Some("aa ABCDEFGHIJKLMNOPQRSTUVWXY"));
+    // Terminal wraps join as in the default copy; the program's own break is one space.
+    assert_eq!(copy_line_at(5, b"abcdefgh\r\nxy", (0, 0), (2, 1)).as_deref(), Some("abcdefgh xy"));
+}
+
+#[test]
+fn copy_as_one_line_adds_a_space_after_a_word_that_ended_exactly_at_the_edge() {
+    // A 32-character word cut over two rows, the second exactly full, then "next": wrap-ansi starts that row with a space.
+    let feed = format!("  see {}\r\n  {}\r\n   next", "A".repeat(14), "A".repeat(18));
+    assert_eq!(copy_line_at(20, feed.as_bytes(), (0, 2), (2, 7)).as_deref(), Some(format!("see {} next", "A".repeat(32)).as_str()));
+}
+
+#[test]
+fn copy_as_one_line_skips_blank_rows_and_text_the_selection_does_not_reach() {
+    assert_eq!(copy_line_at(20, b"alpha\r\n\r\nbeta", (0, 0), (2, 3)).as_deref(), Some("alpha beta"));
+    // The selection ends inside the next row's indent: no trailing space.
+    assert_eq!(copy_line_at(20, b"  alpha beta gamma\r\n  delta", (0, 0), (1, 1)).as_deref(), Some("  alpha beta gamma"));
+    // It starts after the first row's text: no leading space.
+    assert_eq!(copy_line_at(20, b"  alpha\r\n  delta", (0, 10), (1, 6)).as_deref(), Some("delta"));
+    assert_eq!(copy_line_at(20, b"alpha\r\n\r\n", (0, 0), (2, 5)).as_deref(), Some("alpha"));
 }

@@ -28,10 +28,10 @@ pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label:
     // No selection? Fall through so a stray
     // Ctrl+Shift+C still hits the pty.
     if !event.repeat
-        && action == Some(Action::CopySelection)
+        && matches!(action, Some(Action::CopySelection | Action::CopyOneLine))
         && state.agent_pane.selection().is_some()
     {
-        state.copy_llm_selection();
+        state.copy_llm_selection(action == Some(Action::CopyOneLine));
         state.last_key = Some(label);
         state.window.request_redraw();
         return Break(());
