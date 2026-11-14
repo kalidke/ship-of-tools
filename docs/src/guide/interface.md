@@ -10,7 +10,7 @@ rebindable; see [Keybindings](../ref/keybindings.md).
 <DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open." />
 ```
 
-`Ctrl+J`, `Ctrl+T`, `Ctrl+M`, `Ctrl+Shift+K` and `F1` swap the REPL, Terminal,
+`Ctrl+J`, `Ctrl+T`, `Ctrl+M`, `Ctrl+K` and `F1` swap the REPL, Terminal,
 Monitor, Chat and Help into the drawer. Column order, widths and the drawer height come from the
 [layout preset](../ref/config.md#layout); the portrait preset drops the agent
 column.
@@ -44,9 +44,9 @@ than stacking:
 | [Terminal](#The-Terminal-Drawer) | `Ctrl+T` | a local OS shell on the *frontend* machine — canonical use is SSHing out to backend hosts |
 | [Monitor](#The-Monitor-Drawer) | `Ctrl+M` | CPU / GPU / RAM history across your configured hosts |
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
-| [Chat](chat.md) | `Ctrl+Shift+K` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
+| [Chat](chat.md) | `Ctrl+K` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
 
-Drawer toggles are **global** — they fire even when another pane holds focus.
+Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+K` (like `Ctrl+J`, `Ctrl+T` and `Ctrl+M`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
 
 ## Help drawer
 

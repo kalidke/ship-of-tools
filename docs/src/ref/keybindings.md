@@ -122,7 +122,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
 | `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
 | `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |
-| `drawer.chat` | `Primary+Shift+k` | Show or hide the project chat. |
+| `drawer.chat` | `Primary+k` | Show or hide the project chat. |
 | `view.scroll_line_up` | `Alt+ArrowUp` | Scroll without moving the input cursor. |
 | `view.scroll_line_down` | `Alt+ArrowDown` | Scroll without moving the input cursor. |
 | `preview.table_left` | `h` / `ArrowLeft` | Move horizontally through a wide text table. |

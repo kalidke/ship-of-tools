@@ -79,6 +79,20 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
     assert_eq!(resolve(&context, "y", Modifiers::default()), Some("preview.copy_code"));
 }
 
+/// The Chat drawer takes `Primary+k` alone, like its siblings `drawer.repl` (`Primary+j`), `drawer.terminal` and
+/// `drawer.monitor`, in every context; the old `Primary+Shift+k` resolves to nothing, and no other action holds the chord.
+#[test]
+fn primary_k_opens_the_chat_drawer_and_primary_shift_k_is_free() {
+    let b = KeyBindings::defaults();
+    let k = Key::Character("k".into());
+    let shifted = Modifiers { shift: true, ..primary() };
+    assert_eq!(b.resolve(&k, None, primary(), false, |_| true), Some(Action::ToggleChatDrawer));
+    assert_eq!(b.resolve(&k, None, primary(), true, |_| true), Some(Action::ToggleChatDrawer));
+    assert_eq!(b.resolve(&k, None, shifted, false, |_| true), None);
+    let holders = ACTIONS.iter().filter(|s| s.defaults.iter().any(|d| d.eq_ignore_ascii_case("Primary+k"))).count();
+    assert_eq!(holders, 1);
+}
+
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
