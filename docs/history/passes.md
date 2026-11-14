@@ -2223,3 +2223,14 @@ A landing's record goes here, with its measured times; the package page holds on
   two cut-word guesses with one comparison against the selection's own indent; a program that wraps narrower than the
   pane is the stated limit. A default that changes what every copy gives needs its false cases probed before the
   build, not after.
+- The wake holds the row's input before it waits, 2026-11-13, the second of the four (WAKE-EATS-UNSENT-PROMPT). A
+  reproduction on a scratch Claude Code row first (an unsent line, then mail): the wake typed nothing and the line
+  stayed, so the plain case was already closed. A diagnosis (19:52 to 20:14) found the race the report fits: the wake
+  read a free prompt, held about 1.5 s, and took the row's pen only as it typed, so a person's first key in that gap had
+  the wake line appended to it; its test was red at main. Builder 20:15, main 21:11 (71311e0ab, 8fe46a0a6), 56 minutes
+  from the build, a miss. The wake now takes the pen before its hold; a window's key the row refuses because a wake
+  took the pen is retaken and sent once, and a second refusal says "not sent" on the status line instead of vanishing.
+  Review round 1 (no blocker) found an untested guard whose loss crashed the window's attach worker, and four sentences
+  that overstated the fix; a key typed between the wake's text and its Enter still lands after the wake line, unlost,
+  and the contract says so. Where the minutes went: the build 20, a rebase onto the copy landing with a conflict in the
+  defect list, the review 13, a fix round 17.
