@@ -2244,3 +2244,16 @@ A landing's record goes here, with its measured times; the package page holds on
   test pinned one of the four rules (five of six mutants passed); each now fails by assertion, and showing a parked
   client wakes its worker, which also needed a fresh read of whether it is shown (a quiet row's screen had waited out a
   250 ms tick). The pane's own warning was never reproduced, so the entry stays open on that and three reading notes.
+- Only the lock holder refreshes relay units, 2026-11-13, the fourth of the four (RELAY-SOCKET-HANG). A diagnosis
+  (21:00 to 21:18) refuted the entry's hypothesis on two lab servers: every form of a user-manager query over a
+  non-interactive login returned in 0.01 s, with and without the bus variables and with no manager, and a manager that
+  never answers is cut by systemd itself at 90 s. What it found real: the daemon's unit restarted forever a start that
+  another daemon refused (every 2 s, or about 152 s when the other held the lock without answering, which fits the 36
+  restarts reported), and each 152 s try ran the relay refresh before it took the lock: a reset of every relay unit, a
+  reload of the user manager and a restart of every relay socket. Builder 21:19, main 22:07 (087bd1f61, 4ee9b944d), 48
+  minutes, a miss. The refresh now runs only after the lock is held, and a start another daemon refuses exits 69,
+  which the unit does not restart (the unit's unlimited restarts dated from the first commit, meant for outages; the
+  one change is that an outside daemon ending leaves the unit down until the next launch). Review round 1, no blocker:
+  four stale pages and comments, guard tests that reached a real user manager through `systemd-run` (now stubbed), and
+  a sentence that called the hang explained. The loop closed under its own id (SOTD-UNIT-RESTART-LOOP); the hang of
+  over two minutes stays open, unreproduced, with what would settle it.
