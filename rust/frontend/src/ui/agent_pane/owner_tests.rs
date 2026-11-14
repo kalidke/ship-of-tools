@@ -195,7 +195,7 @@ fn pane_input_reaches_only_the_selected_client_or_is_counted() {
     assert!(b.borrow().inputs.is_empty(), "input before a checkpoint stays local");
     assert!(p.view(None).1.iter().any(|s| s.contains("pendingbefore checkpoint")));
     step(&mut p, &b, Step { status: Some("attached"), ..Default::default() }, t);
-    assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")));
+    assert!(p.view(None).1.iter().any(|s| s == "2 keystrokes discarded, not sent"), "the switch and the attach left the notice");
     assert!(b.borrow().inputs.is_empty());
 }
 
@@ -931,7 +931,7 @@ fn kept_row_invalidation_preserves_the_existing_scope() {
     assert_eq!(p.target(), None);
     assert_eq!(p.snapshot_target(), None);
     assert_eq!(pixels(&mut p), (PaneScreen::Hold, "selected".into()));
-    assert!(p.view(None).1.is_empty(), "discard count is cleared");
+    assert!(p.view(None).1.is_empty(), "nothing was discarded yet");
     assert_eq!(p.selection(), Some(((0, 0), (0, 0))));
     assert_eq!(p.size(), Some((90, 30)));
     p.send_input(b"discard again");
@@ -1227,18 +1227,18 @@ fn a_client_retired_with_input_waiting_is_counted_as_discarded() {
     install(&mut p, "h", "b", c, t);
     b.borrow_mut().unsent = 1;
     select(&mut p, "h", "c", t, 1);
-    assert_eq!(notice(&mut p), None, "a parked client still sends its input");
+    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a parked client still sends its input");
     let (c, _) = Scripted::new(b"", true);
     install(&mut p, "h", "c", c, t);
     let evicted = select(&mut p, "h", "d", t, 1);
     assert_eq!(evicted.len(), 1);
-    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "an evicted client");
+    assert_eq!(notice(&mut p).as_deref(), Some("3 keystrokes discarded, not sent"), "an evicted client");
 
     let (c, d) = Scripted::new(b"", true);
     install(&mut p, "h", "d", c, t);
     d.borrow_mut().unsent = 3;
     p.invalidate_kept_attachment();
-    assert_eq!(notice(&mut p).as_deref(), Some("3 keystrokes discarded, not sent"), "the kept-row invalidation");
+    assert_eq!(notice(&mut p).as_deref(), Some("6 keystrokes discarded, not sent"), "the kept-row invalidation");
 
     let e = ready(&mut p, "h", "e", b"", t);
     select(&mut p, "h", "f", t, 4);
@@ -1249,14 +1249,14 @@ fn a_client_retired_with_input_waiting_is_counted_as_discarded() {
     }
     select(&mut p, "h", "e", t, 4);
     drop(prepare(&mut p, key("h", "e")));
-    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a dead warm client retired at the attach");
+    assert_eq!(notice(&mut p).as_deref(), Some("8 keystrokes discarded, not sent"), "a dead warm client retired at the attach");
 
     let g = ready(&mut p, "k", "g", b"", t);
     g.borrow_mut().unsent = 1;
     select(&mut p, "k", "f", t, 4);
-    assert_eq!(notice(&mut p), None);
+    assert_eq!(notice(&mut p).as_deref(), Some("8 keystrokes discarded, not sent"));
     assert_eq!(p.prune_warm(&"k".into(), &HashSet::new()).len(), 1);
-    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a warm client of a removed row");
+    assert_eq!(notice(&mut p).as_deref(), Some("9 keystrokes discarded, not sent"), "a warm client of a removed row");
 }
 
 fn typed(p: &mut Pane, key: Key, bytes: &[u8], at: Instant) {
@@ -1323,14 +1323,6 @@ fn a_discard_after_the_last_frame_is_not_dismissed_unseen() {
     wire.borrow_mut().discarded = 2;
     p.send_input(b"l");
     assert_eq!(notice(&mut p).as_deref(), Some("4 keystrokes discarded, not sent"), "the client's discard since the frame was dismissed");
-    let mut p = Pane::new(None);
-    select(&mut p, "h", "row", t, 2);
-    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
-    assert!(notice(&mut p).is_some());
-    select(&mut p, "h", "next", t, 2);
-    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
-    p.send_input(b"m");
-    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a count drawn for another row stood for this one");
 }
 
 /// The Enter that sends the held keys dismisses what was drawn.
@@ -1347,4 +1339,63 @@ fn the_enter_that_sends_held_keys_dismisses_the_drawn_notice() {
     held_key(&mut p, NamedKey::Enter, false, after(t, 1000));
     assert_eq!(wire.borrow().inputs, vec![b"held".to_vec()]);
     assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")), "the Enter that sent the held keys left the notice");
+}
+
+/// Only a person's act dismisses the notice: a row switch leaves it, drawn or not.
+#[test]
+fn a_row_switch_does_not_dismiss_the_notice() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    select(&mut p, "h", "next", t, 2);
+    assert!(p.view(None).1.iter().any(|s| s == "1 keystroke discarded, not sent"), "a switch dropped a notice nobody saw");
+}
+
+/// The kept-row reply is the daemon's, not a person's act: it leaves a drawn notice.
+#[test]
+fn a_kept_row_reply_does_not_dismiss_the_notice() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    ready(&mut p, "h", "row", b"", t);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert!(p.view(None).1.iter().any(|s| s == "1 keystroke discarded, not sent"));
+    p.invalidate_kept_attachment();
+    assert!(p.view(None).1.iter().any(|s| s == "1 keystroke discarded, not sent"), "a kept-row reply dismissed a drawn notice");
+}
+
+/// Held lines sit above the notice: a click on them leaves it, a click on its own row dismisses it.
+#[test]
+fn a_click_on_a_held_line_leaves_the_notice_and_a_click_on_its_row_dismisses_it() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(b"ab");
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP]);
+    let rows = p.view(None).1;
+    assert_eq!(rows.len(), 3, "{}", rows.len());
+    assert!(rows[2].contains("discarded"));
+    p.press(Some((0, 0)));
+    p.press(Some((1, 0)));
+    assert!(p.view(None).1.iter().any(|s| s.contains("discarded")), "a click on a held line dismissed the notice");
+    p.press(Some((2, 0)));
+    assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")), "a click on the notice left it");
+}
+
+/// An Enter the full hold refuses says so.
+#[test]
+fn an_enter_the_full_hold_refuses_says_so() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP]);
+    assert_eq!(held_key(&mut p, NamedKey::Enter, false, t), "Enter refused: held keys are full");
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(b"a");
+    assert_eq!(held_key(&mut p, NamedKey::Enter, false, t), "Enter held, not sent; wait for the row's screen");
 }

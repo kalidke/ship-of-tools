@@ -717,13 +717,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is said on the status line as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The worker
   refuses any input before its first attach, so the pane never relies on a queue there. The notice that keys were
   discarded is the pane's count plus the client's own, drawn over the pane, and an attach, cold or warm, does not clear
-  it. Only a person's act dismisses it, and only a count a frame has drawn (`discard_drawn`: the notice's row and the
-  count shown; a discard since then is unseen): a key held or sent, Esc, Backspace or the Enter that sends, or a click
+  it. `DiscardNotice` owns the pane's count with the record of what a frame drew (the notice's row and the total shown),
+  and its `dismiss` is the only clear: only a person's act dismisses it, and only a count a frame has drawn (a discard
+  since then is unseen), so neither a row switch nor the daemon's kept-row reply does, and the notice, which names no
+  row, goes on showing over the next row. The client's own count lives with its client: it leaves with a retired one and
+  comes back with a parked one. The acts are a key held or sent, Esc, Backspace or the Enter that sends, or a click
   on the notice's row. A key that holds or sends nothing (a modifier alone) leaves it, a discarded key adds to it, and a
   dismissal clears both counts (`a_discard_notice_outlives_the_attach_until_a_key_or_a_click`,
   `typed_keys_past_the_hold_add_to_the_notice_and_a_key_that_does_nothing_leaves_it`,
   `a_discard_after_the_last_frame_is_not_dismissed_unseen`,
-  `the_enter_that_sends_held_keys_dismisses_the_drawn_notice`, `the_clients_own_discard_count_is_dismissed_with_the_panes`).
+  `the_enter_that_sends_held_keys_dismisses_the_drawn_notice`, `the_clients_own_discard_count_is_dismissed_with_the_panes`,
+  `a_row_switch_does_not_dismiss_the_notice`, `a_kept_row_reply_does_not_dismiss_the_notice`,
+  `a_click_on_a_held_line_leaves_the_notice_and_a_click_on_its_row_dismisses_it`; a full hold says so, `an_enter_the_full_hold_refuses_says_so`).
   A client that leaves the pane (dropped by a switch, evicted from the warm pool, retired dead, retired with its row, or
   by the kept-row invalidation; a parked client keeps its queue and sends it) is retired through the capsule's `retire`,
   and the inputs its worker never took, and the held keys of a row pruned away, add to the count

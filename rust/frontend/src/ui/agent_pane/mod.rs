@@ -38,7 +38,6 @@ pub(in crate::ui) trait PaneClient {
     fn scroll(&mut self, rows: i32);
     fn mouse_tracking_on(&self) -> bool;
     fn set_viewed(&self, viewed: bool);
-    fn set_shutdown_reason(&self, _reason: &'static str) {}
     /// The latest OSC 52 copy the row's output asked for since the last take, as base64.
     fn take_copy(&mut self) -> Option<Vec<u8>>;
     /// The last pump emptied the output that waited for it.
@@ -65,7 +64,6 @@ impl PaneClient for PaneAttachClient {
     fn scroll(&mut self, rows: i32) { scroll_ring(self.screen_mut(), rows); }
     fn mouse_tracking_on(&self) -> bool { self.mouse_tracking_on() }
     fn set_viewed(&self, viewed: bool) { self.set_viewed(viewed); }
-    fn set_shutdown_reason(&self, reason: &'static str) { self.set_shutdown_reason(reason); }
     fn take_copy(&mut self) -> Option<Vec<u8>> { self.take_copy() }
     fn backlog_drained(&self) -> bool { self.backlog_drained() }
     fn at_ground(&self) -> bool { self.at_ground() }
@@ -91,9 +89,7 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     pane_attach_episode_warnings: u32,
     pane_presentation: PanePresentation,
     pane_feed: PaneFeed,
-    pane_inputs_discarded: usize,
-    /// The notice's row in the overlay and the count it showed at the last frame; only a count drawn can be dismissed.
-    discard_drawn: Option<(u16, usize)>,
+    discard: input::DiscardNotice,
     held_keys: std::collections::HashMap<WsKey, input::HeldKeys>,
     live_since: Option<Instant>,
     live_run: Option<String>,
@@ -114,7 +110,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_attach_term: None, warm_attach: WarmAttachPool::new(), pane_hold: None,
             pane_dial_error: None, pane_attach_requested_at: None, pane_attach_started_at: None,
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
-            pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, discard_drawn: None, copy_quiet: false, copy_tail: false,
+            pane_feed: PaneFeed::Pending, discard: Default::default(), copy_quiet: false, copy_tail: false,
             held_keys: std::collections::HashMap::new(), live_since: None, live_run: None, painted_live_run: None,
         }
     }
@@ -142,8 +138,7 @@ impl<C: PaneClient> AgentPane<C> {
     /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
-        self.pane_inputs_discarded = 0;
-        if let Some(mut c) = self.pane_attach_term.take() { self.count_unsent(std::slice::from_mut(&mut c), "drop"); }
+        if let Some(mut c) = self.pane_attach_term.take() { self.retire_leaving(std::slice::from_mut(&mut c), "kept row invalidated"); }
         self.bl_pane_target = None;
         self.pane_feed = PaneFeed::Pending;
     }

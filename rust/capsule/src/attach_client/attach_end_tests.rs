@@ -249,3 +249,13 @@ fn input_waiting_for_the_worker_is_counted_as_unsent() {
     assert_eq!(w.inputs_discarded(), 0);
     drop(inbox);
 }
+
+/// A person who has seen the count of discarded inputs clears it.
+#[test]
+fn the_count_of_discarded_inputs_is_cleared_on_request() {
+    let w = AttachWorker::inert();
+    assert!(!w.send_input(b"x".to_vec()));
+    assert_eq!(w.inputs_discarded(), 1);
+    w.clear_discarded();
+    assert_eq!(w.inputs_discarded(), 0);
+}

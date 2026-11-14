@@ -11,23 +11,43 @@ pub(super) struct HeldKeys {
     pub(super) bytes: usize,
 }
 
+/// The pane's count of discarded keystrokes and what a frame drew of the notice (its row and the total shown). The
+/// fields are private and `dismiss` is the only clear, so nothing but a person's act, after the frame drew the count,
+/// takes the notice away; a discard since the last frame is unseen and stays.
+#[derive(Default)]
+pub(super) struct DiscardNotice {
+    count: usize,
+    drawn: Option<(u16, usize)>,
+}
+
+impl DiscardNotice {
+    pub(super) fn add(&mut self, n: usize) {
+        self.count += n;
+        self.drawn = None;
+    }
+    pub(super) fn count(&self) -> usize { self.count }
+    /// What this frame drew: the notice's row and the total shown, or nothing.
+    pub(super) fn drew(&mut self, drawn: Option<(u16, usize)>) { self.drawn = drawn; }
+    pub(super) fn on_row(&self, row: u16) -> bool { self.drawn.is_some_and(|(r, _)| r == row) }
+    /// Clears the count when the frame drew all of `total`; whether it did.
+    fn dismiss(&mut self, total: usize) -> bool {
+        let all_drawn = self.drawn.is_some_and(|(_, n)| n == total);
+        if all_drawn { *self = Self::default(); }
+        all_drawn
+    }
+}
+
 impl<C: PaneClient> AgentPane<C> {
-    /// Input the pane drops, counted in the notice; what is drawn of the notice is no longer all of it.
-    pub(super) fn discard(&mut self, n: usize) {
-        self.pane_inputs_discarded += n;
-        self.discard_drawn = None;
-    }
-
+    /// The pane's count and the client's own, the number the notice shows.
     pub(super) fn discard_total(&self) -> usize {
-        self.pane_inputs_discarded + self.pane_attach_term.as_ref().map_or(0, |c| c.inputs_discarded())
+        self.discard.count() + self.pane_attach_term.as_ref().map_or(0, |c| c.inputs_discarded())
     }
 
-    /// A person's act (a key held or sent, a click on the notice) dismisses the notice, but only if the frame has drawn
-    /// all of it: a discard since then is still unseen.
+    /// A person's act (a key held or sent, a click on the notice) dismisses the notice, and clears the client's count
+    /// with the pane's.
     fn dismiss_discard_notice(&mut self) {
-        if self.discard_drawn.is_some_and(|(_, n)| n == self.discard_total()) {
-            self.pane_inputs_discarded = 0;
-            self.discard_drawn = None;
+        let total = self.discard_total();
+        if self.discard.dismiss(total) {
             if let Some(c) = self.pane_attach_term.as_mut() { c.clear_inputs_discarded(); }
         }
     }
@@ -38,13 +58,13 @@ impl<C: PaneClient> AgentPane<C> {
     pub(in crate::ui) fn send_input(&mut self, bytes: &[u8]) -> bool {
         let live = self.refresh_live();
         let Some(target) = self.bl_pane_target.clone() else {
-            self.discard(1);
+            self.discard.add(1);
             return false;
         };
         if !live || self.held_keys.contains_key(&target) {
             let held_bytes = self.held_keys.get(&target).map_or(0, |h| h.bytes);
             if held_bytes.saturating_add(bytes.len()) > sot_capsule::attach_client::attach::HELD_INPUT_CAP {
-                self.discard(1);
+                self.discard.add(1);
                 return false;
             } else if !bytes.is_empty() {
                 self.dismiss_discard_notice();
@@ -190,7 +210,7 @@ impl<C: PaneClient> AgentPane<C> {
 
     pub(in crate::ui) fn press(&mut self, cell: Option<(u16, u16)>) -> bool {
         if let Some(cell) = cell {
-            if self.discard_drawn.is_some_and(|(row, _)| row == cell.0) { self.dismiss_discard_notice(); }
+            if self.discard.on_row(cell.0) { self.dismiss_discard_notice(); }
             self.llm_selection = Some((cell, cell));
             self.llm_drag_active = true;
             true

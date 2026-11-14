@@ -35,9 +35,9 @@ impl<C> WarmAttachPool<C> {
     }
 }
 
-pub(in crate::ui) fn shutdown_detached(clients: Vec<PaneAttachClient>, reason: &'static str) {
+/// Ends clients the pane has retired (`retire_leaving` named why) off the window's thread.
+pub(in crate::ui) fn shutdown_detached(clients: Vec<PaneAttachClient>) {
     for mut c in clients {
-        c.set_shutdown_reason(reason);
         std::thread::spawn(move || { c.shutdown(Duration::from_millis(250)); });
     }
 }
@@ -121,7 +121,6 @@ impl<C: PaneClient> AgentPane<C> {
             return PaneSwitch { open: None, retired: vec![], status: Some(format!("already attached · {}", next.1)) };
         }
         self.clear_live();
-        self.pane_inputs_discarded = 0;
         self.pane_attach_requested_at = origin;
         self.pane_presentation.begin(origin);
         let mut retired = Vec::new();
@@ -131,9 +130,9 @@ impl<C: PaneClient> AgentPane<C> {
                 Some(key) if client.is_checkpointed() && !client.is_dead() => {
                     client.set_viewed(false);
                     retired = self.warm_attach.park(key, client, bound);
-                    self.count_unsent(&mut retired, "warm pool eviction");
+                    self.retire_leaving(&mut retired, "warm pool eviction");
                 }
-                _ => self.count_unsent(std::slice::from_mut(&mut client), "switch away"),
+                _ => self.retire_leaving(std::slice::from_mut(&mut client), "switch away"),
             }
         }
         self.pane_dial_error = None;
@@ -154,7 +153,7 @@ impl<C: PaneClient> AgentPane<C> {
         let warm = self.warm_attach.take(&target.0).and_then(|mut c| {
             if c.is_dead() { retired.push(c); None } else { Some(c) }
         });
-        self.count_unsent(&mut retired, "dead warm client");
+        self.retire_leaving(&mut retired, "dead warm client");
         (AttachPlan { target: target.0, size: self.open_size(), warm }, retired)
     }
 
@@ -264,18 +263,18 @@ impl<C: PaneClient> AgentPane<C> {
     pub(in crate::ui) fn prune_warm(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
         let gone = |(h, row): &WsKey| h == host && !live.contains(row);
         let dropped = self.held_keys.iter().filter(|(k, _)| gone(k)).map(|(_, held)| held.entries.len()).sum();
-        self.discard(dropped);
+        self.discard.add(dropped);
         self.held_keys.retain(|k, _| !gone(k));
         let mut retired = self.warm_attach.retain_rows(host, live);
-        self.count_unsent(&mut retired, "row removed");
+        self.retire_leaving(&mut retired, "row removed");
         retired
     }
 
     /// Retires the clients leaving the pane: input their workers never took is gone with them, so it is counted among
     /// the discarded keystrokes.
-    pub(super) fn count_unsent(&mut self, leaving: &mut [C], reason: &'static str) {
+    pub(super) fn retire_leaving(&mut self, leaving: &mut [C], reason: &'static str) {
         let lost = leaving.iter_mut().map(|c| c.retire(reason)).sum();
-        self.discard(lost);
+        self.discard.add(lost);
     }
 }
 
@@ -289,7 +288,7 @@ impl State {
         let bound = self.agent_pane.target().and_then(|(h, _)| self.row_directory.rows(&h)
             .map(|l| l.iter().filter(|w| !w.is_inert_anchor()).count())).unwrap_or(1);
         let plan = self.agent_pane.begin_switch(key, origin, bound);
-        shutdown_detached(plan.retired, "warm pool eviction");
+        shutdown_detached(plan.retired);
         if let Some(status) = plan.status {
             self.status.set(status);
             self.window.request_redraw();
@@ -312,7 +311,7 @@ impl State {
 
     pub(in crate::ui) fn spawn_pane_attach_term(&mut self, target: AdmittedAttach) {
         let (plan, retired) = self.agent_pane.prepare_attach(target);
-        shutdown_detached(retired, "dead warm client");
+        shutdown_detached(retired);
         let hosts = &mut self.hosts;
         let wake = self.wake.clone();
         let effect = install_pane_attach(&mut self.agent_pane, plan, |host, target, (cols, rows)| {
@@ -372,7 +371,7 @@ impl State {
 
     pub(in crate::ui) fn prune_warm_attach(&mut self, host: &HostKey) {
         let live = self.row_directory.rows(host).map(|l| l.iter().map(|w| w.session_name.clone()).collect()).unwrap_or_default();
-        shutdown_detached(self.agent_pane.prune_warm(host, &live), "row removed");
+        shutdown_detached(self.agent_pane.prune_warm(host, &live));
     }
 }
 
