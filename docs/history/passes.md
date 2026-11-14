@@ -2333,3 +2333,10 @@ A landing's record goes here, with its measured times; the package page holds on
   the review 13 (no blockers; a should-fix: the frame's read, its request for the next frame and its cap were pinned by no
   test, and a read moved above the spend passed every test while the wheel did nothing); a fix commit 9 (the one call
   and a native fixture red against all three); one scoped gate. That completes the plan's five landings.
+- Tests that resolve the state or config root hold the env lock and pin it (START-TEST-ENV-RACE), 2026-11-14: builder
+  about 12:20, main 13:33 (12b2842e6), about 73 minutes. About 33 lines of test support and 50 lines across 18 test
+  files. `EnvPinned` moves from the create tests to `paths.rs` and gains `fresh()`; the start test and 27 others that
+  reached the environment with no lock hold it. Where the minutes went: the build about 63, most of it finding the class
+  (a temporary probe in the one environment read, run over the whole suite on one test thread until it named nothing)
+  and reproducing the race (1 in 400 runs before, 0 in 1,200 after); the diff was read instead of a review round; one
+  scoped gate, then a rebase over a records commit.
