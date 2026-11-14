@@ -205,6 +205,7 @@ impl<C: PaneClient> AgentPane<C> {
         Some(out)
     }
     pub(in crate::ui) fn reset_scroll(&mut self) {
+        self.motion.stop();
         if let Some(c) = self.pane_attach_term.as_mut() { c.reset_scroll(); }
     }
 
@@ -233,15 +234,37 @@ impl<C: PaneClient> AgentPane<C> {
         self.pane_feed == PaneFeed::Capsule && self.pane_attach_term.as_ref().is_some_and(|c| c.screen().alternate_screen())
     }
     /// True consumes the page key; alternate-screen applications receive its original bytes.
-    pub(in crate::ui) fn page(&mut self, up: bool, height: u16) -> bool {
+    pub(in crate::ui) fn page(&mut self, up: bool, height: u16, now: Instant, length: Duration) -> bool {
         if self.alternate_screen() { return false; }
         if self.pane_feed == PaneFeed::Capsule {
             let step = (height as i32 / 3).max(1);
-            if let Some(c) = self.pane_attach_term.as_mut() { c.scroll(if up { step } else { -step }); }
+            self.ask_scroll(if up { step } else { -step }, now, length);
         }
         true
     }
-    pub(in crate::ui) fn wheel(&mut self, rows: i32) -> WheelEffect {
+
+    /// A person asked the local ring to move by `rows` (positive is older): a row at a time over `length`, at once
+    /// when it is zero. A program that owns its screen is scrolled by nothing here, so it moves at once.
+    fn ask_scroll(&mut self, rows: i32, now: Instant, length: Duration) {
+        let Some(c) = self.pane_attach_term.as_mut() else { return };
+        let at_once = if c.screen().alternate_screen() { rows } else { self.motion.ask_rows(rows, now, length) };
+        if at_once != 0 { c.scroll(at_once); }
+    }
+
+    /// One frame of what a person's scroll owes, after the pump: the rows the curve has reached go into the ring. The
+    /// ring's end and its live tail stop it (a move that came up short). Whether frames must keep coming.
+    pub(in crate::ui) fn spend_scroll(&mut self, now: Instant) -> bool {
+        let Some(c) = self.pane_attach_term.as_mut() else { self.motion.stop(); return false };
+        let rows = self.motion.spend_rows(now, c.screen().size().0 as f32);
+        if rows != 0 {
+            let before = c.screen().scrollback() as i32;
+            c.scroll(rows);
+            if c.screen().scrollback() as i32 - before != rows { self.motion.stop(); }
+        }
+        self.motion.moving()
+    }
+
+    pub(in crate::ui) fn wheel(&mut self, rows: i32, now: Instant, length: Duration) -> WheelEffect {
         let live = self.refresh_live();
         if self.pane_feed == PaneFeed::Pending { return WheelEffect::Pending; }
         let Some(c) = self.pane_attach_term.as_mut() else { return WheelEffect::ClearResidue };
@@ -250,7 +273,7 @@ impl<C: PaneClient> AgentPane<C> {
             let seq = format!("\x1b[<{button};1;1M");
             let run = c.screen_run().to_owned();
             for _ in 0..rows.unsigned_abs().min(8) { c.send_input_in_run(seq.as_bytes(), &run); }
-        } else { c.scroll(rows); }
+        } else { self.ask_scroll(rows, now, length); }
         WheelEffect::Redraw
     }
 }

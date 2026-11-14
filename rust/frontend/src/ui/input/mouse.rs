@@ -260,7 +260,8 @@ fn wheel_terminal(state: &mut State, rows_above: i32) {
 }
 
 fn wheel_agent_pane(state: &mut State, rows_above: i32) {
-    match state.agent_pane.wheel(rows_above) {
+    let (now, length) = state.scroll_ask();
+    match state.agent_pane.wheel(rows_above, now, length) {
         WheelEffect::Pending => {},
         WheelEffect::ClearResidue => state.pointer.clear_residue(),
         WheelEffect::Redraw => state.window.request_redraw(),

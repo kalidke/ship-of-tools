@@ -71,7 +71,8 @@ fn agent_pane_page_key(state: &mut State, key: KeyPress<'_>, label: String) -> C
             _ => None,
         };
         if let Some(up) = scroll {
-            if state.agent_pane.page(up, state.pane_rects.llm.height) {
+            let (now, length) = state.scroll_ask();
+            if state.agent_pane.page(up, state.pane_rects.llm.height, now, length) {
                 state.last_key = Some(label);
                 state.window.request_redraw();
                 return Break(());
