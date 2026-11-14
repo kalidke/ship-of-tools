@@ -43,7 +43,9 @@ impl RingRoll {
     pub(in crate::ui) fn ask(&mut self, rows: i32, now: Instant, length: Duration, mut ring: impl FnMut(i32) -> usize) {
         let reaches = ring(0) as i32 + self.motion.rows_owed() + rows <= 0;
         let at_once = self.motion.ask_rows(rows, now, length);
-        self.to_tail = reaches && self.motion.moving();
+        // A tail ask earned the landing: a later ask toward the tail keeps it however many lines arrived between,
+        // and one away from it works the new target out afresh. The flag implies a roll that is moving.
+        self.to_tail = self.motion.moving() && (reaches || (self.to_tail && rows < 0));
         if at_once != 0 { ring(at_once); }
     }
 

@@ -321,7 +321,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Whole rows (`ask_rows`, `spend_rows`, `rows_owed`, `finish_rows`, for the cell panes) add the one field it keeps for
   them, the carry: the distance spent minus the rows shown. A frame shows the spent distance rounded up in the direction
   of travel, so the first row shows at the first frame and a one-row step is that row; the motion ends with the frame
-  that shows its last row (no frame is drawn for a roll with nothing more to show), and that frame rounds, so the rows
+  that shows its last row (no frame is drawn for a roll with nothing more to show), so the rows
   shown total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
   `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). The preview and `terminal::vt::RingRoll` use it; a
   pane's ask, spend and edges are that pane's.
@@ -329,9 +329,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Terminal drawer: a `ScrollMotion` in whole rows and whether the ask reached the live tail. Every move goes through the
   owner's `ring` closure (rows to move by, none to read; the offset after), so the emulator's offset stays the one
   position. A move that comes up short (the ring's end, the live tail) stops the roll. An ask that reaches the live tail
-  (the offset, what is still owed and the rows asked sum to zero or less) lands on it when the roll rests, however many
-  lines arrived while it ran; an ask that stops short keeps the relative rule, the emulator holding the view steady as
-  lines arrive (`a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady`).
+  (the offset, what is still owed and the rows asked sum to zero or less, or a later ask toward the tail while one is
+  pending) lands on it when the roll rests, however many lines arrived while it ran, and so does a switch's finish; an ask that stops short keeps the relative rule, the emulator holding the view steady as
+  lines arrive (`a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady`,
+  `a_second_ask_toward_the_tail_keeps_the_landing_the_first_earned`, `a_switch_parks_a_tail_ask_on_the_tail_whatever_arrived`;
+  the Terminal drawer inherits the rule through the same type, its own tests having no way to make a shell print between two frames).
 - `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
   pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
   raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached

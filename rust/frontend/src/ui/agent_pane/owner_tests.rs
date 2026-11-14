@@ -1524,3 +1524,43 @@ fn a_client_installed_after_a_kept_rows_invalidation_owes_nothing_of_the_old_one
     assert!(!p.spend_scroll(after(t, 16)));
     assert_eq!(back(&p), 0, "the new client is not rolled by the old one's ask");
 }
+
+#[test]
+fn a_second_ask_toward_the_tail_keeps_the_landing_the_first_earned() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", history(60).as_bytes(), t);
+    p.wheel(6, t, ZERO);
+    let burst: &'static [u8] = Box::leak(history(20).into_bytes().into_boxed_slice());
+    // A wheel down that reaches the tail, a frame, a screenful arriving, then one more tick down: still the tail.
+    let t = after(t, 1000);
+    p.wheel(-6, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    step(&mut p, &wire, Step { output: burst, ..Default::default() }, after(t, 9));
+    p.wheel(-3, after(t, 10), LENGTH);
+    frames_until_rest(&mut p, t, 16);
+    assert_eq!(back(&p), 0);
+    // An ask away from the tail works its target out afresh: relative to the view, which the emulator holds steady.
+    p.wheel(6, t, ZERO);
+    let t = after(t, 2000);
+    p.wheel(-6, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    step(&mut p, &wire, Step { output: burst, ..Default::default() }, after(t, 9));
+    p.wheel(2, after(t, 10), LENGTH);
+    frames_until_rest(&mut p, t, 16);
+    assert!(back(&p) > 0, "{}", back(&p));
+}
+
+#[test]
+fn a_switch_parks_a_tail_ask_on_the_tail_whatever_arrived() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "a", history(60).as_bytes(), t);
+    p.wheel(8, t, ZERO);
+    p.page(false, 24, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    step(&mut p, &wire, Step { output: b"a\r\nb\r\nc\r\nd\r\ne\r\n", ..Default::default() }, after(t, 9));
+    assert!(back(&p) > 0);
+    select(&mut p, "h", "b", t, 2);
+    assert_eq!(p.pane_hold.as_ref().expect("the departing screen").0.scrollback(), 0);
+}
