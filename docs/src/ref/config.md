@@ -107,7 +107,7 @@ present, `high` already resolves to it.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `fullscreen_vsync_pin` | bool | `false` | While fullscreen, keep requesting a redraw every vsync instead of falling back to the on-demand idle tick. |
-| `smooth_scroll_ms` | integer, 0 to 1000 | `150` | How long a person's scroll in the preview takes to arrive, easing out. `0` moves at once. A value outside the range is ignored with a warning. |
+| `smooth_scroll_ms` | integer, 0 to 1000 | `150` | How long a person's scroll in the preview and the Chat drawer takes to arrive, easing out. `0` moves at once. A value outside the range is ignored with a warning. |
 
 In borderless fullscreen, DWM composition disengages and the panel's refresh
 follows the frontend's present cadence directly. The efficient on-demand idle

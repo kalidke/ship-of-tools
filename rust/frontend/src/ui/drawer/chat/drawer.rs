@@ -1,7 +1,7 @@
 //! The chat drawer's model: the owner, the row it follows and the reads in flight. State sends what its methods return.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
@@ -305,9 +305,14 @@ impl ChatDrawer {
         self.view.backs(inside)
     }
 
-    /// A key or the wheel moves the reader through the records (`view::ChatView::scroll`).
-    pub(in crate::ui) fn scroll(&mut self, up: bool, step: Step) {
-        self.view.scroll(up, step);
+    /// A key or the wheel asks to move the reader through the records (`view::ChatView::scroll`).
+    pub(in crate::ui) fn scroll(&mut self, up: bool, step: Step, now: Instant, length: Duration) {
+        self.view.scroll(up, step, now, length);
+    }
+
+    /// Whether the reader's scroll is still arriving, so frames must keep coming.
+    pub(in crate::ui) fn moving(&self) -> bool {
+        self.view.moving()
     }
 
     /// A mark key moves the mark (`view::ChatView::mark`).
@@ -333,10 +338,10 @@ impl ChatDrawer {
     }
 
     /// The channel's view, set aside for a thread. Nothing selectable is parked: a press made in the thread could not
-    /// clear a selection held in the view parked behind it, and it would come back at close.
+    /// clear a selection held in the view parked behind it, and it would come back at close. Nothing owed is parked either.
     fn parked_view(&mut self) -> super::view::ChatView {
         let mut view = std::mem::take(&mut self.view);
-        view.clear_selection();
+        view.park();
         view
     }
 

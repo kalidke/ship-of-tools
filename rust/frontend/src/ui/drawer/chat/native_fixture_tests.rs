@@ -123,6 +123,21 @@ impl State {
         Ok(ms)
     }
 
+    /// Frames until the chat's scroll has come to rest: each presents, each but the last asks for the next, and the motion
+    /// ends within a few lengths.
+    fn witness_rest(&mut self, frames: &mut Vec<f64>, newest: &Ts, label: &str) -> Result<()> {
+        let begun = Instant::now();
+        while begun.elapsed() < std::time::Duration::from_secs(5) {
+            self.witness_frame(frames, newest, label)?;
+            if !self.chat.moving() {
+                return Ok(());
+            }
+            anyhow::ensure!(self.pacer.is_dirty(), "{label}: a frame mid-motion did not ask for the next");
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        anyhow::bail!("{label}: the scroll never came to rest")
+    }
+
     /// A key pressed in the window: resolved by the real bindings under the real help context (so the pane the drawer maps to
     /// decides the action), then routed as `drawer_pane_key` and `chat_key` route it. A winit `KeyEvent` cannot be built
     /// outside the event loop, so those two functions themselves are not called.
@@ -133,7 +148,8 @@ impl State {
         anyhow::ensure!(action == expect, "{key:?} resolved to {action:?}, not {expect:?}");
         if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
             anyhow::ensure!(line_scroll_target(self.focus_prompts.focus(), self.layout_help.drawer()) == LineScroll::Chat, "Alt+Up is not the chat's");
-            self.chat.scroll(action == Some(Action::ScrollLineUp), Step::Line);
+            let (now, length) = self.scroll_ask();
+            self.chat.scroll(action == Some(Action::ScrollLineUp), Step::Line, now, length);
         } else if chat_apply(self, chat_move(action)) {
         } else if action == Some(Action::ReturnNav) {
             anyhow::ensure!(self.chat.close_thread(), "Escape closed no thread");
@@ -262,19 +278,26 @@ impl State {
         anyhow::ensure!(self.chat.following(), "PageDown never returned to the newest");
 
         // The wheel through the window's own adapter, one tick up and one down (three rows, a line step in the chat), then
-        // Alt+Up: the chat's view moves each time (the REPL's scroll is checked at the end).
+        // Alt+Up: the chat's view moves each time (the REPL's scroll is checked at the end). The window is a harness instance,
+        // which asks with zero (and so did the paging above); these scrolls name their own length, ease over frames, and each
+        // check of where one landed waits for the motion to rest. An arrival of the motion at the newest ends it there.
+        self.settings.smooth_scroll_ms = 150;
         for (tick, following) in [(1.0, false), (-1.0, true)] {
             self.pointer.clear_residue();
             crate::ui::input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), winit::event::MouseScrollDelta::LineDelta(0.0, tick));
+            anyhow::ensure!(self.chat.following() == !following, "the wheel ({tick}) moved the chat at the event, not over frames");
             self.witness_frame(&mut frames, &newest, "the wheel")?;
+            anyhow::ensure!(!following || self.chat.moving() && !self.chat.following(), "the wheel ({tick}) began no motion");
+            self.witness_rest(&mut frames, &newest, "the wheel")?;
             anyhow::ensure!(self.chat.following() == following, "the wheel ({tick}) left following = {}", self.chat.following());
         }
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, true), Some(Action::ScrollLineUp))?;
-        self.witness_frame(&mut frames, &newest, "Alt+Up")?;
+        self.witness_rest(&mut frames, &newest, "Alt+Up")?;
         anyhow::ensure!(!self.chat.following(), "Alt+Up did not scroll the chat");
+        // End moves at once, with nothing left owed.
         self.witness_key(Key::Named(NamedKey::End), (false, false), Some(Action::ChatLatest))?;
         self.witness_frame(&mut frames, &newest, "End")?;
-        anyhow::ensure!(self.chat.following(), "End did not follow the newest");
+        anyhow::ensure!(self.chat.following() && !self.chat.moving(), "End did not follow the newest at once");
 
         // ArrowUp marks the newest, ArrowRight opens its thread (read by value and answered), Escape closes it.
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;

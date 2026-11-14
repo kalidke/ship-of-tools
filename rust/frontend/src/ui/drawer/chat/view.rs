@@ -2,6 +2,7 @@
 //! shapes only the records that reach the body; every other buffer is kept for a scroll, up to `SPARE` of them.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use chrono::FixedOffset;
 use cosmic_text::{Align, Attrs, Buffer, BufferLine, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
@@ -11,6 +12,7 @@ use super::owner::ts_order;
 use super::mrkdwn::{ALT, BLOCK, BOLD, CODE, FILL, ITALIC, QUOTE, STRIKE};
 use super::project::{clock, project, Kind, Span};
 use crate::ui::flowed_selection::{FlowedSelection, FlowedText};
+use crate::ui::motion::ScrollMotion;
 use crate::ui::preview::markdown::{BODY_LINE_H, BODY_SIZE};
 use crate::ui::render::cells::CellQuad;
 use crate::ui::render::quad::ScreenRect;
@@ -142,8 +144,12 @@ pub(super) fn place(count: usize, body_h: f32, from: Option<(usize, f32)>, mut h
     out
 }
 
+/// How far the newest record's foot may lie below the body's foot and still be in view: a two-hundredth of a pixel, the float
+/// noise of an eased scroll's many fractional spends, so a scroll that lands on the foot is following, not an ulp short of it.
+const FOLLOW_SLACK_PX: f32 = 0.005;
+
 /// A position kept honest: the records above the body's top are taken up while there is room above, none is left wholly
-/// above it, and a position whose newest record is wholly in view is `None` (following).
+/// above it, and a position whose newest record is wholly in view (to `FOLLOW_SLACK_PX`) is `None` (following).
 pub(super) fn settle(count: usize, body_h: f32, (mut i, mut dy): (usize, f32), mut height: impl FnMut(usize) -> f32) -> Option<(usize, f32)> {
     while dy > 0.0 && i > 0 {
         i -= 1;
@@ -155,7 +161,7 @@ pub(super) fn settle(count: usize, body_h: f32, (mut i, mut dy): (usize, f32), m
         i += 1;
     }
     let mut end = dy;
-    (i..count).any(|j| { end += height(j); end > body_h }).then_some((i, dy))
+    (i..count).any(|j| { end += height(j); end > body_h + FOLLOW_SLACK_PX }).then_some((i, dy))
 }
 
 /// How far a key moves the position.
@@ -262,8 +268,12 @@ pub(in crate::ui) struct ChatView {
     /// The record at the body's top (by its time) and its top's distance below the body's top; `None` follows the newest.
     pub(super) anchor: Option<(Ts, f32)>,
     /// What keys and the wheel asked since the last frame, toward older records: lines and pages, turned into pixels by
-    /// the frame that spends them, so a key before the first frame is kept and a resize or scale change does not matter.
+    /// the frame that asks the motion for them, so a key before the first frame is kept and a resize or scale change does not
+    /// matter. `asked` is the first of them: its instant and the length, since the motion's clock starts at the key.
     pending: (f32, f32),
+    asked: Option<(Instant, Duration)>,
+    /// What those asks still owe the anchor, in pixels toward older records, spent at each frame through `settle`.
+    motion: ScrollMotion,
     cache: HashMap<Key, Shaped>,
     /// The records that reach the body, in order: buffer key, top, time, and the group's tile color when it starts one.
     placed: Vec<(Key, f32, Ts, Option<(u8, u8, u8)>)>,
@@ -286,8 +296,15 @@ pub(in crate::ui) struct ChatView {
 }
 
 impl ChatView {
-    /// Places the records in `body` and shapes those that reach it; the rest of the cache is trimmed.
+    /// `layout_at` for the frame at this instant.
     pub(in crate::ui) fn layout(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset) {
+        self.layout_at(fonts, records, body, scale, now, offset, Instant::now());
+    }
+
+    /// Places the records in `body` and shapes those that reach it, as the frame at `at` moves the view; the rest of the cache
+    /// is trimmed.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::ui) fn layout_at(&mut self, fonts: &mut FontSystem, records: &[(&ChatRecord, bool)], body: ScreenRect, scale: f32, now: i64, offset: FixedOffset, at: Instant) {
         let width = text_rect(body, scale).w.max(1.0);
         let cache = &mut self.cache;
         let mut used: HashMap<usize, Key> = HashMap::new();
@@ -304,13 +321,23 @@ impl ChatView {
         // The anchor is found by its time: a record gone passes it to the nearest newer one, and a snapshot that replaced
         // every record does the same against the new set.
         let found = self.anchor.as_ref().map(|(ts, dy)| (find(records, ts), *dy));
-        let pending = self.pending.0 * BODY_LINE_H * scale + self.pending.1 * body.h / 3.0;
-        let found = match (found, pending > 0.0) {
+        // The asked lines and pages are owed pixels; this frame spends its share (a pane's height at most is ever owed).
+        let asked = self.pending.0 * BODY_LINE_H * scale + self.pending.1 * body.h / 3.0;
+        let at_once = self.asked.take().map_or(0.0, |(when, length)| self.motion.ask(asked, when, length));
+        let spent = at_once + self.motion.spend(at, body.h);
+        self.pending = (0.0, 0.0);
+        // A reader following the newest starts from it when older records are owed.
+        let found = match (found, spent + self.motion.owed() > 0.0) {
             (None, true) if count > 0 => Some((count - 1, body.h - height(count - 1))),
             (found, _) => found,
         };
-        let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + pending), &mut height));
-        self.pending = (0.0, 0.0);
+        let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + spent), &mut height));
+        // Following the newest, or the oldest record's top at the body's top, ends the motion: nothing waits against an edge.
+        // A first frame that spends nothing (at the key's own instant) is not an arrival at the newest.
+        let waiting = spent == 0.0 && self.motion.owed() > 0.0;
+        if (from.is_none() && !waiting) || (from == Some((0, 0.0)) && self.motion.owed() > 0.0) {
+            self.motion.stop();
+        }
         let mut spots = place(count, body.h, from, &mut height);
         // The mark: keys move it, one at a time, and the view shows it (a record above the body has its top at the body's
         // top, one below its bottom at the foot, one taller than the body its top). Then the mark is in view: its first
@@ -326,6 +353,7 @@ impl ChatView {
             if top.is_some_and(|t| t >= 0.0 && t + h <= body.h) {
                 from
             } else {
+                self.motion.stop();
                 let above = top.map_or(spots.first().is_none_or(|p| i < p.index), |t| t < 0.0);
                 let from = settle(count, body.h, (i, if above || h > body.h { 0.0 } else { body.h - h }), &mut height);
                 spots = place(count, body.h, from, &mut height);
@@ -466,13 +494,27 @@ impl ChatView {
         self.lent().map_or_else(Vec::new, |t| self.selection.rects(&t))
     }
 
-    /// A key or the wheel moves the position `step` toward older records (`up`) or newer; it takes effect at the next frame.
-    pub(super) fn scroll(&mut self, up: bool, step: Step) {
+    /// A key or the wheel asks to move the position `step` toward older records (`up`) or newer, at `now`: it is owed from the
+    /// next frame and arrives over `length` (at that frame when it is zero).
+    pub(super) fn scroll(&mut self, up: bool, step: Step, now: Instant, length: Duration) {
         let n = if up { 1.0 } else { -1.0 };
         match step {
             Step::Line => self.pending.0 += n,
             Step::Page => self.pending.1 += n,
         }
+        self.asked.get_or_insert((now, length));
+    }
+
+    /// Whether frames must keep coming: something is owed.
+    pub(super) fn moving(&self) -> bool {
+        self.motion.moving()
+    }
+
+    /// The view is set aside (a thread opens): nothing asked or owed goes with it, and nothing selectable.
+    pub(super) fn park(&mut self) {
+        (self.pending, self.asked) = ((0.0, 0.0), None);
+        self.motion.stop();
+        self.clear_selection();
     }
 
     /// A mark key moves the mark one record toward older records (`older`) or newer; it takes effect at the next frame.
@@ -489,13 +531,15 @@ impl ChatView {
 
     /// The reader asks for the newest: the view follows it again.
     pub(super) fn latest(&mut self) {
-        (self.anchor, self.pending) = (None, (0.0, 0.0));
+        (self.anchor, self.pending, self.asked) = (None, (0.0, 0.0), None);
+        self.motion.stop();
     }
 
     /// The drawer is not showing the chat: nothing is prepared.
     pub(super) fn hide(&mut self) {
         self.placed.clear();
         self.body = None;
+        self.motion.stop();
     }
 
     /// The placed records as areas clipped to the body, and a marked continuation's time in its gutter.
