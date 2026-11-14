@@ -35,11 +35,15 @@ public static class SotScratchLongPath {
     static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint size);
     [DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool GetUserProfileDirectoryW(IntPtr token, StringBuilder path, ref uint size);
-    // The profile folder of the account the process token belongs to; the environment does not move it.
+    // The profile folder of the account the process token belongs to; the environment does not move it. On failure
+    // $null, and LastError holds the Win32 error. The caller keeps the identity that owns the token alive until this returns.
+    public static int LastError;
     public static string ProfileOf(IntPtr token) {
         StringBuilder sb = new StringBuilder(1024);
         uint size = (uint)sb.Capacity;
-        return GetUserProfileDirectoryW(token, sb, ref size) ? sb.ToString() : null;
+        if (GetUserProfileDirectoryW(token, sb, ref size)) { LastError = 0; return sb.ToString(); }
+        LastError = Marshal.GetLastWin32Error();
+        return null;
     }
     public static string Expand(string path) {
         StringBuilder sb = new StringBuilder(1024);
@@ -120,8 +124,11 @@ function Get-SotScratchRefusal([hashtable]$Vars, [hashtable]$Real) {
 }
 
 function Get-SotRealProfile {
-    $prof = [SotScratchLongPath]::ProfileOf([Security.Principal.WindowsIdentity]::GetCurrent().Token)
-    if (-not $prof) { throw 'scratch-guard: could not read the account''s profile folder from its token' }
+    # The identity owns the token handle and closes it when it is finalized, so it is held in a variable until the lookup
+    # has returned; a temporary with no reference after .Token is read can be collected before the call uses the handle.
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try { $prof = [SotScratchLongPath]::ProfileOf($id.Token) } finally { $id.Dispose() }
+    if (-not $prof) { throw ('scratch-guard: could not read the account''s profile folder from its token (Win32 error ' + [SotScratchLongPath]::LastError + ')') }
     return @{
         UserName = [Environment]::UserName
         Profile  = $prof
