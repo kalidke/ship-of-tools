@@ -70,12 +70,14 @@ impl State {
     }
 }
 
-/// Why drawing is off with no base: a shown SVG is a picture the daemon cannot compose into the agent's, so its line
-/// names the two ways to draw now; `canvas` is the bound label of `preview.canvas`.
-fn no_base_line(shown: Option<&str>, canvas: &str) -> String {
-    match shown {
-        Some(node) if node.to_ascii_lowercase().ends_with(".svg") => {
-            format!("drawing: an SVG cannot be drawn on yet; open a PNG of it, or press {canvas} for a blank canvas")
+/// Why `d` finds no base to draw on. The key resolves only while a picture is shown, so a picture whose node is not an
+/// image file (an SVG, a PDF page, a video poster, a plugin's picture) is one the daemon cannot compose into the agent's:
+/// the line names the two ways to draw now; `canvas` is the bound label of `preview.canvas`. Otherwise the picture is an
+/// image file and the base is held back by the refused-hello overlay, and "no image" is all there is to say.
+fn no_base_line(raster_shown: bool, node: Option<&str>, canvas: &str) -> String {
+    match node {
+        Some(n) if raster_shown && !State::is_image_node_id(n) => {
+            format!("drawing: only image files can be drawn on; open a PNG of it, or press {canvas} for a blank canvas")
         }
         _ => "drawing: no image to draw on".to_string(),
     }
@@ -90,7 +92,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
     match key.action {
         Some(Action::PreviewDraw) if shown.is_none() => {
             let canvas = state.bindings.first_label(Action::PreviewCanvas);
-            state.status.set(no_base_line(state.raster.node(), &canvas));
+            state.status.set(no_base_line(state.raster.is_shown(), state.raster.node(), &canvas));
         }
         Some(Action::PreviewDraw) => {
             let on = !state.ink.is_on();
@@ -133,13 +135,22 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
 mod tests {
     use super::*;
 
+    const ONLY_IMAGES: &str = "drawing: only image files can be drawn on; open a PNG of it, or press Shift+D for a blank canvas";
+
     #[test]
-    fn drawing_over_a_shown_svg_names_the_two_ways_to_draw() {
-        assert_eq!(
-            no_base_line(Some("files:fig/a.SVG"), "Shift+D"),
-            "drawing: an SVG cannot be drawn on yet; open a PNG of it, or press Shift+D for a blank canvas"
-        );
-        assert_eq!(no_base_line(Some("files:a.pdf"), "Shift+D"), "drawing: no image to draw on");
-        assert_eq!(no_base_line(None, "Shift+D"), "drawing: no image to draw on");
+    fn drawing_over_a_picture_that_is_not_an_image_file_names_the_two_ways_to_draw() {
+        for node in ["files:fig/a.SVG", "files:doc.pdf", "files:clip.mp4", "files:x.bin"] {
+            assert_eq!(no_base_line(true, Some(node), "Shift+D"), ONLY_IMAGES, "{node}");
+        }
+        assert!(no_base_line(true, Some("files:a.svg"), "Ctrl+K").ends_with("press Ctrl+K for a blank canvas"));
+    }
+
+    #[test]
+    fn an_image_file_or_no_picture_keeps_the_plain_line() {
+        let plain = "drawing: no image to draw on";
+        assert_eq!(no_base_line(true, Some("files:a.png"), "Shift+D"), plain);
+        assert_eq!(no_base_line(true, Some("files:A.JPEG"), "Shift+D"), plain);
+        assert_eq!(no_base_line(true, None, "Shift+D"), plain);
+        assert_eq!(no_base_line(false, Some("files:a.svg"), "Shift+D"), plain);
     }
 }
