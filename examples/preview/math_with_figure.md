@@ -18,6 +18,11 @@ CairoMakie at the acceptance-gate spike.
 
 ![Sample heatmap from the M1 spike](sample.png)
 
+An SVG figure is drawn too: a fitted spot, $I(x) = A\,e^{-(x - x_0)^2 / 2\sigma^2} + b$,
+on its camera pixels and along one row.
+
+![A fitted spot](sample.svg)
+
 ## Why this matters
 
 The "concept explorer" idea hinges on jumping fluidly between **levels

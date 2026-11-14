@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300" width="480" height="300">
+  <title>A fitted spot: camera pixels, the fit and its profile</title>
+  <defs>
+    <radialGradient id="spot" cx="0.53" cy="0.47" r="0.42">
+      <stop offset="0" stop-color="#fff7c2"/>
+      <stop offset="0.35" stop-color="#f2a33a"/>
+      <stop offset="0.75" stop-color="#7a1f4f"/>
+      <stop offset="1" stop-color="#1b1030"/>
+    </radialGradient>
+    <pattern id="pixels" width="25" height="25" patternUnits="userSpaceOnUse">
+      <path d="M25 0V25H0" fill="none" stroke="#000" stroke-opacity="0.35" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2457a6" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#2457a6" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="480" height="300" fill="#fbfcfd"/>
+  <text x="24" y="30" font-family="sans-serif" font-size="16" font-weight="600" fill="#15202b">A fitted spot</text>
+
+  <g transform="translate(24 48)">
+    <rect width="200" height="200" fill="url(#spot)"/>
+    <rect width="200" height="200" fill="url(#pixels)"/>
+    <ellipse cx="106" cy="94" rx="14" ry="10" transform="rotate(-20 106 94)"
+             fill="none" stroke="#7fe3ff" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <path d="M98 94H114M106 86V102" stroke="#7fe3ff" stroke-width="2"/>
+    <line x1="130" y1="186" x2="180" y2="186" stroke="#ffffff" stroke-width="4"/>
+    <text x="155" y="178" font-family="sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">500 nm</text>
+    <text x="0" y="220" font-family="sans-serif" font-size="12" fill="#5b6673">Camera pixels, fit and uncertainty</text>
+  </g>
+
+  <g transform="translate(260 48)" font-family="sans-serif" font-size="11" fill="#5b6673">
+    <path d="M0 180H200M0 180V0" stroke="#15202b" stroke-width="1" fill="none"/>
+    <path d="M0 178 L40 177.9 L45 177.6 L50 176.9 L55 175.2 L60 171.5 L65 164.5 L70 152.5 L75 134.3 L80 110.2
+             L85 82.6 L90 56.3 L95 37.1 L100 30 L105 37.1 L110 56.3 L115 82.6 L120 110.2 L125 134.3 L130 152.5 L135 164.5
+             L140 171.5 L145 175.2 L150 176.9 L155 177.6 L160 177.9 L200 178 Z" fill="url(#fill)"/>
+    <path d="M0 178 L40 177.9 L45 177.6 L50 176.9 L55 175.2 L60 171.5 L65 164.5 L70 152.5 L75 134.3 L80 110.2
+             L85 82.6 L90 56.3 L95 37.1 L100 30 L105 37.1 L110 56.3 L115 82.6 L120 110.2 L125 134.3 L130 152.5 L135 164.5
+             L140 171.5 L145 175.2 L150 176.9 L155 177.6 L160 177.9 L200 178"
+          fill="none" stroke="#2457a6" stroke-width="2" stroke-linejoin="round"/>
+    <g fill="#c0392b" opacity="0.85">
+      <circle cx="12.5" cy="176.5" r="3"/><circle cx="37.5" cy="175.8" r="3"/><circle cx="62.5" cy="167" r="3"/>
+      <circle cx="87.5" cy="67.5" r="3"/><circle cx="112.5" cy="78.5" r="3"/><circle cx="137.5" cy="161" r="3"/>
+      <circle cx="162.5" cy="175.8" r="3"/><circle cx="187.5" cy="177" r="3"/>
+    </g>
+    <line x1="100" y1="0" x2="100" y2="180" stroke="#2e7d4f" stroke-dasharray="3 3"/>
+    <text x="100" y="196" text-anchor="middle">position</text>
+    <text x="-90" y="-8" transform="rotate(-90)" text-anchor="middle">photons</text>
+    <text x="0" y="220" font-size="12">One row: counts and the fit</text>
+  </g>
+</svg>
