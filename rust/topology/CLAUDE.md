@@ -127,7 +127,7 @@ of each.
     stalls the rest can cost minutes (a manager that answers none fails at the first call); `apply` is a dry run unless
     `--yes`. A missing user bus environment fails a call at once, and a manager that accepts and never answers fails it
     at 90 s, systemd's own bound (measured on systemd 255 and 259); the reported relay-socket hang of over two minutes
-    is not reproduced and its cause is not established.
+    is not reproduced and its cause is not established (docs/defects.md: RELAY-SOCKET-HANG).
 12. **`sotd stdio-bridge` adds nothing to the stream unless its first frame is `link.hello`.** It connects through
     `connect_own` to the local label's socket (no argument), to the hub's relay socket for a plain host name (`--host`)
     or to a local endpoint a caller on this box names (`--endpoint`), and puts nothing of its own on stdout. The forms

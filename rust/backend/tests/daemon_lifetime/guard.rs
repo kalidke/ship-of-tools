@@ -736,6 +736,8 @@ async fn refresh_calls(main_pid_of: &str, lock_held: bool) -> String {
     let bin = env._tmp.path().join("stub-bin");
     std::fs::create_dir_all(&bin).unwrap();
     crate::native_stub_systemctl(&bin, STUB_SYSTEMCTL);
+    // The durable parent's scope probe calls `systemd-run`; a refusal (exit 1) is the contained, scope-less start.
+    sot_platform::test_exec::write_executable(&bin.join("systemd-run"), "#!/bin/sh\necho \"$*\" >> \"${0%/*}/scope-calls\"\nexit 1\n");
     std::fs::write(bin.join("main-pid-of"), main_pid_of).unwrap();
     let hosts = env._tmp.path().join("hosts.toml");
     std::fs::write(
@@ -775,6 +777,8 @@ async fn refresh_calls(main_pid_of: &str, lock_held: bool) -> String {
         let said = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(!status.success(), "the start that never took the lock ended well: {status:?}\n{said}");
         assert!(said.contains("still holds"), "the start did not end at the lock wait:\n{said}");
+        let scopes = std::fs::read_to_string(bin.join("scope-calls")).unwrap_or_default();
+        assert!(!scopes.is_empty(), "the durable parent's scope probe did not reach the stub systemd-run");
         return std::fs::read_to_string(bin.join("calls")).unwrap_or_default();
     }
     let socket = env.socket_path.clone();
@@ -813,9 +817,9 @@ async fn the_relay_refresh_follows_the_guard() {
     );
 }
 
-/// The unit restarts a start that exits 1 (`Restart=on-failure`, no start limit), so a start that waits out another
-/// holder of the daemon lock was tried again every 152 s for as long as that holder lived; each try leaves the user
-/// manager and the relay sockets alone.
+/// A start that waits out another holder of the daemon lock ran the relay refresh before it took the lock, and the unit
+/// restarted it every 152 s for as long as that holder lived; it now runs no `systemctl`. Its durable parent's scope
+/// calls go to a stub `systemd-run` too, so the case reaches no user manager.
 #[tokio::test]
 async fn a_start_that_never_takes_the_lock_refreshes_no_relay_unit() {
     let _serial = SERIAL.lock().await;

@@ -276,7 +276,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sot flag `--token`, `SOT_TOKEN` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli` |
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
 | the serving daemon's one raw exit, and the child fire that comes first (`FIRE_WAIT`) | process rule | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`, `terminal` |
-| sotd exit 0, 1 and 101 (the main future's result) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
+| sotd exit 0, 1 and 101 (the main future's result, other than a seat held) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
+| sotd exit 69 (a start refused because another daemon answers on its socket or holds the daemon lock; the unit does not restart it) | exit code | server (the code); distribution (`deploy/sotd.service` `RestartPreventExitStatus=`) | `rust/backend/src/server/listen.rs` `SeatHeld`, `refusal_code`; `rust/backend/src/main.rs` `complete_main`; `rust/protocol/src/ops/lease.rs` `EXIT_SEAT_HELD`; not `sot-capsule supervise`'s 69 below, a different program |
 | sotd's end by INT and TERM (the fire and the children's folders, then death by the signal) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit_by_signal` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease_exit.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |

@@ -442,7 +442,7 @@ fn main() -> Result<()> {
 }
 
 /// The serving daemon's main result becomes a status while the runtime still exists, and takes the one terminal path: `Ok`
-/// is 0, an error is printed and is 1, a panic of the main future is 101 (what an unwinding `main` would have given).
+/// is 0, an error is printed and is 1 (69 for a seat held, `server::refusal_code`), a panic of the main future is 101 (what an unwinding `main` would have given).
 fn complete_main<T>(
     runtime: &tokio::runtime::Runtime,
     future: impl std::future::Future<Output = Result<()>>,

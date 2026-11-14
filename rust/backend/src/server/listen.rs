@@ -53,7 +53,7 @@ fn daemon_lock_wait() -> std::time::Duration {
 /// Takes `<state_root>/daemon.lock`, trying every 250 ms. A busy lock with
 /// a daemon answering on `socket` refuses at once; a busy lock with nobody
 /// answering is a predecessor still shutting down, waited for up to
-/// [`daemon_lock_wait`]. Either error ends `main` with exit 1.
+/// [`daemon_lock_wait`]. Either error is a [`SeatHeld`], which ends `main` with `EXIT_SEAT_HELD`.
 pub(super) async fn lock_daemon(
     state_root: &std::path::Path,
     socket: Option<&std::path::Path>,
