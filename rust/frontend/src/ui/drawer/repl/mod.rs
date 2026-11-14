@@ -117,6 +117,8 @@ impl ReplModel {
     pub(in crate::ui) fn pkg_mode(&self) -> bool {
         self.live.pkg_mode
     }
+    /// The frame reads the scroll through `frame_scroll` alone.
+    #[cfg(test)]
     pub(in crate::ui) fn scroll(&self) -> u16 {
         self.live.scroll
     }

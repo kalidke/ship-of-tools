@@ -243,11 +243,13 @@ impl ReplModel {
         let row = &mut self.live;
         self.roll.ask(if older { 1 } else { -1 }, now, length, |rows| line_step(&mut row.scroll, rows));
     }
-    /// One frame, before the view is built: the rows the roll has reached; `cap` is the drawer's rows. Whether
-    /// frames must keep coming.
-    pub(in crate::ui) fn spend_scroll(&mut self, now: Instant, cap: f32) -> bool {
+    /// One frame's scroll for the build: the rows the roll has reached go in first, so the build never reads an
+    /// offset the frame has not spent (the commit writes the built value back, and would undo a later spend); `cap`
+    /// is the drawer's rows. Answers the scroll and whether frames must keep coming.
+    pub(in crate::ui) fn frame_scroll(&mut self, now: Instant, cap: f32) -> (u16, bool) {
         let row = &mut self.live;
-        self.roll.spend(now, cap, |rows| page_step(&mut row.scroll, rows))
+        let moving = self.roll.spend(now, cap, |rows| page_step(&mut row.scroll, rows));
+        (self.live.scroll, moving)
     }
     pub(super) fn finish_scroll(&mut self) {
         let row = &mut self.live;

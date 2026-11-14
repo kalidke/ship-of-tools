@@ -863,7 +863,7 @@ const ROWS: f32 = 40.0;
 fn frames(m: &mut ReplModel, from: Instant) -> Vec<(u16, bool)> {
     let mut shown = Vec::new();
     for i in 1..=40 {
-        let moving = m.spend_scroll(from + FRAME * i, ROWS);
+        let moving = m.frame_scroll(from + FRAME * i, ROWS).1;
         shown.push((m.scroll(), moving));
         if !moving {
             break;
@@ -890,13 +890,13 @@ fn a_page_is_spent_in_whole_rows_and_a_submit_moves_at_once() {
 
     let t1 = t0 + Duration::from_secs(1);
     m.scroll_rows(12, t1, LENGTH);
-    assert!(m.spend_scroll(t1 + FRAME, ROWS));
+    assert!(m.frame_scroll(t1 + FRAME, ROWS).1);
     assert!((13..24).contains(&m.scroll()), "{}", m.scroll());
     // The Enter key: the eval, then the return to the tail (`drawer/keys.rs`).
     m.begin_eval(target(&a)).unwrap();
     m.scroll_to_tail();
     assert_eq!(m.scroll(), 0);
-    assert!(!m.spend_scroll(t1 + FRAME * 2, ROWS), "nothing is owed after a submit");
+    assert!(!m.frame_scroll(t1 + FRAME * 2, ROWS).1, "nothing is owed after a submit");
     assert_eq!(m.scroll(), 0);
 }
 
@@ -919,11 +919,11 @@ fn an_edit_a_history_step_ctrl_l_and_a_fresh_run_stop_a_roll_at_once() {
         complete(&mut m, &a, id);
         let t0 = Instant::now();
         m.scroll_rows(12, t0, LENGTH);
-        assert!(m.spend_scroll(t0 + FRAME, ROWS), "{name}");
+        assert!(m.frame_scroll(t0 + FRAME, ROWS).1, "{name}");
         assert!(m.scroll() > 0, "{name}");
         stop(&mut m, &a);
         assert_eq!(m.scroll(), 0, "{name} returns to the tail");
-        assert!(!m.spend_scroll(t0 + FRAME * 2, ROWS), "{name} leaves nothing owed");
+        assert!(!m.frame_scroll(t0 + FRAME * 2, ROWS).1, "{name} leaves nothing owed");
         assert_eq!(m.scroll(), 0, "{name}");
     }
 }
@@ -934,11 +934,11 @@ fn a_row_switch_finishes_a_roll_where_it_was_asked() {
     let (a, b) = (key("host", "a"), key("host", "b"));
     let t0 = Instant::now();
     m.scroll_rows(12, t0, LENGTH);
-    assert!(m.spend_scroll(t0 + FRAME, ROWS));
+    assert!(m.frame_scroll(t0 + FRAME, ROWS).1);
     assert!(m.scroll() < 12);
     switch(&mut m, &a, &b);
     assert_eq!(m.scroll(), 0);
-    assert!(!m.spend_scroll(t0 + FRAME * 2, ROWS), "the entered row owes nothing");
+    assert!(!m.frame_scroll(t0 + FRAME * 2, ROWS).1, "the entered row owes nothing");
     assert_eq!(m.scroll(), 0);
     switch(&mut m, &b, &a);
     assert_eq!(m.scroll(), 12, "the row was parked where the person asked");
@@ -946,10 +946,10 @@ fn a_row_switch_finishes_a_roll_where_it_was_asked() {
     // A restore with nothing captured sets a new position: what was owed goes.
     let t1 = t0 + Duration::from_secs(1);
     m.scroll_rows(12, t1, LENGTH);
-    assert!(m.spend_scroll(t1 + FRAME, ROWS));
+    assert!(m.frame_scroll(t1 + FRAME, ROWS).1);
     m.restore_row(&b);
     assert_eq!(m.scroll(), 0);
-    assert!(!m.spend_scroll(t1 + FRAME * 2, ROWS), "a restore stops the roll");
+    assert!(!m.frame_scroll(t1 + FRAME * 2, ROWS).1, "a restore stops the roll");
     assert_eq!(m.scroll(), 0);
 }
 
@@ -959,17 +959,17 @@ fn the_top_and_the_tail_stop_a_roll() {
     let mut m = ReplModel::default();
     let t0 = Instant::now();
     m.scroll_rows(12, t0, LENGTH);
-    assert!(m.spend_scroll(t0 + FRAME, ROWS));
+    assert!(m.frame_scroll(t0 + FRAME, ROWS).1);
     let built = m.scroll();
     m.commit_rendered_scroll(built, 1);
-    assert!(!m.spend_scroll(t0 + FRAME * 2, ROWS), "a roll into the top stops");
+    assert!(!m.frame_scroll(t0 + FRAME * 2, ROWS).1, "a roll into the top stops");
     assert_eq!(m.scroll(), 1);
 
     // A clamp while the roll moves away from the top keeps it.
     let t1 = t0 + Duration::from_secs(1);
     m.scroll_rows(20, t1, Duration::ZERO);
     m.scroll_rows(-12, t1, LENGTH);
-    assert!(m.spend_scroll(t1 + FRAME, ROWS));
+    assert!(m.frame_scroll(t1 + FRAME, ROWS).1);
     let built = m.scroll();
     m.commit_rendered_scroll(built, built - 1);
     let rest = frames(&mut m, t1 + FRAME);
@@ -989,14 +989,14 @@ fn a_one_row_step_shows_at_the_first_frame_and_no_frame_follows_it() {
     let t0 = Instant::now();
     m.scroll_line(true, t0, LENGTH);
     assert_eq!(m.scroll(), 0, "nothing moves at the ask");
-    assert!(!m.spend_scroll(t0 + FRAME, ROWS), "the frame that shows the row is the last");
+    assert!(!m.frame_scroll(t0 + FRAME, ROWS).1, "the frame that shows the row is the last");
     assert_eq!(m.scroll(), 1);
     // A wheel step of one row.
     m.scroll_rows(1, t0 + FRAME, LENGTH);
-    assert!(!m.spend_scroll(t0 + FRAME * 2, ROWS));
+    assert!(!m.frame_scroll(t0 + FRAME * 2, ROWS).1);
     assert_eq!(m.scroll(), 2);
     m.scroll_line(false, t0 + FRAME * 2, LENGTH);
-    assert!(!m.spend_scroll(t0 + FRAME * 3, ROWS));
+    assert!(!m.frame_scroll(t0 + FRAME * 3, ROWS).1);
     assert_eq!(m.scroll(), 1);
 }
 
@@ -1006,7 +1006,7 @@ fn a_page_that_reaches_the_tail_lands_on_it_while_output_arrives() {
     let t0 = Instant::now();
     m.scroll_rows(10, t0, Duration::ZERO);
     m.scroll_rows(-10, t0, LENGTH);
-    assert!(m.spend_scroll(t0 + FRAME, ROWS));
+    assert!(m.frame_scroll(t0 + FRAME, ROWS).1);
     // The anchor holds the read rows steady as five lines arrive: the build comes back five rows further from the tail.
     let held = m.scroll() + 5;
     m.commit_rendered_scroll(held, held);

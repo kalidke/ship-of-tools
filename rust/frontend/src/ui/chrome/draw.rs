@@ -40,11 +40,11 @@ impl State {
         // mutable borrow inside the draw closure, then written back to
         // self after `draw` returns.
         let mut new_pane_rects = self.pane_rects;
-        // A person's eased scroll of the REPL is spent before its position is read here.
-        if self.repl_model.spend_scroll(std::time::Instant::now(), self.pane_rects.repl.height as f32) {
+        let (mut new_repl_scroll, repl_rolling) =
+            self.repl_model.frame_scroll(std::time::Instant::now(), self.pane_rects.repl.height as f32);
+        if repl_rolling {
             self.pacer.mark_dirty();
         }
-        let mut new_repl_scroll = self.repl_model.scroll();
         // Nav-spill overlay rows collected by this draw (same captured-
         // local pattern as `preview_cells`); written to
         // the nav spill after `draw` returns for the render-

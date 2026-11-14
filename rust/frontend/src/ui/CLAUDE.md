@@ -677,18 +677,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   saturating fine-line scroll retain their distinct arithmetic; rendering supplies the final clamp.
 - A person's REPL scroll eases a row at a time: `scroll_rows` (the wheel, PageUp/PageDown, Ctrl+u/d) and
   `scroll_line` (Alt+Up/Down) ask the model's `RingRoll` with the event's instant and the length (`State::scroll_ask`),
-  and at a zero length apply their own arithmetic at once, as before. `draw_chrome` spends the roll by the page
-  arithmetic (`spend_scroll`, the drawer's rows as the cap) before it reads the scroll for the build, and marks the
-  pacer dirty while it moves. The tail is the page arithmetic's floor and stops the roll; the top is the commit's
-  clamp (`commit_rendered_scroll(built, shown)`, a shown scroll below the built one), which stops a roll toward it and
-  not one away from it. An edit, a history step, a submit, an interrupt, Ctrl+L and a fresh run return to the tail and
+  and at a zero length apply their own arithmetic at once, as before. `draw_chrome` reads the scroll for the build only
+  through `frame_scroll`, which spends the roll by the page arithmetic first (the drawer's rows as the cap), so no read
+  can precede the spend (`scroll()` is test-only); a read before it would be undone, since the commit writes the built
+  value back. It marks the pacer dirty while the roll moves. The tail is the page arithmetic's floor and stops the
+  roll; the top is the commit's clamp (`commit_rendered_scroll(built, shown)`, a shown scroll below the built one),
+  which stops a roll toward it and not one away from it. Learned only when drawn, the top costs up to two frames that
+  show nothing new: the frame that asks past it (clamped) and the one its spend had already asked for. An edit, a history step, a submit, an interrupt, Ctrl+L and a fresh run return to the tail and
   stop the roll (`scroll_to_tail`); a switch's capture finishes it, so the row parks where the person asked, and a
   restore stops it. A page that reaches the tail lands there however much output the anchor held the view steady
   through. Tests: `model_tests::a_page_is_spent_in_whole_rows_and_a_submit_moves_at_once`,
   `an_edit_a_history_step_ctrl_l_and_a_fresh_run_stop_a_roll_at_once`, `a_row_switch_finishes_a_roll_where_it_was_asked`,
   `the_top_and_the_tail_stop_a_roll`, `a_one_row_step_shows_at_the_first_frame_and_no_frame_follows_it`,
-  `a_page_that_reaches_the_tail_lands_on_it_while_output_arrives`; the call sites and the spend's `mark_dirty` in
-  `draw_chrome` rest on reading, like the other State handlers.
+  `a_page_that_reaches_the_tail_lands_on_it_while_output_arrives`. The frame's glue (the spend before the build, its
+  `mark_dirty` and the cap) is pinned by the native fixture `a_repl_wheel_tick_rolls_a_row_at_a_time` (a wheel tick
+  through `mouse_wheel`, the pacer cleared before each `redraw`; in `run_state_fixtures`, so only under a display); the
+  key call sites rest on reading, like the other State handlers.
 - Ctrl+L clears log, scroll and ReplPresentation's image caches, retaining draft, prompt mode and history walk. A fresh file
   run clears log, scroll, mode and history, retaining draft and image caches until normal pruning. Every restore
   requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests`, including

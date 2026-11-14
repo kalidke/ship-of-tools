@@ -219,4 +219,42 @@ impl State {
         );
         Ok(())
     }
+
+    /// A wheel tick over the REPL's log rolls it a row at a time through the real frame: nothing moves at the event,
+    /// each frame short of the last row asks for the next, the frame that shows the last row does not, and the rest
+    /// is the tick's three rows.
+    #[allow(
+        dead_code,
+        reason = "runs only inside a native State, from the window_minimized fixtures child"
+    )]
+    pub(in crate::ui) fn a_repl_wheel_tick_rolls_a_row_at_a_time(&mut self) -> Result<()> {
+        // The fixture's window is a harness instance, which asks with zero; this one drives the motion.
+        self.settings.smooth_scroll_ms = 150;
+        self.repl_model = ReplModel::default();
+        let row = self.active_ws_key();
+        closed(&mut self.repl_model, &row, &(0..200).map(|n| format!("out {n}\n")).collect::<String>());
+        if self.layout_help.drawer() != DrawerContent::Repl {
+            let effect = self.layout_help.toggle_drawer(DrawerContent::Repl, self.focus_prompts.focus());
+            effect.apply(self, None);
+        }
+        self.set_focus(PaneFocus::Repl);
+        self.redraw()?;
+        self.pointer.clear_residue();
+        crate::ui::input::mouse::mouse_wheel(self, winit::keyboard::ModifiersState::empty(), winit::event::MouseScrollDelta::LineDelta(0.0, 1.0));
+        anyhow::ensure!(self.repl_model.scroll() == 0, "the wheel moved the REPL at the event, not over frames");
+        let (mut frames, begun) = (Vec::new(), std::time::Instant::now());
+        while frames.last().map(|&(scroll, _)| scroll) != Some(3) {
+            anyhow::ensure!(begun.elapsed() < std::time::Duration::from_secs(5), "the roll never came to rest: {frames:?}");
+            self.pacer.clear_dirty();
+            self.redraw()?;
+            frames.push((self.repl_model.scroll(), self.pacer.is_dirty()));
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        println!("repl-roll: {frames:?}");
+        anyhow::ensure!(frames.iter().any(|&(scroll, _)| scroll > 0 && scroll < 3), "no frame showed a row between: {frames:?}");
+        let (last, before) = frames.split_last().expect("at least one frame");
+        anyhow::ensure!(before.iter().all(|&(_, asked)| asked), "a frame short of the last row did not ask for the next: {frames:?}");
+        anyhow::ensure!(!last.1, "the frame that showed the last row asked for another: {frames:?}");
+        Ok(())
+    }
 }
