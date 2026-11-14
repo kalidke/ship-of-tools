@@ -4,9 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-/// The time a person's scroll takes to arrive in this landing; the setting that replaces it is the next landing's.
-pub(in crate::ui) const SCROLL_LENGTH: Duration = Duration::from_millis(150);
-
 #[derive(Default)]
 pub(in crate::ui) struct ScrollMotion {
     /// Distance asked and not yet spent, signed, in the pane's unit: the view comes to rest where the person asked.

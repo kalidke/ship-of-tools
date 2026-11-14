@@ -105,9 +105,9 @@ impl State {
     }
 
     /// What a person's scroll asks with: the event's instant and how long it takes to arrive. The one place the
-    /// length is read, so every call site asks alike.
+    /// length is read (`[display] smooth_scroll_ms`, zero in a harness instance), so every call site asks alike.
     pub(in crate::ui) fn scroll_ask(&self) -> (std::time::Instant, std::time::Duration) {
-        (std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH)
+        (std::time::Instant::now(), std::time::Duration::from_millis(self.settings.smooth_scroll_ms))
     }
 
     pub(in crate::ui) fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {

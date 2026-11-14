@@ -291,8 +291,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   table buffers, math images, image previews, the concept pane or double-click word selection. A
   sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
   request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
-  named: by a signed step stopping at the top, top, end, each an ask at the event's time and a length (150 ms
-  now, `motion::SCROLL_LENGTH`; zero lands at once), never a move. The scroll is fractional body lines, whole at rest;
+  named: by a signed step stopping at the top, top, end, each an ask at the event's time and a length (`[display]
+  smooth_scroll_ms`, 0 to 1000, default 150; zero lands at once), never a move. The scroll is fractional body lines, whole at rest;
   `advance`, run by the layout's clamp each frame, resolves an End against that layout's end, spends the owed distance
   (a person's travel past one pane height at once), stops it at the top or the end, lands a rest on a whole line and
   answers whether frames must keep coming. A new file, a reply's anchor and a change of the drawn buffer (edit mode
@@ -302,7 +302,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_new_file_and_a_change_of_buffer_end_what_is_owed`, `a_zero_length_scroll_lands_at_once_and_an_edge_drops_what_is_owed`,
   `a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once`, `an_edge_stops_the_motion_at_the_frame_that_meets_it`,
   `a_reanchor_after_a_wheel_step_lands_on_its_line_not_beside_it`, `the_last_ask_wins_over_an_end_not_yet_resolved`). Every
-  call site asks with `State::scroll_ask` (the event's instant and the one length), so the length is read in one place.
+  call site asks with `State::scroll_ask` (the event's instant and the one length, `settings.smooth_scroll_ms`), so the length is read in one place; a harness instance
+  (`ephemeral`, any `--capture`) has it set to 0 at start by `Settings::for_harness` (`a_harness_instance_asks_with_zero`), because its idle
+  loop returns before the pacer can schedule the next frame, and the native fixture, whose window is such an instance, sets its own 150 ms.
   The State glue is pinned only for the wheel: the native fixture `a_preview_scroll_moves_over_frames_and_comes_to_rest`
   (which runs only under a display) drives the wheel's call site and `clamp_preview_scroll`'s `mark_dirty`. The keys'
   eight call sites in `preview/keys.rs`, Alt+Up and Alt+Down in `input/global_keys.rs` and the re-anchor in

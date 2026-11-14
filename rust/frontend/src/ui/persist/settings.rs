@@ -78,6 +78,11 @@
 //                                   # points of one core + 8.5 points of
 //                                   # iGPU 3D continuously at idle in
 //                                   # fullscreen (measured on one laptop).
+//   smooth_scroll_ms = 150          # How long a person's scroll takes to
+//                                   # arrive (ease-out). 0..=1000; 0 moves
+//                                   # at once. Out of range warns and keeps
+//                                   # the default. A harness run
+//                                   # (--ephemeral, --capture) uses 0.
 //
 //   [chat]
 //   name = "Ada"                    # The author a chat post carries; unset,
@@ -103,6 +108,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::discover::find_config_file;
+
+/// The longest a scroll may take to arrive: past a second the view lags the hand.
+pub const MAX_SMOOTH_SCROLL_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresetMode {
@@ -356,10 +364,24 @@ pub struct Settings {
     /// (measured on one laptop). No VRR detection API is trusted here,
     /// so this is a setting, not a probe.
     pub fullscreen_vsync_pin: bool,
+    /// `[display] smooth_scroll_ms` — how long a person's scroll takes to arrive, 0..=`MAX_SMOOTH_SCROLL_MS`; 0 moves
+    /// at once. Read through `State::scroll_ask`, the one place the length is read.
+    pub smooth_scroll_ms: u64,
     /// `[chat] name` — the author a chat post carries beside the app's name. `None` (unset or blank): the window does not post.
     pub chat_name: Option<String>,
     /// The settings file the window loaded, when it loaded one: where the Chat drawer writes `[chat] name`.
     pub source: Option<PathBuf>,
+}
+
+impl Settings {
+    /// A harness instance (`--ephemeral`, any `--capture`) never eases a scroll: its idle loop returns before the
+    /// pacer can schedule the next frame, so a capture could freeze mid-motion.
+    pub fn for_harness(mut self, harness: bool) -> Self {
+        if harness {
+            self.smooth_scroll_ms = 0;
+        }
+        self
+    }
 }
 
 impl Default for Settings {
@@ -377,6 +399,7 @@ impl Default for Settings {
             nav_spill_ms: 2000,
             gpu_power_preference: GpuPowerPreference::Low,
             fullscreen_vsync_pin: false,
+            smooth_scroll_ms: 150,
             chat_name: None,
             source: None,
         }
@@ -518,6 +541,11 @@ impl Settings {
                     self.new_session_root =
                         if v.is_empty() { None } else { Some(v.to_string()) };
                 }
+                ("display", "smooth_scroll_ms") => match value.trim().parse::<u64>() {
+                    Ok(v) if v <= MAX_SMOOTH_SCROLL_MS => self.smooth_scroll_ms = v,
+                    _ => tracing::warn!(line = lineno + 1, value = %value,
+                        "display.smooth_scroll_ms: expected an integer in [0, 1000] (ms; 0 moves at once)"),
+                },
                 ("display", "fullscreen_vsync_pin") => match parse_bool(&value) {
                     Some(b) => self.fullscreen_vsync_pin = b,
                     None => tracing::warn!(line = lineno + 1, value = %value,

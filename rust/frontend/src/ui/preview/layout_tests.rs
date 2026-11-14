@@ -51,6 +51,8 @@ impl State {
     /// (`smooth-witness`), asserting none.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
     pub(in crate::ui) fn a_preview_scroll_moves_over_frames_and_comes_to_rest(&mut self) -> anyhow::Result<()> {
+        // The fixture's window is a harness instance, which asks with zero; this one drives the motion, so it names its own length.
+        self.settings.smooth_scroll_ms = 150;
         self.redraw()?;
         let source: String = (0..400).map(|n| format!("line {n}\n\n")).collect();
         self.preview_source.install("text/markdown".into(), source.clone().into_bytes(), Some("files:long.md".into()), None, None);

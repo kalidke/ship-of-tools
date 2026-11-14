@@ -167,6 +167,33 @@
     }
 
     #[test]
+    fn smooth_scroll_ms_is_read_and_zero_moves_at_once() {
+        assert_eq!(Settings::default().smooth_scroll_ms, 150);
+        let mut s = Settings::default();
+        s.merge_text("[display]\nsmooth_scroll_ms = 400\n");
+        assert_eq!(s.smooth_scroll_ms, 400);
+        s.merge_text("[display]\nsmooth_scroll_ms = 1000\n");
+        assert_eq!(s.smooth_scroll_ms, 1000, "the bound is inclusive");
+        s.merge_text("[display]\nsmooth_scroll_ms = 1001\n");
+        assert_eq!(s.smooth_scroll_ms, 1000, "past the bound keeps what was set");
+        s.merge_text("[display]\nsmooth_scroll_ms = fast\n");
+        assert_eq!(s.smooth_scroll_ms, 1000, "garbage keeps what was set");
+        s.merge_text("[display]\nsmooth_scroll_ms = 0\n");
+        assert_eq!(s.smooth_scroll_ms, 0);
+        let mut m = crate::ui::motion::ScrollMotion::default();
+        let length = std::time::Duration::from_millis(s.smooth_scroll_ms);
+        assert_eq!(m.ask(5.0, std::time::Instant::now(), length), 5.0, "zero applies the ask at the event");
+        assert!(!m.moving());
+    }
+
+    #[test]
+    fn a_harness_instance_asks_with_zero() {
+        let s = Settings::default();
+        assert_eq!(s.clone().for_harness(false).smooth_scroll_ms, 150);
+        assert_eq!(s.for_harness(true).smooth_scroll_ms, 0);
+    }
+
+    #[test]
     fn merge_keeps_defaults_on_garbage() {
         let mut s = Settings::default();
         let before = s.ultrawide.columns.clone();

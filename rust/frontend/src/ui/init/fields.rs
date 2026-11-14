@@ -139,7 +139,7 @@ impl State {
             layout_help: LayoutHelp::new(initial_drawer(cli, want_terminal_init), cli.start_maximized, cli.start_help, cli.start_help_peek),
             nav_spill: NavSpill::default(),
             bindings: load_keybindings(),
-            settings,
+            settings: settings.for_harness(harness),
             monitor_aspect: initial_monitor_aspect(event_loop),
             term_drawer: crate::ui::drawer::terminal::drawer::TerminalDrawer::new(repo_dir),
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
