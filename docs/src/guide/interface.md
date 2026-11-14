@@ -46,6 +46,8 @@ than stacking:
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
 | [Chat](chat.md) | `Ctrl+K` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
 
+Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed. The drawer's height, maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
+
 Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+K` (like `Ctrl+J`, `Ctrl+T` and `Ctrl+M`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
 
 ## Help drawer

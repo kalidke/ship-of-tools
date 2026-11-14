@@ -79,6 +79,9 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     edit_state: Option<EditState>,
     /// The row's drawing and drawing mode (the raster and the overlay are rebuilt on restore).
     ink: crate::ui::preview::image::ink::Drawing,
+    /// The row's drawer (closed or its tenant; never Help, which is the window's). `LayoutHelp` owns the drawer; this
+    /// is only what it was when the row was left.
+    drawer: DrawerContent,
 }
 
 impl WorkspaceUiSnapshot {
@@ -113,6 +116,7 @@ impl State {
                 concept: self.concept.park(),
                 edit_state: self.editor.park(),
                 ink: self.ink.park(),
+                drawer: self.layout_help.row_drawer(),
             },
         );
     }
@@ -159,6 +163,7 @@ impl State {
         self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         self.ink.restore(snap.ink);
+        self.enter_row_drawer(snap.drawer);
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; the switch emptied the text pane before this
@@ -185,6 +190,12 @@ impl State {
         // hold its own key's tree.
         self.window.request_redraw();
         true
+    }
+
+    /// Show the entered row's drawer, with the focus and Monitor effects a toggle has.
+    pub(in crate::ui) fn enter_row_drawer(&mut self, drawer: DrawerContent) {
+        let effect = self.layout_help.enter_row_drawer(drawer, self.focus_prompts.focus());
+        effect.apply(self, None);
     }
 
     /// Capture the current REPL pane state into the per-workspace

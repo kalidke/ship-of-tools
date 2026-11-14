@@ -447,3 +447,50 @@ fn chat_is_shown_in_chat_and_in_help_opened_from_chat_only() {
     h.open();
     assert!(!h.layout.chat_shown(), "Help opened from the REPL");
 }
+
+#[test]
+fn a_rows_drawer_is_what_its_tenant_shows_and_under_help_what_help_covers() {
+    for drawer in DRAWERS { for focus in FOCI {
+        let mut h = Harness::new(drawer, focus, false);
+        let own = if drawer == DrawerContent::Help { DrawerContent::Closed } else { drawer };
+        assert_eq!(h.layout.row_drawer(), own);
+        h.open();
+        assert_eq!(h.layout.row_drawer(), own, "Help hid the row's drawer from its parked view");
+    } }
+}
+#[test]
+fn entering_a_row_shows_its_drawer_and_moves_only_drawer_focus_off_a_closed_one() {
+    for from in DRAWERS { for focus in FOCI { for row in [DrawerContent::Closed, DrawerContent::Repl, DrawerContent::Terminal,
+        DrawerContent::Monitor, DrawerContent::Chat] {
+        let mut h = Harness::new(from, focus, false);
+        let e = h.layout.enter_row_drawer(row, focus); e.apply(&mut h, None);
+        assert_eq!(h.layout.drawer(), row);
+        let expected = if focus == PaneFocus::Repl && row == DrawerContent::Closed { PaneFocus::NavTree } else { focus };
+        assert_eq!(h.focus.focus(), expected);
+        assert!(h.events.iter().any(|e| e == "monitor"));
+        assert_eq!(h.layout.chat_shown(), row == DrawerContent::Chat);
+    } } }
+}
+#[test]
+fn a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid() {
+    let mut h = Harness::new(DrawerContent::Terminal, PaneFocus::Preview, true);
+    h.open();
+    assert!(!h.layout.maximized());
+    let parked = h.layout.row_drawer();
+    assert_eq!(parked, DrawerContent::Terminal);
+    let e = h.layout.enter_row_drawer(DrawerContent::Chat, PaneFocus::Repl); e.apply(&mut h, None);
+    assert_eq!((h.layout.drawer(), h.layout.maximized(), h.layout.chat_shown()), (DrawerContent::Chat, true, true));
+    h.layout.close_help();
+    assert_eq!(h.layout.drawer(), DrawerContent::Closed, "the closed Help's origin brought the left row's drawer back");
+    h.open();
+    let e = h.layout.enter_row_drawer(parked, PaneFocus::Repl); e.apply(&mut h, None);
+    assert_eq!(h.layout.drawer(), DrawerContent::Terminal);
+}
+#[test]
+fn a_row_visited_for_the_first_time_starts_with_the_drawer_the_window_started_with() {
+    for start in [DrawerContent::Closed, DrawerContent::Monitor, DrawerContent::Terminal] {
+        let mut h = Harness::new(start, PaneFocus::NavTree, false);
+        h.toggle(DrawerContent::Repl);
+        assert_eq!(h.layout.fresh_drawer(), start);
+    }
+}

@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 18] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 19] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -158,6 +158,7 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             State::a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window,
         ),
         ("a_rows_drawing_stays_with_its_row", State::a_rows_drawing_stays_with_its_row),
+        ("a_rows_drawer_stays_with_its_row", State::a_rows_drawer_stays_with_its_row),
         (
             "a_row_left_before_its_preview_came_back_shows_its_own",
             State::a_row_left_before_its_preview_came_back_shows_its_own,
