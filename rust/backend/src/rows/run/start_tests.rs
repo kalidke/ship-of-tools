@@ -38,6 +38,9 @@ fn a_settle_ends_at_the_first_answer() {
 async fn only_a_started_claude_spawn_opens_a_leg_and_the_next_spawn_closes_it() {
     use crate::rows::workspace::TrustTake;
     let tmp = tempfile::tempdir().unwrap();
+    // `spawn_and_watch` resolves the state root from the process environment: pin it to this test's own folder, under the
+    // env lock, so another test's pin (and its removal) cannot move it mid-body.
+    let _env = crate::paths::EnvPinned::new(tmp.path());
     let workspaces = crate::rows::Workspaces::new();
     let permit = workspaces.begin_start("any").unwrap();
     let row = |label: &str, kind: &str| {

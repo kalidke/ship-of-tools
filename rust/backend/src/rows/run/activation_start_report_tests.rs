@@ -7,6 +7,7 @@ use crate::rows::Workspace;
 /// attach". Fails while every resume counts as a start.
 #[test]
 fn an_attach_to_a_terminal_row_reports_nothing_started() {
+    let _env = crate::paths::EnvPinned::fresh();
     let state_root = tempfile::tempdir().unwrap();
     let reg = Workspaces::new();
     let mut ws = Workspace::from_label("t", std::path::PathBuf::from("/p/t"), false, "none".into(), String::new(), String::new());
@@ -31,6 +32,7 @@ fn an_attach_to_a_terminal_row_reports_nothing_started() {
 /// error and the row's `activation_error` holds it. Fails while an exhausted wait returns as if it had resolved.
 #[test]
 fn a_wait_that_outlasts_the_settle_budget_fails_the_activation() {
+    let _env = crate::paths::EnvPinned::fresh();
     let state_root = tempfile::tempdir().unwrap();
     let reg = Workspaces::new();
     let mut ws = Workspace::from_label("u", std::path::PathBuf::from("/p/u"), false, "none".into(), String::new(), String::new());

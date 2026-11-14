@@ -22,6 +22,7 @@ fn a_text_write_that_may_have_landed_is_not_a_clean_refusal() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_wake_without_a_lane_is_a_checkpoint_error() {
+    let _env = crate::paths::EnvPinned::fresh();
     let free = |_: &[String], _: Option<(u16, u16)>, _: &str, _: bool| Some(Prompt::Empty);
     let d = Duration::from_secs(5);
     let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "h", "x", None, &free, "claude", d, d)

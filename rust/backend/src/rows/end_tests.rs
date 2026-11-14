@@ -82,6 +82,7 @@ async fn non_capsule_row_is_counted_not_ended() {
 
 #[tokio::test]
 async fn already_removed_row_is_not_kept() {
+    let _env = crate::paths::EnvPinned::fresh();
     let reg = Workspaces::new();
     let mut row = Workspace::from_label("gone", PathBuf::from("/p/gone"), false, "none".into(), String::new(), String::new());
     row.runtime = "capsule".to_string();

@@ -130,11 +130,10 @@ pub(super) fn r3(asked: &str, link: &str) -> String {
     format!("refused: {asked} is behind the tracked link {link}, and a link serves only a file that exists on this host under /mnt, /media or /Volumes, outside the home folder and hidden folders, through a link written as an absolute path into those folders, with no symlink below it (is its share mounted?)")
 }
 
-/// The bounds of the real mount folders and this account's home folder, and that home folder, read while holding the
-/// lock every test that sets `HOME` holds: never `Bounds::of_process()`, which keeps the home of whichever test
+/// The bounds of the real mount folders and this account's home folder, and that home folder, read by a caller that
+/// holds the env lock every test that sets `HOME` holds (its `EnvPinned`): never `Bounds::of_process()`, which keeps the home of whichever test
 /// first built a site.
 fn bounds_of_this_account() -> (PathBuf, Bounds) {
-    let _env = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = crate::pages::home_folder().expect("the home folder resolves");
     let b = Bounds::new(&MOUNT_FOLDERS.map(Path::new), Some(home.as_path()));
     (home, b)
@@ -296,6 +295,7 @@ async fn h_empty_file_has_content_length_zero_through_the_site_server() {
 /// path with a hidden part or in the home folder is refused.
 #[test]
 fn i_the_bounds_of_this_process_refuse_every_private_place() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (home, b) = bounds_of_this_account();
     let mut private: Vec<PathBuf> = [
         "/proc/1/environ", "/proc/self", "/sys/kernel", "/etc/passwd", "/tmp/x", "/run/user/1/x", "/var/log/x",
@@ -415,6 +415,7 @@ async fn a_never_committed_link_is_r2b_then_served_once_added_s1() {
 /// the fixture's bounds (its home folder lies under its mount folder) and under this process's own.
 #[tokio::test]
 async fn every_private_or_missing_target_has_one_answer() {
+    let _env = crate::paths::EnvPinned::fresh();
     let f = fixture();
     write(&f.share.join(".backup/key"), b"k");
     write(&f.share.join("results/.hidden.png"), b"h");

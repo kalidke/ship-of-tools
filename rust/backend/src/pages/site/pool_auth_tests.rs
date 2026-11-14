@@ -26,6 +26,7 @@ async fn get(port: u16, target: &str, cookie: Option<&str>) -> (u16, Option<Stri
 /// `secret` decides alone.
 #[tokio::test]
 async fn a_secret_parameter_decides_alone_and_the_cookie_only_without_one() {
+    let _env = crate::paths::EnvPinned::fresh();
     let _pool = own_pool();
     let root = std::env::temp_dir().join(format!("sot-site-auth-test-{}", sot_updater::unique::suffix()));
     std::fs::create_dir_all(&root).unwrap();

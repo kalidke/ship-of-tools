@@ -45,6 +45,39 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Pins the three folders the config and state roots resolve under (the two XDG ones, and the Windows local-app-data
+/// one), and the comm folder, to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
+#[cfg(test)]
+pub(crate) struct EnvPinned {
+    _guards: [EnvGuard; 4],
+    _serial: std::sync::MutexGuard<'static, ()>,
+    _dir: Option<tempfile::TempDir>,
+}
+
+#[cfg(test)]
+impl EnvPinned {
+    /// `new` on a folder of its own, removed after the pin is restored and the lock is free.
+    pub(crate) fn fresh() -> Self {
+        let dir = tempfile::Builder::new().prefix("sot-envpin-").tempdir().unwrap();
+        let mut pin = Self::new(dir.path());
+        pin._dir = Some(dir);
+        pin
+    }
+
+    pub(crate) fn new(dir: &std::path::Path) -> Self {
+        let serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA", "SOT_COMM_HOME"].map(EnvGuard::capture);
+        std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
+        std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+        std::env::set_var("LOCALAPPDATA", dir.join("local"));
+        let (state, config) = (sot_platform::host::state_dir::daemon_state_dir(), crate::rows::store::app_config_dir());
+        assert!(state.starts_with(dir) && config.starts_with(dir), "the pin missed a root: {state:?}, {config:?}");
+        EnvPinned { _guards: guards, _serial: serial, _dir: None }
+    }
+}
+
+
 
 
 

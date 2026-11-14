@@ -46,6 +46,7 @@ fn a_still_starting_authority_is_stopped_then_proven() {
 // it); no voyage is read.
 #[test]
 fn the_destroy_proof_needs_no_voyage() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path();
 
@@ -73,6 +74,7 @@ fn the_destroy_proof_needs_no_voyage() {
 /// boot. Every `end_run` caller holds the row's guard, so no start can begin between a missing marker and the answer.
 #[test]
 fn ending_a_never_started_row_creates_no_start_marker() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = tempfile::tempdir().expect("tempdir");
     let state_dir = dir.path();
     match end_run(state_dir, "test reason", true) {

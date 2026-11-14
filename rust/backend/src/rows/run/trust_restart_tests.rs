@@ -156,6 +156,7 @@ fn a_restart_waits_out_a_recent_claude_start_on_the_same_trust_file() {
 /// spelling would make the wait never wait.
 #[test]
 fn the_wait_asks_about_the_file_a_real_preparation_marks() {
+    let _env = crate::paths::EnvPinned::fresh();
     if !sot_platform::test_isolated::run_isolated("rows::run::trust_restart::tests::the_wait_asks_about_the_file_a_real_preparation_marks") {
         return;
     }

@@ -437,6 +437,7 @@ fn a_live_rest_is_a_persons_unless_the_journal_shows_it_is_the_retires_own() {
 #[cfg(target_os = "linux")]
 #[test]
 fn remembered_scopes_are_ended_when_no_supervisor_lives() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (dir, root) = (old_folder(), tempfile::tempdir().unwrap());
     let rel = format!("/a/app.slice/sot-row-{}-x.scope", sot_platform::host::state_dir::state_dir_hash(dir.path()));
     let scope = root.path().join(rel.trim_start_matches('/'));
@@ -456,6 +457,7 @@ fn remembered_scopes_are_ended_when_no_supervisor_lives() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_remembered_scope_that_will_not_empty_keeps_the_layout_in_place() {
+    let _env = crate::paths::EnvPinned::fresh();
     let (dir, root) = (old_folder(), tempfile::tempdir().unwrap());
     let rel = format!("/a/app.slice/sot-row-{}-x.scope", sot_platform::host::state_dir::state_dir_hash(dir.path()));
     let scope = root.path().join(rel.trim_start_matches('/'));
@@ -474,6 +476,7 @@ fn a_remembered_scope_that_will_not_empty_keeps_the_layout_in_place() {
 /// fence file, the start marker. Reached through `end_run`, the close path.
 #[test]
 fn the_retire_never_creates_the_start_marker() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("voyages").join(V)).unwrap();
     let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
@@ -486,6 +489,7 @@ fn the_retire_never_creates_the_start_marker() {
 /// `end_run` meets an old row first: it retires it (a Cleanup boot ends rows through here) and keeps the person's end.
 #[test]
 fn end_run_retires_an_old_row_it_meets() {
+    let _env = crate::paths::EnvPinned::fresh();
     let dir = old_folder();
     add_end(dir.path(), 1, "sot-backend-end-run-a");
     let outcome = crate::rows::run::end_run::end_run(dir.path(), "close", false).unwrap();
