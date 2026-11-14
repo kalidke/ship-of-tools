@@ -7,7 +7,7 @@
 
 use crate::endpoint::Endpoint;
 use sot_platform::transport::TransportError;
-use crate::row::{RowClient, RowError, RowEvent, RowWaker};
+use crate::row::{RowClient, RowError, RowEvent, RowWaker, NOT_DRIVER};
 use sot_platform::host::redial::Redial;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -51,7 +51,8 @@ pub enum WorkerEvent {
 pub enum InputOutcome {
     /// The bytes reached the terminal.
     Recorded,
-    /// The pen was no longer this client's, and the client does not take it back.
+    /// The pen was no longer this client's, and the client did not take it back: a headless client never does, and a
+    /// window does once per frame (the pen was taken again as it did, or the row refused it).
     RefusedStale,
     /// The row may or may not have written the bytes; they are never sent again.
     DeliveryUnknown,
@@ -492,7 +493,7 @@ where
                             self.settle(InputOutcome::RunEnded);
                             continue;
                         }
-                        if let Err(ended) = self.type_input(client, &bytes, meant_for.as_deref(), &mut driver) {
+                        if let Err(ended) = self.type_input(client, &bytes, meant_for.as_deref(), &mut driver, false) {
                             return ended;
                         }
                     }
@@ -506,8 +507,12 @@ where
         }
     }
 
-    /// Types `bytes`, taking the pen first when this client does not hold it.
-    fn type_input(&self, client: &mut RowClient<E::Client>, bytes: &[u8], meant_for: Option<&str>, driver: &mut bool) -> Result<(), Ended> {
+    /// Types `bytes`, taking the pen first when this client does not hold it. A window's bytes the row refuses because
+    /// another client took the pen (nothing was written, and the window had not yet read its demotion) are sent once
+    /// more after the pen is taken back (`retaken` marks that send), before the next frame; a headless client's never are.
+    fn type_input(
+        &self, client: &mut RowClient<E::Client>, bytes: &[u8], meant_for: Option<&str>, driver: &mut bool, retaken: bool,
+    ) -> Result<(), Ended> {
         if !*driver {
             // A watcher that typed once in a run gives up the pen to whoever took it after, and does not fight for it,
             // not even over a new connection to the same run; in another run it has not typed.
@@ -545,6 +550,10 @@ where
                 self.shared.discarded.fetch_add(1, Ordering::AcqRel);
                 self.settle(InputOutcome::RunEnded);
                 Ok(())
+            }
+            Err(RowError::Refused(msg)) if msg == NOT_DRIVER && !self.headless && !retaken => {
+                *driver = false;
+                self.type_input(client, bytes, meant_for, driver, true)
             }
             Err(RowError::Refused(_)) => {
                 *driver = false;

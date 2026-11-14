@@ -2,7 +2,7 @@
 
 use super::manage::Management;
 use super::proto::{
-    AttachRes, ExitingEvt, StatusRes, OP_ATTACH, OP_DEMOTED, OP_EXITING, OP_OUTPUT, OP_PHASE, OP_SNAPSHOT, OP_WATCH, OUTPUT_CHUNK,
+    AttachRes, ExitingEvt, StatusRes, NOT_DRIVER, OP_ATTACH, OP_DEMOTED, OP_EXITING, OP_OUTPUT, OP_PHASE, OP_SNAPSHOT, OP_WATCH, OUTPUT_CHUNK,
     SNAPSHOT_CHUNK,
 };
 use super::MAX_CONNECTIONS;
@@ -544,7 +544,7 @@ impl RowRun {
         let bound = {
             let mut inner = self.lock();
             if inner.driver != Some(id) {
-                return Err("this connection is not the driver".into());
+                return Err(NOT_DRIVER.into());
             }
             if expected.is_some_and(|run| run != inner.run) {
                 return Err(RUN_ENDED.into());
@@ -562,7 +562,7 @@ impl RowRun {
     pub(super) fn resize(&self, id: ConnId, cols: u16, rows: u16) -> Result<(), String> {
         check_size(cols, rows)?;
         if self.lock().driver != Some(id) {
-            return Err("this connection is not the driver".into());
+            return Err(NOT_DRIVER.into());
         }
         self.resize_terminal(cols, rows)
     }

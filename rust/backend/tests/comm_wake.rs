@@ -362,6 +362,29 @@ async fn a_line_a_person_typed_and_did_not_send_is_never_typed_into() {
     row.env.kill_daemon_bounded().await;
 }
 
+/// WAKE-EATS-UNSENT-PROMPT: keys a person types after the wake's last read of the screen and before its typing reach the
+/// row first. The wake appends nothing to them: its line never lands after a person's text.
+#[tokio::test]
+async fn keys_typed_between_the_wakes_last_read_and_its_typing_get_nothing_appended() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cwrk", None, false, &[], &[], 0, 1).await;
+    append_mail(&row.env, 1);
+    // The wake has read a free, still prompt and is about to type.
+    row.final_ok.reached_async(0).await;
+    let typed = serde_json::json!({ "workspace_id": row.ws, "data_b64": base64_of("close the worktrees"), "enter": false });
+    let res = call(&mut row.conn, row.next_id, op::PTY_INPUT, typed).await;
+    row.next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    wait_for_screen(&mut row, "close the worktrees").await;
+    let done_before = row.done.arrivals();
+    row.final_ok.release(0);
+    row.done.reached_async(done_before).await;
+    let screen = row.screen().await;
+    assert!(!screen.iter().any(|l| l.contains("[sot-comm]")), "the wake typed after a person's keys: {screen:?}");
+    assert_eq!((pings(&row.log), others(&row.log)), (0, 0), "a line was sent");
+    row.env.kill_daemon_bounded().await;
+}
+
 /// `text` in standard base64, as `pty.input` takes its data.
 fn base64_of(text: &str) -> String {
     use base64::Engine as _;

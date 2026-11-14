@@ -81,8 +81,10 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 /// must then hold identical (the cursor, and every row through the line
 /// under it) for `still_for`, else it is a working row and nothing is
 /// typed. `is_free` is asked of the first frame and again immediately
-/// before typing. Never takes the pen unless the prompt is free and
-/// still, and never retries. `owed` is an Enter owed for a line typed earlier ([`Owed`]); `is_free` is told, as its
+/// before typing. Takes the pen (an empty write) once the first frame is free, before the hold, and never retries: a
+/// key a person types after that takes the pen back, which refuses the typing (a headless client never takes it again
+/// in a run), and a key typed before it reaches the screen inside the hold, so the line never lands after a person's
+/// text. `owed` is an Enter owed for a line typed earlier ([`Owed`]); `is_free` is told, as its
 /// last argument, whether the attempt completes that line (an empty box is not free then), which is known only once the
 /// attach has named the run.
 pub fn wake_if_free(
@@ -116,6 +118,8 @@ pub fn wake_if_free(
         Ok(WakeOutcome::RunChanged)
     } else if first_prompt.is_none() {
         Ok(not_free("prompt not free", &client, agent))
+    } else if send_text(&mut client, b"", Some(&run), op_budget).is_err() {
+        Ok(not_free("the pen was not taken", &client, agent))
     } else {
         // Test points (platform's hold tool): `hold` when the hold begins (the screen was free), `final_ok` when the live
         // final check passes (before typing), `done` when the client is shut down. An attach or checkpoint failure

@@ -23,7 +23,7 @@ pub use client::{PlatformConn, RowCanceler, RowClient, RowEvent, RowWaker};
 pub use manage::Management;
 pub use proto::{
     AttachReq, AttachRes, EndRunOutcome, EndRunReq, EndRunRes, ExitingEvt, HelloReq, HelloRes, InputRes, ResetOutcome,
-    ResetRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, StopOutcome, StopRes, OP_ATTACH, OP_DEMOTED,
+    ResetRes, ResizeReq, RowError, RowHelloExchange, SnapshotEvt, StatusRes, StopOutcome, StopRes, NOT_DRIVER, OP_ATTACH, OP_DEMOTED,
     OP_END_RUN, OP_EXITING, OP_HELLO, OP_INPUT, OP_OUTPUT, OP_PHASE, OP_RESET, OP_RESIZE, OP_SNAPSHOT, OP_STATUS, OP_STOP,
     OP_TAKE, OP_WATCH, OUTPUT_CHUNK, SNAPSHOT_CHUNK,
 };

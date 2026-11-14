@@ -139,9 +139,22 @@ Waking:
   wider than the box wraps, as Claude Code draws it (measured on 2.1.312: inline up to 512 bytes, each further row
   indented two columns, a break dropping its run of spaces or falling inside a word longer than a row), and the gate
   before Enter reads it across its rows (`screen::holds_wrapped`).
-- How a wake attaches: as a watcher over the row's socket that takes the pen once, only to type (the capsule contract's
+- How a wake attaches: as a watcher over the row's socket that takes the pen once, with an empty write as soon as the
+  first frame reads free and before its hold, and types only while it still holds it (the capsule contract's
   guarantees 6 and 7: one driver, and a headless client takes the pen once per run). A window that was driving is demoted by it and takes the pen back on its next key
-  (`fe_attach::a_demoted_window_types_again_after_a_wake`).
+  (`fe_attach::a_demoted_window_types_again_after_a_wake`), which refuses the wake's typing: a key typed after the take
+  never has the wake line after it, and one typed before the take reaches the screen inside the hold
+  (`comm_wake::keys_typed_between_the_wakes_last_read_and_its_typing_get_nothing_appended`). A window key frame that
+  reaches the row after the take and before the window has read its demotion is refused with nothing written, and the
+  window takes the pen back and sends those bytes once (the capsule's guarantee 7,
+  `fe_attach::a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it_back`); that retake
+  makes the wake's own typing, if it has not yet gone, refuse. Limit: the window holds keys typed while its row
+  connects and sends them as one input on a later Enter (the frontend contract's held input); the row's box reads empty
+  meanwhile, so the wake can type, and if that input reaches the row between the wake's text and its Enter, it lands
+  after the wake line and the wake's Enter is refused (the pen is the window's). Nothing is lost: if the held bytes end
+  in the person's own Enter (one pressed before the screen was live is held as CR), the agent receives the wake line
+  and the person's text as one message; otherwise the box holds both and no Enter is owed on it (the gate withholds it
+  while the box is more than the line). The wake cannot see held keys, so this stays open.
 - What a wake never touches: a dialog, a menu, a working session, and a person's unsent text. Text a person typed is not
   dim and is not free wherever the cursor sits, on one row or on several (a draft that wraps or holds a newline puts
   the cursor's row out of the box's one line), so the wake types nothing into it, appends nothing to it and sends no

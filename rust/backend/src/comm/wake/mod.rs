@@ -58,9 +58,9 @@
 //! wake waits up to [`OP_BUDGET`] for after typing; otherwise no Enter goes, the
 //! attempt counts as the wake (within one daemon run the line is not typed again before [`REPEAT_AFTER`]) and owes its Enter, and a warning names
 //! it. A later tick ([`Decision::Complete`]) sends Enter alone, never typing, once the first frame and the live screen after the hold both show just the wake line in main's box.
-//! That gate withholds Enter after a stray key between the
-//! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
-//! panel or a draft). Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
+//! The attempt takes the pen before its hold, so a key typed after the take takes the pen back and the typing is
+//! refused, and a key typed before it shows inside the hold; the gate then withholds Enter only when something
+//! other than a key moved the box or focus after the final read. Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
 //! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
 //! shows, and the refusal streak logs it.
 //! The owed Enter outlives the mail: a line left in main's box is the wake's to finish however the mail is read (the

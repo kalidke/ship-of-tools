@@ -24,6 +24,9 @@ pub const OP_WATCH: &str = "row.watch";
 pub const OP_PHASE: &str = "row.phase";
 pub const OP_EXITING: &str = "row.exiting";
 
+/// What the row answers input or a resize from a connection that is not the driver; nothing was written.
+pub const NOT_DRIVER: &str = "this connection is not the driver";
+
 /// A snapshot event's blob is at most this; a longer screen goes in several, the last flagged.
 pub const SNAPSHOT_CHUNK: usize = 1024 * 1024;
 /// An output event's blob is at most this.

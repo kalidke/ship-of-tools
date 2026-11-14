@@ -360,6 +360,93 @@ fn a_demotion_during_attach_leaves_a_watcher_whose_next_key_takes_the_pen() {
     win.shutdown(Duration::from_millis(500));
 }
 
+/// A row stand-in whose driver was changed under the client: it refuses the first `row.input` as from a connection that
+/// is not the driver (the wake took the pen, and the window has not read its demotion), and writes the bytes of every
+/// input it accepts. Returns the ops it was sent, in order, and what it wrote.
+fn demoted_unaware_standin(path: &std::path::Path) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u8>>>) {
+    use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
+    use sot_protocol::Frame;
+    let listener = std::os::unix::net::UnixListener::bind(path).expect("bind the stand-in");
+    let ops = Arc::new(Mutex::new(Vec::new()));
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let (seen, wrote) = (Arc::clone(&ops), Arc::clone(&written));
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut out = stream;
+        let mut refused = false;
+        while let Ok((frame, blob)) = read_frame_blocking_blob(&mut reader) {
+            seen.lock().unwrap().push(frame.op.clone());
+            let id = frame.id;
+            let mut send = |f: Frame, blob: Option<&[u8]>| write_frame_blocking_blob(&mut out, &f, blob).is_ok();
+            let ok = match frame.op.as_str() {
+                "row.hello" => {
+                    let (pid, created) = sot_capsule::row::self_identity().expect("own identity");
+                    send(
+                        Frame::res(
+                            id,
+                            "row.hello",
+                            serde_json::json!({"pid": pid, "created": created, "phase": "ready", "run": "run-one", "row": sot_capsule::row::ROW_PROTOCOL}),
+                        ),
+                        None,
+                    )
+                }
+                "row.attach" => {
+                    let mut parser = vt100_ctt::Parser::new(24, 80, 0);
+                    parser.process(b"a window that drives");
+                    let checkpoint = parser.screen().checkpoint().expect("a checkpoint");
+                    send(Frame::res(id, "row.attach", serde_json::json!({"run": "run-one"})), None)
+                        && send(
+                            Frame::evt(
+                                "row.snapshot",
+                                serde_json::json!({"last": true, "blob": {"len": checkpoint.len(), "mime": "application/octet-stream"}}),
+                            ),
+                            Some(&checkpoint),
+                        )
+                }
+                "row.input" if !std::mem::replace(&mut refused, true) => {
+                    send(Frame::res(id, "row.input", serde_json::json!({"error": sot_capsule::row::NOT_DRIVER, "code": "refused"})), None)
+                }
+                "row.input" => {
+                    let bytes = blob.unwrap_or_default();
+                    wrote.lock().unwrap().extend_from_slice(&bytes);
+                    send(Frame::res(id, "row.input", serde_json::json!({"written": bytes.len()})), None)
+                }
+                _ => send(Frame::res(id, &frame.op, serde_json::json!({})), None),
+            };
+            if !ok {
+                break;
+            }
+        }
+    });
+    (ops, written)
+}
+
+/// A window's key frame that reaches the row after a wake took the pen, before the window has read its demotion, is
+/// refused with nothing written: the window takes the pen back and sends those bytes once, ahead of the next frame.
+#[test]
+fn a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it_back() {
+    use sot_capsule::attach_client::attach::InputOutcome;
+    let row = fresh_row();
+    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap());
+    let mut win = window(&row);
+    pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
+    win.send_input(b"ab");
+    win.send_input(b"c");
+    // Both frames written, or the time a client that dropped the first one would need to show it.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while written.lock().unwrap().len() < 3 && Instant::now() < deadline {
+        win.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*written.lock().unwrap(), b"abc", "the refused bytes were lost, doubled or reordered");
+    pump_until(&mut win, "both frames recorded", |c| c.recorded_bytes() == 3);
+    assert_eq!(win.last_input_outcome(), Some(InputOutcome::Recorded));
+    let ops: Vec<String> = ops.lock().unwrap().iter().filter(|o| o.as_str() == "row.input" || o.as_str() == "row.take").cloned().collect();
+    assert_eq!(ops, ["row.input", "row.take", "row.input", "row.input"], "the window did not take the pen back and send again");
+    win.shutdown(Duration::from_millis(500));
+}
+
 #[test]
 fn a_row_socket_path_too_long_ends_the_attach_with_a_named_error() {
     let mut client = window(&"x".repeat(300));
