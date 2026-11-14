@@ -121,7 +121,7 @@ impl State {
             // Guard on a real change in target line so we don't re-anchor every
             // redraw and fight the user's manual scroll on a stable selection.
             let is_code = self.preview_is_code();
-            if self.shaped.reanchor(anchor_line, is_code) {
+            if self.shaped.reanchor(anchor_line, is_code, std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH) {
                 self.window.request_redraw();
             }
             return;

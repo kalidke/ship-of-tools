@@ -395,12 +395,12 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
                 return Break(());
             }
             (LineScroll::Preview, Some(Action::ScrollLineUp)) => {
-                state.shaped.scroll_up(row_step as u16);
+                state.shaped.scroll_by(-row_step, std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH);
                 state.window.request_redraw();
                 return Break(());
             }
             (LineScroll::Preview, Some(Action::ScrollLineDown)) => {
-                state.shaped.scroll_down(row_step as u16);
+                state.shaped.scroll_by(row_step, std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH);
                 state.window.request_redraw();
                 return Break(());
             }

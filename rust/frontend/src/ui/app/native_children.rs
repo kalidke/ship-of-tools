@@ -175,6 +175,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             "a_chat_of_200_messages_scrolls_posts_and_recovers",
             State::a_chat_of_200_messages_scrolls_posts_and_recovers,
         ),
+        (
+            "a_preview_scroll_moves_over_frames_and_comes_to_rest",
+            State::a_preview_scroll_moves_over_frames_and_comes_to_rest,
+        ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.
     let mut failed = Vec::new();

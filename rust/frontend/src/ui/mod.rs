@@ -495,6 +495,7 @@ impl State {
 
 
 mod flowed_selection;
+mod motion;
 pub(crate) mod preview;
 pub(crate) mod render;
 use render::*;

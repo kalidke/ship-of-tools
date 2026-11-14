@@ -22,7 +22,7 @@ target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns t
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
-`flowed_selection::FlowedSelection` owns mouse selection over flowed text; `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
+`flowed_selection::FlowedSelection` owns mouse selection over flowed text; `motion::ScrollMotion` owns the rule of a person's eased scroll (the owed distance, its deadline and the last frame's time; a pane keeps its own position and edges); `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
 anchor, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
@@ -280,7 +280,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the preview gets the preview's copied text and rectangles for the same wrapped Unicode text.
 - `ShapedPreview` privately owns the pane's flowed text: one buffer shaped for the rect the last layout pass gave it
   (resized only when the rect moved by more than half a pixel), the scroll in body lines, the
-  definition-line anchor, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
+  definition-line anchor, the `ScrollMotion` that spends a person's scroll over frames, the refused-hello overlay and a `FlowedSelection`. Its `hit`,
   `press`, `extend_drag`, `release`, `clear_selection`, `selected_text` and pure `selection_rects` operations lend the
   selection the text origin, top padding, scroll and media placeholder; the render pass tints the clipped rectangles before painting glyphs.
   Installing a buffer clears selection and scrolls to the top. A row switch, Escape in the preview
@@ -291,7 +291,28 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   table buffers, math images, image previews, the concept pane or double-click word selection. A
   sent `preview.get` arms its anchor; the reply consumes it and scrolls to the definition only for a code reply to the
   request that armed it; a cursor move within the shown file re-anchors only on a real change of line. Scrolling is
-  named: by a signed step stopping at the top, saturating line steps, top, end (clamped by the next layout).
+  named: by a signed step stopping at the top, top, end, each an ask at the event's time and a length (150 ms
+  now, `motion::SCROLL_LENGTH`; zero lands at once), never a move. The scroll is fractional body lines, whole at rest;
+  `advance`, run by the layout's clamp each frame, resolves an End against that layout's end, spends the owed distance
+  (a person's travel past one pane height at once), stops it at the top or the end, lands a rest on a whole line and
+  answers whether frames must keep coming. A new file, a reply's anchor and a change of the drawn buffer (edit mode
+  opening or closing) move at once and owe nothing; a cursor move's re-anchor and Home and End ease. The drawn offset
+  (`scroll_px`, which the hit test, the selection and every paint read) is on a whole physical pixel between lines
+  (`a_wheel_moves_the_preview_over_frames_and_its_hit_test_follows`, `home_and_end_ask_their_whole_distance_resolved_at_the_layouts_end`,
+  `a_new_file_and_a_change_of_buffer_end_what_is_owed`, `a_zero_length_scroll_lands_at_once_and_an_edge_drops_what_is_owed`,
+  `a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once`); the State glue (the call sites' event time,
+  `clamp_preview_scroll`'s `mark_dirty`) is pinned by the native fixture `a_preview_scroll_moves_over_frames_and_comes_to_rest`,
+  which runs only under a display.
+- `ScrollMotion` (`motion.rs`, a leaf module with no `impl State`) privately owns the owed distance, its deadline and the
+  last spend's time. `ask` adds a distance and restarts the deadline from the ask's time (a zero length answers what to
+  apply at once); `spend` keeps `owed * ((deadline - now) / (deadline - last))^3`, so the sum of every spend is the asked
+  total and the last of it lands `length` after the last ask, spends all of it at the deadline, and spends at once
+  whatever is owed past the pane height it is given; `finish` and `stop` end it. It knows no pane, edge or unit; the
+  strip's motion stays `StripMotion`. Behavior tests: `motion_tests` (`an_ask_comes_to_rest_exactly_its_length_after_it_on_the_asked_total`,
+  `the_first_frame_already_moves_and_the_steps_shrink`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
+  `what_is_owed_past_a_pane_is_spent_at_once_at_the_next_frame`, `a_zero_length_applies_at_once_and_owes_nothing`,
+  `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`, `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`).
+  Only the preview uses it so far; a pane's ask, spend and edges are that pane's.
 - `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
   pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
   raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
