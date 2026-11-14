@@ -2234,3 +2234,13 @@ A landing's record goes here, with its measured times; the package page holds on
   that overstated the fix; a key typed between the wake's text and its Enter still lands after the wake line, unlost,
   and the contract says so. Where the minutes went: the build 20, a rebase onto the copy landing with a conflict in the
   defect list, the review 13, a fix round 17.
+- A parked attach client keeps reading, 2026-11-13, the third of the four (KEYS-DROPPED-WHILE-A-ROW-ATTACHES). No
+  window log from the computers where a person saw it was reachable, so a diagnosis (20:35 to 21:00) built the case on
+  a lab server: real capsules and the window's attach client switching every 200 ms, with and without load. Every client
+  parked in the warm pool of a busy row was cut (6 of 6, 3 of 3, 6 of 6): once 4 MiB of output sat unread its worker
+  stopped reading, the row cut it after its 5 s write bound, and the window reused it as attached, a stale screen and a
+  lost key. Builder 21:11, main 21:55 (6c0fb7fd8, f89667976), 44 minutes, a miss. A parked client now keeps reading,
+  drops past 4 MiB, and asks for the row's screen once when shown again. Review round 1 found one blocker: the first
+  test pinned one of the four rules (five of six mutants passed); each now fails by assertion, and showing a parked
+  client wakes its worker, which also needed a fresh read of whether it is shown (a quiet row's screen had waited out a
+  250 ms tick). The pane's own warning was never reproduced, so the entry stays open on that and three reading notes.
