@@ -88,12 +88,6 @@ owned by `docs/CLAUDE.md`.
 
 ## topology
 
-- **RELAY-SOCKET-HANG** [person] On one user's hub the relay to a daemon-less host showed eof,
-  `systemctl --user is-active sot-host-relay-<host>.socket` hung twice for over two minutes, and the user's session
-  restarted its `sotd.service` 36 times and killed a "duplicate" daemon while debugging. Hypothesis, unproven:
-  `systemctl --user` over a non-interactive ssh without the user bus environment waits out D-Bus timeouts, and the 36
-  restarts fit `Restart=on-failure` with a duplicate daemon holding the lock, 150 s each. Main bounds each systemctl call
-  but the original cause is not established; needs a real ssh login and user manager.
 - **HOSTS-SYNC-TIMEOUT** [session] An ssh install on a Windows box ended with `topology sync --hub <hub>
   failed (exit 2): ssh <hub> did not exit within 30s`, while the box's window link to the hub was up. Likely the install
   login has no key or agent for the hub. Read at topology's pass; the fix is a clear reason in the failure, not a longer
@@ -1063,3 +1057,4 @@ An item closes by moving here as one line: id, subsystem, the fixing commit or l
 - **GATE-TARGET-SHARED** (distribution) closed by d74ddbe77: the gate holds a lock on its target folder, and a second gate on the same target fails naming it.
 - **LANE-BRIDGE-RELAY-HALF-CLOSE** (capsule) closed by 0f7cdf875: the throttled relay half-closes each destination as its copy returns.
 - **INSTALL-WIN-UNBOUNDED-STEPS** (distribution) closed by 7cd579500, merged at 3678eaf20: the Windows process listing and end-state version asks are bounded at 60 s, and a listing with no answer is never "none runs".
+- **RELAY-SOCKET-HANG** (topology) closed by the landing that fixes it, 2026-11-13: a `sotd.service` start refused by a daemon that answers on the socket or holds the daemon lock restarted every 2 s or every 152 s (`Restart=on-failure`, no start limit), and each 152 s try reloaded the user manager and restarted every relay socket before it took the lock. Now the refresh at start runs only after the lock is held, and such a refusal exits `EXIT_SEAT_HELD`, which the unit lists in `RestartPreventExitStatus=`, so the unit rests until the next launch starts it. The eof for a computer with no daemon stays by design (the reason is in the hub's journal). A missing bus environment fails `systemctl --user` at once and a silent manager at 90 s (systemd 255 and 259), so the hang of over two minutes was most likely the session tool's own 2-minute timeout cutting a command that ran during a try's reload window; it was never reproduced.

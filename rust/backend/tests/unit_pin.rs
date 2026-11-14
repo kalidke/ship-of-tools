@@ -13,6 +13,17 @@ const BOUND: Duration = Duration::from_secs(30);
 
 const UNIT: &str = include_str!("../../../deploy/sotd.service");
 
+/// The unit comes back after every failure but one: a start refused because another daemon holds the seat exits
+/// `EXIT_SEAT_HELD` and the unit rests (`RestartPreventExitStatus=`), where an exit of 1 or a crash restarts it.
+#[test]
+fn the_unit_rests_on_a_seat_held_and_restarts_on_any_other_failure() {
+    let value = |key: &str| -> Vec<&str> {
+        UNIT.lines().filter_map(|l| l.strip_prefix(key)).flat_map(str::split_whitespace).collect()
+    };
+    assert_eq!(value("Restart="), ["on-failure"]);
+    assert_eq!(value("RestartPreventExitStatus="), [sot_protocol::ops::lease::EXIT_SEAT_HELD.to_string()]);
+}
+
 /// This box as `host_name()` names it from the kernel hostname, which is all systemd sees.
 fn me() -> String {
     let raw = std::fs::read_to_string("/proc/sys/kernel/hostname").expect("kernel hostname");

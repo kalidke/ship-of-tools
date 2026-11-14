@@ -117,13 +117,17 @@ of each.
 11. **Every `systemctl` call topology makes is given a wait budget, and a stuck manager is a named failure.** Each call
     runs through `sot_containment::process().output` with `SYSTEMCTL_BOUND` (30 s) and fails `did not exit within`
     that bound; `apply` collects each unit's failure and runs the rest, `refresh` collects all but a failed reload and
-    redoes every step at its next run, and the daemon's refresh at start runs on a thread nobody waits for. Limits:
+    redoes every step at its next run, and the daemon's refresh at start runs on a thread nobody waits for, started only
+    once the daemon holds its lock, so a start that loses the lock (it exits `EXIT_SEAT_HELD`, which the unit does not
+    restart) runs no `systemctl`. Limits:
     the bound is containment's budget with its limits (the child is created before its wait starts, and the timeout
     cleanup reaps without a wall-clock ceiling: `rust/containment/CLAUDE.md` guarantee 4), not a strict 30 s return; it
     is per call, and a complete CLI refresh makes `2 + 3N` calls for N enabled relay hosts (inventory, reload, and
     reset, show and restart per host; the start adds the MainPID probe), so a manager that answers the first and
     stalls the rest can cost minutes (a manager that answers none fails at the first call); `apply` is a dry run unless
-    `--yes`. The reported relay-socket hang is not reproduced and its cause is not established.
+    `--yes`. A missing user bus environment fails a call at once, and a manager that accepts and never answers fails it
+    at 90 s, systemd's own bound (measured on systemd 255 and 259); the reported relay-socket hang of over two minutes
+    is not reproduced and its cause is not established.
 12. **`sotd stdio-bridge` adds nothing to the stream unless its first frame is `link.hello`.** It connects through
     `connect_own` to the local label's socket (no argument), to the hub's relay socket for a plain host name (`--host`)
     or to a local endpoint a caller on this box names (`--endpoint`), and puts nothing of its own on stdout. The forms
@@ -245,7 +249,7 @@ One per guarantee. Library paths are under `rust/topology/src/`; daemon-half pat
 | 8 | one dial, one channel | `lane_client_ownership_tests.rs`: `a_remote_attach_opens_one_channel_and_starts_no_login`, `a_refused_channel_is_the_dials_error_with_no_second_try` |
 | 9 | endpoints derived once | `tests.rs`: `plan_lines_are_stable`, `relay_socket_path_is_a_sibling_of_the_relay_socket`, `only_the_complete_generated_path_is_a_hub_relay`, `a_planned_relay_dial_is_recognized_and_the_hubs_own_is_not`; `endpoint_tests.rs`: `session_socket_path_honours_xdg_runtime_dir` (the launcher's label has no behavior test here); `rust/backend/tests/stdio_bridge.rs`: `stdio_bridge_refuses_a_host_outside_the_grammar` |
 | 10 | pins | `relay_units_tests.rs`: `a_pin_names_each_host_and_its_domain_forms_only`, `unit_names_and_pin_paths`, `relay_units_carry_the_host_and_the_declared_path`; backend `relay_units_tests.rs`: `refresh_pins_the_daemon_and_the_tunnels`; `rust/backend/tests/unit_pin.rs` (real systemd condition evaluation, pin-write refusal); the `[Install]` limit has no test |
-| 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree` |
+| 11 | bounded `systemctl` | backend `relay_units_tests.rs`: `a_hung_systemctl_ends_at_its_bound_and_says_so`, `refresh_writes_and_reloads_in_order`, `refresh_after_a_failed_reload_reloads_and_restarts_again`, `the_relay_probe_takes_its_tree`; `rust/backend/tests/daemon_lifetime/guard.rs`: `a_start_that_never_takes_the_lock_refreshes_no_relay_unit` |
 | 12 | stdio-bridge | `rust/backend/tests/stdio_bridge.rs` (every test there; the first-line rule: `a_link_hello_makes_the_bridge_a_router`, `a_plain_first_frame_is_forwarded_byte_for_byte`, `dash_dash_host_carries_a_link_hello_unchanged`, `a_first_line_past_the_bound_unterminated_or_crlf_is_forwarded_unchanged`, `no_first_line_within_its_bound_ends_the_bridge`) |
 | 13 | per-channel flow control | `link/tests.rs`: `a_stalled_channel_never_delays_another_channel`, `data_beyond_its_credit_ends_the_link`, `a_blob_over_the_chunk_ends_the_link`, `a_frame_for_a_closed_channel_is_dropped_and_one_never_opened_ends_the_link`, `a_skipped_channel_number_ends_the_link_at_the_router`, `credit_returned_beyond_the_window_ends_the_link`, `the_open_past_the_cap_is_refused` |
 | 14 | a closed window ends its link | `rust/backend/tests/stdio_bridge.rs`: `a_dropped_link_ends_its_router_and_every_daemon_connection`, `a_silent_window_ends_its_router_with_its_input_still_open` (the bound injected by `SOT_TEST_LINK_SILENCE_MS`); `link/tests.rs`: `a_silent_link_ends_at_its_bound` (both ends, the bound injected), `the_links_end_closes_a_local_connection_that_stopped_reading`; the window's `pages_tests.rs`: `a_link_end_closes_a_page_whose_browser_stopped_reading` |

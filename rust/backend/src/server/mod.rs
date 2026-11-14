@@ -49,6 +49,7 @@ mod reply;
 
 #[cfg(unix)]
 pub(crate) use listen::refuse_live_socket;
+pub(crate) use listen::refusal_code;
 
 use sot_protocol::reply::write_frame_to;
 use context::Services;
@@ -61,6 +62,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     // predecessor is still shutting down. With no state root there is no
     // record to fence, the same posture as the resume skip below.
     let _daemon_lock = take_daemon_lock(&opts).await?;
+
+    // Only the daemon that holds the lock refreshes the hub's relay units: a `sotd.service` start that waits out another
+    // holder and exits is not restarted into a reload of the user manager.
+    #[cfg(target_os = "linux")]
+    crate::topology::relay_units::spawn_refresh_at_start();
 
     // A daemon that ended without its terminal (a crash, a SIGKILL) left its Julia children's temporary folders.
     crate::sidecars::child::sweep_gone();

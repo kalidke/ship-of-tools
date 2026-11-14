@@ -721,9 +721,18 @@ async fn the_prologue_refuses_a_second_thread() {
 const STUB_SYSTEMCTL: &str = "#!/bin/sh\nd=${0%/*}\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *show*MainPID*) if [ \"$(cat \"$d/main-pid-of\")\" = guard ]; then read -r _ _ _ pp _ < \"/proc/$PPID/stat\"; echo \"$pp\"; else echo \"$PPID\"; fi ;;\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\nesac\nexit 0\n";
 
 /// Start a hub-configured daemon whose `systemctl` is the stub and report the stub's calls after the daemon has had time to
-/// refresh. `main_pid_of` is what the stub reports as the unit's MainPID.
-async fn refresh_calls(main_pid_of: &str) -> String {
+/// refresh. `main_pid_of` is what the stub reports as the unit's MainPID. With `lock_held` another holder has the daemon
+/// lock and nothing answers on the socket, as for a `sotd.service` start against a daemon it did not start: the daemon
+/// waits 3 s for the lock and exits, and the calls are read after that exit.
+async fn refresh_calls(main_pid_of: &str, lock_held: bool) -> String {
     let env = Env::new("grel");
+    let state = env.state_root.join("sot");
+    let _held = lock_held.then(|| {
+        std::fs::create_dir_all(&state).unwrap();
+        sot_platform::host::try_lock_daemon(&state)
+            .expect("open the daemon lock")
+            .expect("the daemon lock is free")
+    });
     let bin = env._tmp.path().join("stub-bin");
     std::fs::create_dir_all(&bin).unwrap();
     crate::native_stub_systemctl(&bin, STUB_SYSTEMCTL);
@@ -745,10 +754,29 @@ async fn refresh_calls(main_pid_of: &str) -> String {
         ("SOT_HOSTS", hosts.to_str().unwrap()),
         ("SOT_SELF_HOST", "hub-box"),
         ("PATH", path.as_str()),
+        ("SOT_TEST_DAEMON_LOCK_WAIT_MS", "3000"),
     ];
     let mut launched = Run::command(&env, &log, &extra, None)
         .spawn()
         .expect("spawn sotd");
+    if lock_held {
+        let began = Instant::now();
+        let status = loop {
+            if let Some(status) = launched.try_wait().expect("try_wait") {
+                break status;
+            }
+            if began.elapsed() > BOUND {
+                let _ = launched.kill();
+                let _ = launched.wait();
+                panic!("the start that waits for the lock did not end:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!status.success(), "the start that never took the lock ended well: {status:?}\n{said}");
+        assert!(said.contains("still holds"), "the start did not end at the lock wait:\n{said}");
+        return std::fs::read_to_string(bin.join("calls")).unwrap_or_default();
+    }
     let socket = env.socket_path.clone();
     poll_until(
         || {
@@ -769,12 +797,12 @@ async fn refresh_calls(main_pid_of: &str) -> String {
 #[tokio::test]
 async fn the_relay_refresh_follows_the_guard() {
     let _serial = SERIAL.lock().await;
-    let acted = refresh_calls("guard").await;
+    let acted = refresh_calls("guard", false).await;
     assert!(
         acted.contains("list-unit-files"),
         "the refresh did not run when the unit's MainPID was the guard:\n{acted}"
     );
-    let skipped = refresh_calls("daemon").await;
+    let skipped = refresh_calls("daemon", false).await;
     assert!(
         skipped.contains("MainPID"),
         "the daemon did not ask for the unit's MainPID:\n{skipped}"
@@ -782,5 +810,18 @@ async fn the_relay_refresh_follows_the_guard() {
     assert!(
         !skipped.contains("list-unit-files"),
         "the refresh ran when the unit's MainPID was the daemon, not the guard:\n{skipped}"
+    );
+}
+
+/// The unit restarts a start that exits 1 (`Restart=on-failure`, no start limit), so a start that waits out another
+/// holder of the daemon lock was tried again every 152 s for as long as that holder lived; each try leaves the user
+/// manager and the relay sockets alone.
+#[tokio::test]
+async fn a_start_that_never_takes_the_lock_refreshes_no_relay_unit() {
+    let _serial = SERIAL.lock().await;
+    let calls = refresh_calls("guard", true).await;
+    assert!(
+        calls.is_empty(),
+        "a start that never held the daemon lock ran systemctl for the relay refresh:\n{calls}"
     );
 }

@@ -17,6 +17,24 @@ use interprocess::os::windows::security_descriptor::{
     AsSecurityDescriptorExt, BorrowedSecurityDescriptor,
 };
 
+/// A start refused because another daemon answers on its socket or holds the daemon lock. It ends the process with
+/// [`sot_protocol::ops::lease::EXIT_SEAT_HELD`], which the unit does not restart (`refusal_code`).
+#[derive(Debug)]
+struct SeatHeld(String);
+
+impl std::fmt::Display for SeatHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SeatHeld {}
+
+/// The exit code of a start that ended in `error`: a seat held is its own code, anything else is 1.
+pub(crate) fn refusal_code(error: &anyhow::Error) -> i32 {
+    if error.is::<SeatHeld>() { sot_protocol::ops::lease::EXIT_SEAT_HELD } else { 1 }
+}
+
 /// `SOT_TEST_DAEMON_LOCK_WAIT_MS` overrides [`sot_protocol::ops::lease::DAEMON_LOCK_WAIT`]
 /// for tests — the same `OnceLock` convention as [`ping_read_deadline`].
 /// Unset in every real deployment.
@@ -50,11 +68,12 @@ pub(super) async fn lock_daemon(
             return Ok(lock);
         }
         if let Some(path) = socket.filter(|p| socket_answers(p)) {
-            anyhow::bail!(
+            return Err(SeatHeld(format!(
                 "another daemon on this computer holds {} and answers on {}; refusing to start",
                 lock_path.display(),
                 path.display()
-            );
+            ))
+            .into());
         }
         if !logged {
             tracing::info!(
@@ -64,11 +83,12 @@ pub(super) async fn lock_daemon(
             logged = true;
         }
         if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!(
+            return Err(SeatHeld(format!(
                 "the previous daemon on this computer still holds {} after {:?}",
                 lock_path.display(),
                 daemon_lock_wait()
-            );
+            ))
+            .into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
@@ -188,11 +208,12 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
     match attempt {
         Ok(client) => {
             if replies(client) {
-                anyhow::bail!(
+                return Err(SeatHeld(format!(
                     "another daemon is already listening on {}; refusing to start on its socket \
                      (stop that daemon first, or pass a different --socket)",
                     path.display()
-                );
+                ))
+                .into());
             }
             tracing::warn!(socket = %path.display(), "a listener on the socket never replied; starting over it");
             Ok(())
