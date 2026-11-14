@@ -622,10 +622,13 @@ owned by `docs/CLAUDE.md`.
   connects are held in a visible line on the pane, held per row with an 8 KiB bound, and sent only by a fresh Enter one
   second after the row's screen was presented, into the run it showed. A warm client the window had parked for a row
   it switched away from stopped reading once 4 MiB of the row's output waited unread, and the row cut it at its 5 s
-  write bound; shown again, it replayed the stale output as attached, so a key typed then was lost as delivery
-  unknown, and its "episode failure ... status=redialing" came about 100 ms after the switch. Fixed: a client off
-  screen keeps reading and drops the output, and asks for the screen when shown. Not confirmed against a person's
-  window log: a first attach closing for another cause is still open; read the end records at the next one.
+  write bound; shown again, it replayed the stale output as attached, and a key typed then was lost as delivery
+  unknown. Reproduced in a test against a real supervisor and fixed: a client off screen keeps reading and drops the
+  output, and asks for the screen when shown. Not reproduced: the pane's "episode failure ... status=redialing"
+  warning (a debug build drains the stale output before the warning shows); that this cut is its cause, and the "about
+  100 ms after the switch" timing, are inferred from release-build drain rates, and no person's window log was read, so
+  the entry stays open for the warning: whether a first attach also closes for another cause is unproven; read the end
+  records at the next occurrence.
   Beside it: a client installed but not yet attached forwards input with no run identity, so it can land in
   a run the person never saw, against the pane's own rule; the discard notice clears on attach and can go unseen; a
   client dropped with unsent input has no accounting.

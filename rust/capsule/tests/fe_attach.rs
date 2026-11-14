@@ -2,6 +2,7 @@
 //! `FeAttachClient` over the row socket (pass 6c-1a2): the window's and the wake's one client, against a row served
 //! the way the supervisor serves it. A fake main loop owns a parser and answers the requests, as the real loop does.
 
+use sot_capsule::attach_client::attach::{AttachWorker, WorkerEvent};
 use sot_capsule::attach_client::client::FeAttachClient;
 use sot_capsule::endpoint::PlatformEndpoint;
 use sot_capsule::row::{row_socket_path, RowRequest, RowRun, RowServer};
@@ -485,17 +486,16 @@ fn a_row_socket_path_too_long_ends_the_attach_with_a_named_error() {
     assert!(client.status_line().contains("too long"), "{:?}", client.status_line());
 }
 
-/// A client off screen is never cut for not being read: past its sink's bound it keeps reading the row and drops the
-/// output, so the row's write bound (5 s) never ends its connection; shown again, its next key is recorded, not lost.
-#[test]
-fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
-    struct Supervisor(std::process::Child);
-    impl Drop for Supervisor {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
+struct Supervisor(std::process::Child);
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
+}
+
+/// A real supervisor whose agent is `sh -c script`, and the row it serves.
+fn supervise(script: &str) -> (Supervisor, tempfile::TempDir, String) {
     let runtime = runtime_dir();
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
@@ -505,12 +505,12 @@ fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
         .arg(&state_dir)
         .arg("--start")
         .arg("--")
-        .args(["/bin/sh", "-c", "exec yes 'an agent that writes without pause'"])
+        .args(["/bin/sh", "-c", script])
         .env("SOT_RUNTIME_DIR", &runtime)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let _supervisor = Supervisor(cmd.spawn().expect("start a supervisor"));
+    let supervisor = Supervisor(cmd.spawn().expect("start a supervisor"));
     let row = sot_platform::host::state_dir::state_dir_hash(&state_dir);
     let socket = sot_capsule::row::socket_path_in(&runtime, &row).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -518,12 +518,99 @@ fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
         assert!(Instant::now() < deadline, "the row socket was never bound");
         std::thread::sleep(Duration::from_millis(50));
     }
+    (supervisor, dir, row)
+}
+
+/// What a worker's sink was given, and how much of its output its owner has acknowledged.
+#[derive(Default)]
+struct Seen {
+    output: usize,
+    acked: usize,
+    checkpoints: Vec<Instant>,
+    statuses: Vec<String>,
+}
+
+/// A worker whose owner is the test: a recording sink, and `settle` acknowledging what it has been given, as a pump does.
+struct Recorded {
+    worker: AttachWorker,
+    seen: Arc<Mutex<Seen>>,
+}
+
+impl Recorded {
+    fn start(row: &str) -> Self {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let sink = {
+            let seen = Arc::clone(&seen);
+            move |event: WorkerEvent| {
+                let mut seen = seen.lock().unwrap();
+                match event {
+                    WorkerEvent::Output(bytes) => seen.output += bytes.len(),
+                    WorkerEvent::Checkpoint { .. } => seen.checkpoints.push(Instant::now()),
+                    WorkerEvent::Status(text) => seen.statuses.push(text),
+                    WorkerEvent::Terminal(text) => seen.statuses.push(format!("terminal: {text}")),
+                }
+            }
+        };
+        let worker = AttachWorker::spawn(PlatformEndpoint::default(), row.to_string(), 80, 24, false, sink).expect("start a worker");
+        Self { worker, seen }
+    }
+
+    fn checkpoints(&self) -> usize {
+        self.seen.lock().unwrap().checkpoints.len()
+    }
+
+    fn output(&self) -> usize {
+        self.seen.lock().unwrap().output
+    }
+
+    fn settle(&self) {
+        let mut seen = self.seen.lock().unwrap();
+        let fresh = seen.output - seen.acked;
+        seen.acked = seen.output;
+        drop(seen);
+        self.worker.ack_output_consumed(fresh);
+    }
+
+    fn wait_for_checkpoints(&self, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.checkpoints() < count {
+            assert!(Instant::now() < deadline, "no checkpoint number {count}; statuses {:?}", self.seen.lock().unwrap().statuses);
+            self.settle();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// The sink's bound (4 MiB) and what one chunk or an in-flight read may add to it.
+const SINK_BOUND: usize = 4 * 1024 * 1024;
+const SINK_SLACK: usize = 1024 * 1024;
+
+/// A client off screen is never cut for not being read: past its sink's bound it keeps reading the row and drops the
+/// output, so the row's write bound (5 s) never ends its connection; shown again, its next key is recorded, not lost, and
+/// it asks the row for the screen once. A client on screen that is not pumped still stops reading at the bound.
+#[test]
+fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
+    let (_supervisor, _dir, row) = supervise("exec yes 'an agent that writes without pause'");
     let mut client = window(&row);
+    let parked = Recorded::start(&row);
+    let stuck = Recorded::start(&row);
     pump_until(&mut client, "attach", |c| c.is_checkpointed() && c.status_line() == "attached");
+    parked.wait_for_checkpoints(1);
+    stuck.wait_for_checkpoints(1);
     // Parked, as the window's warm pool parks a row it switched away from, and not pumped past the row's write bound.
+    // `stuck` stays on screen and is never acknowledged.
     client.set_viewed(false);
+    parked.worker.set_viewed(false);
     std::thread::sleep(Duration::from_secs(8));
+    // The bound holds off screen, where the output past it is dropped, and on screen, where reading stops.
+    let (off, on) = (parked.output(), stuck.output());
+    assert!(off > SINK_BOUND && off <= SINK_BOUND + SINK_SLACK, "a parked sink held {off} bytes of output");
+    assert!(on <= SINK_BOUND + SINK_SLACK, "a client on screen that is not pumped held {on} bytes of output");
+    assert!(stuck.checkpoints() <= 4, "a client on screen that is not pumped asked for the screen {} times", stuck.checkpoints());
+    assert_eq!(parked.checkpoints(), 1, "a parked client asked for the screen while it was off screen");
+    assert!(!parked.seen.lock().unwrap().statuses.iter().any(|s| s.contains("redialing")), "a parked client was cut");
     client.set_viewed(true);
+    parked.worker.set_viewed(true);
     client.send_input(b"x");
     let deadline = Instant::now() + Duration::from_secs(10);
     let outcome = loop {
@@ -540,4 +627,52 @@ fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
         "the row cut the client while it was off screen; status {:?}",
         client.status_line()
     );
+    // Shown again, it is sent the row's screen, once.
+    parked.wait_for_checkpoints(2);
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until {
+        parked.settle();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(parked.checkpoints(), 2, "the screen was asked for again after it was shown");
+}
+
+/// Shown again, a client that dropped output off screen is woken to ask for the screen, so it does not wait out the
+/// worker's read tick (250 ms) on a row that has gone quiet. Six workers are shown 40 ms apart, so one that happened to be
+/// near its tick does not pass for all.
+#[test]
+fn a_parked_client_shown_again_asks_for_the_screen_at_once_on_a_quiet_row() {
+    let (_supervisor, _dir, row) = supervise("sleep 2; yes 'a screenful' | head -c 6000000; exec sleep 600");
+    let workers: Vec<Recorded> = (0..6).map(|_| Recorded::start(&row)).collect();
+    for worker in &workers {
+        worker.wait_for_checkpoints(1);
+        worker.worker.set_viewed(false);
+    }
+    // The agent writes 6 MB after the first attach and then stops; every worker is full and has dropped the rest.
+    std::thread::sleep(Duration::from_secs(5));
+    for worker in &workers {
+        assert!(worker.output() > SINK_BOUND, "the agent's output did not reach a parked sink: {}", worker.output());
+        assert_eq!(worker.checkpoints(), 1);
+    }
+    // Shown 40 ms apart, so their ticks, which the flood's end set together, are met at every phase.
+    let start = Instant::now();
+    let mut shown: Vec<Option<Instant>> = vec![None; workers.len()];
+    while workers.iter().any(|w| w.checkpoints() < 2) {
+        assert!(start.elapsed() < Duration::from_secs(10), "a shown client never asked for the screen");
+        for (i, worker) in workers.iter().enumerate() {
+            if shown[i].is_none() && start.elapsed() >= Duration::from_millis(40 * i as u64) {
+                worker.worker.set_viewed(true);
+                shown[i] = Some(Instant::now());
+            }
+            worker.settle();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let slowest = workers
+        .iter()
+        .zip(&shown)
+        .map(|(w, shown)| w.seen.lock().unwrap().checkpoints[1].duration_since(shown.unwrap()))
+        .max()
+        .unwrap();
+    assert!(slowest < Duration::from_millis(100), "the screen came {slowest:?} after the client was shown on a quiet row");
 }

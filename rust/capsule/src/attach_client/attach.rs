@@ -166,9 +166,12 @@ impl AttachWorker {
         Self { shared, commands, handle: Mutex::new(None) }
     }
 
-    /// A client off screen starts no dial; it finishes the attempt in flight and waits until it is viewed again.
+    /// A client off screen starts no dial; it finishes the attempt in flight and waits until it is viewed again. Shown
+    /// again, the worker is woken, so the screen it asks for does not wait out a quiet row's read tick.
     pub fn set_viewed(&self, viewed: bool) {
-        self.shared.viewed.store(viewed, Ordering::Release);
+        if !self.shared.viewed.swap(viewed, Ordering::AcqRel) && viewed {
+            self.shared.wake();
+        }
     }
 
     /// Queues input for the row. Before the attach only [`HELD_INPUT_CAP`] bytes are held; the rest are dropped and
@@ -484,8 +487,8 @@ where
                 }
             }
             // Output dropped while a request waited, or while off screen: ask the row for the screen as it is, which
-            // arrives as a snapshot.
-            if client.take_lost_output() || (behind && viewed) {
+            // arrives as a snapshot. Whether it is on screen is read afresh: it may have been shown during the read above.
+            if client.take_lost_output() || (behind && self.shared.viewed.load(Ordering::Acquire)) {
                 behind = false;
                 let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
                 match client.attach(cols, rows, driver) {
