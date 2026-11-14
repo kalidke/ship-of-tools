@@ -2282,3 +2282,16 @@ A landing's record goes here, with its measured times; the package page holds on
   blockers) found the same wrong line over a PDF page and a video poster, so the SVG case became one rule for every
   picture that is no image file, a pure choice of line with tests that fail for a PNG or a missing node; the call
   site's wiring rests on reading. One fix commit, rebased over the chord change, and two scoped gates.
+- Each row keeps its own drawer, 2026-11-14, on the maintainer's word: builder about 10:58, main 11:34 (bba002f03,
+  a7f4009d4), about 36 minutes. About 35 product lines and 130 test lines, with a native fixture. A row's parked view
+  holds its drawer (closed or the tenant shown, never Help); a first visit is closed; a switch closes Help and returns
+  the focus Help took. Where the minutes went: the build 13; review round 1 (no blockers) 10, which found a switch under
+  Help that left a row's Chat drawer focused and maximized, so keys meant for the agent went to the draft; one fix
+  commit 4, with the first-visit rule changed to closed; two scoped gates.
+- Smooth scrolling, landing 1 of 5 (the motion owner and the preview), 2026-11-14, on the maintainer's word for 0.7.1:
+  builder about 11:05, main 11:44 (d8c6e1553, affc2e92a), about 39 minutes. About 150 product lines and 340 test lines,
+  with a native fixture. A person's scroll in the preview eases over 150 ms to exactly where it lands today; every other
+  move is at once; the drawn position is the one position, so hit testing and selection follow it. Where the minutes
+  went: the build 15; review round 1 (no blockers) 12, which found three rules no test failed for and a lost ask after
+  End; one fix commit 4 and the call sites' one `scroll_ask`; two scoped gates. The plan of record is the session's,
+  in its output folder; landings 2 to 5 follow.
