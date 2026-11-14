@@ -2210,3 +2210,16 @@ A landing's record goes here, with its measured times; the package page holds on
   refused were both retried at every preview), fixes 8, then the gate and the hosted run; 87 minutes from the second
   build's launch, a miss: two review rounds, each finding behavior worth fixing before the landing. The removal of the
   plugins' lazy load is right once no JLL loads in the kernel (4.5 ms, 2 MiB).
+- Copy as one line, 2026-11-13, the first of the four defects a person saw that the fifth candidate carries (the
+  maintainer: a release candidate saves nothing for the next one). Builder launched 19:37, main 20:33 (010f71a71,
+  f33dda4c3, 3d7efb008), 56 minutes, a miss. A long command Claude Code had word-wrapped itself pasted as two lines
+  (PANE-COPY-KEEPS-WRAPS). The first build joined, in the default copy, every break where the next word would not have
+  fit, read from Claude Code's own wrap settings; its full gate passed, and review round 1 found the blocker: that
+  default glued real lines on common screens (Claude Code's input box and rules, tables, a list of paths, two URLs, the
+  current folder's path), which no reading of the screen can tell from a wrap. The redesign leaves the default copy as
+  it was (byte for byte on round 1's screens and 4,000 random ones, but for a terminal wrap a wide character forces,
+  now flagged in the vendored terminal) and adds Copy as one line, Primary+Shift+l. Round 2 moved the key off
+  Primary+Alt+c, which on Windows is the AltGr chord that types a character on several keyboard layouts, and replaced
+  two cut-word guesses with one comparison against the selection's own indent; a program that wraps narrower than the
+  pane is the stated limit. A default that changes what every copy gives needs its false cases probed before the
+  build, not after.
