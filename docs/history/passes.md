@@ -2257,3 +2257,11 @@ A landing's record goes here, with its measured times; the package page holds on
   four stale pages and comments, guard tests that reached a real user manager through `systemd-run` (now stubbed), and
   a sentence that called the hang explained. The loop closed under its own id (SOTD-UNIT-RESTART-LOOP); the hang of
   over two minutes stays open, unreproduced, with what would settle it.
+- Input around an attach, 2026-11-13, the three reading notes left beside KEYS-DROPPED-WHILE-A-ROW-ATTACHES, taken
+  into the fifth candidate rather than saved. Builder 22:00, main 23:11 (f0f4ac65f, d28f867f2, dd6c94b86), 71 minutes,
+  a miss: three review rounds. All three were real: input with no run identity before a client's first attach is now
+  refused and counted (no production caller reached it); the discard notice is one private count with its drawn record,
+  cleared only by a person's act after a frame drew it, a switch carrying it to the next row; and a retired client
+  stops before it counts, so only input never taken is said not sent, held keys dropped by pruning included. Round 1
+  found a blocker (the pane zeroed the notice before it knew what a key did, so five discarded keys read as one), round
+  2 two places that still zeroed it outside a dismissal and three unpinned lines, each now red by a named mutant.
