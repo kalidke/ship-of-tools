@@ -75,8 +75,9 @@ struct Shared {
     shutdown_reason: Mutex<&'static str>,
     host: String,
     attached: AtomicBool,
-    /// Bytes of input in the command queue.
+    /// Bytes of input in the command queue, and how many inputs they are.
     queued_input: AtomicUsize,
+    queued_inputs: AtomicUsize,
     discarded: AtomicUsize,
     /// Output bytes sent to the sink and not yet consumed by it.
     sink_bytes: AtomicUsize,
@@ -98,6 +99,7 @@ impl Shared {
             host: String::new(),
             attached: AtomicBool::new(false),
             queued_input: AtomicUsize::new(0),
+            queued_inputs: AtomicUsize::new(0),
             discarded: AtomicUsize::new(0),
             sink_bytes: AtomicUsize::new(0),
             waker: Mutex::new(None),
@@ -161,9 +163,15 @@ impl AttachWorker {
     /// A worker with no thread, for a test that feeds the client's events by hand.
     #[cfg(test)]
     pub(crate) fn inert() -> Self {
-        let (commands, _inbox) = mpsc::channel();
+        Self::inert_with_inbox().0
+    }
+
+    /// [`Self::inert`], keeping the queue its inputs wait in.
+    #[cfg(test)]
+    fn inert_with_inbox() -> (Self, Receiver<Command>) {
+        let (commands, inbox) = mpsc::channel();
         let shared = Arc::new(Shared::new(80, 24, false));
-        Self { shared, commands, handle: Mutex::new(None) }
+        (Self { shared, commands, handle: Mutex::new(None) }, inbox)
     }
 
     /// A client off screen starts no dial; it finishes the attempt in flight and waits until it is viewed again. Shown
@@ -174,8 +182,10 @@ impl AttachWorker {
         }
     }
 
-    /// Queues input for the row. Before the attach only [`HELD_INPUT_CAP`] bytes are held; the rest are dropped and
-    /// counted. Returns whether the bytes were kept.
+    /// Queues input for the row, typed into the run of the last attach. Before the first attach there is no run:
+    /// the input is refused and counted, never sent into whichever run the attach finds. After a loss only
+    /// [`HELD_INPUT_CAP`] bytes wait for the redial; the rest are dropped and counted. Returns whether the bytes were
+    /// kept.
     pub fn send_input(&self, bytes: Vec<u8>) -> bool {
         self.send_input_for(bytes, None)
     }
@@ -183,16 +193,17 @@ impl AttachWorker {
     /// [`Self::send_input`] meant for the run `run` names: never written into another, however the worker has been
     /// reconnected since, and the row refuses it in any run but that one.
     pub fn send_input_for(&self, bytes: Vec<u8>, run: Option<String>) -> bool {
+        let typed_into = run.clone().filter(|r| !r.is_empty()).or_else(|| Some(self.shared.current_run()).filter(|r| !r.is_empty()));
         let cap = if self.shared.attached.load(Ordering::Acquire) { QUEUED_INPUT_CAP } else { HELD_INPUT_CAP };
         let queued = self.shared.queued_input.load(Ordering::Acquire);
-        if queued.saturating_add(bytes.len()) > cap {
+        if typed_into.is_none() || queued.saturating_add(bytes.len()) > cap {
             self.shared.discarded.fetch_add(1, Ordering::AcqRel);
             return false;
         }
         self.shared.queued_input.fetch_add(bytes.len(), Ordering::AcqRel);
+        self.shared.queued_inputs.fetch_add(1, Ordering::AcqRel);
         // The answer to the most recent input: none until this one is answered.
         *self.shared.outcome.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        let typed_into = run.clone().or_else(|| Some(self.shared.current_run()).filter(|r| !r.is_empty()));
         if self.commands.send(Command::Input(bytes, typed_into, run)).is_err() {
             return false;
         }
@@ -210,6 +221,11 @@ impl AttachWorker {
 
     pub fn inputs_discarded(&self) -> usize {
         self.shared.discarded.load(Ordering::Acquire)
+    }
+
+    /// Inputs queued and not yet taken by the worker: lost if the worker ends first.
+    pub fn unsent_inputs(&self) -> usize {
+        self.shared.queued_inputs.load(Ordering::Acquire)
     }
 
     pub fn recorded_bytes(&self) -> u64 {
@@ -500,6 +516,7 @@ where
                 match command {
                     Command::Input(bytes, typed_into, meant_for) => {
                         self.shared.queued_input.fetch_sub(bytes.len(), Ordering::AcqRel);
+                        self.shared.queued_inputs.fetch_sub(1, Ordering::AcqRel);
                         // Typed into a run that is not this one (the connection was lost, and the row's agent started
                         // again): never written here.
                         if typed_into.is_some_and(|run| run != self.shared.current_run()) {

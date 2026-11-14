@@ -714,8 +714,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   screen run. Every live key, paste and mouse sequence names the checkpoint's `screen_run` through
   `send_input_in_run`. Before sending held keys, a different worker `run()` keeps them and clears the dwell, reporting
   that the restarted row's screen must show again. Limit: a worker that moves after this check can still reject the
-  send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is said on the status line as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The worker's
-  own pre-attach queue remains bounded independently; the pane no longer relies on it. A wheel while nonlive only
+  send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is said on the status line as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The worker
+  refuses any input before its first attach, so the pane never relies on a queue there. The notice that keys were
+  discarded (`pane_inputs_discarded`, drawn over the pane) is not cleared by an attach, cold or warm: it stays until a key
+  is held or sent, Esc, Backspace or Enter over held keys, or a click in the pane, and a discarded key adds to it
+  (`a_discard_notice_outlives_the_attach_until_a_key_or_a_click`). A client that leaves the pane with input its worker
+  never took (dropped by a switch, evicted from the warm pool, retired dead, retired with its row, or by the kept-row
+  invalidation; a parked client keeps its queue and sends it) adds that many inputs to the same count
+  (`a_client_retired_with_input_waiting_is_counted_as_discarded`). Held keys dropped by row pruning are not counted. A wheel while nonlive only
   scrolls locally or reports Pending and never holds mouse bytes. Behavior tests in `agent_pane::owner_tests`:
   `keys_typed_while_a_row_connects_are_held_and_sent_only_on_an_armed_enter`,
   `held_keys_stay_with_their_row_across_a_switch`, `held_keys_are_not_sent_into_a_run_the_screen_did_not_show`,

@@ -27,6 +27,8 @@ pub(in crate::ui) trait PaneClient {
     fn pump(&mut self) -> bool;
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome>;
     fn inputs_discarded(&self) -> usize;
+    /// Inputs the client was handed and its worker has not taken: lost when the client is dropped.
+    fn unsent_inputs(&self) -> usize;
     fn screen_run(&self) -> &str;
     fn run(&self) -> String;
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str);
@@ -52,6 +54,7 @@ impl PaneClient for PaneAttachClient {
     fn pump(&mut self) -> bool { self.pump() }
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome> { self.last_input_outcome() }
     fn inputs_discarded(&self) -> usize { self.inputs_discarded() }
+    fn unsent_inputs(&self) -> usize { self.unsent_inputs() }
     fn screen_run(&self) -> &str { self.screen_run() }
     fn run(&self) -> String { self.run() }
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str) { self.send_input_in_run(bytes, run); }
@@ -135,8 +138,8 @@ impl<C: PaneClient> AgentPane<C> {
     /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
-        self.pane_attach_term = None;
         self.pane_inputs_discarded = 0;
+        if let Some(c) = self.pane_attach_term.take() { self.count_unsent(&[c]); }
         self.bl_pane_target = None;
         self.pane_feed = PaneFeed::Pending;
     }

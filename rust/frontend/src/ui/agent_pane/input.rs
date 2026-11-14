@@ -25,11 +25,13 @@ impl<C: PaneClient> AgentPane<C> {
             if held_bytes.saturating_add(bytes.len()) > sot_capsule::attach_client::attach::HELD_INPUT_CAP {
                 self.pane_inputs_discarded += 1;
             } else if !bytes.is_empty() {
+                self.pane_inputs_discarded = 0;
                 let held = self.held_keys.entry(target).or_default();
                 held.bytes += bytes.len();
                 held.entries.push(bytes.to_vec());
             }
         } else {
+            self.pane_inputs_discarded = 0;
             let c = self.pane_attach_term.as_mut().expect("live client");
             let run = c.screen_run().to_owned();
             c.send_input_in_run(bytes, &run);
@@ -42,6 +44,7 @@ impl<C: PaneClient> AgentPane<C> {
         let target = self.bl_pane_target.clone()?;
         let count = self.held_keys.get(&target)?.entries.len();
         if !unmodified { return None; }
+        self.pane_inputs_discarded = 0;
         match logical {
             Key::Named(NamedKey::Escape) => {
                 self.held_keys.remove(&target);
@@ -166,6 +169,7 @@ impl<C: PaneClient> AgentPane<C> {
 
     pub(in crate::ui) fn press(&mut self, cell: Option<(u16, u16)>) -> bool {
         if let Some(cell) = cell {
+            self.pane_inputs_discarded = 0;
             self.llm_selection = Some((cell, cell));
             self.llm_drag_active = true;
             true

@@ -10,7 +10,7 @@ type Pane = AgentPane<Scripted>;
 struct Wire {
     inputs: Vec<Vec<u8>>, sizes: Vec<(u16, u16)>, viewed: Vec<bool>,
     scrolls: Vec<i32>, resets: usize, dead: bool, steps: VecDeque<Step>,
-    input_runs: Vec<String>, run: String,
+    input_runs: Vec<String>, run: String, unsent: usize,
 }
 #[derive(Default)]
 struct Step {
@@ -57,6 +57,7 @@ impl PaneClient for Scripted {
     }
     fn last_input_outcome(&self) -> Option<InputOutcome> { self.outcome }
     fn inputs_discarded(&self) -> usize { 0 }
+    fn unsent_inputs(&self) -> usize { self.wire.borrow().unsent }
     fn screen_run(&self) -> &str { &self.screen_run }
     fn run(&self) -> String { self.wire.borrow().run.clone() }
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str) {
@@ -310,7 +311,8 @@ fn held_keys_past_the_bound_are_refused_and_counted() {
     p.send_input(b"\x1b[200~paste\x1b[201~");
     p.send_input(b"\r"); // Exactly the cap is kept; the paste was refused whole.
     p.send_input(b"y");
-    assert!(p.view(None).1.iter().any(|s| s == "3 keystrokes discarded, not sent"));
+    // A key kept after a refusal dismisses its notice: the paste's went with the Enter, the last key's remains.
+    assert!(p.view(None).1.iter().any(|s| s == "1 keystroke discarded, not sent"));
     let wire = Scripted::new(b"", true);
     let handle = wire.1;
     install(&mut p, "h", "row", wire.0, t);
@@ -1154,4 +1156,102 @@ fn copy_as_one_line_needs_the_program_to_wrap_at_the_panes_width() {
     let rows = feed.matches("\r\n").count() as u16 + 1;
     let copied = copy_line_at(24, feed.as_bytes(), (0, 2), (rows - 1, 23)).unwrap();
     assert_eq!(copied, "see /srv/data/resu lts/run_2026_11_11 /analysis/output.t xt tail");
+}
+
+/// The notice that keys were discarded is the person's to dismiss: the attach that ends the wait does not clear it, a
+/// key held or sent or a click in the pane does, and a key that is itself discarded adds to it.
+#[test]
+fn a_discard_notice_outlives_the_attach_until_a_key_or_a_click() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let notice = |p: &mut Pane| p.view(None).1.into_iter().find(|s| s.contains("discarded"));
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "cold", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    let (c, wire) = Scripted::new(b"", false);
+    install(&mut p, "h", "cold", c, t);
+    step(&mut p, &wire, Step { status: Some("attached"), checkpoint: true, ..Default::default() }, t);
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "the attach cleared the notice");
+    p.press(None);
+    assert!(notice(&mut p).is_some(), "a press outside the pane dismissed it");
+    p.press(Some((0, 0)));
+    assert_eq!(notice(&mut p), None, "a click in the pane leaves it");
+
+    let warm = ready(&mut p, "h", "warm", b"", t);
+    select(&mut p, "h", "other", t, 2);
+    select(&mut p, "h", "warm", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    let (plan, _) = prepare(&mut p, key("h", "warm"));
+    start(&mut p, plan, |_, _, _| panic!("warm"), || t);
+    assert_eq!(warm.borrow().viewed.last(), Some(&true));
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a warm attach cleared the notice");
+    p.send_input(b"k");
+    assert_eq!(notice(&mut p), None, "a key leaves it");
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a discarded key counts");
+
+    let live = ready(&mut p, "h", "live", b"", t);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    present(&mut p, t);
+    assert!(notice(&mut p).is_some());
+    p.send_input(b"z");
+    assert_eq!(live.borrow().inputs, vec![b"z".to_vec()]);
+    assert_eq!(notice(&mut p), None, "a key sent into the live run leaves it");
+
+    select(&mut p, "h", "held", t, 2);
+    p.send_input(b"a");
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert!(notice(&mut p).is_some());
+    held_key(&mut p, NamedKey::Escape, false, t);
+    assert_eq!(notice(&mut p), None, "Esc over held keys leaves it");
+}
+
+/// A client leaving the pane (dropped by a switch, evicted from the pool, retired for a dead connection or by the
+/// kept-row invalidation) with input its worker never took says how many were lost.
+#[test]
+fn a_client_retired_with_input_waiting_is_counted_as_discarded() {
+    let t = Instant::now();
+    let notice = |p: &mut Pane| p.view(None).1.into_iter().find(|s| s.contains("discarded"));
+    let mut p = Pane::new(None);
+    let a = ready(&mut p, "h", "a", b"", t);
+    a.borrow_mut().unsent = 2;
+    step(&mut p, &a, Step { dead: true, ..Default::default() }, t);
+    select(&mut p, "h", "b", t, 1);
+    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a dead client was dropped by a switch");
+
+    let (c, b) = Scripted::new(b"", true);
+    install(&mut p, "h", "b", c, t);
+    b.borrow_mut().unsent = 1;
+    select(&mut p, "h", "c", t, 1);
+    assert_eq!(notice(&mut p), None, "a parked client still sends its input");
+    let (c, _) = Scripted::new(b"", true);
+    install(&mut p, "h", "c", c, t);
+    let evicted = select(&mut p, "h", "d", t, 1);
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "an evicted client");
+
+    let (c, d) = Scripted::new(b"", true);
+    install(&mut p, "h", "d", c, t);
+    d.borrow_mut().unsent = 3;
+    p.invalidate_kept_attachment();
+    assert_eq!(notice(&mut p).as_deref(), Some("3 keystrokes discarded, not sent"), "the kept-row invalidation");
+
+    let e = ready(&mut p, "h", "e", b"", t);
+    select(&mut p, "h", "f", t, 4);
+    {
+        let mut e = e.borrow_mut();
+        e.unsent = 2;
+        e.dead = true;
+    }
+    select(&mut p, "h", "e", t, 4);
+    drop(prepare(&mut p, key("h", "e")));
+    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a dead warm client retired at the attach");
+
+    let g = ready(&mut p, "k", "g", b"", t);
+    g.borrow_mut().unsent = 1;
+    select(&mut p, "k", "f", t, 4);
+    assert_eq!(notice(&mut p), None);
+    assert_eq!(p.prune_warm(&"k".into(), &HashSet::new()).len(), 1);
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a warm client of a removed row");
 }

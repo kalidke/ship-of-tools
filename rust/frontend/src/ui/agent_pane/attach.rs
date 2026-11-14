@@ -131,8 +131,12 @@ impl<C: PaneClient> AgentPane<C> {
                 Some(key) if client.is_checkpointed() && !client.is_dead() => {
                     client.set_viewed(false);
                     retired = self.warm_attach.park(key, client, bound);
+                    self.count_unsent(&retired);
                 }
-                _ => client.set_shutdown_reason("switch away"),
+                _ => {
+                    client.set_shutdown_reason("switch away");
+                    self.count_unsent(std::slice::from_ref(&client));
+                }
             }
         }
         self.pane_dial_error = None;
@@ -153,6 +157,7 @@ impl<C: PaneClient> AgentPane<C> {
         let warm = self.warm_attach.take(&target.0).and_then(|mut c| {
             if c.is_dead() { retired.push(c); None } else { Some(c) }
         });
+        self.count_unsent(&retired);
         (AttachPlan { target: target.0, size: self.open_size(), warm }, retired)
     }
 
@@ -197,7 +202,6 @@ impl<C: PaneClient> AgentPane<C> {
             let warm = matches!(pending.effect.trace, AttachTrace::Warm(_));
             if warm {
                 c.set_viewed(true);
-                if c.status_line() == "attached" { self.pane_inputs_discarded = 0; }
             }
             self.pane_attach_term = Some(c);
             self.copy_quiet = true;
@@ -247,7 +251,6 @@ impl<C: PaneClient> AgentPane<C> {
         if status_after != status_before {
             if status_after == "attached" {
                 effect.outcomes.push(AttachOutcome::Attached);
-                self.pane_inputs_discarded = 0;
             } else {
                 self.pane_attach_episode_warnings += 1;
                 effect.outcomes.push(AttachOutcome::Warning { episode: self.pane_attach_episode_warnings, status: status_after });
@@ -263,7 +266,14 @@ impl<C: PaneClient> AgentPane<C> {
 
     pub(in crate::ui) fn prune_warm(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
         self.held_keys.retain(|(h, row), _| h != host || live.contains(row));
-        self.warm_attach.retain_rows(host, live)
+        let retired = self.warm_attach.retain_rows(host, live);
+        self.count_unsent(&retired);
+        retired
+    }
+
+    /// Input a leaving client's worker never took is gone with it, so it is counted among the discarded keystrokes.
+    pub(super) fn count_unsent(&mut self, leaving: &[C]) {
+        self.pane_inputs_discarded += leaving.iter().map(|c| c.unsent_inputs()).sum::<usize>();
     }
 }
 

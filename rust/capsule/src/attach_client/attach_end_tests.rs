@@ -224,3 +224,28 @@ fn a_service_read_error_keeps_its_cause_and_the_old_status() {
         );
     }
 }
+
+/// Before its first attach a worker knows no run, so input has none to be typed into: it is refused and counted, not
+/// queued to land in whichever run the attach finds.
+#[test]
+fn input_before_the_first_attach_is_refused_and_counted() {
+    let (w, inbox) = AttachWorker::inert_with_inbox();
+    assert!(!w.send_input(b"x".to_vec()), "input with no run identity was queued");
+    assert!(!w.send_input_for(b"y".to_vec(), Some(String::new())), "an empty run names nothing");
+    assert_eq!(w.inputs_discarded(), 2);
+    assert_eq!(w.unsent_inputs(), 0);
+    assert!(inbox.try_recv().is_err(), "a refused input reached the worker's queue");
+}
+
+/// Input the worker has not yet taken is counted, so a caller that retires the client can say what was lost (the
+/// count falls as the worker takes input: `fe_attach::a_demoted_window_types_again_after_a_wake`).
+#[test]
+fn input_waiting_for_the_worker_is_counted_as_unsent() {
+    let (w, inbox) = AttachWorker::inert_with_inbox();
+    *w.shared.run.lock().unwrap() = "one".into();
+    assert!(w.send_input(b"a".to_vec()));
+    assert!(w.send_input_for(b"bc".to_vec(), Some("one".into())));
+    assert_eq!(w.unsent_inputs(), 2);
+    assert_eq!(w.inputs_discarded(), 0);
+    drop(inbox);
+}

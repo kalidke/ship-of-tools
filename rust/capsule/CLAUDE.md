@@ -123,8 +123,11 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    run retires it within 2 s of its end. The loop drains at most 16 requests a pass and keeps at most one wake pending,
    so output, ticks and exit checks still run under a flood. The client tags each input with the run it was typed into
    and answers one left over when the connection comes back to another run `run ended`, counted, never written; a
-   `run ended` the row itself answers is counted the same way, and a resync's attach records the run it returns; input
-   typed before the attach is held (8 KiB at most) and sent after it. A headless client takes the pen once per run: its
+   `run ended` the row itself answers is counted the same way, and a resync's attach records the run it returns. A
+   client that has never attached knows no run, so its input is refused and counted (`inputs_discarded`), never
+   queued to land in whichever run the first attach finds (`attach_end_tests::input_before_the_first_attach_is_refused_and_counted`);
+   after a loss at most 8 KiB wait for the redial, typed into the run last attached. Input the worker has not taken is
+   counted (`unsent_inputs`), lost with the client when it is dropped, and the window says so when it retires one. A headless client takes the pen once per run: its
    Enter never takes it in a replacement run, and in the same run after another driver took it back it does not fight
    for it. A window's input the row refuses as from a connection that is not the driver (another client took the pen
    and the window has not read its demotion; nothing was written) takes the pen back and is sent once more, before the

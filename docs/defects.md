@@ -635,9 +635,6 @@ owned by `docs/CLAUDE.md`.
   100 ms after the switch" timing, are inferred from release-build drain rates, and no person's window log was read, so
   the entry stays open for the warning: whether a first attach also closes for another cause is unproven; read the end
   records at the next occurrence.
-  Beside it: a client installed but not yet attached forwards input with no run identity, so it can land in
-  a run the person never saw, against the pane's own rule; the discard notice clears on attach and can go unseen; a
-  client dropped with unsent input has no accounting.
 - **REPLY-BAR-DELETE** [note] The window's reply bar and `page.reply` over the window's connection serve only a daemon from
   before v0.7.0-rc.2: the page server refuses an unscoped reply (403 `no_reply_scope`) and `fe.command.send` refuses
   the reserved `page_reply`, so nothing a current daemon sends reaches the bar. While it stands, a reply confirmed just

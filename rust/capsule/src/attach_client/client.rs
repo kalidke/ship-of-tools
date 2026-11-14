@@ -221,13 +221,18 @@ impl FeAttachClient {
         self.worker.set_viewed(viewed);
     }
 
-    /// Inputs dropped for want of room: typed before the attach past what is held, or past the queue's bound.
+    /// Inputs refused or dropped: typed before the first attach, past what waits for a redial, or past the queue's bound.
     pub fn inputs_discarded(&self) -> usize {
         self.worker.inputs_discarded()
     }
 
+    /// Inputs handed to the worker that it has not yet taken: all of them are lost when this client is dropped.
+    pub fn unsent_inputs(&self) -> usize {
+        self.worker.unsent_inputs()
+    }
+
     /// Hands keystroke bytes to the worker, which takes the pen first when this client was demoted. Input typed before
-    /// the attach is held and sent after it.
+    /// the first attach is refused and counted: it has no run to be typed into.
     pub fn send_input(&mut self, bytes: &[u8]) {
         if !self.worker.send_input(bytes.to_vec()) {
             tracing::warn!("fe attach client: dropped an input send");

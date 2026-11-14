@@ -146,6 +146,7 @@ fn a_demoted_window_types_again_after_a_wake() {
     // The window was demoted by the wake's take; its next keystroke takes the pen back and is written.
     win.send_input(b"x");
     pump_until(&mut win, "the window's input recorded", |c| c.recorded_bytes() == 1);
+    assert_eq!(win.unsent_inputs(), 0, "an input the worker took is still counted as waiting");
     assert_eq!(looped.written(), b"wx");
     assert_eq!(win.status_line(), "attached", "the window never left the row");
     win.shutdown(Duration::from_millis(500));
