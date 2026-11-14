@@ -68,8 +68,6 @@ struct HelpOrigin { focus: PaneFocus, drawer: DrawerContent, maximized: bool }
 
 pub(in crate::ui) struct LayoutHelp {
     drawer: DrawerContent,
-    /// The drawer the window started with: what a row visited for the first time shows.
-    fresh: DrawerContent,
     maximized: bool,
     wide_preview: bool,
     help: Help,
@@ -111,7 +109,7 @@ pub(in crate::ui) struct PeekOverlay { pub lines: Vec<String>, pub opacity: f32 
 
 impl LayoutHelp {
     pub(in crate::ui) fn new(drawer: DrawerContent, maximized: bool, start_help: bool, start_peek: bool) -> Self {
-        Self { drawer, fresh: drawer, maximized, wide_preview: false, help: Help::default(), help_origin: None,
+        Self { drawer, maximized, wide_preview: false, help: Help::default(), help_origin: None,
             help_start_pending: start_help, help_peek_start_pending: start_peek }
     }
     pub(in crate::ui) fn drawer(&self) -> DrawerContent { self.drawer }
@@ -126,19 +124,23 @@ impl LayoutHelp {
         let shown = if self.drawer == DrawerContent::Help { self.help_origin.map_or(DrawerContent::Closed, |o| o.drawer) } else { self.drawer };
         if shown == DrawerContent::Help { DrawerContent::Closed } else { shown }
     }
-    /// What a row visited for the first time shows.
-    pub(in crate::ui) fn fresh_drawer(&self) -> DrawerContent { self.fresh }
-    /// The entered row's own drawer replaces the left row's. Help is the window's, not a row's: it closes (the layout
-    /// it hid comes back). Focus in the drawer moves to the tree only when the entered row's drawer is closed.
+    /// The entered row's own drawer replaces the left row's. Help is the window's, not a row's: it closes, and the
+    /// layout it hid comes back with the focus it took (focus still in Help goes to where Help was opened from).
+    /// Focus in the drawer moves to the tree only when the entered row's drawer is closed.
     pub(in crate::ui) fn enter_row_drawer(&mut self, row: DrawerContent, focus: PaneFocus) -> LayoutEffect {
+        debug_assert!(row != DrawerContent::Help, "Help is not a row's drawer");
+        let mut to = focus;
         if self.drawer == DrawerContent::Help {
-            if let Some(origin) = self.help_origin { self.maximized = origin.maximized; }
+            if let Some(origin) = self.help_origin {
+                self.maximized = origin.maximized;
+                if focus == PaneFocus::Repl { to = origin.focus; }
+            }
             self.help.peek = None;
         }
         self.help_origin = None;
         self.drawer = row;
-        LayoutEffect { focus: (focus == PaneFocus::Repl && !row.is_open()).then_some(PaneFocus::NavTree),
-            monitor_sync: true, redraw: true }
+        if to == PaneFocus::Repl && !row.is_open() { to = PaneFocus::NavTree; }
+        LayoutEffect { focus: (to != focus).then_some(to), monitor_sync: true, redraw: true }
     }
     pub(in crate::ui) fn maximized(&self) -> bool { self.maximized }
     pub(in crate::ui) fn wide_preview(&self) -> bool { self.wide_preview }

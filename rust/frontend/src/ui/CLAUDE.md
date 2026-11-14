@@ -205,10 +205,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
   composes and applies the view; the map is reached through nothing else. A view holds its row's drawer (closed, or the
   tenant shown; never Help): `snapshot_current_workspace_ui` parks `LayoutHelp::row_drawer`, a return applies it through
-  `LayoutHelp::enter_row_drawer`, and a first visit applies the drawer the window started with (`fresh_drawer`; closed by
-  default). The drawer's height, maximize and wide preview stay window-wide, and the parked drawers are runtime memory:
-  a window restart starts every row at the fresh drawer. Pinned by `a_rows_drawer_rides_its_view_and_a_destroyed_rows_drops_with_it` and the
-  native fixture `a_rows_drawer_stays_with_its_row`.
+  `LayoutHelp::enter_row_drawer`, and a first visit is closed. The row shown at start has no switch behind it: its drawer
+  is whatever the window started with (closed, the Terminal after a relaunch, the Monitor under `--start-monitor`) and
+  is parked when the row is first left. The one rare case: a relaunch whose resumed row is gone at the first list moves
+  to a neighbor as a first visit, so the Terminal closes there. The drawer's height, maximize and wide preview stay
+  window-wide, and the parked drawers are runtime memory: a window restart starts every row closed but the one shown.
+  Pinned by the native fixture `a_rows_drawer_stays_with_its_row`.
 - `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
   the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
   and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed
@@ -680,16 +682,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `LayoutHelp` privately owns the shown drawer, maximize/wide flags, Help browsing, the first return origin and startup
   requests, including private nested storage. It returns owned effects, never takes State and lends only immutable
   observations. The drawer has four tenants (Repl, Terminal, Monitor, Chat) besides Help; Chat shows the held records (`drawer/chat/`) and
-  its keys reach no REPL handler (`input/CLAUDE.md`). Ordinary toggles alone abandon the origin and request Monitor sync, after focus and before binding
+  its keys reach no REPL handler (`input/CLAUDE.md`). Ordinary toggles and a row switch abandon the origin and request Monitor sync, after focus and before binding
   feedback/redraw. Automatic REPL opening keeps setting/base-preset gates; demo opening ignores them; Terminal
   failure closes only selection. These paths preserve other layout/Help state and keep held subscriptions. A row switch
   replaces the drawer with the entered row's (`enter_row_drawer`, applied after the REPL and view restores): Help is the
-  window's, so it closes, its hidden maximize returns and its origin goes; `row_drawer` parks what Help covered. The
+  window's, so it closes, its hidden maximize returns with the focus it took (focus still in Help goes back to where Help
+  was opened from) and its origin goes; `row_drawer` parks what Help covered. The
   effect requests Monitor sync, so a drawer left or entered as Monitor takes or drops the subscription as a toggle does,
   and moves focus to the tree only when the focus was in the drawer and the entered row's drawer is closed (an open one
   never takes focus). The Chat's watch follows `chat_shown`, so it follows the restored drawer. Pinned by
   `entering_a_row_shows_its_drawer_and_moves_only_drawer_focus_off_a_closed_one` and
-  `a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid`.
+  `a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid` and
+  `a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into_the_entered_drawer`.
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
   agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first

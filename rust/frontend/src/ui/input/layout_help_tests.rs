@@ -480,6 +480,7 @@ fn a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid() {
     assert_eq!(parked, DrawerContent::Terminal);
     let e = h.layout.enter_row_drawer(DrawerContent::Chat, PaneFocus::Repl); e.apply(&mut h, None);
     assert_eq!((h.layout.drawer(), h.layout.maximized(), h.layout.chat_shown()), (DrawerContent::Chat, true, true));
+    assert_eq!(h.focus.focus(), PaneFocus::Preview, "Help's focus stayed in the entered row's chat");
     h.layout.close_help();
     assert_eq!(h.layout.drawer(), DrawerContent::Closed, "the closed Help's origin brought the left row's drawer back");
     h.open();
@@ -487,10 +488,20 @@ fn a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid() {
     assert_eq!(h.layout.drawer(), DrawerContent::Terminal);
 }
 #[test]
-fn a_row_visited_for_the_first_time_starts_with_the_drawer_the_window_started_with() {
-    for start in [DrawerContent::Closed, DrawerContent::Monitor, DrawerContent::Terminal] {
-        let mut h = Harness::new(start, PaneFocus::NavTree, false);
-        h.toggle(DrawerContent::Repl);
-        assert_eq!(h.layout.fresh_drawer(), start);
+fn a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into_the_entered_drawer() {
+    // Help takes focus into the drawer; the maximize it hid follows focus, so the focus must go back with it.
+    for origin in [PaneFocus::NavTree, PaneFocus::Preview, PaneFocus::Llm] {
+        for row in [DrawerContent::Closed, DrawerContent::Repl, DrawerContent::Chat] {
+            let mut h = Harness::new(DrawerContent::Closed, origin, true);
+            h.open();
+            assert_eq!(h.focus.focus(), PaneFocus::Repl);
+            let e = h.layout.enter_row_drawer(row, h.focus.focus()); e.apply(&mut h, None);
+            assert_eq!((h.focus.focus(), h.layout.maximized()), (origin, true), "{origin:?} then {row:?}");
+        }
     }
+    // Help opened from the drawer itself: the focus stays there only where the entered row has a drawer.
+    let mut h = Harness::new(DrawerContent::Repl, PaneFocus::Repl, false);
+    h.open();
+    let e = h.layout.enter_row_drawer(DrawerContent::Closed, PaneFocus::Repl); e.apply(&mut h, None);
+    assert_eq!(h.focus.focus(), PaneFocus::NavTree);
 }

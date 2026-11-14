@@ -301,7 +301,7 @@ impl State {
             self.drift.clear();
             self.editor.close();
             self.ink.restore(Default::default());
-            self.enter_row_drawer(self.layout_help.fresh_drawer());
+            self.enter_row_drawer(DrawerContent::Closed);
         }
         restored
     }
