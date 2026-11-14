@@ -101,14 +101,21 @@ impl ScrollMotion {
             0.0
         };
         self.carry = if self.moving() { total - rows } else { 0.0 };
+        // The motion ends once its last row is shown: no frame is drawn for a roll that has nothing more to show.
+        if self.moving() && self.rows_owed() == 0 {
+            self.stop();
+        }
         rows as i32
     }
 
+    /// The rows still to show: what is owed, less the rows already shown ahead of the curve.
+    pub(in crate::ui) fn rows_owed(&self) -> i32 { (self.owed + self.carry).round() as i32 }
+
     /// `finish` in whole rows: the rows still to show.
     pub(in crate::ui) fn finish_rows(&mut self) -> i32 {
-        let rest = self.owed + self.carry;
+        let rest = self.rows_owed();
         self.stop();
-        rest.round() as i32
+        rest
     }
 
     /// What is owed, for a caller that asks for a target rather than a distance.

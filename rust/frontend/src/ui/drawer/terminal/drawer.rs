@@ -1,8 +1,7 @@
 //! The Terminal drawer's backend: the local shell's pty, the size it was last given, and the folder it starts in.
 
 use super::pty::{LocalTerminal, ResolvedShell};
-use super::vt::scroll_ring;
-use crate::ui::motion::ScrollMotion;
+use super::vt::{ring_of, RingRoll};
 use std::time::{Duration, Instant};
 
 /// The drawer's local shell (G2/G3). Spawned the first time the drawer is shown, at 80x24, in the repo root; sized
@@ -22,7 +21,7 @@ pub(in crate::ui) struct TerminalDrawer {
     /// supervisor (then the shell inherits the frontend's cwd). ADR 0017.
     repo_dir: Option<std::path::PathBuf>,
     /// A person's wheel and page keys over the local ring, eased in whole rows; typing ends what is owed.
-    motion: ScrollMotion,
+    roll: RingRoll,
 }
 
 /// One frame's pump of the shell: what the status line needs when the pane looks wrong.
@@ -35,7 +34,7 @@ pub(in crate::ui) struct PumpReport {
 }
 
 impl TerminalDrawer {
-    pub(in crate::ui) fn new(repo_dir: Option<std::path::PathBuf>) -> Self { Self { term: None, size: None, repo_dir, motion: ScrollMotion::default() } }
+    pub(in crate::ui) fn new(repo_dir: Option<std::path::PathBuf>) -> Self { Self { term: None, size: None, repo_dir, roll: RingRoll::default() } }
 
     pub(in crate::ui) fn is_spawned(&self) -> bool { self.term.is_some() }
     pub(in crate::ui) fn screen(&self) -> Option<&vt100::Screen> { self.term.as_ref().map(|t| t.screen()) }
@@ -80,6 +79,7 @@ impl TerminalDrawer {
         if cols >= 2 && rows >= 2 {
             let changed = self.size.map(|prev| prev != (cols, rows)).unwrap_or(true);
             if changed {
+                self.roll.stop();
                 if let Some(t) = self.term.as_mut() {
                     t.resize(cols, rows);
                 }
@@ -91,25 +91,16 @@ impl TerminalDrawer {
     /// A person asked the vt100 scrollback ring to move by `delta` rows (positive is older): a row at a time over
     /// `length`, at once when it is zero. A program on the alternate screen owns its view, so it moves at once.
     pub(in crate::ui) fn scroll(&mut self, delta: i32, now: Instant, length: Duration) {
-        if let Some(t) = self.term.as_mut() {
-            let at_once = if t.screen().alternate_screen() { delta } else { self.motion.ask_rows(delta, now, length) };
-            if at_once != 0 {
-                scroll_ring(t.screen_mut(), at_once);
-            }
-        }
+        let Some(t) = self.term.as_mut() else { return };
+        let alternate = t.screen().alternate_screen();
+        if alternate { ring_of(t.screen_mut())(delta); } else { self.roll.ask(delta, now, length, ring_of(t.screen_mut())); }
     }
 
-    /// One frame of what a person's scroll owes, after the pump: the rows the curve has reached go into the ring.
-    /// The ring's end and its live tail stop it (a move that came up short). Whether frames must keep coming.
+    /// One frame of what a person's scroll owes, after the pump. Whether frames must keep coming.
     pub(in crate::ui) fn spend_scroll(&mut self, now: Instant) -> bool {
-        let Some(t) = self.term.as_mut() else { self.motion.stop(); return false };
-        let rows = self.motion.spend_rows(now, t.screen().size().0 as f32);
-        if rows != 0 {
-            let before = t.screen().scrollback() as i32;
-            scroll_ring(t.screen_mut(), rows);
-            if t.screen().scrollback() as i32 - before != rows { self.motion.stop(); }
-        }
-        self.motion.moving()
+        let Some(t) = self.term.as_mut() else { self.roll.stop(); return false };
+        let cap = t.screen().size().0 as f32;
+        self.roll.spend(now, cap, ring_of(t.screen_mut()))
     }
 
     /// Input that should leave the view at the live tail (typing, a paste).
@@ -117,7 +108,7 @@ impl TerminalDrawer {
         if let Some(t) = self.term.as_mut() {
             t.send_input(bytes);
             t.screen_mut().set_scrollback(0);
-            self.motion.stop();
+            self.roll.stop();
         }
     }
 

@@ -1,7 +1,6 @@
 //! The selected agent pane owns its target, clients, screen feed, input and presentation.
 
 use super::*;
-use crate::ui::motion::ScrollMotion;
 use std::time::{Duration, Instant};
 
 mod attach;
@@ -104,7 +103,7 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     copy_tail: bool,
     /// A person's wheel and page keys over the local ring, eased in whole rows; the ring's own offset stays the one
     /// position, and typing, a reshape and a switch end what is owed.
-    motion: ScrollMotion,
+    roll: RingRoll,
 }
 
 impl<C: PaneClient> AgentPane<C> {
@@ -116,7 +115,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
             pane_feed: PaneFeed::Pending, discard: Default::default(), copy_quiet: false, copy_tail: false,
             held_keys: std::collections::HashMap::new(), live_since: None, live_run: None, painted_live_run: None,
-            motion: ScrollMotion::default(),
+            roll: RingRoll::default(),
         }
     }
 
@@ -143,7 +142,6 @@ impl<C: PaneClient> AgentPane<C> {
     /// State has already admitted the kept-row outcome. Other pane state deliberately survives it.
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
-        self.motion.stop();
         if let Some(mut c) = self.pane_attach_term.take() { self.retire_leaving(std::slice::from_mut(&mut c), "kept row invalidated"); }
         self.bl_pane_target = None;
         self.pane_feed = PaneFeed::Pending;

@@ -205,7 +205,7 @@ impl<C: PaneClient> AgentPane<C> {
         Some(out)
     }
     pub(in crate::ui) fn reset_scroll(&mut self) {
-        self.motion.stop();
+        self.roll.stop();
         if let Some(c) = self.pane_attach_term.as_mut() { c.reset_scroll(); }
     }
 
@@ -247,21 +247,13 @@ impl<C: PaneClient> AgentPane<C> {
     /// when it is zero. A program that owns its screen is scrolled by nothing here, so it moves at once.
     fn ask_scroll(&mut self, rows: i32, now: Instant, length: Duration) {
         let Some(c) = self.pane_attach_term.as_mut() else { return };
-        let at_once = if c.screen().alternate_screen() { rows } else { self.motion.ask_rows(rows, now, length) };
-        if at_once != 0 { c.scroll(at_once); }
+        if c.screen().alternate_screen() { ring(c)(rows); } else { self.roll.ask(rows, now, length, ring(c)); }
     }
 
-    /// One frame of what a person's scroll owes, after the pump: the rows the curve has reached go into the ring. The
-    /// ring's end and its live tail stop it (a move that came up short). Whether frames must keep coming.
+    /// One frame of what a person's scroll owes, after the pump. Whether frames must keep coming.
     pub(in crate::ui) fn spend_scroll(&mut self, now: Instant) -> bool {
-        let Some(c) = self.pane_attach_term.as_mut() else { self.motion.stop(); return false };
-        let rows = self.motion.spend_rows(now, c.screen().size().0 as f32);
-        if rows != 0 {
-            let before = c.screen().scrollback() as i32;
-            c.scroll(rows);
-            if c.screen().scrollback() as i32 - before != rows { self.motion.stop(); }
-        }
-        self.motion.moving()
+        let Some(c) = self.pane_attach_term.as_mut() else { self.roll.stop(); return false };
+        self.roll.spend(now, c.screen().size().0 as f32, ring(c))
     }
 
     pub(in crate::ui) fn wheel(&mut self, rows: i32, now: Instant, length: Duration) -> WheelEffect {
@@ -275,6 +267,14 @@ impl<C: PaneClient> AgentPane<C> {
             for _ in 0..rows.unsigned_abs().min(8) { c.send_input_in_run(seq.as_bytes(), &run); }
         } else { self.ask_scroll(rows, now, length); }
         WheelEffect::Redraw
+    }
+}
+
+/// The client's ring as `RingRoll` moves it: by `rows` (none reads it), answering the offset after.
+pub(super) fn ring<C: PaneClient>(c: &mut C) -> impl FnMut(i32) -> usize + '_ {
+    move |rows| {
+        if rows != 0 { c.scroll(rows); }
+        c.screen().scrollback()
     }
 }
 

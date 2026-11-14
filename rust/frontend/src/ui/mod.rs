@@ -77,7 +77,7 @@ use drawer::repl::presentation::ReplPresentation;
 use drawer::repl::log::ReplEntry;
 use drawer::repl::{DraftEdit, ReplModel, ReplTarget};
 use drawer::terminal::pump::scroll_drawer_ring;
-use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
+use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring, RingRoll};
 
 mod agent_pane;
 use agent_pane::*;

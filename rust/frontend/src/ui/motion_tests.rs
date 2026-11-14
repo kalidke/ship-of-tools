@@ -182,19 +182,19 @@ fn whole_rows_move_the_first_row_at_once_and_end_with_the_last() {
         // The first row comes at the first frame, in the direction of travel, and no frame turns back.
         assert_eq!(shown[0].signum(), asked.signum(), "{asked} at {step} ms: {shown:?}");
         assert!(shown.iter().all(|r| r.signum() != -asked.signum()), "{shown:?}");
-        // Rest comes at the first frame at or past the deadline, with the last row shown by then.
-        assert_eq!(shown.len() as u64, (150 + step - 1) / step, "{asked} at {step} ms");
+        // The motion ends with the frame that shows its last row: no frame is drawn for a roll with nothing more to
+        // show, and none comes later than the length allows.
+        assert!(shown.last().is_some_and(|r| *r != 0), "{asked} at {step} ms: {shown:?}");
+        assert!(shown.len() as u64 <= (150 + step - 1) / step, "{asked} at {step} ms: {shown:?}");
         assert!(!m.moving() && m.owed() == 0.0);
     }
-    // A one-row step is the whole of its first frame.
+    // A one-row step is the whole of its first frame, and nothing is drawn after it.
     let t0 = Instant::now();
     let mut m = ScrollMotion::default();
     m.ask_rows(1, t0, LENGTH);
     assert_eq!(m.spend_rows(at(t0, 8), NEVER), 1);
-    assert!(m.moving(), "the length still runs, with nothing more to show");
-    assert_eq!(m.spend_rows(at(t0, 80), NEVER), 0);
-    assert_eq!(m.spend_rows(at(t0, 150), NEVER), 0);
-    assert!(!m.moving());
+    assert!(!m.moving() && m.rows_owed() == 0);
+    assert_eq!(m.spend_rows(at(t0, 16), NEVER), 0);
     // The cap spends a pane's excess at once, in rows, and the total still lands.
     let mut m = ScrollMotion::default();
     m.ask_rows(-100, t0, LENGTH);

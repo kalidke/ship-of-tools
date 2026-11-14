@@ -343,7 +343,7 @@ impl<C: PaneClient> AgentPane<C> {
                                 // A resize reshapes the row map, so the old
                                 // offset means nothing: snap to live.
                                 t.reset_scroll();
-                                self.motion.stop();
+                                self.roll.stop();
                             }
                         }
                         self.pty_size = Some((cols, rows));
