@@ -1,6 +1,8 @@
 //! vt100 helpers shared by the Terminal drawer and the agent pane: scrolling, key encoding, painting.
 
 use crate::ui::*;
+use crate::ui::motion::ScrollMotion;
+use std::time::{Duration, Instant};
 
 /// Move a terminal's scrollback view by `delta` rows (positive = older).
 ///
@@ -11,6 +13,72 @@ use crate::ui::*;
 pub(in crate::ui) fn scroll_ring(scr: &mut vt100::Screen, delta: i32) {
     let cur = scr.scrollback() as i32;
     scr.set_scrollback((cur + delta).max(0) as usize);
+}
+
+/// A screen's ring as `RingRoll` moves it.
+pub(in crate::ui) fn ring_of(scr: &mut vt100::Screen) -> impl FnMut(i32) -> usize + '_ {
+    move |rows| {
+        if rows != 0 { scroll_ring(scr, rows); }
+        scr.scrollback()
+    }
+}
+
+/// A person's scroll of a terminal's ring, eased in whole rows: the one rule of the agent pane and the Terminal drawer.
+/// The ring's own offset stays the one position, so every move goes through the caller's `ring`, which moves it by
+/// the rows it is given (none: read it) and answers the offset after.
+#[derive(Default)]
+pub(in crate::ui) struct RingRoll {
+    motion: ScrollMotion,
+    /// The ask reached the live tail: the roll rests on it, however many lines arrived while it ran. An ask that
+    /// stops short of the tail keeps the relative rule, the emulator holding the view steady as lines arrive.
+    to_tail: bool,
+}
+
+/// A move toward the live tail longer than any ring: the offset clamps at zero.
+const TO_TAIL: i32 = i32::MIN / 2;
+
+impl RingRoll {
+    /// A person asked the ring to move by `rows` (positive is older): a row at a time over `length`, at once when it
+    /// is zero.
+    pub(in crate::ui) fn ask(&mut self, rows: i32, now: Instant, length: Duration, mut ring: impl FnMut(i32) -> usize) {
+        let reaches = ring(0) as i32 + self.motion.rows_owed() + rows <= 0;
+        let at_once = self.motion.ask_rows(rows, now, length);
+        self.to_tail = reaches && self.motion.moving();
+        if at_once != 0 { ring(at_once); }
+    }
+
+    /// One frame, after the pump: the rows the curve has reached go into the ring. A move that comes up short (the
+    /// ring's end, the live tail) stops it; a roll that rests on an ask that reached the tail lands there. Whether
+    /// frames must keep coming.
+    pub(in crate::ui) fn spend(&mut self, now: Instant, cap: f32, mut ring: impl FnMut(i32) -> usize) -> bool {
+        let rows = self.motion.spend_rows(now, cap);
+        if rows != 0 {
+            let before = ring(0) as i32;
+            if ring(rows) as i32 - before != rows { self.motion.stop(); }
+        }
+        if !self.motion.moving() { self.land(&mut ring); }
+        self.motion.moving()
+    }
+
+    /// Everything owed, now (a switch parks the ring where the person asked).
+    pub(in crate::ui) fn finish(&mut self, mut ring: impl FnMut(i32) -> usize) {
+        let rows = self.motion.finish_rows();
+        if rows != 0 { ring(rows); }
+        self.land(&mut ring);
+    }
+
+    /// The ring moved by another rule (typing, a reshape): nothing is owed.
+    pub(in crate::ui) fn stop(&mut self) {
+        self.motion.stop();
+        self.to_tail = false;
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn moving(&self) -> bool { self.motion.moving() }
+
+    fn land(&mut self, ring: &mut impl FnMut(i32) -> usize) {
+        if std::mem::take(&mut self.to_tail) { ring(TO_TAIL); }
+    }
 }
 
 /// Translate a key event into the byte sequence a PTY expects. Shared by

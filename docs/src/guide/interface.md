@@ -339,8 +339,9 @@ at once, `0` for every move at once). Two escape hatches keep full-screen apps w
   primary-screen app that wants the key itself.
 
 The mouse wheel scrolls the same ring, or is forwarded as SGR mouse events
-when the running app has enabled mouse tracking (`vim`, `htop`). A screen an app
-owns (the alternate screen, mouse tracking) is never eased: the app redraws it.
+when the running app has enabled mouse tracking (`vim`, `htop`). A program on the
+alternate screen is moved at once, and the wheel never eases while an app tracks the mouse: it is forwarded to the app.
+A scroll down that reaches the live tail ends on it, whatever the shell printed meanwhile.
 
 ## The Monitor Drawer
 

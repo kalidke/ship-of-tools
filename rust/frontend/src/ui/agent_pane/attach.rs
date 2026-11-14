@@ -125,9 +125,8 @@ impl<C: PaneClient> AgentPane<C> {
         self.pane_presentation.begin(origin);
         let mut retired = Vec::new();
         // The parked position is the one the person asked for, not one part-way.
-        let owed = self.motion.finish_rows();
         if let Some(mut client) = self.pane_attach_term.take() {
-            if owed != 0 { client.scroll(owed); }
+            self.roll.finish(input::ring(&mut client));
             self.pane_hold = Some(HeldPaneScreen(client.screen().clone()));
             match self.bl_pane_target.clone() {
                 Some(key) if client.is_checkpointed() && !client.is_dead() => {
@@ -198,6 +197,8 @@ impl<C: PaneClient> AgentPane<C> {
     fn finish_attach(&mut self, pending: PendingAttach<C>, now: impl FnOnce() -> Instant) -> AttachEffect {
         if let Some(c) = pending.client {
             self.clear_live();
+            // A roll owed to an earlier client is nobody's to spend on this one.
+            self.roll.stop();
             let warm = matches!(pending.effect.trace, AttachTrace::Warm(_));
             if warm {
                 c.set_viewed(true);

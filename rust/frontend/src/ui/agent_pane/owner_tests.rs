@@ -1405,13 +1405,25 @@ fn an_enter_the_full_hold_refuses_says_so() {
 /// The ring's offset, as the pane draws it.
 fn back(p: &Pane) -> usize { p.pane_attach_term.as_ref().expect("client").screen().scrollback() }
 fn history(rows: usize) -> String { (0..rows).map(|i| format!("line {i}\r\n")).collect() }
-/// Frames every 8 ms from `from` while the pane's scroll moves; the last frame's time.
+/// Frames every 8 ms from `ms` while the pane's scroll moves; the last frame's time.
 fn frames_until_rest(p: &mut Pane, t: Instant, mut ms: u64) -> u64 {
     while p.spend_scroll(after(t, ms)) {
         ms += 8;
         assert!(ms < 10_000, "a scroll that never rests");
     }
     ms
+}
+/// Frames every 8 ms from `ms` until the scroll rests; how many came after the one that last moved the ring.
+fn idle_frames(p: &mut Pane, t: Instant, mut ms: u64) -> u32 {
+    let mut idle = 0;
+    loop {
+        let before = back(p);
+        let moving = p.spend_scroll(after(t, ms));
+        idle = if back(p) != before { 0 } else { idle + 1 };
+        if !moving { return idle; }
+        ms += 8;
+        assert!(ms < 10_000, "a scroll that never rests");
+    }
 }
 
 #[test]
@@ -1424,22 +1436,20 @@ fn a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once() {
     // The first row shows at the first frame, and the page comes to rest on its eight rows.
     assert!(p.spend_scroll(after(t, 8)));
     assert!(back(&p) >= 1 && back(&p) < 8, "{}", back(&p));
-    let rest = frames_until_rest(&mut p, t, 16);
+    assert_eq!(idle_frames(&mut p, t, 16), 0, "the roll ends with the frame that shows its last row");
     assert_eq!(back(&p), 8);
     assert_eq!(wire.borrow().scrolls.iter().sum::<i32>(), 8);
     assert!(wire.borrow().scrolls.iter().all(|r| *r > 0), "{:?}", wire.borrow().scrolls);
-    assert!(rest >= 152, "the length runs out at its end: {rest}");
     // A one-row wheel step is its one row at its first frame.
     let t = after(t, 1000);
     assert!(matches!(p.wheel(-1, t, LENGTH), WheelEffect::Redraw));
     assert_eq!(back(&p), 8);
-    p.spend_scroll(after(t, 8));
+    assert!(!p.spend_scroll(after(t, 8)), "a one-row step is its first frame and nothing after it");
     assert_eq!(back(&p), 7);
-    frames_until_rest(&mut p, t, 16);
-    assert_eq!(back(&p), 7);
-    // Typing returns to the live tail at once and ends what is owed.
+    // Typing returns to the live tail at once and ends what is owed, even inside the length.
     p.page(true, 24, t, LENGTH);
-    p.spend_scroll(after(t, 200));
+    assert!(p.spend_scroll(after(t, 16)));
+    assert!(back(&p) > 7);
     p.reset_scroll();
     assert_eq!(back(&p), 0);
     assert!(!p.spend_scroll(after(t, 208)));
@@ -1454,8 +1464,7 @@ fn a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it() {
     p.sync_size((80, 24));
     // The live tail ends a scroll toward it; nothing is owed past the edge.
     p.page(false, 24, t, LENGTH);
-    p.spend_scroll(after(t, 8));
-    assert!(!p.spend_scroll(after(t, 16)) && back(&p) == 0);
+    assert!(!p.spend_scroll(after(t, 8)) && back(&p) == 0);
     // A reshape's snap to live ends one on its way up.
     p.page(true, 24, t, LENGTH);
     p.spend_scroll(after(t, 8));
@@ -1475,4 +1484,43 @@ fn a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it() {
     p.wheel(2, t, LENGTH);
     assert_eq!(b.borrow().scrolls, vec![2]);
     assert!(!p.spend_scroll(after(t, 8)));
+}
+
+#[test]
+fn a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", history(60).as_bytes(), t);
+    p.wheel(8, t, ZERO);
+    assert_eq!(back(&p), 8);
+    // A page down that reaches the tail, with five lines arriving while it rolls: it rests on the tail.
+    let t = after(t, 1000);
+    p.page(false, 24, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    step(&mut p, &wire, Step { output: b"a\r\nb\r\nc\r\nd\r\ne\r\n", ..Default::default() }, after(t, 9));
+    frames_until_rest(&mut p, t, 16);
+    assert_eq!(back(&p), 0, "the tail is where the ask went");
+    // One that stops short is relative to the view, which the emulator holds steady as lines arrive.
+    p.wheel(20, t, ZERO);
+    let t = after(t, 2000);
+    p.page(false, 24, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    step(&mut p, &wire, Step { output: b"f\r\ng\r\n", ..Default::default() }, after(t, 9));
+    frames_until_rest(&mut p, t, 16);
+    assert_eq!(back(&p), 20 - 8 + 2);
+}
+
+#[test]
+fn a_client_installed_after_a_kept_rows_invalidation_owes_nothing_of_the_old_ones_roll() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    ready(&mut p, "h", "a", history(60).as_bytes(), t);
+    p.page(true, 24, t, LENGTH);
+    assert!(p.spend_scroll(after(t, 8)));
+    p.invalidate_kept_attachment();
+    p.restore_snapshot_target("h".into(), Some("a".into()));
+    let (c, _) = Scripted::new(history(60).as_bytes(), true);
+    install(&mut p, "h", "a", c, t);
+    assert!(!p.spend_scroll(after(t, 16)));
+    assert_eq!(back(&p), 0, "the new client is not rolled by the old one's ask");
 }

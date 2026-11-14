@@ -318,12 +318,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `the_first_frame_already_moves_and_the_steps_shrink`, `the_curve_is_a_cubic_ease_out`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
   `what_is_owed_past_a_pane_is_spent_at_once_at_the_next_frame`, `a_zero_length_applies_at_once_and_owes_nothing`,
   `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`, `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`).
-  Whole rows (`ask_rows`, `spend_rows`, `finish_rows`, for the cell panes) add the one field it keeps for them, the carry:
-  the distance spent minus the rows shown. A frame shows the spent distance rounded up in the direction of travel, so the
-  first row shows at the first frame and a one-row step is that row; the frame that rests rounds, so the rows shown
-  total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
-  `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). The preview, the agent pane and the Terminal drawer
-  use it; a pane's ask, spend and edges are that pane's.
+  Whole rows (`ask_rows`, `spend_rows`, `rows_owed`, `finish_rows`, for the cell panes) add the one field it keeps for
+  them, the carry: the distance spent minus the rows shown. A frame shows the spent distance rounded up in the direction
+  of travel, so the first row shows at the first frame and a one-row step is that row; the motion ends with the frame
+  that shows its last row (no frame is drawn for a roll with nothing more to show), and that frame rounds, so the rows
+  shown total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
+  `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). The preview and `terminal::vt::RingRoll` use it; a
+  pane's ask, spend and edges are that pane's.
+- `terminal::vt::RingRoll` owns the one rule of a person's scroll over a terminal's ring, for the agent pane and the
+  Terminal drawer: a `ScrollMotion` in whole rows and whether the ask reached the live tail. Every move goes through the
+  owner's `ring` closure (rows to move by, none to read; the offset after), so the emulator's offset stays the one
+  position. A move that comes up short (the ring's end, the live tail) stops the roll. An ask that reaches the live tail
+  (the offset, what is still owed and the rows asked sum to zero or less) lands on it when the roll rests, however many
+  lines arrived while it ran; an ask that stops short keeps the relative rule, the emulator holding the view steady as
+  lines arrive (`a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady`).
 - `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
   pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
   raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
@@ -505,11 +513,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
   live tail (and ends what a scroll still owes); a wheel the shell's app tracks is forwarded as is. A person's wheel and
-  PageUp/PageDown over the local ring ask its `ScrollMotion` (`State::scroll_ask`; a screen on the alternate screen is moved
+  PageUp/PageDown over the local ring ask its `RingRoll` (`State::scroll_ask`; a program on the alternate screen is moved
   at once, as before), and `spend_scroll`, run after the pump whether or not the drawer is shown, moves the ring the rows the
-  curve has reached; a move that comes up short (the ring's end, the live tail) stops it
-  (`drawer::terminal::drawer::tests::a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`, on a real shell,
-  Unix only).
+  curve has reached. Typing and a reshape (`fit`) stop it
+  (`drawer::terminal::drawer::tests::a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`,
+  `a_reshape_stops_a_roll_and_a_program_on_the_alternate_screen_is_moved_at_once`, on a real shell, Unix only; a reshape
+  does not snap the drawer to live, as the agent pane's does).
 - `MonitorPane` privately owns the Monitor drawer (ADR 0020): its chart model, the raster, the drawer rect, the
   readings' dirty mark, the subscription this window holds and the declared hub it asks. The chart is the one SVG the
   window still draws in its own process (`quad_from_own_svg`): the window's process draws only SVG it composes, and
@@ -749,13 +758,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `PaneClient` port uses `FeAttachClient` in production and a scripted client in `agent_pane/owner_tests.rs`.
   State applies owned effects for transport sends, asynchronous retirement, logging, redraw, clipboard and persistence;
   it keeps host/dial configuration, pointer geometry/residue, create origins and multi-owner event ordering.
-- The pane's wheel (only over its own ring: never when a program in it tracks the mouse, and a program on the alternate
-  screen is moved at once) and PageUp/PageDown ask its `ScrollMotion` (`State::scroll_ask`), and `spend_scroll`, run
-  after the pump in `pump_pane_attach_term`, moves the ring the rows the curve has reached and answers whether frames must
-  keep coming. The client's own offset stays the one position; the edge (the ring's end, the live tail) is a move that came up
-  short, read from the client's screen, and stops the motion. Typing and pasting (`reset_scroll`), a reshape's snap to live
-  and a kept row's invalidation stop it; a switch finishes it first, so the parked ring stands where the person asked
-  (`a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`, `a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it`).
+- The pane's wheel (forwarded, never eased, when a program in it tracks the mouse; a program on the alternate screen is
+  moved at once) and PageUp/PageDown (a key to a program on the alternate screen; a program that only tracks the mouse still
+  has its ring paged) ask its `RingRoll` (`State::scroll_ask`),
+  and `spend_scroll`, run after the pump in `pump_pane_attach_term`, moves the ring the rows the curve has reached and
+  answers whether frames must keep coming. The client's own offset stays the one position; the edge and the tail's landing
+  are `RingRoll`'s. Typing and pasting (`reset_scroll`) and a reshape's snap to live stop it, a client's install ends what
+  an earlier client's roll owed, and a switch finishes it first, so the parked ring stands where the person asked
+  (`a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`, `a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it`,
+  `a_client_installed_after_a_kept_rows_invalidation_owes_nothing_of_the_old_ones_roll`).
   The State glue (the three call sites and `mark_dirty`) rests on reading.
 - Switch compares the whole host/attachment pair, captures/parks the departing client and sets Pending before sending;
   only a successful open send commits the target. Direct replies require that pair, the active host and an empty slot.
