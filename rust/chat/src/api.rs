@@ -701,10 +701,10 @@ impl Api {
         name_records(records, |id| names.by_id.get(id).cloned());
     }
 
-    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request,
-    /// cut to `MAX_NAME` bytes on a character boundary.
+    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request.
+    /// Every name in it went through `clean`, so none is empty or past `MAX_NAME`.
     pub fn cached_name(&self, id: &str) -> Option<String> {
-        self.names.lock().unwrap().by_id.get(id).map(|n| clean(n, MAX_NAME).0)
+        self.names.lock().unwrap().by_id.get(id).cloned()
     }
 
     /// The names of the configured channels, looked up so a later `cached_name` finds them: the distinct channel ids

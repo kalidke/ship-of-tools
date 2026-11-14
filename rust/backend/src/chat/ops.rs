@@ -96,7 +96,7 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
         Ok((Resolution::Mapped { workspace, channel, .. }, delivers)) => match ChatChannel::try_from(channel) {
             Ok(channel) => {
                 // The cache alone: a resolve makes no Slack call, and a name not yet found leaves the id.
-                let name = chat.service().and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel.as_str())).filter(|n| !n.is_empty());
+                let name = chat.service().and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel.as_str()));
                 reply(req_id, NAME, &ChatResolveRes::Mapped { workspace, channel, delivers, name })
             }
             Err(_) => reply(req_id, NAME, &ChatResolveRes::Invalid),

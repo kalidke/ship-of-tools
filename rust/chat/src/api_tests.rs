@@ -14,7 +14,7 @@ use crate::api::{
 };
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen};
 use crate::http::{HttpError, Secret};
-use crate::normalize::{MAX_NAME, MAX_TEXT};
+use crate::normalize::MAX_TEXT;
 
 const TOKEN: &str = "sentinel-bot-token-not-a-credential";
 const WS: &str = "T0TEAM";
@@ -1059,7 +1059,8 @@ async fn the_configured_channels_names_are_looked_up_once_and_a_failure_is_retur
         })
         .await;
         let api = new_api(&fake);
-        let mut ids: Vec<String> = ["C0AAA", "C0AAA", "U0USER", "D0DM", "C0PRIV", "G0GRP"].map(String::from).to_vec();
+        // A channel mapped twice is asked for, and returned, once; a failure is not cached, so a duplicate of one would repeat.
+        let mut ids: Vec<String> = ["C0AAA", "C0AAA", "U0USER", "D0DM", "C0PRIV", "G0GRP", "C0PRIV"].map(String::from).to_vec();
         let failed = api.channel_names(&ids).await;
         assert_eq!(failed, [("C0PRIV".to_string(), "malformed")], "a private channel gives no name; a user or a DM is not asked for");
         assert_eq!((api.cached_name("C0AAA").as_deref(), api.cached_name("G0GRP").as_deref()), (Some("n-C0AAA"), Some("n-G0GRP")));
@@ -1078,8 +1079,8 @@ async fn the_configured_channels_names_are_looked_up_once_and_a_failure_is_retur
     .await;
 }
 
-/// The lookup ends at the first answer no other channel escapes (the scope is missing), and a stalled one ends at the
-/// names' deadline, the channels it did not reach returned as `timeout`.
+/// The lookup ends at the first answer no other channel escapes (the scope is missing, or Slack is limiting reads), and a
+/// stalled one ends at the names' deadline, the channels it did not reach returned as `timeout`.
 #[tokio::test]
 async fn the_lookup_stops_at_a_scope_error_and_at_the_deadline() {
     bounded(async {
@@ -1094,6 +1095,15 @@ async fn the_lookup_stops_at_a_scope_error_and_at_the_deadline() {
         fake.shutdown().await;
 
         let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| status(429, &[("Retry-After", "30")], &json!({})))
+        })
+        .await;
+        let api = new_api(&fake);
+        assert_eq!(api.channel_names(&ids).await, [("C0AAA".to_string(), "limited")]);
+        assert_eq!(calls(&fake, "conversations.info"), 1, "a rate limit ended the lookup");
+        fake.shutdown().await;
+
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
             auth(seen).unwrap_or(Reply::Hang)
         })
         .await;
@@ -1102,20 +1112,6 @@ async fn the_lookup_stops_at_a_scope_error_and_at_the_deadline() {
         let failed = api.channel_names(&ids).await;
         assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
         assert_eq!(failed.iter().map(|(id, code)| (id.as_str(), *code)).collect::<Vec<_>>(), [("C0AAA", "timeout"), ("C0BBB", "timeout"), ("C0CCC", "timeout")]);
-        fake.shutdown().await;
-    })
-    .await;
-}
-
-/// A cached name is cut to the wire's bound on a character boundary (`remember` takes any name, as the tests do).
-#[tokio::test]
-async fn a_cached_name_is_cut_to_the_bound_on_a_character_boundary() {
-    bounded(async {
-        let fake = FakeSlack::start(Identity::Trusted, |seen, _| auth(seen).unwrap_or_else(|| Reply::json(&json!({"ok": false})))).await;
-        let api = new_api(&fake);
-        api.remember("C0LONG", &"é".repeat(100));
-        let name = api.cached_name("C0LONG").unwrap();
-        assert_eq!((name.len(), name.chars().all(|c| c == 'é')), (MAX_NAME, true));
         fake.shutdown().await;
     })
     .await;

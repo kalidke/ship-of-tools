@@ -526,9 +526,11 @@ fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
     }
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let mut fonts = FontSystem::new();
+    // `remap`: the row is answered with another channel after the draft is begun, which closes any thread, so only the
+    // channel view is left to look at.
     for draft in [Draft::None, Draft::Channel, Draft::Thread] {
-        for view in [View::Channel, View::SameThread, View::OtherThread] {
-            let (mut d, _) = channel(&held);
+        for (view, remap) in [(View::Channel, false), (View::SameThread, false), (View::OtherThread, false), (View::Channel, true)] {
+            let (mut d, at) = channel(&held);
             let row = shown("ROW1");
             match draft {
                 Draft::None => {}
@@ -547,16 +549,22 @@ fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
                 View::SameThread => drop(open(&mut d, &mut fonts, &[true, true])),
                 View::OtherThread => drop(open(&mut d, &mut fonts, &[true])),
             }
+            if remap {
+                let other = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH2", "delivers": false });
+                d.on_evt(&host(), answer("ROW1", other), at + Duration::from_secs(1));
+            }
             let text = if matches!(draft, Draft::None) { "> " } else { "> hi" };
             let rows = foot(&d);
             let (head, tail) = rows.split_first().unwrap();
             assert_eq!(head, text, "{draft:?} in {view:?}");
             let said = tail.first().map(String::as_str);
-            let case = format!("{draft:?} in {view:?}: {rows:?}");
-            match (draft, view) {
-                (Draft::None | Draft::Channel, View::Channel) => assert_eq!(said, None, "{case}"),
-                (Draft::Channel, _) => assert_eq!(said, Some("to CH1"), "{case}"),
-                (Draft::None | Draft::Thread, _) => assert!(said.is_some_and(|s| s.starts_with("reply in thread of")), "{case}"),
+            let case = format!("{draft:?} in {view:?}, remapped {remap}: {rows:?}");
+            let thread_line = |s: &str| s.starts_with("reply in thread of") && s.ends_with(" in CH1") == remap;
+            match (draft, view, remap) {
+                (Draft::None, View::Channel, true) => assert_eq!(said, None, "{case}: the title's own channel"),
+                (Draft::None | Draft::Channel, View::Channel, false) => assert_eq!(said, None, "{case}"),
+                (Draft::Channel, _, _) => assert_eq!(said, Some("to CH1"), "{case}"),
+                (Draft::None | Draft::Thread, _, _) => assert!(said.is_some_and(thread_line), "{case}"),
             }
             assert!(tail.len() <= 1, "{case}");
         }

@@ -437,7 +437,8 @@ impl ChatDrawer {
     }
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
-    /// (`reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`, or
+    /// (`reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`, then
+    /// ` in <channel>` when the draft's channel is not the watched one, or
     /// `to <channel>`, spelled as the title spells it), else where the next draft would go: the open thread, or the
     /// watched channel. The foot is silent only when the destination is what the title shows: no thread in the draft,
     /// none open, and the draft's channel the watched one.
@@ -455,9 +456,14 @@ impl ChatDrawer {
         let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
         // With no draft, the line names where the next one would go: the open thread's parent.
         let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
+        let elsewhere = self.owner.channel() != Some(dest.channel.as_str());
         let to = match thread {
-            Some(p) => Some(format!("reply in thread of {}", super::project::when(p.as_str(), now, offset))),
-            None if self.thread.is_none() && self.owner.channel() == Some(dest.channel.as_str()) => None,
+            // A thread draft says its channel too when the title has moved to another one: the post goes where it was begun.
+            Some(p) => {
+                let at = if elsewhere { format!(" in {}", self.rows.label(dest.channel.as_str())) } else { String::new() };
+                Some(format!("reply in thread of {}{at}", super::project::when(p.as_str(), now, offset)))
+            }
+            None if self.thread.is_none() && !elsewhere => None,
             None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
         Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
