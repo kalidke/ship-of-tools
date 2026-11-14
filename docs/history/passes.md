@@ -1238,7 +1238,7 @@ A landing's record goes here, with its measured times; the package page holds on
   Fixed forward, 2026-11-08, red seen 10:13, main 10:23 (e4fa098af): the test creates the folder and asserts the refusal's
   own text; the product question went to `docs/defects.md` (STATE-ROOT-CHECK-NEW-FOLDER).
 - The trust restart, 2026-11-08: builder launched 09:54, main 11:58 (108cc184d, 0f73aa32a, a6d3b975b), 124 minutes, past
-  the maintainer's hour: a failure of the standard. The third landing: a Ready Claude row whose leg shows Claude Code's
+  the maintainer's hour. The third landing: a Ready Claude row whose leg shows Claude Code's
   folder-trust dialog, with its root under the declared prefix, is stopped and spawned again with its own argv (a
   reauth's resume id kept), once per episode, under its guard and never waited on, never by keys; the spawn records trust
   again. The restart waits while this daemon started a Claude leg on the same trust file less than 2 s ago; a dialog it
@@ -1260,18 +1260,17 @@ A landing's record goes here, with its measured times; the package page holds on
   ran them under a virtual display on a build computer. Where the minutes went: the build (2 minutes); one review round
   (blockers 0) and one fix round of 1 minute; two gates of 2 minutes.
 - The session start after a clear, its review's follow-ups, 2026-11-08: builder launched 12:08, main 12:56 (e3b3e28cf,
-  e48b9cc21), 48 minutes, past the half hour. Both forms of the start print their shared lines from one place, so the full
+  e48b9cc21), 48 minutes. Both forms of the start print their shared lines from one place, so the full
   start's tests pin the again form; the again form reads no inbox, resolves its context without writing and so creates
   nothing in any comm folder, and names each failure in its own sentence (an unreadable registry gets no instruction to
   join, which could not help); a send and the again form share one classification of why a handle is not routable, with
   one table test over the four causes; the manual and the agents' contract no longer promise unread mail after a clear.
   About 70 product lines and 180 test lines. Where the minutes went: the build (2 minutes); two review rounds (blockers 0,
   0; the first found two causes untested, a copied decision, and wording wider than the tests) and one fix round of 2
-  minutes; three gates of 3 to 4 minutes, the last after moving onto main past the destroy pins and their records. Why
-  past the half hour: the second round, for the shared classification and the write-free context, which change product
+  minutes; three gates of 3 to 4 minutes, the last after moving onto main past the destroy pins and their records. Where the minutes went: the second round, for the shared classification and the write-free context, which change product
   logic.
 - The per-landing run executes the window's State fixtures, 2026-11-08: builder launched 12:40, main 13:46 (f387a2015,
-  41dd99ba3), 66 minutes, past the maintainer's hour: a failure of the standard. The Linux rest-0 job installs a virtual
+  41dd99ba3), 66 minutes, past the maintainer's hour. The Linux rest-0 job installs a virtual
   display and Mesa's software Vulkan driver (with mirror retries) and, after the shard-coverage check, builds and runs the
   minimized target's 13 State fixtures alone; a hosted run names the device (llvmpipe) and each fixture, and a run with one
   fixture broken failed that job alone, naming it. It adds about a minute to that job, which does not set the run's wall
@@ -1305,7 +1304,7 @@ A landing's record goes here, with its measured times; the package page holds on
   product lines and 20 test lines. Where the minutes went: the build (1 minute); one review round (blockers 0) and one fix
   round of 1 minute; two gates of 4 minutes.
 - B2h, the window's first chat owner, 2026-11-08: builder launched 14:31, main 20:07 (b14e92443, one commit squashed from
-  five), 336 minutes, past the maintainer's hour: a failure of the standard. The owner keeps one watched channel matched to
+  five), 336 minutes, past the maintainer's hour. The owner keeps one watched channel matched to
   the daemon: each loss (a lost event bus, a status that says events were lost, an unreadable event, the link returning)
   is recovered by one path, a watch again until the daemon answers complete, then one read whose snapshot replaces the
   held records with the changes that arrived during it kept; watches are paced and capped before a gap, and a gap asks
@@ -1334,7 +1333,7 @@ A landing's record goes here, with its measured times; the package page holds on
   needed one-line export in fe-net, which the session allowed. Where the minutes went: the build (9 minutes, with the
   stop); one review round (blockers 0; 23 minutes) and one fix round of 12 minutes; two gates of 2 minutes.
 - D4a, the window's drawing, its pure owner, 2026-11-08: builder launched 21:07, main 22:30 (74eb2a339, one commit
-  squashed from three), 83 minutes, past the maintainer's hour: a failure of the standard. The first of D4's three
+  squashed from three), 83 minutes, past the maintainer's hour. The first of D4's three
   landings (the plan's 280 product lines split before launch): `InkLayer` holds a row's drawing, its cleared copy, the
   live stroke, drawing mode and a revision every committed change raises. A press inside the image rectangle maps to
   the base's fraction at any zoom and pan; drag points are clamped to the base and kept one raster pixel apart; a
@@ -1348,7 +1347,7 @@ A landing's record goes here, with its measured times; the package page holds on
   maintainer's note, had no orderings with the keys pressed during a drag (the first round's panic) and a reach of one
   raster pixel, under one screen pixel at fit (the plan now says the painted ink's reach).
 - D4b, the window's drawing, its raster and overlay, 2026-11-09: builder launched 22:33 (the 8th), main 00:05
-  (63ced6673, one commit squashed from three), 92 minutes, past the maintainer's hour: a failure of the standard. The
+  (63ced6673, one commit squashed from three), 92 minutes, past the maintainer's hour. The
   owner keeps the drawing's raster at the wire's dimensions for the base's source size and paints it with the wire's own
   functions, a segment per drag and a whole repaint per undo, clear, restore, erase hit, dropped stroke or new base, with
   a dirty rectangle inside the raster; the raster view records the node its quad came from, and one decider names the
@@ -1438,12 +1437,12 @@ A landing's record goes here, with its measured times; the package page holds on
   eight mutants of the rule were all killed); its wording findings went into the records after, and its two test
   findings into INK-REACH-ONE-SIZE.
 - One definition of a whole-line range (SELECT-MARKDOWN, landing 1 of 2), 2026-11-09: builder launched 11:12, main 11:43
-  (2a564496f), 32 minutes: past the half hour, a failure by this page's standard. `sot_protocol::ops::whole_lines`
+  (2a564496f), 32 minutes. `sot_protocol::ops::whole_lines`
   builds the range and text of whole file lines as a selection names a file's text, and a backend test proves the
   daemon's unchanged check accepts exactly that over every line pair of a fixture in LF, CRLF and without its final
   newline; no product code calls it yet. About 30 product lines and 90 test lines. Where the minutes went: the build (4
   minutes); two review rounds (blockers 0, 0; 12 and 10 minutes) with one fix round of 3 minutes between; two gates of 2
-  minutes, scoped. The cause of the overrun: the plan wrote this landing's records as if the next landing's caller
+  minutes, scoped. Where the minutes went: the plan wrote this landing's records as if the next landing's caller
   existed, and its backend test asserted only that one pair was accepted, so a version answering nothing for most pairs
   passed; the first review found both, and the second round was the cost. A plan's landing states its records true at
   that landing alone, and a test over many cases asserts the exact count. The second round's one finding, a test of a
@@ -1455,7 +1454,7 @@ A landing's record goes here, with its measured times; the package page holds on
   the selected text was rendered from, through `whole_lines`; a rendered buffer with no map shares nothing, and the
   walk's golden is unchanged. SELECT-MARKDOWN is closed before its window test; SELECTION-WITHDRAWN-ON-REFRESH names
   the reflow that withdraws a rendered selection. About 110 product lines and 190 test lines. Builder launched 11:45,
-  main 13:10 (d7456b9af), 85 minutes: far past the half hour, a failure by this page's standard. Where the minutes
+  main 13:10 (d7456b9af), 85 minutes. Where the minutes
   went: the first builder (8 minutes) was stopped when the session's account reached its five-hour limit and the
   session moved to another account; a second builder checked and kept the first one's work whole and committed it (4
   minutes); one gate of 2 minutes, scoped; one review round of 70 minutes (blockers 0; an audit of 41 documents not in
@@ -1493,13 +1492,12 @@ A landing's record goes here, with its measured times; the package page holds on
   gates of 2 to 3 minutes (the first failed the suites' rule that every shell suite loads the home guard first); one
   review round of 11 minutes (blockers 0; a decoy uid that prefixes the real one, missing from the test, was added);
   two fix rounds of a minute.
-- The project chat's B5a, the Chat tenant, 2026-11-09: builder launched 15:13, main 16:01 (41b9ae031), 48 minutes, past
-  the half hour, a failure by this page's standard. The drawer has a fourth tenant, Chat (`Primary+Shift+k`), which
+- The project chat's B5a, the Chat tenant, 2026-11-09: builder launched 15:13, main 16:01 (41b9ae031), 48 minutes. The drawer has a fourth tenant, Chat (`Primary+Shift+k`), which
   shows nothing yet, and one exhaustive decision of who a tenant's input reaches, so the Monitor no longer types into
   or scrolls the hidden REPL (MONITOR-TENANT-REACHES-REPL closed). About 95 product lines and 50 test lines. Where the
   minutes went: the build (6 minutes); two review rounds (blockers 1, 0; 16 and 15 minutes: the first found the
-  guarantee unpinned, a deleted check passing every test); one rework of 3 minutes; two scoped gates of 2 minutes. The
-  cause of the overrun: the plan's red test covered the maps but not the handlers that read them, so the first review
+  guarantee unpinned, a deleted check passing every test); one rework of 3 minutes; two scoped gates of 2 minutes.
+  Where the minutes went: the plan's red test covered the maps but not the handlers that read them, so the first review
   found the guarantee untested and a rework and second round followed. The handlers' arms are still driven by no test
   (B5A-ARMS-UNDRIVEN).
 - The project chat's B5b, the owner moves to a leaf module, 2026-11-09: builder launched 16:02, main 16:14 (5673fc010),
@@ -1508,7 +1506,7 @@ A landing's record goes here, with its measured times; the package page holds on
   visibility line. Where the minutes went: the build (3 minutes); one scoped gate of 2 minutes; one review round of 8
   minutes, bounded (blockers 0; 310 of 340 lines byte-identical).
 - The project chat's B5c, the watch follows the shown row, 2026-11-09: builder launched 16:16, main 17:10 (165ec8b56),
-  54 minutes, past the half hour, a failure by this page's standard. The window watches exactly the channel of the row
+  54 minutes. The window watches exactly the channel of the row
   the drawer shows, while it shows Chat or Help opened from Chat, and nothing otherwise; a resolve answer other than
   `mapped` ends the watch. About 150 product lines and 140 test lines. Where the minutes went: the build (6 minutes),
   which ran past the plan's named split point at 120 product lines to about 210, then a split into this landing and
@@ -1517,8 +1515,7 @@ A landing's record goes here, with its measured times; the package page holds on
   round of 7 minutes; two scoped gates of 2 minutes. The causes: a builder that did not stop at the split, and a red
   test that covered the row channel's decisions but not the conditions that start and stop it.
 - The project chat's B5c2, the reads in flight, 2026-11-09: split from B5c's build 16:25, rebased onto main as its own
-  landing 17:12, main 18:08 (536cf56fe), 56 minutes from the rebase and 103 from the split, past the half hour, a
-  failure by this page's standard. The drawer keeps, per host, the set of history reads in flight; a read equal to one
+  landing 17:12, main 18:08 (536cf56fe), 56 minutes from the rebase and 103 from the split. The drawer keeps, per host, the set of history reads in flight; a read equal to one
   in flight waits, a read its reader gave up is an orphan whose reply is dropped, a held read given up is cancelled, each
   owner call gives up what it dropped in one place, and a link change clears the host's set, so a read from before a
   re-watch never fills the new watch. About 85 product lines and 140 test lines. Where the minutes went: 45 minutes
@@ -1527,7 +1524,7 @@ A landing's record goes here, with its measured times; the package page holds on
   pinned only the equal-read wait, and each review found another rule of the set with no test (the link clear and the
   held cancel; then the half of the comparison that keeps a read still wanted; then the two-host parts, left to B5c3).
 - The project chat's B5d, a gap only after the daemon's slowest snapshot, 2026-11-09: builder launched 17:15, main
-  18:13 (d39167f49), 58 minutes, past the half hour, a failure by this page's standard. The drawer shows a channel as
+  18:13 (d39167f49), 58 minutes. The drawer shows a channel as
   not up to date only 20 s after the daemon admits its watch (any answer but `unavailable`), or after the recovery's
   start when no answer comes; a refused watch is a gap at once; the gap carries its reason, a refused read's code
   included; `stale_row`, `stale_mapping` and `unmapped` are not asked again (CHAT-GAP-ASKS-DEAD-TARGET closed). About
@@ -1560,7 +1557,7 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes (blockers 0; two false records and the body's keys untested); one fix round of 2 minutes; a rebase onto B5e's
   last commit (2 minutes); two scoped gates of 3 minutes.
 - The project chat's B5f, the literal projection, 2026-11-09: builder launched 18:30, main 19:04 (450fcfb51), 34
-  minutes, past the half hour, a failure by this page's standard. A record becomes kinded spans: a header (the name
+  minutes. A record becomes kinded spans: a header (the name
   cleaned of controls and wire's unsafe characters, the origin tag, the local time by checked integer math, raw past
   range), the body through wire's grammar with markup its own kind and controls made U+FFFD, and meta lines. About 107
   product lines and 120 test lines. Where the minutes went: the build (3 minutes); two review rounds (blockers 1, 0; 12
@@ -1569,7 +1566,7 @@ A landing's record goes here, with its measured times; the package page holds on
   four scoped gates of 2 minutes. The causes: a red test without the time format's edges or the meta rules, and the
   rebases while B5e and B5l moved under it.
 - The project chat's B5g, the drawer shows the channel, 2026-11-09: builder launched 19:05, main 19:42 (de3089241), 37
-  minutes, past the half hour, a failure by this page's standard. With Chat shown, the held records are placed oldest
+  minutes. With Chat shown, the held records are placed oldest
   to newest with the newest at the body's bottom; only records that reach the body are measured and shaped, their
   buffers cached by spans, width and scale (those in view plus 64 others, the farthest evicted first), prepared as
   clipped areas in the frame's one text vector; `no messages` only for a channel read whole and empty. A new manual
@@ -1580,7 +1577,7 @@ A landing's record goes here, with its measured times; the package page holds on
   view's other rules, and a fix round whose mutant runs stacked when a restore failed, so a reviewer reran them one at
   a time.
 - The project chat's B5h, every outcome has a state, a next action and words, 2026-11-09: builder launched 19:43, main
-  20:27 (c0eff1431), 44 minutes, past the half hour, a failure by this page's standard. The Chat drawer's title says
+  20:27 (c0eff1431), 44 minutes. The Chat drawer's title says
   each outcome of the shown row's channel (unlisted, offline, reading, unmapped, no configuration, not the hub, the row
   gone, a refusal, no chat, a gap and its reason, a watch refused for good) and when it is asked again; a refusal
   code's words have one owner, wire's `ChatCode::text()`, which the daemon's refusal and the window both use. About 100
@@ -1590,15 +1587,14 @@ A landing's record goes here, with its measured times; the package page holds on
   daemon's per-code text into wire; three scoped gates of 3 minutes. The causes: a builder that left a table row
   unbuilt and wrote its test to the words it had, and a fix that crossed three crates.
 - The project chat's B5i, a reader scrolled up stays put, 2026-11-09: builder launched 20:28, main 20:59 (f7bde24c4), 31
-  minutes, just past the half hour, a failure by this page's standard. The view's position is following or a record's
+  minutes. The view's position is following or a record's
   top and offset; PageUp and PageDown move a third of the body, Alt+Up, Alt+Down and the wheel one line, only in the
   Chat tenant with its focus, and End returns to following; an anchor that goes passes to the nearest newer record; a
   row change returns to following. About 124 product lines and 160 test lines. Where the minutes went: the build (11
   minutes, past its 100-line stop, which it reported with a split point); one review round of 12 minutes (blockers 0;
   the focus rule, the clamp and the row reset untested); one fix round of 4 minutes; two scoped gates of 2 minutes. The
   cause: the build's size, about twice the plan's 60 lines.
-- The project chat's B5j, tombstones, 2026-11-09: builder launched 20:32, main 21:31 (3fc1e22ab), 59 minutes, past the
-  half hour, a failure by this page's standard. A message deleted while the window watches stays in place as
+- The project chat's B5j, tombstones, 2026-11-09: builder launched 20:32, main 21:31 (3fc1e22ab), 59 minutes. A message deleted while the window watches stays in place as
   `(message deleted)`: the owner holds each record with its deleted flag as one pair, keeping only the deleted record's
   identity, author, time and origin; a tombstone counts against the bound and a replacing snapshot drops it. About 32
   product lines and 120 test lines. Where the minutes went: a git slip in its first worktree (a stash command whose
@@ -1609,8 +1605,7 @@ A landing's record goes here, with its measured times; the package page holds on
   left open and the builder chose from wire fields, and the slip.
 - The project chat's B5k, the draft, 2026-11-09, in four landings: builder launched 21:11; the move of
   `chord_types_text` into `input/` (2e9ea678b) and the draft's own state (463b0e9f0) main 22:30, 79 minutes; the
-  wiring (7efcfd230) and the rows (c46aa3690) main 22:39, 88 minutes; past the half hour, a failure by this page's
-  standard. One draft per canonical row, holding only what wire's `post_text_fits` admits (a key or paste past it
+  wiring (7efcfd230) and the rows (c46aa3690) main 22:39, 88 minutes. One draft per canonical row, holding only what wire's `post_text_fits` admits (a key or paste past it
   refused whole), its destination fixed at the first character, CR LF and CR made LF and other controls dropped as the
   drawer cannot show them, edited only in the Chat tenant (`DrawerInput::Chat`), drawn at the drawer's foot in at most
   four wrapped rows with a true count of rows not shown at every height; a retired row drops its draft. About 210
@@ -1624,7 +1619,7 @@ A landing's record goes here, with its measured times; the package page holds on
 - The project chat's B5m, the post, 2026-11-09, in three landings: builder launched 22:43; the flag (760a6c2c9: a
   connection keeps whether its hello said the daemon posts plain text, and a post on one that did not is refused
   locally) and the name (9250e00ce: `[chat] name` in settings.toml) main 23:35, 52 minutes; the post (fa9070892) main
-  23:40, 57 minutes; past the half hour, a failure by this page's standard. Enter posts the draft once, frozen while it
+  23:40, 57 minutes. Enter posts the draft once, frozen while it
   waits, and only a `posted` reply for that post clears its own row's draft; every outcome is reported once, its words
   on the status line. About 180 product lines and 250 test lines over the three. Where the minutes went: the build (10
   minutes, which stopped at its size bound uncommitted, as its brief said); the split into three (5 minutes); three
@@ -1633,8 +1628,7 @@ A landing's record goes here, with its measured times; the package page holds on
   alive, two of them double-post risks); a last fix of part 3 (3 minutes); seven scoped gates of 2 minutes. The cause:
   a step of about 145 product lines planned as 55, so it was split after it was built.
 - The project chat's B5n, older pages in the owner's one store, 2026-11-10, in two commits landed together: builder
-  launched 2026-11-09 23:45, main 00:51 (a2f29504f, 3ec55215d), 66 minutes, past the half hour, a failure by this
-  page's standard. The owner keeps up to 256 records above its floor, a hard ceiling of 276 while a reader stays on the
+  launched 2026-11-09 23:45, main 00:51 (a2f29504f, 3ec55215d), 66 minutes. The owner keeps up to 256 records above its floor, a hard ceiling of 276 while a reader stays on the
   oldest, trimmed in one pass after every change; a replacing snapshot replaces all, or keeps the older records when it
   overlaps; when the oldest held record is in view the drawer reads 20 older ones in a slot of its own, taken only while
   the floor it was asked below still holds and only as many as fit; a refusal, Slack's plan hiding history and an empty
@@ -1644,8 +1638,7 @@ A landing's record goes here, with its measured times; the package page holds on
   quadratic trim, and a page taken after its floor moved); three fix rounds of 13, 8 and 3 minutes; six scoped gates
   of 2 minutes. The causes: the plan's bound left open how a parked reader and the bound meet, and the paging rules
   were checked when a page was asked for but not when it arrived.
-- The project chat's B5o, the message mark, 2026-11-10: builder launched 00:58, main 01:42 (07965073d), 44 minutes,
-  past the half hour, a failure by this page's standard. ArrowUp and ArrowDown in the Chat drawer mark one held message,
+- The project chat's B5o, the message mark, 2026-11-10: builder launched 00:58, main 01:42 (07965073d), 44 minutes. ArrowUp and ArrowDown in the Chat drawer mark one held message,
   folded one key at a time; a mark moved out of view moves the view to show it; a mark whose header leaves the body
   moves to the nearest message whose header is inside, or to the first one shown when none is; a mark no longer held
   passes to the nearest newer one; a row change clears it; the marked header is drawn in the focus color
@@ -1657,7 +1650,7 @@ A landing's record goes here, with its measured times; the package page holds on
   review found a definition that let the mark leave the person's sight.
 - The project chat's B5p, one thread view, 2026-11-10, in three commits landed in two pushes: builder launched 01:46;
   the view (85f14caf7) main 03:15, 89 minutes; the owner's reserve and the thread's reads (6afab7bcf, 90002ae5f) main
-  03:27, 101 minutes; both past the half hour, a failure by this page's standard. ArrowRight opens the marked
+  03:27, 101 minutes. ArrowRight opens the marked
   message's thread and Escape, a row switch, hiding the drawer or its channel's watch changing closes it, the
   channel's place kept; the title keeps the link's words over a thread; the thread is read whole, 20 at a time through
   the reads in flight, each reply taken only for the read it answers, repeats dropped, up to 156 messages with the
@@ -1674,7 +1667,7 @@ A landing's record goes here, with its measured times; the package page holds on
   after it was built; and the reviews kept finding rules a thread shares with the channel (the title, the watch, the
   reads in flight) that the plan stated for the channel alone.
 - The project chat's B5p, its last part, posting into a thread, 2026-11-10: builder launched 03:31, main 04:08
-  (ae5a44dcb), 37 minutes, past the half hour, a failure by this page's standard. A draft begun while a thread is open
+  (ae5a44dcb), 37 minutes. A draft begun while a thread is open
   posts into that thread and keeps that destination through a close, a row switch and a reconnect; a channel draft
   stays the channel's; the line under the draft names where it goes; after the person's own post into the open thread
   it is read again whole through the one restart, which gives up the read in flight first; the thread is matched by
@@ -1685,7 +1678,7 @@ A landing's record goes here, with its measured times; the package page holds on
   2 minutes. The cause: the brief named the reread after a post but not its race with the read already in flight,
   the value matching the plan states for every chat read.
 - The project chat's B5q, selection and copy, 2026-11-10, in two commits landed together: builder launched 04:11, main
-  04:50 (4a2be095b, bbfdab4fc), 39 minutes, past the half hour, a failure by this page's standard. A left press in the
+  04:50 (4a2be095b, bbfdab4fc), 39 minutes. A left press in the
   chat's records focuses the drawer and a drag selects text inside one message's body, the preview's selection over that
   record's buffer, cleared by any press elsewhere, an edit, a new width or scale, the record dropped or evicted, the
   mark moving onto or off it, a row reset and a thread opening; the tint joins the one batched selection paint;
@@ -1699,7 +1692,7 @@ A landing's record goes here, with its measured times; the package page holds on
   product lines came to 122, and the thread view's parking of the channel's view, landed one step before, carried
   state the plan had not yet given it.
 - The project chat's B5r, the native witness, 2026-11-10: builder launched 04:52, main 05:19 (2405fbbf0), 27
-  minutes, inside the half hour. A fifteenth State fixture drives the real window's chat through its State: a row
+  minutes. A fifteenth State fixture drives the real window's chat through its State: a row
   listed and Chat shown, a mapped resolve, a watch, a snapshot and older pages to 200 messages, PageUp to the oldest and
   back, the wheel through the window's own wheel code, Alt+Up, a resize of the canvas with 256 records of 8 KiB, the
   mark, a thread opened, read and closed, a typed and pasted draft posted once, the link dropped and back and a lost
@@ -1712,7 +1705,7 @@ A landing's record goes here, with its measured times; the package page holds on
   other subsystems' tests, each passing on the runs around it (BENEATH-TWO-WRITERS-WINDOWS and
   REGISTRY-TEMPFAIL-LOCK-TURN noted).
 - Platform's write beneath a root on Windows closes its temporary file's handle at the rename, 2026-11-10: builder
-  launched 05:33, main 05:42 (5f3e51af4), 9 minutes, inside the half hour. Each writer kept its renamed file's handle,
+  launched 05:33, main 05:42 (5f3e51af4), 9 minutes. Each writer kept its renamed file's handle,
   which shares no deletion, open through the folder's sync, so a second writer of the same name was refused with access
   denied once the sync outlasted its retries (BENEATH-TWO-WRITERS-WINDOWS, now Closed). About 10 product lines added
   and 17 removed, and 18 test lines. Found from a hosted Windows red on a commit that touched no platform code; the
@@ -1720,8 +1713,7 @@ A landing's record goes here, with its measured times; the package page holds on
   by two scratch-branch probes with a 1000 ms delay before the folder's sync: the new test and the two-writers test red
   at the parent with the hosted log's error, all 32 beneath tests green with the fix. Where the minutes went: the build
   (2 minutes); the probes (6 minutes, while the gate ran 2 and one review 6, blockers 0).
-- No daemon test reaches the live comm folder, 2026-11-10: builder launched 06:25, main 07:14 (102b3b766), 49 minutes,
-  past the half hour, a failure by this page's standard. Under test, the one comm-home resolver aborts the run, naming
+- No daemon test reaches the live comm folder, 2026-11-10: builder launched 06:25, main 07:14 (102b3b766), 49 minutes. Under test, the one comm-home resolver aborts the run, naming
   the test and the path, when the home it resolves is outside the temporary folder (TESTS-REACH-LIVE-COMM-HOME, Closed).
   Found by REGISTRY-TEMPFAIL-LOCK-TURN's diagnosis, which saw four destroy tests prune and lock the comm folder their
   environment named; the guard then found 31 tests reaching it (destroy 4, reauth 16, create rollback 5, agent
@@ -1732,7 +1724,7 @@ A landing's record goes here, with its measured times; the package page holds on
   read by the session); two scoped gates of 2 minutes. The cause: the brief sized the class by the diagnosis's four
   tests, and a guard that panics can be caught.
 - Every test that takes the comm registry lock holds its turn guard, 2026-11-10: builder launched 07:15, main 07:29
-  (aceaebe3a), 14 minutes, inside the half hour. The lock's in-process turn is shared by the whole test process and its
+  (aceaebe3a), 14 minutes. The lock's in-process turn is shared by the whole test process and its
   wait counts inside a test's bound, so other tests' holds spent a 1 second bound on a slow runner
   (REGISTRY-TEMPFAIL-LOCK-TURN, Closed): every lock-taking test now holds the guard, for write when its assertion rests
   on a bound under 10 seconds, and the shared test home waits the product's 10 seconds. No product lines; about 40
@@ -1740,8 +1732,7 @@ A landing's record goes here, with its measured times; the package page holds on
   file syncs: red 10 of 10 at the base, green 9 of 9 with the fix. Where the minutes went: the build (10 minutes,
   applying the diagnosis's diff by hand where the comm-home guard had moved code, the check red at main and green with
   the fix); one scoped gate of 2 minutes; no review (test-only, the diagnosis's diff read by the session).
-- The comm-home guard's fix forward, 2026-11-10: builder launched 07:37, main 07:57 (eb2b76a19), 20 minutes, inside
-  the half hour. The guard's landing (07:14) turned main red on all three hosted systems and in the unscoped local
+- The comm-home guard's fix forward, 2026-11-10: builder launched 07:37, main 07:57 (eb2b76a19), 20 minutes. The guard's landing (07:14) turned main red on all three hosted systems and in the unscoped local
   gate: its search for tests reaching the comm folder had set `HOME` inside the temporary folder, so tests that find
   the folder through `HOME`, or `USERPROFILE` on Windows, were missed. One such test on Linux and macOS (found by
   running each of the 1,526 unit tests in its own process with the guard printing instead of aborting, under both
@@ -1752,8 +1743,7 @@ A landing's record goes here, with its measured times; the package page holds on
   isolation only, read by the session).
 - The window's per-user settings in platform's config folder (WINDOWS-SETTINGS-NO-DURABLE-HOME), 2026-11-10: found
   13:19 while the maintainer used the Chat drawer on a Windows window at 0.7.1-rc.3 (the window read no settings file,
-  so Enter never posted); builder launched about 13:27, main 14:14 (227a75877), about 47 minutes, a miss of the half
-  hour. About 25 product lines (discovery takes platform's resolver; the Windows launcher's default deleted), 80 test
+  so Enter never posted); builder launched about 13:27, main 14:14 (227a75877), about 47 minutes. About 25 product lines (discovery takes platform's resolver; the Windows launcher's default deleted), 80 test
   lines, and the manual's discovery order stated once. Where the minutes went: the build (8 minutes); review round 1
   (blocker: a new test that would fail on Windows, where the resolver reads neither `XDG_CONFIG_HOME` nor `HOME`);
   the amended commit's scoped gate failed (an edited skill whose project copy was not edited, which must stay
@@ -1763,14 +1753,14 @@ A landing's record goes here, with its measured times; the package page holds on
   2026-11-10: reported by the maintainer 13:24 ("pdfs not updated in preview when new pdf is generated"); diagnosis
   13:2x to 13:50 (an agent badged `$PWD/../x.pdf`; the window kept the `..`, the daemon refused it, the pane kept the
   older bytes unmarked, and the live refresh never matched the watcher's id); builder launched 13:52, main 14:47
-  (1cb38101d), 55 minutes from the builder and 83 from the report, a miss. About 95 product lines and 130 test lines:
+  (1cb38101d), 55 minutes from the builder and 83 from the report. About 95 product lines and 130 test lines:
   one fold at the window's three ways in, a refused preview titled as such, and a badge that a change event re-fetched
   during its load now clears (found by review round 1 and taken into the same landing). Where the minutes went: two
   test rounds the session asked for before review (the wiring and the live refresh pinned through the native State
   harness, run on a second computer under a virtual display); review round 1 (blocker: a row switch restored the
   stale view unmarked); review round 2 (no blockers; three small fixes); four scoped gates of 2 to 3 minutes.
 - P14, a filing may name its expected row, 2026-11-10: builder launched about 13:34, main 15:10 (be8ebb740), about 96
-  minutes, a miss. About 100 product lines (the filer and the inbox) and 230 test lines. Where the minutes went: the
+  minutes. About 100 product lines (the filer and the inbox) and 230 test lines. Where the minutes went: the
   build (29 minutes); review round 1 (blocker: daemons from 0.7.0 on ignore the new field, so a forwarded or offered
   request would be filed as an ordinary one; should-fix: two 2 s lock waits in series against a 3 s forward bound, and
   a stuck inbox holding the whole registry lock); the architect's two departures from the plan of record (a request
@@ -1779,7 +1769,7 @@ A landing's record goes here, with its measured times; the package page holds on
   review round 2 (no blockers; a test's turn lock and a doc comment); three scoped gates.
 - The Chat drawer asks for the posting name once and saves it (CHAT-NAME-ASKED-ONCE), 2026-11-10, three landings:
   the settings write (5e9083a56, 15:44), the prompt's state and foot (245e1cb2b, 15:45) and its keys and save
-  (b682e8940, 15:47). Builder launched 14:15, the last on main 15:47, 92 minutes, a miss. About 146, 77 and 90 product
+  (b682e8940, 15:47). Builder launched 14:15, the last on main 15:47, 92 minutes. About 146, 77 and 90 product
   lines; the first is over the 120-line rule with its strict check, kept whole because it has no caller. Where the
   minutes went: the first build came to 217 product lines in one commit and was split; review round 1 of each part
   (no blockers; the write could leave a file the daemon's strict reader refuses, which would stop folder trust, now
@@ -1788,33 +1778,33 @@ A landing's record goes here, with its measured times; the package page holds on
   whole-scope gate went red in a rows test the window cannot reach (ROWS-ROLLBACK-TEST-RACE), and it was gated again on
   its own change, green.
 - P13, an installed tool runs every part it sources, whatever their number, 2026-11-10: builder launched about 15:37,
-  main 15:49 (cf9d0f596), 12 minutes, inside the half hour. 20 test and record lines, no product code; read by the
+  main 15:49 (cf9d0f596), 12 minutes. 20 test and record lines, no product code; read by the
   session, no review (test only); one scoped gate.
 - The Chat drawer follows a row switch at once (CHAT-ROW-SWITCH-LAGS), 2026-11-10: reported by the maintainer about
   13:40; diagnosis to 14:14 (the window dropped a channel's watch at a row change and asked again only after its own
   one-second pace and the next idle frame); builder launched 14:15, main 16:03 (333e9430b), 108 minutes from the
-  builder, a miss. About 80 product lines (the last two channels' records kept across a switch, the short asks, the
+  builder. About 80 product lines (the last two channels' records kept across a switch, the short asks, the
   chat's next ask joined to the window's idle deadlines) and about 600 test lines, including a fixed-seed walk of
   12,000 orders over three channels (about 4 s). Where the minutes went: four review rounds, the first three each with
   a blocker (a change event between the take-up and the snapshot; a recovery restarted before its snapshot; records
   held before a channel's first whole state counted as history, found by the strongest reviewer), the walk added to
   close the class; the fourth round no blockers, its model fix taken; five scoped gates.
 - P16, one reader for every inbox's lines from one sender, 2026-11-10: builder launched about 16:45, main 17:43
-  (f4f94b9b5), 58 minutes, a miss. About 55 product lines (the reader, the complete-line rule moved into it from the
+  (f4f94b9b5), 58 minutes. About 55 product lines (the reader, the complete-line rule moved into it from the
   cursor) and 72 test lines. Where the minutes went: the build (13 minutes); review round 1 (blocker: an inbox file or
   folder that could not be read gave a partial or empty answer, the skipped inbox its lock rule exists to prevent, which
   would let the chat's rebuild file a post twice; should-fix: two copies of the complete-line rule, the lock-fault rule
   untested); review round 2 (no blockers; the folder rule and "creates no inbox" unpinned, its two tests taken, landed on
   the builder's reds without a third round); three scoped gates.
 - P15, one poll prints a bounded batch, and the Stop hook blocks again after it, 2026-11-10: builder launched about
-  16:22, main 17:56 (fc88d046c), 94 minutes, a miss. About 30 product lines (the poll's byte budget and its count line,
+  16:22, main 17:56 (fc88d046c), 94 minutes. About 30 product lines (the poll's byte budget and its count line,
   the hook's mark of total and unread) and 110 test lines. Where the minutes went: review round 1 (blocker: the hook
   keyed on the inbox total let a turn end with mail unread after a partial poll); review round 2 (no blockers; the
   records' limit unstated, a stale bound, the tick rule in six places, the mark's total half unpinned); review round 3
   (no blockers; two stale comments and the limit sentence too narrow, landed on the session's read of the records diff);
   a rebase onto P16, clean; four scoped gates.
 - B3a, the chat's owner runs from the service's start, 2026-11-10: builder launched about 16:45, main 18:30
-  (b3b1f7728), 105 minutes, a miss. About 65 product lines (`Chat::boot`, the one composition for the daemon and the
+  (b3b1f7728), 105 minutes. About 65 product lines (`Chat::boot`, the one composition for the daemon and the
   rig; `begin` private) and 80 test lines. The product code was judged right in every round; the minutes went to its
   tests: review round 1 (blockers: the test never took the daemon's boot path, and its log check raced tracing-core's
   call-site cache, 13 of 20 runs failing beside one sibling); review round 2 (blockers: the owner test watched before
@@ -1822,59 +1812,58 @@ A landing's record goes here, with its measured times; the package page holds on
   subscriber); review round 3 by the strongest reviewer (no blockers, 385 runs without a failure; two record lines);
   four scoped gates.
 - B3b, one bounded, marked mail body per channel post, 2026-11-10: builder launched about 17:15, main 18:40
-  (2d4eb9dcb), 85 minutes, a miss. About 105 product lines (`mail.rs`; the Slack id grammar made config's one copy) and
+  (2d4eb9dcb), 85 minutes. About 105 product lines (`mail.rs`; the Slack id grammar made config's one copy) and
   280 test lines. Where the minutes went: before review, the id grammar moved to its owner and the push sweep stopped
   the maintainer's first name, copied into tests from the plan's example; review round 1 (no blockers; 20,000 hostile
   records fuzzed, no forged line; the cut halved the text, an omitted record read as an empty post); review round 2 (no
   blockers; a files-only body could pass the bound by four bytes, the line-end cost unpinned); review round 3, narrow
   (no blockers; 115,000 bodies matched an oracle written from the rules; two tests); two rebases; three scoped gates.
 - B3f, the scan read and no thread cursor under a lower bound alone, 2026-11-10: builder launched about 18:11, main
-  18:46 (4d4579730), 35 minutes, a miss. About 125 product lines (the scan shares the drawer's request builder and page
+  18:46 (4d4579730), 35 minutes. About 125 product lines (the scan shares the drawer's request builder and page
   parser) and 430 test lines; closes SLACK-REPLIES-CURSOR-DROPS. Review round 1 (no blockers; every drawer read
   compared before and after, identical but for the refused form; a replies scan kept its parent outside the bounds;
   reds by `unwrap`), its fixes landed on the builder's reds; two rebases; two scoped gates.
 - B3e, a channel's boundary file and its filed set in memory, 2026-11-10: builder launched about 18:41, main 19:04
-  (5ea47a681), 23 minutes, inside the half hour. About 77 product lines and 134 test lines. Review round 1 (no blockers;
+  (5ea47a681), 23 minutes. About 77 product lines and 134 test lines. Review round 1 (no blockers;
   20 of 21 mutants killed; the filed set's trim at a start dropped filings above the boundary, which the next pass would
   file again, so the bound became soft; `contains` now true at or below the boundary), its fixes landed on the
   builder's reds; two scoped gates.
 - B3d, a delivering configuration of at most 32 channels, each with its own floor, 2026-11-10: builder launched about
-  18:51, main 19:10 (75242faa4), 19 minutes, inside the half hour. About 56 product lines and 100 test lines. Review
+  18:51, main 19:10 (75242faa4), 19 minutes. About 56 product lines and 100 test lines. Review
   round 1 (no blockers; two floor mutants survived, the malformed value carried no ordinal, the resolution carried the
   hub's value), its fixes landed on the builder's reds; two scoped gates.
 - P18, one chat listener per comm folder, 2026-11-10: builder launched about 18:32, main 19:13 (d22e6c096), 41
-  minutes, a miss. About 110 product lines (the lock in the comm folder's `chat/`, a held start tried again each minute,
+  minutes. About 110 product lines (the lock in the comm folder's `chat/`, a held start tried again each minute,
   the step-down) and 200 test lines. Review round 1 (no blockers; ten mutants killed; a hub move probed end to end; a
   held start gave up for good on a topology being edited, now only on one naming another hub), its fixes landed on the
   builder's reds; two rebases by the session; three scoped gates.
 - B3c, the watch model hands every new record of a delivering channel over, 2026-11-10: builder launched about 19:17,
-  main 19:36 (2fe137150), 19 minutes, inside the half hour. About 35 product lines and 70 test lines. Review round 1
+  main 19:36 (2fe137150), 19 minutes. About 35 product lines and 70 test lines. Review round 1
   (no blockers; 9 of 12 mutants killed; a separate take of the arrived records could be forgotten), and the session
   chose the reviewer's simpler shape: the pump and the start return the handover, which the caller must use, and the
   separate take, its buffer and its stop check went; one rebase; two scoped gates.
 - B3h1, the recovery traversal's channel walk and its horizon, 2026-11-11: builder launched about 07:12, main 08:04
-  (4fdbd1889), 52 minutes, a miss. About 98 product lines of code (139 with comments), the fake Slack's history pages
+  (4fdbd1889), 52 minutes. About 98 product lines of code (139 with comments), the fake Slack's history pages
   (98) and 335 test lines; the thread walk is the next landing, split before the build. Where the minutes went: review
   round 1 (no blockers; nine mutants; the horizon's taking from the first page alone, the step back by a page's raw
   oldest timestamp and one skipped pace were unpinned, and the contract let a caller commit before the thread walk);
   two narrow rounds on the pace test, whose first gap carried the first connection's handshake, state the test does not
   own; a gate whose results were complete but whose wrapper hung on a user service manager another agent had broken,
   read by hand; two scoped gates.
-- An SVG's image reads no file or URL, 2026-11-11: builder launched about 08:33, main 09:03 (fe6a459a7), 30 minutes,
-  at the half hour. About 19 product lines and 100 test lines; closes SVG-IMAGE-HREF-READS-LOCAL-FILES. It follows an
+- An SVG's image reads no file or URL, 2026-11-11: builder launched about 08:33, main 09:03 (fe6a459a7), 30 minutes. About 19 product lines and 100 test lines; closes SVG-IMAGE-HREF-READS-LOCAL-FILES. It follows an
   in-process hardening of the SVG reader that did not land after three review rounds, each finding new ways a file
   could still hold the window; the plan now draws a file's SVG in a bounded child process, and this is its first
   landing. Review round 1 (no blockers; 49 hostile spellings traced at the system-call level read nothing, against 42
   reads and 5 hangs at the base), its fixes (one table over four elements and three spellings) landed on the builder's
   reds; two scoped gates.
 - The chat drawer's look, L1: Slack's dark colors, the header, the origin badge, the mark band and the selection,
-  2026-11-11: builder launched about 08:12, main 09:06 (1434b66a9), 54 minutes, a miss. About 163 product lines added
+  2026-11-11: builder launched about 08:12, main 09:06 (1434b66a9), 54 minutes. About 163 product lines added
   and 122 deleted, 368 test lines added. Where the minutes went: review round 1 (no blockers; the manual
   called the lighter band darker; the run finder moved without a test; the frame's order of layout and rectangles was
   untested, so the layout now returns the frame's rectangles and no order remains; the badge's line height unpinned);
   two amend rounds; one rebase by the session; two scoped gates.
 - The chat drawer's look, L2: message groups, the gutter and the group's tile, 2026-11-11: builder launched about
-  09:08, main 10:04 (7500bbf6e), 56 minutes, a miss. About 171 product lines added and 62 deleted. Where the minutes
+  09:08, main 10:04 (7500bbf6e), 56 minutes. About 171 product lines added and 62 deleted. Where the minutes
   went: a scoped gate red on one host and green on another, a test whose expected eviction sat at a font's wrap point
   (fixed by visiting every scroll position and widening the test's body by the gutter); review round 1 (no blockers;
   33 mutants of the grouping and lead rules killed; the tile's scale, color and fit unpinned; a header-only record's
@@ -1893,7 +1882,7 @@ A landing's record goes here, with its measured times; the package page holds on
   older skill triggered by the message's words; the terminal hang; a contract naming a test that does not exist). One
   miss of the session's own: a probe script was edited while a run read it, which lost one case's mail check.
 - The chat drawer's look, L3: day dividers, the time alone in the header and Slack's thread summary, 2026-11-11:
-  builder launched about 10:37, main 11:27 (4e3954a1e), 50 minutes, a miss. About 106 product lines added and 20
+  builder launched about 10:37, main 11:27 (4e3954a1e), 50 minutes. About 106 product lines added and 20
   deleted (the plan said 80; the divider's lead line moved line indexes in existing tests). Where the minutes went: the
   session moved to another account between the build and the review, which ended the builder, and its fix list first
   reached the reviewer by the builder's old name; review round 1 (no blockers; 13 mutants killed; widths 30 to 700 px
@@ -1903,7 +1892,7 @@ A landing's record goes here, with its measured times; the package page holds on
 - Platform's primitives for a process that bounds itself, the SVG child's second landing, in two, 2026-11-11: builder
   launched 11:29; the capped allocator and the exit by a code on main 12:26 (37958a6c2), the inherited descriptors,
   crashes as exits, the CPU limit, ending with the parent and the Windows job's assigned child on main 12:27
-  (7e5ab2b88); 58 minutes, a miss. About 120 and 130 product lines. Where the minutes went: the change passed the
+  (7e5ab2b88); 58 minutes. About 120 and 130 product lines. Where the minutes went: the change passed the
   stop at 154 lines and was split into two commits, each gated alone; one hosted probe on macOS and Windows (macOS
   enforces the CPU limit and kept no crash report; a Windows child ended 50 ms after its job closed); review round 1
   (one blocker: a single request near the address space's size wrapped the allocator's running total and let the cap
@@ -1918,7 +1907,7 @@ A landing's record goes here, with its measured times; the package page holds on
   fonts stay loaded for every draw and a page's equations will go to one child as a batch. Cold first runs: Windows
   fonts 2,993 ms, inside the child's 10 s wall.
 - The SVG child, `sot --draw-svg`, with no caller, 2026-11-11: builder launched 12:47, main 13:48 (4c5519034, three
-  commits), 61 minutes, a miss. About 125 product lines and 260 test lines. Where the minutes went: one hosted probe on
+  commits), 61 minutes. About 125 product lines and 260 test lines. Where the minutes went: one hosted probe on
   macOS and Windows (a macOS child that closed its inherited descriptors still draws, and leaves no crash report; a
   Windows stack overflow ends the child in 102 ms and leaves no dump; whether Windows shows an error dialog cannot be
   seen on a hosted runner, so a lab Windows computer must show it before a person sees the child's drawing); review
@@ -1927,7 +1916,7 @@ A landing's record goes here, with its measured times; the package page holds on
   (no blockers: the draw thread's panic arm unpinned; the record's Windows wording); two fix commits and three gates.
 - A row left before its preview came back, PREVIEW-NOT-FOLLOWING-ROW, 2026-11-11: seen by the maintainer and, the same
   hour, by another session's row showing a file of another project; diagnosis launched about 14:50, main 15:49
-  (c84ffa166, e2b9abd1a), 59 minutes, a miss; from the fix's commit to main 23 minutes. About 20 product lines and 140
+  (c84ffa166, e2b9abd1a), 59 minutes; from the fix's commit to main 23 minutes. About 20 product lines and 140
   test lines. Where the minutes went: the diagnosis (35 minutes; from the daemon's log, the row was left 0.34 s after it
   asked while the daemon took up to 13 s per preview during a sweep of rows, and was entered 119 times the next day
   without asking again), its diff applied as written; review round 1 (no blockers: the fixture pinned only the side
@@ -1936,7 +1925,7 @@ A landing's record goes here, with its measured times; the package page holds on
 - The update runbook moves every daemon a window dials before that window, 2026-11-11: the maintainer at about 13:10,
   "your directions are bad - its leaving fe orphaned to non updated Bes", and later "users followed your exact
   intructions above and had systems that updated but would not connect due to a FE/BE version mismatch"; builder
-  launched 13:52, main 18:05 (8494686d7 to 5756c144e, five commits), 4 hours 13 minutes, a miss by far. About 270
+  launched 13:52, main 18:05 (8494686d7 to 5756c144e, five commits), 4 hours 13 minutes. About 270
   runbook and guide lines. The cause: the runbook updated only the computer its agent ran on, and a window and its
   daemon on two computers refuse each other across 0.6 and 0.7; its first proof had run single computers only. Where
   the time went: the cases themselves (two-computer groups, window-only laptops, a home several computers share, a
@@ -1967,7 +1956,7 @@ A landing's record goes here, with its measured times; the package page holds on
   parent's read 5 s; the records named a console writer as the limit, which never reaches a pipe, in place of a copy
   made before the call), one fix commit, a second probe and two gates.
 - The SVG child's runner, its fifth landing (3a, 3b), 2026-11-11: builder launched about 19:42, main 20:30 (592d146e9,
-  6039df26e, e63d60b71), 48 minutes, a miss. About 180 product lines and 320 test lines. Where the minutes went: the
+  6039df26e, e63d60b71), 48 minutes. About 180 product lines and 320 test lines. Where the minutes went: the
   change passed the stop at 177 code lines (the plan said 95: the Windows branch, the check on each reply and a second
   thread, so a binary that never reads its input is refused at its first line rather than at the wall) and was split
   into the start and the finish, each gated alone; one hosted probe on macOS and Windows; review round 1 (no blockers:
@@ -1976,7 +1965,7 @@ A landing's record goes here, with its measured times; the package page holds on
   a thread failed to start); one fix commit, a second probe and three gates.
 - The SVG draw worker, its sixth landing (4, in two parts), 2026-11-11: builder launched about 20:33; part 1 (the
   runner's stop, its two kinds of end, the source's generation) on main 21:10 (bb6a46d55), part 2 (the worker) 22:46
-  (ec716bf86, 43ff2f198, 9f639f020); 2 hours 13 minutes, a miss, an hour of it held for the account's five-hour window.
+  (ec716bf86, 43ff2f198, 9f639f020); 2 hours 13 minutes, an hour of it held for the account's five-hour window.
   About 80 and 177 product lines (the plan said 90 in all) and 340 test lines. Where the minutes went: the change
   passed the stop at 283 code lines and was split; review round 1 (part 1 clean; part 2 one blocker: the waiting-input
   bound counted every generation, so a hostile file's queue would refuse the next file's own preview for good; three
@@ -1991,14 +1980,14 @@ A landing's record goes here, with its measured times; the package page holds on
   one fix commit and two gates.
 - An `.svg` file previewed as its picture, the SVG child's eighth landing (6, in three parts), 2026-11-12: builder
   launched about 23:25 the day before; the fit ask and the one drain on main 00:04 (9544bf2c6, 5c2da1bac), the preview
-  00:39 (9c6e30c89, 99d00ee09, be83b267c); 74 minutes, a miss. About 280 product lines (the plan said 110) and 450 test
+  00:39 (9c6e30c89, 99d00ee09, be83b267c); 74 minutes. About 280 product lines (the plan said 110) and 450 test
   lines. Where the minutes went: the change passed the stop at 258 code lines and was split in three; one hosted probe
   on macOS and Windows; review round 1 (no blockers: a text-size change showed the file's text until the redraw and
   asked a stale layout's size; a file not UTF-8 showed the previous file's text; the cache kept up to 1 GiB of file
   bytes, now a digest); round 2 (no blockers: the not-UTF-8 line missed the markdown route); two fix commits and five
   gates, one widened to the whole run by a lock change.
 - Math through the worker in one batch per frame, and the Monitor's clamp, the SVG child's ninth and last planned
-  landing (7), 2026-11-12: builder launched about 00:45, main 01:20 (0e79eec01, 4d5f5b06b), 35 minutes, a miss by five.
+  landing (7), 2026-11-12: builder launched about 00:45, main 01:20 (0e79eec01, 4d5f5b06b), 35 minutes.
   About 100 product lines net (the plan said 70) and 400 test lines. A page of 50 equations whose replies had all
   arrived drew in one child in about 180 ms, against about 3 s with one child per equation (measured with that mutant);
   replies that arrive one at a time cost one child per worker pop. Review round 1 (no blockers: nothing asserted that a
@@ -2015,7 +2004,7 @@ A landing's record goes here, with its measured times; the package page holds on
   preview's shown flags were a tuple of five read by position, so a reader shifted to the wrong flag compiled and
   passed every test; the flags are now a named struct).
 - The chat drawer's look, L4a (Slack's inline styles: bold, italic, strike and code), 2026-11-12: builder launched
-  01:46, main 02:45 (cc855d902, c276093d9, 922c3f86e), 59 minutes, a miss. About 120 product lines of code (about 180
+  01:46, main 02:45 (cc855d902, c276093d9, 922c3f86e), 59 minutes. About 120 product lines of code (about 180
   added with comments; the plan said 110) and 210 test lines. Where the minutes went: the build took 11 minutes, then
   two review rounds of about 15 minutes each and two fix commits. Review round 1 (no blockers): the parse was quadratic
   on a long line of openers and runs every frame for every placed record, 13 to 20 ms for one 8 KiB line, now linear
@@ -2025,7 +2014,7 @@ A landing's record goes here, with its measured times; the package page holds on
   row that failed when either scope was dropped. The builder ran its first suite with the real home folder, against
   its brief; nothing under the window's folders changed, and the one daemon test sets its own.
 - B3h2, the recovery traversal's thread walk, 2026-11-12: builder launched 02:47, main 03:19 (18bd75845, 91de4d807,
-  c76ce99b5), 32 minutes, a miss by two. About 76 product lines net (126 added, 50 removed: the channel and thread
+  c76ce99b5), 32 minutes. About 76 product lines net (126 added, 50 removed: the channel and thread
   walks now share one read and one candidate routine) and 230 test lines. Where the minutes went: the build took 11
   minutes, one review round 12, one fix commit 6 (tests and contract only), the gates 4. Review round 1 (one blocker:
   the contract let a caller commit to the horizon from a pass cut short at its mail cap, which loses the mail past the
@@ -2034,8 +2023,7 @@ A landing's record goes here, with its measured times; the package page holds on
   commits). No second review: the fix changed no product line. The first gate of the fix was run on a mistyped commit
   id, failed its checkout and still printed its pass line; it was run again on the right commit, and the session's
   gate script now stops when its checkout fails.
-- B3g1, delivery's filing half, 2026-11-12: builder launched 03:21, main 03:46 (929e34120, 059ce507f), 25 minutes,
-  inside the half hour. About 100 product lines and 245 test lines. The plan's B3g came to about 220 code lines in one
+- B3g1, delivery's filing half, 2026-11-12: builder launched 03:21, main 03:46 (929e34120, 059ce507f), 25 minutes. About 100 product lines and 245 test lines. The plan's B3g came to about 220 code lines in one
   draft, so the builder stopped at the line limit four minutes in and the landing was split along the plan's own rule:
   this half is the one queue, the start's gate, pacing, the live `omitted` rule and the bounds; the pass half follows.
   The builder's draft corrected the plan's D5: a candidate queued or in flight counts as filed only once its filing
@@ -2043,7 +2031,7 @@ A landing's record goes here, with its measured times; the package page holds on
   had no failing test, among them the channel in the queue's key, whose loss would drop mail when two channels share a
   `ts`). One fix commit, tests and one product line; no second review.
 - B3g2, delivery's pass half, 2026-11-12: builder handed the brief at 03:50, main 04:35 (56f664ca1, 4a883182c,
-  fc9704724), 45 minutes, a miss. About 120 product lines and 390 test lines. Where the minutes went: the build took 7
+  fc9704724), 45 minutes. About 120 product lines and 390 test lines. Where the minutes went: the build took 7
   minutes, two review rounds of about 15 and 10, and three fix commits. Review round 1 (one blocker: the backoff and
   its retry instant were global, so one channel whose passes failed or were skipped, as an absent row or a thread Slack
   will not serve makes them, starved every channel after it, 100 passes to 0 over about 16 simulated hours; now each
@@ -2052,7 +2040,7 @@ A landing's record goes here, with its measured times; the package page holds on
   back). Round 2 (no blockers): the pace was set only after a completed pass, and a channel truncated at every pass
   could hold another's owed pass; ready channels now go least recently passed first.
 - B3i1, the mail jobs (the recipient, the filing job, the commit job and the start's read), 2026-11-12: builder
-  launched 04:36, main 05:14 (6f734cad9, b8a9ac9b2), 38 minutes, a miss. About 65 product lines and 220 test lines.
+  launched 04:36, main 05:14 (6f734cad9, b8a9ac9b2), 38 minutes. About 65 product lines and 220 test lines.
   Where the minutes went: the build took 16 minutes with the landing's measurement (50 guarded filings at the filing
   gap on the shared home while another thread took the registry lock with a 1 s bound 20 times: all 50 filed in
   11.3 s, all 20 takes in, the slowest 133 ms), one review round 13, one fix commit 4. Review round 1 (no blockers: a
@@ -2061,7 +2049,7 @@ A landing's record goes here, with its measured times; the package page holds on
   sentence was dropped from the log). One run of the rows suite on the builder's scratch host failed 22 tests and was
   not kept; three later runs, and the reviewer's, were green; its cause is unknown.
 - The chat drawer's look, L4b (links, mentions on their slug, Slack's special tokens), 2026-11-12: builder launched
-  05:15, main 05:58 (54320c707, 5876dc479), 43 minutes, a miss. About 65 product lines and 240 test lines. Where the
+  05:15, main 05:58 (54320c707, 5876dc479), 43 minutes. About 65 product lines and 240 test lines. Where the
   minutes went: the build took 13 minutes; the local gate failed one test the builder's host passed, and the review
   (about 17 minutes) found why: a wrapped mention's trailing space can hang past the width in one font and not
   another, and the product clips the slug to the body while the test expected the unclipped extent; a sweep of 3,602
@@ -2070,7 +2058,7 @@ A landing's record goes here, with its measured times; the package page holds on
   right-to-left lines (L4a's code boxes had the same fault); the gate then passed where it had failed. No second
   review: the fix was tests and ten product lines, and the failing environment proved it.
 - The chat drawer's look, L5 (fenced code blocks and quotes), 2026-11-12: builder launched 05:59, main 06:36
-  (ec0621859, 1bd59a437), 37 minutes, a miss. About 112 product lines (the plan said 100; the builder stopped at 120 and
+  (ec0621859, 1bd59a437), 37 minutes. About 112 product lines (the plan said 100; the builder stopped at 120 and
   the landing was kept whole, since both halves share the empty line's fill and its copy) and 145 test lines. Where the
   minutes went: the build 13 minutes with a stop at the line limit, one review round 16, one fix commit 4. Review round 1
   (no blockers: a plain line between two quote runs or two blocks had no test of its two bars or two panels; the
@@ -2091,7 +2079,7 @@ A landing's record goes here, with its measured times; the package page holds on
   10 of 10 before. No review: a text change with its test, read by the session. Found on the way:
   LEGACY-SKILL-LIST-BEHIND.
 - The chat drawer's look, L6 (`(edited)`), 2026-11-12: builder launched 06:56, main 07:28 (4972afaf9, 5e2b6bd58), 32
-  minutes, a miss by two. About 30 product lines across wire (the record's `edited`, last and left out when false),
+  minutes. About 30 product lines across wire (the record's `edited`, last and left out when false),
   chat's normalization and the drawer, and 150 test lines. Where the minutes went: the build 11 minutes, one review
   round 11, one fix commit 6, the gates 4. Review round 1 (no blockers; a window of the last candidate reads the new
   key in every reply and event, since nothing in the tree denies unknown fields): `(edited)` was in every copy, so a
@@ -2099,7 +2087,7 @@ A landing's record goes here, with its measured times; the package page holds on
   glyph flag the copy cuts at, as L5's empty-line space; the record bound's test and the mark's color and size were
   unpinned. Slack's `edited` object is as Slack documents it; the plan's premise PC is unmeasured.
 - The chat drawer's look, L7 (people by name), 2026-11-12: builder launched 07:29, main 08:18 (0a1469963, f05ccf214,
-  97362d09e), 49 minutes, a miss. About 110 product lines across wire (the record's `names`, bounded at decode), chat
+  97362d09e), 49 minutes. About 110 product lines across wire (the record's `names`, bounded at decode), chat
   (mention lookups in the fill, a reserve for the names inside the record bound, a fill that keeps its own finds),
   the daemon's watch (a change event named from the cache alone) and the drawer, and about 330 test lines; a first
   commit gave every crate's tests one record fixture behind a dev-only feature that the release features check now
@@ -2109,7 +2097,7 @@ A landing's record goes here, with its measured times; the package page holds on
   authors-first order was untested, and a large fill could lose its own first names to the shared cache's eviction.
   No second review: three fixes, each with a test red against the old behavior.
 - The chat drawer's look, L8 (channels by name), 2026-11-12, the first landing after the session moved to another
-  account: builder launched 08:19, main 08:50 (05a793f7a, 2f2c722e9), 31 minutes, a miss by one. About 60 product
+  account: builder launched 08:19, main 08:50 (05a793f7a, 2f2c722e9), 31 minutes. About 60 product
   lines, almost all in chat's name fill (`conversations.info` through the same door, cache, deadline and cap), and 270
   test lines. Where the minutes went: the build 10 minutes, one review round 9, one fix commit 7, the gates 4. Review
   round 1 (no blockers; the new call goes only through the one door with its id validated, and no person's name can
@@ -2130,7 +2118,7 @@ A landing's record goes here, with its measured times; the package page holds on
   whether the rule ever fires. No review: ten lines read by the session, with a red test. It clears the way for the
   daemon to deliver from the pass (B3i2).
 - B3i2a, the daemon's live delivery, 2026-11-12: builder launched 09:03, main 10:00 (5e0622c61, 045457cbb), 57
-  minutes, a miss. About 135 product lines (the plan sized all of B3i2 at 55) and 200 test lines. Where the minutes
+  minutes. About 135 product lines (the plan sized all of B3i2 at 55) and 200 test lines. Where the minutes
   went: the builder stopped at the line limit after 6 minutes with a whole draft of about 190 lines (the owner holds,
   runs and logs four kinds of job, which the plan never counted), the session split it in three (this live path; the
   passes and the commit; the delivery's end before a step-down), the live path took 24 minutes, one review round 14,
@@ -2139,7 +2127,7 @@ A landing's record goes here, with its measured times; the package page holds on
   records missed what waits for the passes. The plan's comm_wake characterization does not exist on main and is
   owed. No hub maps a delivering channel, so nothing on any computer runs this until a person configures one.
 - B3i2b, the daemon's passes and its boundary commit, 2026-11-12: builder handed the landing at 10:02, main 10:51
-  (0c456d990, 32816bdfb), 49 minutes, a miss. About 60 product lines and 290 test lines. Where the minutes went: the
+  (0c456d990, 32816bdfb), 49 minutes. About 60 product lines and 290 test lines. Where the minutes went: the
   build 18 minutes, the gate 3, one review round 10, one fix commit 14. Review round 1 (no blockers; no probe lost mail
   or filed it twice, and a commit never outran its filings): three rules had no failing test (an absent recipient
   costs no read, a refused live post is filed once by the next pass, a pass job's panic still answers), the
@@ -2147,7 +2135,7 @@ A landing's record goes here, with its measured times; the package page holds on
   what waits for what. Left as notes in the contract: two commits of one channel can fail on their shared temporary
   name, and a pass does not ask the hub check until the delivery's end order exists (B3i2c).
 - B3i2c, the delivery's end before the service stops, 2026-11-12: builder handed the landing at 10:52, main 11:43
-  (ce9737b9e, e136cb610), 51 minutes, a miss. About 60 product lines and 140 test lines, with the plan's comm_wake
+  (ce9737b9e, e136cb610), 51 minutes. About 60 product lines and 140 test lines, with the plan's comm_wake
   characterization (a `#chat` line with a hostile body wakes a free Claude row with the fixed line alone), which the
   plan had called green on main but which did not exist. Where the minutes went: the build 18 minutes, the gate 3, one
   review round 11, one fix commit 15. Review round 1 (no blockers): aborting a pass detached its inner job, which kept
@@ -2157,7 +2145,7 @@ A landing's record goes here, with its measured times; the package page holds on
   nothing, and every filing asks first. B3i2's three landings took about 2 h 40 min for about 255 product lines against
   the plan's 55.
 - B3j, the row replies, 2026-11-12: builder handed the landing at 11:46, main 12:41 (43d37777f, 7a0028139, fe0ace161,
-  d607bcb83), 55 minutes, a miss. About 155 product lines (115 of code: the verb 105 with comments, the dispatch 32,
+  d607bcb83), 55 minutes. About 155 product lines (115 of code: the verb 105 with comments, the dispatch 32,
   the post's checks 16) against the plan's 100, and about 520 test lines against its 270, with the stage's done test (a
   channel post filed as marked mail with no window open, across a restart and a lost state folder, and the row's reply
   reaching its thread). Where the minutes went: the build 25 minutes, the gate 3, one review round 13, one fix commit
@@ -2177,7 +2165,7 @@ A landing's record goes here, with its measured times; the package page holds on
   mutant and against a dropped part, and agents guarantee 13 now cites both testsets. A deletion's cover is a claim to
   test with mutants, not to read.
 - The chat's configuration refusals name their file, 2026-11-12: builder handed the landing at 13:10, main 13:46
-  (9adf05135, e28763b94), 36 minutes, a miss. About 30 product lines and 90 test lines. Two defects a session met at
+  (9adf05135, e28763b94), 36 minutes. About 30 product lines and 90 test lines. Two defects a session met at
   the hub's first chat start: a refused `chat.toml` and a refused `chat-secrets.toml` gave the same words, and a key
   the file must not hold gave none; and two programs wrote the secrets file in two forms. Now every refusal's line
   starts with its file's name and names a stray key only when another chat table accepts it (any other key, a
@@ -2208,11 +2196,11 @@ A landing's record goes here, with its measured times; the package page holds on
   20:14 to 20:47, review round 1 11 minutes (0 blockers; a start-up race that started three children from five
   previews, two rules no test held), fixes 11, round 2 14 (0 blockers; a start that failed and a copy the preview
   refused were both retried at every preview), fixes 8, then the gate and the hosted run; 87 minutes from the second
-  build's launch, a miss: two review rounds, each finding behavior worth fixing before the landing. The removal of the
+  build's launch: two review rounds, each finding behavior worth fixing before the landing. The removal of the
   plugins' lazy load is right once no JLL loads in the kernel (4.5 ms, 2 MiB).
 - Copy as one line, 2026-11-13, the first of the four defects a person saw that the fifth candidate carries (the
   maintainer: a release candidate saves nothing for the next one). Builder launched 19:37, main 20:33 (010f71a71,
-  f33dda4c3, 3d7efb008), 56 minutes, a miss. A long command Claude Code had word-wrapped itself pasted as two lines
+  f33dda4c3, 3d7efb008), 56 minutes. A long command Claude Code had word-wrapped itself pasted as two lines
   (PANE-COPY-KEEPS-WRAPS). The first build joined, in the default copy, every break where the next word would not have
   fit, read from Claude Code's own wrap settings; its full gate passed, and review round 1 found the blocker: that
   default glued real lines on common screens (Claude Code's input box and rules, tables, a list of paths, two URLs, the
@@ -2228,7 +2216,7 @@ A landing's record goes here, with its measured times; the package page holds on
   stayed, so the plain case was already closed. A diagnosis (19:52 to 20:14) found the race the report fits: the wake
   read a free prompt, held about 1.5 s, and took the row's pen only as it typed, so a person's first key in that gap had
   the wake line appended to it; its test was red at main. Builder 20:15, main 21:11 (71311e0ab, 8fe46a0a6), 56 minutes
-  from the build, a miss. The wake now takes the pen before its hold; a window's key the row refuses because a wake
+  from the build. The wake now takes the pen before its hold; a window's key the row refuses because a wake
   took the pen is retaken and sent once, and a second refusal says "not sent" on the status line instead of vanishing.
   Review round 1 (no blocker) found an untested guard whose loss crashed the window's attach worker, and four sentences
   that overstated the fix; a key typed between the wake's text and its Enter still lands after the wake line, unlost,
@@ -2239,7 +2227,7 @@ A landing's record goes here, with its measured times; the package page holds on
   a lab server: real capsules and the window's attach client switching every 200 ms, with and without load. Every client
   parked in the warm pool of a busy row was cut (6 of 6, 3 of 3, 6 of 6): once 4 MiB of output sat unread its worker
   stopped reading, the row cut it after its 5 s write bound, and the window reused it as attached, a stale screen and a
-  lost key. Builder 21:11, main 21:55 (6c0fb7fd8, f89667976), 44 minutes, a miss. A parked client now keeps reading,
+  lost key. Builder 21:11, main 21:55 (6c0fb7fd8, f89667976), 44 minutes. A parked client now keeps reading,
   drops past 4 MiB, and asks for the row's screen once when shown again. Review round 1 found one blocker: the first
   test pinned one of the four rules (five of six mutants passed); each now fails by assertion, and showing a parked
   client wakes its worker, which also needed a fresh read of whether it is shown (a quiet row's screen had waited out a
@@ -2251,15 +2239,14 @@ A landing's record goes here, with its measured times; the package page holds on
   another daemon refused (every 2 s, or about 152 s when the other held the lock without answering, which fits the 36
   restarts reported), and each 152 s try ran the relay refresh before it took the lock: a reset of every relay unit, a
   reload of the user manager and a restart of every relay socket. Builder 21:19, main 22:07 (087bd1f61, 4ee9b944d), 48
-  minutes, a miss. The refresh now runs only after the lock is held, and a start another daemon refuses exits 69,
+  minutes. The refresh now runs only after the lock is held, and a start another daemon refuses exits 69,
   which the unit does not restart (the unit's unlimited restarts dated from the first commit, meant for outages; the
   one change is that an outside daemon ending leaves the unit down until the next launch). Review round 1, no blocker:
   four stale pages and comments, guard tests that reached a real user manager through `systemd-run` (now stubbed), and
   a sentence that called the hang explained. The loop closed under its own id (SOTD-UNIT-RESTART-LOOP); the hang of
   over two minutes stays open, unreproduced, with what would settle it.
 - Input around an attach, 2026-11-13, the three reading notes left beside KEYS-DROPPED-WHILE-A-ROW-ATTACHES, taken
-  into the fifth candidate rather than saved. Builder 22:00, main 23:11 (f0f4ac65f, d28f867f2, dd6c94b86), 71 minutes,
-  a miss: three review rounds. All three were real: input with no run identity before a client's first attach is now
+  into the fifth candidate rather than saved. Builder 22:00, main 23:11 (f0f4ac65f, d28f867f2, dd6c94b86), 71 minutes: three review rounds. All three were real: input with no run identity before a client's first attach is now
   refused and counted (no production caller reached it); the discard notice is one private count with its drawn record,
   cleared only by a person's act after a frame drew it, a switch carrying it to the next row; and a retired client
   stops before it counts, so only input never taken is said not sent, held keys dropped by pruning included. Round 1

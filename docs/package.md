@@ -165,8 +165,8 @@ A plan states the change: its rules, the files it touches, and its product and t
 or an estimate. The load (every file the change reads or writes, whole and once, `wc -c` / 4, with the contracts it
 edits and those that cite them) decides the context that holds the change whole; it never decides the number of
 landings, and a change is split only when the change itself is large. A planner prompt asks for the change and its
-traps, never a load split or a time. An edit past ten minutes is a flag, and a landing past thirty minutes from its
-change to main is a failure, stopped and written up with its cause. Each new rule gets one test, red before the
+traps, never a load split or a time. A landing's record gives its minutes and where they went, and no code change takes an
+hour (the maintainer, 2026-11-07). Each new rule gets one test, red before the
 change, and the proof is the build, the existing suite and those tests. A landing's record, with its measured times,
 goes to `docs/history/passes.md`, which no pass loads, not to this page; the same file holds the pass table, the
 earlier text of the sections above and the integration-test assignment by pass.
