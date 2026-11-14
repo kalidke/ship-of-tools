@@ -79,6 +79,8 @@ impl PaneClient for Scripted {
     fn at_ground(&self) -> bool { self.ground }
 }
 fn key(h: &str, n: &str) -> WsKey { (h.into(), n.into()) }
+const ZERO: Duration = Duration::ZERO;
+const LENGTH: Duration = Duration::from_millis(150);
 fn after(t: Instant, ms: u64) -> Instant { t + Duration::from_millis(ms) }
 fn select(p: &mut Pane, h: &str, n: &str, t: Instant, bound: usize) -> Vec<Scripted> {
     let switch = p.begin_switch(key(h, n), Some(t), bound);
@@ -367,18 +369,18 @@ fn a_wheel_while_connecting_holds_nothing() {
     let t = Instant::now();
     let mut p = Pane::new(None);
     select(&mut p, "h", "row", t, 2);
-    assert!(matches!(p.wheel(3), WheelEffect::Pending));
+    assert!(matches!(p.wheel(3, t, ZERO), WheelEffect::Pending));
     let (c, wire) = Scripted::new(b"\x1b[?1000h", false);
     install(&mut p, "h", "row", c, t);
-    assert!(matches!(p.wheel(3), WheelEffect::Redraw));
+    assert!(matches!(p.wheel(3, t, ZERO), WheelEffect::Redraw));
     assert_eq!(wire.borrow().scrolls, vec![3]);
     assert!(wire.borrow().inputs.is_empty());
     assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
     step(&mut p, &wire, Step { checkpoint: true, status: Some("attached"), ..Default::default() }, t);
-    p.wheel(2);
+    p.wheel(2, t, ZERO);
     assert!(wire.borrow().inputs.is_empty(), "mouse tracking waits for a presented screen too");
     present(&mut p, t);
-    p.wheel(-1);
+    p.wheel(-1, t, ZERO);
     assert_eq!(wire.borrow().inputs, vec![b"\x1b[<65;1;1M".to_vec()]);
     assert_eq!(wire.borrow().input_runs, vec!["first"]);
 }
@@ -435,7 +437,7 @@ fn ordinary_input_and_wheel_name_the_shown_run() {
     wire.borrow_mut().run = "unshown".into();
     p.send_input(b"key");
     p.send_input(b"\x1b[200~paste\x1b[201~");
-    p.wheel(1);
+    p.wheel(1, t, ZERO);
     assert_eq!(wire.borrow().inputs, vec![b"key".to_vec(), b"\x1b[200~paste\x1b[201~".to_vec(), b"\x1b[<64;1;1M".to_vec()]);
     assert_eq!(wire.borrow().input_runs, vec!["first"; 3]);
 }
@@ -854,26 +856,26 @@ fn a_wrapped_row_keeps_the_spaces_at_its_wrap_point() {
 fn paging_and_wheel_preserve_terminal_modes() {
     let t = Instant::now();
     let mut p = Pane::new(None);
-    assert!(p.page(true, 24));
-    assert!(matches!(p.wheel(3), WheelEffect::Pending));
+    assert!(p.page(true, 24, t, ZERO));
+    assert!(matches!(p.wheel(3, t, ZERO), WheelEffect::Pending));
     let a = ready(&mut p, "h", "a", b"1\r\n2\r\n3", t);
-    assert!(p.page(true, 24));
-    assert!(p.page(false, 0));
-    assert!(matches!(p.wheel(-2), WheelEffect::Redraw));
+    assert!(p.page(true, 24, t, ZERO));
+    assert!(p.page(false, 0, t, ZERO));
+    assert!(matches!(p.wheel(-2, t, ZERO), WheelEffect::Redraw));
     assert_eq!(a.borrow().scrolls, vec![8, -1, -2]);
     step(&mut p, &a, Step { output: b"\x1b[?1049h", ..Default::default() }, t);
     present(&mut p, t);
-    assert!(!p.page(true, 24), "alternate-screen page falls through to raw key input");
+    assert!(!p.page(true, 24, t, ZERO), "alternate-screen page falls through to raw key input");
     p.send_input(b"\x1b[5~");
     step(&mut p, &a, Step { output: b"\x1b[?1000h", ..Default::default() }, t);
-    p.wheel(20);
-    p.wheel(-1);
+    p.wheel(20, t, ZERO);
+    p.wheel(-1, t, ZERO);
     assert_eq!(a.borrow().inputs[0], b"\x1b[5~");
     assert_eq!(a.borrow().inputs[1..9], vec![b"\x1b[<64;1;1M".to_vec(); 8]);
     assert_eq!(a.borrow().inputs[9], b"\x1b[<65;1;1M");
     assert_eq!(a.borrow().input_runs, vec!["first"; 10]);
     select(&mut p, "h", "b", t, 2);
-    p.wheel(5);
+    p.wheel(5, t, ZERO);
     assert_eq!(a.borrow().inputs.len(), 10, "Pending wheel never reaches a parked mouse client");
 }
 
@@ -1398,4 +1400,79 @@ fn an_enter_the_full_hold_refuses_says_so() {
     select(&mut p, "h", "row", t, 2);
     p.send_input(b"a");
     assert_eq!(held_key(&mut p, NamedKey::Enter, false, t), "Enter held, not sent; wait for the row's screen");
+}
+
+/// The ring's offset, as the pane draws it.
+fn back(p: &Pane) -> usize { p.pane_attach_term.as_ref().expect("client").screen().scrollback() }
+fn history(rows: usize) -> String { (0..rows).map(|i| format!("line {i}\r\n")).collect() }
+/// Frames every 8 ms from `from` while the pane's scroll moves; the last frame's time.
+fn frames_until_rest(p: &mut Pane, t: Instant, mut ms: u64) -> u64 {
+    while p.spend_scroll(after(t, ms)) {
+        ms += 8;
+        assert!(ms < 10_000, "a scroll that never rests");
+    }
+    ms
+}
+
+#[test]
+fn a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", history(60).as_bytes(), t);
+    assert!(p.page(true, 24, t, LENGTH));
+    assert!(wire.borrow().scrolls.is_empty() && back(&p) == 0, "nothing moves at the event itself");
+    // The first row shows at the first frame, and the page comes to rest on its eight rows.
+    assert!(p.spend_scroll(after(t, 8)));
+    assert!(back(&p) >= 1 && back(&p) < 8, "{}", back(&p));
+    let rest = frames_until_rest(&mut p, t, 16);
+    assert_eq!(back(&p), 8);
+    assert_eq!(wire.borrow().scrolls.iter().sum::<i32>(), 8);
+    assert!(wire.borrow().scrolls.iter().all(|r| *r > 0), "{:?}", wire.borrow().scrolls);
+    assert!(rest >= 152, "the length runs out at its end: {rest}");
+    // A one-row wheel step is its one row at its first frame.
+    let t = after(t, 1000);
+    assert!(matches!(p.wheel(-1, t, LENGTH), WheelEffect::Redraw));
+    assert_eq!(back(&p), 8);
+    p.spend_scroll(after(t, 8));
+    assert_eq!(back(&p), 7);
+    frames_until_rest(&mut p, t, 16);
+    assert_eq!(back(&p), 7);
+    // Typing returns to the live tail at once and ends what is owed.
+    p.page(true, 24, t, LENGTH);
+    p.spend_scroll(after(t, 200));
+    p.reset_scroll();
+    assert_eq!(back(&p), 0);
+    assert!(!p.spend_scroll(after(t, 208)));
+    assert_eq!(back(&p), 0, "a stopped motion owes nothing");
+}
+
+#[test]
+fn a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let a = ready(&mut p, "h", "a", history(60).as_bytes(), t);
+    p.sync_size((80, 24));
+    // The live tail ends a scroll toward it; nothing is owed past the edge.
+    p.page(false, 24, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    assert!(!p.spend_scroll(after(t, 16)) && back(&p) == 0);
+    // A reshape's snap to live ends one on its way up.
+    p.page(true, 24, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    assert!(back(&p) > 0);
+    p.sync_size((80, 20));
+    assert_eq!(back(&p), 0);
+    assert!(!p.spend_scroll(after(t, 16)) && back(&p) == 0);
+    // A switch finishes it, so the parked ring stands where the person asked.
+    a.borrow_mut().scrolls.clear();
+    p.page(true, 20, t, LENGTH);
+    p.spend_scroll(after(t, 8));
+    select(&mut p, "h", "b", t, 2);
+    assert_eq!(a.borrow().scrolls.iter().sum::<i32>(), 6);
+    assert!(!p.spend_scroll(after(t, 16)));
+    // A program that owns the screen is moved at once, as before.
+    let b = ready(&mut p, "h", "c", b"\x1b[?1049h", t);
+    p.wheel(2, t, LENGTH);
+    assert_eq!(b.borrow().scrolls, vec![2]);
+    assert!(!p.spend_scroll(after(t, 8)));
 }

@@ -124,7 +124,10 @@ impl<C: PaneClient> AgentPane<C> {
         self.pane_attach_requested_at = origin;
         self.pane_presentation.begin(origin);
         let mut retired = Vec::new();
+        // The parked position is the one the person asked for, not one part-way.
+        let owed = self.motion.finish_rows();
         if let Some(mut client) = self.pane_attach_term.take() {
+            if owed != 0 { client.scroll(owed); }
             self.pane_hold = Some(HeldPaneScreen(client.screen().clone()));
             match self.bl_pane_target.clone() {
                 Some(key) if client.is_checkpointed() && !client.is_dead() => {
@@ -343,6 +346,7 @@ impl State {
         }
         if let Some(status) = effect.status { self.status.set(status); }
         if let Some(b64) = effect.copy { self.copy_to_clipboard(&b64); }
+        if self.agent_pane.spend_scroll(Instant::now()) { self.pacer.mark_dirty(); }
     }
 
     /// A copy the pane's row asked for (`/copy` in Claude Code, any OSC 52 write) lands on this window's clipboard, the

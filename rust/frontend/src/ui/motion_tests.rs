@@ -158,3 +158,67 @@ fn the_curve_is_a_cubic_ease_out() {
     assert!((m.spend(at(t0, 75), NEVER) - 7.0).abs() < 1e-4);
     assert!((m.owed() - 1.0).abs() < 1e-4);
 }
+
+/// Frames every `step` ms from the ask until the motion rests, in whole rows: what each frame shows.
+fn row_frames(m: &mut ScrollMotion, t0: Instant, step: u64, cap: f32) -> Vec<i32> {
+    let mut shown = Vec::new();
+    let mut ms = step;
+    while m.moving() {
+        shown.push(m.spend_rows(at(t0, ms), cap));
+        ms += step;
+        assert!(ms < 10_000, "a motion that never rests");
+    }
+    shown
+}
+
+#[test]
+fn whole_rows_move_the_first_row_at_once_and_end_with_the_last() {
+    for (asked, step) in [(8_i32, 8_u64), (8, 16), (8, 33), (1, 8), (3, 100), (-8, 8), (-1, 16), (-5, 33)] {
+        let t0 = Instant::now();
+        let mut m = ScrollMotion::default();
+        assert_eq!(m.ask_rows(asked, t0, LENGTH), 0, "nothing at the event itself");
+        let shown = row_frames(&mut m, t0, step, NEVER);
+        assert_eq!(shown.iter().sum::<i32>(), asked, "{asked} at {step} ms: {shown:?}");
+        // The first row comes at the first frame, in the direction of travel, and no frame turns back.
+        assert_eq!(shown[0].signum(), asked.signum(), "{asked} at {step} ms: {shown:?}");
+        assert!(shown.iter().all(|r| r.signum() != -asked.signum()), "{shown:?}");
+        // Rest comes at the first frame at or past the deadline, with the last row shown by then.
+        assert_eq!(shown.len() as u64, (150 + step - 1) / step, "{asked} at {step} ms");
+        assert!(!m.moving() && m.owed() == 0.0);
+    }
+    // A one-row step is the whole of its first frame.
+    let t0 = Instant::now();
+    let mut m = ScrollMotion::default();
+    m.ask_rows(1, t0, LENGTH);
+    assert_eq!(m.spend_rows(at(t0, 8), NEVER), 1);
+    assert!(m.moving(), "the length still runs, with nothing more to show");
+    assert_eq!(m.spend_rows(at(t0, 80), NEVER), 0);
+    assert_eq!(m.spend_rows(at(t0, 150), NEVER), 0);
+    assert!(!m.moving());
+    // The cap spends a pane's excess at once, in rows, and the total still lands.
+    let mut m = ScrollMotion::default();
+    m.ask_rows(-100, t0, LENGTH);
+    let first = m.spend_rows(at(t0, 8), 20.0);
+    assert!(first < -80, "{first}");
+    assert_eq!(first + row_frames(&mut m, t0, 8, 20.0).iter().sum::<i32>(), -100);
+}
+
+#[test]
+fn a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry() {
+    let t0 = Instant::now();
+    let mut m = ScrollMotion::default();
+    assert_eq!(m.ask_rows(3, t0, Duration::ZERO), 3);
+    assert!(!m.moving());
+    // A motion already owing, with a row shown ahead of the curve, hands over exactly what is left of the total.
+    m.ask_rows(5, t0, LENGTH);
+    let shown = m.spend_rows(at(t0, 8), NEVER);
+    assert_eq!(shown + m.ask_rows(2, at(t0, 9), Duration::ZERO), 7);
+    assert!(!m.moving());
+    // A stop forgets the row shown ahead, so the next motion counts from its own ask.
+    m.ask_rows(5, t0, LENGTH);
+    m.spend_rows(at(t0, 8), NEVER);
+    m.stop();
+    m.ask_rows(4, at(t0, 200), LENGTH);
+    assert_eq!(row_frames(&mut m, at(t0, 200), 16, NEVER).iter().sum::<i32>(), 4);
+    assert_eq!(m.finish_rows(), 0);
+}

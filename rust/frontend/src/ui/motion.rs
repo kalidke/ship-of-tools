@@ -4,6 +4,9 @@
 
 use std::time::{Duration, Instant};
 
+/// Float noise in a sum of spends never shows a row the curve has not reached.
+const ROW_EPS: f32 = 1.0e-3;
+
 #[derive(Default)]
 pub(in crate::ui) struct ScrollMotion {
     /// Distance asked and not yet spent, signed, in the pane's unit: the view comes to rest where the person asked.
@@ -12,6 +15,9 @@ pub(in crate::ui) struct ScrollMotion {
     deadline: Option<Instant>,
     /// The last spend's time (or the ask's), so the same curve runs at 60 and 120 frames a second.
     last: Option<Instant>,
+    /// A cell pane's whole-row spend: the distance spent minus the rows shown, so the first row shows at the first
+    /// frame (the rows run ahead of the curve by less than one) and the asked total still lands.
+    carry: f32,
 }
 
 impl ScrollMotion {
@@ -65,6 +71,44 @@ impl ScrollMotion {
     pub(in crate::ui) fn stop(&mut self) {
         self.owed = 0.0;
         self.deadline = None;
+        self.carry = 0.0;
+    }
+
+    /// `ask` for a pane that moves in whole rows: what to apply now, which with a zero `length` is the asked rows and
+    /// all that was owed.
+    pub(in crate::ui) fn ask_rows(&mut self, delta: i32, now: Instant, length: Duration) -> i32 {
+        if length.is_zero() {
+            return delta + self.finish_rows();
+        }
+        self.ask(delta as f32, now, length);
+        0
+    }
+
+    /// `spend` for a pane that moves in whole rows: the rows this frame shows. Rows are the spent distance rounded up
+    /// in the direction of travel, so the first row shows at the first frame; the last frame rounds, so the asked
+    /// total is what is shown, never a row more.
+    pub(in crate::ui) fn spend_rows(&mut self, now: Instant, cap: f32) -> i32 {
+        let carry = self.carry;
+        let spent = self.spend(now, cap);
+        let total = carry + spent;
+        let rows = if !self.moving() {
+            total.round()
+        } else if spent > 0.0 {
+            (total - ROW_EPS).ceil().max(0.0)
+        } else if spent < 0.0 {
+            (total + ROW_EPS).floor().min(0.0)
+        } else {
+            0.0
+        };
+        self.carry = if self.moving() { total - rows } else { 0.0 };
+        rows as i32
+    }
+
+    /// `finish` in whole rows: the rows still to show.
+    pub(in crate::ui) fn finish_rows(&mut self) -> i32 {
+        let rest = self.owed + self.carry;
+        self.stop();
+        rest.round() as i32
     }
 
     /// What is owed, for a caller that asks for a target rather than a distance.
