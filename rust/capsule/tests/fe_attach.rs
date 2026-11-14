@@ -484,3 +484,60 @@ fn a_row_socket_path_too_long_ends_the_attach_with_a_named_error() {
     }
     assert!(client.status_line().contains("too long"), "{:?}", client.status_line());
 }
+
+/// A client off screen is never cut for not being read: past its sink's bound it keeps reading the row and drops the
+/// output, so the row's write bound (5 s) never ends its connection; shown again, its next key is recorded, not lost.
+#[test]
+fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
+    struct Supervisor(std::process::Child);
+    impl Drop for Supervisor {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let runtime = runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_sot-capsule"));
+    cmd.arg("supervise")
+        .arg(&state_dir)
+        .arg("--start")
+        .arg("--")
+        .args(["/bin/sh", "-c", "exec yes 'an agent that writes without pause'"])
+        .env("SOT_RUNTIME_DIR", &runtime)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _supervisor = Supervisor(cmd.spawn().expect("start a supervisor"));
+    let row = sot_platform::host::state_dir::state_dir_hash(&state_dir);
+    let socket = sot_capsule::row::socket_path_in(&runtime, &row).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "the row socket was never bound");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mut client = window(&row);
+    pump_until(&mut client, "attach", |c| c.is_checkpointed() && c.status_line() == "attached");
+    // Parked, as the window's warm pool parks a row it switched away from, and not pumped past the row's write bound.
+    client.set_viewed(false);
+    std::thread::sleep(Duration::from_secs(8));
+    client.set_viewed(true);
+    client.send_input(b"x");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let outcome = loop {
+        client.pump();
+        if let Some(outcome) = client.last_input_outcome() {
+            break outcome;
+        }
+        assert!(Instant::now() < deadline, "the key was never answered; status {:?}", client.status_line());
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(
+        outcome,
+        sot_capsule::attach_client::attach::InputOutcome::Recorded,
+        "the row cut the client while it was off screen; status {:?}",
+        client.status_line()
+    );
+}

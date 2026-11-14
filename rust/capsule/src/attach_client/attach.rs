@@ -18,8 +18,9 @@ use std::time::{Duration, Instant};
 pub const HELD_INPUT_CAP: usize = 8192;
 /// The most input queued for a row that is attached, in bytes: a paste fits, a stalled row does not grow without end.
 const QUEUED_INPUT_CAP: usize = 4 * 1024 * 1024;
-/// Output bytes the sink may hold before the worker stops reading the row, which then evicts a viewer that falls
-/// behind and shows it a fresh snapshot on its redial.
+/// Output bytes the sink may hold. Past it, a client on screen stops reading the row, which then evicts a viewer that
+/// falls behind and shows it a fresh snapshot on its redial; a client off screen keeps reading and drops the output, so
+/// the row never cuts it for not being read, and asks for the screen as it is when it is shown again.
 const SINK_BOUND_BYTES: usize = 4 * 1024 * 1024;
 /// The first wait and the cap of a redial: 250 ms doubling to 4 s, started over only after a connection that lasted
 /// `STABLE`.
@@ -447,16 +448,24 @@ where
     fn serve(&self, client: &mut RowClient<E::Client>, mut driver: bool) -> Ended {
         // A viewer the row resynced (it fell behind, and its queued output was dropped) is sent a fresh screen at the next
         // ground state: the chunks are gathered here and handed over whole.
-        let mut resync: Vec<u8> = Vec::new();        loop {
+        let mut resync: Vec<u8> = Vec::new();
+        // Output dropped while this client was off screen: the screen its owner holds is behind the row's.
+        let mut behind = false;
+        loop {
             if self.stopping() {
                 return Ended::Shutdown;
             }
-            // The sink's owner has not consumed what it was given: stop reading, so the row's own queue fills and it
-            // evicts a viewer that cannot keep up.
-            if self.shared.sink_bytes.load(Ordering::Acquire) > SINK_BOUND_BYTES {
+            let viewed = self.shared.viewed.load(Ordering::Acquire);
+            let full = self.shared.sink_bytes.load(Ordering::Acquire) > SINK_BOUND_BYTES;
+            // The sink's owner has not consumed what it was given. On screen: stop reading, so the row's own queue fills
+            // and it evicts a viewer that cannot keep up. Off screen: keep reading and drop the output, since a row
+            // whose writes stall for its write bound cuts the connection, and the window would learn of that only
+            // once it had replayed the stale output of a client it already shows as attached.
+            if full && viewed {
                 std::thread::sleep(Duration::from_millis(2));
             } else {
                 match client.next_event(EVENT_TICK) {
+                    Ok(Some(RowEvent::Output(_))) if full => behind = true,
                     Ok(Some(RowEvent::Output(bytes))) => {
                         self.shared.sink_bytes.fetch_add(bytes.len(), Ordering::AcqRel);
                         (self.sink)(WorkerEvent::Output(bytes));
@@ -474,8 +483,10 @@ where
                     Err(e) => return Ended::Lost(e),
                 }
             }
-            // Output dropped while a request waited: ask the row for the screen as it is, which arrives as a snapshot.
-            if client.take_lost_output() {
+            // Output dropped while a request waited, or while off screen: ask the row for the screen as it is, which
+            // arrives as a snapshot.
+            if client.take_lost_output() || (behind && viewed) {
+                behind = false;
                 let (cols, rows) = *self.shared.size.lock().unwrap_or_else(|p| p.into_inner());
                 match client.attach(cols, rows, driver) {
                     Ok(run) => *self.shared.run.lock().unwrap_or_else(|p| p.into_inner()) = run,

@@ -620,10 +620,13 @@ owned by `docs/CLAUDE.md`.
 - **KEYS-DROPPED-WHILE-A-ROW-ATTACHES** [person] Keys typed while a row's attach is pending were discarded ("intermittent
   freezes, keys discarded") during a load average of 110 on 32 cores. The key loss is fixed: keys typed while a row
   connects are held in a visible line on the pane, held per row with an 8 KiB bound, and sent only by a fresh Enter one
-  second after the row's screen was presented, into the run it showed. Open: why a first attach closed about 100 ms
-  after it opened (bursts of "capsule attach episode failure ... status=redialing" while rows were switched every
-  200 ms, and single ones). The attach end records now log stage, cause and full error; read them at the next
-  occurrence. Beside it: a client installed but not yet attached forwards input with no run identity, so it can land in
+  second after the row's screen was presented, into the run it showed. A warm client the window had parked for a row
+  it switched away from stopped reading once 4 MiB of the row's output waited unread, and the row cut it at its 5 s
+  write bound; shown again, it replayed the stale output as attached, so a key typed then was lost as delivery
+  unknown, and its "episode failure ... status=redialing" came about 100 ms after the switch. Fixed: a client off
+  screen keeps reading and drops the output, and asks for the screen when shown. Not confirmed against a person's
+  window log: a first attach closing for another cause is still open; read the end records at the next one.
+  Beside it: a client installed but not yet attached forwards input with no run identity, so it can land in
   a run the person never saw, against the pane's own rule; the discard notice clears on attach and can go unseen; a
   client dropped with unsent input has no accounting.
 - **REPLY-BAR-DELETE** [note] The window's reply bar and `page.reply` over the window's connection serve only a daemon from
