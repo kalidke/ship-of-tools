@@ -139,6 +139,8 @@ fn copy_selection_status(
 
 fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
     let KeyPress { event, action, .. } = key;
+    let now = std::time::Instant::now();
+    let length = crate::ui::motion::SCROLL_LENGTH;
     match action {
         Some(Action::ScrollPageUp) => {
             // 1/3-pane step preserves reading
@@ -147,11 +149,11 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
             // for the "I really want to jump"
             // case.
             let page_step = (h / 3).max(1);
-            state.shaped.scroll_by(-page_step);
+            state.shaped.scroll_by(-page_step, now, length);
         }
         Some(Action::ScrollPageDown) => {
             let page_step = (h / 3).max(1);
-            state.shaped.scroll_by(page_step);
+            state.shaped.scroll_by(page_step, now, length);
         }
         // Plain ArrowUp / ArrowDown scroll the
         // markdown preview vertically by one row.
@@ -159,23 +161,23 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // (Action::PreviewPngPanUp/Down) so this
         // arm only fires for non-PNG content.
         Some(Action::PreviewUp) => {
-            state.shaped.scroll_up(1);
+            state.shaped.scroll_by(-1, now, length);
         }
         Some(Action::PreviewDown) => {
-            state.shaped.scroll_down(1);
+            state.shaped.scroll_by(1, now, length);
         }
         Some(Action::PreviewStart) if !event.repeat => {
-            state.shaped.scroll_to_top();
+            state.shaped.scroll_to_top(now, length);
         }
         Some(Action::PreviewEnd) if !event.repeat => {
             // Redraw clamps to (total - visible).
-            state.shaped.scroll_to_end();
+            state.shaped.scroll_to_end(now, length);
         }
         Some(Action::PreviewHalfUp) => {
-            state.shaped.scroll_by(-(h / 2));
+            state.shaped.scroll_by(-(h / 2), now, length);
         }
         Some(Action::PreviewHalfDown) => {
-            state.shaped.scroll_by(h / 2);
+            state.shaped.scroll_by(h / 2, now, length);
         }
         _ => {}
     }

@@ -131,9 +131,11 @@ impl State {
         // back via ceil so the final body-line step always lands the
         // bottom of the document on screen (no off-by-fraction clip).
         let max_scroll = preview_max_scroll(line_h, visible_px, shown);
-        self.shaped.clamp_scroll(max_scroll);
-        let preview_scroll_px = self.shaped.scroll() as f32 * line_h;
-        preview_scroll_px
+        // A person's scroll eases over frames: spend this frame's share, and keep frames coming until it rests.
+        if self.shaped.advance(std::time::Instant::now(), max_scroll, visible_px / line_h, show_edit) {
+            self.pacer.mark_dirty();
+        }
+        self.shaped.scroll_px()
     }
 }
 

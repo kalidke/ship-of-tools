@@ -122,7 +122,7 @@ fn a_scrolled_short_pane_clips_the_tint_as_the_preview_does() {
     let metrics = md.buffer.metrics();
     let line = md.line_height();
     let mut preview = ShapedPreview::new(md, HighlightService::new().unwrap(), rect);
-    preview.scroll_down(1);
+    preview.scroll_by(1, std::time::Instant::now(), std::time::Duration::ZERO);
     let mut fixture = Fixture::new(&mut fs, metrics, TEXT, None);
     fixture.rect = rect;
     fixture.scroll_px = line;

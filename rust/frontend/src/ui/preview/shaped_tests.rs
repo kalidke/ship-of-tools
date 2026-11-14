@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ui::render::text::EXTRA_TOP_PAD_PX;
+use std::time::{Duration, Instant};
 
 const TEXT: &str = "alpha beta gamma delta epsilon zeta eta theta\nbravé charlie\nomega";
 
@@ -20,7 +21,7 @@ fn at(p: &ShapedPreview, line: usize, byte: usize) -> (f32, f32) {
         if let Some(glyph) = run.glyphs.iter().find(|g| g.start == byte) {
             return (p.rect().x + glyph.x + glyph.w * 0.15,
                 p.rect().y + EXTRA_TOP_PAD_PX + run.line_top + run.line_height * 0.5
-                    - p.scroll() as f32 * p.md().line_height());
+                    - p.scroll_px());
         }
     }
     panic!("no shaped glyph at ({line}, {byte})");
@@ -96,7 +97,7 @@ fn preview_scroll_and_resize_keep_text_positions_and_hit_the_drawn_text() {
     let (mut p, mut fs) = preview(TEXT, 145.0, 400.0);
     select(&mut p);
     let expected = p.selected_text();
-    p.scroll_down(1);
+    p.scroll_by(1, std::time::Instant::now(), std::time::Duration::ZERO);
     assert_eq!(p.selected_text(), expected);
     let pos = at(&p, 1, 7);
     let cursor = p.hit(pos, true).unwrap();
@@ -109,7 +110,7 @@ fn preview_scroll_and_resize_keep_text_positions_and_hit_the_drawn_text() {
 #[test]
 fn preview_drag_outside_clamps_to_visible_lines() {
     let (mut p, _fs) = preview("alpha\nbravo\ncharlie\ndelta\necho", 200.0, 42.0);
-    p.scroll_down(1);
+    p.scroll_by(1, std::time::Instant::now(), std::time::Duration::ZERO);
     let start = p.hit(at(&p, 1, 0), true).unwrap();
     p.press(Some(start));
     assert!(p.extend_drag((p.rect().x + p.rect().w + 100.0, p.rect().y + 1000.0)));
@@ -127,7 +128,7 @@ fn preview_tint_has_one_clipped_rectangle_per_selected_visual_line() {
     assert_eq!(rects.len(), selected_lines);
     assert!((rects[0].x - at(&p, 0, 6).0).abs() < 5.0);
     assert!((rects[0].y - p.rect().y - EXTRA_TOP_PAD_PX).abs() < 0.01);
-    p.scroll_down(1);
+    p.scroll_by(1, std::time::Instant::now(), std::time::Duration::ZERO);
     p.layout(ScreenRect { h: 42.0, ..p.rect() }, &mut fs);
     let clipped = p.selection_rects();
     assert!(!clipped.is_empty());
@@ -248,4 +249,115 @@ fn a_rendered_markdown_selection_is_shared_as_the_files_own_lines() {
         assert_eq!(p.selected_text().as_deref(), Some("beta = 2"));
         assert_eq!(p.released_selection(), Some((((29, 0), (29, 8)), "beta = 2".to_string())));
     }
+}
+
+const LENGTH: Duration = Duration::from_millis(150);
+
+fn long() -> String { (0..40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n") }
+
+fn frame(t0: Instant, ms: u64) -> Instant { t0 + Duration::from_millis(ms) }
+
+/// The screen y of a buffer line's top edge at the preview's drawn offset.
+fn line_top(p: &ShapedPreview, line: usize) -> f32 {
+    let top = p.md().buffer.layout_runs().find(|r| r.line_i == line).unwrap().line_top;
+    p.rect().y + EXTRA_TOP_PAD_PX + top - p.scroll_px()
+}
+
+#[test]
+fn a_wheel_moves_the_preview_over_frames_and_its_hit_test_follows() {
+    let (mut p, _fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    p.scroll_by(3, t0, LENGTH);
+    assert_eq!(p.scroll(), 0.0, "nothing moves at the event itself");
+    assert!(p.advance(frame(t0, 16), 30, 5.0, false), "frames keep coming while it moves");
+    let (lines, px) = (p.scroll(), p.scroll_px());
+    assert!(lines > 0.0 && lines < 3.0 && lines.fract() != 0.0, "{lines}");
+    assert_eq!(px, px.round(), "the drawn offset is a whole pixel");
+    // The hit test reads the same offset: a point a hair inside line 3's top edge is line 3, a hair above it line 2.
+    let (x, y) = (p.rect().x + 2.0, line_top(&p, 3));
+    assert_eq!(p.hit((x, y + 0.1), true).map(|c| c.line), Some(3));
+    assert_eq!(p.hit((x, y - 0.1), true).map(|c| c.line), Some(2));
+    assert!(p.advance(frame(t0, 100), 30, 5.0, false));
+    assert!(!p.advance(frame(t0, 150), 30, 5.0, false), "the last frame rests it");
+    assert_eq!(p.scroll(), 3.0, "on the asked line, exactly");
+    assert_eq!(p.scroll_px(), 3.0 * p.md().line_height());
+    let (x, y) = (p.rect().x + 2.0, line_top(&p, 3));
+    assert_eq!(p.hit((x, y + 0.1), true).map(|c| c.line), Some(3));
+}
+
+#[test]
+fn a_zero_length_scroll_lands_at_once_and_an_edge_drops_what_is_owed() {
+    let (mut p, _fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    p.scroll_by(4, t0, Duration::ZERO);
+    assert_eq!(p.scroll(), 4.0);
+    assert!(!p.advance(frame(t0, 16), 30, 5.0, false));
+    p.scroll_by(-5, t0, LENGTH);
+    assert!(p.advance(frame(t0, 16), 30, 5.0, false));
+    // The top is met before the owed distance is spent: it rests there, and nothing owed keeps frames alive.
+    assert!(!p.advance(frame(t0, 150), 30, 5.0, false));
+    assert_eq!(p.scroll(), 0.0);
+    p.scroll_by(40, t0, LENGTH);
+    assert!(!p.advance(frame(t0, 150), 30, 5.0, false));
+    assert_eq!(p.scroll(), 30.0, "the end clamps what was asked past it");
+    assert!(!p.advance(frame(t0, 300), 30, 5.0, false));
+}
+
+#[test]
+fn home_and_end_ask_their_whole_distance_resolved_at_the_layouts_end() {
+    let (mut p, _fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    p.scroll_to_end(t0, LENGTH);
+    assert_eq!(p.scroll(), 0.0);
+    // The layout knows the end: 30 lines, five visible. Only the last pane of the travel is eased.
+    assert!(p.advance(frame(t0, 16), 30, 5.0, false));
+    assert!(p.scroll() > 25.0 && p.scroll() < 30.0, "{}", p.scroll());
+    assert!(!p.advance(frame(t0, 150), 30, 5.0, false));
+    assert_eq!(p.scroll(), 30.0);
+    p.scroll_to_top(t0, LENGTH);
+    assert!(p.advance(frame(t0, 16), 30, 5.0, false));
+    assert!(p.scroll() < 5.0 && p.scroll() > 0.0, "{}", p.scroll());
+    assert!(!p.advance(frame(t0, 150), 30, 5.0, false));
+    assert_eq!(p.scroll(), 0.0);
+    // A zero length is today's End: the position the layout clamps.
+    p.scroll_to_end(t0, Duration::ZERO);
+    assert!(!p.advance(frame(t0, 300), 30, 5.0, false));
+    assert_eq!(p.scroll(), 30.0);
+}
+
+#[test]
+fn a_new_file_and_a_change_of_buffer_end_what_is_owed() {
+    let (mut p, mut fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    p.scroll_by(6, t0, LENGTH);
+    p.advance(frame(t0, 16), 30, 5.0, false);
+    p.install(MarkdownPreview::new_plain(&mut fs, &long(), 300.0, 1.0));
+    assert_eq!(p.scroll(), 0.0);
+    assert!(!p.advance(frame(t0, 32), 30, 5.0, false), "a new file is at the top and owes nothing");
+    assert_eq!(p.scroll(), 0.0);
+    p.scroll_by(6, t0, LENGTH);
+    p.advance(frame(t0, 16), 30, 5.0, false);
+    let kept = p.scroll();
+    assert!(!p.advance(frame(t0, 32), 30, 5.0, true), "the editor opening stops it where it stood");
+    assert_eq!(p.scroll(), kept.round());
+    assert!(!p.advance(frame(t0, 300), 30, 5.0, true));
+    assert_eq!(p.scroll(), kept.round());
+}
+
+#[test]
+fn a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once() {
+    let src = "module M\n\nexport foo\n\n\"\"\"\nfoo docstring\n\"\"\"\nfunction foo()\nend\n";
+    let (mut p, _fs) = preview(src, 2000.0, 400.0);
+    let t0 = Instant::now();
+    assert!(p.reanchor(Some(8), true, t0, LENGTH));
+    assert_eq!(p.scroll(), 0.0);
+    assert!(p.advance(frame(t0, 16), 40, 9.0, false));
+    assert!(p.scroll() > 0.0 && p.scroll() < 4.0);
+    assert!(!p.advance(frame(t0, 150), 40, 9.0, false));
+    assert_eq!(p.scroll(), 4.0);
+    p.scroll_by(5, t0, LENGTH);
+    p.arm_anchor(Some(8));
+    p.settle_anchor(true);
+    assert_eq!(p.scroll(), 4.0);
+    assert!(!p.advance(frame(t0, 32), 40, 9.0, false), "a reply's anchor owes nothing");
 }
