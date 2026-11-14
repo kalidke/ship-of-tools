@@ -9,6 +9,7 @@ use crate::net::dial::HostKey;
 use crate::net::transport::{ChatReply, OutgoingReq};
 use sot_protocol::ops::{ChatCode, ChatResolveRes};
 use crate::ui::app::NAV_FIRE_DEBOUNCE;
+use crate::ui::chrome::cell_row;
 use crate::ui::ResultRowIdentity;
 
 use super::owner::{Out, GAP_PACE};
@@ -118,11 +119,11 @@ impl RowChannel {
         self.wanted.iter_mut().for_each(|w| (w.answer, w.name) = (Some((stand, now)), name.clone()));
     }
 
-    /// The watched channel as the title says it: `#name` when the last answer named this id, else the id. A name the
-    /// daemon sent is drawn without its control characters.
+    /// A channel as the title and the foot say it: `#name` when the last answer named this id, else the id. The name is
+    /// the daemon's text, so it reaches the cells through `cell_row`.
     pub(super) fn label(&self, channel: &str) -> String {
         match self.wanted.as_ref().and_then(|w| w.name.as_ref()) {
-            Some((id, name)) if id == channel => format!("#{}", name.chars().filter(|c| !c.is_control()).collect::<String>()),
+            Some((id, name)) if id == channel => format!("#{}", cell_row(name)),
             _ => channel.to_string(),
         }
     }

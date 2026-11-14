@@ -463,13 +463,14 @@ impl Chat<Service> {
         tokio::spawn(async move {
             let Some(service) = chat.running().await else { return };
             tracing::info!(status = %Status::Running, "project chat");
-            // The mapped channels' names, looked up once in the background: `chat.resolve` makes no Slack call and
-            // carries what the cache holds, so a window's title can name the channel. A lookup that fails leaves the id.
+            // The mapped channels' names, looked up once in the background (`Api::channel_names`, which holds the
+            // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
+            // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.
             if let (Some(Ok(config)), Ok(api)) = (&chat.config, service.api()) {
                 let channels: Vec<String> = config.mappings().map(|(_, channel)| channel.to_string()).collect();
                 drop(tokio::spawn(async move {
-                    for channel in channels {
-                        api.author_name(&channel).await;
+                    for (channel, code) in api.channel_names(&channels).await {
+                        tracing::warn!(code, channel, "project chat: a channel's name was not found");
                     }
                 }));
             }

@@ -436,10 +436,11 @@ impl ChatDrawer {
         self.compose.retire(rows);
     }
 
-    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and, when the title
-    /// does not already say it, where it goes (`reply in thread of h:mm AM`, the parent's time with its date before it for
-    /// another day, `project::when`; `to <channel>` only for a draft of a channel the title does not name), else where the
-    /// next draft would go: the open thread, or nothing for the watched channel.
+    /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
+    /// (`reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`, or
+    /// `to <channel>`, spelled as the title spells it), else where the next draft would go: the open thread, or the
+    /// watched channel. The foot is silent only when the destination is what the title shows: no thread in the draft,
+    /// none open, and the draft's channel the watched one.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let now = chrono::Local::now();
         self.compose_text_at(focused, now.timestamp(), *now.offset())
@@ -456,8 +457,8 @@ impl ChatDrawer {
         let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
         let to = match thread {
             Some(p) => Some(format!("reply in thread of {}", super::project::when(p.as_str(), now, offset))),
-            None if self.owner.channel() == Some(dest.channel.as_str()) => None,
-            None => Some(format!("to {}", dest.channel.as_str())),
+            None if self.thread.is_none() && self.owner.channel() == Some(dest.channel.as_str()) => None,
+            None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
         Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
     }

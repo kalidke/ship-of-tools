@@ -103,7 +103,8 @@ pub struct ChatResolveReq {
 }
 
 /// Reply to `chat.resolve`. `delivers`: mail may be delivered for the row (a `mail_after` is set). `name`: the channel's
-/// name as the daemon's cache holds it, a public channel's alone (a resolve makes no Slack call); absent, a reader shows the id.
+/// name as the daemon's cache holds it, a public channel's alone (a resolve makes no Slack call); absent, empty, too long or
+/// not a string, a reader shows the id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ChatResolveRes {
@@ -195,10 +196,13 @@ fn cursor<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::E
     Ok(Option::<Bounded>::deserialize(d)?.map(|b| b.0))
 }
 
+/// A name that is empty, longer than `MAX_NAME` or not a string reads as no name: a cosmetic field is never a reason to
+/// refuse the mapping it rides on.
 fn channel_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    #[derive(Deserialize)]
-    struct Bounded(#[serde(deserialize_with = "within::<_, MAX_NAME>")] String);
-    Ok(Option::<Bounded>::deserialize(d)?.map(|b| b.0))
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) if !s.is_empty() && s.len() <= MAX_NAME => Some(s),
+        _ => None,
+    })
 }
 
 /// Reply to `chat.history`. `next` is the cursor for the next page, absent on the last. `limited`: the history was cut

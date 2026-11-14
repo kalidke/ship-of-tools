@@ -9,7 +9,8 @@ use sot_protocol::ops::ChatTarget;
 use crate::ui::chrome::{cell_lines, wrap_status};
 use crate::ui::ResultRowIdentity;
 
-/// The draft rows of the compose block; the row naming where the draft goes (the channel, or the thread) follows them.
+/// The draft rows of the compose block; a row naming where the draft goes (the thread, or a channel the title does not
+/// name) and how many rows are not shown follows them, when there is something to say.
 const DRAFT_ROWS: usize = 3;
 
 #[derive(Debug, PartialEq)]
@@ -136,8 +137,9 @@ pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usiz
     };
     let inner = width.saturating_sub(2).max(1);
     let wrapped: Vec<String> = lines.iter().flat_map(|l| wrap_status(l, inner, inner)).collect();
-    let all_fit = to.is_none() && wrapped.len() <= DRAFT_ROWS.min(height);
-    let hidden = wrapped.len().saturating_sub(if all_fit { wrapped.len() } else { DRAFT_ROWS.min(height.saturating_sub(1)) });
+    // The row is there for a destination, or for the count of rows the draft cannot show.
+    let need_row = to.is_some() || wrapped.len() > DRAFT_ROWS.min(height);
+    let hidden = wrapped.len().saturating_sub(DRAFT_ROWS.min(height.saturating_sub(usize::from(need_row))));
     let mut out: Vec<String> = wrapped[hidden..].iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " })).collect();
     let count = match hidden {
         0 => None,

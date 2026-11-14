@@ -49,6 +49,8 @@ pub(super) struct Levers {
     /// While set, a thread read (`conversations.replies`) is answered 500, and counted in the second field.
     pub(super) replies_fail: Arc<std::sync::atomic::AtomicBool>,
     pub(super) replies_failed: Arc<AtomicUsize>,
+    /// While set, a channel's name lookup (`conversations.info`) is never answered.
+    names_hang: Arc<std::sync::atomic::AtomicBool>,
     /// History calls that reached the fake, counted before the gate.
     histories: Arc<AtomicUsize>,
     /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
@@ -69,11 +71,12 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         channel: Arc::new(Mutex::new(None)),
         replies_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         replies_failed: Arc::new(AtomicUsize::new(0)),
+        names_hang: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         histories: Arc::new(AtomicUsize::new(0)),
         hello: Arc::new(tokio::sync::Semaphore::new(1000)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
-    let (replies_fail, replies_failed) = (lv.replies_fail.clone(), lv.replies_failed.clone());
+    let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -89,6 +92,9 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         }
         if path.ends_with("/chat.postMessage") {
             return Reply::json(&json!({"ok": true, "ts": "1700000250.000100"}));
+        }
+        if path.ends_with("/conversations.info") && names_hang.load(Ordering::SeqCst) {
+            return Reply::Hang;
         }
         if path.ends_with("/conversations.replies") && replies_fail.load(Ordering::SeqCst) {
             replies_failed.fetch_add(1, Ordering::SeqCst);
@@ -781,6 +787,24 @@ async fn the_owner_runs_from_the_services_start_with_no_watch() {
     let mut conn = connect(rig.services.clone()).await;
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
+}
+
+/// The start's name lookup runs beside the start, never in front of it: with a lookup that never answers, the owner
+/// still runs with no connection (a delivering hub's mail depends on it) and a first watch is served at once, well inside
+/// the lookup's own deadline.
+#[tokio::test(flavor = "current_thread")]
+async fn a_name_lookup_that_never_answers_delays_neither_the_owner_nor_the_first_watch() {
+    let (fake, lv) = live().await;
+    lv.names_hang.store(true, Ordering::SeqCst);
+    let rig = super::chat_ops_tests::rig_booting(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let within = Duration::from_secs(3);
+    tokio::time::timeout(within, eventually("the owner with no connection", || hub.running())).await.expect("the start's lookup held the owner back");
+    after_hello(&rig.services.chat, &rig.rows, &alpha_target(&rig)).await;
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    tokio::time::timeout(within, complete(&hub, &["C0AAAA"])).await.expect("the first watch waited for the lookup");
+    assert!(fake.seen().iter().any(|s| s.path().ends_with("/conversations.info")), "the start did look the name up");
 }
 
 /// The capture is `test_log`'s, which no sibling's first reach of the call site can switch off.

@@ -16,6 +16,7 @@ use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_MENTIONS, MAX_NAME};
+use crate::watch::MAX_CHANNELS;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
 /// fifteen seconds covers a slow link and still frees a drawer waiting on a stalled page.
@@ -700,9 +701,42 @@ impl Api {
         name_records(records, |id| names.by_id.get(id).cloned());
     }
 
-    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request.
+    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request,
+    /// cut to `MAX_NAME` bytes on a character boundary.
     pub fn cached_name(&self, id: &str) -> Option<String> {
-        self.names.lock().unwrap().by_id.get(id).cloned()
+        self.names.lock().unwrap().by_id.get(id).map(|n| clean(n, MAX_NAME).0)
+    }
+
+    /// The names of the configured channels, looked up so a later `cached_name` finds them: the distinct channel ids
+    /// among `channels` (at most `MAX_CHANNELS`; a user or a direct-message id is no channel and is not asked for), one
+    /// after another within the one `NAMES_DEADLINE` a fill has, and ended at the first answer no other channel escapes
+    /// (`gives_up`). Each channel that got no name is returned with a fixed code (`ApiError::code`, or `timeout` for one the
+    /// deadline cut off), for the caller to log; a name already cached is not asked for again.
+    pub async fn channel_names(&self, channels: &[String]) -> Vec<(String, &'static str)> {
+        let mut ids: Vec<&String> = Vec::new();
+        for c in channels.iter().filter(|c| is_channel_id(c)) {
+            if !ids.contains(&c) && ids.len() < MAX_CHANNELS {
+                ids.push(c);
+            }
+        }
+        let failed: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+        let lookups = async {
+            for id in &ids {
+                if let Err(e) = self.name_of(id).await {
+                    failed.lock().unwrap().push((id.to_string(), e.code()));
+                    if gives_up(&e) {
+                        break;
+                    }
+                }
+            }
+        };
+        let cut_off = tokio::time::timeout(self.deadlines.names, lookups).await.is_err();
+        let mut failed = failed.into_inner().unwrap();
+        if cut_off {
+            let tried: Vec<String> = failed.iter().map(|(id, _)| id.clone()).collect();
+            failed.extend(ids.iter().filter(|id| self.cached_name(id).is_none() && !tried.contains(id)).map(|id| (id.to_string(), "timeout")));
+        }
+        failed
     }
 
     /// A channel's name from `conversations.info`, cleaned.

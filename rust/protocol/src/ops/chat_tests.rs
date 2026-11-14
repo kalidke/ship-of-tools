@@ -48,8 +48,8 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false}),
     );
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("admiral".into()) },
-        json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "admiral"}),
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("general".into()) },
+        json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general"}),
     );
     pinned(ChatResolveRes::Unmapped, json!({"state": "unmapped"}));
     pinned(ChatWatchReq { target: target() }, json!({"target": target_json()}));
@@ -198,6 +198,23 @@ fn a_cursor_a_text_and_a_name_stop_at_their_bounds() {
     assert!(serde_json::from_value::<ChatPostReq>(post(161, 1)).is_err());
 }
 
+/// A name is never a reason to refuse the mapping: one at the bound is kept, and one that is too long, empty, not a
+/// string or null reads as no name, the reply still mapped.
+#[test]
+fn a_name_that_is_too_long_or_not_a_string_reads_as_no_name() {
+    let name_of = |name: Value| match serde_json::from_value::<ChatResolveRes>(json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": name})).unwrap() {
+        ChatResolveRes::Mapped { name, channel, .. } => {
+            assert_eq!(channel.as_str(), "C1", "the mapping survives");
+            name
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(name_of(json!("n".repeat(160))), Some("n".repeat(160)));
+    for bad in [json!("n".repeat(161)), json!(""), json!(7), json!(["a"]), json!({"a": 1}), Value::Null] {
+        assert_eq!(name_of(bad.clone()), None, "{bad}");
+    }
+}
+
 /// The resolve reply as the window before `name` decoded it: the new reply, with its name, still reads, and an older
 /// daemon's reply, with none, reads as a mapped channel with no name.
 #[test]
@@ -210,7 +227,7 @@ fn an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed() {
         #[serde(other)]
         Invalid,
     }
-    let named = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": "admiral"});
+    let named = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": "general"});
     assert_eq!(serde_json::from_value::<Before>(named).unwrap(), Before::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true });
     let unnamed = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true});
     assert_eq!(
@@ -236,9 +253,6 @@ fn a_target_names_a_real_channel_and_bounded_ids() {
     let long = "W".repeat(65);
     let mapped = json!({"state": "mapped", "workspace": long, "channel": "C1", "delivers": true});
     assert!(serde_json::from_value::<ChatResolveRes>(mapped).is_err());
-    let named = |name: String| json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true, "name": name});
-    assert!(serde_json::from_value::<ChatResolveRes>(named("n".repeat(160))).is_ok());
-    assert!(serde_json::from_value::<ChatResolveRes>(named("n".repeat(161))).is_err());
     let changed = json!({"workspace": long, "channel": "C1", "put": [], "deleted": []});
     assert!(serde_json::from_value::<ChatChangedEvt>(changed).is_err());
 }

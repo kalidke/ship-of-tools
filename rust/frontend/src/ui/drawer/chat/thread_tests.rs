@@ -508,6 +508,74 @@ fn to_line(d: &ChatDrawer) -> String {
     foot(d).pop().unwrap()
 }
 
+/// What the foot says of where a draft goes, for each kind of draft and each view of the drawer: silent only when the
+/// destination is what the title shows (no thread in the draft, none open, the draft's channel the watched one).
+#[test]
+fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
+    #[derive(Clone, Copy, Debug)]
+    enum Draft {
+        None,
+        Channel,
+        Thread,
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum View {
+        Channel,
+        SameThread,
+        OtherThread,
+    }
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let mut fonts = FontSystem::new();
+    for draft in [Draft::None, Draft::Channel, Draft::Thread] {
+        for view in [View::Channel, View::SameThread, View::OtherThread] {
+            let (mut d, _) = channel(&held);
+            let row = shown("ROW1");
+            match draft {
+                Draft::None => {}
+                Draft::Channel => d.edit(row.as_ref(), Edit::Text("hi")).unwrap(),
+                Draft::Thread => {
+                    open(&mut d, &mut fonts, &[true, true]);
+                    d.edit(row.as_ref(), Edit::Text("hi")).unwrap();
+                    if !matches!(view, View::SameThread) {
+                        d.close_thread();
+                    }
+                }
+            }
+            match view {
+                View::Channel => {}
+                View::SameThread if matches!(draft, Draft::Thread) => {}
+                View::SameThread => drop(open(&mut d, &mut fonts, &[true, true])),
+                View::OtherThread => drop(open(&mut d, &mut fonts, &[true])),
+            }
+            let text = if matches!(draft, Draft::None) { "> " } else { "> hi" };
+            let rows = foot(&d);
+            let (head, tail) = rows.split_first().unwrap();
+            assert_eq!(head, text, "{draft:?} in {view:?}");
+            let said = tail.first().map(String::as_str);
+            let case = format!("{draft:?} in {view:?}: {rows:?}");
+            match (draft, view) {
+                (Draft::None | Draft::Channel, View::Channel) => assert_eq!(said, None, "{case}"),
+                (Draft::Channel, _) => assert_eq!(said, Some("to CH1"), "{case}"),
+                (Draft::None | Draft::Thread, _) => assert!(said.is_some_and(|s| s.starts_with("reply in thread of")), "{case}"),
+            }
+            assert!(tail.len() <= 1, "{case}");
+        }
+    }
+}
+
+/// A channel the window has a name for is spelled in the foot as the title spells it.
+#[test]
+fn the_foot_spells_the_channel_as_the_title_does() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let (mut d, at) = channel(&held);
+    let named = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false, "name": "general" });
+    d.on_evt(&host(), answer("ROW1", named), at);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
+    open(&mut d, &mut fonts, &[true, true]);
+    assert_eq!((d.title(), foot(&d)), (" chat · #general · thread ".to_string(), vec!["> hi".to_string(), "to #general".to_string()]));
+}
+
 #[test]
 fn a_draft_posts_to_the_destination_it_was_begun_in() {
     let mut fonts = FontSystem::new();
@@ -534,12 +602,12 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     assert_eq!(reads(&made(&mut d, &req, at)), 0, "the thread is closed: nothing is read");
     assert!(d.draft().is_none());
 
-    // Begun in the channel, then a thread opened: the post is the channel's, and the line says so.
+    // Begun in the channel, then a thread opened: the post is the channel's, and the foot says so.
     let (mut d, at) = channel(&held);
     d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
     open(&mut d, &mut fonts, &[true, true]);
     d.edit(shown("ROW1").as_ref(), Edit::Text("!")).unwrap();
-    assert_eq!(foot(&d), ["> hi!"], "the title names the channel, so the foot says nothing of it");
+    assert_eq!(foot(&d), ["> hi!", "to CH1"], "the title says `thread`, so the foot says where the draft goes: the channel");
     let req = send(&mut d, at);
     assert_eq!((req.thread.as_ref(), req.target.channel.as_str(), req.text.as_str()), (None, "CH1", "hi!"));
     assert_eq!(reads(&made(&mut d, &req, at)), 0, "a post to the channel reads no thread");

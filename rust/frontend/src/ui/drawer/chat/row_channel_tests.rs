@@ -432,12 +432,28 @@ fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
     d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(160));
     assert_eq!(d.title(), " chat · C1 reading… ", "an answer with no name: the id");
 
-    d.on_evt(&host(), named_to("R", "C1", "admiral"), t0 + Duration::from_millis(200));
-    assert_eq!(d.title(), " chat · #admiral reading… ");
-    d.on_evt(&host(), named_to("R", "C1", "ad\u{7}mi\nral"), t0 + Duration::from_millis(210));
-    assert_eq!(d.title(), " chat · #admiral reading… ", "a control character is not drawn");
+    d.on_evt(&host(), named_to("R", "C1", "general"), t0 + Duration::from_millis(200));
+    assert_eq!(d.title(), " chat · #general reading… ");
+    d.on_evt(&host(), named_to("R", "C1", "ge\u{7}ne\nral\u{2028}x"), t0 + Duration::from_millis(210));
+    assert_eq!(d.title(), " chat · #ge ne ⏎ ral ⏎ x reading… ", "the daemon's text reaches the cells through `cell_row`");
 
     // A later answer with no name is what the daemon knows now: the id.
     d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(220));
     assert_eq!(d.title(), " chat · C1 reading… ");
+}
+
+/// A name belongs to the id its answer named: no other id is drawn with it.
+#[test]
+fn a_name_is_drawn_only_for_the_id_its_answer_named() {
+    use super::row_channel::RowChannel;
+    let t0 = Instant::now();
+    let mut rows = RowChannel::default();
+    rows.on_connection(&host(), true);
+    rows.tick(wanted("R"), t0);
+    let reply = ChatReply::Done(serde_json::from_value(serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false, "name": "general" })).unwrap());
+    rows.answered(&reply, t0);
+    assert_eq!((rows.label("C2"), rows.label("C1")), ("#general".to_string(), "C1".to_string()));
+    // An answer that names nothing, or no mapping, takes the name away.
+    rows.answered(&ChatReply::Done(ChatResolveRes::Unmapped), t0);
+    assert_eq!(rows.label("C2"), "C2");
 }

@@ -53,7 +53,7 @@ oldest messages go (past 276), the one that becomes the oldest gains both, and t
 
 The hub's `chat.toml` maps a folder to a channel; a row whose folder is mapped shows that channel. How the mapping is
 written is in [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml). The drawer follows the selected
-row. Its title is `chat · #<channel name>` (a public channel's name as Slack spells it; the channel's id when the name is not known, as for a private channel, an older daemon, or a name Slack did not give; it shows only while a channel is watched) followed by what the drawer is waiting for or why it shows nothing:
+row. Its title is `chat · #<channel name>` (a public channel's name as Slack spells it, looked up once when the hub's daemon starts and not refreshed until it starts again, so a rename shows after that; the channel's id when the name is not known, as for a private channel, an older daemon, a lookup that failed (the daemon's log says why) or the first moments after a daemon start; it shows only while a channel is watched) followed by what the drawer is waiting for or why it shows nothing:
 
 | the title says | meaning | asked again |
 |---|---|---|
@@ -124,8 +124,8 @@ stays up does the same. A draft is kept through both.
 
 ## The draft
 
-With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then, only when the title does not already say it, where it goes (`reply in thread of` the parent's time for a draft begun in a thread, and for the next one while a thread is open, or `to <channel id>` for a draft begun in a channel the title no longer names) and, if the
-draft is longer, how many rows are not shown (a draft of up to three rows for the title's channel has no row but its own) (a line wider than the drawer wraps, and each wrapped row counts). `Shift+Enter`
+With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then where it goes, unless the title already shows it (`reply in thread of` the parent's time for a draft begun in a thread, and for the next one while a thread is open, and `to #<channel name>` for a channel draft while a thread is open or when the title names another channel; a channel draft with no thread open has no such row) and, if the
+draft is longer, how many rows are not shown (a line wider than the drawer wraps, and each wrapped row counts). `Shift+Enter`
 (`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and where it goes
 (the channel, or the thread open then) is fixed when its first character is typed, even if you move the view afterwards. A draft stops at what a post
 can carry (8 KiB, counting `&`, `<` and `>` as five, four and four bytes); a key or paste past it is refused whole and

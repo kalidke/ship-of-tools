@@ -244,20 +244,16 @@ fn info_calls(fake: &FakeSlack) -> usize {
 /// answered at once, with no `name`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resolve_carries_the_name_the_start_found_and_none_before_it() {
-    let fake = slack_naming(Some("admiral")).await;
+    let fake = slack_naming(Some("general")).await;
     let rig = rig_started(&fake, false).await;
     let mut conn = connect_window(rig.services.clone()).await;
-    let mut resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
-    for n in 3..200u64 {
-        if resolved["name"].is_string() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        resolved = conn.ask(n, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
-    }
-    assert_eq!((resolved["state"].as_str(), resolved["name"].as_str()), (Some("mapped"), Some("admiral")), "{resolved}");
+    let target = sot_protocol::ops::ChatTarget { row: rig.alpha.clone(), workspace: "T0AAAA".into(), channel: sot_protocol::ops::ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
+    let api = rig.services.chat.admit(&rig.rows, &target).expect("the service runs").api().unwrap();
+    sot_chat::fake_slack::eventually("the start's lookup", || api.cached_name("C0AAAA").is_some()).await;
+    let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    assert_eq!((resolved["state"].as_str(), resolved["name"].as_str()), (Some("mapped"), Some("general")), "{resolved}");
     let before = info_calls(&fake);
-    conn.ask(300, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    conn.ask(3, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
     assert_eq!(info_calls(&fake), before, "a resolve asked Slack for the name");
     fake.shutdown().await;
 

@@ -182,6 +182,34 @@ fn the_compose_rows_show_the_draft_wrapped_to_the_drawer_and_counted() {
     assert_eq!(shown(&d, false, 12, 1), ["4 lines not shown"]);
 }
 
+/// The destination row is there only when it has something to say, and the count of hidden rows is true at every height,
+/// for a draft of one, two or three rows with no destination.
+#[test]
+fn a_foot_with_no_destination_has_a_row_only_for_what_it_cannot_show() {
+    let rows = |n: usize, height: usize| {
+        let lines = ["a", "b", "c"][..n].iter().map(|s| s.to_string()).collect();
+        compose_rows(&super::compose::ComposeText::Draft { lines, to: None }, 40, height)
+    };
+    assert_eq!(rows(3, 3), ["> a", "  b", "  c"]);
+    assert_eq!(rows(3, 9), ["> a", "  b", "  c"]);
+    assert_eq!(rows(3, 2), ["> c", "2 lines not shown"]);
+    assert_eq!(rows(3, 1), ["3 lines not shown"]);
+    assert_eq!(rows(2, 3), ["> a", "  b"]);
+    assert_eq!(rows(2, 2), ["> a", "  b"]);
+    assert_eq!(rows(2, 1), ["2 lines not shown"]);
+    assert_eq!(rows(1, 3), ["> a"]);
+    assert_eq!(rows(1, 1), ["> a"]);
+    assert!(rows(1, 0).is_empty() && rows(3, 0).is_empty());
+    // With a destination the row is always there, and the count joins it.
+    let with = |n: usize, height: usize| {
+        let lines = ["a", "b", "c"][..n].iter().map(|s| s.to_string()).collect();
+        compose_rows(&super::compose::ComposeText::Draft { lines, to: Some("to C1".into()) }, 40, height)
+    };
+    assert_eq!(with(3, 4), ["> a", "  b", "  c", "to C1"]);
+    assert_eq!(with(3, 3), ["> b", "  c", "to C1 · 1 line not shown"]);
+    assert_eq!(with(1, 1), ["to C1 · 1 line not shown"]);
+}
+
 /// The one post `outs` holds.
 fn posted(outs: Vec<(String, OutgoingReq)>) -> ChatPostReq {
     match outs.as_slice() {
