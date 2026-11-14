@@ -321,7 +321,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   markdown and plain text take their text, so every mime reaches it (a `tokens+json` that fails to decode installs
   nothing, as before). An SVG is not an image node
   (`is_image_node_id`): it has no ROI, crop (`c` says an SVG cannot be cropped), scale bar, caption or drawing, since
-  the daemon can decode none of them (drawing over an SVG is not built).
+  the daemon can decode none of them (drawing over an SVG is not built: `d` over the shown picture says `drawing: an SVG
+  cannot be drawn on yet; open a PNG of it, or press <canvas key> for a blank canvas`, `drawing_over_a_shown_svg_names_the_two_ways_to_draw`;
+  over the SVG's text `d` resolves to no action, as over any text file, so it says nothing there).
   Limits: a zoom past fit enlarges the raster's pixels (no re-raster at zoom); a pane resized after the draw scales the
   picture until the preview is next rendered; a text-scale change shows the kept picture when the pane's pixel size is unchanged and otherwise draws
   again with the old picture up; a row switch back shows the kept picture (view at fit, no carry); the window's heap

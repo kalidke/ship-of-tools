@@ -70,6 +70,17 @@ impl State {
     }
 }
 
+/// Why drawing is off with no base: a shown SVG is a picture the daemon cannot compose into the agent's, so its line
+/// names the two ways to draw now; `canvas` is the bound label of `preview.canvas`.
+fn no_base_line(shown: Option<&str>, canvas: &str) -> String {
+    match shown {
+        Some(node) if node.to_ascii_lowercase().ends_with(".svg") => {
+            format!("drawing: an SVG cannot be drawn on yet; open a PNG of it, or press {canvas} for a blank canvas")
+        }
+        _ => "drawing: no image to draw on".to_string(),
+    }
+}
+
 pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     if key.event.repeat {
         return Continue(());
@@ -77,7 +88,10 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
     state.ink_sync();
     let shown = state.shown_ink_base();
     match key.action {
-        Some(Action::PreviewDraw) if shown.is_none() => state.status.set("drawing: no image to draw on".to_string()),
+        Some(Action::PreviewDraw) if shown.is_none() => {
+            let canvas = state.bindings.first_label(Action::PreviewCanvas);
+            state.status.set(no_base_line(state.raster.node(), &canvas));
+        }
         Some(Action::PreviewDraw) => {
             let on = !state.ink.is_on();
             state.ink.set_on(on);
@@ -113,4 +127,19 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
     state.last_key = Some(label);
     state.window.request_redraw();
     Break(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drawing_over_a_shown_svg_names_the_two_ways_to_draw() {
+        assert_eq!(
+            no_base_line(Some("files:fig/a.SVG"), "Shift+D"),
+            "drawing: an SVG cannot be drawn on yet; open a PNG of it, or press Shift+D for a blank canvas"
+        );
+        assert_eq!(no_base_line(Some("files:a.pdf"), "Shift+D"), "drawing: no image to draw on");
+        assert_eq!(no_base_line(None, "Shift+D"), "drawing: no image to draw on");
+    }
 }
