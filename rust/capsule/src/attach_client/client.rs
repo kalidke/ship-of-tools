@@ -231,6 +231,18 @@ impl FeAttachClient {
         self.worker.unsent_inputs()
     }
 
+    /// Forgets the count of inputs refused or dropped: a person has seen it.
+    pub fn clear_inputs_discarded(&mut self) {
+        self.worker.clear_discarded();
+    }
+
+    /// Retires the client: names why, tells the worker to stop and says how many inputs it never took, which are lost.
+    pub fn retire(&mut self, reason: &'static str) -> usize {
+        self.worker.set_shutdown_reason(reason);
+        self.worker.stop();
+        self.worker.unsent_inputs()
+    }
+
     /// Hands keystroke bytes to the worker, which takes the pen first when this client was demoted. Input typed before
     /// the first attach is refused and counted: it has no run to be typed into.
     pub fn send_input(&mut self, bytes: &[u8]) {

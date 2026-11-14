@@ -127,7 +127,11 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    client that has never attached knows no run, so its input is refused and counted (`inputs_discarded`), never
    queued to land in whichever run the first attach finds (`attach_end_tests::input_before_the_first_attach_is_refused_and_counted`);
    after a loss at most 8 KiB wait for the redial, typed into the run last attached. Input the worker has not taken is
-   counted (`unsent_inputs`), lost with the client when it is dropped, and the window says so when it retires one. A headless client takes the pen once per run: its
+   counted (`unsent_inputs`) and lost with the client. `FeAttachClient::retire` stops the worker first, which then takes
+   no further input, and returns that count, so what it says is lost is never written, apart from the one input in
+   flight (delivery unknown, as above; `fe_attach::a_retired_client_writes_nothing_it_counted_as_lost`). The run an
+   input is typed into is the pane's through its trait (`send_input_in_run` alone), and every headless caller waits
+   for a checkpoint before it types; the refusal above guards the client's own API. A headless client takes the pen once per run: its
    Enter never takes it in a replacement run, and in the same run after another driver took it back it does not fight
    for it. A window's input the row refuses as from a connection that is not the driver (another client took the pen
    and the window has not read its demotion; nothing was written) takes the pen back and is sent once more, before the

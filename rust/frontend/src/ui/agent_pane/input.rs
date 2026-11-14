@@ -12,30 +12,53 @@ pub(super) struct HeldKeys {
 }
 
 impl<C: PaneClient> AgentPane<C> {
+    /// Input the pane drops, counted in the notice; what is drawn of the notice is no longer all of it.
+    pub(super) fn discard(&mut self, n: usize) {
+        self.pane_inputs_discarded += n;
+        self.discard_drawn = None;
+    }
+
+    pub(super) fn discard_total(&self) -> usize {
+        self.pane_inputs_discarded + self.pane_attach_term.as_ref().map_or(0, |c| c.inputs_discarded())
+    }
+
+    /// A person's act (a key held or sent, a click on the notice) dismisses the notice, but only if the frame has drawn
+    /// all of it: a discard since then is still unseen.
+    fn dismiss_discard_notice(&mut self) {
+        if self.discard_drawn.is_some_and(|(_, n)| n == self.discard_total()) {
+            self.pane_inputs_discarded = 0;
+            self.discard_drawn = None;
+            if let Some(c) = self.pane_attach_term.as_mut() { c.clear_inputs_discarded(); }
+        }
+    }
+
     /// The one routing point for typed keys and every paste. Unshown input stays with its row;
     /// once a row has held keys, later typing cannot pass them. Only an armed Enter releases them.
-    pub(in crate::ui) fn send_input(&mut self, bytes: &[u8]) {
+    /// False when the input was refused and counted.
+    pub(in crate::ui) fn send_input(&mut self, bytes: &[u8]) -> bool {
         let live = self.refresh_live();
         let Some(target) = self.bl_pane_target.clone() else {
-            self.pane_inputs_discarded += 1;
-            return;
+            self.discard(1);
+            return false;
         };
         if !live || self.held_keys.contains_key(&target) {
             let held_bytes = self.held_keys.get(&target).map_or(0, |h| h.bytes);
             if held_bytes.saturating_add(bytes.len()) > sot_capsule::attach_client::attach::HELD_INPUT_CAP {
-                self.pane_inputs_discarded += 1;
+                self.discard(1);
+                return false;
             } else if !bytes.is_empty() {
-                self.pane_inputs_discarded = 0;
+                self.dismiss_discard_notice();
                 let held = self.held_keys.entry(target).or_default();
                 held.bytes += bytes.len();
                 held.entries.push(bytes.to_vec());
             }
         } else {
-            self.pane_inputs_discarded = 0;
+            self.dismiss_discard_notice();
             let c = self.pane_attach_term.as_mut().expect("live client");
             let run = c.screen_run().to_owned();
             c.send_input_in_run(bytes, &run);
         }
+        true
     }
 
     /// A plain logical key takes the held-input path before ordinary terminal encoding.
@@ -44,13 +67,14 @@ impl<C: PaneClient> AgentPane<C> {
         let target = self.bl_pane_target.clone()?;
         let count = self.held_keys.get(&target)?.entries.len();
         if !unmodified { return None; }
-        self.pane_inputs_discarded = 0;
         match logical {
             Key::Named(NamedKey::Escape) => {
+                self.dismiss_discard_notice();
                 self.held_keys.remove(&target);
                 Some(format!("dropped {count} held inputs, not sent"))
             }
             Key::Named(NamedKey::Backspace) => {
+                self.dismiss_discard_notice();
                 let held = self.held_keys.get_mut(&target).expect("selected held keys");
                 if let Some(last) = held.entries.pop() { held.bytes -= last.len(); }
                 if held.entries.is_empty() { self.held_keys.remove(&target); }
@@ -58,11 +82,7 @@ impl<C: PaneClient> AgentPane<C> {
             }
             Key::Named(NamedKey::Enter) => {
                 if !self.refresh_live() {
-                    let discarded = self.pane_inputs_discarded;
-                    self.send_input(b"\r");
-                    if self.pane_inputs_discarded != discarded {
-                        return Some("Enter refused: held keys are full".into());
-                    }
+                    if !self.send_input(b"\r") { return Some("Enter refused: held keys are full".into()); }
                     return Some("Enter held, not sent; wait for the row's screen".into());
                 }
                 let c = self.pane_attach_term.as_ref().expect("live client");
@@ -72,6 +92,7 @@ impl<C: PaneClient> AgentPane<C> {
                 }
                 if repeat { return Some("held keys not sent: release Enter and press it again".into()); }
                 if !self.held_armed(now) { return Some("held keys not sent: wait for Enter to arm".into()); }
+                self.dismiss_discard_notice();
                 let held = self.held_keys.remove(&target).expect("selected held keys");
                 let c = self.pane_attach_term.as_mut().expect("live client");
                 let run = c.screen_run().to_owned();
@@ -169,7 +190,7 @@ impl<C: PaneClient> AgentPane<C> {
 
     pub(in crate::ui) fn press(&mut self, cell: Option<(u16, u16)>) -> bool {
         if let Some(cell) = cell {
-            self.pane_inputs_discarded = 0;
+            if self.discard_drawn.is_some_and(|(row, _)| row == cell.0) { self.dismiss_discard_notice(); }
             self.llm_selection = Some((cell, cell));
             self.llm_drag_active = true;
             true

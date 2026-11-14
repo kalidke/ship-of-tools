@@ -286,6 +286,7 @@ impl<C: PaneClient> AgentPane<C> {
             ),
         );
         pane_overlay.splice(0..0, self.held_overlay_lines(Instant::now()));
+        self.discard_drawn = Some(self.discard_total()).filter(|&n| n > 0).map(|n| (pane_overlay.len() as u16 - 1, n));
         // Choosing a screen does not complete presentation. The frame carries a qualified candidate to the presentation owner and completes it only after submit/present.
         let facts = (self.pane_feed == PaneFeed::Capsule && pane_screen == PaneScreen::Client).then(|| PaneFacts {
             checkpointed: pane_attach_checkpointed, attached: pane_attach_is_attached, live: !pane_attach_is_dead,

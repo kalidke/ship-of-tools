@@ -716,12 +716,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   that the restarted row's screen must show again. Limit: a worker that moves after this check can still reject the
   send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is said on the status line as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The worker
   refuses any input before its first attach, so the pane never relies on a queue there. The notice that keys were
-  discarded (`pane_inputs_discarded`, drawn over the pane) is not cleared by an attach, cold or warm: it stays until a key
-  is held or sent, Esc, Backspace or Enter over held keys, or a click in the pane, and a discarded key adds to it
-  (`a_discard_notice_outlives_the_attach_until_a_key_or_a_click`). A client that leaves the pane with input its worker
-  never took (dropped by a switch, evicted from the warm pool, retired dead, retired with its row, or by the kept-row
-  invalidation; a parked client keeps its queue and sends it) adds that many inputs to the same count
-  (`a_client_retired_with_input_waiting_is_counted_as_discarded`). Held keys dropped by row pruning are not counted. A wheel while nonlive only
+  discarded is the pane's count plus the client's own, drawn over the pane, and an attach, cold or warm, does not clear
+  it. Only a person's act dismisses it, and only a count a frame has drawn (`discard_drawn`: the notice's row and the
+  count shown; a discard since then is unseen): a key held or sent, Esc, Backspace or the Enter that sends, or a click
+  on the notice's row. A key that holds or sends nothing (a modifier alone) leaves it, a discarded key adds to it, and a
+  dismissal clears both counts (`a_discard_notice_outlives_the_attach_until_a_key_or_a_click`,
+  `typed_keys_past_the_hold_add_to_the_notice_and_a_key_that_does_nothing_leaves_it`,
+  `a_discard_after_the_last_frame_is_not_dismissed_unseen`,
+  `the_enter_that_sends_held_keys_dismisses_the_drawn_notice`, `the_clients_own_discard_count_is_dismissed_with_the_panes`).
+  A client that leaves the pane (dropped by a switch, evicted from the warm pool, retired dead, retired with its row, or
+  by the kept-row invalidation; a parked client keeps its queue and sends it) is retired through the capsule's `retire`,
+  and the inputs its worker never took, and the held keys of a row pruned away, add to the count
+  (`a_client_retired_with_input_waiting_is_counted_as_discarded`, `held_keys_dropped_by_pruning_are_counted`). A wheel while nonlive only
   scrolls locally or reports Pending and never holds mouse bytes. Behavior tests in `agent_pane::owner_tests`:
   `keys_typed_while_a_row_connects_are_held_and_sent_only_on_an_armed_enter`,
   `held_keys_stay_with_their_row_across_a_switch`, `held_keys_are_not_sent_into_a_run_the_screen_did_not_show`,

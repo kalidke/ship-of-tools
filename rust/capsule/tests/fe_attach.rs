@@ -364,8 +364,8 @@ fn a_demotion_during_attach_leaves_a_watcher_whose_next_key_takes_the_pen() {
 
 /// A row stand-in whose driver was changed under the client: it refuses the first `refusals` `row.input`s as from a
 /// connection that is not the driver (the wake took the pen, and the window has not read its demotion), and writes the
-/// bytes of every input it accepts. Returns the ops it was sent, in order, and what it wrote.
-fn demoted_unaware_standin(path: &std::path::Path, refusals: usize) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u8>>>) {
+/// bytes of every input it accepts, answering each after `answer_after`. Returns the ops it was sent, in order, and what it wrote.
+fn demoted_unaware_standin(path: &std::path::Path, refusals: usize, answer_after: Duration) -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<u8>>>) {
     use sot_protocol::codec::{read_frame_blocking_blob, write_frame_blocking_blob};
     use sot_protocol::Frame;
     let listener = std::os::unix::net::UnixListener::bind(path).expect("bind the stand-in");
@@ -413,6 +413,7 @@ fn demoted_unaware_standin(path: &std::path::Path, refusals: usize) -> (Arc<Mute
                 "row.input" => {
                     let bytes = blob.unwrap_or_default();
                     wrote.lock().unwrap().extend_from_slice(&bytes);
+                    std::thread::sleep(answer_after);
                     send(Frame::res(id, "row.input", serde_json::json!({"written": bytes.len()})), None)
                 }
                 _ => send(Frame::res(id, &frame.op, serde_json::json!({})), None),
@@ -431,7 +432,7 @@ fn demoted_unaware_standin(path: &std::path::Path, refusals: usize) -> (Arc<Mute
 fn a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it_back() {
     use sot_capsule::attach_client::attach::InputOutcome;
     let row = fresh_row();
-    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), 1);
+    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), 1, Duration::ZERO);
     let mut win = window(&row);
     pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
     win.send_input(b"ab");
@@ -456,7 +457,7 @@ fn a_window_key_refused_because_a_wake_took_the_pen_is_sent_once_after_taking_it
 fn a_window_key_the_row_refuses_twice_is_given_up_after_one_retake() {
     use sot_capsule::attach_client::attach::InputOutcome;
     let row = fresh_row();
-    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), usize::MAX);
+    let (ops, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), usize::MAX, Duration::ZERO);
     let mut win = window(&row);
     pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
     win.send_input(b"ab");
@@ -676,4 +677,22 @@ fn a_parked_client_shown_again_asks_for_the_screen_at_once_on_a_quiet_row() {
         .max()
         .unwrap();
     assert!(slowest < Duration::from_millis(100), "the screen came {slowest:?} after the client was shown on a quiet row");
+}
+
+/// A client retired while its row is slow to answer the input in flight counts what its worker never took, and the
+/// worker then takes none of it: the key counted as lost is never written.
+#[test]
+fn a_retired_client_writes_nothing_it_counted_as_lost() {
+    let row = fresh_row();
+    let (_, written) = demoted_unaware_standin(&row_socket_path(&row).unwrap(), 0, Duration::from_millis(400));
+    let mut win = window(&row);
+    pump_until(&mut win, "the checkpoint", |c| c.is_checkpointed());
+    win.send_input(b"a");
+    std::thread::sleep(Duration::from_millis(100));
+    win.send_input(b"b");
+    assert_eq!(win.retire("test"), 1, "the input behind the one in flight");
+    // Past the row's answer to the first input, with no shutdown call: the retire alone stopped the worker.
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(*written.lock().unwrap(), b"a", "an input counted as lost was written");
+    assert!(win.shutdown(Duration::from_secs(3)), "the worker did not end");
 }

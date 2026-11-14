@@ -228,6 +228,11 @@ impl AttachWorker {
         self.shared.queued_inputs.load(Ordering::Acquire)
     }
 
+    /// Forgets the inputs counted so far: a person has seen them.
+    pub fn clear_discarded(&self) {
+        self.shared.discarded.store(0, Ordering::Release);
+    }
+
     pub fn recorded_bytes(&self) -> u64 {
         self.shared.recorded.load(Ordering::Acquire)
     }
@@ -252,14 +257,19 @@ impl AttachWorker {
         *self.shared.shutdown_reason.lock().unwrap_or_else(|p| p.into_inner()) = reason;
     }
 
-    /// Ends the worker and waits up to `wait` for its thread; `true` when it ended.
-    pub fn shutdown(&self, wait: Duration) -> bool {
+    /// Tells the worker to end, without waiting: it takes no further input from then on.
+    pub fn stop(&self) {
         {
             let mut reason = self.shared.shutdown_reason.lock().unwrap_or_else(|p| p.into_inner());
             if *reason == "drop" { *reason = "shutdown"; }
         }
         self.shared.shutdown.store(true, Ordering::Release);
         self.shared.wake();
+    }
+
+    /// Ends the worker and waits up to `wait` for its thread; `true` when it ended.
+    pub fn shutdown(&self, wait: Duration) -> bool {
+        self.stop();
         let Some(handle) = self.handle.lock().unwrap_or_else(|p| p.into_inner()).take() else { return true };
         let deadline = Instant::now() + wait;
         while !handle.is_finished() {
@@ -512,7 +522,8 @@ where
                     Err(e) => return Ended::Lost(e),
                 }
             }
-            while let Ok(command) = self.inbox.try_recv() {
+            while !self.stopping() {
+                let Ok(command) = self.inbox.try_recv() else { break };
                 match command {
                     Command::Input(bytes, typed_into, meant_for) => {
                         self.shared.queued_input.fetch_sub(bytes.len(), Ordering::AcqRel);

@@ -131,12 +131,9 @@ impl<C: PaneClient> AgentPane<C> {
                 Some(key) if client.is_checkpointed() && !client.is_dead() => {
                     client.set_viewed(false);
                     retired = self.warm_attach.park(key, client, bound);
-                    self.count_unsent(&retired);
+                    self.count_unsent(&mut retired, "warm pool eviction");
                 }
-                _ => {
-                    client.set_shutdown_reason("switch away");
-                    self.count_unsent(std::slice::from_ref(&client));
-                }
+                _ => self.count_unsent(std::slice::from_mut(&mut client), "switch away"),
             }
         }
         self.pane_dial_error = None;
@@ -157,7 +154,7 @@ impl<C: PaneClient> AgentPane<C> {
         let warm = self.warm_attach.take(&target.0).and_then(|mut c| {
             if c.is_dead() { retired.push(c); None } else { Some(c) }
         });
-        self.count_unsent(&retired);
+        self.count_unsent(&mut retired, "dead warm client");
         (AttachPlan { target: target.0, size: self.open_size(), warm }, retired)
     }
 
@@ -265,15 +262,20 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     pub(in crate::ui) fn prune_warm(&mut self, host: &HostKey, live: &std::collections::HashSet<String>) -> Vec<C> {
-        self.held_keys.retain(|(h, row), _| h != host || live.contains(row));
-        let retired = self.warm_attach.retain_rows(host, live);
-        self.count_unsent(&retired);
+        let gone = |(h, row): &WsKey| h == host && !live.contains(row);
+        let dropped = self.held_keys.iter().filter(|(k, _)| gone(k)).map(|(_, held)| held.entries.len()).sum();
+        self.discard(dropped);
+        self.held_keys.retain(|k, _| !gone(k));
+        let mut retired = self.warm_attach.retain_rows(host, live);
+        self.count_unsent(&mut retired, "row removed");
         retired
     }
 
-    /// Input a leaving client's worker never took is gone with it, so it is counted among the discarded keystrokes.
-    pub(super) fn count_unsent(&mut self, leaving: &[C]) {
-        self.pane_inputs_discarded += leaving.iter().map(|c| c.unsent_inputs()).sum::<usize>();
+    /// Retires the clients leaving the pane: input their workers never took is gone with them, so it is counted among
+    /// the discarded keystrokes.
+    pub(super) fn count_unsent(&mut self, leaving: &mut [C], reason: &'static str) {
+        let lost = leaving.iter_mut().map(|c| c.retire(reason)).sum();
+        self.discard(lost);
     }
 }
 

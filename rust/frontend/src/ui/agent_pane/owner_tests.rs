@@ -10,7 +10,7 @@ type Pane = AgentPane<Scripted>;
 struct Wire {
     inputs: Vec<Vec<u8>>, sizes: Vec<(u16, u16)>, viewed: Vec<bool>,
     scrolls: Vec<i32>, resets: usize, dead: bool, steps: VecDeque<Step>,
-    input_runs: Vec<String>, run: String, unsent: usize,
+    input_runs: Vec<String>, run: String, unsent: usize, discarded: usize,
 }
 #[derive(Default)]
 struct Step {
@@ -56,8 +56,9 @@ impl PaneClient for Scripted {
         true
     }
     fn last_input_outcome(&self) -> Option<InputOutcome> { self.outcome }
-    fn inputs_discarded(&self) -> usize { 0 }
-    fn unsent_inputs(&self) -> usize { self.wire.borrow().unsent }
+    fn inputs_discarded(&self) -> usize { self.wire.borrow().discarded }
+    fn clear_inputs_discarded(&mut self) { self.wire.borrow_mut().discarded = 0; }
+    fn retire(&mut self, _: &'static str) -> usize { self.wire.borrow().unsent }
     fn screen_run(&self) -> &str { &self.screen_run }
     fn run(&self) -> String { self.wire.borrow().run.clone() }
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str) {
@@ -311,8 +312,9 @@ fn held_keys_past_the_bound_are_refused_and_counted() {
     p.send_input(b"\x1b[200~paste\x1b[201~");
     p.send_input(b"\r"); // Exactly the cap is kept; the paste was refused whole.
     p.send_input(b"y");
-    // A key kept after a refusal dismisses its notice: the paste's went with the Enter, the last key's remains.
-    assert!(p.view(None).1.iter().any(|s| s == "1 keystroke discarded, not sent"));
+    // The first notice was drawn and went with the key kept after it; the paste's, refused in the same frame as the
+    // Enter that was kept, was never drawn and stays, with the last key's.
+    assert!(p.view(None).1.iter().any(|s| s == "2 keystrokes discarded, not sent"));
     let wire = Scripted::new(b"", true);
     let handle = wire.1;
     install(&mut p, "h", "row", wire.0, t);
@@ -1159,7 +1161,7 @@ fn copy_as_one_line_needs_the_program_to_wrap_at_the_panes_width() {
 }
 
 /// The notice that keys were discarded is the person's to dismiss: the attach that ends the wait does not clear it, a
-/// key held or sent or a click in the pane does, and a key that is itself discarded adds to it.
+/// key held or sent or a click on the notice does, once it has been drawn, and a key that is itself discarded adds to it.
 #[test]
 fn a_discard_notice_outlives_the_attach_until_a_key_or_a_click() {
     use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
@@ -1173,9 +1175,10 @@ fn a_discard_notice_outlives_the_attach_until_a_key_or_a_click() {
     step(&mut p, &wire, Step { status: Some("attached"), checkpoint: true, ..Default::default() }, t);
     assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "the attach cleared the notice");
     p.press(None);
-    assert!(notice(&mut p).is_some(), "a press outside the pane dismissed it");
+    p.press(Some((1, 0)));
+    assert!(notice(&mut p).is_some(), "a click that is not on the notice dismissed it");
     p.press(Some((0, 0)));
-    assert_eq!(notice(&mut p), None, "a click in the pane leaves it");
+    assert_eq!(notice(&mut p), None, "a click on the notice leaves it");
 
     let warm = ready(&mut p, "h", "warm", b"", t);
     select(&mut p, "h", "other", t, 2);
@@ -1254,4 +1257,94 @@ fn a_client_retired_with_input_waiting_is_counted_as_discarded() {
     assert_eq!(notice(&mut p), None);
     assert_eq!(p.prune_warm(&"k".into(), &HashSet::new()).len(), 1);
     assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a warm client of a removed row");
+}
+
+fn typed(p: &mut Pane, key: Key, bytes: &[u8], at: Instant) {
+    if p.held_key(&key, false, true, at).is_none() { p.send_input(bytes); }
+}
+
+/// The notice counts every typed key the hold refuses, through the pair the window calls (`held_key`, then `send_input`
+/// for what it leaves), and a key that holds or sends nothing leaves it.
+#[test]
+fn typed_keys_past_the_hold_add_to_the_notice_and_a_key_that_does_nothing_leaves_it() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP]);
+    for _ in 0..5 { typed(&mut p, Key::Character("a".into()), b"a", t); }
+    assert!(p.view(None).1.iter().any(|s| s == "5 keystrokes discarded, not sent"), "typed keys past the hold were not all counted");
+    typed(&mut p, Key::Named(NamedKey::Shift), b"", t);
+    assert!(p.view(None).1.iter().any(|s| s == "5 keystrokes discarded, not sent"), "a modifier alone dismissed it");
+    held_key(&mut p, NamedKey::Backspace, false, t);
+    assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")), "Backspace over held keys leaves it");
+}
+
+/// A client's own count (run-ended and queue-bound discards) is shown with the pane's and dismissed with it.
+#[test]
+fn the_clients_own_discard_count_is_dismissed_with_the_panes() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    wire.borrow_mut().discarded = 2;
+    assert!(p.view(None).1.iter().any(|s| s == "2 keystrokes discarded, not sent"));
+    p.press(Some((0, 0)));
+    assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")));
+    assert_eq!(wire.borrow().discarded, 0);
+}
+
+/// Held keys of a row that goes are counted among the discarded.
+#[test]
+fn held_keys_dropped_by_pruning_are_counted() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    select(&mut p, "m", "gone", t, 2);
+    p.send_input(b"a");
+    p.send_input(b"b");
+    assert!(p.prune_warm(&"m".into(), &HashSet::new()).is_empty());
+    assert!(p.view(None).1.iter().any(|s| s == "2 keystrokes discarded, not sent"));
+}
+
+/// A discard the frame has not drawn is never dismissed by a key: the person has seen the earlier count only.
+#[test]
+fn a_discard_after_the_last_frame_is_not_dismissed_unseen() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let notice = |p: &mut Pane| p.view(None).1.into_iter().find(|s| s.contains("discarded"));
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"));
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    p.send_input(b"k");
+    assert_eq!(notice(&mut p).as_deref(), Some("2 keystrokes discarded, not sent"), "a key dismissed a count never drawn");
+    wire.borrow_mut().discarded = 1;
+    assert_eq!(notice(&mut p).as_deref(), Some("3 keystrokes discarded, not sent"));
+    wire.borrow_mut().discarded = 2;
+    p.send_input(b"l");
+    assert_eq!(notice(&mut p).as_deref(), Some("4 keystrokes discarded, not sent"), "the client's discard since the frame was dismissed");
+    let mut p = Pane::new(None);
+    select(&mut p, "h", "row", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    assert!(notice(&mut p).is_some());
+    select(&mut p, "h", "next", t, 2);
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP + 1]);
+    p.send_input(b"m");
+    assert_eq!(notice(&mut p).as_deref(), Some("1 keystroke discarded, not sent"), "a count drawn for another row stood for this one");
+}
+
+/// The Enter that sends the held keys dismisses what was drawn.
+#[test]
+fn the_enter_that_sends_held_keys_dismisses_the_drawn_notice() {
+    use sot_capsule::attach_client::attach::HELD_INPUT_CAP;
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    p.send_input(b"held");
+    p.send_input(&vec![b'x'; HELD_INPUT_CAP]);
+    present(&mut p, t);
+    assert!(p.view(None).1.iter().any(|s| s.contains("discarded")));
+    held_key(&mut p, NamedKey::Enter, false, after(t, 1000));
+    assert_eq!(wire.borrow().inputs, vec![b"held".to_vec()]);
+    assert!(!p.view(None).1.iter().any(|s| s.contains("discarded")), "the Enter that sent the held keys left the notice");
 }

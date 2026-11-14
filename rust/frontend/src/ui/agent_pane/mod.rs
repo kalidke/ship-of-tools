@@ -27,8 +27,9 @@ pub(in crate::ui) trait PaneClient {
     fn pump(&mut self) -> bool;
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome>;
     fn inputs_discarded(&self) -> usize;
-    /// Inputs the client was handed and its worker has not taken: lost when the client is dropped.
-    fn unsent_inputs(&self) -> usize;
+    fn clear_inputs_discarded(&mut self);
+    /// Ends the client for `reason`, stopping its worker first; the inputs the worker never took, which are lost.
+    fn retire(&mut self, reason: &'static str) -> usize;
     fn screen_run(&self) -> &str;
     fn run(&self) -> String;
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str);
@@ -54,7 +55,8 @@ impl PaneClient for PaneAttachClient {
     fn pump(&mut self) -> bool { self.pump() }
     fn last_input_outcome(&self) -> Option<sot_capsule::attach_client::client::InputOutcome> { self.last_input_outcome() }
     fn inputs_discarded(&self) -> usize { self.inputs_discarded() }
-    fn unsent_inputs(&self) -> usize { self.unsent_inputs() }
+    fn clear_inputs_discarded(&mut self) { self.clear_inputs_discarded(); }
+    fn retire(&mut self, reason: &'static str) -> usize { self.retire(reason) }
     fn screen_run(&self) -> &str { self.screen_run() }
     fn run(&self) -> String { self.run() }
     fn send_input_in_run(&mut self, bytes: &[u8], run: &str) { self.send_input_in_run(bytes, run); }
@@ -90,6 +92,8 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     pane_presentation: PanePresentation,
     pane_feed: PaneFeed,
     pane_inputs_discarded: usize,
+    /// The notice's row in the overlay and the count it showed at the last frame; only a count drawn can be dismissed.
+    discard_drawn: Option<(u16, usize)>,
     held_keys: std::collections::HashMap<WsKey, input::HeldKeys>,
     live_since: Option<Instant>,
     live_run: Option<String>,
@@ -110,7 +114,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_attach_term: None, warm_attach: WarmAttachPool::new(), pane_hold: None,
             pane_dial_error: None, pane_attach_requested_at: None, pane_attach_started_at: None,
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
-            pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, copy_quiet: false, copy_tail: false,
+            pane_feed: PaneFeed::Pending, pane_inputs_discarded: 0, discard_drawn: None, copy_quiet: false, copy_tail: false,
             held_keys: std::collections::HashMap::new(), live_since: None, live_run: None, painted_live_run: None,
         }
     }
@@ -139,7 +143,7 @@ impl<C: PaneClient> AgentPane<C> {
     pub(in crate::ui) fn invalidate_kept_attachment(&mut self) {
         self.clear_live();
         self.pane_inputs_discarded = 0;
-        if let Some(c) = self.pane_attach_term.take() { self.count_unsent(&[c]); }
+        if let Some(mut c) = self.pane_attach_term.take() { self.count_unsent(std::slice::from_mut(&mut c), "drop"); }
         self.bl_pane_target = None;
         self.pane_feed = PaneFeed::Pending;
     }
