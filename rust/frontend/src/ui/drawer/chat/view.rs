@@ -333,8 +333,8 @@ impl ChatView {
         };
         let from = found.and_then(|(i, dy)| settle(count, body.h, (i, dy + spent), &mut height));
         // Following the newest, or the oldest record's top at the body's top, ends the motion: nothing waits against an edge.
-        // A first frame that spends nothing (at the key's own instant) is not an arrival at the newest.
-        let waiting = spent == 0.0 && self.motion.owed() > 0.0;
+        // A first frame that spends nothing, or only the slack (within microseconds of the key), is not an arrival at the newest.
+        let waiting = spent <= FOLLOW_SLACK_PX && self.motion.owed() > 0.0;
         if (from.is_none() && !waiting) || (from == Some((0, 0.0)) && self.motion.owed() > 0.0) {
             self.motion.stop();
         }

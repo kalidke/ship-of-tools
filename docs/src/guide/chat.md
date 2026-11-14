@@ -10,8 +10,8 @@ ArrowRight (`chat.thread_open`) opens the marked message's thread, a message wit
 
 To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
 line. The view glides to its new place over `smooth_scroll_ms` (`[display]`, 150 ms unless you change it; 0 moves at once);
-`End`, the arrow keys that mark a message and opening or closing a thread move it at once, and so does a message that arrives
-while you follow the newest. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
+`End`, opening or closing a thread and an arrow key that marks a message out of view move it at once, and so does a message
+that arrives while you follow the newest. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
 and a message deleted at the reader's place stays there as `(message deleted)`; the next one takes the place only when a new snapshot or the trim drops it. `End` (`chat.latest`) returns to the newest and
 follows it again, and scrolling down to the newest does the same. One case moves the view: deleting or shortening the newest message can bring the newest wholly into view,
 which returns the reader to following. Scrolling to the oldest message reads older pages from Slack, up to the 256 messages the drawer keeps; the title says when a

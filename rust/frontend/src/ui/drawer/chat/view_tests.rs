@@ -1875,12 +1875,17 @@ fn following_the_newest_or_reaching_the_oldest_drops_what_is_owed() {
     view.scroll(false, Step::Page, t0, GLIDE);
     lay_at(&mut view, &mut fonts, &held, h, ms(8));
     assert!(view.anchor.is_none() && !view.moving());
-    // A page up whose first frame is the key's own instant spends nothing, and is not lost for it.
-    view.scroll(true, Step::Page, ms(20), GLIDE);
-    lay_at(&mut view, &mut fonts, &held, h, ms(20));
-    assert!(view.moving(), "a first frame at the key's instant ended the motion");
-    lay_at(&mut view, &mut fonts, &held, h, ms(28));
-    assert!(view.moving() && view.anchor.is_some());
+    // A page up whose first frame is the key's own instant, or within microseconds of it, spends nothing or next to nothing,
+    // and is not lost for it.
+    for (n, lag) in [Duration::ZERO, Duration::from_micros(1), Duration::from_micros(5)].into_iter().enumerate() {
+        let key = ms(20 + 100 * n as u64);
+        view.scroll(true, Step::Page, key, Duration::from_secs(1));
+        lay_at(&mut view, &mut fonts, &held, h, key + lag);
+        assert!(view.moving(), "a first frame {lag:?} after the key ended the motion");
+        lay_at(&mut view, &mut fonts, &held, h, key + Duration::from_millis(8));
+        assert!(view.moving() && view.anchor.is_some(), "{lag:?}");
+        view.latest();
+    }
     // The newest reached from above: the pages owed past it are dropped with the following.
     let mut view = ChatView::default();
     view.anchor = Some((held[24].ts.clone(), 0.0));
@@ -1954,4 +1959,27 @@ fn a_position_within_the_float_noise_of_the_newest_is_following() {
     // Three records of 50 in a body of 100: the newest's foot lies `dy` past the body's foot.
     assert_eq!(settle(3, 100.0, (1, 0.002), |_| 50.0), None);
     assert_eq!(settle(3, 100.0, (1, 0.02), |_| 50.0).map(|p| p.0), Some(0));
+}
+
+#[test]
+fn the_clock_is_the_first_keys_and_no_more_than_a_body_is_owed() {
+    let (mut fonts, held, h) = thirty();
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    // Two pages asked 5 ms apart before the frame: the motion runs on the first key's clock, so a frame at 8 ms has spent
+    // what the curve covers 8 ms after the first (not 3 ms after the second), of both pages (3 records).
+    let mut view = ChatView::default();
+    view.scroll(true, Step::Page, t0, GLIDE);
+    view.scroll(true, Step::Page, ms(5), GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    let want = 25.5 - 3.0 * (1.0 - (142.0_f32 / 150.0).powi(3));
+    assert!(near(place_of(&view, &held, h), want), "{} wanted {want}", place_of(&view, &held, h));
+    // Ten pages (15 records) asked at once: all but a body (4.5 records) is spent at the first frame, so the view is never
+    // more than a body behind the place it will rest at.
+    let mut view = ChatView::default();
+    (0..10).for_each(|_| view.scroll(true, Step::Page, t0, GLIDE));
+    lay_at(&mut view, &mut fonts, &held, h, t0);
+    assert!(view.moving() && near(place_of(&view, &held, h), 25.5 - 10.5), "{}", place_of(&view, &held, h));
+    lay_at(&mut view, &mut fonts, &held, h, ms(150));
+    assert!(!view.moving() && near(place_of(&view, &held, h), 25.5 - 15.0), "{}", place_of(&view, &held, h));
 }

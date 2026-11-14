@@ -100,20 +100,23 @@ fn joined(d: &ChatDrawer) -> String {
 #[test]
 fn a_thread_opening_or_closing_leaves_nothing_owed() {
     let mut fonts = FontSystem::new();
+    // A body of 100: a page is a third of it, so two pages do not reach the oldest of twenty records.
+    let short = || ScreenRect { h: 100.0, ..body() };
     let (mut d, _) = channel(&(0..20).map(top).collect::<Vec<_>>());
-    d.layout(&mut fonts, body(), 1.0, body());
+    d.layout(&mut fonts, short(), 1.0, short());
     d.mark(true);
-    d.layout(&mut fonts, body(), 1.0, body());
-    d.scroll(true, Step::Page, Instant::now(), Duration::from_millis(150));
-    // The drawer's frame reads the clock: let the key be a moment old, so the first frame has spent something.
-    std::thread::sleep(Duration::from_millis(5));
-    d.layout(&mut fonts, body(), 1.0, body());
+    d.layout(&mut fonts, short(), 1.0, short());
+    // One page at once puts the reader off the newest; the next is eased over a length no frame of the test outlasts.
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
+    d.layout(&mut fonts, short(), 1.0, short());
+    d.scroll(true, Step::Page, Instant::now(), Duration::from_secs(60));
+    d.layout(&mut fonts, short(), 1.0, short());
     assert!(d.moving() && !d.following());
     d.open_thread();
-    d.layout(&mut fonts, body(), 1.0, body());
+    d.layout(&mut fonts, short(), 1.0, short());
     assert!(!d.moving(), "the thread's view owes nothing");
     d.close_thread();
-    d.layout(&mut fonts, body(), 1.0, body());
+    d.layout(&mut fonts, short(), 1.0, short());
     assert!(!d.moving() && !d.following(), "the channel's view returns where it was, owing nothing");
 }
 

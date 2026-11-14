@@ -128,6 +128,8 @@ impl State {
     fn witness_rest(&mut self, frames: &mut Vec<f64>, newest: &Ts, label: &str) -> Result<()> {
         let begun = Instant::now();
         while begun.elapsed() < std::time::Duration::from_secs(5) {
+            // The frame itself must ask for the next: a pacer left dirty by the key or the last frame would hide its absence.
+            self.pacer.clear_dirty();
             self.witness_frame(frames, newest, label)?;
             if !self.chat.moving() {
                 return Ok(());
@@ -200,8 +202,10 @@ impl State {
             (self.layout_help.drawer(), self.focus_prompts.focus()),
         );
         self.chat = ChatDrawer::default();
+        let length = self.settings.smooth_scroll_ms;
         let result = self.witness_run(&host, &events, &mut sent);
         self.chat = ChatDrawer::default();
+        self.settings.smooth_scroll_ms = length;
         let (conns, evt_rx, (saved_host, saved_row), name, (drawer, focus)) = saved;
         (self.conns, self.evt_rx, self.settings.chat_name) = (conns, evt_rx, name);
         self.selected.select(saved_host, saved_row);
