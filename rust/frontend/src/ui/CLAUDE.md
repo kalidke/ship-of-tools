@@ -300,16 +300,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   (`scroll_px`, which the hit test, the selection and every paint read) is on a whole physical pixel between lines
   (`a_wheel_moves_the_preview_over_frames_and_its_hit_test_follows`, `home_and_end_ask_their_whole_distance_resolved_at_the_layouts_end`,
   `a_new_file_and_a_change_of_buffer_end_what_is_owed`, `a_zero_length_scroll_lands_at_once_and_an_edge_drops_what_is_owed`,
-  `a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once`); the State glue (the call sites' event time,
-  `clamp_preview_scroll`'s `mark_dirty`) is pinned by the native fixture `a_preview_scroll_moves_over_frames_and_comes_to_rest`,
-  which runs only under a display.
+  `a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once`, `an_edge_stops_the_motion_at_the_frame_that_meets_it`,
+  `a_reanchor_after_a_wheel_step_lands_on_its_line_not_beside_it`, `the_last_ask_wins_over_an_end_not_yet_resolved`). Every
+  call site asks with `State::scroll_ask` (the event's instant and the one length), so the length is read in one place.
+  The State glue is pinned only for the wheel: the native fixture `a_preview_scroll_moves_over_frames_and_comes_to_rest`
+  (which runs only under a display) drives the wheel's call site and `clamp_preview_scroll`'s `mark_dirty`. The keys'
+  eight call sites in `preview/keys.rs`, Alt+Up and Alt+Down in `input/global_keys.rs` and the re-anchor in
+  `preview/fetch.rs` rest on reading, like the other State handlers.
 - `ScrollMotion` (`motion.rs`, a leaf module with no `impl State`) privately owns the owed distance, its deadline and the
   last spend's time. `ask` adds a distance and restarts the deadline from the ask's time (a zero length answers what to
   apply at once); `spend` keeps `owed * ((deadline - now) / (deadline - last))^3`, so the sum of every spend is the asked
   total and the last of it lands `length` after the last ask, spends all of it at the deadline, and spends at once
   whatever is owed past the pane height it is given; `finish` and `stop` end it. It knows no pane, edge or unit; the
   strip's motion stays `StripMotion`. Behavior tests: `motion_tests` (`an_ask_comes_to_rest_exactly_its_length_after_it_on_the_asked_total`,
-  `the_first_frame_already_moves_and_the_steps_shrink`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
+  `the_first_frame_already_moves_and_the_steps_shrink`, `the_curve_is_a_cubic_ease_out`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
   `what_is_owed_past_a_pane_is_spent_at_once_at_the_next_frame`, `a_zero_length_applies_at_once_and_owes_nothing`,
   `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`, `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`).
   Only the preview uses it so far; a pane's ask, spend and edges are that pane's.

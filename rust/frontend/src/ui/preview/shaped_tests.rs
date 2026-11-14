@@ -361,3 +361,44 @@ fn a_reanchor_inside_the_file_eases_and_a_reply_anchor_lands_at_once() {
     assert_eq!(p.scroll(), 4.0);
     assert!(!p.advance(frame(t0, 32), 40, 9.0, false), "a reply's anchor owes nothing");
 }
+
+#[test]
+fn an_edge_stops_the_motion_at_the_frame_that_meets_it() {
+    let (mut p, _fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    // Four lines from the end, ten asked: the first frame passes the end, rests there and asks for no more frames.
+    p.scroll_by(26, t0, Duration::ZERO);
+    p.scroll_by(10, t0, LENGTH);
+    assert!(!p.advance(frame(t0, 8), 30, 5.0, false));
+    assert_eq!(p.scroll(), 30.0);
+    // The same at the top, three lines from it.
+    p.scroll_by(-27, t0, Duration::ZERO);
+    p.scroll_by(-10, t0, LENGTH);
+    assert!(!p.advance(frame(t0, 8), 30, 5.0, false));
+    assert_eq!(p.scroll(), 0.0);
+}
+
+#[test]
+fn a_reanchor_after_a_wheel_step_lands_on_its_line_not_beside_it() {
+    let src = "module M\n\nexport foo\n\n\"\"\"\nfoo docstring\n\"\"\"\nfunction foo()\nend\n";
+    let (mut p, _fs) = preview(src, 2000.0, 400.0);
+    let t0 = Instant::now();
+    p.scroll_by(5, t0, LENGTH);
+    assert!(p.advance(frame(t0, 8), 40, 9.0, false));
+    assert!(p.reanchor(Some(8), true, frame(t0, 20), LENGTH));
+    assert!(p.advance(frame(t0, 40), 40, 9.0, false));
+    assert!(!p.advance(frame(t0, 300), 40, 9.0, false));
+    assert_eq!(p.scroll(), 4.0, "the target counts what the wheel step still owed");
+}
+
+#[test]
+fn the_last_ask_wins_over_an_end_not_yet_resolved() {
+    let (mut p, _fs) = preview(&long(), 300.0, 200.0);
+    let t0 = Instant::now();
+    p.scroll_by(10, t0, Duration::ZERO);
+    p.scroll_to_end(t0, LENGTH);
+    p.scroll_to_top(frame(t0, 2), LENGTH);
+    assert!(p.advance(frame(t0, 16), 30, 5.0, false));
+    assert!(!p.advance(frame(t0, 160), 30, 5.0, false));
+    assert_eq!(p.scroll(), 0.0, "Home asked after End is the one that lands");
+}

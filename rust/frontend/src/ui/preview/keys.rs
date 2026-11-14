@@ -139,8 +139,7 @@ fn copy_selection_status(
 
 fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
     let KeyPress { event, action, .. } = key;
-    let now = std::time::Instant::now();
-    let length = crate::ui::motion::SCROLL_LENGTH;
+    let (now, length) = state.scroll_ask();
     match action {
         Some(Action::ScrollPageUp) => {
             // 1/3-pane step preserves reading

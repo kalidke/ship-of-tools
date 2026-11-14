@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 19] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 20] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (

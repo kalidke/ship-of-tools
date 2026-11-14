@@ -104,6 +104,12 @@ impl State {
         self.canvas.shape(|fs| self.concept.layout(preview_rect, fs));
     }
 
+    /// What a person's scroll asks with: the event's instant and how long it takes to arrive. The one place the
+    /// length is read, so every call site asks alike.
+    pub(in crate::ui) fn scroll_ask(&self) -> (std::time::Instant, std::time::Duration) {
+        (std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH)
+    }
+
     pub(in crate::ui) fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {
         // Clamp the preview scroll so the user can't walk past the end
         // of the document. Pixel-summing per LayoutLine accounts for

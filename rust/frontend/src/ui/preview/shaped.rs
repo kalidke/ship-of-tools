@@ -56,6 +56,8 @@ impl ShapedPreview {
         &self.highlight
     }
     pub(in crate::ui) fn fatal(&self) -> Option<&MarkdownPreview> { self.fatal.as_ref() }
+    /// The position in body lines, for the tests; the drawn value is `scroll_px`.
+    #[cfg(test)]
     pub(in crate::ui) fn scroll(&self) -> f32 { self.scroll }
 
     /// A freshly shaped buffer replaces the shown one: selection goes, and scroll returns to the top.
@@ -169,6 +171,8 @@ impl ShapedPreview {
 
     /// A person's ask for the whole distance to the whole line `target`, counting what is already owed.
     fn scroll_to(&mut self, target: f32, now: Instant, length: Duration) {
+        // The last ask wins: an End not yet resolved is this ask's to replace.
+        self.end_asked = None;
         self.ask(target - self.scroll - self.motion.owed(), now, length);
     }
 

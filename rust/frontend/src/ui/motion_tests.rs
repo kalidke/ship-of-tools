@@ -148,3 +148,13 @@ fn a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests() {
     assert!((m.spend(at(t0, 5_000), NEVER) - 4.0).abs() < 1e-6);
     assert!(!m.moving());
 }
+
+#[test]
+fn the_curve_is_a_cubic_ease_out() {
+    let t0 = Instant::now();
+    let mut m = ScrollMotion::default();
+    m.ask(8.0, t0, LENGTH);
+    // Halfway through the time, one eighth of the distance is left: 8 * (1 - 0.5^3).
+    assert!((m.spend(at(t0, 75), NEVER) - 7.0).abs() < 1e-4);
+    assert!((m.owed() - 1.0).abs() < 1e-4);
+}

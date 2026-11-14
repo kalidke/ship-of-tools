@@ -225,7 +225,8 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
             help::DrawerInput::Inert => {}
         },
         PaneFocus::Preview => {
-            state.shaped.scroll_by(-rows_above, std::time::Instant::now(), crate::ui::motion::SCROLL_LENGTH);
+            let (now, length) = state.scroll_ask();
+            state.shaped.scroll_by(-rows_above, now, length);
             state.window.request_redraw();
         }
         PaneFocus::Llm => {
