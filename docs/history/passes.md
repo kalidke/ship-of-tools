@@ -2265,3 +2265,16 @@ A landing's record goes here, with its measured times; the package page holds on
   stops before it counts, so only input never taken is said not sent, held keys dropped by pruning included. Round 1
   found a blocker (the pane zeroed the notice before it knew what a key did, so five discarded keys read as one), round
   2 two places that still zeroed it outside a dismissal and three unpinned lines, each now red by a named mutant.
+- v0.7.1-rc.5, 2026-11-14, on the maintainer's word (the fifth candidate, carrying every known fix: the four defects a
+  person saw on rc.4 and the three reading notes beside one of them; the copy-as-one-line key kept at Ctrl+Shift+L):
+  the full local gate at 55f251e76 passed (2026-11-13, done 23:19); the cut at 07:18 from a fresh clone (release
+  590b48239, the line's next stamp f2c3ad697 after it); the release run green on every leg, the draft ready about
+  07:40. The hub's install by archive first stopped, changing nothing, because the daemon's restart would end a row's
+  live REPL; on the maintainer's word it ran with the restart and passed (the rows unchanged, every window
+  reattached). A second computer reached over ssh staged it for its next start at the desk. The cross-computer mail
+  matrix, 6 lines, 0 failures, with the hub on rc.5 and the window computer still on rc.4. Named consumer: the
+  maintainer at the window computers; named checks: the four on the candidate's page (a wrapped line copied as one
+  line, a key typed while a mail notice is shown, rows switched quickly, the hub's links after its daemon restarts).
+  Seen while starting that second computer's daemon for a remote person: an ssh sign-in on Windows cannot follow the
+  install's junctions (WIN-SSH-JUNCTION-UNTRUSTED), and the hub's spawn still refuses a folder only the far computer
+  has (SPAWN-REMOTE-FOLDER).

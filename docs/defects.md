@@ -708,6 +708,14 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
+- **WIN-SSH-JUNCTION-UNTRUSTED** [session] On a Windows computer, a sign-in over ssh by key cannot follow the
+  install's junctions (`repo\current`, `julia\current`): a listing through either answers "The path cannot be
+  traversed because it contains an untrusted mount point", and so does a process created through WMI from that
+  sign-in. The installer itself works over ssh (it stages, and the next start at the desk applies), but nothing started
+  from ssh can run the launcher's paths, so a daemon a remote person needs on a computer with nobody signed in at its
+  desk has no supported start. Seen 2026-11-14; the daemon was started by hand with `SOT_RESOURCE_ROOT` set to the
+  version folder and that version's `scripts/sot-local-daemon.ps1`, created through WMI so it outlives the ssh session.
+  Fix not decided: a start for a daemon with no desk session that resolves the version folder without the junction.
 - **INSTALLER-NEWEST-TAKES-A-DRAFT** [session] On a pre-release install the prelude of `scripts/install.sh` and
   `scripts/install.ps1` (and the preludes of 0.6.6-rc9.14 on) lists the releases through GitHub's API: `newest_release`
   takes the first entry, and from 0.6.6-rc9.15 on sends `GITHUB_TOKEN` or `GH_TOKEN` when set. Seen in test runs, three
