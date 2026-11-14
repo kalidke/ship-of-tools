@@ -41,6 +41,7 @@ fn parked_view(page: Option<(u32, u32)>) -> WorkspaceUiSnapshot {
         concept: None,
         edit_state: None,
         ink: Default::default(),
+        drawer: DrawerContent::Closed,
         page,
     }
 }
@@ -96,4 +97,21 @@ fn a_rows_drawing_comes_back_with_its_view() {
     parked.forget(&a);
     layer.restore(parked.view(&a).map(|v| v.ink.clone()).unwrap_or_default());
     assert!(layer.strokes().is_empty() && !layer.is_on() && layer.base().is_none(), "a destroyed row's drawing is gone");
+}
+
+#[test]
+fn a_rows_drawer_rides_its_view_and_a_destroyed_rows_drops_with_it() {
+    let (a, b): (WsKey, WsKey) = (("h".into(), "a".into()), ("h".into(), "b".into()));
+    let mut parked = ParkedViews::default();
+    parked.park(a.clone(), WorkspaceUiSnapshot { drawer: DrawerContent::Chat, ..parked_view(None) });
+    parked.park(b.clone(), WorkspaceUiSnapshot { drawer: DrawerContent::Monitor, ..parked_view(None) });
+    assert_eq!(parked.view(&a).map(|v| v.drawer), Some(DrawerContent::Chat));
+    assert_eq!(parked.view(&b).map(|v| v.drawer), Some(DrawerContent::Monitor));
+    let default: WsKey = ("h".into(), "<default>".into());
+    let raw: WsKey = ("h".into(), "base".into());
+    parked.park(raw.clone(), WorkspaceUiSnapshot { drawer: DrawerContent::Repl, ..parked_view(None) });
+    parked.migrate(&raw, default.clone());
+    assert_eq!(parked.view(&default).map(|v| v.drawer), Some(DrawerContent::Repl), "the default row's drawer stayed under its raw slug");
+    parked.forget(&a);
+    assert!(parked.view(&a).is_none(), "a destroyed row's drawer outlived it for a same-slug successor");
 }

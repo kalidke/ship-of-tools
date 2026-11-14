@@ -1608,6 +1608,52 @@ impl State {
     }
 }
 
+impl State {
+    /// A row's drawer stays with its row: a first visit starts with the window's fresh drawer, a return brings the
+    /// row's own tenant, Help closes on a switch, and a destroyed row's drawer does not reach its same-slug successor.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_rows_drawer_stays_with_its_row(&mut self) -> Result<()> {
+        let a = "<host-drawer>".to_string();
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx)];
+        let mut default = ws_info("default", "attach-default");
+        default.is_default = true;
+        default.agent = "none".into();
+        let rows = vec![default, probe_row("s1", "id-s1", false), probe_row("s2", "id-s2", false)];
+        self.on_workspaces(a.clone(), rows.clone());
+        let fresh = self.layout_help.fresh_drawer();
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        let focus = self.focus_prompts.focus();
+        let effect = self.layout_help.toggle_drawer(DrawerContent::Chat, focus);
+        effect.apply(self, None);
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        anyhow::ensure!(self.layout_help.drawer() == fresh, "a first visit showed the row just left's drawer");
+        let effect = self.layout_help.toggle_drawer(DrawerContent::Monitor, self.focus_prompts.focus());
+        effect.apply(self, None);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        anyhow::ensure!(self.layout_help.drawer() == DrawerContent::Chat && self.layout_help.chat_shown(), "a return lost the row's Chat");
+        anyhow::ensure!(!self.monitor.subscribed(), "the left row's Monitor kept its subscription");
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        anyhow::ensure!(self.layout_help.drawer() == DrawerContent::Monitor && self.monitor.subscribed(),
+            "the other return lost the row's Monitor or its subscription");
+        let context = help::Context::default();
+        self.open_help_drawer(context);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        anyhow::ensure!(self.layout_help.drawer() == DrawerContent::Chat, "a switch under Help did not show the entered row's drawer");
+        let destroyed = crate::net::transport::WorkspaceDestroyedInfo {
+            workspace_id: "id-s1".into(), slug: "s1".into(), label: "s1".into(), tmux_killed: true, toml_removed: true, kept: None,
+        };
+        self.on_workspace_destroyed(a.clone(), Ok(destroyed));
+        let mut next = rows;
+        next[1] = probe_row("s1", "id-s1-next", false);
+        self.on_workspaces(a.clone(), next);
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        anyhow::ensure!(self.layout_help.drawer() == fresh, "a destroyed row's drawer came back to its same-slug successor");
+        Ok(())
+    }
+}
+
 /// The `preview.get`s the window wrote, as `(node, row, generation)`.
 fn previews_asked(rx: &mut ProbeRx) -> Vec<(String, Option<String>, u64)> {
     std::iter::from_fn(|| rx.try_recv().ok())
