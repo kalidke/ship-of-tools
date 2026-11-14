@@ -4,9 +4,10 @@
 use crate::ui::*;
 use super::drawer::PumpReport;
 
-/// `scroll_ring` for the Terminal drawer's local terminal; three call sites share it.
+/// A person's scroll of the Terminal drawer's local ring, asked as every scroll is; the wheel and the page keys share it.
 pub(in crate::ui) fn scroll_drawer_ring(state: &mut State, delta: i32) {
-    state.term_drawer.scroll(delta);
+    let (now, length) = state.scroll_ask();
+    state.term_drawer.scroll(delta, now, length);
 }
 
 impl State {
@@ -47,6 +48,10 @@ impl State {
                     ));
                 }
             }
+        }
+        // After the pump, shown or not, so a scroll left over a closed drawer still comes to rest.
+        if self.term_drawer.spend_scroll(std::time::Instant::now()) {
+            self.pacer.mark_dirty();
         }
     }
 

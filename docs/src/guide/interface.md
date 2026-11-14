@@ -330,7 +330,8 @@ pressing another swaps it in place.
 Plain `PgUp`/`PgDn` page the drawer's scrollback ring (a one-third-pane step,
 the same convention as the LLM pane) — so a `claude` session running here
 scrolls exactly like one in the LLM pane. Typing snaps back to the live tail.
-Two escape hatches keep full-screen apps working:
+The ring moves a row at a time over `[display] smooth_scroll_ms` (a one-row step
+at once, `0` for every move at once). Two escape hatches keep full-screen apps working:
 
 - Apps on the **alternate screen** (`vim`, `less`) page themselves — they
   receive the raw key automatically.
@@ -338,7 +339,8 @@ Two escape hatches keep full-screen apps working:
   primary-screen app that wants the key itself.
 
 The mouse wheel scrolls the same ring, or is forwarded as SGR mouse events
-when the running app has enabled mouse tracking (`vim`, `htop`).
+when the running app has enabled mouse tracking (`vim`, `htop`). A screen an app
+owns (the alternate screen, mouse tracking) is never eased: the app redraws it.
 
 ## The Monitor Drawer
 

@@ -22,7 +22,7 @@ target, awaited level, refresh memo and root-armed target; `nav::FileOps` owns t
 upload batch. `preview::concept::DriftCheck` owns the drift badge's per-file parsed hashes, parse latch and backoff;
 `preview::editor::state::Editor` owns the active edit, the file edit awaiting its `file.read` and the shaped edit buffer;
 `preview::concept::ConceptSlot` owns the last annotation read, its shaped body and the concept pane's rect;
-`flowed_selection::FlowedSelection` owns mouse selection over flowed text; `motion::ScrollMotion` owns the rule of a person's eased scroll (the owed distance, its deadline and the last frame's time; a pane keeps its own position and edges); `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
+`flowed_selection::FlowedSelection` owns mouse selection over flowed text; `motion::ScrollMotion` owns the rule of a person's eased scroll (the owed distance, its deadline, the last frame's time and a cell pane's carry of rows; a pane keeps its own position and edges); `preview::shaped::ShapedPreview` owns the flowed preview buffer, its rect, scroll and definition-line
 anchor, the refused-hello overlay and the highlighter; `preview::image::raster::RasterView` owns the shown raster, its
 zoom, pan and dimensions, the visible ROI and the same-directory view carry; `preview::image::pages::PageView` owns
 the shown preview's page, its raster zoom and a re-raster's keep-view; `preview::image::figure_overlays::FigureOverlays`
@@ -318,7 +318,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `the_first_frame_already_moves_and_the_steps_shrink`, `the_curve_is_a_cubic_ease_out`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
   `what_is_owed_past_a_pane_is_spent_at_once_at_the_next_frame`, `a_zero_length_applies_at_once_and_owes_nothing`,
   `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`, `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`).
-  Only the preview uses it so far; a pane's ask, spend and edges are that pane's.
+  Whole rows (`ask_rows`, `spend_rows`, `finish_rows`, for the cell panes) add the one field it keeps for them, the carry:
+  the distance spent minus the rows shown. A frame shows the spent distance rounded up in the direction of travel, so the
+  first row shows at the first frame and a one-row step is that row; the frame that rests rounds, so the rows shown
+  total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
+  `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). The preview, the agent pane and the Terminal drawer
+  use it; a pane's ask, spend and edges are that pane's.
 - `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
   pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
   raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
@@ -496,10 +501,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   after the first frame, a size event or a quit question closing over the bar, the teardown's `unknown` and the host's
   disconnect drained in one frame both show, and an Enter a second after a
   presented frame puts one `PageReply` with the line on B's connection and none on A's).
-- `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3): spawned the first time the drawer is
+- `TerminalDrawer` privately owns the Terminal drawer's local shell (G2/G3) and its scroll motion: spawned the first time the drawer is
   shown, at 80x24 in the repo root; pumped before each draw (the report says when the pane looks wrong); its pty
   resized only when the drawer's cell size changes (at least 2x2). Typed and pasted input returns the view to the
-  live tail; a wheel the shell's app tracks is forwarded as is.
+  live tail (and ends what a scroll still owes); a wheel the shell's app tracks is forwarded as is. A person's wheel and
+  PageUp/PageDown over the local ring ask its `ScrollMotion` (`State::scroll_ask`; a screen on the alternate screen is moved
+  at once, as before), and `spend_scroll`, run after the pump whether or not the drawer is shown, moves the ring the rows the
+  curve has reached; a move that comes up short (the ring's end, the live tail) stops it
+  (`drawer::terminal::drawer::tests::a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`, on a real shell,
+  Unix only).
 - `MonitorPane` privately owns the Monitor drawer (ADR 0020): its chart model, the raster, the drawer rect, the
   readings' dirty mark, the subscription this window holds and the declared hub it asks. The chart is the one SVG the
   window still draws in its own process (`quad_from_own_svg`): the window's process draws only SVG it composes, and
@@ -734,11 +744,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   public selection operations with independent subscription setup; fresh Windows/macOS release gates cover 7g/7h.
 - `AgentPane` privately owns the host/attachment target, size, selection/drag, selected client, host-bounded warm
   pool, held keys by row, presented live run and dwell, hold, dial reason, request/client clocks, warning count, feed,
-  discarded-input count and composed `PanePresentation`. Its operations never take State or expose mutable
+  discarded-input count, its scroll motion and composed `PanePresentation`. Its operations never take State or expose mutable
   clients/screens/storage. The narrow
   `PaneClient` port uses `FeAttachClient` in production and a scripted client in `agent_pane/owner_tests.rs`.
   State applies owned effects for transport sends, asynchronous retirement, logging, redraw, clipboard and persistence;
   it keeps host/dial configuration, pointer geometry/residue, create origins and multi-owner event ordering.
+- The pane's wheel (only over its own ring: never when a program in it tracks the mouse, and a program on the alternate
+  screen is moved at once) and PageUp/PageDown ask its `ScrollMotion` (`State::scroll_ask`), and `spend_scroll`, run
+  after the pump in `pump_pane_attach_term`, moves the ring the rows the curve has reached and answers whether frames must
+  keep coming. The client's own offset stays the one position; the edge (the ring's end, the live tail) is a move that came up
+  short, read from the client's screen, and stops the motion. Typing and pasting (`reset_scroll`), a reshape's snap to live
+  and a kept row's invalidation stop it; a switch finishes it first, so the parked ring stands where the person asked
+  (`a_page_scrolls_the_ring_a_row_at_a_time_and_typing_returns_at_once`, `a_scroll_stops_at_the_tail_and_at_a_reshape_and_a_switch_finishes_it`).
+  The State glue (the three call sites and `mark_dirty`) rests on reading.
 - Switch compares the whole host/attachment pair, captures/parks the departing client and sets Pending before sending;
   only a successful open send commits the target. Direct replies require that pair, the active host and an empty slot.
   Exact warm reuse precedes dial configuration; pruning uses committed host-local stored attachment names, including
