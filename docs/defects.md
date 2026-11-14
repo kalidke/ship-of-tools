@@ -136,6 +136,13 @@ owned by `docs/CLAUDE.md`.
 
 ## containment
 
+- **ESCAPED-HOLDER-MACOS** [note] A hosted run on main (2026-11-14, Rust run 43633631706, macOS, shard
+  sotd-c+plat+inst) failed `signal::output_bound_tests::output_does_not_wait_for_an_escaped_pipe_holder`
+  (`rust/containment/src/signal_output_bound_tests.rs`): `Signal::output` with a 2 s bound returned the command's
+  status 0 instead of `TimedOut`, so the escaped holder (a `perl` fork after `setsid`, holding the pipe while `keep`
+  exists) did not keep the pipe open past the bound. The test passed on every earlier run that day and nothing in
+  containment had changed. Not diagnosed: whether the escapee died early, never inherited the pipe, or the leader's
+  wait ran past the escapee's loop.
 - **B15-REVIEW-NOTES** [note] `end_group` with a leader-exited group (`jobs -p` would miss it): the case has a test
   row (`leaderexit`), and the Git Bash stale-group hazard goes with the shell client's removal. `in-job.ps1`'s
   handle-based wait (C#) needs a Windows test computer. The gate's tool probes sit above its container check (add a
@@ -208,6 +215,10 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **START-TEST-ENV-RACE** [note] A rows start test reads `XDG_STATE_HOME` without holding the test lock that guards
+  the environment, so another test that sets it at the same moment moves the first test's state folder. Seen once in a
+  scoped local gate on 2026-11-14 whose change touched only a Windows test helper; the rerun passed. Fix: the test takes
+  the lock.
 - **ROWS-ROLLBACK-TEST-RACE** [note] `rows::ops::create::tests::rollback_tests::a_destroy_during_a_failing_create_stays_destroyed`
   panicked `no row with task new task` (`create_tests.rs`, its registry lookup) once in a whole local gate run on
   2026-11-10 whose change touched only the window, and passed in the day's other whole runs: a state the test does not

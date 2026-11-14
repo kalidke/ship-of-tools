@@ -2295,3 +2295,31 @@ A landing's record goes here, with its measured times; the package page holds on
   went: the build 15; review round 1 (no blockers) 12, which found three rules no test failed for and a lost ask after
   End; one fix commit 4 and the call sites' one `scroll_ask`; two scoped gates. The plan of record is the session's,
   in its output folder; landings 2 to 5 follow.
+- Smooth scrolling, landing 2 (the setting), 2026-11-14: builder about 11:45, main 11:52 (82d8f1b97), about 7 minutes.
+  About 29 product lines and 29 test lines. `[display] smooth_scroll_ms`, 0 to 1000, default 150, 0 moving at once,
+  read only by `scroll_ask`; a harness instance runs at 0. The diff was read instead of a review round; one scoped gate.
+- The Chat drawer names its channel, 2026-11-14, on the maintainer's word: builder about 10:56, main 12:16 (6ebf6ee8e,
+  ef822b13a, bc0db0f73), about 80 minutes. About 110 product lines over the wire, chat, the daemon and the window, and
+  about 230 test lines. The title shows `#name` from the daemon's name cache, filled once in the background when the
+  hub's chat service starts (`Api::channel_names`: bounded by a count, a deadline and a stop at a refusal); the foot
+  names a draft's destination only where the title does not. Where the minutes went: the build 27; review round 1 12,
+  which found a blocker (a channel draft with a thread open left the foot silent, so Enter posted to the channel
+  unannounced) and a lookup with no bounds; a fix commit 14; round 2 15 (no blockers; three wrong records, two unpinned
+  rules); a last commit 6; two scoped gates.
+- The scratch guard keeps the identity alive across its profile lookup (SCRATCH-GUARD-TOKEN-LIFETIME), 2026-11-14,
+  fixing forward a hosted red on main: builder about 12:07, main 12:25 (f77f32167), about 18 minutes. About 8 lines of a
+  test helper. Run whole on a lab Windows computer before the push (120 checks, none failing). Its first local gate
+  failed in an unrelated rows test (START-TEST-ENV-RACE), and the rerun passed.
+- Smooth scrolling, landing 3 (the agent pane and the Terminal drawer, in whole rows), 2026-11-14: builder about 11:52,
+  main 12:43 (e62ed3e97, 3a7930a06, af9ffe340), about 51 minutes. About 150 product lines and 300 test lines. A page
+  rolls a row at a time; a one-row step and typing move at once; a program that tracks the mouse or holds the alternate
+  screen gets the wheel as before; an ask that reaches the live tail rests on it however many lines arrived (`RingRoll`,
+  the session's decision; the plan's relative rule holds for an ask that stops short). Where the minutes went: the build
+  8; review round 1 12 (no blockers: a typing test that tested nothing, frames after the last row, a page toward the tail
+  landing short when output arrived, thin drawer tests); a fix commit 8; round 2 12 (no blockers: a second ask down
+  dropped the tail landing); a last commit 3; three scoped gates.
+- Smooth scrolling, landing 4 (the Chat drawer, by pixels), 2026-11-14, trial 1, Sonnet arm, builder smooth-l4: builder
+  about 12:17, main 12:59 (37c2abc4a, 32b6d42b1), about 42 minutes. About 75 product lines and 250 test lines. Where the
+  minutes went: the build 12; review round 1 20, which found a blocker (the charter claimed the chat witness pinned the
+  frame request it did not) and a follower's first frame within microseconds of the key that dropped the scroll; a fix
+  commit 6, rebased over landing 3; one scoped gate.
