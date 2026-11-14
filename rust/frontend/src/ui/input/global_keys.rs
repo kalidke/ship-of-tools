@@ -380,12 +380,14 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
         let target = line_scroll_target(state.focus_prompts.focus(), state.layout_help.drawer());
         match (target, action) {
             (LineScroll::Repl, Some(Action::ScrollLineUp)) => {
-                state.repl_model.scroll_line(true);
+                let (now, length) = state.scroll_ask();
+                state.repl_model.scroll_line(true, now, length);
                 state.window.request_redraw();
                 return Break(());
             }
             (LineScroll::Repl, Some(Action::ScrollLineDown)) => {
-                state.repl_model.scroll_line(false);
+                let (now, length) = state.scroll_ask();
+                state.repl_model.scroll_line(false, now, length);
                 state.window.request_redraw();
                 return Break(());
             }

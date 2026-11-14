@@ -200,7 +200,7 @@ fn repl_drawer_layout_uses_the_owner_window() {
             let end = 100 - expected as usize;
             assert_eq!(window, (end - height, end));
             let mut model = ReplModel::default();
-            model.commit_rendered_scroll(scroll);
+            model.commit_rendered_scroll(proposed, scroll);
             assert_eq!(model.scroll(), expected);
             if drawer == DrawerContent::Repl {
                 for (i, y) in (area.y..area.bottom()).enumerate() {

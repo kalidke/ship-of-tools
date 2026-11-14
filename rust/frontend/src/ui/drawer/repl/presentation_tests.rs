@@ -308,7 +308,7 @@ fn drawer_layout_returns_the_clamped_half_open_window() {
     assert_eq!(layout.scrollback, Rect::new(3, 4, 20, 7));
     assert_eq!(layout.input, Rect::new(3, 11, 20, 3));
     assert_eq!((layout.scroll, layout.window), (13, (0, 7)));
-    model.commit_rendered_scroll(layout.scroll);
+    model.commit_rendered_scroll(999, layout.scroll);
     assert_eq!(model.scroll(), 13);
     let layout = Owner::drawer_layout(Rect::new(0, 0, 20, 10), 2, 20, 4);
     assert_eq!((layout.scroll, layout.window), (4, (8, 16)));

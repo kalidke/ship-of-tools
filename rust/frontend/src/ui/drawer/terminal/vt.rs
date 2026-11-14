@@ -23,8 +23,9 @@ pub(in crate::ui) fn ring_of(scr: &mut vt100::Screen) -> impl FnMut(i32) -> usiz
     }
 }
 
-/// A person's scroll of a terminal's ring, eased in whole rows: the one rule of the agent pane and the Terminal drawer.
-/// The ring's own offset stays the one position, so every move goes through the caller's `ring`, which moves it by
+/// A person's scroll of a terminal's ring, eased in whole rows: the one rule of the agent pane and the Terminal drawer,
+/// and of the REPL drawer, whose offset from its tail is held steady as output arrives as a ring's is. The ring's own
+/// offset stays the one position, so every move goes through the caller's `ring`, which moves it by
 /// the rows it is given (none: read it) and answers the offset after.
 #[derive(Default)]
 pub(in crate::ui) struct RingRoll {
@@ -67,6 +68,11 @@ impl RingRoll {
         let rows = self.motion.finish_rows();
         if rows != 0 { ring(rows); }
         self.land(&mut ring);
+    }
+
+    /// The ring's far end, met outside a spend (a pane that learns its end only when it draws): a roll toward it stops.
+    pub(in crate::ui) fn met_end(&mut self) {
+        if self.motion.rows_owed() > 0 { self.stop(); }
     }
 
     /// The ring moved by another rule (typing, a reshape): nothing is owed.
