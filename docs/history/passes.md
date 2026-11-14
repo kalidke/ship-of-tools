@@ -2286,3 +2286,12 @@ A landing's record goes here, with its measured times; the package page holds on
   figure in `math_with_figure.md`; checked with the window's drawing library and its font fallback before the commit.
   Main at 10:00 (b97a040fb), about 25 minutes from the ask, two full local gates: the first failed one check of
   CI-PRE-REPL-INTERRUPT at a peak load of 13.8, and the rerun passed.
+- The Chat drawer opens with `Primary+k`, 2026-11-14, on the maintainer's word, matching the other drawers' chords;
+  `Primary+Shift+k` is free. The accepted cost, the same as its siblings': the chord no longer reaches the agent pane,
+  the REPL or the Terminal drawer. Builder about 10:41, main 10:48 (da0da0d97), about 7 minutes. Six lines of product
+  and records, one test run red on the old chord; the diff was read instead of a review round; one scoped gate.
+- The drawing key over a picture that is no image file says so (SVG-DRAW-SILENT), 2026-11-14: builder about 10:28,
+  main 10:55 (380766f50, 4a2c07622), about 27 minutes. About 12 product lines and 18 test lines. Review round 1 (no
+  blockers) found the same wrong line over a PDF page and a video poster, so the SVG case became one rule for every
+  picture that is no image file, a pure choice of line with tests that fail for a PNG or a missing node; the call
+  site's wiring rests on reading. One fix commit, rebased over the chord change, and two scoped gates.
