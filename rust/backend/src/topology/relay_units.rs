@@ -302,7 +302,7 @@ pub(super) fn refresh_cmd(topo: &Topology) -> Result<(), String> {
     refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| systemctl_stdout(a), &mut |l| println!("{l}"))
 }
 
-/// The daemon's own call at start (main.rs). Gates, cheapest first: hosts.toml
+/// The daemon's own call at start (`server::run`, once it holds the daemon lock). Gates, cheapest first: hosts.toml
 /// loads, this box is the hub, and this process is `sotd.service`'s MainPID.
 /// The first two return silently, the third logs one line. The daemon never
 /// waits on this.
@@ -471,8 +471,8 @@ mod tests;
 
 /// The hub keeps its generated relay units equal to this binary's text.
 /// refresh_at_start acts only in sotd.service's main process, never in a
-/// hand-started daemon, and the daemon never waits on it, so a wedged
-/// user manager cannot keep it down.
+/// hand-started daemon, and only once that process holds the daemon lock;
+/// the daemon never waits on it, so a wedged user manager cannot keep it down.
 #[cfg(target_os = "linux")]
 pub(crate) fn spawn_refresh_at_start() {
     let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(refresh_at_start);

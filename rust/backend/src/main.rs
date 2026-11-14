@@ -344,7 +344,10 @@ fn main() -> Result<()> {
     // before any startup side effect (`server::refuse_live_socket`).
     #[cfg(unix)]
     if let Some(path) = opts.socket.as_deref() {
-        server::refuse_live_socket(path)?;
+        if let Err(error) = server::refuse_live_socket(path) {
+            eprintln!("Error: {error:?}");
+            lifecycle::shutdown::exit(server::refusal_code(&error));
+        }
     }
 
     // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row
@@ -421,9 +424,6 @@ fn main() -> Result<()> {
 
     comm::mail::record_at_boot();
 
-    #[cfg(target_os = "linux")]
-    topology::relay_units::spawn_refresh_at_start();
-
     let runtime = runtime()?;
     complete_main(
         &runtime,
@@ -453,7 +453,7 @@ fn complete_main<T>(
             Ok(Ok(())) => 0,
             Ok(Err(error)) => {
                 eprintln!("Error: {error:?}");
-                1
+                server::refusal_code(&error)
             }
             Err(_) => 101,
         };

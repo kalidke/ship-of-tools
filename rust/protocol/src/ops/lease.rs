@@ -84,6 +84,9 @@ pub const CLOSE_ACK_WAIT: Duration = Duration::from_secs(125);
 pub const NOTICE_ACK_WAIT: Duration = Duration::from_secs(5);
 pub const EXIT_REQUESTED_SHUTDOWN: i32 = 0;
 pub const EXIT_UPDATE_RESTART: i32 = 75;
+/// A start refused because another daemon answers on its socket or holds the daemon lock: `deploy/sotd.service` lists it
+/// in `RestartPreventExitStatus=`, so the unit rests and the next launch's `systemctl --user start` tries again.
+pub const EXIT_SEAT_HELD: i32 = 69;
 /// In the daemon's state root.
 pub const HELD_RECORD_FILE: &str = "held.json";
 

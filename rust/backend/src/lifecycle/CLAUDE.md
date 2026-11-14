@@ -75,7 +75,9 @@ of each.
    A participant not confirmed retired is named and logged as incomplete; the code is chosen before retirement and
    never changes, and a registrant after retirement began is refused. With none registered the terminal is what it was.
    Codes: 0 (a finished close, an Ok main result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec`
-   recipe), 75 (the update restart), 78 (no config directory), 101 (a panic of the main future, turned into its code
+   recipe), 69 (`EXIT_SEAT_HELD`: a start refused because another daemon answers on its socket or holds the daemon
+   lock, which `deploy/sotd.service` lists in `RestartPreventExitStatus=` so the unit rests and the next launch's
+   `systemctl --user start` tries again; every other failure is restarted), 75 (the update restart), 78 (no config directory), 101 (a panic of the main future, turned into its code
    while the runtime still exists, `complete_main`); INT and TERM take the same fire and folders and then end the daemon
    by the signal itself with its default action (`shutdown::exit_by_signal`), so a service manager counts the stop as
    clean and a shell reads 130 and 143. Limit: a death by an uncatchable signal, an abort or a raw exit elsewhere is the
