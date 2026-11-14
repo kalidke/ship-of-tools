@@ -215,7 +215,8 @@ fn route_wheel_rows(state: &mut State, rows_above: i32) {
         PaneFocus::Repl => match help::DrawerInput::of(state.layout_help.drawer()) {
             help::DrawerInput::Terminal => wheel_terminal(state, rows_above),
             help::DrawerInput::Repl => {
-                state.repl_model.scroll_rows(rows_above);
+                let (now, length) = state.scroll_ask();
+                state.repl_model.scroll_rows(rows_above, now, length);
                 state.window.request_redraw();
             }
             help::DrawerInput::Chat => {

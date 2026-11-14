@@ -40,6 +40,10 @@ impl State {
         // mutable borrow inside the draw closure, then written back to
         // self after `draw` returns.
         let mut new_pane_rects = self.pane_rects;
+        // A person's eased scroll of the REPL is spent before its position is read here.
+        if self.repl_model.spend_scroll(std::time::Instant::now(), self.pane_rects.repl.height as f32) {
+            self.pacer.mark_dirty();
+        }
         let mut new_repl_scroll = self.repl_model.scroll();
         // Nav-spill overlay rows collected by this draw (same captured-
         // local pattern as `preview_cells`); written to
@@ -68,6 +72,7 @@ impl State {
         self.decode_repl_images();
         let repl_lines;
         (repl_lines, new_repl_scroll) = self.build_repl_view(new_repl_scroll);
+        let built_repl_scroll = new_repl_scroll;
         let repl_input = self.repl_model.input().to_string();
         let repl_pkg_mode = self.repl_model.pkg_mode();
         let (nav_cursor_body_pos, nav_has_cursor) = self.nav_cursor_row();
@@ -172,7 +177,7 @@ impl State {
         // closure can't write to the nav scroll directly because the
         // ratatui draw API takes a &mut self method, not self.
         self.nav.set_scroll(nav_scroll);
-        self.repl_model.commit_rendered_scroll(new_repl_scroll);
+        self.repl_model.commit_rendered_scroll(built_repl_scroll, new_repl_scroll);
         let preview_px = (
             (new_pane_rects.preview.width as f32 * self.canvas.cell_w()) as u32,
             (new_pane_rects.preview.height as f32 * self.canvas.cell_h()) as u32,

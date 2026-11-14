@@ -325,8 +325,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   shown total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
   `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). The preview and the Chat view (in pixels) and `terminal::vt::RingRoll` (in whole rows) use it; a
   pane's ask, spend and edges are that pane's.
-- `terminal::vt::RingRoll` owns the one rule of a person's scroll over a terminal's ring, for the agent pane and the
-  Terminal drawer: a `ScrollMotion` in whole rows and whether the ask reached the live tail. Every move goes through the
+- `terminal::vt::RingRoll` owns the one rule of a person's scroll over a terminal's ring, for the agent pane, the
+  Terminal drawer and the REPL drawer (whose offset from its tail moves as a ring's does): a `ScrollMotion` in whole rows and whether the ask reached the live tail. Every move goes through the
   owner's `ring` closure (rows to move by, none to read; the offset after), so the emulator's offset stays the one
   position. A move that comes up short (the ring's end, the live tail) stops the roll. An ask that reaches the live tail
   (the offset, what is still owed and the rows asked sum to zero or less, or a later ask toward the tail while one is
@@ -334,6 +334,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   lines arrive (`a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady`,
   `a_second_ask_toward_the_tail_keeps_the_landing_the_first_earned`, `a_switch_parks_a_tail_ask_on_the_tail_whatever_arrived`;
   the Terminal drawer inherits the rule through the same type, its own tests having no way to make a shell print between two frames).
+  `met_end` stops a roll toward the far end that a pane learns of only when it draws (the REPL's top).
 - `RasterView` privately owns the image pane's view of one raster: its texture, loaded and served dimensions, zoom,
   pan, the visible source-pixel ROI, the per-directory, per-size view carry and the carry parked at install. A decoded
   raster installs; unless a page re-raster keeps the view, the view resets to fit and an image node's cached
@@ -622,7 +623,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `FramePacer` privately owns the frame-rate cap: a redraw inside `FRAME_BUDGET` of the last frame is deferred
   (dirty) and drawn at the boundary, so a burst collapses into one frame (the capture harness draws every redraw);
   animations and debounces mark it dirty; the first drawn frame takes the window's focus once.
-- `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll and history walks, plus
+- `ReplModel` privately owns live and parked row logs, drafts, prompt modes, scroll (and the live row's roll) and history walks, plus
   the window-wide saturating eval counter, interrupt memory, host-qualified eval routes, run-file display records
   and raw-slug lifecycle state. It lends immutable entries and returns owned send plans and effects; its operations
   never take State or expose mutable storage. ReplPresentation owns image caches, geometry and build anchors;
@@ -674,6 +675,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   same remembered set, and remembers only successful sends. Interrupt memory stays window-wide through restore,
   clear and fresh runs. With no run, Ctrl+C clears draft and exits pkg mode. Page/wheel integer conversion and
   saturating fine-line scroll retain their distinct arithmetic; rendering supplies the final clamp.
+- A person's REPL scroll eases a row at a time: `scroll_rows` (the wheel, PageUp/PageDown, Ctrl+u/d) and
+  `scroll_line` (Alt+Up/Down) ask the model's `RingRoll` with the event's instant and the length (`State::scroll_ask`),
+  and at a zero length apply their own arithmetic at once, as before. `draw_chrome` spends the roll by the page
+  arithmetic (`spend_scroll`, the drawer's rows as the cap) before it reads the scroll for the build, and marks the
+  pacer dirty while it moves. The tail is the page arithmetic's floor and stops the roll; the top is the commit's
+  clamp (`commit_rendered_scroll(built, shown)`, a shown scroll below the built one), which stops a roll toward it and
+  not one away from it. An edit, a history step, a submit, an interrupt, Ctrl+L and a fresh run return to the tail and
+  stop the roll (`scroll_to_tail`); a switch's capture finishes it, so the row parks where the person asked, and a
+  restore stops it. A page that reaches the tail lands there however much output the anchor held the view steady
+  through. Tests: `model_tests::a_page_is_spent_in_whole_rows_and_a_submit_moves_at_once`,
+  `an_edit_a_history_step_ctrl_l_and_a_fresh_run_stop_a_roll_at_once`, `a_row_switch_finishes_a_roll_where_it_was_asked`,
+  `the_top_and_the_tail_stop_a_roll`, `a_one_row_step_shows_at_the_first_frame_and_no_frame_follows_it`,
+  `a_page_that_reaches_the_tail_lands_on_it_while_output_arrives`; the call sites and the spend's `mark_dirty` in
+  `draw_chrome` rest on reading, like the other State handlers.
 - Ctrl+L clears log, scroll and ReplPresentation's image caches, retaining draft, prompt mode and history walk. A fresh file
   run clears log, scroll, mode and history, retaining draft and image caches until normal pruning. Every restore
   requests a build-anchor reset, including a first visit. Behavior proofs: `drawer::repl::model_tests`, including

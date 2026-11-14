@@ -5,6 +5,7 @@ use super::{
     SubmissionKind,
 };
 use crate::ui::*;
+use std::time::{Duration, Instant};
 
 /// One submitted REPL eval — code typed by the user plus the frames the
 /// kernel returned. `in_flight` means we sent the request but haven't seen
@@ -98,7 +99,7 @@ impl ReplModel {
     ) -> ReplSend {
         if fresh {
             self.live.log.clear();
-            self.live.scroll = 0;
+            self.scroll_to_tail();
             self.live.pkg_mode = false;
             self.live.history_pos = None;
             self.live.history_saved = None;
@@ -200,7 +201,7 @@ impl ReplModel {
             &row.input,
         ) {
             row.input = line;
-            row.scroll = 0;
+            self.scroll_to_tail();
             true
         } else {
             false
@@ -213,7 +214,7 @@ impl ReplModel {
             history_step_forward(&row.log, &mut row.history_pos, &mut row.history_saved)
         {
             row.input = line;
-            row.scroll = 0;
+            self.scroll_to_tail();
             true
         } else {
             false
@@ -222,7 +223,7 @@ impl ReplModel {
 
     pub(in crate::ui) fn clear_scrollback(&mut self) -> ReplEffects {
         self.live.log.clear();
-        self.live.scroll = 0;
+        self.scroll_to_tail();
         ReplEffects {
             clear_images: true,
             status: Some("repl · scrollback cleared".into()),
@@ -231,21 +232,38 @@ impl ReplModel {
         }
     }
 
-    /// Page, half-page and wheel arithmetic converts after the integer calculation, as before.
-    pub(in crate::ui) fn scroll_rows(&mut self, rows_above: i32) {
-        self.live.scroll = (self.live.scroll as i32 + rows_above).max(0) as u16;
+    /// A person's page, half page or wheel step, `rows_above` older (negative toward the tail): a row at a time over
+    /// `length`, at once when it is zero, by the page arithmetic.
+    pub(in crate::ui) fn scroll_rows(&mut self, rows_above: i32, now: Instant, length: Duration) {
+        let row = &mut self.live;
+        self.roll.ask(rows_above, now, length, |rows| page_step(&mut row.scroll, rows));
     }
-    pub(in crate::ui) fn scroll_line(&mut self, older: bool) {
-        self.live.scroll = if older {
-            self.live.scroll.saturating_add(1)
-        } else {
-            self.live.scroll.saturating_sub(1)
-        };
+    /// A person's one-line step (Alt+Up, Alt+Down), by the line arithmetic when it is applied at once.
+    pub(in crate::ui) fn scroll_line(&mut self, older: bool, now: Instant, length: Duration) {
+        let row = &mut self.live;
+        self.roll.ask(if older { 1 } else { -1 }, now, length, |rows| line_step(&mut row.scroll, rows));
     }
-    pub(in crate::ui) fn commit_rendered_scroll(&mut self, scroll: u16) {
-        self.live.scroll = scroll;
+    /// One frame, before the view is built: the rows the roll has reached; `cap` is the drawer's rows. Whether
+    /// frames must keep coming.
+    pub(in crate::ui) fn spend_scroll(&mut self, now: Instant, cap: f32) -> bool {
+        let row = &mut self.live;
+        self.roll.spend(now, cap, |rows| page_step(&mut row.scroll, rows))
     }
+    pub(super) fn finish_scroll(&mut self) {
+        let row = &mut self.live;
+        self.roll.finish(|rows| page_step(&mut row.scroll, rows));
+    }
+    /// The scroll the view showed: `shown`, the render's clamp of what was `built`. A clamp is the top, and a roll
+    /// toward it stops there.
+    pub(in crate::ui) fn commit_rendered_scroll(&mut self, built: u16, shown: u16) {
+        if shown < built {
+            self.roll.met_end();
+        }
+        self.live.scroll = shown;
+    }
+    /// A move to the tail by another rule (an edit, a submit, Ctrl+L, a fresh run): nothing stays owed.
     pub(in crate::ui) fn scroll_to_tail(&mut self) {
+        self.roll.stop();
         self.live.scroll = 0;
     }
 
@@ -326,6 +344,20 @@ impl State {
         let effects = self.repl_model.complete_submission(plan.submission, result);
         self.apply_repl_effects(effects);
     }
+}
+
+/// Page, half-page and wheel arithmetic converts after the integer calculation, as before (it wraps past the top of
+/// `u16`); the rendering clamps it. The offset after, as `RingRoll` reads it.
+fn page_step(scroll: &mut u16, rows: i32) -> usize {
+    *scroll = (*scroll as i32 + rows).max(0) as u16;
+    *scroll as usize
+}
+
+/// A line step saturates.
+fn line_step(scroll: &mut u16, rows: i32) -> usize {
+    let step = u16::try_from(rows.unsigned_abs()).unwrap_or(u16::MAX);
+    *scroll = if rows >= 0 { scroll.saturating_add(step) } else { scroll.saturating_sub(step) };
+    *scroll as usize
 }
 
 /// Walk one step backward (older) through the REPL history. Returns

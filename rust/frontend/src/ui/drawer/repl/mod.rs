@@ -2,7 +2,7 @@
 
 use crate::net::dial::HostKey;
 use crate::net::transport::OutgoingReq;
-use crate::ui::WsKey;
+use crate::ui::{RingRoll, WsKey};
 use log::ReplEntry;
 use std::collections::HashMap;
 
@@ -31,6 +31,8 @@ pub(in crate::ui) struct ReplModel {
     runfile_status: HashMap<(HostKey, u64), (String, Option<String>, bool)>,
     interrupted: Vec<u64>,
     lifecycle: HashMap<WsKey, String>,
+    /// A person's eased scroll of the live row, a row at a time: the offset from the tail moves as a terminal's ring does.
+    roll: RingRoll,
 }
 
 /// State supplies its existing normalization and wire selection before borrowing the owner.
@@ -123,13 +125,16 @@ impl ReplModel {
         self.parked.get(key).map(|row| row.log.as_slice())
     }
 
+    /// A switch parks the row where the person asked: what the roll owed is spent first.
     pub(in crate::ui) fn capture_row(&mut self, key: WsKey) {
+        self.finish_scroll();
         self.parked.insert(key, self.live.clone());
     }
 
     pub(in crate::ui) fn restore_row(&mut self, key: &WsKey) -> (bool, ReplEffects) {
         let row = self.parked.get(key).cloned();
         let found = row.is_some();
+        self.roll.stop();
         self.live = row.unwrap_or_default();
         (
             found,

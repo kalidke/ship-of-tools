@@ -155,22 +155,26 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     let page_step = (h / 3).max(1);
     match &event.logical_key {
         _ if action == Some(Action::ScrollPageUp) => {
-            state.repl_model.scroll_rows(page_step);
+            let (now, length) = state.scroll_ask();
+            state.repl_model.scroll_rows(page_step, now, length);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::ScrollPageDown) => {
-            state.repl_model.scroll_rows(-page_step);
+            let (now, length) = state.scroll_ask();
+            state.repl_model.scroll_rows(-page_step, now, length);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::PreviewHalfUp) => {
-            state.repl_model.scroll_rows(h / 2);
+            let (now, length) = state.scroll_ask();
+            state.repl_model.scroll_rows(h / 2, now, length);
             state.window.request_redraw();
             return Break(());
         }
         _ if action == Some(Action::PreviewHalfDown) => {
-            state.repl_model.scroll_rows(-(h / 2));
+            let (now, length) = state.scroll_ask();
+            state.repl_model.scroll_rows(-(h / 2), now, length);
             state.window.request_redraw();
             return Break(());
         }
