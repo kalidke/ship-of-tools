@@ -2323,3 +2323,13 @@ A landing's record goes here, with its measured times; the package page holds on
   minutes went: the build 12; review round 1 20, which found a blocker (the charter claimed the chat witness pinned the
   frame request it did not) and a follower's first frame within microseconds of the key that dropped the scroll; a fix
   commit 6, rebased over landing 3; one scoped gate.
+- The chat resolve-name test counts after the start's lookup has ended (CHAT-RESOLVE-NAME-TEST-RACE), 2026-11-14,
+  fixing forward a hosted red on main: builder about 12:45, main 13:08 (075d7c548), about 23 minutes. 4 test lines. The
+  diff was read instead of a review round; 400 runs of the test on a build computer, none failing; one scoped gate.
+- Smooth scrolling, landing 5 (the REPL drawer, in whole rows), 2026-11-14, outside trial 1 (an Opus builder launched by
+  name ran at its definition's effort, not the call's): builder 12:43, main 13:27 (34100ce43, 1be346371), about 44
+  minutes. About 88 product lines and 220 test lines. The REPL reuses the terminals' whole-row owner, learns its top only
+  when the view is drawn, and reads its scroll for a frame only through the spend. Where the minutes went: the build 12;
+  the review 13 (no blockers; a should-fix: the frame's read, its request for the next frame and its cap were pinned by no
+  test, and a read moved above the spend passed every test while the wheel did nothing); a fix commit 9 (the one call
+  and a native fixture red against all three); one scoped gate. That completes the plan's five landings.

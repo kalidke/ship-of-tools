@@ -221,7 +221,9 @@ in a bounded child of the window's own binary (it bounds its memory, CPU, crashe
 reads, and answers on a private stdout) through one worker thread (one draw at a time, each job tagged with the shown
 source's generation, a stale draw stopped at once, waiting input bounded, two strikes per generation) and a runner that
 holds it to a 10 s wall; the window's own process draws only the Monitor's chart, its text clamped. A crash of it on a
-Windows computer was seen to show no dialog and leave no dump or report (2026-11-12). A PDF page and a video's poster
+Windows computer was seen to show no dialog and leave no dump or report (2026-11-12). Every text pane's scroll (the
+preview, the Chat drawer, the agent pane, the Terminal and REPL drawers) eases over `[display] smooth_scroll_ms`, 150 ms
+by default, the terminals and the REPL a whole row at a time (2026-11-14, on the maintainer's word). A PDF page and a video's poster
 are drawn by the computer's own poppler and ffmpeg where the kernel's search path has them, and otherwise by Julia's
 copy, which the first preview that needs it fetches once per user per computer in a child process (nothing is
 downloaded at install, and no copy is loaded into the kernel). Also in progress,
