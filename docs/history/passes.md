@@ -2278,4 +2278,11 @@ A landing's record goes here, with its measured times; the package page holds on
   computer's own daemon, and an SVG file, a markdown figure with math and the chat drawer's look).
   Seen while starting that second computer's daemon for a remote person: an ssh sign-in on Windows cannot follow the
   install's junctions (WIN-SSH-JUNCTION-UNTRUSTED), and the hub's spawn still refuses a folder only the far computer
-  has (SPAWN-REMOTE-FOLDER).
+  has (SPAWN-REMOTE-FOLDER). A window computer's own session installed it by archive at the maintainer's request (pass,
+  the window restarted by its supervisor, its row kept), and the mail matrix with both ends on rc.5 ran 6 lines, 0
+  failures.
+- An SVG preview sample, 2026-11-14, on the maintainer's word: `examples/preview/sample.svg` (gradients, a pattern,
+  dashed strokes, transforms and text, so its preview exercises the drawing child) and the same picture as a second
+  figure in `math_with_figure.md`; checked with the window's drawing library and its font fallback before the commit.
+  Main at 10:00 (b97a040fb), about 25 minutes from the ask, two full local gates: the first failed one check of
+  CI-PRE-REPL-INTERRUPT at a peak load of 13.8, and the rerun passed.

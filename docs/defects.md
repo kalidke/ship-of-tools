@@ -508,8 +508,11 @@ owned by `docs/CLAUDE.md`.
   signals that merge and a loop never forced; merging is likely, not proven. The daemon's `Escalation` is a different
   sequence (it signals every 50 ms for `FORCE_SPAN`, then answers the failure). The pre-release Julia's first-testset
   failure was not reproduced. The three `run_shim` signal testsets run only with `SOT_REPL_SIGNAL_TESTS=1` (the local
-  gate and `release-gate.yml`'s `repl-signals-linux`), not in `CI.yml`. Fix: drive the test's signals as `Escalation`
-  does, place the held-still window from the child's first line, then return the testsets to `CI.yml`.
+  gate and `release-gate.yml`'s `repl-signals-linux`), not in `CI.yml`. Seen again in the local gate on 2026-11-14 on
+  Julia 1.13.0, at a peak load of 13.8 on a lab server: one check failed (the stopped eval's error frames were not
+  exactly one "eval interrupted"), the rest of the run green; the same commit's rerun at a peak of 12.0 passed. Fix:
+  drive the test's signals as `Escalation` does, place the held-still window from the child's first line, then return
+  the testsets to `CI.yml`.
 - **DISPLAY-INTO-CHILD** [note] `sidecars/display/` (one 235-line file and a page) moves to
   `sidecars/child/display.rs`, the concept "what each child the daemon starts carries"; it deletes a folder, a page and
   the "display/ sibling" cross-reference.
