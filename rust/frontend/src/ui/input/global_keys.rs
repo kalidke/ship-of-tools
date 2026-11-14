@@ -390,7 +390,8 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
                 return Break(());
             }
             (LineScroll::Chat, _) => {
-                state.chat.scroll(action == Some(Action::ScrollLineUp), drawer::chat::Step::Line);
+                let (now, length) = state.scroll_ask();
+                state.chat.scroll(action == Some(Action::ScrollLineUp), drawer::chat::Step::Line, now, length);
                 state.window.request_redraw();
                 return Break(());
             }

@@ -321,25 +321,25 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     };
     // Following: the newest ends at the bottom, and a step down changes nothing.
     view.layout(&mut fonts, &plain(&held.iter().collect::<Vec<_>>()), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h }, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
-    view.scroll(false, Step::Page);
+    view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
     // A page up moves a third of the body: the reader is now at message 14, 5h above the follow position.
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     at(&mut view, &mut fonts, &held, "14", 0.0);
     assert!(view.anchor.is_some());
     // An arrival moves nothing.
     held.extend((20..22).map(rec));
     at(&mut view, &mut fonts, &held, "14", 0.0);
     // A line down moves the record up a line; a line up moves it back (the wheel and Alt+Down use the same step).
-    view.scroll(false, Step::Line);
+    view.scroll(false, Step::Line, Instant::now(), Duration::ZERO);
     let line = BODY_LINE_H;
     at(&mut view, &mut fonts, &held, "14", -line);
     // A page down passes the record: none is left wholly above the top, and a page up returns to it.
-    view.scroll(false, Step::Page);
+    view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
     let (got, top) = top_of(&lay(&mut view, &mut fonts, &held, h));
     assert!(got != "14" && top + h > 0.0, "message {got} at {top}");
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     at(&mut view, &mut fonts, &held, "14", -line);
     // Edits that change height keep the anchor's top: the anchor taller, a record below it taller, one above it taller.
     let long = "word ".repeat(200);
@@ -361,11 +361,11 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     let shown = lay(&mut view, &mut fonts, &older, h);
     assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
     // Page down from an anchor brings the newest wholly into view, and the position becomes None.
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &held, h);
     assert!(view.anchor.is_some());
     for _ in 0..8 {
-        view.scroll(false, Step::Page);
+        view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
         let shown = lay(&mut view, &mut fonts, &held, h);
         let (text, top) = shown.last().unwrap();
         assert!(view.anchor.is_none() || !text.ends_with("message 21") || top + h > 4.5 * h, "the newest is in view but the reader is not following");
@@ -373,7 +373,7 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     assert!(view.anchor.is_none(), "the newest is in view");
     // Paging up past the oldest stops with it at the top, never an empty body.
     for _ in 0..60 {
-        view.scroll(true, Step::Page);
+        view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
         lay(&mut view, &mut fonts, &held, h);
     }
     at(&mut view, &mut fonts, &held, "0", 0.0);
@@ -381,14 +381,14 @@ fn an_anchored_reader_stays_put_through_arrivals_edits_and_deletes() {
     // is kept.
     let mut big = ChatView::default();
     big.anchor = Some((held[10].ts.clone(), 0.0));
-    big.scroll(false, Step::Line);
+    big.scroll(false, Step::Line, Instant::now(), Duration::ZERO);
     let records: Vec<&ChatRecord> = held.iter().collect();
     big.layout(&mut fonts, &plain(&records), ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 1000.0 }, 2.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
     assert!(near(big.placed_tops()[0], -2.0 * BODY_LINE_H), "{:?}", big.placed_tops());
     // End: back to the newest from anywhere, and a pending move is dropped.
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &held, h);
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     view.latest();
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert!(view.anchor.is_none() && near(shown.last().unwrap().1, 3.5 * h));
@@ -455,7 +455,7 @@ fn a_row_change_returns_the_reader_to_the_newest() {
     let mut fonts = FontSystem::new();
     let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
     d.layout(&mut fonts, body, 1.0, body);
-    d.scroll(true, Step::Page);
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body, 1.0, body);
     assert!(!d.following(), "scrolled up");
     d.tick(shown("S"), at + Duration::from_secs(1));
@@ -518,11 +518,11 @@ fn the_readers_anchor_reaches_the_owner_each_frame() {
     let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 };
     d.layout(&mut fonts, body, 1.0, body);
     assert_eq!(d.owner_anchor(), None, "following");
-    d.scroll(true, Step::Page);
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body, 1.0, body);
     let first = d.owner_anchor().expect("the reader left the newest");
     for _ in 0..6 {
-        d.scroll(true, Step::Page);
+        d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     }
     d.layout(&mut fonts, body, 1.0, body);
     let second = d.owner_anchor().expect("still anchored");
@@ -573,7 +573,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     assert_eq!((number(&view), view.anchor.is_none()), (Some(19), true), "{shown:?}");
     assert!(near(shown.last().unwrap().1, 3.5 * h));
     // A page up that leaves the mark below the body moves the mark to the nearest record in view.
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     let shown = lay(&mut view, &mut fonts, &held, h);
     let last = shown.last().unwrap().0.rsplit("message ").next().unwrap().parse::<usize>().unwrap();
     assert!(last < 19 && number(&view) == Some(last), "{last} {:?}", number(&view));
@@ -583,7 +583,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     }
     lay(&mut view, &mut fonts, &held, h);
     for _ in 0..3 {
-        view.scroll(false, Step::Page);
+        view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
     }
     let shown = lay(&mut view, &mut fonts, &held, h);
     // The record crossing the top has lost its header, so the mark takes the first one whose header is in.
@@ -623,7 +623,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     assert!(top_of(&shown).0 == "10" && near(top_of(&shown).1, 0.0), "{shown:?}");
     // A change of the watched target clears the mark and the position.
     view.mark(true);
-    view.scroll(true, Step::Page);
+    view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &older, h);
     view.reset();
     assert!(view.mark.is_none() && view.anchor.is_none());
@@ -699,7 +699,7 @@ fn the_marks_first_line_is_inside_the_body() {
         view.mark(true);
     }
     lay_px(&mut view, &mut fonts, &held, 100.0);
-    view.scroll(false, Step::Page);
+    view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
     let top = lay_px(&mut view, &mut fonts, &held, 100.0);
     assert!(header_in(top), "{top:?}");
     // No header inside the body (a tall record crossing the top, the next one's header below the foot): the nearest placed.
@@ -1792,4 +1792,166 @@ fn a_copy_leaves_out_edited() {
     let mut view = ChatView::default();
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(drag(&mut view, &held[0].ts, (2, 0), (2, 13)).as_deref(), Some("hello"));
+}
+
+const GLIDE: Duration = Duration::from_millis(150);
+
+/// Thirty records, and one record's height (two records of a following view that are not the oldest).
+fn thirty() -> (FontSystem, Vec<ChatRecord>, f32) {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..30).map(rec).collect();
+    let probe = lay(&mut ChatView::default(), &mut fonts, &held, 1000.0);
+    (fonts, held, probe[2].1 - probe[1].1)
+}
+
+/// `lay`, as the frame at `at`.
+fn lay_at(view: &mut ChatView, fonts: &mut FontSystem, held: &[ChatRecord], h: f32, at: Instant) -> Vec<(String, f32)> {
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let body = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 4.5 * h };
+    view.layout_at(fonts, &plain(&records), body, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap(), at);
+    view.placed_text().into_iter().zip(view.placed_tops()).collect()
+}
+
+/// How far an anchored reader is from the body's top, in records (the record at the top, less its top's distance in records).
+fn place_of(view: &ChatView, held: &[ChatRecord], h: f32) -> f32 {
+    let (ts, dy) = view.anchor.as_ref().expect("an anchored reader");
+    held.iter().position(|r| r.ts == *ts).unwrap() as f32 - dy / h
+}
+
+/// A page up from the newest of thirty is 1.5 records, from the place 25.5 records down; the curve covers
+/// `1 - ((150 - t) / 150)^3` of it by `t` milliseconds after the key.
+fn page_by(t: f32) -> f32 {
+    25.5 - 1.5 * (1.0 - ((150.0 - t) / 150.0).powi(3))
+}
+
+#[test]
+fn a_page_is_spent_over_frames_and_an_arrival_moves_nothing() {
+    let (mut fonts, mut held, h) = thirty();
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    // At once, the place it comes to rest at.
+    let mut once = ChatView::default();
+    once.scroll(true, Step::Page, t0, Duration::ZERO);
+    let rest = top_of(&lay_at(&mut once, &mut fonts, &held, h, t0));
+    // Over frames: nothing moves at the key, the first frame moves part of the page (its clock is the key's), and the curve
+    // is the one the frames' times fix, whatever frames come.
+    let (mut view, mut arrived) = (ChatView::default(), ChatView::default());
+    for v in [&mut view, &mut arrived] {
+        v.scroll(true, Step::Page, t0, GLIDE);
+        assert!(v.anchor.is_none() && !v.moving());
+    }
+    for (at, want) in [(8, page_by(8.0)), (75, page_by(75.0))] {
+        for v in [&mut view, &mut arrived] {
+            lay_at(v, &mut fonts, &held, h, ms(at));
+            assert!(v.moving() && near(place_of(v, &held, h), want), "{at} ms: {} wanted {want}", place_of(v, &held, h));
+        }
+    }
+    assert!(place_of(&view, &held, h) > 24.0, "the page is not spent yet");
+    // An arrival moves nothing: the reader's records keep their tops, and the motion goes on the same curve.
+    let before = lay_at(&mut view, &mut fonts, &held, h, ms(100));
+    held.push(rec(30));
+    let after = lay_at(&mut arrived, &mut fonts, &held, h, ms(100));
+    assert_eq!((top_of(&before).0, near(top_of(&before).1, top_of(&after).1)), (top_of(&after).0, true), "{before:?} {after:?}");
+    assert!(near(place_of(&arrived, &held, h), page_by(100.0)) && arrived.moving());
+    // The last of it lands on the key's length, exactly where the page at once lands.
+    let landed = top_of(&lay_at(&mut arrived, &mut fonts, &held, h, ms(150)));
+    assert!(!arrived.moving() && landed.0 == rest.0 && near(landed.1, rest.1), "{landed:?} {rest:?}");
+    // An arrival to a reader following the newest moves at once: the newest ends at the foot, and nothing is owed.
+    let mut following = ChatView::default();
+    lay_at(&mut following, &mut fonts, &held, h, ms(200));
+    held.push(rec(31));
+    let shown = lay_at(&mut following, &mut fonts, &held, h, ms(210));
+    assert!(following.anchor.is_none() && !following.moving() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
+}
+
+#[test]
+fn following_the_newest_or_reaching_the_oldest_drops_what_is_owed() {
+    let (mut fonts, held, h) = thirty();
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    // A page toward newer records while following moves nothing and owes nothing.
+    let mut view = ChatView::default();
+    lay_at(&mut view, &mut fonts, &held, h, t0);
+    view.scroll(false, Step::Page, t0, GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    assert!(view.anchor.is_none() && !view.moving());
+    // A page up whose first frame is the key's own instant spends nothing, and is not lost for it.
+    view.scroll(true, Step::Page, ms(20), GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(20));
+    assert!(view.moving(), "a first frame at the key's instant ended the motion");
+    lay_at(&mut view, &mut fonts, &held, h, ms(28));
+    assert!(view.moving() && view.anchor.is_some());
+    // The newest reached from above: the pages owed past it are dropped with the following.
+    let mut view = ChatView::default();
+    view.anchor = Some((held[24].ts.clone(), 0.0));
+    (0..3).for_each(|_| view.scroll(false, Step::Page, t0, GLIDE));
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    assert!(view.moving() && view.anchor.is_some());
+    lay_at(&mut view, &mut fonts, &held, h, ms(75));
+    assert!(view.anchor.is_none() && !view.moving());
+    // The oldest reached from below: its top at the body's top, and the pages owed past it are dropped there.
+    let mut view = ChatView::default();
+    view.anchor = Some((held[2].ts.clone(), 0.0));
+    (0..3).for_each(|_| view.scroll(true, Step::Page, t0, GLIDE));
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    assert!(view.moving());
+    for at in [75, 80] {
+        let (text, top) = top_of(&lay_at(&mut view, &mut fonts, &held, h, ms(at)));
+        assert!(text == "0" && near(top, 0.0) && !view.moving(), "{at} ms: message {text} at {top}");
+    }
+}
+
+#[test]
+fn a_move_by_another_rule_ends_the_motion_where_it_is() {
+    let (mut fonts, held, h) = thirty();
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    let gliding = |fonts: &mut FontSystem| {
+        let mut view = ChatView::default();
+        view.anchor = Some((held[14].ts.clone(), 0.0));
+        view.scroll(true, Step::Page, t0, GLIDE);
+        lay_at(&mut view, fonts, &held, h, ms(8));
+        assert!(view.moving());
+        view
+    };
+    // End, and a row change (which also forgets the mark): the newest, at once.
+    for end in [ChatView::latest, ChatView::reset] {
+        let mut view = gliding(&mut fonts);
+        end(&mut view);
+        let shown = lay_at(&mut view, &mut fonts, &held, h, ms(16));
+        assert!(view.anchor.is_none() && !view.moving() && near(shown.last().unwrap().1, 3.5 * h), "{shown:?}");
+    }
+    // A thread's open parks the view with nothing owed and nothing asked, and a hidden drawer has none either: the place
+    // is where the last frame left it.
+    for (away, asked) in [(ChatView::park as fn(&mut ChatView), true), (ChatView::hide, false)] {
+        let mut view = gliding(&mut fonts);
+        let place = place_of(&view, &held, h);
+        if asked {
+            view.scroll(true, Step::Page, ms(9), GLIDE);
+        }
+        away(&mut view);
+        lay_at(&mut view, &mut fonts, &held, h, ms(16));
+        assert!(!view.moving() && near(place_of(&view, &held, h), place), "{} moved from {place}", place_of(&view, &held, h));
+    }
+    // A mark key that moves the view: the mark one record older than the one at the top is put at the top, and what was owed
+    // toward newer records does not carry it on.
+    let mut view = ChatView::default();
+    view.anchor = Some((held[10].ts.clone(), 0.0));
+    view.mark = Some(held[10].ts.clone());
+    lay_at(&mut view, &mut fonts, &held, h, t0);
+    view.scroll(false, Step::Page, t0, GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    assert!(view.moving() && view.mark.as_ref() == Some(&held[11].ts), "the mark passes to the first record in view");
+    view.mark(true);
+    for at in [16, 75] {
+        let (text, top) = top_of(&lay_at(&mut view, &mut fonts, &held, h, ms(at)));
+        assert!(text == "10" && near(top, 0.0) && !view.moving(), "{at} ms: message {text} at {top}");
+    }
+}
+
+#[test]
+fn a_position_within_the_float_noise_of_the_newest_is_following() {
+    // Three records of 50 in a body of 100: the newest's foot lies `dy` past the body's foot.
+    assert_eq!(settle(3, 100.0, (1, 0.002), |_| 50.0), None);
+    assert_eq!(settle(3, 100.0, (1, 0.02), |_| 50.0).map(|p| p.0), Some(0));
 }

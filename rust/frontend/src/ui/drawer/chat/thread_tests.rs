@@ -98,6 +98,26 @@ fn joined(d: &ChatDrawer) -> String {
 }
 
 #[test]
+fn a_thread_opening_or_closing_leaves_nothing_owed() {
+    let mut fonts = FontSystem::new();
+    let (mut d, _) = channel(&(0..20).map(top).collect::<Vec<_>>());
+    d.layout(&mut fonts, body(), 1.0, body());
+    d.mark(true);
+    d.layout(&mut fonts, body(), 1.0, body());
+    d.scroll(true, Step::Page, Instant::now(), Duration::from_millis(150));
+    // The drawer's frame reads the clock: let the key be a moment old, so the first frame has spent something.
+    std::thread::sleep(Duration::from_millis(5));
+    d.layout(&mut fonts, body(), 1.0, body());
+    assert!(d.moving() && !d.following());
+    d.open_thread();
+    d.layout(&mut fonts, body(), 1.0, body());
+    assert!(!d.moving(), "the thread's view owes nothing");
+    d.close_thread();
+    d.layout(&mut fonts, body(), 1.0, body());
+    assert!(!d.moving() && !d.following(), "the channel's view returns where it was, owing nothing");
+}
+
+#[test]
 fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     let mut fonts = FontSystem::new();
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
@@ -315,7 +335,7 @@ fn thread_view_compose_and_back_keep_target() {
     d.layout(&mut fonts, body(), 1.0, body());
     d.mark(true);
     d.layout(&mut fonts, body(), 1.0, body());
-    d.scroll(true, Step::Page);
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(!d.following());
     d.open_thread();
@@ -362,7 +382,7 @@ fn thread_view_compose_and_back_keep_target() {
     d.layout(&mut fonts, body(), 1.0, body());
     d.mark(true);
     d.layout(&mut fonts, body(), 1.0, body());
-    d.scroll(true, Step::Page);
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(d.owner_anchor().is_some(), "scrolled up");
     d.open_thread();

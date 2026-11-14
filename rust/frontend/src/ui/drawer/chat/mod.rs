@@ -260,7 +260,10 @@ fn copy_status(text: Option<String>, clipboard: impl FnOnce(String) -> Result<()
 /// Applies a move; whether there was one.
 pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
     match mv {
-        Some(Move::Scroll(up, step)) => state.chat.scroll(up, step),
+        Some(Move::Scroll(up, step)) => {
+            let (now, length) = state.scroll_ask();
+            state.chat.scroll(up, step, now, length);
+        }
         Some(Move::Latest) => state.chat.latest(),
         Some(Move::Mark(older)) => state.chat.mark(older),
         Some(Move::Thread) => state.with_chat(|c, _| c.open_thread()),

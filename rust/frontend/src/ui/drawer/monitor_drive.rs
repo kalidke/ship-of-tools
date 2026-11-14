@@ -84,6 +84,10 @@ impl State {
                 Vec::new()
             }
         };
+        // A person's scroll still arriving needs the next frame.
+        if self.chat.moving() {
+            self.pacer.mark_dirty();
+        }
         // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
         // Regenerate the SVG → wgpu quad whenever the readings changed
         // (the pane's dirty mark) or the chart on screen was drawn for another size,
