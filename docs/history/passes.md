@@ -2362,3 +2362,12 @@ A landing's record goes here, with its measured times; the package page holds on
   blocker (the paced length had no ceiling, so a held Page Down in a 135-row pane came to rest 4.1 s after its last
   ask, against 132 ms on rc.6) and an untested carry and pixel spends off by up to 401 ulp; a fix commit 8, its diff
   read; a second scoped gate 3.
+- The Chat title names a mapped private channel and asks again for a name its first answer lacked
+  (CHAT-PRIVATE-CHANNEL-NAME, seen in use by a person on rc.6; CHAT-RESOLVE-BEFORE-NAME, a note from reading), 2026-11-14,
+  trial 1, Sonnet arm, builder chat-private-name: builder 20:53, main 21:13 (889251737, efc02514a), about 20 minutes.
+  About 48 product lines and 160 test lines. The daemon's start lookup refused the mapped channel's name because Slack
+  says it is private (the hub's log: `code="malformed"`), a rule written for mentions; a mapped channel is now named
+  public or private, a mention of any other keeps the rule, and the window resolves a nameless mapped answer again at
+  1, 3, 10 and 30 s, since a resolve right after the daemon's start can come before its lookup ends. Where the minutes
+  went: the first commit 6, its diff read; the race confirmed by reading and fixed in a second commit 9, its diff read;
+  one scoped gate 3. The candidate's cut waited on it, at the maintainer's word.
