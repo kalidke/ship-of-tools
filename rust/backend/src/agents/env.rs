@@ -167,7 +167,9 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary; empty when that path is not a runnable file ([`sotd_bin_pair`]). `SOT_SELECTION_FILE` is the row's
-/// selection file in `state_dir`, for every agent kind ([`selection_file_value`]).
+/// selection file in `state_dir`, for every agent kind ([`selection_file_value`]). A `claude` row alone gets
+/// `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`. Every row launch (create, attach, boot resume, reauth, the trust restart,
+/// the watchdog's restart) builds its leg's pairs here, through `rows::spawn::detach::spawn_detached_supervisor`.
 pub fn capsule_supervisor_env(
     workspace_id: &str, slug: &str, cwd: &Path, agent_kind: &str, state_dir: &Path,
 ) -> Vec<(String, String)> {
@@ -190,6 +192,12 @@ pub fn capsule_supervisor_env(
     // A row's conversation never leaves its row (agent view moves it into Claude Code's own
     // daemon, outside the capsule); an env var, not a settings key, as --settings is not passed to every row.
     env.push(("CLAUDE_CODE_DISABLE_AGENT_VIEW".to_string(), "1".to_string()));
+    // A Claude row draws with Claude Code's classic renderer on the main screen: its fullscreen renderer takes the
+    // alternate screen and the mouse, so the window's own scroll and selection of the agent pane never apply. The
+    // variable wins over the person's `tui` setting; Codex and terminal-only rows are left as they are.
+    if agent_kind == "claude" {
+        env.push(("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(), "1".to_string()));
+    }
     // The `ccb` launcher's own PATH rule, promoted to the daemon: a leg
     // inherits the SERVICE's PATH, which has no `~/.local/bin` (CLAUDE.md's
     // documented gotcha — the same reason [`claude_argv`] full-paths

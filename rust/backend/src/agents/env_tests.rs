@@ -169,6 +169,61 @@ fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
 }
 
 #[test]
+fn capsule_supervisor_env_starts_claude_in_its_classic_renderer() {
+    // Claude Code's fullscreen renderer takes the alternate screen and the mouse, so the window's scroll of the agent
+    // pane never applies; a Claude row alone gets the switch, a Codex row and a terminal-only row do not.
+    let _guard = self_file_env_guarded();
+    let switch = |kind: &str| -> Vec<String> {
+        capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), kind, Path::new("/state/ws-1"))
+            .into_iter()
+            .filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")
+            .map(|(_, v)| v)
+            .collect()
+    };
+    assert_eq!(switch("claude"), ["1"]);
+    assert!(switch("codex").is_empty());
+    assert!(switch("none").is_empty());
+}
+
+#[test]
+fn every_row_launch_builds_its_leg_from_capsule_supervisor_env() {
+    // The one function the classic-renderer switch (and every other row pair) rides on: outside tests, the row's pairs
+    // are built in one place and a supervisor is launched from one place, both in `spawn_detached_supervisor`, which
+    // hands the pairs to the leg's environment. Create, attach, boot resume, reauth, the trust restart and the
+    // watchdog's restart all launch through it.
+    fn product_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                product_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.to_string_lossy().ends_with("tests.rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    product_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    let calls = |needle: &str, definition: &str| -> Vec<String> {
+        let mut found = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            for line in text.lines().map(str::trim) {
+                if line.contains(needle) && !line.starts_with("//") && !line.contains(definition) {
+                    found.push(format!("{}: {line}", file.file_name().unwrap().to_string_lossy()));
+                }
+            }
+        }
+        found
+    };
+    let built = calls("capsule_supervisor_env(", "fn capsule_supervisor_env(");
+    assert_eq!(built, ["detach.rs: let supervisor_env = capsule_supervisor_env(workspace_id, slug, cwd, agent_kind, state_dir);"]);
+    let launched = calls("spawn_detached(", "fn spawn_detached(");
+    assert_eq!(launched, ["detach.rs: let spawn = spawn_detached(line, env, state_dir, cwd, workspace_id)?;"]);
+    let leg = calls("leg_env(std::env::vars_os()", "fn leg_env(");
+    assert_eq!(leg, ["detach.rs: let env = || leg_env(std::env::vars_os().collect(), &supervisor_env, &account_env_extra);"]);
+}
+
+#[test]
 fn capsule_comm_home_str_none_when_no_home_var_is_set() {
     let _guard = self_file_env_guarded();
     std::env::remove_var("SOT_COMM_HOME");
