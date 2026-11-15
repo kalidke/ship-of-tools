@@ -1984,3 +1984,63 @@ fn the_clock_is_the_first_keys_and_no_more_than_a_body_is_owed() {
     lay_at(&mut view, &mut fonts, &held, h, ms(150));
     assert!(!view.moving() && near(place_of(&view, &held, h), 25.5 - 15.0), "{}", place_of(&view, &held, h));
 }
+
+const RULE: (u8, u8, u8) = (0x2A, 0x2D, 0x31);
+
+/// A rule lies between each two messages, grouped or not: in the top pixel of the lower one, across the body, gutter included,
+/// one pixel tall at every text scale; none above the first record shown, none where a day divider separates the two, and
+/// none inside a record.
+#[test]
+fn a_rule_lies_between_each_two_messages_but_above_the_first_and_at_a_divider() {
+    let mut fonts = FontSystem::new();
+    let by_eve = |ts: &str, text: &str| {
+        let mut r = rec_by(ts, "Eve", "member", text);
+        r.author.id = "U2".to_string();
+        r
+    };
+    // Yesterday's, then today's first (a divider), a continuation, another author's group and its continuation.
+    let held = [rec_by("1699900000.000100", "Ada", "member", "alpha"), by_ada(0, "beta"), by_ada(30, "gamma\ndelta"), by_eve("1700000300.000100", "own group\nsecond line"), by_eve("1700000330.000100", "epsilon")];
+    let records: Vec<&ChatRecord> = held.iter().collect();
+    let body = ScreenRect { h: 1000.0, ..body_of_drawer() };
+    for scale in [1.0_f32, 2.0] {
+        let mut view = ChatView::default();
+        view.layout(&mut fonts, &plain(&records), body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        let tops = view.placed_tops();
+        assert_eq!(tops.len(), 5, "every record is placed at scale {scale}");
+        assert!(tops[0] > 0.0, "the first record is below the body's top");
+        let quads = view.backs(DRAWER);
+        let rules: Vec<_> = of_color(&quads, RULE).into_iter().map(|q| (q.x, q.y, q.w, q.h)).collect();
+        let want: Vec<_> = [2, 3, 4].iter().map(|i| (body.x, body.y + tops[*i], body.w, 1.0)).collect();
+        assert_eq!(rules, want, "scale {scale}: one rule above each of the continuation, the new group and its continuation");
+    }
+}
+
+/// The rules take no height and move nothing: each record's top is the one above it plus its lines, a press on the rule's
+/// pixel row selects in the record below it, and the marked message's copy and the selection are its text alone.
+#[test]
+fn the_rules_move_no_line_and_are_never_selected_or_copied() {
+    let mut fonts = FontSystem::new();
+    let held = [by_ada(0, "alpha line"), by_ada(30, "gamma line"), by_ada(60, "delta line")];
+    let mut view = ChatView::default();
+    lay_drawer(&mut view, &mut fonts, &held);
+    let tops = view.placed_tops();
+    let heights: Vec<f32> = view.placed_buffers().iter().map(|b| b.layout_runs().map(|r| r.line_height).sum()).collect();
+    for i in 1..tops.len() {
+        assert!(near(tops[i], tops[i - 1] + heights[i - 1]), "record {i} starts where the one above ends: {tops:?} {heights:?}");
+    }
+    let quads = view.backs(DRAWER);
+    let rules = of_color(&quads, RULE);
+    assert_eq!(rules.len(), 2);
+    for (rule, r) in rules.iter().zip(&held[1..]) {
+        let (x, _) = view.point_at(&r.ts, 0, 0).unwrap();
+        view.press(view.hit((x, rule.y + 0.5)));
+        view.extend_drag(view.point_at(&r.ts, 0, 5).unwrap());
+        view.release();
+        assert_eq!(view.selected_text().as_deref(), Some(&r.text[..5]), "a press on the rule is a press on the record below it");
+    }
+    view.clear_selection();
+    view.mark(false);
+    lay_drawer(&mut view, &mut fonts, &held);
+    assert_eq!(view.marked_text().as_deref(), Some("delta line"));
+    assert_eq!(view.placed_tops(), tops, "marking moves nothing");
+}

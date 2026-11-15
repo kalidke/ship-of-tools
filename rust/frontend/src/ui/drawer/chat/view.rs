@@ -34,6 +34,10 @@ const SKY: (u8, u8, u8) = (0x1D, 0x9B, 0xD1);
 /// A mention's slug: Sky Blue at about 10% over the background.
 const SLUG: (u8, u8, u8) = (0x18, 0x29, 0x34);
 const SELECTION: (u8, u8, u8) = (0x1B, 0x43, 0x56);
+/// The rule between two messages: chosen between `BAND` and `LOW`, a little lighter than the ground and quieter than a day
+/// divider's rule. One pixel tall at every text scale.
+const RULE: (u8, u8, u8) = (0x2A, 0x2D, 0x31);
+const RULE_PX: f32 = 1.0;
 /// Inline code's text: the one value here that is not the chart's, chosen to read as code on `BAND`.
 const CODE_TEXT: (u8, u8, u8) = (0xE8, 0x91, 0x2D);
 /// The mark's bar at the record's left edge, in pixels at text scale 1.
@@ -564,7 +568,7 @@ impl ChatView {
     }
 
     /// The frame's rectangles in painting order: the background of the drawer's `inside` (the body and the compose foot),
-    /// then each placed record's mark band and bar and badges, and last the selection's tint over every fill. All but the
+    /// then each placed record's rule above it, mark band and bar and badges, and last the selection's tint over every fill. All but the
     /// background are clipped to the body. Nothing while the chat is hidden. They are rectangles of the cell backgrounds'
     /// palette, which paints first in the pass, so the drawer's cells and the glyphs lie over them.
     pub(super) fn backs(&self, inside: ScreenRect) -> Vec<CellQuad> {
@@ -577,12 +581,17 @@ impl ChatView {
         // A `LOW` border one pixel wide (at the text scale) and `fill` inside it: the day pill's, and an inline code run's.
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
         let text = text_rect(body, self.scale);
-        for (key, top, ts, tile) in &self.placed {
+        for (i, (key, top, ts, tile)) in self.placed.iter().enumerate() {
             let shaped = &self.cache[key];
             let scale = f32::from_bits(key.2);
             let boxed = |r: ScreenRect, fill| [quad(r, LOW), quad(ScreenRect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, fill)].into_iter().flatten();
             let all = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: shaped.height };
             let at = ScreenRect { y: all.y + shaped.day, h: all.h - shaped.day, ..all };
+            // A rule across the body, gutter included, in the top pixel of every record but the first placed and one a divider
+            // already separates: records abut, so it takes no height, and the band and every fill after it lie over it.
+            if i > 0 && shaped.day == 0.0 {
+                out.extend(quad(ScreenRect { h: RULE_PX, ..all }, RULE));
+            }
             if self.mark.as_ref() == Some(ts) {
                 out.extend(quad(at, BAND));
                 out.extend(quad(ScreenRect { w: MARK_BAR_PX * scale, ..at }, SKY));

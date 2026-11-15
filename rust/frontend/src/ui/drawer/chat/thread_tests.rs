@@ -738,3 +738,22 @@ fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
 fn unasked(outs: &[Out]) -> bool {
     outs.iter().all(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. }))
 }
+
+/// A thread's messages have the channel's rules: none above the parent or at a reply that starts a day, one above each other
+/// reply.
+#[test]
+fn a_threads_messages_have_the_channels_rules() {
+    const RULE: (u8, u8, u8) = (0x2A, 0x2D, 0x31);
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let (mut d, at) = channel(&held);
+    let parent = held[2].ts.clone();
+    let first = history(&open(&mut d, &mut fonts, &[true]));
+    let rules = |d: &mut ChatDrawer, fonts: &mut FontSystem| d.layout(fonts, body(), 1.0, body()).iter().filter(|q| q.color == RULE).count();
+    assert_eq!(rules(&mut d, &mut fonts), 0, "the parent alone has none");
+    // The replies come a day after the parent: the first starts a day, and the other two are its group.
+    let rs: Vec<ChatRecord> = (0..3).map(|n| reply_to(&parent, n)).collect();
+    assert!(on(&mut d, &first, page(&rs, None), at + Duration::from_secs(1)).is_empty());
+    assert_eq!(rules(&mut d, &mut fonts), 2, "{}", joined(&d));
+    assert_eq!(d.placed_text().len(), 4, "the parent and three replies: {}", joined(&d));
+}

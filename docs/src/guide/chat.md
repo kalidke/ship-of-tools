@@ -28,7 +28,8 @@ Chat drawer is hidden.
 The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each group of messages starts
 with a header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
 (`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`, whatever the day). The badge comes from where Slack says the post came from, never from the
-text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed.
+text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed. A thin gray line runs across the drawer between each two messages, as in Slack, one under the
+other in a group too (a day divider takes its place); it is not text, and a press, a drag or a copy never takes it.
 
 The first message of each local day, and the oldest message held, has a day divider above its header: the day's name
 (`Today`, `Yesterday`, or `Monday, November 9th`, with the year after it for another year) centered in a small outlined box with a
