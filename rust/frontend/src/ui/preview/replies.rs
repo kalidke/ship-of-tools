@@ -7,8 +7,9 @@ use super::requests::{self, RequestReplyContext, PreviewRequests};
 
 impl State {
     /// The preview's own message: on the status line and boxed over the preview pane, always both (the box is
-    /// `PreviewNotice`'s, drawn with the overlays). Every status write the preview makes for a person's action in it, or
-    /// for a reply about what it shows, goes through here.
+    /// `PreviewNotice`'s, drawn with the overlays). It carries the messages the charter lists as boxed; the ones it lists as
+    /// left on the status line (a text selection's share replies, the browser opens and their failures, the editor's lines,
+    /// pin, copy, the refused-hello line, the other panes') are written with `status.set`.
     pub(in crate::ui) fn preview_says(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.preview_notice.show(text.clone(), std::time::Instant::now());
@@ -125,6 +126,8 @@ impl State {
         // (otherwise active_workspace_id drift sends the
         // request to a project that doesn't have the file).
         self.preview_requests.clear_refusal();
+        // A notice is about the file shown; another file's preview drops it before this one's own render can raise one.
+        if node_id.as_deref() != self.preview_source.node_id() { self.preview_notice.clear(); }
         let scale = extras.as_ref().and_then(parse_physical_scale);
         self.ink.install_preview(&mut self.preview_source, mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
         // Pagination state (ADR 0021): present only when the
@@ -543,3 +546,6 @@ fn pluto_starting_status(host: &str, message: &str) -> String {
 #[cfg(test)]
 #[path = "replies_pluto_starting_tests.rs"]
 mod pluto_starting_tests;
+#[cfg(test)]
+#[path = "replies_notice_tests.rs"]
+mod notice_tests;

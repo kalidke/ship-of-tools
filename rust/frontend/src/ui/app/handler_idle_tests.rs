@@ -1,4 +1,4 @@
-use super::{arm_idle, earliest, has_passed};
+use super::{arm_idle, earliest, floating_idle, has_passed};
 use std::time::{Duration, Instant};
 
 /// One slot, driven through the wakes `about_to_wait` sees: the armed repaint does not move later.
@@ -124,4 +124,43 @@ fn an_ask_that_has_passed_is_a_redraw_now() {
     assert!(!has_passed(Some(at), at - Duration::from_millis(1)), "not yet");
     assert!(has_passed(Some(at), at), "at its instant");
     assert!(has_passed(Some(at), at + Duration::from_millis(1)), "after it");
+}
+
+/// Every floating box through hold, fade and drop: the loop wakes for each end, paces frames only while one fades, draws the
+/// erasing frame once and then asks for nothing (no lasting 16 ms interval).
+#[test]
+fn a_faded_box_is_dropped_and_the_idle_loop_stops_redrawing() {
+    use crate::ui::input::{help, layout_help::LayoutHelp};
+    use crate::ui::preview::notice::PreviewNotice;
+    use crate::ui::DrawerContent;
+    let start = Instant::now();
+    let (mut layout, mut notice) = (LayoutHelp::new(DrawerContent::Closed, false, false, false), PreviewNotice::default());
+    let idle = Duration::from_secs(1);
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    // Nothing shown: no wake, no redraw, the 1 s tick.
+    let f = floating_idle(&mut layout, &mut notice, start);
+    assert!(!f.redraw && !f.fading && f.deadline.is_none());
+    assert_eq!(super::idle_interval(f.fading, false), idle);
+    // A peek held from 0 and a notice from 1 s: the earlier hold's end is the deadline, neither is fading in its hold.
+    layout.start_peek(help::Context::default(), start);
+    notice.show("about the file".into(), at(1000));
+    let f = floating_idle(&mut layout, &mut notice, at(2000));
+    assert!(!f.redraw && !f.fading);
+    assert_eq!(f.deadline, Some(at(5000)));
+    // The peek fades first: paced frames, then it is dropped with one erasing frame, and the notice's hold end remains.
+    let f = floating_idle(&mut layout, &mut notice, at(5100));
+    assert!(!f.redraw && f.fading);
+    assert_eq!(super::idle_interval(f.fading, false), Duration::from_millis(16));
+    let f = floating_idle(&mut layout, &mut notice, at(5240));
+    assert!(f.redraw && !f.fading, "the peek is dropped with a frame, and the notice still holds");
+    assert_eq!(f.deadline, Some(at(6000)));
+    // The notice fades, then is dropped: one erasing frame, and then the loop wants nothing at all.
+    let f = floating_idle(&mut layout, &mut notice, at(6100));
+    assert!(!f.redraw && f.fading);
+    let f = floating_idle(&mut layout, &mut notice, at(6240));
+    assert!(f.redraw && !f.fading && f.deadline.is_none());
+    assert!(notice.text().is_none());
+    assert_eq!(super::idle_interval(f.fading, false), idle);
+    let f = floating_idle(&mut layout, &mut notice, at(6300));
+    assert!(!f.redraw && !f.fading && f.deadline.is_none(), "nothing keeps the loop awake after the drop");
 }

@@ -208,7 +208,9 @@ impl super::super::State {
 
     pub(in crate::ui) fn on_selection_reply(&mut self, host: &HostKey, req: &SelectionSetReq, reply: SelectionReply) {
         if let Some(line) = self.selection_share.on_reply(host, req, reply) {
-            self.preview_says(line);
+            // A drawing's reply answers a person's action and is boxed; a text selection's, which follows every
+            // release and each reconnect and would cover the text being read, stays on the status line.
+            if req.drawing.is_some() { self.preview_says(line) } else { self.status.set(line) }
         }
     }
 }

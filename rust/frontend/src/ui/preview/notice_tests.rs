@@ -65,7 +65,7 @@ fn the_box_sits_at_the_panes_foot_inside_it_and_wraps_to_it() {
     let text = "Can't draw on this SVG. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
         which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
     let b = shown(text, t).boxed(PANE, t).expect("a box");
-    assert!(b.lines.len() > 1 && b.lines.len() <= MAX_ROWS, "{:?}", b.lines);
+    assert!(b.lines.len() > 1 && b.lines.len() <= PANE.height as usize / 2, "{:?}", b.lines);
     assert!(b.lines.iter().all(|l| l.chars().count() <= PANE.width as usize - 4), "{:?}", b.lines);
     assert_eq!(b.rect.height as usize, b.lines.len() + 2);
     assert_eq!((b.rect.x, b.rect.width), (PANE.x, PANE.width));
@@ -87,19 +87,19 @@ fn the_box_is_inside_the_pane_at_text_scale_1_and_2() {
         let (px, py, pw, ph) = (ox + b.rect.x as f32 * cw, oy + b.rect.y as f32 * ch, b.rect.width as f32 * cw, b.rect.height as f32 * ch);
         assert!(px >= ox + pane.x as f32 * cw && py >= oy + pane.y as f32 * ch);
         assert!(px + pw <= ox + (pane.x + pane.width) as f32 * cw && py + ph <= oy + (pane.y + pane.height) as f32 * ch);
-        assert!(b.lines.len() <= MAX_ROWS && b.lines.len() + 2 <= pane.height as usize);
+        assert!(b.lines.len() <= MIN_ROWS.max(pane.height as usize / 2) && b.lines.len() + 2 <= pane.height as usize);
     }
 }
 
 #[test]
 fn a_text_past_the_rows_ends_in_an_ellipsis_within_the_width() {
     let t = Instant::now();
-    let b = shown(&"abcdefghij ".repeat(60), t).boxed(PANE, t).expect("a box");
-    assert_eq!(b.lines.len(), MAX_ROWS);
+    let b = shown(&"abcdefghij ".repeat(200), t).boxed(PANE, t).expect("a box");
+    assert_eq!(b.lines.len(), MIN_ROWS.max(PANE.height as usize / 2));
     let last = b.lines.last().unwrap();
     assert!(last.ends_with('…') && last.chars().count() <= PANE.width as usize - 4, "{last}");
     // A short pane takes fewer rows still.
-    let short = shown(&"abcdefghij ".repeat(60), t).boxed(Rect { height: 5, ..PANE }, t).expect("a box");
+    let short = shown(&"abcdefghij ".repeat(200), t).boxed(Rect { height: 5, ..PANE }, t).expect("a box");
     assert_eq!(short.lines.len(), 3);
     assert!(short.rect.height <= 5);
 }
@@ -126,4 +126,18 @@ fn the_rows_are_cell_safe_whatever_the_text() {
     }
     assert!(b.lines.iter().any(|l| l.contains("red")) && !b.lines.iter().any(|l| l.contains("[31m")));
     assert!(b.lines.len() >= 3, "each separator ends a row: {:?}", b.lines);
+}
+
+#[test]
+fn the_drawing_refusal_keeps_its_remedy_in_a_narrow_pane() {
+    let t = Instant::now();
+    let text = "Can't draw on this SVG. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
+        which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
+    for (width, height) in [(70, 30), (50, 14), (40, 30), (36, 30), (30, 30)] {
+        let b = shown(text, t).boxed(Rect { x: 0, y: 0, width, height }, t).expect("a box");
+        assert!(b.lines.join(" ").ends_with("for a blank canvas."), "{width}x{height}: {:?}", b.lines);
+    }
+    // A pane too short for the text cuts it with an ellipsis rather than overrunning the pane.
+    let cut = shown(text, t).boxed(Rect { x: 0, y: 0, width: 30, height: 12 }, t).expect("a box");
+    assert!(cut.lines.last().unwrap().ends_with('…') && cut.rect.height <= 12);
 }

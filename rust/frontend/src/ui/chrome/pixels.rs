@@ -105,10 +105,16 @@ impl State {
         prepared.layout.apply(self, None);
         // The help peek's box, else (the peek is the person's latest ask, and no close dialog covers the panes) the
         // preview's notice, over the preview pane: both are drawn as this one backed box.
+        // Edit mode shows no box and drops one raised before it: it would cover the text being edited.
+        if self.editor.is_editing() { self.preview_notice.clear(); }
         let boxed = match prepared.overlay {
             Some(o) => Some((ratatui::layout::Rect { height: o.lines.len() as u16 + 2, ..rect }, o.lines, o.opacity, true)),
-            None if dialog.is_none() => self.preview_notice.boxed(self.pane_rects.preview, std::time::Instant::now())
-                .map(|n| (n.rect, n.lines, n.opacity, false)),
+            None if dialog.is_none() => {
+                let notice = self.preview_notice.boxed(self.pane_rects.preview, std::time::Instant::now());
+                // As under the peek, the spill's text would draw over the box (the overlay pass draws it after the backing).
+                if notice.is_some() { self.nav_spill.clear_segments(); }
+                notice.map(|n| (n.rect, n.lines, n.opacity, false))
+            }
             None => None,
         };
         if let Some((cells, content, opacity, titled)) = boxed {

@@ -8,8 +8,9 @@ use crate::ui::input::layout_help::{hold_then_fade, PEEK_HOLD};
 use ratatui::layout::Rect;
 use std::time::Instant;
 
-/// The most text rows a notice takes; a longer text ends its last row with an ellipsis (the status line has it whole).
-pub(in crate::ui) const MAX_ROWS: usize = 6;
+/// The text rows a notice may take: at least this many, or half the pane's rows if more. A text that needs more ends its
+/// last row with an ellipsis.
+const MIN_ROWS: usize = 6;
 /// Narrower than this, the pane's text rows are too few cells to read and no box is drawn.
 const MIN_TEXT_CELLS: usize = 8;
 
@@ -29,6 +30,7 @@ pub(in crate::ui) struct NoticeBox {
 impl PreviewNotice {
     pub(in crate::ui) fn show(&mut self, text: String, now: Instant) { self.shown = Some((text, now)); }
     pub(in crate::ui) fn clear(&mut self) { self.shown = None; }
+    #[cfg(test)]
     pub(in crate::ui) fn text(&self) -> Option<&str> { self.shown.as_ref().map(|(t, _)| t.as_str()) }
 
     /// Opacity at `now`: 1 while held, then to 0 over the fade; 0 when nothing is shown.
@@ -54,7 +56,7 @@ impl PreviewNotice {
         let (text, _) = self.shown.as_ref()?;
         let opacity = self.opacity(now);
         let width = (pane.width as usize).checked_sub(4).filter(|w| *w >= MIN_TEXT_CELLS)?;
-        let rows = (pane.height as usize).checked_sub(2).map(|room| room.min(MAX_ROWS)).filter(|r| *r > 0)?;
+        let rows = (pane.height as usize).checked_sub(2).map(|room| room.min(MIN_ROWS.max(pane.height as usize / 2))).filter(|r| *r > 0)?;
         let mut lines: Vec<String> = cell_lines(text).iter().flat_map(|row| wrap_status(row, width, width)).collect();
         if lines.is_empty() || opacity <= 0.0 {
             return None;

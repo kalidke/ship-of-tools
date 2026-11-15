@@ -231,10 +231,8 @@ impl ApplicationHandler for App {
         if state.focus_prompts.expire_hint(std::time::Instant::now()) {
             state.window.request_redraw();
         }
-        if state.layout_help.expire_peek(std::time::Instant::now) {
-            state.window.request_redraw();
-        }
-        if state.preview_notice.expire(std::time::Instant::now()) {
+        let floating = floating_idle(&mut state.layout_help, &mut state.preview_notice, std::time::Instant::now());
+        if floating.redraw {
             state.window.request_redraw();
         }
         // The chat's next watch, once its instant has passed before the loop went to sleep: the redraw's tick sends it.
@@ -301,12 +299,9 @@ impl ApplicationHandler for App {
             // over the fade, smooth enough to read as a blink) only while a
             // flash is live; `redraw` prunes finished flashes so we fall back
             // to the 1s idle tick automatically once none remain.
-            let fading_help = state.layout_help.peek_fading(std::time::Instant::now)
-                || state.preview_notice.fading(std::time::Instant::now());
-            let interval = idle_interval(fading_help, state.row_presentation.has_flashes());
+            let interval = idle_interval(floating.fading, state.row_presentation.has_flashes());
             let fade_at = earliest([
-                state.layout_help.peek_deadline(),
-                state.preview_notice.deadline(),
+                floating.deadline,
                 state.focus_prompts.hint_deadline(),
                 state.reply_bar.arm_deadline(std::time::Instant::now()),
                 state.chat.next_ask(),
@@ -387,7 +382,22 @@ fn idle_interval(fading_help: bool, flashes: bool) -> std::time::Duration {
     else { std::time::Duration::from_secs(1) }
 }
 
-/// The earliest of the instants a part of the window wants a frame at while it is idle: a help peek's or a preview notice's fade, the quit hint's
+/// What the floating boxes (the help peek and the preview's notice) ask of the idle loop at `now`. Each box whose fade is
+/// over is dropped here, and `redraw` says a frame must erase one; `fading` says a box is in its fade, so frames are
+/// paced; `deadline` is the earliest end of a hold, which the loop sleeps to. A dropped box asks for nothing, so the loop
+/// returns to its 1 s tick.
+struct FloatingIdle { redraw: bool, fading: bool, deadline: Option<std::time::Instant> }
+
+fn floating_idle(help: &mut LayoutHelp, notice: &mut crate::ui::preview::notice::PreviewNotice, now: std::time::Instant) -> FloatingIdle {
+    let redraw = help.expire_peek(|| now) | notice.expire(now);
+    FloatingIdle {
+        redraw,
+        fading: help.peek_fading(|| now) || notice.fading(now),
+        deadline: earliest([help.peek_deadline(), notice.deadline()]),
+    }
+}
+
+/// The earliest of the instants a part of the window wants a frame at while it is idle: a floating box's fade, the quit hint's
 /// expiry, the reply bar's arm moment and the chat's next watch.
 fn earliest(deadlines: impl IntoIterator<Item = Option<std::time::Instant>>) -> Option<std::time::Instant> {
     deadlines.into_iter().flatten().min()

@@ -360,3 +360,21 @@ fn the_drawing_is_wanted_from_the_owner_and_held_during_a_drag() {
     let q = frame(&mut s, &ink, Some(&fig), Some("r1"), None).unwrap();
     assert!(q.drawing.is_none() && q.selection.is_none(), "an empty drawing is never sent");
 }
+
+impl crate::ui::State {
+    /// A drawing's share reply is boxed with the status line; a text selection's stays on the status line alone.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_text_selections_reply_stays_off_the_box(&mut self) -> anyhow::Result<()> {
+        self.selection_share = up();
+        self.preview_notice.clear();
+        let text = req(go(&mut self.selection_share, want("some words")));
+        self.on_selection_reply(&host(), &text, done());
+        anyhow::ensure!(self.status.text().starts_with("selection shared"), "the status line says `{}`", self.status.text());
+        anyhow::ensure!(self.preview_notice.text().is_none(), "a text selection's reply was boxed");
+        let drawing = req(go_ink(&mut self.selection_share, ink_want("r1", "files:a.png", 1), 2));
+        self.on_selection_reply(&host(), &drawing, done());
+        anyhow::ensure!(self.preview_notice.text() == Some(self.status.text()) && self.status.text().starts_with("drawing shared"),
+            "a drawing's reply was not on both: `{}` and `{:?}`", self.status.text(), self.preview_notice.text());
+        Ok(())
+    }
+}

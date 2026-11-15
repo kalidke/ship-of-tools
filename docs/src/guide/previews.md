@@ -213,7 +213,7 @@ the agent".
 
 ## Messages about the preview
 
-What the preview says about something you just did in it, such as drawing turned on or refused, a drawing shared or not, an SVG it could not draw or a crop it refused, shows on the status line and also in a box at the foot of the preview pane, in the look of the help peek. The box stays for 5 seconds and fades; a newer message replaces it, a switch to another row drops it, and a help peek (`Ctrl+?`) shown at that moment takes its place. The status line keeps the message after the box is gone.
+What the preview says about something you just did in it, such as drawing turned on or refused, a drawing shared or not, an SVG it could not draw or a crop it refused, shows on the status line and also in a box at the foot of the preview pane, in the look of the help peek. The box stays for 5 seconds and fades; a newer message replaces it, a switch to another row or another file drops it, it does not show while you edit, and a help peek (`Ctrl+?`) shown at that moment takes its place. The status line keeps the message after the box is gone. Some messages are on the status line only: a text selection shared with the agent, a page or video opened in the browser (and its failures), saving in the editor.
 
 ## Sharing with the agent
 

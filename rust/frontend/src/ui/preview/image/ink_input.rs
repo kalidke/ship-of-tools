@@ -73,8 +73,8 @@ impl State {
 /// Why `d` finds no base to draw on, in words for the person. The key resolves only while a picture is shown, so a
 /// picture whose node is not an image file (an SVG, a PDF page, a video poster, a plugin's picture) is one the daemon
 /// cannot compose into the agent's: the words say what drawing is for and the two ways to draw now; `canvas` is the
-/// bound label of `preview.canvas`. Under the refused-hello overlay the connection notice is why, and with no picture
-/// shown there is nothing to draw on.
+/// bound label of `preview.canvas`. Under the refused-hello overlay the connection notice is why; otherwise (no picture
+/// shown, or one with no node) there is no image file to draw on.
 fn no_base_line(refused: bool, raster_shown: bool, node: Option<&str>, canvas: &str) -> String {
     match node {
         _ if refused => "Can't draw while the connection notice covers the preview.".to_string(),
@@ -82,17 +82,16 @@ fn no_base_line(refused: bool, raster_shown: bool, node: Option<&str>, canvas: &
             "Can't draw on {}. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
              which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press {canvas} for a blank canvas.",
             picture_name(n)),
-        _ => "Can't draw here: no picture is shown.".to_string(),
+        _ => "Can't draw here: there is no image file to draw on.".to_string(),
     }
 }
 
 /// What the person calls the picture a non-image node shows, by its extension.
 fn picture_name(node: &str) -> &'static str {
     let lower = node.to_ascii_lowercase();
-    let ends = |exts: &[&str]| exts.iter().any(|e| lower.ends_with(e));
-    if ends(&[".svg"]) { "this SVG" }
-    else if ends(&[".pdf"]) { "this PDF page" }
-    else if ends(&[".mp4", ".webm", ".mov", ".mkv", ".m4v"]) { "this video frame" }
+    if lower.ends_with(".svg") { "this SVG" }
+    else if lower.ends_with(".pdf") { "this PDF page" }
+    else if sot_protocol::video_path::video_mime(node).is_some() { "this video frame" }
     else { "this picture" }
 }
 
@@ -165,7 +164,7 @@ mod tests {
         let notice = "Can't draw while the connection notice covers the preview.";
         assert_eq!(no_base_line(true, true, Some("files:a.png"), "Shift+D"), notice);
         assert_eq!(no_base_line(true, true, Some("files:a.svg"), "Shift+D"), notice);
-        let none = "Can't draw here: no picture is shown.";
+        let none = "Can't draw here: there is no image file to draw on.";
         assert_eq!(no_base_line(false, true, Some("files:a.png"), "Shift+D"), none);
         assert_eq!(no_base_line(false, true, None, "Shift+D"), none);
         assert_eq!(no_base_line(false, false, Some("files:a.svg"), "Shift+D"), none);
