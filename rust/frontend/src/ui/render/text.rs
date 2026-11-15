@@ -12,6 +12,7 @@ use glyphon::{
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 /// The bidi paragraph separators cosmic-text does not end a buffer line at. Unicode ends a bidi paragraph at `\n`,
 /// `\r`, U+001C, U+001D, U+001E, U+0085 and U+2029 (bidi class B); cosmic-text 0.12's `Buffer::set_text` ends a line
@@ -148,20 +149,8 @@ pub struct TextLayer {
     atlas: TextAtlas,
     text_renderer: TextRenderer,
 
-    /// Buffers we own one-per-line. Kept persistent across frames so
-    /// cosmic-text's shape-run-cache amortises across redraws — without
-    /// reuse, `Buffer::new + set_text + shape_until_scroll` pays 100µs
-    /// to 1.3ms per Line per frame (per cosmic-text issue #245), which
-    /// for an LLM-pane redraw of 30-80 Lines blew out the paint budget.
-    buffers: Vec<Buffer>,
-
-    /// Per-buffer signature `(text, width, bold, italic)` of the last
-    /// content shaped into that slot. When the next frame produces an
-    /// identical signature for the same slot we skip set_size/set_text/
-    /// shape entirely — typical chrome rows (status line, idle nav,
-    /// untouched LLM scrollback) are stable across frames so the
-    /// shape cost falls off a cliff.
-    sigs: Vec<BufferSig>,
+    /// The main layer's shaped runs: one buffer per run of the frame, reused by content (`ShapedRuns`).
+    runs: ShapedRuns,
 
     /// Overlay layer: a SECOND glyphon TextRenderer sharing the same
     /// atlas/viewport/font system, rendered by `render_overlay` as a
@@ -172,25 +161,79 @@ pub struct TextLayer {
     /// overlay; the layer is general on purpose (tooltips, toasts, ghost
     /// text all want the same "text above the world" plane).
     overlay_renderer: TextRenderer,
-    /// Overlay-line Buffers + sigs — same persistence/skip strategy as
-    /// the main `buffers`/`sigs` pair, kept separate so overlay churn
-    /// (rows appear/disappear with the spill timer) never invalidates
-    /// the stable chrome rows' shape cache.
-    overlay_buffers: Vec<Buffer>,
-    overlay_sigs: Vec<BufferSig>,
+    /// Overlay-line runs, kept apart from the main layer's so overlay churn (rows appear/disappear with the spill
+    /// timer) never takes the stable chrome rows' buffers.
+    overlay_runs: ShapedRuns,
 
     metrics: Metrics,
-    last_width: u32,
-    last_height: u32,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// What a buffer was shaped for. The size is in it, so a resized surface matches nothing shaped before.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BufferSig {
     text: String,
     bold: bool,
     italic: bool,
     width: u32,
     height: u32,
+}
+
+/// The buffers of one frame's runs, each with the signature it was shaped for. A run takes the buffer the last frame
+/// shaped for the same signature, wherever that sat in the frame's list: a ring that moved a row, or a row that gained
+/// a run, puts every later run in another slot with the same text. Only a run with no such buffer is shaped, into a
+/// buffer the last frame no longer needs. One frame of memory.
+#[derive(Default)]
+pub(in crate::ui) struct ShapedRuns {
+    buffers: Vec<Buffer>,
+    sigs: Vec<BufferSig>,
+}
+
+impl ShapedRuns {
+    /// Make `buffers[i]` the shaping of `lines[i]` at `width` by `height`; the number of runs shaped.
+    pub(in crate::ui) fn shape(&mut self, fonts: &mut FontSystem, metrics: Metrics, width: u32, height: u32, lines: &[Line]) -> usize {
+        let sigs: Vec<BufferSig> = lines
+            .iter()
+            .map(|line| BufferSig { text: line.text.clone(), bold: line.bold, italic: line.italic, width, height })
+            .collect();
+        let mut last: Vec<Option<Buffer>> = std::mem::take(&mut self.buffers).into_iter().map(Some).collect();
+        let last_sigs = std::mem::take(&mut self.sigs);
+        let mut slots_of: HashMap<&BufferSig, Vec<usize>> = HashMap::new();
+        for (slot, sig) in last_sigs.iter().enumerate() {
+            slots_of.entry(sig).or_default().push(slot);
+        }
+        let mut next: Vec<Option<Buffer>> =
+            sigs.iter().map(|sig| slots_of.get_mut(sig).and_then(Vec::pop).and_then(|slot| last[slot].take())).collect();
+        let mut spare = last.into_iter().flatten();
+        let mut shaped = 0;
+        for ((slot, sig), line) in next.iter_mut().zip(&sigs).zip(lines) {
+            if slot.is_some() {
+                continue;
+            }
+            let mut buf = spare.next().unwrap_or_else(|| Buffer::new(fonts, metrics));
+            buf.set_size(fonts, Some(sig.width as f32), Some(sig.height as f32));
+            let mut attrs = Attrs::new().family(Family::Monospace);
+            if line.bold {
+                attrs = attrs.weight(Weight::BOLD);
+            }
+            if line.italic {
+                attrs = attrs.style(Style::Italic);
+            }
+            set_buffer_text(&mut buf, fonts, &line.text, attrs, Shaping::Advanced);
+            buf.shape_until_scroll(fonts, false);
+            *slot = Some(buf);
+            shaped += 1;
+        }
+        self.buffers = next.into_iter().flatten().collect();
+        self.sigs = sigs;
+        shaped
+    }
+
+    /// Give every held buffer `metrics`, which re-shapes it in place at its current size; its signature stays right.
+    fn set_metrics(&mut self, fonts: &mut FontSystem, metrics: Metrics) {
+        for buf in &mut self.buffers {
+            buf.set_metrics(fonts, metrics);
+        }
+    }
 }
 
 impl TextLayer {
@@ -220,13 +263,9 @@ impl TextLayer {
             atlas,
             text_renderer,
             overlay_renderer,
-            overlay_buffers: Vec::new(),
-            overlay_sigs: Vec::new(),
-            buffers: Vec::new(),
-            sigs: Vec::new(),
+            overlay_runs: ShapedRuns::default(),
+            runs: ShapedRuns::default(),
             metrics: Metrics::new(14.0 * scale, 18.0 * scale),
-            last_width: 0,
-            last_height: 0,
         }
     }
 
@@ -260,16 +299,11 @@ impl TextLayer {
     /// without redundant re-shaping.
     pub fn set_metrics(&mut self, metrics: Metrics) {
         self.metrics = metrics;
-        let fs = &mut self.font_system;
-        for buf in self.buffers.iter_mut() {
-            buf.set_metrics(fs, metrics);
-        }
+        self.runs.set_metrics(&mut self.font_system, metrics);
         // Overlay buffers zoom in lockstep — a font-scale change while a
         // spill overlay is up would otherwise render the overlay at the
         // old glyph size until its sig next changed.
-        for buf in self.overlay_buffers.iter_mut() {
-            buf.set_metrics(fs, metrics);
-        }
+        self.overlay_runs.set_metrics(&mut self.font_system, metrics);
     }
 
     /// Measure the actual monospace glyph advance (physical px) at the
@@ -303,7 +337,6 @@ impl TextLayer {
         None
     }
 
-    #[allow(clippy::too_many_lines, reason = "reshapes the changed text buffers and prepares the glyph areas for one frame; predates the 100-line limit")]
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -313,66 +346,16 @@ impl TextLayer {
         lines: &[Line],
         extras: &[ExtraArea],
     ) -> Result<()> {
-        // Latency instrumentation: how many Buffers we actually re-shape
-        // this frame vs how many we skip because their content is
-        // unchanged. The keystroke-echo path tends to dirty 1-2 cells in
+        // Latency instrumentation: how many runs we actually shape this
+        // frame vs how many take a buffer an earlier frame shaped for the
+        // same content. The keystroke-echo path tends to dirty 1-2 cells in
         // the LLM pane while leaving the other ~30+ Lines untouched, so
         // most frames should report `reshape ≪ total`.
         let prepare_t0 = std::time::Instant::now();
-        let mut reshape_count = 0usize;
-        let mut skip_count = 0usize;
-        // Grow the persistent Buffer / sig vecs to fit current line count.
-        // Shrinking just truncates — we hold the trailing slots until
-        // they become needed again, paying a single Buffer::new only
-        // when the chrome grows.
-        while self.buffers.len() < lines.len() {
-            self.buffers
-                .push(Buffer::new(&mut self.font_system, self.metrics));
-            self.sigs.push(BufferSig::default());
-        }
-        self.buffers.truncate(lines.len());
-        self.sigs.truncate(lines.len());
+        let reshape_count = self.runs.shape(&mut self.font_system, self.metrics, width, height, lines);
+        let skip_count = lines.len() - reshape_count;
 
-        let size_changed = width != self.last_width || height != self.last_height;
-        self.last_width = width;
-        self.last_height = height;
-
-        for ((buf, sig), line) in self
-            .buffers
-            .iter_mut()
-            .zip(self.sigs.iter_mut())
-            .zip(lines.iter())
-        {
-            let new_sig = BufferSig {
-                text: line.text.clone(),
-                bold: line.bold,
-                italic: line.italic,
-                width,
-                height,
-            };
-            if !size_changed && *sig == new_sig {
-                skip_count += 1;
-                continue;
-            }
-            buf.set_size(
-                &mut self.font_system,
-                Some(width as f32),
-                Some(height as f32),
-            );
-            let mut attrs = Attrs::new().family(Family::Monospace);
-            if line.bold {
-                attrs = attrs.weight(Weight::BOLD);
-            }
-            if line.italic {
-                attrs = attrs.style(Style::Italic);
-            }
-            set_buffer_text(buf, &mut self.font_system, &line.text, attrs, Shaping::Advanced);
-            buf.shape_until_scroll(&mut self.font_system, false);
-            *sig = new_sig;
-            reshape_count += 1;
-        }
-
-        let chrome_areas = self.buffers.iter().zip(lines.iter()).map(|(buf, line)| {
+        let chrome_areas = self.runs.buffers.iter().zip(lines.iter()).map(|(buf, line)| {
             // Default fg sits at `cells::DEFAULT_FG`, (204, 204, 204) — the VS Code Dark+ /
             // GitHub Dark default-foreground tone. Full-white (238+)
             // looks bright-white over a near-black background and is
@@ -474,53 +457,11 @@ impl TextLayer {
         lines: &[Line],
         fade: Option<(usize, f32)>,
     ) -> Result<()> {
-        while self.overlay_buffers.len() < lines.len() {
-            self.overlay_buffers
-                .push(Buffer::new(&mut self.font_system, self.metrics));
-            self.overlay_sigs.push(BufferSig::default());
-        }
-        self.overlay_buffers.truncate(lines.len());
-        self.overlay_sigs.truncate(lines.len());
-
-        for ((buf, sig), line) in self
-            .overlay_buffers
-            .iter_mut()
-            .zip(self.overlay_sigs.iter_mut())
-            .zip(lines.iter())
-        {
-            // Unlike the main `prepare`, the sig check alone gates the
-            // reshape: `BufferSig` carries width/height, so a surface
-            // resize changes every sig and forces the reshape without a
-            // separate `size_changed` bool.
-            let new_sig = BufferSig {
-                text: line.text.clone(),
-                bold: line.bold,
-                italic: line.italic,
-                width,
-                height,
-            };
-            if *sig == new_sig {
-                continue;
-            }
-            buf.set_size(
-                &mut self.font_system,
-                Some(width as f32),
-                Some(height as f32),
-            );
-            let mut attrs = Attrs::new().family(Family::Monospace);
-            if line.bold {
-                attrs = attrs.weight(Weight::BOLD);
-            }
-            if line.italic {
-                attrs = attrs.style(Style::Italic);
-            }
-            set_buffer_text(buf, &mut self.font_system, &line.text, attrs, Shaping::Advanced);
-            buf.shape_until_scroll(&mut self.font_system, false);
-            *sig = new_sig;
-        }
+        self.overlay_runs.shape(&mut self.font_system, self.metrics, width, height, lines);
 
         let areas: Vec<TextArea> = self
-            .overlay_buffers
+            .overlay_runs
+            .buffers
             .iter()
             .zip(lines.iter())
             .enumerate()

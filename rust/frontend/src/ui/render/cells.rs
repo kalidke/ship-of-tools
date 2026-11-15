@@ -267,6 +267,8 @@ impl WgpuBackend {
     /// column, so different-colour spans on the same row stack side-by-side
     /// at the right pixel offsets.
     ///
+    /// A run ends at its last cell that is not a space, and a run of only spaces makes no entry.
+    ///
     /// Returns more entries than rows when chrome uses multiple colours per
     /// line (typical: a status line has "status: " in dim grey and the value
     /// in green). Glyphon batches the resulting TextAreas; the extra count
@@ -331,6 +333,13 @@ impl WgpuBackend {
                     }
                     text.push_str(s);
                     col += 1;
+                }
+                // A space draws nothing (backgrounds, inverse bars and the cursor are `project_backs`'s
+                // rectangles, and underline is not carried), so a run ends at its last cell that is not a space and
+                // a run of spaces is no run: the blank cells of a terminal row are not shaped.
+                text.truncate(text.trim_end_matches(' ').len());
+                if text.is_empty() {
+                    continue;
                 }
                 out.push(Line {
                     text,

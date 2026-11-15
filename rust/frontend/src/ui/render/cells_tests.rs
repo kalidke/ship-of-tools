@@ -97,3 +97,23 @@ fn a_wide_glyph_s_background_covers_its_width() {
     let text: String = backend.project_lines(0.0, 0.0, 1.0, 1.0).iter().map(|l| l.text.as_str()).collect();
     assert!(!text.contains('z'), "{text:?}");
 }
+
+#[test]
+fn spaces_are_not_text() {
+    // `ab` then blank cells projects the one run `ab`; a row of blanks projects none; a space between letters stays, and
+    // so do the spaces that lead a run (they place its letters).
+    let blank = (5, " ", Style::default());
+    let backend = backend_with(&[(0, "a", Style::default()), (1, "b", Style::default()), blank]);
+    let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["ab"]);
+    assert!(backend_with(&[blank]).project_lines(0.0, 0.0, 1.0, 1.0).is_empty());
+    let backend = backend_with(&[(1, "a", Style::default()), (3, "b", Style::default())]);
+    let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(lines.iter().map(|l| (l.text.as_str(), l.x)).collect::<Vec<_>>(), [(" a b", 0.0)]);
+    // A blank cell of another style ends a run and makes none of its own, and its background is still a rectangle.
+    let red = Style::default().fg(Color::Red);
+    let backend = backend_with(&[(0, "a", Style::default()), (1, " ", Style::default().bg(Color::Blue)), (2, "b", red)]);
+    let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(lines.iter().map(|l| (l.text.as_str(), l.x)).collect::<Vec<_>>(), [("a", 0.0), ("b", 2.0)]);
+    assert_eq!(backend.project_backs(0.0, 0.0, 1.0, 1.0), vec![quad(1.0, 1.0, (36, 114, 200))]);
+}

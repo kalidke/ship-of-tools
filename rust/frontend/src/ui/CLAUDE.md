@@ -626,7 +626,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   from the surface size in the same operation, so the cell count never disagrees with the cell size. Shaping
   (`shape`, which lends the font system to one buffer build or resize), the chrome draw (`draw_chrome`), text and
   overlay preparation and their paint, and the atlas trim are its operations; the cell backend is read through
-  `chrome()`. The native pane-mapping fixture checks rejection and clamping against the window's own metrics, with
+  `chrome()`. The text layer keeps one frame of shaped runs (`render::text::ShapedRuns`, one for the chrome and one for
+  the overlay): a run takes the buffer the last frame shaped for the same text, bold, italic and size, whatever slot it
+  sat in, and only a run with no such buffer is shaped, into a buffer the last frame no longer needs, so a ring that
+  moves a row or a row that gains a run shapes only what is new (`text::tests::a_run_shaped_last_frame_is_not_shaped_again_wherever_it_is_drawn`,
+  which also pins that a resized surface shapes every run again, the signature holding the size;
+  `drawer::terminal::vt::tests::a_screen_one_row_further_up_the_ring_shapes_only_the_row_that_came_into_view`). The native pane-mapping fixture checks rejection and clamping against the window's own metrics, with
   points outside any geometry.
 - `Brushes` privately owns the render resources' quad stage: the pipeline (lent immutably to whoever builds a quad of
   its own), one solid brush per colour drawn in a pass (a paint rewrites its brush's vertex buffer), the border
@@ -645,7 +650,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   resolved colours, the default foreground and the surface standing in for the side it leaves unset, so its letter
   shows on a bar of its foreground; the block cursor is an inverse cell and keeps the letter under it. Backgrounds are
   rectangles under every figure, selection and glyph (`project_backs`). The cells a wide glyph covers, which ratatui's
-  diff never sends, are blanked in its style, so its background spans its width. A box-drawing cell's arms are not
+  diff never sends, are blanked in its style, so its background spans its width. Spaces are not text: `project_lines`
+  ends a run at its last cell that is not a space and makes no run of a run of only spaces, since a space draws nothing
+  (a background, an inverse bar and the cursor are rectangles, and underline is not carried; the blank cells of a
+  terminal row are never shaped; `render::cells::tests::spaces_are_not_text`). A box-drawing cell's arms are not
   dimmed by DIM, as its glyph would be (docs/defects.md: TERMINAL-DIM-BOX-ARMS). Tests: `render::cells::tests`, `render::brushes::tests` and
   `drawer::terminal::vt::tests::{an_inverse_bar_keeps_its_letters,
   a_cell_background_reaches_the_backend_and_the_cursor_keeps_its_letter}`.

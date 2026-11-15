@@ -121,3 +121,44 @@ fn a_flagged_run_covers_its_glyphs_in_a_right_to_left_line_and_leaves_out_a_trai
         assert!(runs >= 2 && runs == lines, "{width}: {runs} runs on {lines} lines");
     }
 }
+
+fn run(text: &str) -> Line {
+    Line { text: text.to_string(), x: 0.0, y: 0.0, color: None, bold: false, italic: false, dim: false }
+}
+
+/// A run shaped last frame is not shaped again wherever the frame puts it: a row's runs put in front move every later
+/// run to another slot and shape only themselves, a run that moved away and back is found, and the buffer in a slot is
+/// always the shaping of that slot's text. A different size matches nothing shaped before.
+#[test]
+fn a_run_shaped_last_frame_is_not_shaped_again_wherever_it_is_drawn() {
+    let mut fonts = FontSystem::new();
+    let metrics = Metrics::new(14.0, 18.0);
+    let mut runs = ShapedRuns::default();
+    let text_at = |runs: &ShapedRuns, slot: usize| runs.buffers[slot].lines.iter().map(|l| l.text()).collect::<String>();
+    let frame: Vec<Line> = ["alpha", "beta", "gamma", "delta"].into_iter().map(run).collect();
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &frame), 4);
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &frame), 0, "the same frame shapes nothing");
+    let mut front = vec![run("one"), run("two")];
+    front.extend(frame.iter().map(|l| run(&l.text)));
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &front), 2, "only the runs put in front are shaped");
+    for (slot, line) in front.iter().enumerate() {
+        assert_eq!(text_at(&runs, slot), line.text, "slot {slot}");
+    }
+    // The first two leave again and two others come: the surviving four shift back, and a bold run is not the plain one.
+    let mut bold = run("alpha");
+    bold.bold = true;
+    let next = vec![run("three"), bold, run("alpha"), run("beta"), run("gamma"), run("delta")];
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &next), 2, "a new run and the bold one");
+    for (slot, line) in next.iter().enumerate() {
+        assert_eq!(text_at(&runs, slot), line.text, "slot {slot}");
+        assert_eq!(runs.buffers.len(), next.len());
+    }
+    // Two runs of one text in a frame are two buffers, and a frame of fewer runs keeps only what it draws.
+    let twice = vec![run("alpha"), run("alpha")];
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &twice), 1, "one plain `alpha` was held, the second is new");
+    assert_eq!(runs.shape(&mut fonts, metrics, 800, 600, &twice), 0);
+    assert_eq!(runs.buffers.len(), 2);
+    assert_eq!(runs.shape(&mut fonts, metrics, 801, 600, &twice), 2, "a resized surface shapes every run again");
+    assert_eq!(runs.shape(&mut fonts, metrics, 801, 600, &[]), 0);
+    assert!(runs.buffers.is_empty());
+}
