@@ -2348,4 +2348,6 @@ A landing's record goes here, with its measured times; the package page holds on
   about 17:56. The hub's install by archive passed at once, the daemon restarted on rc.6 with its 31 rows unchanged and
   every window reattached. Named consumer: the maintainer, at his window computer and a second one, each installed by
   its own session; named check: his use of the day's asks and of rc.5's four checks. Comm changed only in tests since
-  rc.5, so the cut owed no mail matrix.
+  rc.5, so the cut owed no mail matrix. Both window computers' sessions installed it by archive and passed (one from
+  rc.5 at 18:02, its window respawned under its lease and its row kept; the other from rc.4 at 18:04). The mail matrix
+  owed since rc.5 with the second one ran with both ends on rc.6: 6 lines, 0 failures.

@@ -175,8 +175,8 @@ earlier text of the sections above and the integration-test assignment by pass.
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
 procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.6 (2026-11-14, the maintainer's word that it is
-expected to become the release) is an unpublished draft, installed by archive on the hub, with two window computers'
-installs asked of their sessions, for a person's use of what he asked for that day: an SVG example, the Chat drawer on
+expected to become the release) is an unpublished draft, installed by archive on the hub and, by their own sessions, on
+two window computers, for a person's use of what he asked for that day: an SVG example, the Chat drawer on
 Ctrl+K, a line when drawing over a picture that is no image file, the drawer kept per row, the channel's name in the
 Chat title, and every text pane's eased scroll. rc.5 (2026-11-14) carried the fixes for the four defects a person had
 seen open on rc.4: a copy as one line, the wake holding a row's input before it waits, a parked
