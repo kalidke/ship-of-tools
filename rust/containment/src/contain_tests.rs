@@ -45,8 +45,8 @@ impl Drop for Watched {
 }
 
 /// One tree fixture's output: stdout and stderr are files in the fixture's own folder, so no reader exists to
-/// block the tree or to supply its death. Readiness is stdout's first complete numeric line (a grandchild that
-/// shares stdout, like `ping`, may write first); a failure carries a bounded excerpt of both files.
+/// block the tree or to supply its death. Readiness is stdout's first complete numeric line (only the leader writes
+/// there, so the line is whole; a descendant that shared stdout could split it); a failure carries a bounded excerpt of both files.
 struct TreeFiles {
     dir: tempfile::TempDir,
     leader: Arc<AtomicU32>,
@@ -200,11 +200,14 @@ fn async_drop_takes_the_tree(mut cmd: tokio::process::Command) -> Result<(), Str
     }))
 }
 
+/// PowerShell leads and prints the descendant's PID; the descendant is a `cmd` that runs `ping` with its output sent to
+/// `NUL`, so the leader's one write is the only one on the stdout `ready` reads (`ping` writing its replies there
+/// broke the PID's line in two).
 fn ping_tree() -> std::process::Command {
     let mut cmd = std::process::Command::new("powershell");
     cmd.args([
         "-NoProfile", "-Command",
-        "$p=Start-Process -PassThru -NoNewWindow ping -ArgumentList '-n','600','127.0.0.1'; $p.Id; Start-Sleep 600",
+        "$p=Start-Process -PassThru -NoNewWindow cmd -ArgumentList '/c','ping','-n','600','127.0.0.1','>NUL'; $p.Id; Start-Sleep 600",
     ]);
     cmd
 }
