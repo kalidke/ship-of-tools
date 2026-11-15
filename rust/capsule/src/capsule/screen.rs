@@ -144,8 +144,13 @@ impl Drop for ScreenFile {
     }
 }
 
+/// What the new run's parser is told first, so the old program's modes do not outlive it: out of the
+/// alternate screen, every mouse tracking mode and encoding off, bracketed paste, application cursor keys and keypad
+/// off, the cursor shown, attributes and scrolling margins reset. The new program asks for what it needs.
+const FRESH_MODES: &str = "\x1b[?1049l\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?2004l\x1b[?1l\x1b>\x1b[?25h\x1b[0m\x1b[r";
+
 /// Restores the screen the file at `path` holds into `parser`, then sets its geometry and writes the restart line
-/// below the retained content: out of the alternate screen, scrolling margins reset, the cursor on the last row. A
+/// below the retained content: the terminal's input modes reset (`FRESH_MODES`), the cursor on the last row. A
 /// missing file leaves the parser as it is; one that does not restore (torn, another format version) is removed and
 /// the screen starts empty. Returns whether a screen was restored.
 ///
@@ -165,6 +170,8 @@ pub(super) fn restore(path: &std::path::Path, parser: &mut vt100_ctt::Parser, ro
         let _ = std::fs::remove_file(path);
         return false;
     }
+    // First, so the scan below reads the normal grid: a saved screen may have been left in the alternate one.
+    parser.process(FRESH_MODES.as_bytes());
     parser.screen_mut().set_size(rows, cols);
     // Below the last row that holds anything; on a full screen the line scrolls the top row into the history.
     let screen = parser.screen();
@@ -172,11 +179,11 @@ pub(super) fn restore(path: &std::path::Path, parser: &mut vt100_ctt::Parser, ro
     let stamp = utc_stamp(at);
     match used {
         Some(r) if r + 1 >= rows => {
-            parser.process(format!("\x1b[?1049l\x1b[0m\x1b[r\x1b[{rows};1H\r\n[restarted {stamp}]\r\n").as_bytes());
+            parser.process(format!("\x1b[{rows};1H\r\n[restarted {stamp}]\r\n").as_bytes());
         }
         _ => {
             let row = used.map_or(1, |r| r + 2);
-            parser.process(format!("\x1b[?1049l\x1b[0m\x1b[r\x1b[{row};1H[restarted {stamp}]\r\n").as_bytes());
+            parser.process(format!("\x1b[{row};1H[restarted {stamp}]\r\n").as_bytes());
         }
     }
     if cfg!(windows) {
