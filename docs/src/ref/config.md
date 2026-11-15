@@ -107,7 +107,7 @@ present, `high` already resolves to it.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `fullscreen_vsync_pin` | bool | `false` | While fullscreen, keep requesting a redraw every vsync instead of falling back to the on-demand idle tick. |
-| `smooth_scroll_ms` | integer, 0 to 1000 | `150` | How long a person's scroll in the preview, the Chat drawer, the agent pane, the Terminal drawer and the REPL drawer takes to arrive, easing out; the two terminals and the REPL move a row at a time and start no faster than a row per frame at 60 frames a second, so a scroll there of more than a few rows (a page) takes longer than this, about 25 ms a row, up to 600 ms. `0` moves at once. A value outside the range is ignored with a warning. |
+| `smooth_scroll_ms` | integer, 0 to 1000 | `150` | How long a person's scroll in the preview, the Chat drawer, the agent pane, the Terminal drawer and the REPL drawer takes to arrive, easing out; the two terminals and the REPL move a row at a time. `0` moves at once. A value outside the range is ignored with a warning. |
 
 In borderless fullscreen, DWM composition disengages and the panel's refresh
 follows the frontend's present cadence directly. The efficient on-demand idle

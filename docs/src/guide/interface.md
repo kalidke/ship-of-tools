@@ -337,8 +337,7 @@ Plain `PgUp`/`PgDn` page the drawer's scrollback ring (a one-third-pane step,
 the same convention as the LLM pane) — so a `claude` session running here
 scrolls exactly like one in the LLM pane. Typing snaps back to the live tail.
 The ring moves a row at a time over `[display] smooth_scroll_ms` (a one-row step
-at once, `0` for every move at once), starting no faster than a row a frame, so a
-page takes longer than the setting: about 25 ms a row, up to 600 ms. Two escape hatches keep full-screen apps working:
+at once, `0` for every move at once). Two escape hatches keep full-screen apps working:
 
 - Apps on the **alternate screen** (`vim`, `less`) page themselves — they
   receive the raw key automatically.

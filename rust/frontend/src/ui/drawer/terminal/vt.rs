@@ -51,15 +51,13 @@ impl RingRoll {
     }
 
     /// One frame, after the pump: the rows the curve has reached go into the ring. A move that comes up short (the
-    /// ring's end, the live tail) stops it, and so does one that reaches the tail with more owed toward it (a slow roll
-    /// can show no row in the next frame, which would be drawn for nothing); a roll that rests on an ask that reached
-    /// the tail lands there. Whether frames must keep coming.
+    /// ring's end, the live tail) stops it; a roll that rests on an ask that reached the tail lands there. Whether
+    /// frames must keep coming.
     pub(in crate::ui) fn spend(&mut self, now: Instant, cap: f32, mut ring: impl FnMut(i32) -> usize) -> bool {
         let rows = self.motion.spend_rows(now, cap);
         if rows != 0 {
             let before = ring(0) as i32;
-            let after = ring(rows) as i32;
-            if after - before != rows || (after == 0 && self.motion.rows_owed() < 0) { self.motion.stop(); }
+            if ring(rows) as i32 - before != rows { self.motion.stop(); }
         }
         if !self.motion.moving() { self.land(&mut ring); }
         self.motion.moving()
