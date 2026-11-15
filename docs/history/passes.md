@@ -2350,4 +2350,15 @@ A landing's record goes here, with its measured times; the package page holds on
   its own session; named check: his use of the day's asks and of rc.5's four checks. Comm changed only in tests since
   rc.5, so the cut owed no mail matrix. Both window computers' sessions installed it by archive and passed (one from
   rc.5 at 18:02, its window respawned under its lease and its row kept; the other from rc.4 at 18:04). The mail matrix
-  owed since rc.5 with the second one ran with both ends on rc.6: 6 lines, 0 failures.
+  owed since rc.5 with the second one ran with both ends on rc.6: 6 lines, 0 failures. The maintainer's first use of it:
+  the preview's and the Chat drawer's eased scroll work well; a page in the agent pane still looked instant
+  (SMOOTH-PAGE-JUMPS, below).
+- A page in the cell panes rolls about a row a frame (SMOOTH-PAGE-JUMPS, seen in use by a person on rc.6), 2026-11-14,
+  trial 1, Opus arm, builder smooth-rows-pace: builder 19:06, main 19:49 (099981db9, a24c33551), about 43 minutes.
+  About 54 product lines and 200 test lines. A page of the agent pane, the Terminal or the REPL showed rows 5, 3, 3, 2,
+  1, 1 at 60 Hz (a third of it in the first frame, all of it in about 100 ms); now a 15-row page shows a row a frame and
+  rests in about 300 ms, a longer one starts at no more than a row a frame for up to 600 ms, and the pixel panes keep
+  the old cubic to the bit. Where the minutes went: the build 10; one scoped gate 4; the review 19, which found a
+  blocker (the paced length had no ceiling, so a held Page Down in a 135-row pane came to rest 4.1 s after its last
+  ask, against 132 ms on rc.6) and an untested carry and pixel spends off by up to 401 ulp; a fix commit 8, its diff
+  read; a second scoped gate 3.
