@@ -3,6 +3,15 @@
 use super::*;
 use super::view::{ChromeView, NavRow};
 
+/// The nav pane's widgets for one frame: the list's height, the rows pinned under it, the status pinned at its top
+/// and the tree scrolled beneath the status, each with the rect it is drawn in.
+pub(super) struct NavBody {
+    pub(super) list_h: usize,
+    pub(super) pinned: Vec<String>,
+    pub(super) header: (ratatui::layout::Rect, Paragraph<'static>),
+    pub(super) tree: (ratatui::layout::Rect, Paragraph<'static>),
+}
+
 impl ChromeView<'_> {
     pub(super) fn nav_body(
         &mut self,
@@ -10,16 +19,13 @@ impl ChromeView<'_> {
         preview_rect: ratatui::layout::Rect,
         tree_lines: Vec<NavRow>,
         nav_spill_segs_out: &mut Vec<NavSpillSeg>,
-    ) -> (usize, Vec<String>, ratatui::layout::Rect, Paragraph<'static>) {
-        let ChromeView { nav_prompt_line, lease_notice, nav_line, owed_line, status, nav_cursor_body_pos, tree_empty, nav_has_cursor, mut nav_scroll, .. } = *self;
+    ) -> NavBody {
+        let ChromeView { nav_prompt_line, lease_notice, nav_line, owed_line, status, tree_empty, mut nav_scroll, .. } = *self;
         let owed_drawn;
         let leaving_drawn;
         // Help lives on the focused border; keep the nav header compact.
         // The status text wraps at the pane's width (a toast is a
-        // sentence): "status: " heads the first line only. Everything
-        // below counts from body_lines.len(), and the cursor's body
-        // position (a header of one status line and a spacer, computed
-        // before the draw) shifts by the extra lines here.
+        // sentence): "status: " heads the first line only.
         let nav_w = nav_rect.width as usize;
         let (nav_list_h, nav_pinned, line_whole) = nav_pinned_rows(
             nav_prompt_line.as_ref().map(|(t, c)| (t.as_str(), c.as_str())),
@@ -28,59 +34,74 @@ impl ChromeView<'_> {
             nav_w,
             nav_rect.height as usize,
         );
-        let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
         // Only a line drawn whole is acked: a grant's count here, the
         // leaving line once presented (`Leaving::presented`).
         owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
         leaving_drawn = line_whole;
-        // The status takes at most half the list's rows, so the tree keeps the rest.
-        let mut body_lines = status_spans(&status, nav_w, nav_list_h / 2);
-        let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
-        body_lines.push(RtLine::from(""));
+        // The status takes at most half the list's rows (`status_spans`),
+        // and with the spacer under it is pinned at the list's top, so no
+        // scroll hides it; the tree scrolls in the rows below, of which it
+        // keeps at least one. An empty status is its label's one row.
+        let mut header = status_spans(&status, nav_w, nav_list_h / 2);
+        header.push(RtLine::from(""));
+        let header_h = header.len().min(nav_list_h.saturating_sub(1));
+        let header_rect = ratatui::layout::Rect { height: header_h as u16, ..nav_rect };
+        let body_rect = ratatui::layout::Rect {
+            y: nav_rect.y + header_h as u16,
+            height: (nav_list_h - header_h) as u16,
+            ..nav_rect
+        };
+        let mut body_lines: Vec<RtLine<'static>> = Vec::new();
         if tree_empty {
             body_lines.push(RtLine::from(vec![Span::styled(
                 "  (no tree yet)",
                 Style::default().add_modifier(Modifier::DIM),
             )]));
         }
+        // The cursor is the selected row the tree hands over (the picker's
+        // header rows ahead of its entries included).
+        let cursor = tree_lines.iter().position(|row| row.1);
         let (tree_rows_body_start, tree_rows_body_end) = self.nav_tree_rows(&mut body_lines, tree_lines);
-        // Scroll the nav body so the selected tree row stays in
-        // the comfort zone — the middle 1/3 of the pane. Going
-        // down: once cursor crosses the bottom-third boundary,
-        // the scroll advances so the cursor stays planted at
-        // that boundary, no big jumps. Going up: same on the
-        // top boundary. At the actual top/bottom of the body
-        // the cursor falls through to the real first/last row,
-        // since clamping `nav_scroll` to [0, max_scroll]
-        // releases it. Header lines scroll off the top as a
-        // simple trade; sub-paneled header/footer is a later
-        // refinement.
-        let nav_inner_h = nav_list_h;
+        // Scroll the tree so the selected row stays in the comfort
+        // zone — the middle 1/3 of the tree's rows. Going down: once
+        // the cursor crosses the bottom-third boundary, the scroll
+        // advances so the cursor stays planted at that boundary, no
+        // big jumps. Going up: same on the top boundary. At the actual
+        // top/bottom of the body the cursor falls through to the real
+        // first/last row, since clamping `nav_scroll` to
+        // [0, max_scroll] releases it. Below three rows the zone is
+        // the whole height, so the cursor is always drawn.
+        let nav_inner_h = body_rect.height as usize;
         let body_len = body_lines.len();
-        if !nav_has_cursor || body_len <= nav_inner_h {
-            nav_scroll = 0;
-        } else {
-            let scrolloff = (nav_inner_h / 3).max(1);
-            let min_view = scrolloff;
-            // last comfort row in the viewport (inclusive)
-            let max_view = nav_inner_h.saturating_sub(scrolloff).saturating_sub(1);
-            let view_pos = nav_cursor_body_pos.saturating_sub(nav_scroll as usize);
-            if view_pos < min_view {
-                nav_scroll = (nav_cursor_body_pos.saturating_sub(min_view)) as u16;
-            } else if view_pos > max_view {
-                nav_scroll = (nav_cursor_body_pos.saturating_sub(max_view)) as u16;
+        match cursor.map(|i| tree_rows_body_start + i) {
+            Some(cursor_pos) if body_len > nav_inner_h => {
+                let scrolloff = (nav_inner_h / 3).max(1).min(nav_inner_h.saturating_sub(1) / 2);
+                let min_view = scrolloff;
+                // last comfort row in the viewport (inclusive)
+                let max_view = nav_inner_h.saturating_sub(scrolloff).saturating_sub(1);
+                let view_pos = cursor_pos.saturating_sub(nav_scroll as usize);
+                if view_pos < min_view {
+                    nav_scroll = (cursor_pos.saturating_sub(min_view)) as u16;
+                } else if view_pos > max_view {
+                    nav_scroll = (cursor_pos.saturating_sub(max_view)) as u16;
+                }
+                let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
+                if nav_scroll > max_scroll {
+                    nav_scroll = max_scroll;
+                }
             }
-            let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
-            if nav_scroll > max_scroll {
-                nav_scroll = max_scroll;
-            }
+            _ => nav_scroll = 0,
         }
-        self.collect_nav_spill(nav_rect, preview_rect, nav_scroll, tree_rows_body_start, tree_rows_body_end, &body_lines, nav_list_h, nav_spill_segs_out);
-        let nav_body = Paragraph::new(body_lines).scroll((nav_scroll, 0));
+        self.collect_nav_spill(body_rect, preview_rect, nav_scroll, tree_rows_body_start, tree_rows_body_end, &body_lines, nav_spill_segs_out);
         self.owed_drawn = owed_drawn;
         self.leaving_drawn = leaving_drawn;
         self.nav_scroll = nav_scroll;
-        (nav_list_h, nav_pinned, nav_list_rect, nav_body)
+        NavBody {
+            list_h: nav_list_h,
+            pinned: nav_pinned,
+            header: (header_rect, Paragraph::new(header)),
+            tree: (body_rect, Paragraph::new(body_lines).scroll((nav_scroll, 0))),
+        }
     }
 
     fn nav_tree_rows(&self, body_lines: &mut Vec<RtLine<'static>>, tree_lines: Vec<NavRow>) -> (usize, usize) {
@@ -234,15 +255,15 @@ impl ChromeView<'_> {
         style
     }
 
+    /// `body_rect` is where the scrolled tree is drawn, under the pinned status.
     fn collect_nav_spill(
         &self,
-        nav_rect: ratatui::layout::Rect,
+        body_rect: ratatui::layout::Rect,
         preview_rect: ratatui::layout::Rect,
         nav_scroll: u16,
         tree_rows_body_start: usize,
         tree_rows_body_end: usize,
         body_lines: &[RtLine<'static>],
-        nav_list_h: usize,
         nav_spill_segs_out: &mut Vec<NavSpillSeg>,
     ) {
         let ChromeView { nav_spill_active, .. } = *self;
@@ -250,28 +271,28 @@ impl ChromeView<'_> {
         // whose text is wider than the nav column, record the full
         // row (truncated to the overlay's reach cap) so the render-
         // pass tail can float it over the preview's left edge.
-        // TREE rows only — the assembly-captured span above: header
-        // and trailing chrome lines (status/help/concept/key) never
-        // spill (codex review). Widths are terminal
+        // TREE rows only — the assembly-captured span above: the
+        // trailing chrome lines (concept/key) never spill, and the
+        // pinned status is outside the body (codex review). Widths are terminal
         // CELLS via unicode-width, so CJK/emoji names measure and
         // truncate exactly (codex review).
-        if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
+        if nav_spill_active && body_rect.width > 0 && preview_rect.width > 0 {
             use unicode_width::UnicodeWidthStr;
             // Reach: from the nav left edge to 2 cells short of the
             // preview's right edge, in cells.
             let max_cells = (preview_rect.x + preview_rect.width)
                 .saturating_sub(2)
-                .saturating_sub(nav_rect.x) as usize;
+                .saturating_sub(body_rect.x) as usize;
             let first = nav_scroll as usize;
             let tree_span = tree_rows_body_start..tree_rows_body_end;
-            let visible = body_lines.iter().skip(first).take(nav_list_h);
+            let visible = body_lines.iter().skip(first).take(body_rect.height as usize);
             for (vis_idx, line) in visible.enumerate() {
                 if !tree_span.contains(&(first + vis_idx)) {
                     continue;
                 }
                 let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
                 let cell_w = UnicodeWidthStr::width(text.as_str());
-                let Some(take) = nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
+                let Some(take) = nav_spill_take(cell_w, body_rect.width as usize, max_cells)
                 else {
                     continue;
                 };
@@ -294,8 +315,8 @@ impl ChromeView<'_> {
                 };
                 let width_cells = shown_cells as u16;
                 nav_spill_segs_out.push(NavSpillSeg {
-                    x: nav_rect.x,
-                    row: nav_rect.y + vis_idx as u16,
+                    x: body_rect.x,
+                    row: body_rect.y + vis_idx as u16,
                     text: shown,
                     width_cells,
                     color: crate::ui::render::cells::ratatui_color_to_rgb(style.fg),

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
+use super::nav_body::NavBody;
 
 // Snapshot per-row chrome strings up-front so the ratatui closure
 // doesn't need to borrow `self.tree` (the closure captures `frame`
@@ -56,12 +57,10 @@ pub(super) struct ChromeView<'a> {
     pub(super) nav_line: &'a Option<String>,
     pub(super) owed_line: &'a Option<String>,
     pub(super) status: &'a String,
-    pub(super) nav_cursor_body_pos: usize,
     pub(super) tree_empty: bool,
     pub(super) contrast_dim: bool,
     pub(super) concept_status: &'a String,
     pub(super) last_key: &'a Option<String>,
-    pub(super) nav_has_cursor: bool,
     pub(super) nav_spill_active: bool,
     pub(super) preview_name: &'a Option<String>,
     pub(super) pinned_preview_node_id: &'a Option<String>,
@@ -127,7 +126,7 @@ impl ChromeView<'_> {
             mode.label(),
             if nav_focus { "· [FOCUS]" } else { "" }
         );
-        let (nav_list_h, nav_pinned, nav_list_rect, nav_body) = self.nav_body(nav_rect, preview_rect, tree_lines, nav_spill_segs_out);
+        let nav_body = self.nav_body(nav_rect, preview_rect, tree_lines, nav_spill_segs_out);
 
         // Other pane titles + body widgets. No Block / borders
         // — we paint the frame ourselves below so the math is
@@ -148,7 +147,7 @@ impl ChromeView<'_> {
         let repl_title = self.drawer_title(repl_focus);
         let (repl_split, scroll_para, input_para) = self.repl_drawer_body(repl_rect, repl_focus);
 
-        render_nav_widgets(frame, nav_body, nav_list_rect, nav_pinned, nav_rect, nav_list_h, self.nav_prompt_line.is_some());
+        render_nav_widgets(frame, nav_body, nav_rect, self.nav_prompt_line.is_some());
         self.render_drawer_widgets(frame, repl_rect, scroll_para, input_para, repl_split);
 
         // Paint the wireframe directly into the buffer.
@@ -647,19 +646,18 @@ impl ChromeView<'_> {
 
 fn render_nav_widgets(
     frame: &mut ratatui::Frame<'_>,
-    nav_body: Paragraph<'static>,
-    nav_list_rect: ratatui::layout::Rect,
-    nav_pinned: Vec<String>,
+    nav_body: NavBody,
     nav_rect: ratatui::layout::Rect,
-    nav_list_h: usize,
     prompt_open: bool,
 ) {
+        let NavBody { list_h: nav_list_h, pinned: nav_pinned, header, tree } = nav_body;
         // Render content widgets into the interior content
         // rects (no borders). The drawer's REPL scrollback + input
         // only render when the drawer is actually showing the REPL;
         // when it shows the Terminal (G3) the vt100 grid is painted
         // into `repl_rect` after the wireframe instead.
-        frame.render_widget(nav_body, nav_list_rect);
+        frame.render_widget(header.1, header.0);
+        frame.render_widget(tree.1, tree.0);
         frame.render_widget(
             Paragraph::new(
                 nav_pinned

@@ -124,7 +124,8 @@ modes. Details of each built-in mode are on the [Modes](modes.md) page.
 - **`status:`** above the tree usually reads `connected · <host>:<workspace> · rev N`:
   the connection, the active workspace, and the last revision of backend state
   the window has received. An action such as a pin replaces it with a short
-  message (`pinned · <path>`).
+  message (`pinned · <path>`). It stays at the top of the pane while a long
+  tree scrolls beneath it.
 - **`annotation:`** below the tree is the [concept annotation](concept-layer.md)
   status of the cursored entry: `present`, `(none)` when no annotation file
   exists for it, `loading`, or `(no target for this row)` for rows such as
