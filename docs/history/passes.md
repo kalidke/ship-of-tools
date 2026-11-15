@@ -2384,3 +2384,14 @@ A landing's record goes here, with its measured times; the package page holds on
   hosted red on main that was a step bound, not a test: the job took 270 s and 274 s of its 300 s bound on two runs and
   309 s on a third; split, its halves took 156 s and 128 s on the next run. One line of the shard table, written by the
   session; the full local gate passed (6c668c93d, about 12 minutes from the red's reading to main).
+- The maintainer's use of rc.7: a page in the agent pane still jumped. Cause, read from the row's screen snapshot (its
+  mode byte): Claude Code 2.1 draws in its fullscreen renderer, on the alternate screen with mouse tracking, so a Claude
+  row's Page Up and wheel go to Claude Code and it redraws its own view at once; the window's eased scroll applies to
+  its own ring alone (a shell, the Terminal, the REPL). Claude Code's classic renderer (`/tui default`, or the variable
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` per process) would leave its conversation in the window's ring; the choice is
+  the maintainer's.
+- A thin gray rule between the Chat drawer's messages, 2026-11-14, on the maintainer's ask ("slack has a thin hor line
+  (gray) between each message"), trial 1, Opus arm, builder chat-message-rules: builder about 22:08, main 22:19
+  (f33614cc3), about 11 minutes. 11 product lines and 79 test lines: a one-pixel rule in the top pixel of every record
+  but the first and one a day divider opens, grouped messages included, adding no height. Where the minutes went: the
+  build 7, its diff read and its rendered frame looked at; one scoped gate 3.
