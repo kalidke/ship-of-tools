@@ -270,7 +270,8 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     for code in [ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::Unmapped] {
         let (mut d, at) = gapped(code);
         assert_eq!(d.title(), format!(" chat · C1 {} ", code.text()));
-        assert!(d.tick(shown("R"), at + pace * 5).0.is_empty(), "{code:?}: not asked again");
+        let outs = d.tick(shown("R"), at + pace * 5).0;
+        assert!(outs.iter().all(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. })), "{code:?}: not asked again (the resolve for a name apart)");
         d.on_connection(&"a".to_string(), false, at + pace * 6);
         let outs = d.on_connection(&"a".to_string(), true, at + pace * 6 + Duration::from_millis(1));
         assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWatch { target } if target.channel.as_str() == "C1")).count(), 1, "{code:?}: asked again at a link change");

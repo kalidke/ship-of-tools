@@ -58,7 +58,8 @@ impl Daemon {
         match req {
             OutgoingReq::ChatResolve { row } => {
                 self.seen.resolves += 1;
-                let mapped = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false });
+                // The hub names the channel (a nameless answer is asked again, `RowChannel`), so one resolve is all this carries.
+                let mapped = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false, "name": "general" });
                 Some(ChatEvt::Resolved { row, reply: ChatReply::Done(serde_json::from_value::<ChatResolveRes>(mapped).unwrap()) })
             }
             OutgoingReq::ChatWatch { target } => {

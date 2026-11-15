@@ -391,13 +391,13 @@ fn thread_view_compose_and_back_keep_target() {
     d.open_thread();
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.owner_anchor(), None, "the thread's frames set no anchor");
-    assert!(d.tick(shown("ROW1"), at + Duration::from_secs(1)).0.is_empty(), "no older page is asked for");
+    assert!(unasked(&d.tick(shown("ROW1"), at + Duration::from_secs(1)).0), "no older page is asked for");
 
     // A reader at the oldest record when the thread opens: no channel page is asked for while it is open.
     let (mut d, at) = channel_with(&held, Some("older"));
     open(&mut d, &mut fonts, &[true]);
     for s in 1..16 {
-        assert!(d.tick(shown("ROW1"), at + Duration::from_secs(s)).0.is_empty(), "tick {s}");
+        assert!(unasked(&d.tick(shown("ROW1"), at + Duration::from_secs(s)).0), "tick {s}");
     }
     d.close_thread();
     d.layout(&mut fonts, body(), 1.0, body());
@@ -732,4 +732,9 @@ fn a_selection_is_not_parked_with_the_channels_view_when_a_thread_opens() {
     assert!(d.close_thread());
     assert!(!tinted(&mut d, &mut fonts), "the old selection does not return at close");
     assert_eq!(d.copy_text().as_deref(), Some("message 2"), "Primary+c copies the marked parent, not the old selection");
+}
+
+/// Nothing but the row's resolve for a name (`RowChannel` asks again after an answer that named nothing) went out.
+fn unasked(outs: &[Out]) -> bool {
+    outs.iter().all(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. }))
 }

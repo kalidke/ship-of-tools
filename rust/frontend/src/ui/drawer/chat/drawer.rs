@@ -127,9 +127,10 @@ impl ChatDrawer {
         (outs, step.settling)
     }
 
-    /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`): the instant to wake the window for.
+    /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`), or the wanted row is next resolved for its
+    /// name (`RowChannel::next_ask`), whichever is first: the instant to wake the window for.
     pub(in crate::ui) fn next_ask(&self) -> Option<Instant> {
-        self.owner.next_ask()
+        [self.owner.next_ask(), self.rows.next_ask()].into_iter().flatten().min()
     }
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {

@@ -3,7 +3,7 @@
 //! the row or a link changes: a resolve makes no Slack call.
 
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatReply, OutgoingReq};
@@ -14,6 +14,11 @@ use crate::ui::ResultRowIdentity;
 
 use super::owner::{Out, GAP_PACE};
 
+/// How long after a `mapped` answer with no name the row is resolved again: the daemon looks the names up in the background
+/// after its start, so a first answer may come before it ends. Four tries at most, each counted from the last answer; after
+/// the last the title keeps the id until the row or a link changes.
+const NAME_RETRIES: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs(3), Duration::from_secs(10), Duration::from_secs(30)];
+
 struct Wanted {
     id: ResultRowIdentity,
     since: Instant,
@@ -22,6 +27,9 @@ struct Wanted {
     answer: Option<(Stand, Instant)>,
     /// The last mapped answer's channel id and the name it carried, if any: the title says `#name` for that id.
     name: Option<(String, String)>,
+    /// Mapped answers with no name so far, and when the next one is asked for (`None` once the asking ended).
+    nameless: usize,
+    retry_at: Option<Instant>,
 }
 
 /// Where the wanted row stands, for the title (`ChatDrawer::title`).
@@ -76,11 +84,15 @@ impl RowChannel {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> Tick {
         let same = self.wanted.as_ref().map(|w| &w.id) == wanted.as_ref();
         if !same {
-            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None });
+            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, nameless: 0, retry_at: None });
         }
         // Only a refusal that is neither the hub's nor the row's is asked again, after the pace.
         if let Some(w) = self.wanted.as_mut().filter(|w| matches!(w.answer, Some((Stand::Failed(_), at)) if now.duration_since(at) >= GAP_PACE)) {
             (w.asked, w.answer) = (false, None);
+        }
+        // A mapped answer with no name is asked for again on its pace; its answer stays, so the title and the watch hold.
+        if let Some(w) = self.wanted.as_mut().filter(|w| w.retry_at.is_some_and(|at| now >= at)) {
+            (w.asked, w.retry_at) = (false, None);
         }
         let mut tick = Tick { changed: !same, ..Tick::default() };
         if let Some(w) = self.wanted.as_mut().filter(|w| !w.asked && self.connected.contains(&w.id.host)) {
@@ -98,7 +110,12 @@ impl RowChannel {
     /// owner takes the same target twice as nothing).
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool) {
         if up { self.connected.insert(host.clone()); } else { self.connected.remove(host); }
-        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| (w.asked, w.answer) = (false, None));
+        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None));
+    }
+
+    /// When the wanted row is next resolved for its name, so the window can draw a frame at that moment.
+    pub(super) fn next_ask(&self) -> Option<Instant> {
+        self.wanted.as_ref().and_then(|w| w.retry_at)
     }
 
     /// The wanted row's answer, kept for the title.
@@ -116,7 +133,12 @@ impl RowChannel {
             ChatReply::Done(ChatResolveRes::Mapped { channel, name: Some(name), .. }) => Some((channel.as_str().to_string(), name.clone())),
             _ => None,
         };
-        self.wanted.iter_mut().for_each(|w| (w.answer, w.name) = (Some((stand, now)), name.clone()));
+        let nameless = stand == Stand::Mapped && name.is_none();
+        for w in self.wanted.iter_mut() {
+            (w.answer, w.name) = (Some((stand, now)), name.clone());
+            w.nameless = if nameless { w.nameless + 1 } else { 0 };
+            w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
+        }
     }
 
     /// A channel as the title and the foot say it: `#name` when the last answer named this id, else the id. The name is

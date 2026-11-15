@@ -457,3 +457,86 @@ fn a_name_is_drawn_only_for_the_id_its_answer_named() {
     rows.answered(&ChatReply::Done(ChatResolveRes::Unmapped), t0);
     assert_eq!(rows.label("C2"), "C2");
 }
+
+fn reply(channel: &str, name: Option<&str>) -> ChatReply<ChatResolveRes> {
+    let mut json = serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": channel, "delivers": false });
+    if let Some(name) = name {
+        json["name"] = name.into();
+    }
+    ChatReply::Done(serde_json::from_value(json).unwrap())
+}
+
+/// A `mapped` answer with no name is resolved again at 1, 3, 10 and 30 s after the answer before it (the daemon looks the
+/// names up after its start, so the first answer may come first), the answer standing meanwhile; a row or link change
+/// starts the asking afresh; the answer that names the channel ends it; and nothing is asked after the fourth try.
+#[test]
+fn a_mapped_answer_with_no_name_is_asked_again_until_a_name_comes_or_the_tries_end() {
+    use super::row_channel::{RowChannel, Stand};
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let asked = |rows: &mut RowChannel, row: &str, ms: u64| rows.tick(wanted(row), at(ms)).resolve.is_some();
+    let mut rows = RowChannel::default();
+    rows.on_connection(&host(), true);
+    rows.tick(wanted("R"), t0);
+    assert!(asked(&mut rows, "R", 150));
+    assert_eq!(rows.next_ask(), None, "nothing is owed before the answer");
+    rows.answered(&reply("C1", None), at(160));
+    assert_eq!((rows.stand(), rows.label("C1")), (Stand::Mapped, "C1".to_string()), "an answer with no name stands");
+    assert_eq!(rows.next_ask(), Some(at(1160)), "the first try is 1 s after the answer");
+    assert!(!asked(&mut rows, "R", 1000), "nothing before it");
+
+    // Each try is asked once, and the answer that carries no name schedules the next.
+    for (ask, answer, next) in [(1200, 1210, 4210), (4300, 4310, 14310), (14400, 14410, 44410)] {
+        assert!(asked(&mut rows, "R", ask), "try at {ask}");
+        assert_eq!(rows.stand(), Stand::Mapped, "the answer stands while the try is out");
+        assert!(!asked(&mut rows, "R", ask + 1), "asked once");
+        rows.answered(&reply("C1", None), at(answer));
+        assert_eq!(rows.next_ask(), Some(at(next)));
+    }
+    assert!(asked(&mut rows, "R", 44_500), "the fourth try");
+    rows.answered(&reply("C1", None), at(44_510));
+    assert_eq!(rows.next_ask(), None, "the asking ended");
+    assert!(!asked(&mut rows, "R", 200_000), "nothing is asked after the last try");
+
+    // A row change starts it afresh; so does a link change, which clears the answer and asks the row again at once.
+    rows.tick(wanted("S"), at(201_000));
+    assert!(asked(&mut rows, "S", 201_150));
+    rows.answered(&reply("C1", None), at(201_160));
+    assert_eq!(rows.next_ask(), Some(at(202_160)), "a new row has its four tries");
+    rows.on_connection(&host(), false);
+    assert_eq!(rows.next_ask(), None, "a link that is down asks nothing");
+    rows.on_connection(&host(), true);
+    assert!(asked(&mut rows, "S", 201_610));
+    rows.answered(&reply("C1", None), at(201_620));
+    assert_eq!(rows.next_ask(), Some(at(202_620)), "a link change has them afresh too");
+
+    // The answer that carries the name shows it and asks nothing more.
+    assert!(asked(&mut rows, "S", 202_700));
+    rows.answered(&reply("C1", Some("general")), at(202_710));
+    assert_eq!((rows.label("C1"), rows.next_ask()), ("#general".to_string(), None));
+    assert!(!asked(&mut rows, "S", 300_000));
+}
+
+/// Through the drawer: the title and the watch hold while the name is awaited, the second resolve goes out when the first
+/// answer named nothing, and the later answer that names the channel puts `#name` in the title.
+#[test]
+fn the_title_shows_the_name_once_a_later_answer_carries_it() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.tick(wanted("R"), t0);
+    assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
+    assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(160))), 1);
+    // The watch is answered and its snapshot read is out, so the owner asks nothing and only the name is awaited.
+    history(&d.on_evt(&host(), complete("R"), at(165)));
+    assert_eq!(d.title(), " chat · C1 reading… ");
+    assert!(d.tick(wanted("R"), at(900)).0.is_empty());
+    assert!(d.next_ask().is_some_and(|t| t <= at(1160)), "the window is woken for the second resolve");
+    let outs = d.tick(wanted("R"), at(1160)).0;
+    assert_eq!((resolves(&outs), outs.len()), (1, 1), "the second resolve, and no unwatch");
+    assert_eq!(d.title(), " chat · C1 reading… ", "the answer stands while it is out");
+    assert!(d.on_evt(&host(), named_to("R", "C1", "general"), at(1170)).is_empty(), "the same target is nothing to the owner");
+    assert_eq!(d.title(), " chat · #general reading… ");
+    assert!(d.tick(wanted("R"), at(60_000)).0.is_empty(), "the name ended the asking");
+}
