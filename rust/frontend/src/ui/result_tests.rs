@@ -1609,6 +1609,44 @@ impl State {
 }
 
 impl State {
+    /// A preview message is on the status line and in the box over the preview pane, whichever call wrote it; a newer one
+    /// replaces it; the box lies inside the pane at text scale 1 and 2; and a row switch drops it.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_preview_message_is_on_the_status_line_and_boxed_and_a_row_switch_drops_it(&mut self) -> Result<()> {
+        let a = "<host-notice>".to_string();
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx)];
+        let mut default = ws_info("default", "attach-default");
+        default.is_default = true;
+        default.agent = "none".into();
+        self.on_workspaces(a.clone(), vec![default, probe_row("s1", "id-s1", false), probe_row("s2", "id-s2", false)]);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        self.raster.hide();
+        // A real call site: a crop with no picture shown.
+        self.capture_roi();
+        let said = "capture: no image ROI in preview (zoom an image first)";
+        anyhow::ensure!(self.status.text() == said && self.preview_notice.text() == Some(said),
+            "capture_roi wrote `{}` and the box `{:?}`", self.status.text(), self.preview_notice.text());
+        self.preview_says("a newer message");
+        anyhow::ensure!(self.status.text() == "a newer message" && self.preview_notice.text() == Some("a newer message"),
+            "a newer message did not replace both");
+        let mult = self.canvas.text_scale_mult();
+        for scale in [1.0, 2.0] {
+            self.apply_text_scale(scale);
+            self.draw_chrome()?;
+            let pane = self.pane_rects.preview;
+            let b = self.preview_notice.boxed(pane, std::time::Instant::now()).ok_or_else(|| anyhow::anyhow!("no box at scale {scale}"))?;
+            anyhow::ensure!(b.rect.x >= pane.x && b.rect.y >= pane.y && b.rect.x + b.rect.width <= pane.x + pane.width
+                && b.rect.y + b.rect.height <= pane.y + pane.height, "at scale {scale} the box {:?} is not in the pane {pane:?}", b.rect);
+        }
+        self.apply_text_scale(mult);
+        self.switch_to_workspace(a.clone(), Some("s2".into()), None, false);
+        anyhow::ensure!(self.preview_notice.text().is_none(), "a row switch kept the notice about the row left");
+        Ok(())
+    }
+}
+
+impl State {
     /// A row's drawer stays with its row: the row shown at start keeps what it has, a first visit is closed, a return brings the
     /// row's own tenant, Help closes on a switch, and a destroyed row's drawer does not reach its same-slug successor.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]

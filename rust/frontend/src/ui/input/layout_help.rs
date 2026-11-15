@@ -14,11 +14,15 @@ pub struct Peek { context: help::Context, started: Instant }
 impl Peek {
     pub fn context(&self) -> &help::Context { &self.context }
     pub fn started(&self) -> Instant { self.started }
-    pub fn opacity(&self, now: Instant) -> f32 {
-        let elapsed = now.saturating_duration_since(self.started);
-        if elapsed <= PEEK_HOLD { 1.0 } else {
-            (1.0 - (elapsed - PEEK_HOLD).as_secs_f32() / PEEK_FADE.as_secs_f32()).clamp(0.0, 1.0)
-        }
+    pub fn opacity(&self, now: Instant) -> f32 { hold_then_fade(self.started, now) }
+}
+
+/// A floating box's opacity `now` when it was shown at `started`: full for `PEEK_HOLD`, then linear to none over
+/// `PEEK_FADE`. The help peek and the preview's notice are timed by this one rule.
+pub fn hold_then_fade(started: Instant, now: Instant) -> f32 {
+    let elapsed = now.saturating_duration_since(started);
+    if elapsed <= PEEK_HOLD { 1.0 } else {
+        (1.0 - (elapsed - PEEK_HOLD).as_secs_f32() / PEEK_FADE.as_secs_f32()).clamp(0.0, 1.0)
     }
 }
 

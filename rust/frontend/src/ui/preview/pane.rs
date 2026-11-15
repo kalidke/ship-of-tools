@@ -481,7 +481,7 @@ impl State {
             Step::Pending => return false,
         };
         tracing::warn!(why, "svg preview not drawn");
-        self.status.set(svg_not_drawn(&why));
+        self.preview_says(svg_not_drawn(&why));
         self.window.request_redraw();
         false
     }

@@ -358,6 +358,8 @@ struct State {
     raster: RasterView,
     /// The row's drawing: its strokes, its raster and the overlay texture made from it.
     ink: preview::image::ink::InkLayer,
+    /// The preview's latest message, boxed over the preview pane while it is held and fades.
+    preview_notice: preview::notice::PreviewNotice,
     /// Pagination of the shown preview: page and count, the page bitmap's raster zoom and a re-raster's keep-view.
     pages: PageView,
     /// The figure overlays: the scalebar toggle and label, the caption store and label, and the caption band.
