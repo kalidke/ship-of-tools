@@ -174,15 +174,17 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.5 (2026-11-14) is an
-unpublished draft, installed by archive on the hub and staged on a second computer for its next start at the desk,
-with the window computers' installs waiting on a person at each, for a person's use of the fixes for the four
-defects a person had seen open on rc.4: a copy as one line, the wake holding a row's input before it waits, a parked
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.6 (2026-11-14, the maintainer's word that it is
+expected to become the release) is an unpublished draft, installed by archive on the hub, with two window computers'
+installs asked of their sessions, for a person's use of what he asked for that day: an SVG example, the Chat drawer on
+Ctrl+K, a line when drawing over a picture that is no image file, the drawer kept per row, the channel's name in the
+Chat title, and every text pane's eased scroll. rc.5 (2026-11-14) carried the fixes for the four defects a person had
+seen open on rc.4: a copy as one line, the wake holding a row's input before it waits, a parked
 attach client that keeps reading with input around an attach never sent blind or dropped uncounted, and the daemon's
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.6-dev, and the `release/0.6.6` branch is closed to all but fixes found in use. A
+drawing). `main` carries 0.7.1-rc.7-dev, and the `release/0.6.6` branch is closed to all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
 everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
 progress is the project chat (the daemon speaks Slack itself,

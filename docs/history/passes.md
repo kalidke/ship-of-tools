@@ -2340,3 +2340,12 @@ A landing's record goes here, with its measured times; the package page holds on
   (a temporary probe in the one environment read, run over the whole suite on one test thread until it named nothing)
   and reproducing the race (1 in 400 runs before, 0 in 1,200 after); the diff was read instead of a review round; one
   scoped gate, then a rebase over a records commit.
+- v0.7.1-rc.6, 2026-11-14, on the maintainer's word, expected to become the release (the sixth candidate, carrying what
+  he asked for that day: the SVG example, the Chat drawer on Ctrl+K, the drawing line over a picture that is no image
+  file, the drawer kept per row, the channel's name in the Chat title and every text pane's eased scroll, with the day's
+  test fixes): the full local gate at 5d5f39aba passed in 6 minutes (done 17:31); the cut at 17:34 from a fresh clone
+  (release 48ef0f250, the line's next stamp 076d80fc1 after it); the release run green on every leg, the draft ready
+  about 17:56. The hub's install by archive passed at once, the daemon restarted on rc.6 with its 31 rows unchanged and
+  every window reattached. Named consumer: the maintainer, at his window computer and a second one, each installed by
+  its own session; named check: his use of the day's asks and of rc.5's four checks. Comm changed only in tests since
+  rc.5, so the cut owed no mail matrix.
