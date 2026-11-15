@@ -589,7 +589,11 @@ const SINK_SLACK: usize = 1024 * 1024;
 
 /// A client off screen is never cut for not being read: past its sink's bound it keeps reading the row and drops the
 /// output, so the row's write bound (5 s) never ends its connection; shown again, its next key is recorded, not lost, and
-/// it asks the row for the screen once. A client on screen that is not pumped still stops reading at the bound.
+/// it is sent the screen. A client on screen that is not pumped still stops reading at the bound, and is sent no screen
+/// after that. While the agent writes, the row resyncs a client whose reader falls 256 frames behind (guarantee 5), which
+/// sends it a screen it did not ask for and less output than the agent wrote, so the test waits for the sinks to fill
+/// rather than for a time, and counts a parked client's screens from its show. That a parked client asks only once it is
+/// shown, and once, is pinned on a quiet row (`a_parked_client_shown_again_asks_for_the_screen_at_once_on_a_quiet_row`).
 #[test]
 fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
     let (_supervisor, _dir, row) = supervise("exec yes 'an agent that writes without pause'");
@@ -603,14 +607,23 @@ fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
     // `stuck` stays on screen and is never acknowledged.
     client.set_viewed(false);
     parked.worker.set_viewed(false);
-    std::thread::sleep(Duration::from_secs(8));
+    let parked_at = Instant::now();
+    while parked.output() <= SINK_BOUND || stuck.output() <= SINK_BOUND {
+        assert!(parked_at.elapsed() < Duration::from_secs(20), "the sinks never filled: parked {}, stuck {}", parked.output(), stuck.output());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Full, `stuck` reads nothing more, so no screen reaches it from here.
+    let stuck_screens = stuck.checkpoints();
+    // Both full, past the row's write bound.
+    std::thread::sleep(Duration::from_secs(6));
     // The bound holds off screen, where the output past it is dropped, and on screen, where reading stops.
     let (off, on) = (parked.output(), stuck.output());
-    assert!(off > SINK_BOUND && off <= SINK_BOUND + SINK_SLACK, "a parked sink held {off} bytes of output");
+    assert!(off <= SINK_BOUND + SINK_SLACK, "a parked sink held {off} bytes of output");
     assert!(on <= SINK_BOUND + SINK_SLACK, "a client on screen that is not pumped held {on} bytes of output");
-    assert!(stuck.checkpoints() <= 4, "a client on screen that is not pumped asked for the screen {} times", stuck.checkpoints());
-    assert_eq!(parked.checkpoints(), 1, "a parked client asked for the screen while it was off screen");
+    assert_eq!(stuck.checkpoints(), stuck_screens, "a client on screen that stopped reading was sent a screen");
     assert!(!parked.seen.lock().unwrap().statuses.iter().any(|s| s.contains("redialing")), "a parked client was cut");
+    // The screens it was sent so far: the attach's and any resync's.
+    let screens = parked.checkpoints();
     client.set_viewed(true);
     parked.worker.set_viewed(true);
     client.send_input(b"x");
@@ -629,54 +642,81 @@ fn a_client_off_screen_and_never_pumped_keeps_its_connection() {
         "the row cut the client while it was off screen; status {:?}",
         client.status_line()
     );
-    // Shown again, it is sent the row's screen, once.
-    parked.wait_for_checkpoints(2);
-    let until = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < until {
-        parked.settle();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(parked.checkpoints(), 2, "the screen was asked for again after it was shown");
+    // Shown again, it is sent the row's screen.
+    parked.wait_for_checkpoints(screens + 1);
 }
 
 /// Shown again, a client that dropped output off screen is woken to ask for the screen, so it does not wait out the
-/// worker's read tick (250 ms) on a row that has gone quiet. Six workers are shown 40 ms apart, so one that happened to be
-/// near its tick does not pass for all.
+/// worker's read tick (250 ms) on a row that has gone quiet, and it asks once. Six workers are shown 40 ms apart, so one
+/// that happened to be near its tick does not pass for all. While the agent writes, the row resyncs a parked worker whose
+/// reader falls 256 frames behind (guarantee 5), which sends it a screen it did not ask for and less output than the agent
+/// wrote: so the agent writes until the test has seen every sink full, the screen a worker asked for is the first after
+/// it was shown, and on a quiet row, where nothing is resynced, a screen after that one is one it asked for again.
 #[test]
 fn a_parked_client_shown_again_asks_for_the_screen_at_once_on_a_quiet_row() {
-    let (_supervisor, _dir, row) = supervise("sleep 2; yes 'a screenful' | head -c 6000000; exec sleep 600");
+    let told = tempfile::tempdir().unwrap();
+    let stop = told.path().join("stop");
+    let script = format!("sleep 2; yes 'a screenful' & while [ ! -e '{}' ]; do sleep 0.05; done; kill $!; exec sleep 600", stop.display());
+    let (_supervisor, _dir, row) = supervise(&script);
     let workers: Vec<Recorded> = (0..6).map(|_| Recorded::start(&row)).collect();
     for worker in &workers {
         worker.wait_for_checkpoints(1);
         worker.worker.set_viewed(false);
     }
-    // The agent writes 6 MB after the first attach and then stops; every worker is full and has dropped the rest.
-    std::thread::sleep(Duration::from_secs(5));
-    for worker in &workers {
-        assert!(worker.output() > SINK_BOUND, "the agent's output did not reach a parked sink: {}", worker.output());
-        assert_eq!(worker.checkpoints(), 1);
-    }
-    // Shown 40 ms apart, so their ticks, which the flood's end set together, are met at every phase.
+    // The agent writes after the first attach until every sink is full, and on for a moment, so every worker has dropped
+    // output; then it stops.
     let start = Instant::now();
-    let mut shown: Vec<Option<Instant>> = vec![None; workers.len()];
-    while workers.iter().any(|w| w.checkpoints() < 2) {
+    while workers.iter().any(|w| w.output() <= SINK_BOUND) {
+        let outputs: Vec<usize> = workers.iter().map(Recorded::output).collect();
+        assert!(start.elapsed() < Duration::from_secs(20), "the agent's output did not fill every parked sink: {outputs:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    std::fs::write(&stop, b"").unwrap();
+    // Quiet: emptied, no sink is given more output for half a second.
+    let start = Instant::now();
+    loop {
+        workers.iter().for_each(Recorded::settle);
+        let before: Vec<usize> = workers.iter().map(Recorded::output).collect();
+        std::thread::sleep(Duration::from_millis(500));
+        if workers.iter().map(Recorded::output).eq(before) {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "the agent did not stop writing");
+    }
+    // Shown 40 ms apart, so their ticks, which the flood's end set together, are met at every phase; each with the number
+    // of screens it had been sent before.
+    let start = Instant::now();
+    let mut shown: Vec<Option<(Instant, usize)>> = vec![None; workers.len()];
+    while workers.iter().zip(&shown).any(|(w, s)| s.is_none_or(|(_, screens)| w.checkpoints() <= screens)) {
         assert!(start.elapsed() < Duration::from_secs(10), "a shown client never asked for the screen");
         for (i, worker) in workers.iter().enumerate() {
             if shown[i].is_none() && start.elapsed() >= Duration::from_millis(40 * i as u64) {
+                let screens = worker.checkpoints();
                 worker.worker.set_viewed(true);
-                shown[i] = Some(Instant::now());
+                shown[i] = Some((Instant::now(), screens));
             }
             worker.settle();
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+    let shown: Vec<(Instant, usize)> = shown.into_iter().map(Option::unwrap).collect();
     let slowest = workers
         .iter()
         .zip(&shown)
-        .map(|(w, shown)| w.seen.lock().unwrap().checkpoints[1].duration_since(shown.unwrap()))
+        .map(|(w, (at, screens))| w.seen.lock().unwrap().checkpoints[*screens].duration_since(*at))
         .max()
         .unwrap();
     assert!(slowest < Duration::from_millis(100), "the screen came {slowest:?} after the client was shown on a quiet row");
+    // Past two read ticks, none has asked again.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        workers.iter().for_each(Recorded::settle);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    for (worker, (_, screens)) in workers.iter().zip(&shown) {
+        assert_eq!(worker.checkpoints(), screens + 1, "a shown client asked for the screen again on a quiet row");
+    }
 }
 
 /// A client retired while its row is slow to answer the input in flight counts what its worker never took, and the
