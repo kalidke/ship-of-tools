@@ -18,8 +18,13 @@ fn prompt_pinned_cells_have_attention_style() {
                 Some("notice"), None, width, height);
             let rect = ratatui::layout::Rect::new(0, 0, width as u16, height as u16);
             let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width as u16, height as u16)).unwrap();
-            term.draw(|frame| render_nav_widgets(frame, Paragraph::new(""),
-                ratatui::layout::Rect { height: list_h as u16, ..rect }, rows.clone(), rect, list_h, prompt.is_some())).unwrap();
+            let body = NavBody {
+                list_h,
+                pinned: rows.clone(),
+                header: (ratatui::layout::Rect::default(), Paragraph::new("")),
+                tree: (ratatui::layout::Rect { height: list_h as u16, ..rect }, Paragraph::new("")),
+            };
+            term.draw(|frame| render_nav_widgets(frame, body, rect, prompt.is_some())).unwrap();
             for (i, row) in rows.iter().enumerate() {
                 for x in 0..row.chars().count().min(width) {
                     let cell = &term.backend().buffer()[(x as u16, (list_h + i) as u16)];
@@ -102,6 +107,24 @@ fn paint_chrome_chat(
     chat_empty: bool,
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16) {
+    let (rows, scroll, area, window, cells, foot, ..) =
+        paint_chrome_nav(size, status, tree, repl, chat_empty, chat_compose, Mode::default(), false);
+    (rows, scroll, area, window, cells, foot)
+}
+
+/// `paint_chrome_chat` in nav `mode`, with the nav spill `spill_active`, and the nav pane's rect and the spill's
+/// segments drawn besides.
+#[allow(clippy::too_many_arguments, reason = "a test fixture spelling out one frame's inputs")]
+fn paint_chrome_nav(
+    size: (u16, u16),
+    status: &str,
+    tree: Vec<NavRow>,
+    repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
+    chat_empty: bool,
+    chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
+    mode: Mode,
+    spill_active: bool,
+) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
     let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     let status = status.to_string();
@@ -125,19 +148,17 @@ fn paint_chrome_chat(
         maximize_slot: None,
         nav_logo_row: false,
         focus: PaneFocus::NavTree,
-        mode: Mode::default(),
+        mode,
         nav_prompt_line: &prompt,
         lease_notice: None,
         nav_line: &none,
         owed_line: &none,
         status: &status,
-        nav_cursor_body_pos: 2,
         tree_empty: tree.is_empty(),
         contrast_dim: false,
         concept_status: &concept,
         last_key: &none,
-        nav_has_cursor: !tree.is_empty(),
-        nav_spill_active: false,
+        nav_spill_active: spill_active,
         preview_name: &preview_name,
         pinned_preview_node_id: &pinned,
         drawer,
@@ -177,13 +198,14 @@ fn paint_chrome_chat(
     };
     let (w, h) = size;
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-    term.draw(|frame| view.paint(frame, tree, &mut Vec::new()))
+    let mut segs = Vec::new();
+    term.draw(|frame| view.paint(frame, tree, &mut segs))
         .unwrap();
     let buf = term.backend().buffer();
     let rows = (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
-    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window, view.repl_cells, view.chat_foot)
+    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window, view.repl_cells, view.chat_foot, view.new_pane_rects.nav, segs)
 }
 
 #[test]
@@ -341,5 +363,94 @@ fn the_chat_drawer_title_is_the_one_it_is_given_and_no_other_drawer_shows_it() {
     assert!(titled(DrawerContent::Chat));
     for other in [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Help] {
         assert!(!titled(other), "{other:?}");
+    }
+}
+
+/// The nav pane's cells of each of its rows, the trailing blanks cut.
+fn nav_cells(rows: &[String], nav: ratatui::layout::Rect) -> Vec<String> {
+    rows[nav.y as usize..nav.bottom() as usize]
+        .iter()
+        .map(|r| r.chars().skip(nav.x as usize).take(nav.width as usize).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+/// `n` tree rows, `file000.jl` on, each name `pad` x's longer, with the cursor on row `cursor`.
+fn file_rows(n: usize, cursor: usize, pad: usize) -> Vec<NavRow> {
+    (0..n)
+        .map(|i| {
+            let caret = if i == cursor { ">" } else { " " };
+            (format!("{caret} · file{i:03}{}.jl", "x".repeat(pad)), i == cursor, false, false, None, 0.0, false, false)
+        })
+        .collect()
+}
+
+fn paint_nav(size: (u16, u16), status: &str, tree: Vec<NavRow>, mode: Mode, spill: bool) -> (Vec<String>, ratatui::layout::Rect, Vec<NavSpillSeg>) {
+    let repl = (String::new(), Vec::new(), 0, DrawerContent::Repl);
+    let (rows, .., nav, segs) = paint_chrome_nav(size, status, tree, repl, false, None, mode, spill);
+    (rows, nav, segs)
+}
+
+/// With a tree longer than the pane and the cursor on its last row, the status's lines and the spacer under them
+/// are the pane's first rows and the cursor's row is drawn beneath them, in every tree mode.
+#[test]
+fn a_long_tree_keeps_the_status_on_the_panes_first_rows_and_draws_the_cursor() {
+    for mode in [Mode::Files, Mode::Modules, Mode::Sessions] {
+        for size in [(200, 60), (120, 30)] {
+            let (rows, nav, _) = paint_nav(size, "ready\nsecond line", file_rows(300, 299, 0), mode, false);
+            let shown = nav_cells(&rows, nav);
+            assert_eq!(&shown[..3], ["status: ready", "second line", ""], "{mode:?} {size:?}: {shown:#?}");
+            let cursor = shown.iter().position(|r| r == "> · file299.jl");
+            assert!(cursor.is_some_and(|y| y > 2), "{mode:?} {size:?}: the cursor's row is not drawn: {shown:#?}");
+            assert!(!shown[3..].iter().any(|r| r.starts_with("status:")), "{mode:?} {size:?}: a second status");
+        }
+    }
+}
+
+/// The spill's segments name the tree rows actually drawn, each at the row it is drawn on, and never a status
+/// row, whatever the scroll.
+#[test]
+fn the_spill_names_the_tree_rows_drawn_where_they_are_drawn() {
+    for mode in [Mode::Files, Mode::Sessions] {
+        for cursor in [0, 40, 150, 299] {
+            let (rows, nav, segs) = paint_nav((200, 60), "ready\nsecond line", file_rows(300, cursor, 80), mode, true);
+            let shown = nav_cells(&rows, nav);
+            let drawn: Vec<u16> = (0..shown.len()).filter(|&y| shown[y].contains(" · file")).map(|y| nav.y + y as u16).collect();
+            let named: Vec<u16> = segs.iter().map(|s| s.row).collect();
+            assert!(!drawn.is_empty() && named == drawn, "{mode:?} {cursor}: segments {named:?}, drawn tree rows {drawn:?}");
+            for seg in &segs {
+                let cells = &shown[(seg.row - nav.y) as usize];
+                assert_eq!(seg.x, nav.x);
+                assert!(seg.text.starts_with(cells.as_str()), "{mode:?} {cursor}: {:?} over {cells:?}", seg.text);
+            }
+            let cursor_row = format!("> · file{cursor:03}");
+            assert!(shown.iter().any(|r| r.starts_with(&cursor_row)), "{mode:?} {cursor}: cursor not drawn");
+        }
+    }
+}
+
+/// A tree that fits sits where it sat when the status scrolled with it: the status (an empty one is its label
+/// alone, one row), a spacer, the tree, then the annotation and key lines, each with a blank row before it.
+#[test]
+fn a_short_tree_sits_under_the_status_as_before() {
+    for (status, first) in [("ready", "status: ready"), ("", "status:")] {
+        let (rows, nav, _) = paint_nav((200, 60), status, file_rows(5, 4, 0), Mode::Files, false);
+        let shown = nav_cells(&rows, nav);
+        let want = [first, "", "  · file000.jl", "  · file001.jl", "  · file002.jl", "  · file003.jl", "> · file004.jl", "", "c AA06 ⏎ BB06", "", "key: (none)"];
+        assert_eq!(&shown[..want.len()], want, "{status:?}: {shown:#?}");
+    }
+}
+
+/// In a pane too short for the status, its spacer and a tree row, the status gives way from its foot: the tree
+/// keeps a row and the cursor is drawn on it, wherever it is.
+#[test]
+fn a_short_pane_keeps_a_tree_row_for_the_cursor() {
+    for h in 8..=14 {
+        for cursor in [0, 150, 299] {
+            let (rows, nav, _) = paint_nav((200, h), "ready\nsecond line", file_rows(300, cursor, 0), Mode::Files, false);
+            let shown = nav_cells(&rows, nav);
+            let cursor_row = format!("> · file{cursor:03}.jl");
+            assert!(shown.iter().any(|r| *r == cursor_row), "{h} {cursor}: {shown:#?}");
+            assert!(shown[0].starts_with("status: ready") || shown[0] == cursor_row, "{h} {cursor}: {shown:#?}");
+        }
     }
 }

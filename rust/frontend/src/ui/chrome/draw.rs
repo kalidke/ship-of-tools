@@ -75,7 +75,6 @@ impl State {
         let built_repl_scroll = new_repl_scroll;
         let repl_input = self.repl_model.input().to_string();
         let repl_pkg_mode = self.repl_model.pkg_mode();
-        let (nav_cursor_body_pos, nav_has_cursor) = self.nav_cursor_row();
         // Mutable copy of the persistent scroll. The draw closure updates
         // this in place based on the cursor's viewport position; the
         // result is written back to the nav scroll after the draw.
@@ -152,8 +151,8 @@ impl State {
         let mut view = ChromeView {
             layout_preset: &layout_preset, drawer_open, maximize_slot, nav_logo_row, focus, mode,
             nav_prompt_line: &nav_prompt_line, lease_notice, nav_line: &nav_line, owed_line: &owed_line,
-            status: &status, nav_cursor_body_pos, tree_empty, contrast_dim, concept_status: &concept_status,
-            last_key: &last_key, nav_has_cursor, nav_spill_active, preview_name: &preview_name,
+            status: &status, tree_empty, contrast_dim, concept_status: &concept_status,
+            last_key: &last_key, nav_spill_active, preview_name: &preview_name,
             pinned_preview_node_id: self.nav_cursor.pinned(), drawer, chat_empty: self.chat.no_messages(), chat_title: &chat_title, chat_compose: chat_compose.as_ref(), chat_foot: 0, monitor_host_connected,
             monitor_host_label: &monitor_host_label, repl_input: &repl_input, repl_lines: &repl_lines,
             repl_pkg_mode, help_state, help_bindings, help_context: &help_context, clock_now,
@@ -243,20 +242,6 @@ impl State {
             self.active_link.backend_version(),
         );
         (clock_now, battery, last_key, version_stamp, version_skew)
-    }
-
-    fn nav_cursor_row(&self) -> (usize, bool) {
-        // The navigation body begins with status + spacer. The picker adds
-        // two path/header rows before its entries. Keep scroll and hit testing
-        // aligned when the help legend moves from the body to the border.
-        let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
-            Some(p) => (4usize.saturating_add(p.selected()), !p.entries().is_empty()),
-            None => (
-                2usize.saturating_add(self.nav.tree().selected()),
-                !self.nav.tree().rows().is_empty(),
-            ),
-        };
-        (nav_cursor_body_pos, nav_has_cursor)
     }
 
     fn concept_status_line(&self) -> String {
