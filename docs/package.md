@@ -186,7 +186,11 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.8-dev, and the `release/0.6.6` branch is closed to all but fixes found in use. A
+drawing). `main` carries 0.7.1-rc.8-dev, with what the maintainer's use of rc.7 asked for (2026-11-15): Claude rows
+start in Claude Code's classic renderer (his word: "we don't want claude fullscreen"), so the window's eased scroll
+reaches their conversation; a row's new run starts with the terminal's input modes reset; the preview's own messages in
+a box over the preview pane, held 5 s and fading, with plainer words for a refused drawing; and the nav pane's status
+pinned above its tree. The `release/0.6.6` branch is closed to all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
 everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
 progress is the project chat (the daemon speaks Slack itself,

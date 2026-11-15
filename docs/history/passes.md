@@ -2395,3 +2395,42 @@ A landing's record goes here, with its measured times; the package page holds on
   (f33614cc3), about 11 minutes. 11 product lines and 79 test lines: a one-pixel rule in the top pixel of every record
   but the first and one a day divider opens, grouped messages included, adding no height. Where the minutes went: the
   build 7, its diff read and its rendered frame looked at; one scoped gate 3.
+- The maintainer's use of the classic renderer, 2026-11-15: he switched a row to it and said "ok, this is working well
+  in this session. so we don't want claude fullscreen." His switch saved the setting for every session of the computer's
+  accounts, and the Claude sessions already running took it up while running but stayed on the alternate screen with
+  mouse tracking on and nothing redrawn, which he saw as dead screens. Claude Code's own `/restart` relaunched one such
+  session in place, resuming its conversation by id, and its screen came back on the main screen with mouse tracking off;
+  restarting the others from a session was refused by the permission check as destructive, and waits on him.
+- A row's new run starts with the terminal's input modes reset (RESTART-KEEPS-MOUSE-MODE, a note from reading made red by
+  its test), 2026-11-15, trial 1, Sonnet arm, builder capsule-modes: builder about 08:25, main about 08:40 (e03a5ebe8),
+  about 15 minutes. 10 product lines and 47 test lines. A run restored from a screen saved by a program that tracked the
+  mouse kept its mouse mode, so after a fullscreen Claude Code the window would have sent the wheel into a classic one as
+  mouse reports; now mouse reporting and its encoding, bracketed paste and the application keys are off at a new run, and
+  the restart line no longer lands on the normal grid's first row after a screen saved on the alternate one. Where the
+  minutes went: the build 8; its 10 lines read, no review round; one scoped gate 2.
+- Claude rows start in Claude Code's classic renderer (CLAUDE-FULLSCREEN-SCROLL, seen in use by a person on rc.7),
+  2026-11-15, on the maintainer's word above, trial 1, Opus arm, builder claude-classic: builder about 08:25, main 08:43
+  (13e579f2e, 526ae7c59), about 18 minutes. 9 product lines and 17 test lines: a Claude row's environment carries
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, so every computer's rows draw on the main screen whatever the person's own
+  setting, and Codex and terminal-only rows are unchanged. Where the minutes went: the build 11; a fix round 3 (a test
+  that proved the launch paths by reading source text, deleted); the rebase and one scoped gate 3.
+- The preview's own messages in a box over the preview pane, and plainer words for a refused drawing
+  (DRAWING-REFUSAL-WORDS, seen in use by a person on rc.7), 2026-11-15, on the maintainer's asks ("the messsage about
+  drawing not supported isn't very good. explain what it does"; "could we have messages like that appear in the preview
+  pane itself, similar to what happens when we do a help"), trial 1, Sonnet arm, builder preview-notice: builder about
+  08:25, main 08:56 (e5966706b, 015d4d0dc), about 31 minutes. About 216 product lines and 259 test lines. A preview
+  message shows in the help peek's box at the pane's foot, held 5 s and fading, as well as on the status line; a refused
+  drawing says what drawing does and the two ways to draw. Where the minutes went: the build 7, its rendered frame looked
+  at; one scoped gate 2 and the review 16 at once, which found no blocker and eight things to fix (selection replies
+  boxed on every release, the spill drawn over the box, a box outliving its file, the box over the editor, the remedy
+  cut in a narrow pane, an untested idle wake that could leave the window at 60 Hz, a second list of video suffixes, and
+  the docs' list of what is boxed); a fix round 8, its diff read; the rebase and one scoped gate 3.
+- The nav pane's status stays pinned above a long tree (NAV-STATUS-SCROLLS-OFF, seen in use by a person on rc.7),
+  2026-11-15, on the maintainer's report ("when nav pane is long, the messages at top aren't seeen - the are too far
+  up"), trial 1, Opus arm, builder nav-status-pin: builder about 08:25, main 09:06 (454508ca5, ef8489590), about 41
+  minutes. About 100 product lines and 210 test lines. The status was the head of the scrolled nav body, so a cursor deep
+  in a long tree scrolled it off; it is now pinned at the list's top with the tree scrolling beneath, the cursor's
+  comfort zone counted in the tree's own rows, and the workspace picker's cursor, which an old count left undrawn in
+  short lists, drawn. Where the minutes went: the build 13; the review 17, which found no blocker, a cursor that could
+  stay off a one- or two-row tree view, and tests that painted one frame from the top; a fix round 9, its new table
+  test red against the old lines; the rebase and one scoped gate 3.
