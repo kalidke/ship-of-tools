@@ -183,9 +183,11 @@ fn whole_rows_move_the_first_row_at_once_and_end_with_the_last() {
         assert_eq!(shown[0].signum(), asked.signum(), "{asked} at {step} ms: {shown:?}");
         assert!(shown.iter().all(|r| r.signum() != -asked.signum()), "{shown:?}");
         // The motion ends with the frame that shows its last row: no frame is drawn for a roll with nothing more to
-        // show, and none comes later than the length allows.
+        // show, and none comes later than the length allows (stretched to 25 ms a row, so the roll starts no faster
+        // than a row a frame at 60 frames a second).
         assert!(shown.last().is_some_and(|r| *r != 0), "{asked} at {step} ms: {shown:?}");
-        assert!(shown.len() as u64 <= (150 + step - 1) / step, "{asked} at {step} ms: {shown:?}");
+        let length_ms = 150.max(asked.unsigned_abs() as u64 * 25);
+        assert!(shown.len() as u64 <= (length_ms + step - 1) / step, "{asked} at {step} ms: {shown:?}");
         assert!(!m.moving() && m.owed() == 0.0);
     }
     // A one-row step is the whole of its first frame, and nothing is drawn after it.
@@ -221,4 +223,66 @@ fn a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry() {
     m.ask_rows(4, at(t0, 200), LENGTH);
     assert_eq!(row_frames(&mut m, at(t0, 200), 16, NEVER).iter().sum::<i32>(), 4);
     assert_eq!(m.finish_rows(), 0);
+}
+
+/// Frames at 60 a second (or `hz`) from the ask until the roll rests, in whole rows.
+fn rows_at(hz: u64, m: &mut ScrollMotion, t0: Instant, cap: f32) -> Vec<i32> {
+    let mut shown = Vec::new();
+    let mut i = 1;
+    while m.moving() {
+        shown.push(m.spend_rows(t0 + Duration::from_micros(i * 1_000_000 / hz), cap));
+        i += 1;
+        assert!(i < 100_000, "a roll that never rests");
+    }
+    shown
+}
+
+#[test]
+fn a_page_rolls_about_a_row_a_frame_from_one_row_to_rest() {
+    // A third of a 45-row pane, its half and a third of a 135-row pane, each way, at 60 and 120 frames a second.
+    for (page, cap, hz) in [(15_i32, 45.0, 60_u64), (22, 45.0, 60), (45, 135.0, 60), (-15, 45.0, 60), (-45, 135.0, 60), (15, 45.0, 120)] {
+        let t0 = Instant::now();
+        let mut m = ScrollMotion::default();
+        assert_eq!(m.ask_rows(page, t0, LENGTH), 0);
+        let shown = rows_at(hz, &mut m, t0, cap);
+        assert_eq!(shown.iter().sum::<i32>(), page, "{page} at {hz}: {shown:?}");
+        assert_eq!(shown[0], page.signum(), "the first frame shows one row: {page} at {hz}: {shown:?}");
+        assert!(shown.iter().all(|r| r.abs() <= 2 && r.signum() != -page.signum()), "{page} at {hz}: {shown:?}");
+        // About a row a frame: no fewer frames than rows at 60 a second, and it eases to rest (the later half of the
+        // frames shows no more rows than the earlier).
+        assert!(shown.len() as u64 * 60 / hz >= page.unsigned_abs() as u64, "{page} at {hz}: {shown:?}");
+        let (early, late) = shown.split_at(shown.len() / 2);
+        assert!(early.iter().sum::<i32>().abs() >= late.iter().sum::<i32>().abs(), "{page} at {hz}: {shown:?}");
+        assert!(shown.last().is_some_and(|r| *r != 0) && !m.moving() && m.owed() == 0.0);
+    }
+    // A second page asked while the first rolls keeps the pace.
+    let t0 = Instant::now();
+    let mut m = ScrollMotion::default();
+    m.ask_rows(15, t0, LENGTH);
+    let mut shown: Vec<i32> = (1..=6).map(|i| m.spend_rows(t0 + Duration::from_micros(i * 16_667), 45.0)).collect();
+    let t1 = t0 + Duration::from_micros(6 * 16_667 + 1_000);
+    m.ask_rows(15, t1, LENGTH);
+    shown.extend(rows_at(60, &mut m, t1, 45.0));
+    assert_eq!(shown.iter().sum::<i32>(), 30, "{shown:?}");
+    assert!(shown.iter().all(|r| (0..=2).contains(r)), "{shown:?}");
+}
+
+#[test]
+fn a_wheel_tick_and_a_one_row_step_roll_as_quick_as_before() {
+    for (asked, want) in [(3_i32, vec![1, 1, 1]), (-3, vec![-1, -1, -1]), (1, vec![1]), (-1, vec![-1])] {
+        let t0 = Instant::now();
+        let mut m = ScrollMotion::default();
+        m.ask_rows(asked, t0, LENGTH);
+        assert_eq!(rows_at(60, &mut m, t0, 45.0), want, "{asked}");
+    }
+}
+
+#[test]
+fn a_page_with_a_zero_length_moves_at_once() {
+    for page in [15_i32, -15, 45] {
+        let t0 = Instant::now();
+        let mut m = ScrollMotion::default();
+        assert_eq!(m.ask_rows(page, t0, Duration::ZERO), page);
+        assert!(!m.moving() && m.rows_owed() == 0);
+    }
 }

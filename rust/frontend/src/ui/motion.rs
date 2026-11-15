@@ -1,5 +1,5 @@
 //! The rule of a person's scroll that eases: a distance owed is spent over the next frames on an ease-out cubic and
-//! the last of it lands exactly `length` after the last ask. The owner knows no pane; a pane keeps its own position and
+//! the last of it lands exactly `length` after the last ask. A cell pane's whole rows start no faster than a row a frame. The owner knows no pane; a pane keeps its own position and
 //! edges, asks here for what a person wanted, and adds what each frame spends to its position.
 
 use std::time::{Duration, Instant};
@@ -7,7 +7,15 @@ use std::time::{Duration, Instant};
 /// Float noise in a sum of spends never shows a row the curve has not reached.
 const ROW_EPS: f32 = 1.0e-3;
 
-#[derive(Default)]
+/// The start speed of the cubic ease-out, `1 - (1 - u)^3`, as a multiple of its mean speed: a pixel pane's curve.
+const CUBIC: f32 = 3.0;
+
+/// The slowest start the whole-row curve takes, as a multiple of its mean speed: the least at which it only slows.
+const SLOWEST_START: f32 = 1.5;
+
+/// A whole-row motion starts at no more than a row per frame at 60 frames a second, so a page rolls rather than jumps.
+const ROWS_PER_SECOND: f32 = 60.0;
+
 pub(in crate::ui) struct ScrollMotion {
     /// Distance asked and not yet spent, signed, in the pane's unit: the view comes to rest where the person asked.
     owed: f32,
@@ -18,6 +26,14 @@ pub(in crate::ui) struct ScrollMotion {
     /// A cell pane's whole-row spend: the distance spent minus the rows shown, so the first row shows at the first
     /// frame (the rows run ahead of the curve by less than one) and the asked total still lands.
     carry: f32,
+    /// The curve's speed now, as a multiple of its mean speed over the time left: `CUBIC` for a pixel pane, from
+    /// `SLOWEST_START` to `CUBIC` for whole rows. The curve is the cubic that starts at this speed and ends at rest, and
+    /// what is left of it is again such a cubic, so a spend needs only this and the time left.
+    start: f32,
+}
+
+impl Default for ScrollMotion {
+    fn default() -> Self { Self { owed: 0.0, deadline: None, last: None, carry: 0.0, start: CUBIC } }
 }
 
 impl ScrollMotion {
@@ -27,6 +43,7 @@ impl ScrollMotion {
         if length.is_zero() {
             return delta + self.finish();
         }
+        self.start = CUBIC;
         self.owed += delta;
         if self.owed == 0.0 {
             self.stop();
@@ -53,7 +70,11 @@ impl ScrollMotion {
         }
         let last = self.last.unwrap_or(now).min(now);
         let left = (deadline - now).as_secs_f32() / (deadline - last).as_secs_f32();
-        let keep = self.owed * left * left * left;
+        // The cubic from speed `start` to rest keeps `left^2 * (1 + bend * (1 - left))` of what is owed (`left^3` for
+        // `CUBIC`), and what is left of it starts at the speed computed after.
+        let (bend, gone) = (2.0 - self.start, 1.0 - left);
+        let keep = self.owed * left * left * (1.0 + bend * gone);
+        self.start = ((self.start + 3.0 * bend * gone) / (1.0 + bend * gone)).clamp(SLOWEST_START, CUBIC);
         spent += self.owed - keep;
         self.owed = keep;
         self.last = Some(now);
@@ -75,12 +96,18 @@ impl ScrollMotion {
     }
 
     /// `ask` for a pane that moves in whole rows: what to apply now, which with a zero `length` is the asked rows and
-    /// all that was owed.
+    /// all that was owed. The roll starts no faster than `ROWS_PER_SECOND` and only slows: a short step keeps the cubic
+    /// over `length`, and a longer one starts slower and takes longer than `length`, so a page rolls a row a frame.
     pub(in crate::ui) fn ask_rows(&mut self, delta: i32, now: Instant, length: Duration) -> i32 {
         if length.is_zero() {
             return delta + self.finish_rows();
         }
+        let rows = (self.owed + delta as f32).abs();
+        let length = length.max(Duration::from_secs_f32(SLOWEST_START * rows / ROWS_PER_SECOND));
         self.ask(delta as f32, now, length);
+        if self.moving() {
+            self.start = (ROWS_PER_SECOND * length.as_secs_f32() / rows).clamp(SLOWEST_START, CUBIC);
+        }
         0
     }
 

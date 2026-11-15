@@ -959,10 +959,11 @@ fn the_top_and_the_tail_stop_a_roll() {
     let mut m = ReplModel::default();
     let t0 = Instant::now();
     m.scroll_rows(12, t0, LENGTH);
-    assert!(m.frame_scroll(t0 + FRAME, ROWS).1);
+    assert!(m.frame_scroll(t0 + FRAME * 4, ROWS).1);
     let built = m.scroll();
+    assert!(built > 1, "{built}");
     m.commit_rendered_scroll(built, 1);
-    assert!(!m.frame_scroll(t0 + FRAME * 2, ROWS).1, "a roll into the top stops");
+    assert!(!m.frame_scroll(t0 + FRAME * 5, ROWS).1, "a roll into the top stops");
     assert_eq!(m.scroll(), 1);
 
     // A clamp while the roll moves away from the top keeps it.
