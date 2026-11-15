@@ -644,15 +644,16 @@ impl Api {
     /// A member's display name: `display_name`, then `real_name`, then `name`, from the cache or `users.info`. Any
     /// failure gives the id, and a failure is not remembered.
     pub async fn author_name(&self, user: &str) -> String {
-        self.name_of(user).await.unwrap_or_else(|_| user.to_string())
+        self.name_of(user, false).await.unwrap_or_else(|_| user.to_string())
     }
 
-    /// The name from the cache or `users.info` (`conversations.info` for a channel's id), remembered on a success.
-    async fn name_of(&self, user: &str) -> Result<String, ApiError> {
+    /// The name from the cache or `users.info` (`conversations.info` for a channel's id, `channel_name`'s rule for a
+    /// `mapped` one), remembered on a success.
+    async fn name_of(&self, user: &str, mapped: bool) -> Result<String, ApiError> {
         if let Some(name) = self.names.lock().unwrap().by_id.get(user) {
             return Ok(name.clone());
         }
-        let name = self.lookup(user).await?;
+        let name = self.lookup(user, mapped).await?;
         self.remember(user, &name);
         Ok(name)
     }
@@ -677,7 +678,7 @@ impl Api {
         let found: Mutex<HashMap<String, String>> = Mutex::new(HashMap::new());
         let lookups = async {
             for id in &ids {
-                match self.name_of(id).await {
+                match self.name_of(id, false).await {
                     Ok(name) => {
                         found.lock().unwrap().insert(id.clone(), name);
                     }
@@ -701,7 +702,8 @@ impl Api {
         name_records(records, |id| names.by_id.get(id).cloned());
     }
 
-    /// The name the cache holds for an id (a member's, or a public channel's once a lookup found it), with no request.
+    /// The name the cache holds for an id (a member's, or a channel's once a lookup found it: a public one's, or a mapped
+    /// one's), with no request.
     /// Every name in it went through `clean`, so none is empty or past `MAX_NAME`.
     pub fn cached_name(&self, id: &str) -> Option<String> {
         self.names.lock().unwrap().by_id.get(id).cloned()
@@ -722,7 +724,7 @@ impl Api {
         let failed: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
         let lookups = async {
             for id in &ids {
-                if let Err(e) = self.name_of(id).await {
+                if let Err(e) = self.name_of(id, true).await {
                     failed.lock().unwrap().push((id.to_string(), e.code()));
                     if gives_up(&e) {
                         break;
@@ -739,21 +741,24 @@ impl Api {
         failed
     }
 
-    /// A channel's name from `conversations.info`, cleaned.
-    async fn channel_name(&self, channel: &str) -> Result<String, ApiError> {
+    /// A channel's name from `conversations.info`, cleaned. The one rule of which channels may be named: a mapped channel
+    /// (`mapped`: the hub's owner mapped it to a row, the bot reads it and the drawer shows its messages) is named
+    /// whether public or private; any other (a mention's) only when Slack says it is not private, since a reader may
+    /// not be in a private one and sees its label or id. A mapped private channel's name is in the cache, so a mention of
+    /// it shows the name too.
+    async fn channel_name(&self, channel: &str, mapped: bool) -> Result<String, ApiError> {
         let v = self.read("conversations.info", &[("channel", channel.into())], MAX_BODY).await?;
-        // Only a channel Slack says is not private: a reader may not be in a private one, and shows its label or id.
         let public = v.pointer("/channel/is_private").and_then(Value::as_bool) == Some(false);
         let name = v.pointer("/channel/name").and_then(Value::as_str).map(|s| clean(s, MAX_NAME).0);
-        name.filter(|s| public && !s.is_empty()).ok_or(ApiError::Malformed)
+        name.filter(|s| (public || mapped) && !s.is_empty()).ok_or(ApiError::Malformed)
     }
 
-    async fn lookup(&self, user: &str) -> Result<String, ApiError> {
+    async fn lookup(&self, user: &str, mapped: bool) -> Result<String, ApiError> {
         if !valid_id(user) {
             return Err(ApiError::BadRequest);
         }
         if is_channel_id(user) {
-            return self.channel_name(user).await;
+            return self.channel_name(user, mapped).await;
         }
         let v = self
             .read("users.info", &[("user", user.into())], MAX_BODY)

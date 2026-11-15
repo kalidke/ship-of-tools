@@ -216,7 +216,7 @@ header and Slack's thread summary, and Slack's inline styles (bold, italic, stri
 Slack's rules, not yet compared with the desktop app), and links, mentions on their slug and Slack's special tokens
 shown as Slack shows them, fenced code blocks on one panel and quotes with their bar, and `(edited)` on a message Slack
 marks edited (left out of every copy), and people mentioned by name (the daemon looks the names up, and a live
-change takes them from its cache), and channels by name (public channels only; a private one shows its label or
+change takes them from its cache), and channels by name (a mapped channel, public or private; any other only when public, else its label or
 id), have landed. An `.svg` file now previews as its picture fitted to the pane, and every
 SVG that comes from a file (an `.svg` file, a markdown figure, a page's math, the last in one batch per frame) is drawn
 in a bounded child of the window's own binary (it bounds its memory, CPU, crashes and inherited descriptors before it

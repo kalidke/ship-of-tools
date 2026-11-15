@@ -103,7 +103,7 @@ pub struct ChatResolveReq {
 }
 
 /// Reply to `chat.resolve`. `delivers`: mail may be delivered for the row (a `mail_after` is set). `name`: the channel's
-/// name as the daemon's cache holds it, a public channel's alone (a resolve makes no Slack call); absent, empty, too long or
+/// name as the daemon's cache holds it (a resolve makes no Slack call); absent, empty, too long or
 /// not a string, a reader shows the id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]

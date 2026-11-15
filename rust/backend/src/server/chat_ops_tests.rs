@@ -217,15 +217,15 @@ async fn a_current_row_reaches_slack_through_each_request_op() {
     assert_eq!(calls(&fake), 2, "one call for each of history and post");
 }
 
-/// A fake whose `conversations.info` answers `channel` (public) or never answers (`None`).
-async fn slack_naming(channel: Option<&'static str>) -> FakeSlack {
+/// A fake whose `conversations.info` answers `channel` (private when `private`) or never answers (`None`).
+async fn slack_naming(channel: Option<&'static str>, private: bool) -> FakeSlack {
     FakeSlack::start(Identity::Trusted, move |seen, _| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
             Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
         } else if path.ends_with("/conversations.info") {
             match channel {
-                Some(name) => Reply::json(&json!({"ok": true, "channel": {"name": name, "is_private": false}})),
+                Some(name) => Reply::json(&json!({"ok": true, "channel": {"name": name, "is_private": private}})),
                 None => Reply::Hang,
             }
         } else {
@@ -244,7 +244,7 @@ fn info_calls(fake: &FakeSlack) -> usize {
 /// answered at once, with no `name`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resolve_carries_the_name_the_start_found_and_none_before_it() {
-    let fake = slack_naming(Some("general")).await;
+    let fake = slack_naming(Some("general"), false).await;
     let rig = rig_started(&fake, false).await;
     let mut conn = connect_window(rig.services.clone()).await;
     let target = sot_protocol::ops::ChatTarget { row: rig.alpha.clone(), workspace: "T0AAAA".into(), channel: sot_protocol::ops::ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
@@ -260,12 +260,26 @@ async fn a_resolve_carries_the_name_the_start_found_and_none_before_it() {
     assert_eq!(info_calls(&fake), before, "a resolve asked Slack for the name");
     fake.shutdown().await;
 
-    let fake = slack_naming(None).await;
+    let fake = slack_naming(None, false).await;
     let rig = rig_started(&fake, false).await;
     let mut conn = connect_window(rig.services.clone()).await;
     let resolved = tokio::time::timeout(std::time::Duration::from_secs(5), conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha}))).await.expect("a resolve waited for the name");
     assert_eq!(resolved["state"], "mapped");
     assert!(resolved.get("name").is_none(), "{resolved}");
+    fake.shutdown().await;
+}
+
+/// A mapped channel Slack says is private is named as a public one is: the owner mapped it and the bot reads it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resolve_carries_a_mapped_private_channels_name() {
+    let fake = slack_naming(Some("secret"), true).await;
+    let rig = rig_started(&fake, false).await;
+    let mut conn = connect_window(rig.services.clone()).await;
+    let target = sot_protocol::ops::ChatTarget { row: rig.alpha.clone(), workspace: "T0AAAA".into(), channel: sot_protocol::ops::ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
+    let api = rig.services.chat.admit(&rig.rows, &target).expect("the service runs").api().unwrap();
+    sot_chat::fake_slack::eventually("the start's lookup of both channels", || ["C0AAAA", "C0BBBB"].iter().all(|c| api.cached_name(c).is_some())).await;
+    let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    assert_eq!((resolved["state"].as_str(), resolved["name"].as_str()), (Some("mapped"), Some("secret")), "{resolved}");
     fake.shutdown().await;
 }
 

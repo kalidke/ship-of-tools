@@ -1046,9 +1046,9 @@ async fn a_cached_channel_name_is_read_with_no_request() {
 }
 
 /// The start's lookup of the configured channels' names: distinct channel ids only, at most `MAX_CHANNELS`, each asked
-/// once and cached; a failure is returned with its fixed code, a private channel's included.
+/// once and cached, a mapped private channel's included; a failure is returned with its fixed code.
 #[tokio::test]
-async fn the_configured_channels_names_are_looked_up_once_and_a_failure_is_returned_with_its_code() {
+async fn the_configured_channels_names_are_looked_up_once() {
     bounded(async {
         let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
             if let Some(r) = auth(seen) {
@@ -1061,12 +1061,12 @@ async fn the_configured_channels_names_are_looked_up_once_and_a_failure_is_retur
         let api = new_api(&fake);
         // A channel mapped twice is asked for, and returned, once; a failure is not cached, so a duplicate of one would repeat.
         let mut ids: Vec<String> = ["C0AAA", "C0AAA", "U0USER", "D0DM", "C0PRIV", "G0GRP", "C0PRIV"].map(String::from).to_vec();
-        let failed = api.channel_names(&ids).await;
-        assert_eq!(failed, [("C0PRIV".to_string(), "malformed")], "a private channel gives no name; a user or a DM is not asked for");
+        assert!(api.channel_names(&ids).await.is_empty(), "a user or a DM is not asked for");
         assert_eq!((api.cached_name("C0AAA").as_deref(), api.cached_name("G0GRP").as_deref()), (Some("n-C0AAA"), Some("n-G0GRP")));
+        assert_eq!(api.cached_name("C0PRIV").as_deref(), Some("n-C0PRIV"));
         assert_eq!(calls(&fake, "conversations.info"), 3, "each distinct channel once");
         api.channel_names(&ids).await;
-        assert_eq!(calls(&fake, "conversations.info"), 4, "a cached name is not asked for again, a failed one is");
+        assert_eq!(calls(&fake, "conversations.info"), 3, "a cached name is not asked for again");
 
         // At most `MAX_CHANNELS` distinct channels, in the order given.
         ids = (0..40).map(|i| format!("C0K{i:02}")).collect();
@@ -1074,6 +1074,51 @@ async fn the_configured_channels_names_are_looked_up_once_and_a_failure_is_retur
         assert!(api.channel_names(&ids).await.is_empty());
         assert_eq!(calls(&fake, "conversations.info"), before + crate::watch::MAX_CHANNELS);
         assert!(api.cached_name("C0K31").is_some() && api.cached_name("C0K32").is_none());
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A mapped channel is named public or private, and a failure of one is returned with its code and not remembered; a
+/// mention of a channel that is not mapped keeps the public-only rule, and once a private channel is mapped and named its
+/// name is in the cache, so a mention of it shows the name too.
+#[tokio::test]
+async fn a_mapped_private_channel_is_named_and_an_unmapped_one_is_not() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            match seen.param("channel").unwrap_or_default().as_str() {
+                "C0PRIV" => Reply::json(&json!({"ok": true, "channel": {"name": "secret", "is_private": true}})),
+                "C0OTHER" => Reply::json(&json!({"ok": true, "channel": {"name": "hidden", "is_private": true}})),
+                "C0NOFLAG" => Reply::json(&json!({"ok": true, "channel": {"name": "unsure"}})),
+                "C0EMPTY" => Reply::json(&json!({"ok": true, "channel": {"name": " \u{7} ", "is_private": true}})),
+                "C0GONE" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
+                _ => Reply::json(&json!({"ok": true, "channel": {"name": "open", "is_private": false}})),
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        // A mention reads before the mapped lookup: the private channel gets no name, and is asked for again by the lookup.
+        let mut records = vec![member_record("U0AUTH")];
+        records[0].text = "<#C0PRIV> <#C0OTHER> <#C0NOFLAG>".into();
+        api.fill_names(&mut records).await;
+        assert!(records[0].names.is_empty(), "{:?}", records[0].names);
+        assert!(api.cached_name("C0PRIV").is_none() && api.cached_name("C0OTHER").is_none());
+        let ids: Vec<String> = ["C0PRIV", "C0PUB", "C0NOFLAG", "C0EMPTY", "C0GONE"].map(String::from).to_vec();
+        let failed = api.channel_names(&ids).await;
+        assert_eq!(failed, [("C0EMPTY".to_string(), "malformed"), ("C0GONE".to_string(), "slack")], "a name nothing is left of is no name");
+        assert_eq!(
+            (api.cached_name("C0PRIV").as_deref(), api.cached_name("C0PUB").as_deref(), api.cached_name("C0NOFLAG").as_deref()),
+            (Some("secret"), Some("open"), Some("unsure")),
+            "a mapped channel is named whether Slack says it is private, public or nothing"
+        );
+        assert!(api.cached_name("C0OTHER").is_none() && api.cached_name("C0EMPTY").is_none(), "only the mapped channels were named");
+        // The unmapped private channel still gets none; the mapped one's name, now cached, shows on a mention of it.
+        api.fill_names(&mut records).await;
+        assert_eq!(named(&records[0]), ["C0PRIV", "C0NOFLAG"]);
+        assert_eq!(records[0].names[0].name, "secret");
         fake.shutdown().await;
     })
     .await;
