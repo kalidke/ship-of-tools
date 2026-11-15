@@ -562,12 +562,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   move (same mode, workspace and tree generation, another cursor) arms the deadline; boot, loads, restores and
   switches move the baseline without arming. The draw publishes the overflowing rows it collected; the idle tick
   expires the deadline once, with a repaint.
-- The nav pane's list (`chrome::nav_body`): the status lines (at most half the list's rows, `status_spans`; an empty
-  status is its label's one row) and a spacer are pinned at its top, and `nav_pinned_rows` (the lease notice, the
-  not-ended or leaving line, the open prompt) at its foot; the tree, then the annotation and key lines, scroll in the
-  rows between, which keep at least one row, with the cursor (the row the tree hands over as selected) held in the
-  middle third of them; the spill's segments are the tree rows drawn there, at the rows they are drawn on
-  (`chrome::view::tests::a_long_tree_keeps_the_status_on_the_panes_first_rows_and_draws_the_cursor`,
+- The nav pane's list (`chrome::nav_body`): the status lines (half the list's rows but never fewer than three,
+  `status_spans`; an empty status is its label's one row) and a spacer are pinned at its top, cut from their foot to
+  leave the tree one row, and `nav_pinned_rows` (the lease notice, the not-ended or leaving line, the open prompt) at
+  its foot; the tree, then the annotation and key lines, scroll in the rows between, with the cursor (the row the tree
+  hands over as selected, so the picker's header rows count) held in the middle third of them and drawn on every
+  frame, the scroll a frame ends on standing on the next; the spill's segments are the tree rows drawn there, at the
+  rows they are drawn on (`chrome::view::tests::a_long_tree_keeps_the_status_on_the_panes_first_rows_and_draws_the_cursor`,
+  `the_cursor_is_drawn_every_frame_and_the_scroll_settles`, `the_pickers_cursor_is_drawn_under_its_own_header_rows`,
   `the_spill_names_the_tree_rows_drawn_where_they_are_drawn`, `a_short_tree_sits_under_the_status_as_before`). No
   pointer event maps to a nav row: a press selects text only in the agent pane, the preview and the Chat, and a wheel
   over the focused nav does nothing (`route_wheel_rows`).

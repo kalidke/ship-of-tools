@@ -38,10 +38,11 @@ impl ChromeView<'_> {
         // leaving line once presented (`Leaving::presented`).
         owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
         leaving_drawn = line_whole;
-        // The status takes at most half the list's rows (`status_spans`),
-        // and with the spacer under it is pinned at the list's top, so no
-        // scroll hides it; the tree scrolls in the rows below, of which it
-        // keeps at least one. An empty status is its label's one row.
+        // The status takes half the list's rows but never fewer than three
+        // (`status_spans`), and with the spacer under it is pinned at the
+        // list's top, so no scroll hides it; the tree scrolls in the rows
+        // below, and the header is cut from its foot to leave the tree
+        // one. An empty status is its label's one row.
         let mut header = status_spans(&status, nav_w, nav_list_h / 2);
         header.push(RtLine::from(""));
         let header_h = header.len().min(nav_list_h.saturating_sub(1));
@@ -79,11 +80,13 @@ impl ChromeView<'_> {
                 let min_view = scrolloff;
                 // last comfort row in the viewport (inclusive)
                 let max_view = nav_inner_h.saturating_sub(scrolloff).saturating_sub(1);
-                let view_pos = cursor_pos.saturating_sub(nav_scroll as usize);
-                if view_pos < min_view {
+                // Compared in body rows, so a cursor above the view is
+                // seen above it even when the zone's top is the view's.
+                let (top, bottom) = (nav_scroll as usize + min_view, nav_scroll as usize + max_view);
+                if cursor_pos < top {
                     nav_scroll = (cursor_pos.saturating_sub(min_view)) as u16;
-                } else if view_pos > max_view {
-                    nav_scroll = (cursor_pos.saturating_sub(max_view)) as u16;
+                } else if cursor_pos > bottom {
+                    nav_scroll = (cursor_pos - max_view) as u16;
                 }
                 let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
                 if nav_scroll > max_scroll {
@@ -106,11 +109,10 @@ impl ChromeView<'_> {
 
     fn nav_tree_rows(&self, body_lines: &mut Vec<RtLine<'static>>, tree_lines: Vec<NavRow>) -> (usize, usize) {
         let ChromeView { concept_status, last_key, .. } = *self;
-        // Exact tree-row span of body_lines, captured AT ASSEMBLY
-        // (codex round 4: the header is not a constant — Files/
-        // Modules carry 4 chrome lines, Sessions 5, the picker 3 —
-        // so any fixed offset either spills chrome or misses bottom
-        // rows). The picker's own header row lives inside
+        // Exact tree-row span of body_lines, captured AT ASSEMBLY:
+        // it starts after the "(no tree yet)" line when there is one,
+        // and the annotation and key lines after it never spill. The
+        // picker's own header row lives inside
         // tree_lines and stays spill-eligible on purpose: floating
         // the full picker path is exactly what the spill is for.
         let tree_rows_body_start = body_lines.len();
@@ -272,8 +274,8 @@ impl ChromeView<'_> {
         // row (truncated to the overlay's reach cap) so the render-
         // pass tail can float it over the preview's left edge.
         // TREE rows only — the assembly-captured span above: the
-        // trailing chrome lines (concept/key) never spill, and the
-        // pinned status is outside the body (codex review). Widths are terminal
+        // trailing chrome lines (concept/key) never spill (codex
+        // review); the pinned status is outside the body. Widths are terminal
         // CELLS via unicode-width, so CJK/emoji names measure and
         // truncate exactly (codex review).
         if nav_spill_active && body_rect.width > 0 && preview_rect.width > 0 {

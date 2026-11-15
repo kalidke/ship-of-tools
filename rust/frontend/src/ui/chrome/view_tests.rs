@@ -108,13 +108,21 @@ fn paint_chrome_chat(
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16) {
     let (rows, scroll, area, window, cells, foot, ..) =
-        paint_chrome_nav(size, status, tree, repl, chat_empty, chat_compose, Mode::default(), false);
+        paint_chrome_nav(size, status, tree, repl, chat_empty, chat_compose, NavFrame::default());
     (rows, scroll, area, window, cells, foot)
 }
 
-/// `paint_chrome_chat` in nav `mode`, with the nav spill `spill_active`, and the nav pane's rect and the spill's
-/// segments drawn besides.
-#[allow(clippy::too_many_arguments, reason = "a test fixture spelling out one frame's inputs")]
+/// What a frame of the nav pane starts from: the spill on or off, the nav scroll, and, for `alone: Some(h)`, the
+/// nav pane painted alone, 36 columns by `h` rows with no prompt at its foot, so its list is `h` rows.
+#[derive(Clone, Copy, Default)]
+struct NavFrame {
+    spill: bool,
+    scroll: u16,
+    alone: Option<u16>,
+}
+
+/// `paint_chrome_chat` from `nav`, and the nav pane's rect, the spill's segments and the nav scroll the frame ends
+/// on besides.
 fn paint_chrome_nav(
     size: (u16, u16),
     status: &str,
@@ -122,13 +130,12 @@ fn paint_chrome_nav(
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
     chat_empty: bool,
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
-    mode: Mode,
-    spill_active: bool,
-) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>) {
+    nav: NavFrame,
+) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
     let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     let status = status.to_string();
-    let prompt = Some(("delete AA05\rBB05? [y/N]".to_string(), String::new()));
+    let prompt = nav.alone.is_none().then(|| ("delete AA05\rBB05? [y/N]".to_string(), String::new()));
     let none: Option<String> = None;
     let concept = "c AA06\nBB06".to_string();
     let preview_name = Some(format!("dir/AA07\nBB07{}.jl", "\nzz".repeat(60)));
@@ -148,7 +155,7 @@ fn paint_chrome_nav(
         maximize_slot: None,
         nav_logo_row: false,
         focus: PaneFocus::NavTree,
-        mode,
+        mode: Mode::default(),
         nav_prompt_line: &prompt,
         lease_notice: None,
         nav_line: &none,
@@ -158,7 +165,7 @@ fn paint_chrome_nav(
         contrast_dim: false,
         concept_status: &concept,
         last_key: &none,
-        nav_spill_active: spill_active,
+        nav_spill_active: nav.spill,
         preview_name: &preview_name,
         pinned_preview_node_id: &pinned,
         drawer,
@@ -186,7 +193,7 @@ fn paint_chrome_nav(
         term_screen: None,
         owed_drawn: false,
         leaving_drawn: false,
-        nav_scroll: 0,
+        nav_scroll: nav.scroll,
         preview_cells: Default::default(),
         repl_cells: Default::default(),
         new_pane_rects: PaneRects::default(),
@@ -196,16 +203,23 @@ fn paint_chrome_nav(
         pty_size_observed: (0, 0),
         term_size_observed: (0, 0),
     };
-    let (w, h) = size;
+    let (w, h) = nav.alone.map_or(size, |h| (36, h));
     let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
     let mut segs = Vec::new();
-    term.draw(|frame| view.paint(frame, tree, &mut segs))
-        .unwrap();
+    match nav.alone {
+        None => term.draw(|frame| view.paint(frame, tree, &mut segs)).unwrap(),
+        Some(_) => term.draw(|frame| {
+            let area = frame.area();
+            view.new_pane_rects.nav = area;
+            let body = view.nav_body(area, ratatui::layout::Rect::default(), tree, &mut segs);
+            render_nav_widgets(frame, body, area, false);
+        }).unwrap(),
+    };
     let buf = term.backend().buffer();
     let rows = (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
-    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window, view.repl_cells, view.chat_foot, view.new_pane_rects.nav, segs)
+    (rows, view.new_repl_scroll, view.repl_scrollback_cells, view.repl_window, view.repl_cells, view.chat_foot, view.new_pane_rects.nav, segs, view.nav_scroll)
 }
 
 #[test]
@@ -384,25 +398,31 @@ fn file_rows(n: usize, cursor: usize, pad: usize) -> Vec<NavRow> {
         .collect()
 }
 
-fn paint_nav(size: (u16, u16), status: &str, tree: Vec<NavRow>, mode: Mode, spill: bool) -> (Vec<String>, ratatui::layout::Rect, Vec<NavSpillSeg>) {
+/// One frame of the nav pane from `scroll`: the rows painted, the pane's rect, the spill's segments and the scroll
+/// the frame ends on. The nav rows are mode-independent (a mode reaches them only through the Sessions contrast
+/// lever, off here), so the fixture paints in the default mode.
+fn paint_nav(size: (u16, u16), status: &str, tree: Vec<NavRow>, nav: NavFrame) -> (Vec<String>, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let repl = (String::new(), Vec::new(), 0, DrawerContent::Repl);
-    let (rows, .., nav, segs) = paint_chrome_nav(size, status, tree, repl, false, None, mode, spill);
-    (rows, nav, segs)
+    let (rows, .., rect, segs, scroll) = paint_chrome_nav(size, status, tree, repl, false, None, nav);
+    (rows, rect, segs, scroll)
+}
+
+/// The nav pane alone, its list `list` rows, from `scroll`.
+fn paint_list(list: u16, status: &str, tree: Vec<NavRow>, scroll: u16) -> (Vec<String>, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
+    paint_nav((0, 0), status, tree, NavFrame { scroll, alone: Some(list), ..NavFrame::default() })
 }
 
 /// With a tree longer than the pane and the cursor on its last row, the status's lines and the spacer under them
-/// are the pane's first rows and the cursor's row is drawn beneath them, in every tree mode.
+/// are the pane's first rows and the cursor's row is drawn beneath them.
 #[test]
 fn a_long_tree_keeps_the_status_on_the_panes_first_rows_and_draws_the_cursor() {
-    for mode in [Mode::Files, Mode::Modules, Mode::Sessions] {
-        for size in [(200, 60), (120, 30)] {
-            let (rows, nav, _) = paint_nav(size, "ready\nsecond line", file_rows(300, 299, 0), mode, false);
-            let shown = nav_cells(&rows, nav);
-            assert_eq!(&shown[..3], ["status: ready", "second line", ""], "{mode:?} {size:?}: {shown:#?}");
-            let cursor = shown.iter().position(|r| r == "> · file299.jl");
-            assert!(cursor.is_some_and(|y| y > 2), "{mode:?} {size:?}: the cursor's row is not drawn: {shown:#?}");
-            assert!(!shown[3..].iter().any(|r| r.starts_with("status:")), "{mode:?} {size:?}: a second status");
-        }
+    for size in [(200, 60), (120, 30)] {
+        let (rows, nav, ..) = paint_nav(size, "ready\nsecond line", file_rows(300, 299, 0), NavFrame::default());
+        let shown = nav_cells(&rows, nav);
+        assert_eq!(&shown[..3], ["status: ready", "second line", ""], "{size:?}: {shown:#?}");
+        let cursor = shown.iter().position(|r| r == "> · file299.jl");
+        assert!(cursor.is_some_and(|y| y > 2), "{size:?}: the cursor's row is not drawn: {shown:#?}");
+        assert!(!shown[3..].iter().any(|r| r.starts_with("status:")), "{size:?}: a second status");
     }
 }
 
@@ -410,21 +430,19 @@ fn a_long_tree_keeps_the_status_on_the_panes_first_rows_and_draws_the_cursor() {
 /// row, whatever the scroll.
 #[test]
 fn the_spill_names_the_tree_rows_drawn_where_they_are_drawn() {
-    for mode in [Mode::Files, Mode::Sessions] {
-        for cursor in [0, 40, 150, 299] {
-            let (rows, nav, segs) = paint_nav((200, 60), "ready\nsecond line", file_rows(300, cursor, 80), mode, true);
-            let shown = nav_cells(&rows, nav);
-            let drawn: Vec<u16> = (0..shown.len()).filter(|&y| shown[y].contains(" · file")).map(|y| nav.y + y as u16).collect();
-            let named: Vec<u16> = segs.iter().map(|s| s.row).collect();
-            assert!(!drawn.is_empty() && named == drawn, "{mode:?} {cursor}: segments {named:?}, drawn tree rows {drawn:?}");
-            for seg in &segs {
-                let cells = &shown[(seg.row - nav.y) as usize];
-                assert_eq!(seg.x, nav.x);
-                assert!(seg.text.starts_with(cells.as_str()), "{mode:?} {cursor}: {:?} over {cells:?}", seg.text);
-            }
-            let cursor_row = format!("> · file{cursor:03}");
-            assert!(shown.iter().any(|r| r.starts_with(&cursor_row)), "{mode:?} {cursor}: cursor not drawn");
+    for cursor in [0, 40, 150, 299] {
+        let (rows, nav, segs, _) = paint_nav((200, 60), "ready\nsecond line", file_rows(300, cursor, 80), NavFrame { spill: true, ..NavFrame::default() });
+        let shown = nav_cells(&rows, nav);
+        let drawn: Vec<u16> = (0..shown.len()).filter(|&y| shown[y].contains(" · file")).map(|y| nav.y + y as u16).collect();
+        let named: Vec<u16> = segs.iter().map(|s| s.row).collect();
+        assert!(!drawn.is_empty() && named == drawn, "{cursor}: segments {named:?}, drawn tree rows {drawn:?}");
+        for seg in &segs {
+            let cells = &shown[(seg.row - nav.y) as usize];
+            assert_eq!(seg.x, nav.x);
+            assert!(seg.text.starts_with(cells.as_str()), "{cursor}: {:?} over {cells:?}", seg.text);
         }
+        let cursor_row = format!("> · file{cursor:03}");
+        assert!(shown.iter().any(|r| r.starts_with(&cursor_row)), "{cursor}: cursor not drawn");
     }
 }
 
@@ -433,7 +451,7 @@ fn the_spill_names_the_tree_rows_drawn_where_they_are_drawn() {
 #[test]
 fn a_short_tree_sits_under_the_status_as_before() {
     for (status, first) in [("ready", "status: ready"), ("", "status:")] {
-        let (rows, nav, _) = paint_nav((200, 60), status, file_rows(5, 4, 0), Mode::Files, false);
+        let (rows, nav, ..) = paint_nav((200, 60), status, file_rows(5, 4, 0), NavFrame::default());
         let shown = nav_cells(&rows, nav);
         let want = [first, "", "  · file000.jl", "  · file001.jl", "  · file002.jl", "  · file003.jl", "> · file004.jl", "", "c AA06 ⏎ BB06", "", "key: (none)"];
         assert_eq!(&shown[..want.len()], want, "{status:?}: {shown:#?}");
@@ -446,11 +464,73 @@ fn a_short_tree_sits_under_the_status_as_before() {
 fn a_short_pane_keeps_a_tree_row_for_the_cursor() {
     for h in 8..=14 {
         for cursor in [0, 150, 299] {
-            let (rows, nav, _) = paint_nav((200, h), "ready\nsecond line", file_rows(300, cursor, 0), Mode::Files, false);
+            let (rows, nav, ..) = paint_nav((200, h), "ready\nsecond line", file_rows(300, cursor, 0), NavFrame::default());
             let shown = nav_cells(&rows, nav);
             let cursor_row = format!("> · file{cursor:03}.jl");
             assert!(shown.iter().any(|r| *r == cursor_row), "{h} {cursor}: {shown:#?}");
             assert!(shown[0].starts_with("status: ready") || shown[0] == cursor_row, "{h} {cursor}: {shown:#?}");
+        }
+    }
+}
+
+/// Frame to frame, with the scroll carried as the window carries it: over list heights 1 to 20, statuses of 0, 1
+/// and 3 lines, stale starting scrolls (an older build's, past the end) and a cursor that walks down, up and
+/// jumps, every frame draws the cursor (or, with no cursor, the tree's first row), and painting again from the
+/// scroll a frame ends on ends on that same scroll.
+#[test]
+fn the_cursor_is_drawn_every_frame_and_the_scroll_settles() {
+    let walk = [Some(30), Some(31), Some(32), Some(31), Some(30), Some(29), Some(0), Some(1), Some(59), Some(58), None, Some(0), Some(59), Some(0)];
+    for list in 1..=20u16 {
+        for status in ["", "ready", "one\ntwo\nthree"] {
+            for start in [0u16, 5, 30, u16::MAX] {
+                let mut scroll = start;
+                for (step, cursor) in walk.iter().enumerate() {
+                    let tree = file_rows(60, cursor.unwrap_or(usize::MAX), 0);
+                    let (rows, nav, _, end) = paint_list(list, status, tree.clone(), scroll);
+                    let shown = nav_cells(&rows, nav);
+                    let want = match cursor {
+                        Some(c) => format!("> · file{c:03}.jl"),
+                        None => "  · file000.jl".to_string(),
+                    };
+                    let at = format!("list {list}, status {status:?}, start {start}, step {step} ({cursor:?}), scroll {scroll} -> {end}");
+                    assert!(shown.iter().any(|r| *r == want), "{at}: {want:?} not drawn in {shown:#?}");
+                    let (.., again) = paint_list(list, status, tree, end);
+                    assert_eq!(again, end, "{at}: a repaint moved the scroll");
+                    scroll = end;
+                }
+            }
+        }
+    }
+}
+
+/// The workspace picker's rows (its path, the two legend rows, the account row when an account is shown, then the
+/// entries) sit ahead of its cursor in the scrolled body: the cursor's entry is drawn wherever it is, in a list of
+/// one row up, frame to frame.
+#[test]
+fn the_pickers_cursor_is_drawn_under_its_own_header_rows() {
+    let row = |text: String, selected: bool, attention: bool| -> NavRow { (text, selected, false, false, None, 0.0, false, attention) };
+    let picker = |cursor: usize, account: bool| -> Vec<NavRow> {
+        let mut rows = vec![
+            row("workspace picker · /home/dir".into(), false, false),
+            row("  → into · ← up · ↓ move · Esc cancel".into(), false, false),
+            row("  n Claude · b bare · x Codex".into(), false, false),
+        ];
+        if account {
+            rows.push(row("  account: work · a next".into(), false, true));
+        }
+        rows.extend((0..300).map(|i| row(format!("{} ▸ dir{i:03}/", if i == cursor { ">" } else { " " }), i == cursor, false)));
+        rows
+    };
+    for list in 1..=8u16 {
+        for account in [false, true] {
+            let mut scroll = 0;
+            for cursor in [0, 1, 2, 150, 299, 0] {
+                let (rows, nav, _, end) = paint_list(list, "ready", picker(cursor, account), scroll);
+                let shown = nav_cells(&rows, nav);
+                let want = format!("> ▸ dir{cursor:03}/");
+                assert!(shown.iter().any(|r| *r == want), "list {list}, account {account}, cursor {cursor}: {shown:#?}");
+                scroll = end;
+            }
         }
     }
 }
