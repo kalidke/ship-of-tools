@@ -212,6 +212,11 @@ Each session runs Claude Code, Codex or a plain shell. A session belongs to a
 workspace on the **backend daemon**, so it sits alongside project state and
 **survives a frontend restart**.
 
+A Claude Code session in a row runs Claude Code's classic renderer on the main
+screen (its row starts it with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`), so the
+window's own scroll and selection of the agent pane work; this wins over a
+`tui` setting, so the fullscreen renderer cannot be chosen in a row.
+
 Several sessions run concurrently — one per workspace/session, across machines — coordinated over the
 [inter-agent communication system](messaging.md). You start and switch them
 from [Sessions mode](#The-Navigation-Pane) (`s`); cycle the active workspace with
