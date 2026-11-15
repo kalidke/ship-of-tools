@@ -2371,3 +2371,16 @@ A landing's record goes here, with its measured times; the package page holds on
   1, 3, 10 and 30 s, since a resolve right after the daemon's start can come before its lookup ends. Where the minutes
   went: the first commit 6, its diff read; the race confirmed by reading and fixed in a second commit 9, its diff read;
   one scoped gate 3. The candidate's cut waited on it, at the maintainer's word.
+- v0.7.1-rc.7, 2026-11-14, on the maintainer's word (the seventh candidate, carrying the two defects his first use of
+  rc.6 found: SMOOTH-PAGE-JUMPS and CHAT-PRIVATE-CHANNEL-NAME with CHAT-RESOLVE-BEFORE-NAME): the full local gate at
+  ed6e6c4e1 passed (done 21:21); the cut at about 21:23 from a fresh clone (release 6a4cc512e, the line's next stamp
+  9f11e5156 after it); the release run green on every leg, the draft ready about 21:44. The hub's install by archive
+  passed at 21:46, its 31 rows unchanged, and its chat start found the mapped private channel's name. One window
+  computer's session installed it by archive and passed (from rc.6, 21:51); the other window computer was not on the
+  hub at the restart (its window last connected at 20:49), so its install waits for it. Named consumer: the
+  maintainer; named check: a page in the agent pane, the Terminal and the REPL, the Chat title's name, and the rest of
+  his rc.6 list. Comm unchanged since rc.6.
+- The Linux CI job of the shards sotd-a to inst runs as two (CI-LINUX-SOTD-SHARD-BOUND), 2026-11-14, fixing forward a
+  hosted red on main that was a step bound, not a test: the job took 270 s and 274 s of its 300 s bound on two runs and
+  309 s on a third; split, its halves took 156 s and 128 s on the next run. One line of the shard table, written by the
+  session; the full local gate passed (6c668c93d, about 12 minutes from the red's reading to main).
