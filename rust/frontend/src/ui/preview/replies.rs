@@ -6,6 +6,16 @@ use crate::ui::*;
 use super::requests::{self, RequestReplyContext, PreviewRequests};
 
 impl State {
+    /// The preview's own message: on the status line and boxed over the preview pane, always both (the box is
+    /// `PreviewNotice`'s, drawn with the overlays). Every status write the preview makes for a person's action in it, or
+    /// for a reply about what it shows, goes through here.
+    pub(in crate::ui) fn preview_says(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.preview_notice.show(text.clone(), std::time::Instant::now());
+        self.status.set(text);
+        self.window.request_redraw();
+    }
+
     pub(crate) fn clear_hello_refused(&mut self, event_host: HostKey) {
         // ADR 0030 §2: a clean hello means the refusal (a protocol skew
         // or an account refusal, if any) is resolved — clear the
@@ -135,7 +145,7 @@ impl State {
         // consume the marker and label an unrelated image "saved".
         let scale_saved = self.preview_requests.settle_scale_save(node_id.as_deref());
         if let Some(raw) = scale_saved {
-            self.status.set(if self.preview_source.scale().is_some() {
+            self.preview_says(if self.preview_source.scale().is_some() {
                 format!("pixel size {raw} nm · saved")
             } else {
                 // Reply landed but carried no scale — report that
@@ -484,7 +494,7 @@ impl State {
             .and_then(|id| id.rsplit(['/', '\\']).next())
             .unwrap_or("preview")
             .to_string();
-        self.status.set(format!("preview failed · {name}: {message}"));
+        self.preview_says(format!("preview failed · {name}: {message}"));
         self.preview_requests.refuse(node_id.as_deref());
         if self.preview_requests.fail_page_reply() {
             requests::continue_page_request(self);

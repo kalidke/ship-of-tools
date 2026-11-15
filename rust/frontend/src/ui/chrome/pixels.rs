@@ -103,19 +103,26 @@ impl State {
         let prepared = self.layout_help.prepare_peek(dialog.is_some(), inputs, &self.bindings);
         if prepared.clear_spill { self.nav_spill.clear_segments(); }
         prepared.layout.apply(self, None);
-        if let Some(overlay) = prepared.overlay {
-            help_opacity = overlay.opacity;
-            let content = overlay.lines;
+        // The help peek's box, else (the peek is the person's latest ask, and no close dialog covers the panes) the
+        // preview's notice, over the preview pane: both are drawn as this one backed box.
+        let boxed = match prepared.overlay {
+            Some(o) => Some((ratatui::layout::Rect { height: o.lines.len() as u16 + 2, ..rect }, o.lines, o.opacity, true)),
+            None if dialog.is_none() => self.preview_notice.boxed(self.pane_rects.preview, std::time::Instant::now())
+                .map(|n| (n.rect, n.lines, n.opacity, false)),
+            None => None,
+        };
+        if let Some((cells, content, opacity, titled)) = boxed {
+            help_opacity = opacity;
             let px = ScreenRect {
-                x: self.canvas.origin_x() + rect.x as f32 * self.canvas.cell_w(),
-                y: self.canvas.origin_y() + rect.y as f32 * self.canvas.cell_h(),
-                w: rect.width as f32 * self.canvas.cell_w(),
-                h: (content.len() as f32 + 2.0) * self.canvas.cell_h(),
+                x: self.canvas.origin_x() + cells.x as f32 * self.canvas.cell_w(),
+                y: self.canvas.origin_y() + cells.y as f32 * self.canvas.cell_h(),
+                w: cells.width as f32 * self.canvas.cell_w(),
+                h: cells.height as f32 * self.canvas.cell_h(),
             };
             help_overlay_rect = Some(px);
             help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::ui::render::text::Line {
                 text, x: px.x + 2.0 * self.canvas.cell_w(), y: px.y + (i as f32 + 1.0) * self.canvas.cell_h(),
-                color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
+                color: Some((167, 222, 231)), bold: titled && i == 0, italic: false, dim: false,
             }).collect();
             let alpha = (help_opacity * 245.0).round() as u8;
             self.brushes.ensure_help_back(alpha, &self.gpu)?;

@@ -208,7 +208,7 @@ impl super::super::State {
 
     pub(in crate::ui) fn on_selection_reply(&mut self, host: &HostKey, req: &SelectionSetReq, reply: SelectionReply) {
         if let Some(line) = self.selection_share.on_reply(host, req, reply) {
-            self.status.set(line);
+            self.preview_says(line);
         }
     }
 }

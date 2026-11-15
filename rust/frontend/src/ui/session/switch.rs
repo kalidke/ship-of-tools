@@ -256,6 +256,8 @@ impl State {
         // the ENTERING workspace's cursor-follow preview until the user
         // moved the cursor (blank preview on switch).
         self.preview_requests.leave_row();
+        // A notice is about the row left.
+        self.preview_notice.clear();
         if let Some(target) = session_name {
             // The selected host was just set to `host` above, before
             // anything in this function fired a request — correct BY

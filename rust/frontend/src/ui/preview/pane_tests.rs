@@ -308,6 +308,7 @@ impl State {
         self.frames_until(|state| state.status.text().starts_with("svg not drawn: "), "the status line never said why")?;
         anyhow::ensure!(!self.raster.is_shown(), "a broken SVG drew a raster");
         anyhow::ensure!(self.status.text().contains("svg parse failed"), "the status line says `{}`", self.status.text());
+        anyhow::ensure!(self.preview_notice.text() == Some(self.status.text()), "the box says `{:?}`, not what the status line does", self.preview_notice.text());
         Ok(())
     }
 

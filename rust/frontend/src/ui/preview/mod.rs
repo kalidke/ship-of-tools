@@ -13,6 +13,7 @@ mod concept_follow;
 mod fetch;
 pub(in crate::ui) mod keys;
 pub(in crate::ui) mod layout;
+pub(in crate::ui) mod notice;
 mod open;
 mod replies;
 pub(in crate::ui) mod requests;

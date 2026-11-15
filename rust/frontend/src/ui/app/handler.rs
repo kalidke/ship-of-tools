@@ -234,6 +234,9 @@ impl ApplicationHandler for App {
         if state.layout_help.expire_peek(std::time::Instant::now) {
             state.window.request_redraw();
         }
+        if state.preview_notice.expire(std::time::Instant::now()) {
+            state.window.request_redraw();
+        }
         // The chat's next watch, once its instant has passed before the loop went to sleep: the redraw's tick sends it.
         if has_passed(state.chat.next_ask(), std::time::Instant::now()) {
             state.window.request_redraw();
@@ -298,10 +301,12 @@ impl ApplicationHandler for App {
             // over the fade, smooth enough to read as a blink) only while a
             // flash is live; `redraw` prunes finished flashes so we fall back
             // to the 1s idle tick automatically once none remain.
-            let fading_help = state.layout_help.peek_fading(std::time::Instant::now);
+            let fading_help = state.layout_help.peek_fading(std::time::Instant::now)
+                || state.preview_notice.fading(std::time::Instant::now());
             let interval = idle_interval(fading_help, state.row_presentation.has_flashes());
             let fade_at = earliest([
                 state.layout_help.peek_deadline(),
+                state.preview_notice.deadline(),
                 state.focus_prompts.hint_deadline(),
                 state.reply_bar.arm_deadline(std::time::Instant::now()),
                 state.chat.next_ask(),
@@ -382,7 +387,7 @@ fn idle_interval(fading_help: bool, flashes: bool) -> std::time::Duration {
     else { std::time::Duration::from_secs(1) }
 }
 
-/// The earliest of the instants a part of the window wants a frame at while it is idle: a help peek's fade, the quit hint's
+/// The earliest of the instants a part of the window wants a frame at while it is idle: a help peek's or a preview notice's fade, the quit hint's
 /// expiry, the reply bar's arm moment and the chat's next watch.
 fn earliest(deadlines: impl IntoIterator<Item = Option<std::time::Instant>>) -> Option<std::time::Instant> {
     deadlines.into_iter().flatten().min()

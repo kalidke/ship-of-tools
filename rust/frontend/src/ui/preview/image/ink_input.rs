@@ -28,7 +28,7 @@ impl State {
         let Some(note) = self.ink.left_press(shown.as_ref(), p, self.ink_src(shown.as_ref())) else { return false };
         self.set_focus(PaneFocus::Preview);
         if let Some(text) = note {
-            self.status.set(text);
+            self.preview_says(text);
         }
         self.window.request_redraw();
         true
@@ -42,7 +42,7 @@ impl State {
         self.ink_sync();
         let (shown, p) = (self.shown_ink_base(), self.pointer.at_px());
         if let Some(text) = self.ink.moved(shown.as_ref(), p) {
-            self.status.set(text.to_string());
+            self.preview_says(text.to_string());
         }
         self.window.request_redraw();
     }
@@ -70,17 +70,30 @@ impl State {
     }
 }
 
-/// Why `d` finds no base to draw on. The key resolves only while a picture is shown, so a picture whose node is not an
-/// image file (an SVG, a PDF page, a video poster, a plugin's picture) is one the daemon cannot compose into the agent's:
-/// the line names the two ways to draw now; `canvas` is the bound label of `preview.canvas`. Otherwise the picture is an
-/// image file and the base is held back by the refused-hello overlay, and "no image" is all there is to say.
-fn no_base_line(raster_shown: bool, node: Option<&str>, canvas: &str) -> String {
+/// Why `d` finds no base to draw on, in words for the person. The key resolves only while a picture is shown, so a
+/// picture whose node is not an image file (an SVG, a PDF page, a video poster, a plugin's picture) is one the daemon
+/// cannot compose into the agent's: the words say what drawing is for and the two ways to draw now; `canvas` is the
+/// bound label of `preview.canvas`. Under the refused-hello overlay the connection notice is why, and with no picture
+/// shown there is nothing to draw on.
+fn no_base_line(refused: bool, raster_shown: bool, node: Option<&str>, canvas: &str) -> String {
     match node {
-        Some(n) if raster_shown && !State::is_image_node_id(n) => {
-            format!("drawing: only image files can be drawn on; open a PNG of it, or press {canvas} for a blank canvas")
-        }
-        _ => "drawing: no image to draw on".to_string(),
+        _ if refused => "Can't draw while the connection notice covers the preview.".to_string(),
+        Some(n) if raster_shown && !State::is_image_node_id(n) => format!(
+            "Can't draw on {}. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
+             which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press {canvas} for a blank canvas.",
+            picture_name(n)),
+        _ => "Can't draw here: no picture is shown.".to_string(),
     }
+}
+
+/// What the person calls the picture a non-image node shows, by its extension.
+fn picture_name(node: &str) -> &'static str {
+    let lower = node.to_ascii_lowercase();
+    let ends = |exts: &[&str]| exts.iter().any(|e| lower.ends_with(e));
+    if ends(&[".svg"]) { "this SVG" }
+    else if ends(&[".pdf"]) { "this PDF page" }
+    else if ends(&[".mp4", ".webm", ".mov", ".mkv", ".m4v"]) { "this video frame" }
+    else { "this picture" }
 }
 
 pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
@@ -92,7 +105,8 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
     match key.action {
         Some(Action::PreviewDraw) if shown.is_none() => {
             let canvas = state.bindings.first_label(Action::PreviewCanvas);
-            state.status.set(no_base_line(state.raster.is_shown(), state.raster.node(), &canvas));
+            let refused = state.hello_refused.refused(state.selected.host());
+            state.preview_says(no_base_line(refused, state.raster.is_shown(), state.raster.node(), &canvas));
         }
         Some(Action::PreviewDraw) => {
             let on = !state.ink.is_on();
@@ -100,7 +114,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
             if !on {
                 state.ink.release();
             }
-            state.status.set(if on {
+            state.preview_says(if on {
                 "drawing on: press and drag on the image; u undo, Delete clear, d off".to_string()
             } else {
                 "drawing off".to_string()
@@ -110,7 +124,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
         Some(Action::PreviewCanvas) => {
             let canvas = !state.ink.canvas();
             state.ink.set_canvas(canvas);
-            state.status.set(if canvas {
+            state.preview_says(if canvas {
                 "canvas: draw with the pointer; u undo, Delete clear, Shift+D back".to_string()
             } else {
                 "canvas hidden".to_string()
@@ -121,7 +135,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
             let before = state.ink.revision();
             state.ink.clear(shown.as_ref());
             if state.ink.revision() != before {
-                state.status.set("drawing cleared: u brings it back".to_string());
+                state.preview_says("drawing cleared: u brings it back".to_string());
             }
         }
         _ => return Continue(()),
@@ -135,22 +149,25 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
 mod tests {
     use super::*;
 
-    const ONLY_IMAGES: &str = "drawing: only image files can be drawn on; open a PNG of it, or press Shift+D for a blank canvas";
+    const TAIL: &str = ". Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
 
     #[test]
     fn drawing_over_a_picture_that_is_not_an_image_file_names_the_two_ways_to_draw() {
-        for node in ["files:fig/a.SVG", "files:doc.pdf", "files:clip.mp4", "files:x.bin"] {
-            assert_eq!(no_base_line(true, Some(node), "Shift+D"), ONLY_IMAGES, "{node}");
+        for (node, name) in [("files:fig/a.SVG", "this SVG"), ("files:doc.pdf", "this PDF page"), ("files:clip.mp4", "this video frame"),
+            ("files:clip.M4V", "this video frame"), ("files:x.bin", "this picture")] {
+            assert_eq!(no_base_line(false, true, Some(node), "Shift+D"), format!("Can't draw on {name}{TAIL}"), "{node}");
         }
-        assert!(no_base_line(true, Some("files:a.svg"), "Ctrl+K").ends_with("press Ctrl+K for a blank canvas"));
+        assert!(no_base_line(false, true, Some("files:a.svg"), "Ctrl+K").ends_with("press Ctrl+K for a blank canvas."));
     }
 
     #[test]
-    fn an_image_file_or_no_picture_keeps_the_plain_line() {
-        let plain = "drawing: no image to draw on";
-        assert_eq!(no_base_line(true, Some("files:a.png"), "Shift+D"), plain);
-        assert_eq!(no_base_line(true, Some("files:A.JPEG"), "Shift+D"), plain);
-        assert_eq!(no_base_line(true, None, "Shift+D"), plain);
-        assert_eq!(no_base_line(false, Some("files:a.svg"), "Shift+D"), plain);
+    fn the_connection_notice_and_no_picture_have_their_own_words() {
+        let notice = "Can't draw while the connection notice covers the preview.";
+        assert_eq!(no_base_line(true, true, Some("files:a.png"), "Shift+D"), notice);
+        assert_eq!(no_base_line(true, true, Some("files:a.svg"), "Shift+D"), notice);
+        let none = "Can't draw here: no picture is shown.";
+        assert_eq!(no_base_line(false, true, Some("files:a.png"), "Shift+D"), none);
+        assert_eq!(no_base_line(false, true, None, "Shift+D"), none);
+        assert_eq!(no_base_line(false, false, Some("files:a.svg"), "Shift+D"), none);
     }
 }

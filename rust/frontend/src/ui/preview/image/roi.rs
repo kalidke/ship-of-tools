@@ -24,7 +24,7 @@ impl State {
     /// move on any failure path, so a no-op leaves you on the image.
     pub(in crate::ui) fn capture_roi(&mut self) {
         let Some(roi) = self.raster.roi().cloned() else {
-            self.status.set(no_roi_line(self.raster.node()));
+            self.preview_says(no_roi_line(self.raster.node()));
             self.window.request_redraw();
             return;
         };
@@ -56,12 +56,12 @@ impl State {
             )
             .is_err()
         {
-            self.status.set("capture: transport closed".to_string());
+            self.preview_says("capture: transport closed");
             self.window.request_redraw();
             return;
         }
         self.preview_requests.arm_crop(roi_host);
-        self.status.set(format!("capturing ROI {}×{} of {} → LLM…", roi.w, roi.h, name));
+        self.preview_says(format!("capturing ROI {}×{} of {} → LLM…", roi.w, roi.h, name));
         self.window.request_redraw();
     }
 

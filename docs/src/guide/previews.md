@@ -204,12 +204,16 @@ framing.
 
 ## Drawing on a preview
 
-With the preview focused, `d` turns drawing on over a raster image. Only image files can be drawn on: over a PDF page, an SVG or any other picture `d` says so; export a PNG of it, or use the canvas. Holding the left button draws and holding the
+With the preview focused, `d` turns drawing on over a raster image. Only image files can be drawn on: over a PDF page, an SVG, a video frame or any other picture `d` says what it marks up and that this picture is not one (the message names it), and the two ways to draw anyway: open a PNG of it, or use the canvas. Holding the left button draws and holding the
 right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`, `Cmd+z` on macOS) undoes the last step, and `Delete` clears all the
 ink (`u` brings it back). The ink stays where you drew it as you zoom and pan. `Shift+d` shows a blank canvas to draw
 on, and shows the preview again; the canvas is always in drawing mode. Each session keeps one drawing, and a stroke on
 another image or the canvas replaces it, with a note on the status line, and a closed window loses its drawings. What the agent is told is under "Sharing with
 the agent".
+
+## Messages about the preview
+
+What the preview says about something you just did in it, such as drawing turned on or refused, a drawing shared or not, an SVG it could not draw or a crop it refused, shows on the status line and also in a box at the foot of the preview pane, in the look of the help peek. The box stays for 5 seconds and fades; a newer message replaces it, a switch to another row drops it, and a help peek (`Ctrl+?`) shown at that moment takes its place. The status line keeps the message after the box is gone.
 
 ## Sharing with the agent
 
