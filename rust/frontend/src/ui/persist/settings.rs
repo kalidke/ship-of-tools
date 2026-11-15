@@ -79,7 +79,10 @@
 //                                   # iGPU 3D continuously at idle in
 //                                   # fullscreen (measured on one laptop).
 //   smooth_scroll_ms = 150          # How long a person's scroll takes to
-//                                   # arrive (ease-out). 0..=1000; 0 moves
+//                                   # arrive (ease-out). The agent pane,
+//                                   # Terminal and REPL start at a row a
+//                                   # frame, so a page there takes longer,
+//                                   # up to 600 ms. 0..=1000; 0 moves
 //                                   # at once. Out of range warns and keeps
 //                                   # the default. A harness run
 //                                   # (--ephemeral, --capture) uses 0.
@@ -365,7 +368,8 @@ pub struct Settings {
     /// so this is a setting, not a probe.
     pub fullscreen_vsync_pin: bool,
     /// `[display] smooth_scroll_ms` — how long a person's scroll takes to arrive, 0..=`MAX_SMOOTH_SCROLL_MS`; 0 moves
-    /// at once. Read through `State::scroll_ask`, the one place the length is read.
+    /// at once. The cell panes start no faster than a row a frame, so a long scroll there takes longer, up to 600 ms
+    /// (`ScrollMotion::ask_rows`). Read through `State::scroll_ask`, the one place the length is read.
     pub smooth_scroll_ms: u64,
     /// `[chat] name` — the author a chat post carries beside the app's name. `None` (unset or blank): the window does not post.
     pub chat_name: Option<String>,

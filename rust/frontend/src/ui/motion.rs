@@ -1,5 +1,6 @@
 //! The rule of a person's scroll that eases: a distance owed is spent over the next frames on an ease-out cubic and
-//! the last of it lands exactly `length` after the last ask. A cell pane's whole rows start no faster than a row a frame. The owner knows no pane; a pane keeps its own position and
+//! the last of it lands exactly `length` after the last ask. A cell pane's whole rows start no faster than a row a
+//! frame. The owner knows no pane; a pane keeps its own position and
 //! edges, asks here for what a person wanted, and adds what each frame spends to its position.
 
 use std::time::{Duration, Instant};
@@ -15,6 +16,10 @@ const SLOWEST_START: f32 = 1.5;
 
 /// A whole-row motion starts at no more than a row per frame at 60 frames a second, so a page rolls rather than jumps.
 const ROWS_PER_SECOND: f32 = 60.0;
+
+/// The longest the pace stretches a whole-row motion: a held page key or a burst of wheel ticks owes more than a pane,
+/// and the view comes to rest this long after the last ask, starting faster than the pace.
+const PACE_CEILING: Duration = Duration::from_millis(600);
 
 pub(in crate::ui) struct ScrollMotion {
     /// Distance asked and not yet spent, signed, in the pane's unit: the view comes to rest where the person asked.
@@ -71,10 +76,16 @@ impl ScrollMotion {
         let last = self.last.unwrap_or(now).min(now);
         let left = (deadline - now).as_secs_f32() / (deadline - last).as_secs_f32();
         // The cubic from speed `start` to rest keeps `left^2 * (1 + bend * (1 - left))` of what is owed (`left^3` for
-        // `CUBIC`), and what is left of it starts at the speed computed after.
-        let (bend, gone) = (2.0 - self.start, 1.0 - left);
-        let keep = self.owed * left * left * (1.0 + bend * gone);
-        self.start = ((self.start + 3.0 * bend * gone) / (1.0 + bend * gone)).clamp(SLOWEST_START, CUBIC);
+        // `CUBIC`, which stays itself), and what is left of it starts at the speed computed after; `bend` is above -1
+        // there, so the division is by more than zero.
+        let keep = if self.start == CUBIC {
+            self.owed * left * left * left
+        } else {
+            let (bend, gone) = (2.0 - self.start, 1.0 - left);
+            let next = (self.start + 3.0 * bend * gone) / (1.0 + bend * gone);
+            self.start = if next.is_finite() { next.clamp(SLOWEST_START, CUBIC) } else { CUBIC };
+            self.owed * left * left * (1.0 + bend * gone)
+        };
         spent += self.owed - keep;
         self.owed = keep;
         self.last = Some(now);
@@ -97,13 +108,14 @@ impl ScrollMotion {
 
     /// `ask` for a pane that moves in whole rows: what to apply now, which with a zero `length` is the asked rows and
     /// all that was owed. The roll starts no faster than `ROWS_PER_SECOND` and only slows: a short step keeps the cubic
-    /// over `length`, and a longer one starts slower and takes longer than `length`, so a page rolls a row a frame.
+    /// over `length`, and a longer one starts slower and takes longer than `length`, up to `PACE_CEILING`, so a page
+    /// rolls a row a frame and a burst still comes to rest soon after its last ask.
     pub(in crate::ui) fn ask_rows(&mut self, delta: i32, now: Instant, length: Duration) -> i32 {
         if length.is_zero() {
             return delta + self.finish_rows();
         }
         let rows = (self.owed + delta as f32).abs();
-        let length = length.max(Duration::from_secs_f32(SLOWEST_START * rows / ROWS_PER_SECOND));
+        let length = length.max(Duration::from_secs_f32(SLOWEST_START * rows / ROWS_PER_SECOND).min(PACE_CEILING));
         self.ask(delta as f32, now, length);
         if self.moving() {
             self.start = (ROWS_PER_SECOND * length.as_secs_f32() / rows).clamp(SLOWEST_START, CUBIC);

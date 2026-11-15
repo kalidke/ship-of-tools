@@ -311,38 +311,46 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `preview/fetch.rs` rest on reading, like the other State handlers.
 - `ScrollMotion` (`motion.rs`, a leaf module with no `impl State`) privately owns the owed distance, its deadline, the
   last spend's time and the curve's start speed. `ask` adds a distance, restarts the deadline from the ask's time and
-  sets the cubic ease-out (a zero length answers what to apply at once); `spend` keeps, with `left = (deadline - now) /
-  (deadline - last)`, `owed * left^2 * (1 + (2 - start) * (1 - left))`, the cubic that starts at `start` times its mean
-  speed and ends at rest (`left^3` for the ease-out, `start` 3; what is left of such a curve is again one, so the spend
-  carries `start` forward), so the sum of every spend is the asked
-  total and the last of it lands `length` after the last ask, spends all of it at the deadline, and spends at once
-  whatever is owed past the pane height it is given; `finish` and `stop` end it. It knows no pane, edge or unit; the
-  strip's motion stays `StripMotion`. Behavior tests: `motion_tests` (`an_ask_comes_to_rest_exactly_its_length_after_it_on_the_asked_total`,
-  `the_first_frame_already_moves_and_the_steps_shrink`, `the_curve_is_a_cubic_ease_out`, `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
+  sets the cubic ease-out (a zero length answers what to apply at once); `spend`, with `left = (deadline - now) /
+  (deadline - last)`, keeps `owed * left^3` on the ease-out, the pixel panes' curve exactly as before, and otherwise
+  `owed * left^2 * (1 + (2 - start) * (1 - left))`, the cubic that starts at `start` times its mean speed and ends at
+  rest (what is left of such a curve is again one, so the spend carries `start` forward; the ease-out, `start` 3, is
+  itself), so the sum of every spend is the asked total and the last of it lands `length` after the last ask, spends
+  all of it at the deadline, and spends at once whatever is owed past the pane height it is given; `finish` and `stop`
+  end it. It knows no pane, edge or unit; the strip's motion stays `StripMotion`. Behavior tests: `motion_tests`
+  (`an_ask_comes_to_rest_exactly_its_length_after_it_on_the_asked_total`,
+  `the_first_frame_already_moves_and_the_steps_shrink`, `the_curve_is_a_cubic_ease_out`,
+  `a_second_ask_continues_from_where_the_view_is_and_restarts_the_length`,
   `what_is_owed_past_a_pane_is_spent_at_once_at_the_next_frame`, `a_zero_length_applies_at_once_and_owes_nothing`,
-  `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`, `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`).
+  `finish_and_stop_end_the_motion_and_an_ask_that_cancels_owes_nothing`,
+  `a_frame_at_or_before_the_ask_moves_nothing_and_a_late_one_rests`, `a_pixel_spend_is_the_old_cubic_to_the_bit`).
   Whole rows (`ask_rows`, `spend_rows`, `rows_owed`, `finish_rows`, for the cell panes) add the one field it keeps for
-  them, the carry: the distance spent minus the rows shown. A frame shows the spent distance rounded up in the direction
-  of travel, so the first row shows at the first frame and a one-row step is that row; the motion ends with the frame
-  that shows its last row (no frame is drawn for a roll with nothing more to show), so the rows
-  shown total the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
+  them, the carry: the distance spent minus the rows shown. A frame shows the spent distance rounded up in the
+  direction of travel, so the first row shows at the first frame and a one-row step is that row; the motion ends with
+  the frame that shows its last row (no frame is drawn for a roll with nothing more to show), so the rows shown total
+  the rows asked (`whole_rows_move_the_first_row_at_once_and_end_with_the_last`,
   `a_zero_length_in_rows_applies_at_once_and_stop_drops_the_carry`). A whole-row ask paces the roll: it starts no
   faster than a row per frame at 60 frames a second (`ROWS_PER_SECOND`) and only slows, so its length is the setting
-  or 25 ms a row owed, the longer, and its start speed is 60 rows a second or the ease-out's, the slower (from 1.5 to
-  3 times the mean, the cubics that never speed up). A wheel tick (3 rows) and a one-row step keep the ease-out over
-  the setting, as quick as before; a page (a third of the pane, 15 rows in a 45-row pane) shows one row in its first
-  frame and about a row a frame after, never two, and comes to rest in about 300 ms (rows per frame at 60 a second
-  1,1,1,1,1,1,1,1,1,1,1,0,1,1,0,1,0,1, where the cubic over 150 ms showed 5,3,3,2,1,1); a 45-row page takes about a
-  second; a fast run of wheel ticks owes more and rolls at the same pace, behind by at most a pane, the cap
-  (`a_page_rolls_about_a_row_a_frame_from_one_row_to_rest`, `a_wheel_tick_and_a_one_row_step_roll_as_quick_as_before`,
-  `a_page_with_a_zero_length_moves_at_once`). The pixel panes' curve and length are unchanged. The preview and the Chat view (in pixels) and `terminal::vt::RingRoll` (in whole rows) use it; a
-  pane's ask, spend and edges are that pane's.
+  or 25 ms a row owed capped at 600 ms (`PACE_CEILING`), the longer, and its start speed is 60 rows a second or the
+  ease-out's, the slower, but never below 1.5 times the mean (from 1.5 to 3 times the mean, the cubics that never
+  speed up; the curve is the same at every frame rate, `the_whole_row_curve_is_the_same_cubic_at_every_frame_rate`). A
+  wheel tick (3 rows) and a one-row step keep the ease-out over the setting, as quick as before; a page (a third of
+  the pane, 15 rows in a 45-row pane) shows one row in its first frame and about a row a frame after, never two, and
+  comes to rest in about 300 ms (rows per frame at 60 a second 1,1,1,1,1,1,1,1,1,1,1,0,1,1,0,1,0,1, where the cubic
+  over 150 ms showed 5,3,3,2,1,1). Past 24 rows the ceiling holds the length and the roll starts faster than the pace:
+  a 45-row page (a 135-row pane) shows up to two rows a frame, the first frame included, and rests in about 530 ms; a
+  held page key, a fast run of wheel ticks or ticks queued behind a stalled frame owe up to a pane (the cap) and come
+  to rest within the ceiling after the last ask (`a_page_rolls_about_a_row_a_frame_from_one_row_to_rest`,
+  `a_wheel_tick_and_a_one_row_step_roll_as_quick_as_before`, `a_page_with_a_zero_length_moves_at_once`,
+  `a_held_page_key_or_a_burst_comes_to_rest_within_the_ceiling_after_its_last_ask`). The preview and the Chat view (in
+  pixels) and `terminal::vt::RingRoll` (in whole rows) use it; a pane's ask, spend and edges are that pane's.
 - `terminal::vt::RingRoll` owns the one rule of a person's scroll over a terminal's ring, for the agent pane, the
   Terminal drawer and the REPL drawer (whose offset from its tail moves as a ring's does): a `ScrollMotion` in whole rows and whether the ask reached the live tail. Every move goes through the
   owner's `ring` closure (rows to move by, none to read; the offset after), so the emulator's offset stays the one
   position. A move that comes up short (the ring's end, the live tail) stops the roll, and so does one that reaches
   the live tail with more owed toward it, since a paced roll can show no row in the next frame
-  (`the_top_and_the_tail_stop_a_roll`, its tail part: the frame that reaches the tail is the last). An ask that reaches the live tail
+  (`the_top_and_the_tail_stop_a_roll`, its tail part: the frame that reaches the tail is the last). An ask that
+  reaches the live tail
   (the offset, what is still owed and the rows asked sum to zero or less, or a later ask toward the tail while one is
   pending) lands on it when the roll rests, however many lines arrived while it ran, and so does a switch's finish; an ask that stops short keeps the relative rule, the emulator holding the view steady as
   lines arrive (`a_scroll_that_reaches_the_tail_lands_on_it_whatever_arrived_and_one_that_stops_short_stays_steady`,
