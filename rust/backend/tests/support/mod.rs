@@ -185,8 +185,12 @@ where
 }
 mod env;
 mod procs;
+#[cfg(target_os = "linux")]
+mod reaper;
 pub(crate) use self::env::*;
 pub(crate) use self::procs::*;
+#[cfg(target_os = "linux")]
+pub(crate) use self::reaper::Reaper;
 pub async fn try_connect(socket_path: &Path) -> Option<LocalStream> {
     let name = socket_path
         .to_str()

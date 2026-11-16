@@ -231,6 +231,10 @@ impl Daemon {
             .stderr(Stdio::from(file))
             .spawn()
             .expect("spawn sotd");
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = child.id() {
+            env.reap_daemon(pid);
+        }
         poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the daemon to accept").await;
         Daemon { child, log, log_from, sotd_log: env.daemon_log() }
     }

@@ -42,7 +42,6 @@ impl Fixture {
             .env("SOT_RUNTIME_DIR", self.root.join("runtime"))
             .env("SOT_COMM_HOME", self.root.join("comm"))
             .env("SOT_NO_UPDATE", "1")
-            .env_remove("CLAUDE_CONFIG_DIR")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

@@ -195,6 +195,7 @@ impl Run {
             },
         }
         let launched = cmd.spawn().expect("spawn sotd");
+        env.reap_daemon(launched.id());
         let socket = env.socket_path.clone();
         let daemon = poll_until(
             || {

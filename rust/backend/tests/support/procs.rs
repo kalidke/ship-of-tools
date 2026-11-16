@@ -36,7 +36,7 @@ impl ProcFs for RealProcFs {
 /// Whether a read failed because the process is gone (it ended between the listing and the read), the one failure a
 /// listing treats as the process's absence. Any other failure (permission, I/O) is not evidence of absence.
 #[cfg(target_os = "linux")]
-fn is_gone_error(error: &std::io::Error) -> bool {
+pub(crate) fn is_gone_error(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
@@ -180,6 +180,35 @@ pub fn own_supervisor_pids(state_root: &Path) -> Vec<u32> {
         .into_iter()
         .filter_map(|(other, pid)| (!other).then_some(pid))
         .collect()
+}
+
+/// Ends every capsule process over `state_root`, again until a pass finds none or 2 s (5 s on Windows) pass, each
+/// through a handle opened before its identity is read again ([`kill_verified`], [`kill_by_handle`]), never by a bare
+/// discovered pid. Supervisors come first in each listing, so one ended on a pass starts nothing after it. `Err`
+/// names the processes left, or why the listing failed, with the last kill's failure. Never panics: `Env`'s `Drop`
+/// and the reaper call it.
+#[cfg(any(windows, target_os = "linux"))]
+pub fn sweep_capsules(state_root: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + if cfg!(windows) { Duration::from_secs(5) } else { Duration::from_secs(2) };
+    let mut failed = String::new();
+    loop {
+        let pids = try_own_capsule_pids(state_root)
+            .map_err(|error| format!("cannot list the capsule processes over {state_root:?}: {error}{failed}"))?;
+        if pids.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("leaves capsule processes {pids:?} over {state_root:?}{failed}"));
+        }
+        #[cfg(target_os = "linux")]
+        let ended = kill_verified(&RealProcFs, &pids, &sot_capsule_exe(), state_root);
+        #[cfg(windows)]
+        let ended = kill_by_handle(state_root, &pids);
+        if let Err(error) = ended {
+            failed = format!("; could not end capsule processes {pids:?}: {error}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// `PATH` with every directory removed that contains a file named any of
