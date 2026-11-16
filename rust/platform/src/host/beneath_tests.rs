@@ -520,8 +520,17 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
             .map(|c| {
                 let root = &root;
                 sc.spawn(move || {
-                    for _ in 0..200 {
-                        write_beneath(root, "f.txt", c).unwrap();
+                    for i in 0..200 {
+                        // A refused write says how far it got and how long it took: `Written` after the retry window
+                        // is the rename, refused for the whole window.
+                        let (mut last, began) = (None, std::time::Instant::now());
+                        let wrote = write_beneath_at(root, "f.txt", c, None, |s| {
+                            last = Some(s);
+                            Ok(())
+                        });
+                        if let Err(e) = wrote {
+                            panic!("write {i} answered {e:?} after {:?}, its last step {last:?}", began.elapsed());
+                        }
                     }
                 })
             })
@@ -566,6 +575,29 @@ fn a_writer_of_one_name_publishes_while_another_syncs_its_folder() {
     assert_eq!(second, Some(Ok(root.join("f.txt"))));
     assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"second");
     assert_eq!(entries(&root), ["f.txt"]);
+}
+
+#[cfg(windows)]
+#[test]
+fn a_writer_stopped_between_its_rename_and_its_close_does_not_fail_another() {
+    // The first writer is stopped after its rename, its handle (which shares no deletion) still open on the name, for
+    // twice the retry window. The second writer of the name waits its turn and publishes; without the turn its rename
+    // is refused for the whole window and it answers a sharing violation (os error 32).
+    let (_g, root, _outside) = setup();
+    // No other test of this binary writes this name, so only this test's writers carry the key.
+    let name = "stopped-at-its-rename.txt";
+    let arm = crate::test_hold::Holds::here().arm("platform.beneath.renamed").key(name).hold(1);
+    std::thread::scope(|sc| {
+        let first = sc.spawn(|| write_beneath(&root, name, b"first").map_err(|e| e.raw_os_error()));
+        arm.reached(0);
+        let second = sc.spawn(|| write_beneath(&root, name, b"second").map_err(|e| e.raw_os_error()));
+        std::thread::sleep(std::time::Duration::from_millis(2 * crate::host::RETRY_DEADLINE_MS));
+        arm.release(0);
+        assert_eq!(second.join().unwrap(), Ok(root.join(name)));
+        assert_eq!(first.join().unwrap(), Ok(root.join(name)));
+    });
+    assert_eq!(std::fs::read(root.join(name)).unwrap(), b"second");
+    assert_eq!(entries(&root), [name]);
 }
 
 #[test]
