@@ -38,6 +38,9 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
         ApiError::Http(HttpError::Busy) => ChatCode::Busy,
         ApiError::Limited { .. } => ChatCode::Limited,
         ApiError::Closed => ChatCode::Unavailable,
+        // The wire's `no_user_token` is landing 1's; until it lands this is the one honest code there is, and the post
+        // stays unsent whatever the code.
+        ApiError::NoPersonToken => ChatCode::Failed,
         ApiError::BadRequest | ApiError::BadBound | ApiError::Altered => ChatCode::BadRequest,
         ApiError::Http(
             HttpError::Timeout

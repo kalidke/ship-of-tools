@@ -337,7 +337,7 @@ impl<L: Listener> Chat<L> {
             // hub (a missing or unparsable one, as an edit in progress leaves, ends nothing), the phase staying
             // `Starting` so `running` keeps waiting. The credentials are cloned per try and never formatted.
             let made = loop {
-                let tokens = Credentials { bot: credentials.bot.clone(), app: credentials.app.clone() };
+                let tokens = Credentials { bot: credentials.bot.clone(), app: credentials.app.clone(), user: credentials.user.clone() };
                 match start(config, tokens, &locks).await {
                     Err("held") => {
                         if !std::mem::replace(&mut held, true) {

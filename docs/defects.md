@@ -1035,6 +1035,11 @@ owned by `docs/CLAUDE.md`.
   (`Chat::launch`, `rust/backend/src/chat.rs`). `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
   window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
   reading code; never seen.
+- **CHAT-DRAWER-ORIGIN-LEGACY** [note] Nothing makes a `Drawer` post since a person's post went out with their own
+  token. `normalize`'s reading of an own post's `person` metadata, username suffix and file-share label, `mail`'s `the
+  chat drawer` role and the window's `DRAWER` badge serve only posts made before. Deleting them changes the wire
+  (`Origin::Drawer`, which an older reader takes as `other`), and older drawer posts would then read as the app's `Bot`
+  and not as mail. From reading code.
 
 ## records
 

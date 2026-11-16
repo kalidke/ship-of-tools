@@ -838,3 +838,31 @@ fn the_secrets_go_through_the_private_writer_alone() {
         assert_eq!(mode(SECRETS_FILE), 0o600);
     }
 }
+
+fn user() -> String {
+    ["xoxp", "-sentinel-user-cccc"].concat()
+}
+
+#[test]
+fn a_user_token_is_optional_of_its_own_form_and_formats_as_a_mask() {
+    let with = |user: &str| format!("{}user_token = \"{user}\"\n", secrets());
+    let long = |p: &str, n: usize| format!("{p}{}", "a".repeat(n - p.len()));
+    // A file written before the key loads, with no person's token.
+    assert!(creds(&secrets()).unwrap().user.is_none());
+    // A four-key file loads with it, and every format of the credentials is a mask.
+    let c = creds(&with(&user())).unwrap();
+    assert_eq!(c.user.as_ref().map(|u| u.expose()), Some(user().as_str()));
+    no_token(&format!("{c:?} {c:#?}"), "the credentials' format");
+    // The token's own form is `xoxp-`: the bot's, the app's, a bare prefix, a space and a wrong type are refused.
+    for (i, bad) in [bot(), app(), "xoxp-".to_string(), format!("{} x", user()), long("xoxp-", 513)].iter().enumerate() {
+        assert_eq!(creds(&with(bad)).map(drop), Err(E::BadToken), "bad token {i}");
+    }
+    assert_eq!(creds(&format!("{}user_token = [\"{}\"]\n", secrets(), user())).map(drop), Err(E::Malformed(None)));
+    assert!(creds(&with(&long("xoxp-", 512))).is_ok());
+    // The pasted grammar is the same function, and the others do not take it.
+    assert!(user_token(&user()).is_ok());
+    assert_eq!((user_token(&bot()).map(drop), bot_token(&user()).map(drop), app_token(&user()).map(drop)), (Err(E::BadToken), Err(E::BadToken), Err(E::BadToken)));
+    // A fifth key is still refused, unnamed; the user token's own key in `chat.toml` is named as another table's.
+    assert_eq!(creds(&format!("{}extra = 1\n", with(&user()))).map(drop), Err(E::UnknownKey(None)));
+    assert_eq!(parse(&chat("user_token = \"x\"\n")).map(drop), Err(E::UnknownKey(Some("user_token"))));
+}

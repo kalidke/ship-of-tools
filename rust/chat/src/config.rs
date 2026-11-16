@@ -82,7 +82,7 @@ impl ConfigError {
             ConfigError::Malformed(_) => "a chat file is not valid: it must be text of at most 64 KiB, hold only the documented keys, each of the documented type",
             ConfigError::BadId => "a workspace or channel id is not a Slack id (capital letters and digits)",
             ConfigError::BadMailAfter(_) => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
-            ConfigError::BadToken => "a token is not of its form: the bot token starts xoxb- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
+            ConfigError::BadToken => "a token is not of its form: the bot token starts xoxb-, the user token xoxp- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
             ConfigError::UnknownKey(_) => "a key this file does not take is present: each chat file holds only its own documented keys",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
@@ -149,7 +149,7 @@ fn parse_table(text: &str) -> Result<toml::Table, ConfigError> {
 /// The keys each table accepts: `chat.toml`, one of its mappings, `chat-secrets.toml`.
 const CONFIG_KEYS: [&str; 4] = ["workspace", "channels", "mail_after", "mapping"];
 const MAPPING_KEYS: [&str; 4] = ["folder", "channel", "workspace", "mail_after"];
-const SECRETS_KEYS: [&str; 3] = ["workspace", "bot_token", "app_token"];
+const SECRETS_KEYS: [&str; 4] = ["workspace", "bot_token", "app_token", "user_token"];
 
 /// Only the accepted keys may be present. A refusal names the stray key only when another table accepts it (a key of
 /// one file found in the other); a key from a file is otherwise as untrusted as a value, so it is refused unnamed.
@@ -377,6 +377,9 @@ pub fn resolve(config: &Result<Config, ConfigError>, folder: &str) -> Resolution
 pub struct Credentials {
     pub bot: Secret,
     pub app: Secret,
+    /// The person's user token, which their posts go out under. Optional, so a file written before it loads: rows post
+    /// and mail runs, and a person's post waits for a connect.
+    pub user: Option<Secret>,
 }
 
 /// A token of the form `prefix` (the forms platform's log masker knows) then letters, digits and hyphens (the characters platform's masker reads as one token), at most 512 bytes.
@@ -412,6 +415,11 @@ pub fn app_token(s: &str) -> Result<Secret, ConfigError> {
     token_form(s, "xapp-")
 }
 
+/// A pasted user token in the load's own grammar (`BadToken` otherwise).
+pub fn user_token(s: &str) -> Result<Secret, ConfigError> {
+    token_form(s, "xoxp-")
+}
+
 impl Credentials {
     /// Read `chat-secrets.toml` from `dir`. The only call that opens it; the workspace must be `config`'s.
     pub fn read(dir: &Path, read: Reader, config: &Config) -> Result<Credentials, ConfigError> {
@@ -427,6 +435,7 @@ impl Credentials {
         Ok(Credentials {
             bot: token(&t, "bot_token", "xoxb-")?,
             app: token(&t, "app_token", "xapp-")?,
+            user: t.contains_key("user_token").then(|| token(&t, "user_token", "xoxp-")).transpose()?,
         })
     }
 }

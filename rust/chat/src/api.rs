@@ -1,5 +1,6 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
-//! configured), channel history and thread replies (paged), `chat.postMessage` under a custom author, a file shared
+//! configured), channel history and thread replies (paged), `chat.postMessage` (a row's under a custom author, a person's
+//! under their own user token), a file shared
 //! into a channel (Slack's three upload steps), the channel picker's calls (the channel list, one channel's facts, one
 //! join), and author names through a bounded cache. Every call goes out through
 //! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
@@ -89,6 +90,9 @@ pub enum ApiError {
     TooLarge,
     /// The owner closed this client (its service stopped): nothing is sent.
     Closed,
+    /// A person's post or share, and no user token is held (none was configured, or Slack refused the one that was):
+    /// nothing is sent, and the bot's token is never used in its place.
+    NoPersonToken,
 }
 
 impl ApiError {
@@ -108,6 +112,7 @@ impl ApiError {
             ApiError::Missing => "missing_continuation",
             ApiError::TooLarge => "continuation_too_large",
             ApiError::Closed => "closed",
+            ApiError::NoPersonToken => "no_person_token",
         }
     }
 }
@@ -393,7 +398,8 @@ pub struct ScanPage {
     pub limited: bool,
 }
 
-/// Whose post this is. The kind is carried in the metadata and the username suffix, as `normalize` reads them.
+/// Whose post this is. A row's carries the kind in its metadata and username suffix, as `normalize` reads them; a
+/// person's carries nothing of the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PostKind {
     /// A person at the window.
@@ -501,6 +507,8 @@ struct Names {
 pub struct Api {
     http: Http,
     token: Secret,
+    /// The user token a person's post and share go out under. Forgotten when Slack refuses it; never replaced by `token`.
+    person: Mutex<Option<Secret>>,
     workspace: String,
     base: String,
     deadlines: Deadlines,
@@ -561,6 +569,7 @@ impl Api {
         Api {
             http,
             token,
+            person: Mutex::new(None),
             workspace,
             base,
             deadlines: Deadlines {
@@ -574,6 +583,35 @@ impl Api {
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
             transfers: Arc::new(Semaphore::new(MAX_TRANSFERS)),
+        }
+    }
+
+    /// This client with the person's user token, which a person's post and share go out under (`None`: they are refused
+    /// unsent).
+    pub fn with_person(self, token: Option<Secret>) -> Api {
+        *self.person.lock().unwrap() = token;
+        self
+    }
+
+    /// Whether a user token is held for a person's post: false from the start with none, and after Slack refused it.
+    pub fn posts_as_person(&self) -> bool {
+        self.person.lock().unwrap().is_some()
+    }
+
+    /// The token a post of `kind` goes out under: the bot's for a row, the person's for a person, and never the bot's in
+    /// its place.
+    fn poster(&self, kind: PostKind) -> Result<Secret, ApiError> {
+        match kind {
+            PostKind::Row => Ok(self.token.clone()),
+            PostKind::Person => self.person.lock().unwrap().clone().ok_or(ApiError::NoPersonToken),
+        }
+    }
+
+    /// Forget the person's token when Slack's refusal `code` names the token or its scope as bad. The refusal itself
+    /// is still the caller's answer; a restart reads the file again.
+    fn forget_if_refused(&self, kind: PostKind, code: &str) {
+        if kind == PostKind::Person && (TOKEN_REFUSALS.contains(&code) || code == "missing_scope") {
+            *self.person.lock().unwrap() = None;
         }
     }
 
@@ -742,8 +780,11 @@ impl Api {
         self.own.lock().unwrap().clone().ok_or(ApiError::NoIdentity)
     }
 
-    /// Post once under a custom author. `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused
-    /// before anything is sent (`Err`); from there the result is a `PostOutcome`, and no path resends.
+    /// Post once. A row's post is the app's, under the custom author `<name> (row via Ship of Tools)`. A person's is
+    /// made with the person's own user token and carries nothing of the app (no author, no metadata, no label), so Slack
+    /// and every other responder see an ordinary message from them; with no such token it is `Err(NoPersonToken)`, unsent.
+    /// `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused before anything is sent (`Err`); from
+    /// there the result is a `PostOutcome`, and no path resends.
     pub async fn post(
         &self,
         channel: &str,
@@ -758,19 +799,19 @@ impl Api {
         let thread = thread
             .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
             .transpose()?;
-        if !valid_id(channel) || !author_ok(name) {
+        if !valid_id(channel) || (kind == PostKind::Row && !author_ok(name)) {
             return Err(ApiError::BadRequest);
         }
         let text = slack_text(text)?;
-        let mut body = json!({
-            "channel": channel,
-            "text": text,
-            "username": format!("{name} ({} via Ship of Tools)", kind.word()),
-            "metadata": {
+        let token = self.poster(kind)?;
+        let mut body = json!({"channel": channel, "text": text});
+        if kind == PostKind::Row {
+            body["username"] = format!("{name} ({} via Ship of Tools)", kind.word()).into();
+            body["metadata"] = json!({
                 "event_type": "sot_chat_post",
                 "event_payload": {"kind": kind.word(), "name": name},
-            },
-        });
+            });
+        }
         if let Some(parent) = thread {
             body["thread_ts"] = parent.as_str().into();
         }
@@ -780,16 +821,23 @@ impl Api {
             JSON,
             body.to_string().into_bytes(),
         )
-        .bearer(self.token.clone());
-        Ok(post_outcome(self.http.send(request).await))
+        .bearer(token);
+        let outcome = post_outcome(self.http.send(request).await);
+        if let PostOutcome::Refused(code) = &outcome {
+            self.forget_if_refused(kind, code);
+        }
+        Ok(outcome)
     }
 
     /// Share a file once, as `kind` named `name`: Slack's three steps under one transfer permit. Step 1 is a read
     /// (`files.getUploadURLExternal`, under the read rules); step 2 posts the bytes to the URL it answered, with no
     /// authorization; step 3 (`files.completeUploadExternal`) is the share, the only mutation, read as a post's answer
-    /// is. Its `initial_comment` is the label `<name> (<kind> via Ship of Tools)`, then `: ` and the comment when there
-    /// is one, made Slack's by `slack_text`. Input the post cannot carry is `Err` unsent; from there the result is a
-    /// `FileOutcome`, a failure before the share is never `Unknown`, and no path resends.
+    /// is. Steps 1 and 3 go out under one token, the poster's: a row's `initial_comment` is the label `<name> (row via
+    /// Ship of Tools)`, then `: ` and the comment when there is one; a person's, under their own user token, is the
+    /// comment alone, absent without one (no label, and `name` is neither checked nor sent; no token is
+    /// `Err(NoPersonToken)`, unsent). The text is made Slack's by `slack_text`. Input the post cannot carry is `Err`
+    /// unsent; from there the result is a `FileOutcome`, a failure before the share is never `Unknown`, and no path
+    /// resends.
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file(
         &self,
@@ -811,24 +859,36 @@ impl Api {
             && file_name.len() <= MAX_FILENAME
             && !file_name.contains(|c: char| c.is_control() || c == '/' || c == '\\');
         let bytes_ok = !bytes.is_empty() && bytes.len() <= MAX_CHAT_FILE;
-        if !valid_id(channel) || !author_ok(name) || !file_name_ok || !bytes_ok || comment == Some("") {
+        let name_ok = kind == PostKind::Person || author_ok(name);
+        if !valid_id(channel) || !name_ok || !file_name_ok || !bytes_ok || comment == Some("") {
             return Err(ApiError::BadRequest);
         }
-        let label = format!("{name} ({} via Ship of Tools)", kind.word());
-        let label = slack_text(&match comment {
-            Some(c) => format!("{label}: {c}"),
-            None => label,
-        })?;
+        let initial_comment = match (kind, comment) {
+            (PostKind::Person, Some(c)) => Some(slack_text(c)?),
+            (PostKind::Person, None) => None,
+            (PostKind::Row, comment) => {
+                let label = format!("{name} ({} via Ship of Tools)", kind.word());
+                Some(slack_text(&match comment {
+                    Some(c) => format!("{label}: {c}"),
+                    None => label,
+                })?)
+            }
+        };
+        let token = self.poster(kind)?;
         let share_url = self.url("files.completeUploadExternal", &[])?;
         // Owned, so a caller that drops this future frees it with the future.
         let Ok(_permit) = self.transfers.clone().try_acquire_owned() else {
             return Ok(FileOutcome::Refused(HttpError::Busy.code().into()));
         };
         let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
-        let v = match self.read("files.getUploadURLExternal", &params, MAX_BODY).await {
+        let v = match self.read_as(&token, "files.getUploadURLExternal", &params, MAX_BODY).await {
             Ok(v) => v,
             Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
-            Err(e) => return Ok(FileOutcome::Refused(refusal(&e))),
+            Err(e) => {
+                let code = refusal(&e);
+                self.forget_if_refused(kind, &code);
+                return Ok(FileOutcome::Refused(code));
+            }
         };
         let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_URL);
         let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
@@ -847,14 +907,19 @@ impl Api {
         let mut body = json!({
             "files": [{"id": file, "title": file_name}],
             "channel_id": channel,
-            "initial_comment": label,
         });
+        if let Some(text) = initial_comment {
+            body["initial_comment"] = text.into();
+        }
         if let Some(parent) = thread {
             body["thread_ts"] = parent.as_str().into();
         }
-        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes())
-            .bearer(self.token.clone());
-        Ok(share_outcome(self.http.send(share).await, channel))
+        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
+        let outcome = share_outcome(self.http.send(share).await, channel);
+        if let FileOutcome::Refused(code) = &outcome {
+            self.forget_if_refused(kind, code);
+        }
+        Ok(outcome)
     }
 
     /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be
@@ -1169,6 +1234,17 @@ impl Api {
         params: &[(&str, String)],
         max_body: usize,
     ) -> Result<Value, ApiError> {
+        self.read_as(&self.token, method, params, max_body).await
+    }
+
+    /// `read` under `token`: a person's share reads its first step under the person's, so one token carries the share.
+    async fn read_as(
+        &self,
+        token: &Secret,
+        method: &str,
+        params: &[(&str, String)],
+        max_body: usize,
+    ) -> Result<Value, ApiError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(ApiError::Closed);
         }
@@ -1183,7 +1259,7 @@ impl Api {
         }
         let request = Request::get(self.url(method, params)?, self.deadlines.read)
             .max_body(max_body)
-            .bearer(self.token.clone());
+            .bearer(token.clone());
         let response = self.http.send(request).await.map_err(ApiError::Http)?;
         match response.status() {
             429 => return Err(self.rate_limited(&response)),

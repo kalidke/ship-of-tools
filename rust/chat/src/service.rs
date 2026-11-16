@@ -95,7 +95,9 @@ impl Service {
         http: Http,
         dir: &Path,
     ) -> Result<Service, ServiceError> {
-        let api = Api::new(http.clone(), credentials.bot, config.workspace()).map_err(ServiceError::Api)?;
+        let api = Api::new(http.clone(), credentials.bot, config.workspace())
+            .map_err(ServiceError::Api)?
+            .with_person(credentials.user);
         Service::launch(config.workspace(), credentials.app, api, http, dir, BASE.into(), Timing::PRODUCT).await
     }
 
@@ -124,6 +126,7 @@ impl Service {
     ) -> Result<Service, ServiceError> {
         let api = Api::new(http.clone(), credentials.bot, config.workspace())
             .map_err(ServiceError::Api)?
+            .with_person(credentials.user)
             .with_base(base.clone());
         Service::launch(config.workspace(), credentials.app, api, http, dir, base, timing).await
     }
