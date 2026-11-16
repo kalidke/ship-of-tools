@@ -532,6 +532,11 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
                             panic!("write {i} answered {e:?} after {:?}, its last step {last:?}", began.elapsed());
                         }
                     }
+                    #[cfg(windows)]
+                    {
+                        let [call, close] = super::arm::SPANS.with(|s| s.get());
+                        eprintln!("two-writers spans: longest rename call {call} us, longest rename-return-to-close {close} us");
+                    }
                 })
             })
             .collect();
