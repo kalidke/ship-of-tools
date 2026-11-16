@@ -8,144 +8,73 @@ use serde_json::{json, Value};
 
 use super::{Reply, Seen};
 
-const DOWNLOAD: &str = "/files-pri/F0PIC/download/pic.png";
-const PRIVATE: &str = "/files-pri/F0PIC/pic.png";
-
-enum Members {
-    /// `shares.public` for a `C…` channel and `shares.private` for a `G…` one.
-    Shared(Vec<String>),
-    /// The older keys: `channels` for a `C…` channel and `groups` for a `G…` one.
-    Listed(Vec<String>),
-}
-
-/// File `F0PIC`, a PNG shared in `C0CHAN`, with a `thumb_360`; a test changes what it needs.
+/// File `F0PIC`, a PNG shared in `C0CHAN`, with a `thumb_360`; a test says what differs: `Files { size: Some(9), ..Files::new() }`.
 pub struct Files {
-    mimetype: String,
-    size: Option<u64>,
-    original: Vec<u8>,
-    thumb: Vec<u8>,
-    thumb_keys: Vec<&'static str>,
-    download: bool,
-    content_type: Option<String>,
-    members: Members,
-    redirect_to: Option<String>,
+    pub mimetype: String,
+    /// The size `files.info` claims; `None` is the original's true length.
+    pub size: Option<u64>,
+    /// `files.info` has no `size` key at all.
+    pub no_size: bool,
+    pub original: Vec<u8>,
+    pub thumb: Vec<u8>,
+    /// Which `thumb_*` URLs `files.info` names.
+    pub thumb_keys: Vec<&'static str>,
+    /// `files.info` names `url_private_download` (else only `url_private`).
+    pub download: bool,
+    /// The `Content-Type` of every file answer.
+    pub content_type: Option<String>,
+    /// The channels the file is shared in: as `shares` (`public` for `C…`, `private` for `G…`), or, with `older_keys`,
+    /// as the older `channels` and `groups` arrays.
+    pub channels: Vec<String>,
+    pub older_keys: bool,
+    /// Every file URL but `url_private`'s answers a redirect to `url_private`'s path on this host.
+    pub redirect_to: Option<String>,
 }
 
 impl Files {
+    /// The path of the original as `url_private_download` names it, and as `url_private` names it.
+    pub const DOWNLOAD: &'static str = "/files-pri/F0PIC/download/pic.png";
+    pub const PRIVATE: &'static str = "/files-pri/F0PIC/pic.png";
+
     pub fn new() -> Files {
         Files {
             mimetype: "image/png".into(),
             size: None,
+            no_size: false,
             original: b"\x89PNG original bytes".to_vec(),
             thumb: b"\x89PNG thumbnail bytes".to_vec(),
             thumb_keys: vec!["thumb_360"],
             download: true,
             content_type: Some("image/png".into()),
-            members: Members::Shared(vec!["C0CHAN".into()]),
+            channels: vec!["C0CHAN".into()],
+            older_keys: false,
             redirect_to: None,
         }
     }
 
-    pub fn mimetype(mut self, mimetype: &str) -> Files {
-        self.mimetype = mimetype.into();
-        self
-    }
-
-    /// The size `files.info` claims, whatever the original's bytes are (they default to its true length).
-    pub fn size(mut self, size: u64) -> Files {
-        self.size = Some(size);
-        self
-    }
-
-    pub fn original(mut self, bytes: Vec<u8>) -> Files {
-        self.original = bytes;
-        self
-    }
-
-    pub fn thumb(mut self, bytes: Vec<u8>) -> Files {
-        self.thumb = bytes;
-        self
-    }
-
-    /// Which `thumb_*` URLs `files.info` names (none: a file with no thumbnail).
-    pub fn thumb_keys(mut self, keys: &[&'static str]) -> Files {
-        self.thumb_keys = keys.to_vec();
-        self
-    }
-
-    /// No `url_private_download`: only `url_private` names the original.
-    pub fn no_download(mut self) -> Files {
-        self.download = false;
-        self
-    }
-
-    /// The `Content-Type` of every file answer (`None`: no such header).
-    pub fn content_type(mut self, content_type: Option<&str>) -> Files {
-        self.content_type = content_type.map(String::from);
-        self
-    }
-
-    /// The file is shared in these channels, as `shares` gives them.
-    pub fn shared_in(mut self, channels: &[&str]) -> Files {
-        self.members = Members::Shared(channels.iter().map(|c| c.to_string()).collect());
-        self
-    }
-
-    /// The file is shared in these channels, as the older `channels` and `groups` keys give them.
-    pub fn listed_in(mut self, channels: &[&str]) -> Files {
-        self.members = Members::Listed(channels.iter().map(|c| c.to_string()).collect());
-        self
-    }
-
-    /// Every file URL but `url_private`'s answers a redirect to `url_private`'s path on this host.
-    pub fn redirecting_to(mut self, host: &str) -> Files {
-        self.redirect_to = Some(host.into());
-        self
-    }
-
-    /// The path a thumbnail key's URL has.
     pub fn thumb_path(key: &str) -> String {
         format!("/files-tmb/F0PIC/{key}")
     }
 
-    /// The path of the original, as `url_private_download` names it.
-    pub fn download_path() -> &'static str {
-        DOWNLOAD
-    }
-
-    /// The path of the original, as `url_private` names it.
-    pub fn private_path() -> &'static str {
-        PRIVATE
-    }
-
     fn info(&self, port: u16) -> Value {
         let at = |path: &str| format!("https://files.slack.com:{port}{path}");
-        let mut file = json!({
-            "id": "F0PIC",
-            "mimetype": self.mimetype,
-            "size": self.size.unwrap_or(self.original.len() as u64),
-            "url_private": at(PRIVATE),
-        });
+        let mut file = json!({"id": "F0PIC", "mimetype": self.mimetype, "url_private": at(Files::PRIVATE)});
+        if !self.no_size {
+            file["size"] = self.size.unwrap_or(self.original.len() as u64).into();
+        }
         if self.download {
-            file["url_private_download"] = at(DOWNLOAD).into();
+            file["url_private_download"] = at(Files::DOWNLOAD).into();
         }
         for key in &self.thumb_keys {
             file[*key] = at(&Files::thumb_path(key)).into();
         }
-        match &self.members {
-            Members::Shared(channels) => {
-                let (mut public, mut private) = (json!({}), json!({}));
-                for c in channels {
-                    let kind = if c.starts_with('G') { &mut private } else { &mut public };
-                    kind[c.as_str()] = json!([{"ts": "1700000800.000100"}]);
-                }
-                file["shares"] = json!({"public": public, "private": private});
-            }
-            Members::Listed(channels) => {
-                let (groups, public): (Vec<_>, Vec<_>) = channels.iter().partition(|c| c.starts_with('G'));
-                file["channels"] = json!(public);
-                file["groups"] = json!(groups);
-            }
+        let (groups, public): (Vec<_>, Vec<_>) = self.channels.iter().partition(|c| c.starts_with('G'));
+        if self.older_keys {
+            file["channels"] = json!(public);
+            file["groups"] = json!(groups);
+        } else {
+            let shares = |ids: Vec<&String>| ids.into_iter().map(|c| (c.clone(), json!([{"ts": "1700000800.000100"}]))).collect::<serde_json::Map<_, _>>();
+            file["shares"] = json!({"public": shares(public), "private": shares(groups)});
         }
         json!({"ok": true, "file": file})
     }
@@ -160,21 +89,17 @@ impl Files {
             });
         }
         let body = match path.as_str() {
-            DOWNLOAD | PRIVATE => &self.original,
+            Files::DOWNLOAD | Files::PRIVATE => &self.original,
             p if self.thumb_keys.iter().any(|k| p == Files::thumb_path(k)) => &self.thumb,
             _ => return None,
         };
         match &self.redirect_to {
-            Some(host) if path != PRIVATE => return Some(Reply::redirect(&format!("https://{host}:{port}{PRIVATE}"))),
+            Some(host) if path != Files::PRIVATE => {
+                return Some(Reply::redirect(&format!("https://{host}:{port}{}", Files::PRIVATE)))
+            }
             _ => {}
         }
         let headers = self.content_type.iter().map(|c| ("Content-Type".to_string(), c.clone())).collect();
         Some(Reply::Status { code: 200, headers, body: body.clone() })
-    }
-}
-
-impl Default for Files {
-    fn default() -> Files {
-        Files::new()
     }
 }

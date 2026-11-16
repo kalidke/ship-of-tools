@@ -2643,7 +2643,7 @@ async fn a_fetch_reads_only_a_picture_shared_in_its_channel() {
         assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
         let seen = fake.seen();
         let paths: Vec<String> = seen.iter().map(Seen::path).collect();
-        assert_eq!(paths, ["/api/files.info", &Files::thumb_path("thumb_360"), "/api/files.info", Files::download_path()]);
+        assert_eq!(paths, ["/api/files.info", &Files::thumb_path("thumb_360"), "/api/files.info", Files::DOWNLOAD]);
         let bearer = format!("Bearer {TOKEN}");
         assert_eq!(seen[0].param("file").as_deref(), Some("F0PIC"));
         for s in &seen {
@@ -2652,25 +2652,31 @@ async fn a_fetch_reads_only_a_picture_shared_in_its_channel() {
         assert!(seen[1].host.starts_with("files.slack.com:"), "{}", seen[1].host);
 
         // The url_private is the original's when there is no download URL.
-        let fake = files_fake(Files::new().no_download()).await;
+        let fake = files_fake(Files { download: false, ..Files::new() }).await;
         assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
-        assert_eq!(downloads(&fake)[0].path(), Files::private_path());
+        assert_eq!(downloads(&fake)[0].path(), Files::PRIVATE);
 
         // Each row: the file, the channel asked, the variant, the answer and how many URLs were fetched.
         let big = MAX_CHAT_FILE as u64 + 1;
         let (thumb, original) = (FileVariant::Thumb, FileVariant::Original);
         let cases: Vec<(&str, Files, &str, FileVariant, Result<FileFetch, ApiError>, usize)> = vec![
-            ("another channel's file", Files::new().shared_in(&["C0OTHER"]), "C0CHAN", original, Err(ApiError::BadRequest), 0),
-            ("a file shared nowhere", Files::new().shared_in(&[]), "C0CHAN", thumb, Err(ApiError::BadRequest), 0),
-            ("a PDF", Files::new().mimetype("application/pdf"), "C0CHAN", thumb, Ok(FileFetch::NotAnImage), 0),
-            ("an SVG", Files::new().mimetype("image/svg+xml"), "C0CHAN", original, Ok(FileFetch::NotAnImage), 0),
-            ("an original over the bound", Files::new().size(big), "C0CHAN", original, Ok(FileFetch::TooLarge), 0),
-            ("a thumbnail of one", Files::new().size(big), "C0CHAN", thumb, image(THUMB_BYTES), 1),
-            ("an original of the bound", Files::new().size(big - 1), "C0CHAN", original, image(ORIGINAL_BYTES), 1),
-            ("the older keys", Files::new().listed_in(&["C0CHAN"]), "C0CHAN", thumb, image(THUMB_BYTES), 1),
-            ("a group by the older keys", Files::new().listed_in(&["G0PRIV"]), "G0PRIV", thumb, image(THUMB_BYTES), 1),
-            ("a private share", Files::new().shared_in(&["C0OTHER", "G0PRIV"]), "G0PRIV", thumb, image(THUMB_BYTES), 1),
+            ("another channel's file", Files { channels: vec!["C0OTHER".into()], ..Files::new() }, "C0CHAN", original, Err(ApiError::BadRequest), 0),
+            ("a file shared nowhere", Files { channels: vec![], ..Files::new() }, "C0CHAN", thumb, Err(ApiError::BadRequest), 0),
+            ("a PDF", Files { mimetype: "application/pdf".into(), ..Files::new() }, "C0CHAN", thumb, Ok(FileFetch::NotAnImage), 0),
+            ("an SVG", Files { mimetype: "image/svg+xml".into(), ..Files::new() }, "C0CHAN", original, Ok(FileFetch::NotAnImage), 0),
+            ("an original over the bound", Files { size: Some(big), ..Files::new() }, "C0CHAN", original, Ok(FileFetch::TooLarge), 0),
+            ("a thumbnail of one", Files { size: Some(big), ..Files::new() }, "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("an original of the bound", Files { size: Some(big - 1), ..Files::new() }, "C0CHAN", original, image(ORIGINAL_BYTES), 1),
+            ("the older keys", Files { older_keys: true, ..Files::new() }, "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a group by the older keys", Files { channels: vec!["G0PRIV".into()], older_keys: true, ..Files::new() }, "G0PRIV", thumb, image(THUMB_BYTES), 1),
+            ("a private share", Files { channels: vec!["C0OTHER".into(), "G0PRIV".into()], ..Files::new() }, "G0PRIV", thumb, image(THUMB_BYTES), 1),
             ("a file shared in the channel", Files::new(), "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a JPEG", Files { mimetype: "image/jpeg".into(), ..Files::new() }, "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a GIF", Files { mimetype: "image/gif".into(), ..Files::new() }, "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a WebP", Files { mimetype: "image/webp".into(), ..Files::new() }, "C0CHAN", original, image(ORIGINAL_BYTES), 1),
+            ("an original with no size", Files { no_size: true, ..Files::new() }, "C0CHAN", original, Err(ApiError::Malformed), 0),
+            ("a thumbnail with no size", Files { no_size: true, ..Files::new() }, "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a direct message's share", Files { channels: vec!["D0DIRECT".into()], ..Files::new() }, "C0CHAN", thumb, Err(ApiError::BadRequest), 0),
         ];
         for (what, files, channel, variant, want, gets) in cases {
             let fake = files_fake(files).await;
@@ -2719,6 +2725,29 @@ async fn a_fetch_reads_only_a_picture_shared_in_its_channel() {
         assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Closed));
         assert_eq!(fake.seen().len(), before);
         fake.shutdown().await;
+
+        // A client closed while `files.info` is answered sends no GET.
+        let slot: Arc<Mutex<Option<Arc<Api>>>> = Arc::new(Mutex::new(None));
+        let (files, closer) = (Files::new(), slot.clone());
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == "/api/files.info" {
+                if let Some(api) = closer.lock().unwrap().as_ref() {
+                    api.close();
+                }
+            }
+            files.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = Arc::new(new_api(&fake));
+        *slot.lock().unwrap() = Some(api.clone());
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Err(ApiError::Closed));
+        assert_eq!(downloads(&fake).len(), 0);
+        *slot.lock().unwrap() = None;
+        fake.shutdown().await;
+
+        // A result prints its size, never its bytes.
+        let shown = format!("{:?}", FileFetch::Image { mime: "image/png".into(), bytes: vec![0; 1 << 20] });
+        assert_eq!(shown, "Image { mime: \"image/png\", bytes: 1048576 }");
     })
     .await;
 }
@@ -2732,22 +2761,23 @@ async fn a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one() {
             (&["thumb_160", "thumb_480"], "thumb_480"),
             (&["thumb_160"], "thumb_160"),
         ] {
-            let fake = files_fake(Files::new().thumb_keys(keys)).await;
+            let fake = files_fake(Files { thumb_keys: keys.to_vec(), ..Files::new() }).await;
             assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, image(THUMB_BYTES), "{want}");
             assert_eq!(downloads(&fake)[0].path(), Files::thumb_path(want));
             fake.shutdown().await;
         }
 
-        // With none, a small original stands in; one byte over `MAX_THUMB` is refused unsent; the original variant takes
+        // With none, a small original stands in; one byte over `MAX_THUMB` is `NoThumbnail` (not `TooLarge`: a thumbnail may
+        // come later), unsent; the original variant takes
         // it whole.
-        let fake = files_fake(Files::new().thumb_keys(&[]).original(vec![7; MAX_THUMB])).await;
+        let fake = files_fake(Files { thumb_keys: vec![], original: vec![7; MAX_THUMB], ..Files::new() }).await;
         let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await;
         assert_eq!(got, Ok(FileFetch::Image { mime: "image/png".into(), bytes: vec![7; MAX_THUMB] }));
-        assert_eq!(downloads(&fake)[0].path(), Files::download_path());
+        assert_eq!(downloads(&fake)[0].path(), Files::DOWNLOAD);
         fake.shutdown().await;
-        let fake = files_fake(Files::new().thumb_keys(&[]).original(vec![7; MAX_THUMB + 1])).await;
+        let fake = files_fake(Files { thumb_keys: vec![], original: vec![7; MAX_THUMB + 1], ..Files::new() }).await;
         let api = new_api(&fake);
-        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Ok(FileFetch::TooLarge));
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Ok(FileFetch::NoThumbnail));
         assert_eq!(downloads(&fake).len(), 0, "a large original is never fetched for a thumbnail");
         assert!(matches!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Ok(FileFetch::Image { .. })));
         fake.shutdown().await;
@@ -2758,26 +2788,31 @@ async fn a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one() {
 #[tokio::test]
 async fn an_answer_that_is_not_an_image_is_refused() {
     bounded(async {
-        for (served, is_image) in [
-            (Some("text/html; charset=utf-8"), false),
-            (Some("application/octet-stream"), false),
-            (Some("image/"), false),
-            (None, false),
-            (Some("IMAGE/PNG; q=1"), true),
+        for (served, want) in [
+            (Some("text/html; charset=utf-8"), None),
+            (Some("application/octet-stream"), None),
+            (Some("image/"), None),
+            (Some("image/svg+xml"), None),
+            (Some("image/x-icon"), None),
+            (Some("image/jpg"), None),
+            (None, None),
+            (Some("IMAGE/PNG; q=1"), Some("image/png")),
+            (Some("image/jpeg"), Some("image/jpeg")),
+            (Some("image/gif"), Some("image/gif")),
+            (Some("image/webp"), Some("image/webp")),
         ] {
             for variant in [FileVariant::Thumb, FileVariant::Original] {
-                let fake = files_fake(Files::new().content_type(served)).await;
+                let fake = files_fake(Files { content_type: served.map(String::from), ..Files::new() }).await;
                 let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
-                if is_image {
-                    assert!(matches!(got, Ok(FileFetch::Image { ref mime, .. }) if mime == "image/png"), "{got:?}");
-                } else {
-                    assert_eq!(got, Ok(FileFetch::NotAnImage), "{served:?} {variant:?}");
+                match want {
+                    Some(mime) => assert!(matches!(got, Ok(FileFetch::Image { mime: ref m, .. }) if m == mime), "{served:?} {got:?}"),
+                    None => assert_eq!(got, Ok(FileFetch::NotAnImage), "{served:?} {variant:?}"),
                 }
                 fake.shutdown().await;
             }
         }
         // An image with no bytes is no picture either.
-        let fake = files_fake(Files::new().original(Vec::new())).await;
+        let fake = files_fake(Files { original: Vec::new(), ..Files::new() }).await;
         assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Err(ApiError::Malformed));
         fake.shutdown().await;
     })
@@ -2791,8 +2826,8 @@ async fn a_fetch_is_bounded_while_it_streams() {
         // large and exactly the bound passes.
         for (variant, bound) in [(FileVariant::Thumb, MAX_THUMB), (FileVariant::Original, MAX_CHAT_FILE)] {
             for (len, want_ok) in [(bound + 1, false), (bound, true)] {
-                let files = Files::new().size(10);
-                let files = if variant == FileVariant::Thumb { files.thumb(vec![3; len]) } else { files.original(vec![3; len]) };
+                let files = Files { size: Some(10), ..Files::new() };
+                let files = if variant == FileVariant::Thumb { Files { thumb: vec![3; len], ..files } } else { Files { original: vec![3; len], ..files } };
                 let fake = files_fake(files).await;
                 let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
                 let want = if want_ok { Ok(FileFetch::Image { mime: "image/png".into(), bytes: vec![3; len] }) } else { Ok(FileFetch::TooLarge) };
@@ -2810,7 +2845,7 @@ async fn a_fetch_redirected_off_slack_sends_nothing_there() {
         // To a foreign host: refused before any request there, so the token never reaches it.
         for host in ["other.example", "evilslack.com"] {
             for variant in [FileVariant::Thumb, FileVariant::Original] {
-                let fake = files_fake(Files::new().redirecting_to(host)).await;
+                let fake = files_fake(Files { redirect_to: Some(host.into()), ..Files::new() }).await;
                 let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
                 assert_eq!(got, Err(ApiError::Http(HttpError::Destination)), "{host} {variant:?}");
                 for s in fake.seen() {
@@ -2820,10 +2855,10 @@ async fn a_fetch_redirected_off_slack_sends_nothing_there() {
             }
         }
         // Within Slack the redirect is followed and the bearer rides it.
-        let fake = files_fake(Files::new().redirecting_to("files.slack.com")).await;
+        let fake = files_fake(Files { redirect_to: Some("files.slack.com".into()), ..Files::new() }).await;
         assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
         let seen = fake.seen();
-        assert_eq!(seen.last().unwrap().path(), Files::private_path());
+        assert_eq!(seen.last().unwrap().path(), Files::PRIVATE);
         assert_eq!(seen.last().unwrap().authorization, Some(format!("Bearer {TOKEN}")));
         fake.shutdown().await;
     })
@@ -2837,7 +2872,7 @@ async fn a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_rea
         // nothing; a dropped fetch frees its permit.
         let files = Files::new();
         let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
-            if seen.path() == Files::download_path() {
+            if seen.path() == Files::DOWNLOAD {
                 return Reply::Hang;
             }
             files.reply(seen, port).unwrap_or(Reply::Drop)
@@ -2864,7 +2899,7 @@ async fn a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_rea
         // A 429 on the file's URL sets the wait, so the next read is refused without a request.
         let files = Files::new();
         let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
-            if seen.path() == Files::download_path() {
+            if seen.path() == Files::DOWNLOAD {
                 return status(429, &[("Retry-After", "5")], &json!({}));
             }
             files.reply(seen, port).unwrap_or(Reply::Drop)
@@ -2876,6 +2911,31 @@ async fn a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_rea
         let before = fake.seen().len();
         assert!(matches!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Limited { .. })));
         assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn each_variant_is_read_under_its_own_deadline() {
+    bounded(async {
+        // A thumbnail's GET is a read (15 s) and an original's a transfer (60 s): the one that is short times out.
+        let files = Files::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == Files::DOWNLOAD || seen.path() == Files::thumb_path("thumb_360") {
+                return Reply::Hang;
+            }
+            files.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let (short, long) = (Duration::from_millis(300), Duration::from_secs(40));
+        let thumbs = new_api(&fake).with_deadlines(short, long, long);
+        let originals = new_api(&fake).with_transfer_deadline(short);
+        for (api, variant) in [(&thumbs, FileVariant::Thumb), (&originals, FileVariant::Original)] {
+            let start = Instant::now();
+            assert_eq!(api.fetch_file("C0CHAN", "F0PIC", variant).await, Err(ApiError::Http(HttpError::Timeout)), "{variant:?}");
+            assert!(start.elapsed() < Duration::from_secs(10), "{variant:?} ended at its own deadline");
+        }
         fake.shutdown().await;
     })
     .await;

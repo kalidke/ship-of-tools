@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
-use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_MIME, MAX_NAME};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
 use crate::watch::MAX_CHANNELS;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
@@ -466,6 +466,9 @@ pub enum FileFetch {
     NotAnImage,
     /// The file or its rendition is over the bound of its variant, by Slack's word or by the bytes counted as they came.
     TooLarge,
+    /// A thumbnail was asked for, Slack names none and the original is over `MAX_THUMB`. Not final: Slack can make a
+    /// thumbnail after the upload, so a later ask may find one.
+    NoThumbnail,
 }
 
 impl fmt::Debug for FileFetch {
@@ -474,6 +477,7 @@ impl fmt::Debug for FileFetch {
             FileFetch::Image { mime, bytes } => write!(f, "Image {{ mime: {mime:?}, bytes: {} }}", bytes.len()),
             FileFetch::NotAnImage => f.write_str("NotAnImage"),
             FileFetch::TooLarge => f.write_str("TooLarge"),
+            FileFetch::NoThumbnail => f.write_str("NoThumbnail"),
         }
     }
 }
@@ -856,7 +860,8 @@ impl Api {
     /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be
     /// shared in `channel` and a PNG, JPEG, GIF or WebP, then one GET of the rendition, with the bearer, bounded by the
     /// variant (`MAX_THUMB` or `MAX_CHAT_FILE`) while it streams. A thumbnail is Slack's `thumb_360`, `thumb_480` or
-    /// `thumb_160`, else a small original. Input it cannot carry, and a file that is not the channel's, are `Err` unsent.
+    /// `thumb_160`, else a small original (`NoThumbnail` when it is not small). Input it cannot carry is `Err` unsent, and a
+    /// file that is not the channel's is `Err` with nothing downloaded.
     pub async fn fetch_file(&self, channel: &str, file: &str, variant: FileVariant) -> Result<FileFetch, ApiError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(ApiError::Closed);
@@ -888,11 +893,17 @@ impl Api {
                 let original = url("url_private_download").or_else(|| url("url_private")).ok_or(ApiError::Malformed)?;
                 match info.get("size").and_then(Value::as_u64) {
                     Some(size) if size <= bound as u64 => original,
+                    // A thumbnail Slack has not made (it can follow the upload) is not an original too large to show.
+                    Some(_) if variant == FileVariant::Thumb => return Ok(FileFetch::NoThumbnail),
                     Some(_) => return Ok(FileFetch::TooLarge),
                     None => return Err(ApiError::Malformed),
                 }
             }
         };
+        // A service retired while `files.info` was answered sends nothing more, as a share's last step does not.
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
         let request = Request::get(url, deadline).max_body(bound).bearer(self.token.clone());
         let response = match self.http.send(request).await {
             Ok(response) => response,
@@ -1207,12 +1218,10 @@ fn shared_in(file: &Value, channel: &str) -> bool {
     listed("channels") || listed("groups") || shared("public") || shared("private")
 }
 
-/// An answer's `Content-Type` when it is an image's: `image/` and a short subtype, parameters dropped, lower case.
+/// An answer's `Content-Type` when it is one of the `PICTURES`, parameters dropped, lower case.
 fn image_type(response: &Response) -> Option<String> {
     let kind = response.header("content-type")?.split(';').next()?.trim().to_ascii_lowercase();
-    let subtype = kind.strip_prefix("image/")?;
-    let plain = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"+.-_".contains(&b);
-    (kind.len() <= MAX_MIME && !subtype.is_empty() && subtype.bytes().all(plain)).then_some(kind)
+    PICTURES.contains(&kind.as_str()).then_some(kind)
 }
 
 /// An `auth.test` answer's `team_id`: `Malformed` when missing or not an id.
