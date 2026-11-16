@@ -115,6 +115,88 @@ fn remove_durable_is_idempotent_and_accepts_a_missing_folder() {
     remove_durable(&dir.path().join("gone").join("record")).unwrap();
 }
 
+/// A private write's temporary file is owner-only at the step that creates it, and the record it replaces becomes so,
+/// one that other accounts could read included.
+#[test]
+fn a_private_write_is_owner_only_from_its_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record");
+    std::fs::write(&path, b"old").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let mut at_create = None;
+        let temp = dir.path().join("record.tmp");
+        super::super::beneath::write_in_folder_at(&path, b"new", true, || {}, |s| {
+            if s == super::super::beneath::Step::Temp {
+                at_create = Some(mode(&temp));
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(at_create, Some(0o600), "the temporary file's mode at its creation");
+        assert_eq!(mode(&path), 0o600, "the record's mode after the rename");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_durable_private(&path, b"new").unwrap();
+        assert_eq!(mode(&path), 0o600, "the record's mode after the public write");
+    }
+    #[cfg(windows)]
+    write_durable_private(&path, b"new").unwrap();
+    #[cfg(windows)]
+    {
+        let expected = sddl::of_descriptor(super::super::owner_protected_pipe_descriptor().unwrap().as_ptr());
+        let sid = super::super::token_user_sid_string().unwrap();
+        assert!(expected.starts_with("D:P(A;;FA;;;") && expected.matches('(').count() == 1, "{expected}");
+        assert!(sid.starts_with("S-1-"), "{sid}");
+        assert_eq!(sddl::of_file(&path), expected, "the record's DACL: protected, one full-access entry for this user");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+}
+
+/// A DACL as SDDL text, through the converter both sides share, so the expected and the actual speak one dialect.
+#[cfg(windows)]
+mod sddl {
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+    pub fn of_descriptor(sd: PSECURITY_DESCRIPTOR) -> String {
+        let mut text: *mut u16 = std::ptr::null_mut();
+        let ok = unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, std::ptr::null_mut()) };
+        assert_ne!(ok, 0, "ConvertSecurityDescriptorToStringSecurityDescriptorW");
+        let len = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
+        let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) });
+        unsafe { LocalFree(text as HLOCAL) };
+        s
+    }
+
+    pub fn of_file(path: &Path) -> String {
+        let wide = crate::host::wide_null(path.to_str().unwrap());
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let rc = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            )
+        };
+        assert_eq!(rc, 0, "GetNamedSecurityInfoW");
+        let s = of_descriptor(sd);
+        unsafe { LocalFree(sd as HLOCAL) };
+        s
+    }
+}
+
 /// Runs one durable write over a stale entry at the temporary name and checks the outside file and the target.
 fn durable_over_stale_temp(plant: impl FnOnce(&Path, &Path)) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();

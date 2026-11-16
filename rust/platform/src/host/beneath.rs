@@ -18,7 +18,7 @@ use arm::{create_dir_beneath_at, open_followed, remove_in, write_beneath_at, wri
 
 /// The points a test may stop at, each after the step it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
+pub(super) enum Step {
     Root,
     Folder(usize),
     /// A folder's open found nothing; the make follows.
@@ -37,12 +37,20 @@ pub fn write_beneath(root: &Path, rel: &str, bytes: &[u8]) -> io::Result<PathBuf
 
 /// Writes `bytes` at `path` durably (the guarantee of [`super::write_durable`]): the parent folder is opened once, by its
 /// path, and the stale `<name>.tmp` is removed, the file created, written, synced, renamed and the folder synced relative
-/// to that open folder. `before_create` runs after the removal and `at` after each later step, as seams for a test.
-pub(super) fn write_in_folder(path: &Path, bytes: &[u8], before_create: impl FnOnce()) -> io::Result<()> {
-    write_in_folder_at(path, bytes, before_create, |_| Ok(()))
+/// to that open folder. A `private` write creates the temporary file owner-only (Unix mode `0o600`, Windows the
+/// owner-only protected descriptor), so no other account can open it at any step and the rename makes the record so.
+/// `before_create` runs after the removal and `at` after each later step, as seams for a test.
+pub(super) fn write_in_folder(path: &Path, bytes: &[u8], private: bool, before_create: impl FnOnce()) -> io::Result<()> {
+    write_in_folder_at(path, bytes, private, before_create, |_| Ok(()))
 }
 
-fn write_in_folder_at(path: &Path, bytes: &[u8], before_create: impl FnOnce(), mut at: impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+pub(super) fn write_in_folder_at(
+    path: &Path,
+    bytes: &[u8],
+    private: bool,
+    before_create: impl FnOnce(),
+    mut at: impl FnMut(Step) -> io::Result<()>,
+) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| invalid(format!("{path:?} names no file")))?;
     let folder = match path.parent() {
         Some(p) if p.as_os_str().is_empty() => Path::new("."),
@@ -59,7 +67,7 @@ fn write_in_folder_at(path: &Path, bytes: &[u8], before_create: impl FnOnce(), m
     }
     before_create();
     let mut created = false;
-    write_in(&dir, &temp, name, bytes, &mut |s| {
+    write_in(&dir, &temp, name, bytes, private, &mut |s| {
         created |= s == Step::Temp;
         at(s)
     })

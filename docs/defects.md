@@ -1008,8 +1008,18 @@ owned by `docs/CLAUDE.md`.
   (`stale_row`, `unmapped`) is asked again every 5 seconds where the channel's owner waits for a row or link change.
   Both are the hub's own refusals and cost no Slack read (`rust/frontend/src/ui/drawer/chat/thread.rs`). Found by B5p's
   stack review, reading code and a probe; never seen.
+- **CHAT-SETUP-NEEDS-FILES** [person] Setting the project chat up takes a person making and editing two files on the hub
+  (`chat-secrets.toml` and `chat.toml`, `docs/src/guide/chat-setup.md`), with a daemon restart for each change, and the
+  guide does not say which steps are once per Slack workspace and which per project. The maintainer, reading the guide
+  (2026-11-15): "we can't require users to make and edit files". Fix decided: connect a workspace and pick a project's
+  channel from the Chat drawer, the daemon writing both files and applying them with no restart.
 
 ## records
+
+- **CHAT-GUIDE-ONE-COMPUTER-HUB** [note] `docs/src/guide/chat-setup.md` says the chat runs on the one computer a person
+  uses ("If you use Ship of Tools on one computer, that is the one"), but a computer with no `hosts.toml` runs no chat:
+  the daemon's hub fact needs topology to parse and name this computer (`is_hub`, `rust/backend/src/chat.rs`), and a
+  missing file names none. The guide is to say what is true. Found reading code; never seen.
 
 - **FOUR-NUMBERS-TWICE-NAMES** [note] `scripts/four-numbers.jl` should list the twice pairs a pass adds, by name, at each
   landing, as it lists removed tests (23 of one pass's 25 added twice names were door wrappers and generic names).

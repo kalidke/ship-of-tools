@@ -763,7 +763,7 @@ fn a_folder_swapped_before_the_create_keeps_the_record_in_the_opened_folder() {
     let (_g, root, outside) = setup();
     let folder = root.join("d");
     std::fs::create_dir(&folder).unwrap();
-    write_in_folder(&folder.join("record"), b"new", || swap_for_link(&folder, &outside)).unwrap();
+    write_in_folder(&folder.join("record"), b"new", false, || swap_for_link(&folder, &outside)).unwrap();
     assert_eq!(std::fs::read(root.join("d.moved/record")).unwrap(), b"new");
     assert!(entries(&outside).is_empty());
 }
@@ -776,7 +776,7 @@ fn a_folder_swapped_after_the_create_keeps_the_record_in_the_opened_folder() {
     let folder = root.join("d");
     std::fs::create_dir(&folder).unwrap();
     std::fs::write(outside.join("record.tmp"), b"keep").unwrap();
-    write_in_folder_at(&folder.join("record"), b"new", || {}, |s| {
+    write_in_folder_at(&folder.join("record"), b"new", false, || {}, |s| {
         if s == Step::Temp {
             swap_for_link(&folder, &outside);
         }
@@ -792,7 +792,7 @@ fn a_folder_swapped_after_the_create_keeps_the_record_in_the_opened_folder() {
 fn a_record_whose_folder_is_reached_through_a_link_is_written_in_the_target() {
     let (_g, root, outside) = setup();
     link_dir(&outside, &root.join("link")).unwrap();
-    write_in_folder(&root.join("link/record"), b"new", || {}).unwrap();
+    write_in_folder(&root.join("link/record"), b"new", false, || {}).unwrap();
     assert_eq!(std::fs::read(outside.join("record")).unwrap(), b"new");
     assert_eq!(entries(&outside), ["record"]);
 }
@@ -809,7 +809,7 @@ fn a_fifo_at_the_records_folder_answers_at_once() {
     // The write runs on its own thread so a write that blocks fails this test instead of hanging the suite.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(write_in_folder(&fifo.join("record"), b"x", || {}));
+        let _ = tx.send(write_in_folder(&fifo.join("record"), b"x", false, || {}));
     });
     let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the write answered within the bound");
     assert_eq!(got.unwrap_err().kind(), io::ErrorKind::NotADirectory);
@@ -819,7 +819,7 @@ fn a_fifo_at_the_records_folder_answers_at_once() {
 fn a_file_at_the_records_folder_answers_at_once() {
     let (_g, root, _outside) = setup();
     std::fs::write(root.join("f"), b"x").unwrap();
-    let err = write_in_folder(&root.join("f/record"), b"new", || {}).unwrap_err();
+    let err = write_in_folder(&root.join("f/record"), b"new", false, || {}).unwrap_err();
     #[cfg(unix)]
     assert_eq!(err.kind(), io::ErrorKind::NotADirectory);
     #[cfg(not(unix))]

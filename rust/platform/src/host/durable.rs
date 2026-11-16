@@ -470,13 +470,20 @@ fn flush_renamed(to: &Path) -> Result<()> {
 /// always a new file this call creates: whatever sits at its name is removed first, and the create refuses a name that
 /// exists. Windows renames by the temporary file's handle, after the file's flush and before the folder's.
 pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    super::beneath::write_in_folder(path, bytes, || {})
+    super::beneath::write_in_folder(path, bytes, false, || {})
+}
+
+/// [`write_durable`] for a record no other account may read: the temporary file is owner-only from its creation (Unix
+/// mode `0o600`, Windows a protected descriptor with one full-access entry for the process's user), so no other account
+/// can open it at any step, and the rename makes the record owner-only, a record that was readable by others included.
+pub fn write_durable_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    super::beneath::write_in_folder(path, bytes, true, || {})
 }
 
 /// [`write_durable`] with `between` run after the stale temporary name is removed and before it is created (a test seam).
 #[cfg(test)]
 fn write_durable_between(path: &Path, bytes: &[u8], between: impl FnOnce()) -> std::io::Result<()> {
-    super::beneath::write_in_folder(path, bytes, between)
+    super::beneath::write_in_folder(path, bytes, false, between)
 }
 
 /// Deletes `path` if it exists, then syncs its directory, so `Ok` means the absence is durable even when an earlier try

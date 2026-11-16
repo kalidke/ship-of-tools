@@ -28,7 +28,7 @@ pub(super) fn write_beneath_at(
     let last = names.pop().expect("plain_names returns at least one name");
     let ctemp = CString::new(temp_name(temp)?).map_err(|_| invalid("the temporary name holds a NUL".into()))?;
     let dir = walk(root, &names, true, &mut at)?;
-    create_and_publish(&dir, &ctemp, &last, bytes, &mut at)?;
+    create_and_publish(&dir, &ctemp, &last, bytes, false, &mut at)?;
     Ok(root.join(rel))
 }
 
@@ -45,15 +45,17 @@ pub(super) fn remove_in(dir: &File, name: &OsStr) -> io::Result<()> {
 }
 
 /// The names of [`create_and_publish`] from a record's folder.
-pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], private: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let name = |n: &OsStr| CString::new(n.as_bytes()).map_err(|_| invalid("the name holds a NUL".into()));
-    create_and_publish(dir, &name(temp)?, &name(last)?, bytes, at)
+    create_and_publish(dir, &name(temp)?, &name(last)?, bytes, private, at)
 }
 
-/// Create the temporary file in `dir`, then write, rename and sync.
-fn create_and_publish(dir: &File, temp: &CStr, last: &CStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+/// Create the temporary file in `dir` (mode `0o600` when `private`, else `0o666`, each less the umask), then write,
+/// rename and sync.
+fn create_and_publish(dir: &File, temp: &CStr, last: &CStr, bytes: &[u8], private: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-    let fd = own(unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), flags, 0o666 as c_int) })?;
+    let mode: c_int = if private { 0o600 } else { 0o666 };
+    let fd = own(unsafe { libc::openat(dir.as_raw_fd(), temp.as_ptr(), flags, mode) })?;
     let result = publish(dir, File::from(fd), temp, last, bytes, at);
     if result.is_err() {
         // This write created the temporary name exclusively; after a rename it is already gone, and a failure here

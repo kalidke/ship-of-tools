@@ -30,6 +30,7 @@ use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 use super::{absolute_root, invalid, names_another_place, plain_names, temp_name, Step};
 use crate::host::durable::is_transient_hold;
+use crate::host::owner_protected_pipe_descriptor;
 use crate::host::paths::simplify_verbatim;
 use crate::host::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
 
@@ -47,7 +48,7 @@ pub(super) fn write_beneath_at(
     let (last, folders) = names.split_last().expect("plain_names returns at least one name");
     let temp = temp_name(temp)?;
     let dir = walk(root, folders, true, &mut at)?;
-    create_and_publish(&dir, &temp, last, bytes, &mut at)?;
+    create_and_publish(&dir, &temp, last, bytes, false, &mut at)?;
     Ok(root.join(rel))
 }
 
@@ -64,8 +65,8 @@ pub(super) fn remove_in(dir: &File, name: &OsStr) -> io::Result<()> {
 }
 
 /// The names of [`create_and_publish`] from a record's folder.
-pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
-    create_and_publish(dir, utf8(temp)?, utf8(last)?, bytes, at)
+pub(super) fn write_in(dir: &File, temp: &OsStr, last: &OsStr, bytes: &[u8], private: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+    create_and_publish(dir, utf8(temp)?, utf8(last)?, bytes, private, at)
 }
 
 fn utf8(name: &OsStr) -> io::Result<&str> {
@@ -74,9 +75,12 @@ fn utf8(name: &OsStr) -> io::Result<&str> {
 
 /// Create the temporary file in `dir` exclusively, held with share-read alone so no other open can rename or delete it.
 /// Once renamed, that handle holds the final name without delete sharing, which refuses every other writer's rename over
-/// the name, so it is closed at the rename, before the folder's sync.
-fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
-    let file = nt_open(dir, temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE)
+/// the name, so it is closed at the rename, before the folder's sync. A `private` file is created with the owner-only
+/// protected descriptor, which the rename by handle keeps; otherwise it inherits the folder's.
+fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], private: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+    let owner_only = if private { Some(owner_protected_pipe_descriptor().map_err(io::Error::other)?) } else { None };
+    let security = owner_only.as_ref().map_or(null(), |d| d.as_ptr() as *const c_void);
+    let file = nt_create(dir, temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE, security)
         .map_err(status_error)?;
     if let Err(e) = write_and_rename(dir, &file, last, bytes, at) {
         // The handle names the temporary file alone; a failure here changes nothing.
@@ -205,6 +209,11 @@ fn open_folder(prev: &File, name: &str, make: bool, missing: &mut impl FnMut() -
 
 /// One name relative to `parent`, never following a reparse point at the name; the handle is synchronous so std may use it.
 fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32, options: u32) -> Result<File, NTSTATUS> {
+    nt_create(parent, name, access, share, disposition, options, null())
+}
+
+/// [`nt_open`] with `security` the descriptor a file it creates gets (null: the folder's inherited one).
+fn nt_create(parent: &File, name: &str, access: u32, share: u32, disposition: u32, options: u32, security: *const c_void) -> Result<File, NTSTATUS> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let bytes = u16::try_from(wide.len() * 2).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let name = UNICODE_STRING { Length: bytes, MaximumLength: bytes, Buffer: wide.as_ptr() as *mut u16 };
@@ -213,7 +222,7 @@ fn nt_open(parent: &File, name: &str, access: u32, share: u32, disposition: u32,
         RootDirectory: parent.as_raw_handle() as HANDLE,
         ObjectName: &name,
         Attributes: OBJ_CASE_INSENSITIVE as u32,
-        SecurityDescriptor: null(),
+        SecurityDescriptor: security,
         SecurityQualityOfService: null(),
     };
     let mut handle: HANDLE = null_mut();

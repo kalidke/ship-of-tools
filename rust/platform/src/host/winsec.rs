@@ -201,6 +201,8 @@ pub(super) fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
 /// It now builds its `interprocess::os::windows::security_descriptor::
 /// SecurityDescriptor` from THIS SDDL rather than a second copy of it, so
 /// the two pipe families share one owner-only posture instead of drifting.
+/// The private durable write (`write_durable_private`) gives its temporary
+/// file this descriptor too: a file, like a pipe, has no children to inherit.
 #[cfg(windows)]
 pub fn owner_protected_pipe_descriptor() -> Result<OwnerProtectedDescriptor> {
     owner_protected_descriptor_with_ace("", "FA")
