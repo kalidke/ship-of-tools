@@ -2434,3 +2434,55 @@ A landing's record goes here, with its measured times; the package page holds on
   short lists, drawn. Where the minutes went: the build 13; the review 17, which found no blocker, a cursor that could
   stay off a one- or two-row tree view, and tests that painted one frame from the top; a fix round 9, its new table
   test red against the old lines; the rebase and one scoped gate 3.
+- v0.7.1-rc.8, 2026-11-15, on the maintainer's word ("let's try that on next rc7 which will likely be final rc"; rc.7
+  existed, so rc.8), carrying the four landings above: the full local gate at 7e03de18d passed (09:12); the cut at
+  about 09:15 (release afc5207b3, the line's next stamp 69a647d7a); the draft ready about 09:36. The hub's install by
+  archive was refused before it changed anything, because restarting the daemon would end the rows' open REPLs, and
+  the hub stays on rc.7 until he says. One window computer's session installed it by archive (09:40). Named consumer:
+  the maintainer; named check: the preview's box, the pinned nav status and Claude rows in the classic renderer. His use
+  found ROW-PACE-SLOW on the desktop: "why is scrolling slow on [the desktop]?", "just on this llm pane".
+- The Windows tree fixtures' descendant writes nothing to the stdout the test reads (CONTAIN-PING-PID-INTERLEAVE), 2026-11-15,
+  fixing forward a hosted red with no use behind it, test only and outside trial 1: main 09:37 (6b07be38d), one scoped
+  gate; the hosted Windows run passed after it.
+- A parked client's screens are counted from its show, and the sinks are waited for (PARKED-RESYNC-COUNTED), 2026-11-15,
+  fixing forward a hosted red with no use behind it, test only and outside trial 1: an Opus diagnosis of about 68 minutes
+  (the parent of the capsule landing red 28 runs in 50 on four CPUs, main 34, so not that landing) whose diff was applied
+  as it stood; main 11:08 (5130bb840) after one scoped gate of 115 s; the hosted runs green. A second red it found in the
+  same test stays open as PARKED-CLIENT-CUT-COUNT.
+- The cell panes page as they did before the row pace (ROW-PACE-SLOW), 2026-11-15, the two commits of rc.7's pace
+  reverted whole, the scroll code byte-identical to rc.6's: main 15:10 (920021d64), one scoped gate; about 15 minutes
+  from the maintainer's word that his laptop's rc.6 window was "working great". A session's explanations before it (a
+  version, then the pane's height) were given without evidence; the maintainer said so.
+- v0.7.1-rc.9, 2026-11-15, on the maintainer's word ("go - and get this [desktop] on it"), carrying the revert: the full
+  local gate at 920021d64 passed (15:36); the cut at 15:37 (release 831e85b42, next stamp 67b27086d); the draft ready
+  about 16:02; the desktop window computer's session installed it (16:05). Named consumer: the maintainer; named check:
+  Page Up and Page Down in the agent pane on the desktop. His use: "same problem in llm pane".
+- A roll frame shapes only the text that is new, and spaces are not text (AGENT-PANE-ROLL-RESHAPES), 2026-11-15, after a
+  Fable diagnosis on the maintainer's word ("ask a fable agent for help"), trial 1, Sonnet arm, builder text-reuse:
+  diagnosis 16:00 to 16:43, main 17:22 (46d999a06, a95ec4e39), about 82 minutes in all. About 85 product lines added, the
+  program 49 lines shorter, about 130 test lines. The text layer reused a shaped buffer only for the run in the same slot
+  of the frame's list, so a ring that moved a row shaped nearly every run in the window again: about 125 ms a frame at
+  203 by 73 on a Linux host against 4.5 ms for a preview frame, so a page got two frames on the desktop's large pane;
+  runs now take the buffer shaped for the same text wherever it sat, and blank cells make no run. A Codex read on his
+  word ("have codex try to figure it out"), told none of this, found the same cause at the same line in 18 minutes. Where
+  the minutes went: the diagnosis 43, measured; the build 13; one scoped gate and the review 21 at once, which found no
+  blocker and could not break either rule (every glyph of 45 frames of 18 adversarial screens the same before and after)
+  and one untested path, a metrics change; a fix round 25, its test red with that path emptied; one scoped gate 2. Two
+  pixel-scroll builds started before the diagnosis were stopped without an edit.
+- v0.7.1-rc.10, 2026-11-15, on the maintainer's word ("ok, just make a new rc and i try it on [the desktop]"), carrying the
+  text reuse: the full local gate at a95ec4e39 passed (17:31) and the hosted runs were green; the cut at 18:55 (release
+  149fc7dc4, next stamp 0dae303dd); both window computers' sessions installed it by archive (19:21 and 19:26), the
+  laptop from rc.6. Named consumer: the maintainer; named check: Page Up in the agent pane on the desktop. His use: "ok,
+  the llmpane scroll is even better. nice."
+- The Chat drawer's mark keys ease the view, and Left over an empty draft leaves a thread, 2026-11-15, on the
+  maintainer's asks on rc.10 ("up and down arrow should have our smooth scroll as well. and let's make left arrow on
+  empty prompt move back out to main, like the nav pane"), trial 1, Opus arm, builder chat-arrow-keys: builder about
+  19:20, main 19:37 (8ba91c625), about 17 minutes. 65 product lines and about 100 test lines: an arrow that marks a
+  message out of view eases the view there over the scroll setting, and a new action, Left in the Chat scope, closes an
+  open thread as Escape does while the draft is empty. Where the minutes went: the build 11, its diff read, no review
+  round; one scoped gate 2.
+- The rows on Claude Code's alternate screen, 2026-11-15: of the 27 the maintainer's switch to the classic renderer
+  left blank, 24 came back on the main screen with their conversations by Claude Code's own `/restart`, typed by a
+  session on his word in manual mode ("c"); the other three refused it while background work of their own ran, and
+  came back after their sessions stopped that work at his word ("go", and for the first of them "get [it] unstuck"). Their sessions had taken
+  no turn on the mail that asked them (WAKE-MISSED-FULLSCREEN-ROWS).

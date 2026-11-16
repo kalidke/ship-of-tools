@@ -174,10 +174,17 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.7 (2026-11-14) is an unpublished draft, installed
-by archive on the hub and, by its own session, on one window computer (a second waits for its window to return), for a
-person's use of the two defects his first use of rc.6 found: a page in the agent pane, the Terminal and the REPL rolls
-about a row a frame, and the Chat title names a mapped private channel. rc.6 (2026-11-14, the maintainer's word that it
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.10 (2026-11-15) is an unpublished draft, installed
+by archive by their own sessions on both window computers, where the maintainer has used it: a frame of a scroll lays
+out only the text that is new and no blank space, so a page in a large agent pane eases as the preview's does (his
+word on it: "the llmpane scroll is even better"). The hub stays on rc.7: installing there restarts the daemon, which
+ends the rows' open REPLs, and waits on his word. rc.9 (2026-11-15) put the cell panes' page back to rc.6's ease: the
+row pace rc.7 added answered a cause that was not the one seen. rc.8 (2026-11-15) carried what his use of rc.7 asked
+for: Claude rows start in Claude Code's classic renderer (his word: "we don't want claude fullscreen"), so the window's
+eased scroll reaches their conversation; a row's new run starts with the terminal's input modes reset; the preview's
+own messages in a box over the preview pane, held 5 s and fading, with plainer words for a refused drawing; and the
+nav pane's status pinned above its tree. rc.7 (2026-11-14) carried the Chat title's name for a mapped private
+channel. rc.6 (2026-11-14, the maintainer's word that it
 was expected to become the release) carried what he asked for that day: an SVG example, the Chat drawer on Ctrl+K, a
 line when drawing over a picture that is no image file, the drawer kept per row, the channel's name in the Chat title,
 and every text pane's eased scroll. rc.5 (2026-11-14) carried the fixes for the four defects a person had
@@ -186,11 +193,9 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.8-dev, with what the maintainer's use of rc.7 asked for (2026-11-15): Claude rows
-start in Claude Code's classic renderer (his word: "we don't want claude fullscreen"), so the window's eased scroll
-reaches their conversation; a row's new run starts with the terminal's input modes reset; the preview's own messages in
-a box over the preview pane, held 5 s and fading, with plainer words for a refused drawing; and the nav pane's status
-pinned above its tree. The `release/0.6.6` branch is closed to all but fixes found in use. A
+drawing). `main` carries 0.7.1-rc.11-dev, with what the maintainer asked of the Chat drawer on rc.10 (2026-11-15):
+Up and Down ease the view to a marked message out of view, and Left over an empty draft leaves an open thread, as the
+nav pane's Left does. The `release/0.6.6` branch is closed to all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
 everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
 progress is the project chat (the daemon speaks Slack itself,
@@ -231,7 +236,8 @@ source's generation, a stale draw stopped at once, waiting input bounded, two st
 holds it to a 10 s wall; the window's own process draws only the Monitor's chart, its text clamped. A crash of it on a
 Windows computer was seen to show no dialog and leave no dump or report (2026-11-12). Every text pane's scroll (the
 preview, the Chat drawer, the agent pane, the Terminal and REPL drawers) eases over `[display] smooth_scroll_ms`, 150 ms
-by default, the terminals and the REPL a whole row at a time (2026-11-14, on the maintainer's word). A PDF page and a video's poster
+by default, the terminals and the REPL a whole row at a time (2026-11-14, on the maintainer's word), each frame of it
+shaping only the text that came into view (2026-11-15). A PDF page and a video's poster
 are drawn by the computer's own poppler and ffmpeg where the kernel's search path has them, and otherwise by Julia's
 copy, which the first preview that needs it fetches once per user per computer in a child process (nothing is
 downloaded at install, and no copy is loaded into the kernel). Also in progress,

@@ -288,6 +288,10 @@ owned by `docs/CLAUDE.md`.
 
 ## capsule
 
+- **PARKED-CLIENT-CUT-COUNT** [note] `fe_attach`'s parked-client test asserts "a parked client was cut" from the
+  statuses its worker saw since the worker started, but the supervisor's first dial in its start tick can be Unproven
+  (guarantee 4's limit), so on a runner with four CPUs the assertion fails about 5 runs in 100, at the base of the fix
+  that closed PARKED-RESYNC-COUNTED and after it. A red with no use behind it. Fix: count the statuses from the parking.
 - **MACOS-SOCKOPT-RECORDS** [note] Two records of when macOS refuses a socket option disagree. The foreign-peer row test
   (`rust/capsule/tests/row.rs`) rests on xnu's `sosetoptlock`, which refuses an option on a socket shut in both directions;
   `rust/capsule/tests/macos_kernel_facts/peertoken.rs` and `rust/backend/tests/shell_dial.rs` say Darwin refuses
@@ -323,6 +327,11 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **WAKE-MISSED-FULLSCREEN-ROWS** [session] Three Claude rows still on Claude Code's alternate screen, their panes blank
+  after the person switched his renderer setting, took no turn on mail filed to them (2026-11-15): their transcripts
+  showed no `comm-poll` for over 40 minutes, while a line typed into each pane by a session (`[sot-comm] you have mail:
+  run comm-poll.sh`, the wake's own words) started a turn at once. Whether the daemon typed no wake for them (each row's
+  work state was blocked) or typed one the blank program dropped is not known; read the wake's log for those rows first.
 - **HUB-LINK-CROSS-LINE-MAIL** [session] A hub and a linked computer on 0.6.6 and on 0.7 carry no mail between them:
   the link's hello passes the one protocol gate (`server/hello.rs` `protocol_gate`), 0.6.6 is 3 and 0.7 is 4, and
   0.6.6's scripts send protocol 3. Seen with the published 0.6.6 and 0.7.0 daemons through `comm/tests/interop-066.sh`
@@ -593,6 +602,13 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **FRAME-BUDGET-FROM-END** [note] The frame pacer waits `FRAME_BUDGET` (8.333 ms) from the end of the last frame, not
+  from its start (`app/frame.rs` records the time after present; `app/pacing.rs` waits from it), so a frame that takes
+  10 ms is followed by the next about 18 ms after it began, and the window tops out near 77 frames a second. Read by two
+  diagnoses of the agent pane's page (2026-11-15); no use has shown it on its own.
+- **RELEASE-BUILD-SCROLL-FIXTURES** [note] Two native State fixtures, `a_preview_scroll_moves_over_frames_and_comes_to_rest`
+  and `a_repl_wheel_tick_rolls_a_row_at_a_time`, failed 4 runs of 4 in a release build on a Linux host at the unchanged
+  v0.7.1-rc.9 tree, and pass in the debug builds the gates run. Not chased; their timing may assume a debug build's pace.
 - **PDF-TEXT-SELECTION** [feature] Text the person selects in a PDF preview is shared with the row's agent, as a text
   preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
   so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
