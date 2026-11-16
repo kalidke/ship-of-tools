@@ -54,7 +54,7 @@ impl Stand {
             Stand::Offline => "not connected".into(),
             Stand::Resolving => "reading…".into(),
             Stand::Mapped => String::new(),
-            Stand::Unmapped => ChatCode::Unmapped.text().into(),
+            Stand::Unmapped => "no channel".into(),
             Stand::NoConfig => "the hub has no usable chat configuration: its daemon log says why".into(),
             Stand::NotHub => format!("the chat runs on the hub, not on {host}"),
             Stand::RowGone => ChatCode::StaleRow.text().into(),
@@ -111,6 +111,11 @@ impl RowChannel {
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool) {
         if up { self.connected.insert(host.clone()); } else { self.connected.remove(host); }
         self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None));
+    }
+
+    /// A pairing was answered, whatever it said (the hub may have saved it): the row is resolved again on the next frame.
+    pub(super) fn resolve_again(&mut self, host: &HostKey, row: &str) {
+        self.wanted.iter_mut().filter(|w| &w.id.host == host && w.id.workspace_id == row).for_each(|w| (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None));
     }
 
     /// When the wanted row is next resolved for its name, so the window can draw a frame at that moment.

@@ -171,6 +171,7 @@ actions! {
     ChatThreadClose, "chat.thread_close", ["ArrowLeft"], "Close thread", "Close the open thread in the Chat drawer, as Escape does; only while the draft is empty.", "Chat", Chat;
     ChatCopySelection, "chat.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy the text selected in a Chat message, or the marked message's text when none is selected.", "Chat", Chat;
     ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made.", "Chat", Chat;
+    ChatSetup, "chat.setup", ["Primary+Shift+k"], "Choose channel", "Choose this project's Slack channel from a list, or set it to none or connect Slack again; Enter picks, Escape closes.", "Chat", Chat;
     ChatNewline, "chat.newline", ["Shift+Enter"], "Insert newline", "Continue the chat draft on another line.", "Chat", Chat;
     PreviewEnd, "preview.end", ["End"], "Document end", "Scroll to the end of the displayed text.", "Text", Text;
     PreviewHalfUp, "preview.half_up", ["Ctrl+u"], "Half page up", "Scroll up half a pane.", "Text", HalfScroll;

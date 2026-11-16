@@ -18,7 +18,7 @@ fn host() -> HostKey {
     "a".to_string()
 }
 
-fn shown(row: &str) -> Option<ResultRowIdentity> {
+pub(super) fn shown(row: &str) -> Option<ResultRowIdentity> {
     Some(ResultRowIdentity { host: host(), workspace_id: row.to_string() })
 }
 
@@ -27,7 +27,7 @@ fn target() -> ChatTarget {
 }
 
 /// The channel's message `n`: a top-level record, its text `message n`.
-fn top(n: usize) -> ChatRecord {
+pub(super) fn top(n: usize) -> ChatRecord {
     record(&format!("1700000{n:03}.000100"), &format!("1700000{n:03}.000100"), &format!("message {n}"))
 }
 
@@ -61,7 +61,7 @@ fn on(d: &mut ChatDrawer, req: &ChatHistoryReq, reply: ChatReply<ChatHistoryRes>
 }
 
 /// A drawer whose shown row `ROW1` is watched on `CH1` and read whole: the channel holds `held`. The instant of the read.
-fn channel(held: &[ChatRecord]) -> (ChatDrawer, Instant) {
+pub(super) fn channel(held: &[ChatRecord]) -> (ChatDrawer, Instant) {
     channel_with(held, None)
 }
 
@@ -81,7 +81,7 @@ fn channel_with(held: &[ChatRecord], next: Option<&str>) -> (ChatDrawer, Instant
     (d, at)
 }
 
-fn body() -> ScreenRect {
+pub(super) fn body() -> ScreenRect {
     ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 }
 }
 
@@ -93,7 +93,7 @@ fn open(d: &mut ChatDrawer, fonts: &mut FontSystem, keys: &[bool]) -> Vec<Out> {
     d.open_thread()
 }
 
-fn joined(d: &ChatDrawer) -> String {
+pub(super) fn joined(d: &ChatDrawer) -> String {
     d.placed_text().join("|")
 }
 

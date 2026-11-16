@@ -220,9 +220,9 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     d.on_connection(&"a".to_string(), true, t0);
     assert!(asks_at(&mut d, t0 + Duration::from_millis(200)));
 
-    // Unmapped, no usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame.
+    // No usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame. (An unmapped
+    // row opens the channel picker: `picker_tests`.)
     for (evt, words) in [
-        (answer("R", serde_json::json!({ "state": "unmapped" })), "the row's folder maps to no channel"),
         (answer("R", serde_json::json!({ "state": "something_new" })), "the hub has no usable chat configuration: its daemon log says why"),
         (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "this daemon has no chat: update it"),
         (refused("R", ChatCode::Unavailable), "the chat runs on the hub, not on a"),

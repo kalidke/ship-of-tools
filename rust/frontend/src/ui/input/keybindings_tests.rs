@@ -80,23 +80,35 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
 }
 
 /// The Chat drawer takes `Primary+k` alone, like its siblings `drawer.repl` (`Primary+j`), `drawer.terminal` and
-/// `drawer.monitor`, in every context; the old `Primary+Shift+k` resolves to nothing, and no other action holds the chord.
+/// `drawer.monitor`, in every context; `Primary+Shift+k` is `chat.setup`, the Chat tenant's channel picker, and resolves to
+/// nothing in any other pane, and no other action holds either chord.
 #[test]
-fn primary_k_opens_the_chat_drawer_and_primary_shift_k_is_free() {
+fn primary_k_opens_the_chat_drawer_and_primary_shift_k_chooses_its_channel_in_the_chat_alone() {
+    use crate::ui::input::help::{Context, Pane};
     let b = KeyBindings::defaults();
     let k = Key::Character("k".into());
     let shifted = Modifiers { shift: true, ..primary() };
     assert_eq!(b.resolve(&k, None, primary(), false, |_| true), Some(Action::ToggleChatDrawer));
     assert_eq!(b.resolve(&k, None, primary(), true, |_| true), Some(Action::ToggleChatDrawer));
-    assert_eq!(b.resolve(&k, None, shifted, false, |_| true), None);
-    let holders = ACTIONS.iter().filter(|s| s.defaults.iter().any(|d| d.eq_ignore_ascii_case("Primary+k"))).count();
-    assert_eq!(holders, 1);
+    let pane = |pane| Context { pane, ..Context::default() };
+    let setup = |p| {
+        let context = pane(p);
+        b.resolve(&k, None, shifted, context.consumes_text(), |a| context.allows(a)).map(|a| a.spec().name)
+    };
+    assert_eq!(setup(Pane::Chat), Some("chat.setup"));
+    for p in [Pane::Repl, Pane::Terminal, Pane::Agent, Pane::Nav, Pane::Help, Pane::Monitor, Pane::Preview] {
+        assert_eq!(setup(p), None, "{p:?}");
+    }
+    for chord in ["Primary+k", "Primary+Shift+k"] {
+        let holders = ACTIONS.iter().filter(|s| s.defaults.iter().any(|d| d.eq_ignore_ascii_case(chord))).count();
+        assert_eq!(holders, 1, "{chord}");
+    }
 }
 
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.thread_close", "chat.copy_selection", "chat.send", "chat.newline"] {
+    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.thread_close", "chat.copy_selection", "chat.setup", "chat.send", "chat.newline"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");

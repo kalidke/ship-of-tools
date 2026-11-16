@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
-use sot_protocol::ops::{ChatCode, ChatPostRes};
+use sot_protocol::ops::{ChatCode, ChatPairRes, ChatPostRes};
 use super::super::*;
 use crate::ui::input::keypress::KeyPress;
 use crate::ui::persist::chat_name::save_chat_name;
@@ -16,12 +16,14 @@ mod compose;
 mod drawer;
 mod mrkdwn;
 mod owner;
+mod picker;
 mod project;
 mod row_channel;
 mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use drawer::ChatDrawer;
+pub(in crate::ui) use picker::{Body, Tone};
 pub(in crate::ui) use view::{ChatHit, Step};
 #[cfg(test)]
 pub(in crate::ui) use view::ChatView;
@@ -30,6 +32,8 @@ use owner::Out;
 mod compose_tests;
 #[cfg(test)]
 mod mrkdwn_tests;
+#[cfg(test)]
+mod picker_tests;
 #[cfg(test)]
 mod project_tests;
 #[cfg(test)]
@@ -50,12 +54,24 @@ impl State {
     fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
         for (host, req) in f(&mut self.chat, Instant::now()) {
             let post = if let OutgoingReq::ChatPost { req } = &req { Some(req.clone()) } else { None };
+            let unsent = match &req {
+                OutgoingReq::ChatPair { row, channel } => Some(OutgoingReq::ChatPair { row: row.clone(), channel: channel.clone() }),
+                OutgoingReq::ChatChannels => Some(OutgoingReq::ChatChannels),
+                _ => None,
+            };
             if let Err(e) = self.send_to(&host, req) {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
                 // A post the channel refused was never written: the owner reads it as refused, not as waiting for a reply.
                 if let Some(req) = post {
                     let reply = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Unavailable });
                     self.chat.on_evt(&host, ChatEvt::Posted { req, reply }, Instant::now());
+                }
+                // The same for a pair or a channel list that was never written: the picker is not left waiting.
+                let refused = ChatCode::Unavailable;
+                match unsent {
+                    Some(OutgoingReq::ChatPair { row, channel }) => drop(self.chat.on_evt(&host, ChatEvt::Paired { row, channel, reply: ChatReply::<ChatPairRes>::Refused(refused) }, Instant::now())),
+                    Some(OutgoingReq::ChatChannels) => drop(self.chat.on_evt(&host, ChatEvt::Channels { reply: ChatReply::Refused(refused) }, Instant::now())),
+                    _ => {}
                 }
             }
         }
@@ -92,6 +108,20 @@ impl State {
     fn save_chat_name(&mut self) {
         let words = apply_name(&mut self.chat, &mut self.settings, &Env::process());
         self.status.set(words);
+        self.window.request_redraw();
+    }
+
+    /// `chat.setup`: opens the picker for the row the chat shows; the status line says why when it cannot.
+    pub(in crate::ui) fn open_chat_picker(&mut self) {
+        let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
+        let mut refused = None;
+        self.with_chat(|c, _| c.open_picker(row.as_ref(), true).unwrap_or_else(|words| {
+            refused = Some(words);
+            Vec::new()
+        }));
+        if let Some(words) = refused {
+            self.status.set(words);
+        }
         self.window.request_redraw();
     }
 
@@ -222,6 +252,64 @@ pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str
         NameStep::Edit(edit) => state.chat.edit_name(edit).err(),
         NameStep::Held => None,
     };
+    if let Some(words) = refused {
+        state.status.set(words);
+    }
+    state.last_key = Some(label.to_string());
+    state.window.request_redraw();
+    true
+}
+
+/// What a key does to the channel picker.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum PickStep<'a> {
+    Pick,
+    Close,
+    Choose(bool),
+    Paste,
+    Edit(Edit<'a>),
+    /// A held Enter, Escape or paste, or the chord that opened the picker: taken, and nothing done.
+    Held,
+}
+
+/// What a key is while the picker is open: Enter picks, Escape closes, Up and Down choose, paste is a channel link, and the
+/// draft's edits narrow the list; every other key reaches the drawer as before.
+pub(in crate::ui) fn pick_step<'a>(action: Option<Action>, key: &'a Key, repeat: bool, mods: (bool, bool, bool)) -> Option<PickStep<'a>> {
+    match action {
+        Some(Action::ChatSend | Action::ReturnNav | Action::Paste) if repeat => Some(PickStep::Held),
+        Some(Action::ChatSetup) => Some(PickStep::Held),
+        Some(Action::ChatSend) => Some(PickStep::Pick),
+        Some(Action::ReturnNav) => Some(PickStep::Close),
+        Some(Action::Paste) => Some(PickStep::Paste),
+        Some(Action::ChatMarkOlder) => Some(PickStep::Choose(false)),
+        Some(Action::ChatMarkNewer) => Some(PickStep::Choose(true)),
+        _ => draft_edit(action, key, mods).map(PickStep::Edit),
+    }
+}
+
+/// A key while the channel picker is open (`pick_step`); whether it was taken.
+pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
+    if !state.chat.picking() {
+        return false;
+    }
+    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
+    let Some(step) = pick_step(action, &event.logical_key, event.repeat, (ctrl, alt, super_)) else { return false };
+    let mut refused = None;
+    match step {
+        PickStep::Pick => state.with_chat(|c, _| c.picker_enter()),
+        PickStep::Close => state.chat.dismiss_picker(),
+        PickStep::Choose(down) => state.chat.picker_step(down),
+        PickStep::Paste => {
+            if let Some(text) = read_clipboard_text() {
+                state.with_chat(|c, _| c.picker_paste(&text).unwrap_or_else(|words| {
+                    refused = Some(words);
+                    Vec::new()
+                }));
+            }
+        }
+        PickStep::Edit(edit) => state.chat.picker_edit(edit),
+        PickStep::Held => {}
+    }
     if let Some(words) = refused {
         state.status.set(words);
     }

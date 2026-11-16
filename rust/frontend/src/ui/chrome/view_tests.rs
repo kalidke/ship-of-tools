@@ -115,10 +115,12 @@ fn paint_chrome_chat(
 /// What a frame of the nav pane starts from: the spill on or off, the nav scroll, and, for `alone: Some(h)`, the
 /// nav pane painted alone, 36 columns by `h` rows with no prompt at its foot, so its list is `h` rows.
 #[derive(Clone, Copy, Default)]
-struct NavFrame {
+struct NavFrame<'a> {
     spill: bool,
     scroll: u16,
     alone: Option<u16>,
+    /// What the Chat drawer shows in its body instead of records.
+    body: Option<&'a crate::ui::drawer::chat::Body>,
 }
 
 /// `paint_chrome_chat` from `nav`, and the nav pane's rect, the spill's segments and the nav scroll the frame ends
@@ -130,7 +132,7 @@ fn paint_chrome_nav(
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
     chat_empty: bool,
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
-    nav: NavFrame,
+    nav: NavFrame<'_>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
     let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
@@ -170,6 +172,7 @@ fn paint_chrome_nav(
         pinned_preview_node_id: &pinned,
         drawer,
         chat_empty,
+        chat_body: nav.body,
         chat_title: " chat · C1 reading… ",
         chat_compose,
         chat_foot: 0,
@@ -343,6 +346,21 @@ fn the_chat_drawer_draws_no_messages_only_when_told_the_channel_is_empty() {
     assert!(drawn(DrawerContent::Chat, true));
     assert!(!drawn(DrawerContent::Chat, false));
     assert!(!drawn(DrawerContent::Repl, true), "only the chat drawer says it");
+}
+
+#[test]
+fn the_chat_drawer_draws_its_body_words_and_no_other_drawer_does() {
+    use crate::ui::drawer::chat::Body;
+    let body = Body::words("this project has no channel: press Enter to pick one");
+    let drawn = |drawer| {
+        let frame = NavFrame { body: Some(&body), ..NavFrame::default() };
+        let (rows, ..) = paint_chrome_nav((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false, None, frame);
+        rows.iter().any(|r| r.contains("this project has no channel: press Enter to pick one"))
+    };
+    assert!(drawn(DrawerContent::Chat));
+    for other in [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Help] {
+        assert!(!drawn(other), "{other:?}");
+    }
 }
 
 #[test]

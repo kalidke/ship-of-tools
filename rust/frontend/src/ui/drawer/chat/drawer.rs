@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
-use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatResolveRes, ChatTarget};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -13,6 +13,7 @@ use crate::ui::render::quad::ScreenRect;
 
 use super::compose::{Compose, ComposeText, Edit};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
+use super::picker::{connect_again, pair_words, Body, Pick, Picker};
 use super::row_channel::{RowChannel, Stand};
 use super::thread::Thread;
 use super::view::{ChatHit, ChatView, Step};
@@ -86,6 +87,10 @@ pub(in crate::ui) struct ChatDrawer {
     notice: Option<String>,
     /// The name being typed at the drawer's foot, while Enter found none set: the keys edit it, not the draft.
     asking: Option<String>,
+    /// The channel picker, which holds the channel's view meanwhile, and the row whose picker Escape closed: it opens by
+    /// itself for an unmapped row, once, until the row or its link changes.
+    picker: Option<Picker>,
+    dismissed: Option<ResultRowIdentity>,
 }
 
 /// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
@@ -116,8 +121,10 @@ impl ChatDrawer {
             self.cancel_name();
         }
         if step.changed {
-            // Another row's records are not the reader's place, and its thread is no one's.
+            // Another row's records are not the reader's place, and its thread and its picker are no one's.
             self.close_thread();
+            self.close_picker();
+            self.dismissed = None;
             self.view.reset();
             outs = self.owner_outs(ChatOwner::stop);
         }
@@ -136,6 +143,10 @@ impl ChatDrawer {
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
         self.cancel_name();
+        if self.picker.as_ref().is_some_and(|p| &p.row.host == host) {
+            self.close_picker();
+        }
+        self.dismissed = self.dismissed.take().filter(|r| &r.host != host);
         self.flight.clear(host);
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
@@ -163,10 +174,32 @@ impl ChatDrawer {
                         let target = ChatTarget { row, workspace, channel };
                         self.owner_outs(|o| o.watch(host.clone(), target, now))
                     }
+                    ChatReply::Done(ChatResolveRes::Unmapped) => {
+                        let mut outs = self.owner_outs(ChatOwner::stop);
+                        let ours = ResultRowIdentity { host: host.clone(), workspace_id: row };
+                        if self.picker.is_none() && self.dismissed.as_ref() != Some(&ours) {
+                            outs.extend(self.open_picker(Some(&ours), false).unwrap_or_default());
+                        }
+                        outs
+                    }
                     _ => self.owner_outs(ChatOwner::stop),
                 }
             }
             ChatEvt::Resolved { .. } => Vec::new(),
+            ChatEvt::Channels { reply } => {
+                if let Some(p) = self.picker.as_mut().filter(|p| &p.row.host == host) {
+                    p.on_channels(reply);
+                }
+                Vec::new()
+            }
+            ChatEvt::Paired { row, channel, reply } => {
+                self.on_paired(host, &row, channel.as_ref(), Some(&reply));
+                Vec::new()
+            }
+            ChatEvt::PairUnknown { row, channel } => {
+                self.on_paired(host, &row, channel.as_ref(), None);
+                Vec::new()
+            }
             ChatEvt::History { req, reply } => {
                 let orphan = self.flight.answered(host, &req);
                 let mut outs = match (orphan, req.thread.is_some()) {
@@ -202,6 +235,10 @@ impl ChatDrawer {
     /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to write for".into()) };
+        // Enter over an unmapped row with nothing typed asks for its channel.
+        if self.picker.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
+            return self.open_picker(Some(row), false);
+        }
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());
         }
@@ -222,6 +259,113 @@ impl ChatDrawer {
         let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+    }
+
+    /// Opens the picker for `row` and asks for the channels: for an unmapped row, or a mapped one (`setup`, the chord: it
+    /// then ends in `Connect Slack again`, and a mapped row begins with `No channel for this project`). Any other stand says
+    /// its words instead. The channel's view and thread are set aside.
+    pub(in crate::ui) fn open_picker(&mut self, row: Option<&ResultRowIdentity>, setup: bool) -> Result<Vec<Out>, String> {
+        let Some(row) = row.filter(|r| self.rows.row() == Some(*r)) else { return Err("no row to choose a channel for".into()) };
+        let mapped = match self.rows.stand() {
+            Stand::Mapped => true,
+            Stand::Unmapped => false,
+            other => return Err(other.words(self.rows.host())),
+        };
+        if self.picker.is_some() {
+            return Ok(Vec::new());
+        }
+        self.close_thread();
+        self.cancel_name();
+        let parked = self.parked_view();
+        self.picker = Some(Picker::new(row.clone(), setup, mapped, parked));
+        Ok(vec![(row.host.clone(), OutgoingReq::ChatChannels)])
+    }
+
+    /// The picker ends, and the channel's view returns.
+    fn close_picker(&mut self) -> bool {
+        let Some(p) = self.picker.take() else { return false };
+        self.view = p.parked;
+        true
+    }
+
+    /// Escape: the picker closes and does not open by itself again for this row until the row or its link changes.
+    pub(in crate::ui) fn dismiss_picker(&mut self) {
+        if self.close_picker() {
+            self.dismissed = self.rows.row().cloned();
+        }
+    }
+
+    pub(in crate::ui) fn picking(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    /// The picker's keys: Up and Down choose, typing narrows, and a channel link is picked as an entry is.
+    pub(in crate::ui) fn picker_step(&mut self, down: bool) {
+        self.picker.iter_mut().for_each(|p| p.step(down));
+    }
+
+    pub(in crate::ui) fn picker_edit(&mut self, edit: Edit) {
+        if let Some(p) = self.picker.as_mut() {
+            p.edit(edit);
+        }
+    }
+
+    pub(in crate::ui) fn picker_enter(&mut self) -> Vec<Out> {
+        let pick = self.picker.as_mut().and_then(Picker::enter);
+        self.picked(pick)
+    }
+
+    pub(in crate::ui) fn picker_paste(&mut self, text: &str) -> Result<Vec<Out>, &'static str> {
+        let pick = self.picker.as_mut().map(|p| p.paste(text)).transpose()?;
+        Ok(self.picked(pick))
+    }
+
+    /// What picking an entry sends: one `chat.pair` for a channel, or for none; `Connect Slack again` leaves the picker.
+    fn picked(&mut self, pick: Option<Pick>) -> Vec<Out> {
+        let (Some(pick), Some(row)) = (pick, self.picker.as_ref().map(|p| p.row.clone())) else { return Vec::new() };
+        let channel = match pick {
+            Pick::Channel(c) => Some(c),
+            Pick::Unpair => None,
+            Pick::Reconnect => {
+                self.close_picker();
+                self.notice = Some(connect_again());
+                return Vec::new();
+            }
+        };
+        vec![(row.host, OutgoingReq::ChatPair { row: row.workspace_id, channel })]
+    }
+
+    /// A `chat.pair` was answered (`None`: it may have been carried out). Every answer makes the row resolve again, so the
+    /// title and the watch follow what the hub now has. A pair made closes the picker, as does one that may have been made; a
+    /// refusal leaves the list and says why.
+    fn on_paired(&mut self, host: &HostKey, row: &str, channel: Option<&ChatChannel>, reply: Option<&ChatReply<ChatPairRes>>) {
+        self.rows.resolve_again(host, row);
+        let ours = self.picker.as_ref().is_some_and(|p| &p.row.host == host && p.row.workspace_id == row);
+        let private = ours && channel.is_some_and(|c| self.picker.as_ref().is_some_and(|p| p.is_private(c)));
+        let words = match reply {
+            Some(reply) => pair_words(reply, private),
+            None => Some("the channel may have been set: the title shows what the hub has".into()),
+        };
+        if ours {
+            self.picker.iter_mut().for_each(Picker::paired);
+            if words.is_none() || reply.is_none() {
+                self.close_picker();
+                // A project set to no channel stays so until a person asks.
+                if channel.is_none() {
+                    self.dismissed = Some(ResultRowIdentity { host: host.clone(), workspace_id: row.to_string() });
+                }
+            }
+        }
+        self.notice = words;
+    }
+
+    /// What the body shows instead of records: the picker, or, for an unmapped row, how to pick a channel.
+    pub(in crate::ui) fn body(&self) -> Option<Body> {
+        match (&self.picker, self.rows.stand()) {
+            (Some(p), _) => Some(p.body()),
+            (None, Stand::Unmapped) => Some(Body::words("this project has no channel: press Enter to pick one")),
+            _ => None,
+        }
     }
 
     /// The foot asks for the posting name; a name half typed stays.
@@ -267,6 +411,9 @@ impl ChatDrawer {
 
     /// The title: the channel, then the words of the outcome (the row's, or for a mapped row the fill's).
     pub(in crate::ui) fn title(&self) -> String {
+        if let Some(p) = &self.picker {
+            return p.title();
+        }
         let host = self.rows.host();
         let words = match (self.rows.stand(), self.owner.fill()) {
             (Stand::Mapped, Some(Fill::Needed | Fill::Reading)) => Stand::Resolving.words(host),
@@ -288,7 +435,7 @@ impl ChatDrawer {
 
     /// Whether the drawer says `no messages`: of the channel, so never over a thread.
     pub(in crate::ui) fn no_messages(&self) -> bool {
-        self.thread.is_none() && self.owner.no_messages()
+        self.thread.is_none() && self.picker.is_none() && self.owner.no_messages()
     }
 
     /// Places the held records in `body` (the drawer's pixels) and shapes those that reach it, and returns the frame's
@@ -297,9 +444,10 @@ impl ChatDrawer {
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32, inside: ScreenRect) -> Vec<crate::ui::render::cells::CellQuad> {
         let now = chrono::Local::now();
         // The thread's records are its own; the channel's reader keeps the place it left.
-        let records = self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records);
+        // The picker's own view holds no record.
+        let records = if self.picker.is_some() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
-        if self.thread.is_none() {
+        if self.thread.is_none() && self.picker.is_none() {
             self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
             self.owner.reaches(self.view.at_oldest);
         }
@@ -460,6 +608,9 @@ impl ChatDrawer {
 
     /// `compose_text` at a given time and offset, which the parent's time in `reply in thread of` is shown against.
     pub(super) fn compose_text_at(&self, focused: bool, now: i64, offset: chrono::FixedOffset) -> Option<ComposeText> {
+        if self.picker.is_some() {
+            return None;
+        }
         if let Some(name) = &self.asking {
             return Some(ComposeText::asking(name, focused));
         }

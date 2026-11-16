@@ -95,14 +95,35 @@ Restart Ship of Tools' background service on that computer (on Linux: `systemctl
 keep running; their Julia REPLs start fresh. Then select the project in the window and press `Ctrl+K` (`Cmd+K` on a Mac). The first time
 you post, the window asks for the name to post under.
 
+## Choosing a project's channel from the window
+
+With Slack connected (the files above), you pick each project's channel in the window, with no file to edit and no restart.
+Select the project's row on the computer the chat runs on and open the Chat drawer (`Ctrl+K`). A project with no channel yet
+shows the list at once; press Escape to close it, and Enter later to open it again.
+
+- Type to narrow the list (case does not matter), `Up` and `Down` to choose, `Enter` to pick, `Esc` to close.
+- A channel the app is not in is marked `your app joins it when you pick it`: picking a public channel makes the app join
+  it, and Slack then shows that your app joined. This needs the `channels:join` permission, which the manifest above does
+  not have; an app made from it cannot join, and picking such a channel says so: invite the app to the channel, as in step 3.
+- A private channel is in the list only once you have invited your app to it (step 3), and is marked `private, app invited`.
+- If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
+  (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID.
+- After you pick, the drawer shows the channel at once. Another project's channel cannot be picked again: it says that
+  another project already uses it.
+
+To change a project's channel, or to give it none, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac; `chat.setup`) in the Chat
+drawer: the list then begins with `No channel for this project` and ends with `Connect Slack again`. The window writes the
+choice into `chat.toml` for you, whole: comments and the order of its keys are not kept.
+
 ## Adding another project later
 
-Find the channel's ID (step 2), add the app to the channel (step 3), then in `chat.toml` add the ID to `channels` and
-add another `[[mapping]]` with the project's folder and that channel, and restart (step 5). One channel per project.
+Select its row, open the Chat drawer, and pick its channel as above. By hand: find the channel's ID (step 2), add the app to
+the channel (step 3), then in `chat.toml` add the ID to `channels` and add another `[[mapping]]` with the project's folder
+and that channel, and restart (step 5). One channel per project.
 
 ## If it does not show
 
-The Chat drawer's title says what is wrong. `the row's folder maps to no channel` means the folder in `chat.toml` is
-not exactly the row's folder. `the hub has no usable chat configuration` means a file was refused: the background
+The Chat drawer's title says what is wrong. `no channel` means no channel is set for this project: pick one as above, or,
+if you wrote `chat.toml` by hand, the folder in it is not exactly the row's folder. `the hub has no usable chat configuration` means a file was refused: the background
 service's log says which file and which line (`sotd log-path` prints where the log is). A token or ID is never printed
 in the log. The full rules for both files are in [the configuration reference](../ref/config.md#chat.toml-and-chat-secrets.toml).
