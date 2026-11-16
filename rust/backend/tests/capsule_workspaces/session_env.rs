@@ -82,7 +82,7 @@ impl OwnedRow {
         if let Some(mut daemon) = self
             .env
             .as_ref()
-            .and_then(|env| env.daemon.borrow_mut().take())
+            .and_then(|env| env.take_daemon())
         {
             let _ = daemon.kill();
             let deadline = Instant::now() + BOUND;
@@ -160,6 +160,8 @@ impl Drop for OwnedRow {
                 let stage = self.stage.take();
                 // The row's state folder and the Env's runtime folder are what ending it later through its own
                 // supervisor needs (`SOT_RUNTIME_DIR` names where its lane listens).
+                // The Env is forgotten, so its folders stay while this process runs; when it ends, the Env's reaper ends
+                // the row and removes them, unless a process still names one (then it keeps them, with its account).
                 let folders: Vec<String> = [
                     match &self.made {
                         Made::Row(dir) => Some(dir.display().to_string()),
@@ -177,7 +179,7 @@ impl Drop for OwnedRow {
                 .flatten()
                 .collect();
                 eprintln!(
-                    "sotd-bin test: the row is not confirmed ended ({why}); {}; keeping its folders: {}",
+                    "sotd-bin test: the row is not confirmed ended ({why}); {}; its folders, kept until this process ends: {}",
                     self.seen.as_deref().unwrap_or("its supervisor never answered"),
                     folders.join(" ")
                 );
@@ -319,8 +321,7 @@ async fn a_session_after_an_in_place_update_carries_the_stable_start_path() {
     std::fs::rename(&fresh, bin.join("sotd")).expect("rename the replacement over the binary");
     let pid = row
         .env()
-        .daemon
-        .borrow()
+        .daemon()
         .as_ref()
         .expect("the daemon is tracked")
         .id();

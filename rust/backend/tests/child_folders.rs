@@ -61,7 +61,7 @@ fn present(tmp: &Path, names: &[String]) -> Vec<String> {
 /// SIGKILLs `env`'s guard, the process this test spawned, so its daemon dies at once (`PR_SET_PDEATHSIG`) and runs no
 /// code; returns once the daemon is gone, with the daemon's pid. The daemon is the guard's one child.
 async fn kill_the_guard(env: &Env) -> u32 {
-    let mut guard = env.daemon.borrow_mut().take().expect("the launched guard");
+    let mut guard = env.take_daemon().expect("the launched guard");
     let children = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", guard.id())).expect("the guard's children");
     let daemon: Vec<u32> = children.split_whitespace().map(|pid| pid.parse().expect("a pid")).collect();
     assert_eq!(daemon.len(), 1, "the guard's one child is its daemon: {children:?}");
@@ -98,7 +98,7 @@ async fn a_close_removes_its_childrens_folders() {
     let _ = tokio::time::timeout(BOUND, sot_protocol::codec::read_frame(&mut conn)).await.expect("the lease reply in time").expect("the lease reply");
     let leaving = sot_protocol::Frame::req(2, op::FE_LEAVING, json!({ "intent": "close" }));
     let _ = sot_protocol::codec::write_frame(&mut conn, &leaving, None).await;
-    let mut guard = env.daemon.borrow_mut().take().expect("the launched guard");
+    let mut guard = env.take_daemon().expect("the launched guard");
     let status = sot_platform::test_isolated::wait_within(&mut guard, BOUND);
     println!("child-folders: the closed daemon's guard ended: {status:?}; folders left: {:?}", present(tmp.path(), &made));
     assert_eq!(present(tmp.path(), &made), Vec::<String>::new(), "a closed daemon's child folders are gone");
@@ -204,7 +204,7 @@ async fn a_start_in_another_pid_namespace_removes_a_crashed_daemons_folders_and_
         "the sweeping daemon's start to remove what it removes",
     )
     .await;
-    let mut launched = sweeper.daemon.borrow_mut().take().expect("the launched unshare");
+    let mut launched = sweeper.take_daemon().expect("the launched unshare");
     let pids = namespace_pids(launched.id());
     let after = (present(tmp.path(), &kept), present(tmp.path(), &left));
     println!("child-folders: the running daemon's {kept:?} and the crashed daemon's {left:?} (pid {taken}); after a start in a pid namespace holding pids {pids:?}, present: {after:?}");

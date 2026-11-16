@@ -200,7 +200,7 @@ fn assert_never_resumed(row: &Row, why: &str) {
 fn wait_exit(env: &Env, within: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + within;
     loop {
-        let status = env.daemon.borrow_mut().as_mut().expect("a spawned daemon").try_wait().unwrap();
+        let status = env.daemon_try_wait();
         if status.is_some() || Instant::now() >= deadline {
             return status;
         }

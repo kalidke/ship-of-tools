@@ -32,7 +32,7 @@ impl Staged {
     fn ready(env: Env) -> Self {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !(env.comm_root.join("inbox-lock-manager").exists() && env.socket_path.exists()) {
-            if let Some(status) = env.daemon.borrow_mut().as_mut().and_then(|d| d.try_wait().expect("try_wait")) {
+            if let Some(status) = env.daemon_try_wait() {
                 panic!("sotd exited before it was ready: {status}");
             }
             assert!(Instant::now() < deadline, "the hub never recorded its inbox lock and bound its socket");

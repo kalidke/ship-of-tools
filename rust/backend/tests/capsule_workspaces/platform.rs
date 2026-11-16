@@ -225,7 +225,7 @@ async fn killed_outright_child(name: &str, dir: PathBuf) {
     assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
     let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND).await;
-    let daemon = env.daemon.borrow().as_ref().map(std::process::Child::id).expect("the daemon this env spawned");
+    let daemon = env.daemon().as_ref().map(std::process::Child::id).expect("the daemon this env spawned");
     let record = format!(
         "root={}\ntmp={}\nruntime={}\ndaemon={daemon}\n",
         env.state_root.display(),
@@ -356,7 +356,7 @@ async fn create_from_inside_a_job_that_forbids_breakaway_still_reaches_ready() {
     };
     assert!(ok != 0, "SetInformationJobObject: {}", std::io::Error::last_os_error());
     let daemon_handle = {
-        let daemon = env.daemon.borrow();
+        let daemon = env.daemon();
         daemon.as_ref().expect("daemon spawned").as_raw_handle() as HANDLE
     };
     let ok = unsafe { AssignProcessToJobObject(job, daemon_handle) };

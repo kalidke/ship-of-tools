@@ -104,10 +104,9 @@ async fn a_spawned_daemon_inherits_no_sot_variable_the_test_did_not_set() {
     env.spawn_sotd();
     // A daemon that answers is running, so its exec is over and its environ is published.
     let _conn = connect_and_hello(&env.socket_path).await;
-    let mut daemon = env.daemon.borrow_mut();
-    let daemon = daemon.as_mut().expect("a tracked daemon");
-    assert!(daemon.try_wait().expect("poll the daemon").is_none(), "the daemon exited");
-    let environ = std::fs::read(format!("/proc/{}/environ", daemon.id())).expect("read the daemon's environ");
+    let pid = env.daemon().as_ref().expect("a tracked daemon").id();
+    assert!(env.daemon_try_wait().is_none(), "the daemon exited");
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).expect("read the daemon's environ");
     let mut names: Vec<String> = environ
         .split(|b| *b == 0)
         .filter_map(|kv| String::from_utf8_lossy(kv).split('=').next().map(str::to_owned))

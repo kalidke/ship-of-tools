@@ -55,7 +55,7 @@ pub struct Env {
     /// `kill_daemon_bounded`) need. Re-armed on every `spawn_sotd`/
     /// `spawn_sotd_with_prepended_path` call (the daemon-restart tests
     /// spawn a second one after killing the first).
-    pub daemon: RefCell<Option<Child>>,
+    daemon: RefCell<Option<Child>>,
     /// ADR 0043 decision 32 (lane L2), Codex BLOCKER 2: the scratch
     /// `systemd --user` unit [`Env::spawn_sotd_as_user_service`] started,
     /// if any — owned here (never merely returned to the caller) so
@@ -182,7 +182,7 @@ impl Env {
         let reaper = {
             let mut folders = vec![tmp.path(), runtime_tmp.path()];
             folders.extend(state_root_tmp.as_ref().map(tempfile::TempDir::path));
-            Reaper::start(&folders, &state_root, &socket_path)
+            Reaper::start(&folders, &state_root, &daemon_project_root)
         };
         Self {
             _tmp: tmp,
@@ -203,8 +203,10 @@ impl Env {
         }
     }
 
-    /// Track `child`, the daemon a spawn just launched, so `Drop` ends it, and tell the reaper.
-    fn hold_daemon(&self, child: Child) {
+    /// Track `child`, the daemon a spawn just launched, so `Drop` ends it, and tell the reaper. The one way a daemon
+    /// enters `daemon`, so none is tracked that the reaper was not told; a suite that launches one through a command
+    /// of its own calls it right after the spawn.
+    pub fn hold_daemon(&self, child: Child) {
         #[cfg(target_os = "linux")]
         let pid = child.id();
         let previous = self.daemon.borrow_mut().replace(child);
@@ -214,11 +216,28 @@ impl Env {
     }
 
     /// The daemon `pid` launched on this env (the process the spawn returned: on Linux the daemon's guard), which the
-    /// reaper ends when the test's process ends without `Drop`. A suite that launches one through a command of its own
-    /// calls it right after the spawn.
+    /// reaper ends when the test's process ends without `Drop`. For a suite that keeps the child itself, not in `daemon`.
     #[cfg(target_os = "linux")]
     pub fn reap_daemon(&self, pid: u32) {
         self.reaper.daemon(pid);
+    }
+
+    /// The tracked daemon, read only.
+    #[allow(dead_code, reason = "only some suites read the tracked daemon")]
+    pub fn daemon(&self) -> std::cell::Ref<'_, Option<Child>> {
+        self.daemon.borrow()
+    }
+
+    /// The tracked daemon's exit status if it has ended; `None` while it runs or when none is tracked.
+    #[allow(dead_code, reason = "only some suites wait on the tracked daemon")]
+    pub fn daemon_try_wait(&self) -> Option<std::process::ExitStatus> {
+        self.daemon.borrow_mut().as_mut().and_then(|daemon| daemon.try_wait().expect("try_wait the daemon"))
+    }
+
+    /// The tracked daemon, handed to the caller, who ends it. The reaper still names it, and ends it if it lives.
+    #[allow(dead_code, reason = "only some suites end the tracked daemon themselves")]
+    pub fn take_daemon(&self) -> Option<Child> {
+        self.daemon.borrow_mut().take()
     }
 
     /// The bounded, deliberate daemon teardown every test in this file
@@ -230,7 +249,7 @@ impl Env {
     /// step in the common, non-panicking case — exactly the relationship
     /// the old separate `KillGuard` had with its own `Drop`.
     pub async fn kill_daemon_bounded(&self) {
-        let child = self.daemon.borrow_mut().take();
+        let child = self.take_daemon();
         if let Some(child) = child {
             end_daemon_bounded(child).await;
             // On Linux the launched process is the daemon's lifetime guard and the daemon is its child: a guard

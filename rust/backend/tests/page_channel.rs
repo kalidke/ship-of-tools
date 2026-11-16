@@ -23,8 +23,7 @@ async fn window(env: &Env, instance: &str) -> Conn {
             if let Some(stream) = support::try_connect(&env.socket_path).await {
                 return Ok(stream);
             }
-            let status = env.daemon.borrow_mut().as_mut().expect("tracked page daemon")
-                .try_wait().expect("check page daemon status");
+            let status = env.daemon_try_wait();
             if let Some(status) = status {
                 return Err(status);
             }

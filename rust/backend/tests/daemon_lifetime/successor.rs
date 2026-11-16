@@ -102,12 +102,7 @@ impl Case {
         if let Some(create) = self.create.take() {
             create.abort();
         }
-        let mut predecessor = self
-            .env
-            .daemon
-            .borrow_mut()
-            .take()
-            .expect("the predecessor");
+        let mut predecessor = self.env.take_daemon().expect("the predecessor");
         predecessor.kill().expect("SIGKILL the predecessor");
         predecessor.wait().expect("reap the predecessor");
         let alive = !self

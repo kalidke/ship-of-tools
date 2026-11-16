@@ -100,7 +100,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         child.id(),
         socket_path.display()
     );
-    env.daemon.borrow_mut().replace(child);
+    env.hold_daemon(child);
 
     let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "this test's daemon to accept a connection").await;
     let mut conn = tokio::io::BufReader::new(stream);

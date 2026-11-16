@@ -85,7 +85,7 @@ async fn the_durable_parent_descends_from_nothing_the_daemon_started() {
         "the supervisor to answer",
     )
     .await;
-    let launched = env.daemon.borrow().as_ref().expect("the daemon").id() as i32;
+    let launched = env.daemon().as_ref().expect("the daemon").id() as i32;
     let durable = parent_of(supervisor).expect("the supervisor's parent");
     assert!(
         durable > 1 && durable != launched,

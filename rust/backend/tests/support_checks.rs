@@ -122,3 +122,63 @@ fn a_kill_signals_only_a_process_that_still_names_the_capsule() {
     support::kill_verified(&ours, &[pid], exe, root).expect("kill the matching process");
     assert!(child.wait().expect("wait").code().is_none(), "the matching process must end by signal");
 }
+
+/// A process that holds a command line as a daemon's, as a test's stand-in: it names `--project-root <root>` and ends
+/// at the first TERM, in at most a second (its sleep is a child that ends alone).
+fn stand_in_daemon(root: &std::ffi::OsStr) -> std::process::Child {
+    std::process::Command::new("sh")
+        .args(["-c", "while :; do sleep 1; done", "sotd", "--project-root"])
+        .arg(root)
+        .spawn()
+        .expect("spawn the stand-in daemon")
+}
+
+/// The reaper ends a daemon only while its command line, read after its pidfd opened, names exactly this `Env`'s
+/// project root after `--project-root`: an unrelated process, one that names another root and one that names this root
+/// plus a suffix survive; one that names this root is ended.
+#[test]
+fn the_reaper_ends_only_a_process_that_names_this_envs_project_root() {
+    let root = std::path::Path::new("/tmp/sotcw-reaper-check/daemon-project");
+    let mut unrelated = std::process::Command::new("sleep").arg("60").spawn().expect("spawn sleep");
+    let mut other = stand_in_daemon(std::ffi::OsStr::new("/tmp/sotcw-reaper-other/daemon-project"));
+    let mut longer = stand_in_daemon(std::ffi::OsStr::new("/tmp/sotcw-reaper-check/daemon-projectx"));
+    let mut ours = stand_in_daemon(root.as_os_str());
+
+    let ended = [unrelated.id(), other.id(), longer.id(), ours.id()].map(|pid| support::end_daemon_of(pid, root));
+    let ours_status = ours.wait().expect("wait for the matching process");
+    let survived = [&mut unrelated, &mut other, &mut longer].map(|child| child.try_wait().expect("try_wait").is_none());
+    for child in [&mut unrelated, &mut other, &mut longer] {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert_eq!(ended, [Ok(()), Ok(()), Ok(()), Ok(())]);
+    assert_eq!(survived, [true; 3], "a process that is not this env's daemon was signaled");
+    assert!(ours_status.code().is_none(), "the matching process must end by signal: {ours_status}");
+}
+
+/// While a process still names the folders the reaper keeps them, with an account of what is left in the first; with
+/// none it removes them.
+#[test]
+fn the_reaper_keeps_the_folders_while_a_process_names_one() {
+    let dir = tempfile::tempdir().expect("a scratch folder");
+    let (kept, gone) = (dir.path().join("kept"), dir.path().join("gone"));
+    std::fs::create_dir_all(&kept).expect("mkdir");
+    std::fs::create_dir_all(&gone).expect("mkdir");
+    let mut holder = std::process::Command::new("sh")
+        .args(["-c", "while :; do sleep 1; done", "holder"])
+        .arg(&kept)
+        .spawn()
+        .expect("spawn the process that names the folder");
+
+    support::finish(&support::Told::of_folders(vec![kept.clone(), gone.clone()]));
+    let account = std::fs::read_to_string(kept.join("sot-test-reaper.txt")).unwrap_or_default();
+    let (kept_exists, gone_exists) = (kept.exists(), gone.exists());
+    let _ = holder.kill();
+    let _ = holder.wait();
+
+    assert!(kept_exists && account.contains(&holder.id().to_string()), "folders kept with an account: {account:?}");
+    assert!(gone_exists, "the reaper removes nothing while a process names a folder");
+
+    support::finish(&support::Told::of_folders(vec![kept.clone(), gone.clone()]));
+    assert!(!kept.exists() && !gone.exists(), "folders no process names are removed");
+}

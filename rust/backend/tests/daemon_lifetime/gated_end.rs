@@ -138,13 +138,7 @@ impl Held {
     async fn daemon_status(&self, bound: Duration) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + bound;
         loop {
-            if let Some(status) = self
-                .env
-                .daemon
-                .borrow_mut()
-                .as_mut()
-                .and_then(|d| d.try_wait().ok().flatten())
-            {
+            if let Some(status) = self.env.daemon_try_wait() {
                 return Some(status);
             }
             if Instant::now() >= deadline {
@@ -244,7 +238,7 @@ async fn a_close_waits_for_a_birth_held_at_the_gate_and_ends_its_row() {
     held.fx
         .save("registration_kept", held.registration().exists());
     let cleanup = held.fx.cleanup();
-    held.env.daemon.borrow_mut().take();
+    held.env.take_daemon();
     assert!(cleanup.complete(), "{cleanup:?}");
     let saved = |key: &str| held.fx.saved(key).unwrap_or("not recorded").to_string();
     assert_eq!(

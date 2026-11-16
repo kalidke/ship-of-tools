@@ -422,7 +422,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
         .spawn()
         .expect("spawn sotd");
-    env.daemon.borrow_mut().replace(daemon);
+    env.hold_daemon(daemon);
 
     let socket = sot_topology::endpoint::session_socket_path(label);
     let deadline = Instant::now() + BOUND;
@@ -432,7 +432,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         // gone), and BOUND covers only the honest case of one that is
         // still starting. Sleeping out twenty seconds to then report
         // nothing is what hid the cause of this test's first CI failure.
-        let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+        let exited = env.daemon_try_wait();
         if let Some(status) = exited {
             panic!("sotd exited {status} without binding {}: {}", socket.display(), daemon_said(&daemon_stderr));
         }
@@ -512,11 +512,11 @@ fn lease_through_stdio_bridge_refused() {
         .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
         .spawn()
         .expect("spawn sotd");
-    env.daemon.borrow_mut().replace(daemon);
+    env.hold_daemon(daemon);
     let socket = sot_topology::endpoint::session_socket_path(label);
     let deadline = Instant::now() + BOUND;
     while UnixStream::connect(&socket).is_err() {
-        let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+        let exited = env.daemon_try_wait();
         if let Some(status) = exited {
             panic!("sotd exited {status} without binding {}: {}", socket.display(), daemon_said(&daemon_stderr));
         }
@@ -560,7 +560,7 @@ fn lease_through_stdio_bridge_refused() {
     let (status, _, stderr) = sot_platform::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "the bridge exits cleanly after a bridged lease: {stderr:?}");
     std::thread::sleep(Duration::from_secs(2));
-    let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+    let exited = env.daemon_try_wait();
     assert!(exited.is_none(), "the bridged lease's end shut the daemon down: {exited:?}: {}", daemon_said(&daemon_stderr));
     assert!(UnixStream::connect(&socket).is_ok(), "the daemon stopped answering after a bridged lease");
 }
