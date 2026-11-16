@@ -597,6 +597,11 @@ impl ChatView {
         out
     }
 
+    /// The times of the records the last layout placed, in placement order.
+    pub(super) fn placed_times(&self) -> impl Iterator<Item = &Ts> {
+        self.placed.iter().map(|p| &p.2)
+    }
+
     /// The frame's rectangles in painting order: the background of the drawer's `inside` (the body and the compose foot),
     /// then each placed record's rule above it, mark band and bar and badges, and last the selection's tint over every fill. All but the
     /// background are clipped to the body. Nothing while the chat is hidden. They are rectangles of the cell backgrounds'

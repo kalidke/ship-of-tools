@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -16,6 +16,7 @@ use super::compose::{Compose, ComposeText, Edit};
 use super::connect::{Asks, Connect};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::picker::{pair_words, Body, Pick, Picker};
+use super::pictures::ChatPictures;
 use super::row_channel::{RowChannel, Stand};
 use super::thread::Thread;
 use super::view::{ChatHit, ChatView, Step};
@@ -79,6 +80,8 @@ impl Flight {
 #[derive(Default)]
 pub(in crate::ui) struct ChatDrawer {
     owner: ChatOwner,
+    /// The thumbnails of the image files the view places.
+    pictures: ChatPictures,
     rows: RowChannel,
     flight: Flight,
     view: ChatView,
@@ -133,8 +136,8 @@ impl Modal {
     }
 }
 
-/// What a request that could not be queued is told, as if the hub had refused it `unavailable`: a post, a pair or a channel
-/// list never written is not left waiting for a reply that cannot come (`State::with_chat` feeds it to `on_evt`).
+/// What a request that could not be queued is told, as if the hub had refused it `unavailable`: a post, a pair, a channel
+/// list or a picture never written is not left waiting for a reply that cannot come (`State::with_chat` feeds it to `on_evt`).
 pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
     let refused = ChatCode::Unavailable;
     Some(match req {
@@ -142,6 +145,7 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
         OutgoingReq::ChatPair { row, channel } => ChatEvt::Paired { row: row.clone(), channel: channel.clone(), reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatChannels => ChatEvt::Channels { reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatConnect { .. } => ChatEvt::Connect { reply: ChatReply::Refused(refused) },
+        OutgoingReq::ChatFile { req } => ChatEvt::File { req: req.clone(), reply: ChatReply::Refused(refused) },
         _ => return None,
     })
 }
@@ -190,6 +194,7 @@ impl ChatDrawer {
         }
         outs.extend(self.owner_outs(|o| o.tick(now)));
         outs.extend(self.thread_outs(|t| t.tick(now)));
+        outs.extend(self.pictures.asks(now));
         (outs, step.settling)
     }
 
@@ -315,10 +320,11 @@ impl ChatDrawer {
         }
     }
 
-    /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`), or the wanted row is next resolved for its
-    /// name (`RowChannel::next_ask`), whichever is first: the instant to wake the window for.
+    /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`), the wanted row is next resolved for its
+    /// name (`RowChannel::next_ask`), or a placed picture is next asked for (`ChatPictures::next_ask`), whichever is first:
+    /// the instant to wake the window for.
     pub(in crate::ui) fn next_ask(&self) -> Option<Instant> {
-        [self.owner.next_ask(), self.rows.next_ask()].into_iter().flatten().min()
+        [self.owner.next_ask(), self.rows.next_ask(), self.pictures.next_ask()].into_iter().flatten().min()
     }
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
@@ -329,6 +335,7 @@ impl ChatDrawer {
             self.close_modal();
         }
         self.flight.clear(host);
+        self.pictures.on_connection(host, up, now);
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
             if up {
@@ -420,6 +427,9 @@ impl ChatDrawer {
                 }
                 outs
             }
+            ChatEvt::File { req, reply } if req.variant == ChatFileVariant::Thumb => self.pictures.on_reply(host, &req, reply, now),
+            // No window opens a picture yet: that is the next landings'.
+            ChatEvt::File { .. } => Vec::new(),
             evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
         }
     }
@@ -657,6 +667,10 @@ impl ChatDrawer {
         }
         let records = if self.modal.is_some() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
+        // The placed records' files are the pictures wanted, under the watch of the row the frame follows.
+        let at = self.rows.row().and_then(|r| Some((r.host.clone(), self.watch_for(r)?.clone())));
+        let files = self.view.placed_times().filter_map(|ts| records.iter().find(|(r, _)| &r.ts == ts)).flat_map(|(r, _)| r.files.iter().map(|f| (r.workspace.as_str(), r.channel.as_str(), f)));
+        self.pictures.place(at.as_ref().map(|(h, t)| (h, t)), files, Instant::now());
         if self.thread.is_none() && self.modal.is_none() {
             self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
             self.owner.reaches(self.view.at_oldest);
@@ -756,6 +770,7 @@ impl ChatDrawer {
 
     /// The chat is not shown: no record is prepared.
     pub(in crate::ui) fn hide(&mut self) {
+        self.pictures.place(None, [], Instant::now());
         self.close_modal();
         self.close_thread();
         self.cancel_name();
