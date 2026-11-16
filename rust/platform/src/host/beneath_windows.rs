@@ -70,6 +70,23 @@ impl Drop for Turn<'_> {
     }
 }
 
+// Probe only: this thread's longest successful rename call, and its longest time from that call's return to the return
+// of the close of the handle it renamed by, in microseconds.
+#[cfg(test)]
+thread_local! {
+    pub(super) static SPANS: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
+    static RETURNED: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn span(i: usize, since: std::time::Instant) {
+    SPANS.with(|s| {
+        let mut v = s.get();
+        v[i] = v[i].max(since.elapsed().as_micros() as u64);
+        s.set(v);
+    });
+}
+
 /// The Windows [`super::write_beneath_at`].
 pub(super) fn write_beneath_at(
     root: &Path,
@@ -127,6 +144,10 @@ fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], private:
     };
     crate::hold_point!("platform.beneath.renamed", last);
     drop(file);
+    #[cfg(test)]
+    if let Some(returned) = RETURNED.with(|r| r.take()) {
+        span(1, returned);
+    }
     drop(turn);
     at(Step::Renamed)?;
     dir.sync_all()
@@ -221,11 +242,18 @@ fn rename_into<'a>(file: &File, dir: &File, name: &'a str) -> io::Result<Turn<'a
             unsafe { (*info).Anonymous.Flags = flags };
             unsafe { NtSetInformationFile(file.as_raw_handle() as HANDLE, &mut iosb, info as *const c_void, len as u32, class) }
         };
+        #[cfg(test)]
+        let called = std::time::Instant::now();
         let mut s = set(FileRenameInformationEx, FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS);
         if no_posix_rename(s) {
             s = set(FileRenameInformation, FILE_RENAME_REPLACE_IF_EXISTS);
         }
         if s >= 0 {
+            #[cfg(test)]
+            {
+                span(0, called);
+                RETURNED.with(|r| r.set(Some(std::time::Instant::now())));
+            }
             return Ok(turn);
         }
         drop(turn);
