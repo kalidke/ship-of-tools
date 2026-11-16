@@ -15,19 +15,14 @@ fn app() -> String {
     ["xapp", "-sentinel-app-bbbb"].concat()
 }
 
-/// Rows' facts as a fixture: `/work/a` and its alias `/link/a` are one folder, `/work/anchor` is the inert anchor,
-/// `/work/b` is another, and any other folder is unknown. The real canonicalizer is the hub landing's.
-fn rows(folder: &str) -> Option<Folder> {
-    let (canonical, inert) = match folder {
-        "/work/a" | "/link/a" => ("/work/a", false),
-        "/work/b" => ("/work/b", false),
-        "/work/anchor" => ("/work/anchor", true),
-        _ => return None,
-    };
-    Some(Folder {
-        canonical: canonical.to_string(),
-        inert,
-    })
+/// The disk as a fixture: `/work/a` and its alias `/link/a` are one folder, `/work/b` is another, and any other
+/// folder does not exist. The real canonicalizer is the daemon's.
+fn rows(folder: &str) -> Option<String> {
+    match folder {
+        "/work/a" | "/link/a" => Some("/work/a".to_string()),
+        "/work/b" => Some("/work/b".to_string()),
+        _ => None,
+    }
 }
 
 fn chat(extra: &str) -> String {
@@ -55,7 +50,7 @@ fn creds(text: &str) -> Result<Credentials, ConfigError> {
 }
 
 #[test]
-fn mapping_refuses_aliases_duplicates_and_inert_anchor() {
+fn mapping_refuses_aliases_and_duplicates() {
     let ok = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0BBBB")));
     assert!(parse(&ok).is_ok());
     // An alias of a mapped folder collides with it, though the text differs; the second entry is the one named.
@@ -67,11 +62,6 @@ fn mapping_refuses_aliases_duplicates_and_inert_anchor() {
     // One channel for two folders fails.
     let shared = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0AAAA")));
     assert_eq!(parse(&shared).unwrap_err(), E::ChannelRepeated(2));
-    // The inert anchor takes no channel.
-    assert_eq!(
-        parse(&chat(&mapping("/work/anchor", "C0AAAA"))).unwrap_err(),
-        E::InertAnchor(1)
-    );
     // Folders match exactly: a prefix, a parent, a trailing slash and another case are not the mapped folder.
     let cfg = Ok(parse(&ok).unwrap());
     assert!(matches!(
@@ -82,6 +72,26 @@ fn mapping_refuses_aliases_duplicates_and_inert_anchor() {
         assert_eq!(resolve(&cfg, other), Resolution::Unmapped, "{other}");
     }
     assert_eq!(resolve(&cfg, "/work/anchor"), Resolution::Unmapped);
+}
+
+#[test]
+fn a_mapping_whose_folder_does_not_exist_is_ignored_and_keeps_its_channel() {
+    // A missing folder and a relative spelling map nothing and refuse nothing; the neighbors still map.
+    let text = chat(&(mapping("/work/gone", "C0AAAA") + &mapping("/work/b", "C0BBBB") + &mapping("relative/dir", "C0CCCC")))
+        .replace("[\"C0AAAA\", \"C0BBBB\"]", "[\"C0AAAA\", \"C0BBBB\", \"C0CCCC\"]");
+    let c = parse(&text).unwrap();
+    assert_eq!(c.ignored(), [1, 3]);
+    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/b", "C0BBBB")]);
+    assert_eq!(resolve(&Ok(c), "/work/gone"), Resolution::Unmapped);
+    // The ignored mapping's channel and its written folder still count: a later entry may not take either.
+    let channel = chat(&(mapping("/work/gone", "C0AAAA") + &mapping("/work/b", "C0AAAA")));
+    assert_eq!(parse(&channel).unwrap_err(), E::ChannelRepeated(2));
+    let folder = chat(&(mapping("/work/gone", "C0AAAA") + &mapping("/work/gone", "C0BBBB")));
+    assert_eq!(parse(&folder).unwrap_err(), E::FolderRepeated(2));
+    // An ignored mapping still has to name a listed channel, and still counts toward a delivering file's 32.
+    assert_eq!(parse(&chat(&mapping("/work/gone", "C0ZZZZ"))).unwrap_err(), E::ChannelNotListed(1));
+    assert_eq!(Config::parse(&delivering(33), &|_| None).map(drop), Err(E::TooManyDelivering));
+    assert_eq!(Config::parse(&delivering(32), &|_| None).map(|c| c.ignored().len()), Ok(32));
 }
 
 #[test]
@@ -147,24 +157,22 @@ fn index(e: ConfigError) -> usize {
         E::UnknownKey(_) => 6,
         E::SecondWorkspace => 7,
         E::DuplicateChannel => 8,
-        E::UnknownFolder(_) => 9,
-        E::InertAnchor(_) => 10,
-        E::FolderRepeated(_) => 11,
-        E::ChannelRepeated(_) => 12,
-        E::ChannelNotListed(_) => 13,
-        E::TooManyDelivering => 14,
-        E::MappingWithoutFloor(_) => 15,
+        E::FolderRepeated(_) => 9,
+        E::ChannelRepeated(_) => 10,
+        E::ChannelNotListed(_) => 11,
+        E::TooManyDelivering => 12,
+        E::MappingWithoutFloor(_) => 13,
     }
 }
-const VARIANTS: usize = 16;
+const VARIANTS: usize = 14;
 
 fn mapping_from(folder: &str, channel: &str, from: &str) -> String {
     format!("{}mail_after = \"{from}\"\n", mapping(folder, channel))
 }
 
-/// Any folder is a row, canonical as spelled.
-fn many_rows(folder: &str) -> Option<Folder> {
-    Some(Folder { canonical: folder.to_string(), inert: false })
+/// Any folder exists, canonical as spelled.
+fn many_rows(folder: &str) -> Option<String> {
+    Some(folder.to_string())
 }
 
 /// A file of `n` mappings, each channel listed; the hub's `mail_after` first, each mapping with its own.
@@ -294,16 +302,6 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
             Err(E::DuplicateChannel),
         ),
         (
-            "unknown folder, second mapping",
-            parse(&two(m("/work/a", "C0AAAA"), m("/work/zzz", "C0BBBB"))).map(drop),
-            Err(E::UnknownFolder(2)),
-        ),
-        (
-            "inert anchor",
-            parse(&chat(&m("/work/anchor", "C0AAAA"))).map(drop),
-            Err(E::InertAnchor(1)),
-        ),
-        (
             "alias",
             parse(&two(m("/work/a", "C0AAAA"), m("/link/a", "C0BBBB"))).map(drop),
             Err(E::FolderRepeated(2)),
@@ -431,8 +429,6 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         E::UnknownKey(Some("channels")),
         E::SecondWorkspace,
         E::DuplicateChannel,
-        E::UnknownFolder(2),
-        E::InertAnchor(2),
         E::FolderRepeated(2),
         E::ChannelRepeated(2),
         E::ChannelNotListed(2),
@@ -448,7 +444,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         }
     }
     assert!(E::Malformed(Some(3)).to_string().ends_with("(line 3)"));
-    assert!(E::UnknownFolder(2).to_string().ends_with("(mapping 2)"));
+    assert!(E::FolderRepeated(2).to_string().ends_with("(mapping 2)"));
     assert!(E::UnknownKey(Some("channels")).to_string().ends_with("(key \"channels\")"));
     assert_eq!(E::UnknownKey(None).to_string(), E::UnknownKey(None).explain());
     assert_eq!(E::Missing.to_string(), E::Missing.explain());
@@ -558,7 +554,7 @@ fn a_sample_is_found_in_a_reference_with_either_line_ending() {
 
 #[test]
 fn the_reference_samples_are_accepted_by_the_parsers() {
-    let rows = |f: &str| (f == "/path/to/project").then(|| Folder { canonical: f.into(), inert: false });
+    let rows = |f: &str| (f == "/path/to/project").then(|| f.to_string());
     let config = Config::parse(&sample("A `chat.toml` of one mapping:"), &rows).unwrap();
     assert!(Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:"), &config).is_ok());
 }

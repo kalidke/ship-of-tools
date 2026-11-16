@@ -87,8 +87,7 @@ folder = "/home/you/projects/my-project"
 channel = "C0456EFGH"
 ```
 
-`folder` is the project's folder exactly as its session row shows it. The project needs a session row before the next
-step. On Windows, write the folder in single quotes: `folder = 'C:\Users\you\projects\my-project'`.
+`folder` is the project's folder as its session row shows it. On Windows, write the folder in single quotes: `folder = 'C:\Users\you\projects\my-project'`.
 
 ## 5. Restart and open it
 

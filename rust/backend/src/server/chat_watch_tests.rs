@@ -4,7 +4,7 @@ use super::chat_ops_tests::{code, connect, rig, running, starter, watch, Conn, R
 use super::*;
 use crate::chat::tests::{row, Home, SELF};
 use crate::chat::watch::{Evt, Hub};
-use crate::chat::{row_facts, Chat, Status};
+use crate::chat::{Chat, Status};
 use crate::lifecycle::retire::{Participant, Registry};
 use serde_json::{json, Value};
 use sot_chat::config::{self, CONFIG_FILE};
@@ -232,7 +232,7 @@ async fn many(fake: &FakeSlack, n: usize) -> (Home, Services, Workspaces, Vec<(S
     let rows = Workspaces::new();
     let ids: Vec<(String, std::path::PathBuf)> = folders.iter().enumerate().map(|(i, f)| (rows.insert(row(&format!("r{i}"), f)).workspace_id.clone(), f.clone())).collect();
     let spare = rows.insert(row("spare", &home.folder("spare"))).workspace_id.clone();
-    let chat = Chat::begin_unowned(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), starter(fake));
+    let chat = Chat::begin_unowned(&home.env, &|p| config::read_file(p), &Registry::new(), starter(fake));
     running(&chat).await;
     assert_eq!(chat.status(), Status::Running);
     // The socket's hello owes every complete watch a snapshot again, and owed snapshots are asked for by a watch, so a
@@ -833,7 +833,7 @@ async fn the_boots_wait_ends_when_the_chat_is_retired_while_starting() {
     let rows = Workspaces::new();
     rows.insert(row("alpha", &folder));
     let never: crate::chat::Starter<sot_chat::service::Service> = Box::new(|_, _, _| Box::pin(std::future::pending()));
-    let chat = Chat::begin_unowned(&home.env, &row_facts(&rows), &|p| config::read_file(p), &Registry::new(), never);
+    let chat = Chat::begin_unowned(&home.env, &|p| config::read_file(p), &Registry::new(), never);
     let task = chat.start_owner(rows.clone());
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;

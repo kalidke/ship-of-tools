@@ -13,21 +13,15 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// What rows knows of a folder the file names: its canonical spelling and whether it is the inert default anchor.
-/// Chat does not resolve a row; the daemon's adapter supplies this.
-pub struct Folder {
-    pub canonical: String,
-    pub inert: bool,
-}
-
-/// The supplied facts: `None` when no row knows the folder.
-pub type Rows<'a> = &'a dyn Fn(&str) -> Option<Folder>;
+/// The one canonical spelling of a folder, supplied by the daemon: `None` for a folder that does not exist on disk and
+/// for a spelling that is not absolute. Chat resolves no row; whether a row has the folder is asked per action.
+pub type Canon<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// The one file read, so a test (and the hub's guard) sees which files are opened.
 pub type Reader<'a> = &'a dyn Fn(&Path) -> io::Result<String>;
 
 /// The most either file may hold. The cap's job is to end a stall and bound the work a planted file can cause (the
-/// channel check is quadratic, and each mapping asks rows); 64 KiB holds thousands of mappings.
+/// channel check is quadratic, and each mapping asks the filesystem); 64 KiB holds thousands of mappings.
 pub(crate) const MAX_FILE: u64 = 64 * 1024;
 
 /// The one real read: a regular file of at most [`MAX_FILE`] bytes, as UTF-8, through platform's bounded read. Not a
@@ -72,8 +66,6 @@ pub enum ConfigError {
     UnknownKey(Option<&'static str>),
     SecondWorkspace,
     DuplicateChannel,
-    UnknownFolder(usize),
-    InertAnchor(usize),
     FolderRepeated(usize),
     ChannelRepeated(usize),
     ChannelNotListed(usize),
@@ -93,8 +85,6 @@ impl ConfigError {
             ConfigError::UnknownKey(_) => "a key this file does not take is present: each chat file holds only its own documented keys",
             ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
-            ConfigError::UnknownFolder(_) => "a mapping names a folder no row knows: use the project folder's canonical path",
-            ConfigError::InertAnchor(_) => "a mapping names the default anchor, which runs nothing and cannot take a channel",
             ConfigError::FolderRepeated(_) => "two mappings name one folder (an alias of it, or the same pair twice)",
             ConfigError::ChannelRepeated(_) => "two folders map to one channel: a channel belongs to one folder",
             ConfigError::ChannelNotListed(_) => "a mapping names a channel that chat.toml's channels does not list",
@@ -107,9 +97,7 @@ impl ConfigError {
     pub fn at(self) -> Option<usize> {
         match self {
             ConfigError::Malformed(at) | ConfigError::BadMailAfter(at) => at,
-            ConfigError::UnknownFolder(n)
-            | ConfigError::InertAnchor(n)
-            | ConfigError::FolderRepeated(n)
+            ConfigError::FolderRepeated(n)
             | ConfigError::ChannelRepeated(n)
             | ConfigError::ChannelNotListed(n)
             | ConfigError::MappingWithoutFloor(n) => Some(n),
@@ -189,13 +177,15 @@ pub struct Config {
     workspace: String,
     /// Canonical folder, channel and the mapping's own `mail_after`, folders and channels one-to-one.
     mappings: Vec<(String, String, Option<Ts>)>,
+    /// The ordinals of the mappings whose folder did not canonicalize: kept in the file, mapped to nothing.
+    ignored: Vec<usize>,
     mail_after: Option<Ts>,
 }
 
 impl Config {
-    /// Read `chat.toml` from `dir` and admit its mappings against the supplied row facts. Opens no other file.
-    pub fn load(dir: &Path, read: Reader, rows: Rows) -> Result<Config, ConfigError> {
-        Config::parse(&text(read, &dir.join(CONFIG_FILE))?, rows)
+    /// Read `chat.toml` from `dir` and admit its mappings through the supplied canonicalizer. Opens no other file.
+    pub fn load(dir: &Path, read: Reader, canon: Canon) -> Result<Config, ConfigError> {
+        Config::parse(&text(read, &dir.join(CONFIG_FILE))?, canon)
     }
 
     /// The one configured workspace id.
@@ -206,6 +196,12 @@ impl Config {
     /// The admitted mappings, each as its canonical folder and its channel.
     pub fn mappings(&self) -> impl Iterator<Item = (&str, &str)> {
         self.mappings.iter().map(|(f, c, _)| (f.as_str(), c.as_str()))
+    }
+
+    /// The ordinals (from 1, in file order) of the mappings the load ignored: a folder that does not exist (or is not
+    /// absolute) maps nothing, and is no refusal.
+    pub fn ignored(&self) -> &[usize] {
+        &self.ignored
     }
 
     /// The hub's `mail_after`: set, the file is delivering.
@@ -224,7 +220,7 @@ impl Config {
         })
     }
 
-    pub fn parse(text: &str, rows: Rows) -> Result<Config, ConfigError> {
+    pub fn parse(text: &str, canon: Canon) -> Result<Config, ConfigError> {
         let t = parse_table(text)?;
         only(&t, &CONFIG_KEYS)?;
         let workspace = workspace(&t)?;
@@ -248,6 +244,10 @@ impl Config {
             ),
         };
         let mut mappings: Vec<(String, String, Option<Ts>)> = Vec::new();
+        let mut ignored = Vec::new();
+        // Every entry's folder (canonical, else as written) and channel, ignored ones included, so the repeat checks
+        // hold for a folder that is not on disk now.
+        let mut seen: Vec<(String, String)> = Vec::new();
         let entries = match t.get("mapping") {
             None => &[],
             Some(v) => v.as_array().ok_or(ConfigError::Malformed(None))?.as_slice(),
@@ -276,28 +276,32 @@ impl Config {
             if mail_after.is_some() && own.is_none() {
                 return Err(ConfigError::MappingWithoutFloor(at));
             }
-            // M1: canonical folders and channels are one-to-one, the inert anchor takes none, each channel is listed.
-            let f = rows(folder).ok_or(ConfigError::UnknownFolder(at))?;
-            if f.inert {
-                return Err(ConfigError::InertAnchor(at));
-            }
+            // M1: canonical folders and channels are one-to-one and each channel is listed. A folder that does not
+            // canonicalize is ignored, not refused: its row may come later, or it was removed.
             if !channels.contains(&channel) {
                 return Err(ConfigError::ChannelNotListed(at));
             }
-            if mappings.iter().any(|(f2, _, _)| *f2 == f.canonical) {
+            let canonical = canon(folder);
+            let key = canonical.clone().unwrap_or_else(|| folder.to_string());
+            if seen.iter().any(|(f2, _)| *f2 == key) {
                 return Err(ConfigError::FolderRepeated(at));
             }
-            if mappings.iter().any(|(_, c2, _)| *c2 == channel) {
+            if seen.iter().any(|(_, c2)| *c2 == channel) {
                 return Err(ConfigError::ChannelRepeated(at));
             }
-            mappings.push((f.canonical, channel, own));
+            seen.push((key, channel.clone()));
+            match canonical {
+                Some(canonical) => mappings.push((canonical, channel, own)),
+                None => ignored.push(at),
+            }
         }
-        if mail_after.is_some() && mappings.len() > MAX_DELIVERING {
+        if mail_after.is_some() && seen.len() > MAX_DELIVERING {
             return Err(ConfigError::TooManyDelivering);
         }
         Ok(Config {
             workspace,
             mappings,
+            ignored,
             mail_after,
         })
     }

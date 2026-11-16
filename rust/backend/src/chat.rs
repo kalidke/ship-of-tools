@@ -1,5 +1,5 @@
 //! The project chat in the daemon: the one place `sotd` names `sot-chat`. It decides whether this daemon is the
-//! configured hub before it reads any chat file, builds the row facts chat's mappings are admitted against, starts the
+//! configured hub before it reads any chat file, admits chat's mappings against the disk, starts the
 //! one service off the boot path, and retires it through lifecycle's registry. `ops` serves the request ops.
 
 use std::future::Future;
@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use sot_chat::config::{self, Config, ConfigError, Credentials, Folder, Reader, Resolution};
+use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution};
 use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
 use sot_chat::service::Service;
@@ -163,11 +163,6 @@ fn fact_of(workspaces: &Workspaces, ws: &Workspace) -> Option<RowFact> {
     canonical(&ws.project_root).map(|c| RowFact { canonical: c, inert: workspaces.is_inert_default_anchor(ws) })
 }
 
-/// The facts of this daemon's rows, as `Config::load` admits mappings against them.
-pub(crate) fn row_facts(workspaces: &Workspaces) -> Vec<RowFact> {
-    workspaces.list().iter().filter_map(|ws| fact_of(workspaces, ws)).collect()
-}
-
 /// The registry's current entry for the canonical row id, read now. The id is matched exactly (the registry's
 /// `resolve` also takes a slug, which the filter rejects), and no lock is held past the read.
 fn current_row(workspaces: &Workspaces, id: &str) -> Option<RowFact> {
@@ -175,12 +170,10 @@ fn current_row(workspaces: &Workspaces, id: &str) -> Option<RowFact> {
     fact_of(workspaces, &ws)
 }
 
-/// A mapping's folder as chat's `Rows` asks for it: through the same canonicalizer as the rows' own roots.
-fn folder_of(rows: &[RowFact], folder: &str) -> Option<Folder> {
-    let canon = canonical(Path::new(folder))?;
-    let mut same = rows.iter().filter(|r| r.canonical == canon).peekable();
-    same.peek()?;
-    Some(Folder { canonical: canon.to_string_lossy().into_owned(), inert: same.all(|r| r.inert) })
+/// A mapping's folder as chat's `Canon` asks for it: through the same canonicalizer as the rows' own roots, with no row
+/// needed (a row made later in the folder is admitted at its first action).
+fn canon_of(folder: &str) -> Option<String> {
+    canonical(Path::new(folder)).map(|c| c.to_string_lossy().into_owned())
 }
 
 /// Strict hub admission: topology's current load and parse, which must name this computer as its one explicit hub. A
@@ -219,13 +212,13 @@ pub(crate) struct Chat<L: Listener = Service> {
 }
 
 impl<L: Listener> Chat<L> {
-    /// Admit, then start. In order: the hub fact; `chat.toml` against `rows`; `chat-secrets.toml` (the only open of it
+    /// Admit, then start. In order: the hub fact; `chat.toml` against the disk; `chat-secrets.toml` (the only open of it
     /// in the daemon, through `read`); the lock folder (the comm folder's `chat/`); registration with `registry`; then `start` on a task of its
-    /// own, so boot never waits on Slack. A missing `chat.toml` leaves the chat off and writes nothing. Rows made later
-    /// are not seen: a mapping to a folder no row had at this call is refused as `UnknownFolder` until the daemon
-    /// restarts. `check` is the pace of the retry of a start refused `held` and of the hub fact's asks (`HUB_CHECK`; the
+    /// own, so boot never waits on Slack. A missing `chat.toml` leaves the chat off and writes nothing. A mapping
+    /// needs no row: one whose folder does not exist is ignored and logged by its ordinal, and a row made later in a
+    /// mapped folder is admitted at its first action. `check` is the pace of the retry of a start refused `held` and of the hub fact's asks (`HUB_CHECK`; the
     /// tests shorten it). Must run inside the daemon's runtime.
-    fn begin(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
+    fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
         let shared = Shared::new();
         let chat = |config, status| {
             *shared.lock() = Phase::Off(status);
@@ -237,7 +230,12 @@ impl<L: Listener> Chat<L> {
         let Some(dir) = config::config_dir(env) else {
             return chat(Some(Err(ConfigError::Missing)), Status::Refused(ConfigError::Missing));
         };
-        let config = Config::load(&dir, read, &|f| folder_of(rows, f));
+        let config = Config::load(&dir, read, &canon_of);
+        if let Ok(admitted) = &config {
+            for n in admitted.ignored() {
+                tracing::warn!(mapping = n, "project chat: a mapping's folder does not exist and is ignored");
+            }
+        }
         let credentials = match &config {
             Err(e) => {
                 let refused = Status::Refused(*e);
@@ -324,8 +322,8 @@ impl<L: Listener> Chat<L> {
     /// `begin` alone, for a test that wants no boot task: the owner then starts with a first watch. `server::run`
     /// builds its chat only through [`Chat::boot`].
     #[cfg(test)]
-    pub(crate) fn begin_unowned(env: &Env, rows: &[RowFact], read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
-        Chat::begin(env, rows, read, registry, start, HUB_CHECK)
+    pub(crate) fn begin_unowned(env: &Env, read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
+        Chat::begin(env, read, registry, start, HUB_CHECK)
     }
 
     /// A chat that is not the hub, for a test's services.
@@ -484,7 +482,7 @@ impl Chat<Service> {
     /// owner's task, started while the chat is still `Starting`. `check` is [`Chat::begin`]'s; `timing` is the delivery's (`Timing::PRODUCT`; a test shortens it). Must run inside the daemon's
     /// runtime.
     pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, check: Duration, timing: Timing) -> Arc<Chat> {
-        let chat = Chat::begin(env, &row_facts(rows), read, registry, start, check);
+        let chat = Chat::begin(env, read, registry, start, check);
         chat.hub.set_timing(timing);
         tracing::info!(status = %chat.status(), "project chat");
         drop(chat.start_owner(rows.clone()));

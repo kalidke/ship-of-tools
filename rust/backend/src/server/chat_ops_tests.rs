@@ -6,7 +6,7 @@ use sot_chat::api::ApiError;
 use sot_chat::http::HttpError;
 use sot_protocol::ops::ChatCode;
 use crate::chat::tests::{row, Home, SELF};
-use crate::chat::{row_facts, Chat, Status};
+use crate::chat::{Chat, Status};
 use crate::lifecycle::retire::Registry;
 use crate::server::conn::handle_connection;
 use serde_json::{json, Value};
@@ -362,11 +362,11 @@ async fn a_chat_request_is_unavailable_with_no_running_service() {
     let fake = slack(&mode).await;
     let rig = rig(&fake).await;
     let failing: crate::chat::Starter<Service> = Box::new(|_, _, _| Box::pin(async { Err("down") }));
-    let down = Chat::begin_unowned(&rig._home.env, &row_facts(&rig.rows), &|p| config::read_file(p), &Registry::new(), failing);
+    let down = Chat::begin_unowned(&rig._home.env, &|p| config::read_file(p), &Registry::new(), failing);
     running(&down).await;
     let non_hub = Home::new(Some("elsewhere"));
     let bare = Home::new(Some(SELF));
-    let unstarted = |home: &Home| Chat::<Service>::begin_unowned(&home.env, &[], &|p| config::read_file(p), &Registry::new(), starter(&fake));
+    let unstarted = |home: &Home| Chat::<Service>::begin_unowned(&home.env, &|p| config::read_file(p), &Registry::new(), starter(&fake));
     // The running one, stopped: a request after the stop began.
     let stopped = rig.services.chat.clone();
     crate::lifecycle::retire::Participant::request_stop(&*stopped);

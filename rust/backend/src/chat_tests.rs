@@ -137,10 +137,6 @@ impl Listener for Fake {
     }
 }
 
-fn fact(canonical: &Path, inert: bool) -> RowFact {
-    RowFact { canonical: canonical.to_path_buf(), inert }
-}
-
 fn gives(listener: &Arc<Fake>) -> Starter<Fake> {
     let listener = listener.clone();
     Box::new(move |_, _, _| {
@@ -167,8 +163,8 @@ fn never(called: &Arc<AtomicBool>) -> Starter<Fake> {
     })
 }
 
-fn begin(home: &Home, rows: &[RowFact], seen: &Observed, registry: &Registry, start: Starter<Fake>) -> Arc<Chat<Fake>> {
-    Chat::begin(&home.env, rows, &|p| seen.read(p), registry, start, HUB_CHECK)
+fn begin(home: &Home, seen: &Observed, registry: &Registry, start: Starter<Fake>) -> Arc<Chat<Fake>> {
+    Chat::begin(&home.env, &|p| seen.read(p), registry, start, HUB_CHECK)
 }
 
 /// Yield until the start task has finished (no timer: it ends once its starter does).
@@ -191,7 +187,7 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
     for (what, home) in &others {
         let row = home.configured();
         let (seen, registry, called) = (Observed::new(), Registry::new(), Arc::new(AtomicBool::new(false)));
-        let chat = begin(home, &[fact(&row, false)], &seen, &registry, never(&called));
+        let chat = begin(home, &seen, &registry, never(&called));
         assert_eq!(chat.status(), Status::NotHub, "{what}");
         assert!(!called.load(Ordering::SeqCst), "{what}");
         // The status and its words, the answer for a folder, a stop and a wait open nothing either.
@@ -206,7 +202,7 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
     let home = Home::new(Some(SELF));
     let row = home.configured();
     let (seen, listener) = (Observed::new(), Arc::new(Fake::default()));
-    let chat = begin(&home, &[fact(&row, false)], &seen, &Registry::new(), gives(&listener));
+    let chat = begin(&home, &seen, &Registry::new(), gives(&listener));
     assert_eq!(settled(&chat).await, Status::Running);
     let both = vec![home.config().join(CONFIG_FILE), home.config().join(SECRETS_FILE)];
     assert_eq!(seen.opened(), both);
@@ -231,7 +227,7 @@ async fn a_refusal_names_the_file_it_came_from() {
     let home = Home::new(Some(SELF));
     let row = home.folder("a");
     let (called, registry) = (Arc::new(AtomicBool::new(false)), Registry::new());
-    let status = |home: &Home| begin(home, &[fact(&row, false)], &Observed::new(), &registry, never(&called)).status().to_string();
+    let status = |home: &Home| begin(home, &Observed::new(), &registry, never(&called)).status().to_string();
 
     home.secrets();
     home.write(CONFIG_FILE, "workspace = \"T0AAAA\"\nchannels = []\nbot_token = \"T0AAAA\"\n");
@@ -257,7 +253,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
 
     // No chat.toml: off, only that file looked for, nothing created, no lock folder, no start.
     let seen = Observed::new();
-    let chat = begin(&home, &[fact(&row, false)], &seen, &registry, never(&called));
+    let chat = begin(&home, &seen, &registry, never(&called));
     assert_eq!(chat.status(), Status::Refused(ConfigError::Missing));
     assert!(chat.status().to_string().contains("not configured"));
     assert_eq!(seen.opened(), vec![home.config().join(CONFIG_FILE)]);
@@ -267,7 +263,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
     // A malformed chat.toml: no delivery, and the secrets stay unopened.
     home.write(CONFIG_FILE, "workspace = [[[");
     let seen = Observed::new();
-    let chat = begin(&home, &[fact(&row, false)], &seen, &registry, never(&called));
+    let chat = begin(&home, &seen, &registry, never(&called));
     assert!(matches!(chat.status(), Status::Refused(ConfigError::Malformed(_))));
     assert_eq!(seen.opened(), vec![home.config().join(CONFIG_FILE)]);
     assert!(matches!(chat.mapping(&row.to_string_lossy()), Resolution::Invalid(ConfigError::Malformed(_))));
@@ -276,7 +272,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
     home.chat_toml(&[row.to_string_lossy().into_owned()]);
     std::fs::remove_file(home.config().join(SECRETS_FILE)).unwrap();
     let seen = Observed::new();
-    let chat = begin(&home, &[fact(&row, false)], &seen, &registry, never(&called));
+    let chat = begin(&home, &seen, &registry, never(&called));
     assert_eq!(chat.status(), Status::Secrets(ConfigError::Missing));
     assert_eq!(seen.opened().len(), 2);
     assert!(!called.load(Ordering::SeqCst));
@@ -284,7 +280,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_non_hub_in_a_shared_home_answers_not_hub_where_a_hub_without_the_row_refuses() {
+async fn a_non_hub_in_a_shared_home_answers_not_hub_where_a_hub_maps_the_folder() {
     // One shared home: a chat.toml that maps a folder this daemon holds no row for.
     let shared = |hub: &str| {
         let home = Home::new(Some(hub));
@@ -292,28 +288,61 @@ async fn a_non_hub_in_a_shared_home_answers_not_hub_where_a_hub_without_the_row_
         (home, row)
     };
     let (home, row) = shared("elsewhere");
-    let non_hub = begin(&home, &[], &Observed::new(), &Registry::new(), refuses("unused"));
+    let non_hub = begin(&home, &Observed::new(), &Registry::new(), refuses("unused"));
     assert_eq!(non_hub.mapping(&row.to_string_lossy()), Resolution::NotHub);
     assert!(Resolution::NotHub.explain().contains("not the configured hub"));
-    // The same home on the hub, with no such row, is `UnknownFolder`: the hub decision came before the load.
+    // The same home on the hub maps the folder with no row anywhere: the hub decision came before the load.
     let (home, row) = shared(SELF);
-    let hub = begin(&home, &[], &Observed::new(), &Registry::new(), refuses("unused"));
-    assert_eq!(hub.status(), Status::Refused(ConfigError::UnknownFolder(1)));
-    assert_eq!(hub.mapping(&row.to_string_lossy()), Resolution::Invalid(ConfigError::UnknownFolder(1)));
-    // With its row, the hub maps the folder.
-    let hub = begin(&home, &[fact(&row, false)], &Observed::new(), &Registry::new(), refuses("held"));
+    let hub = begin(&home, &Observed::new(), &Registry::new(), refuses("held"));
     assert!(matches!(hub.mapping(&row.to_string_lossy()), Resolution::Mapped { .. }));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mapped_folder_with_no_row_at_start_leaves_the_other_projects_mapped() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    let (with_row, gone) = (home.folder("a"), home.folder("gone"));
+    std::fs::remove_dir_all(&gone).unwrap();
+    home.chat_toml(&[with_row.to_string_lossy().into_owned(), gone.to_string_lossy().into_owned()]);
+    home.secrets();
+    let listener = Arc::new(Fake::default());
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    // One mapping's folder is not on disk: the chat still starts, the mapping maps nothing, and the log names it by
+    // its ordinal alone.
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert!(matches!(chat.mapping(&with_row.to_string_lossy()), Resolution::Mapped { .. }));
+    assert_eq!(chat.mapping(&gone.to_string_lossy()), Resolution::Unmapped);
+    let text = log.text();
+    assert!(text.contains("mapping=2") && text.contains("is ignored"), "{text}");
+    assert!(!text.contains(&*gone.to_string_lossy()), "the ignored folder's path is not logged");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_made_after_the_start_in_a_mapped_folder_is_admitted() {
+    let home = Home::new(Some(SELF));
+    let (a, b) = (home.folder("a"), home.folder("b"));
+    home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
+    home.secrets();
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&Arc::new(Fake::default())));
+    assert_eq!(settled(&chat).await, Status::Running);
+    // No row existed at the start; a row made now in the mapped folder resolves and is admitted at its first action.
+    let rows = Workspaces::new();
+    let id = rows.insert(row("alpha", &a)).workspace_id.clone();
+    let (resolution, _) = chat.resolve(&rows, &id).unwrap();
+    assert!(matches!(resolution, Resolution::Mapped { ref channel, .. } if channel == "C0AAAA"));
+    assert!(chat.admit(&rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
+    let beta = rows.insert(row("beta", &b)).workspace_id.clone();
+    assert!(chat.admit(&rows, &target(&beta, "T0AAAA", "C0BBBB")).is_ok());
+}
+
 #[test]
-fn mappings_are_admitted_against_the_rows_canonical_folders() {
+fn mappings_are_admitted_against_the_canonical_folders_on_disk() {
     let home = Home::new(None);
     let row = home.folder("a");
     let _other = home.folder("b");
-    let rows = [fact(&row, false)];
     let text = row.to_string_lossy().into_owned();
     let want = Some(text.clone());
-    let of = |spelling: &str| folder_of(&rows, spelling).map(|f| f.canonical);
+    let of = canon_of;
 
     // Every spelling of the row's folder is the one canonical string: a trailing slash, `.` and `..`.
     assert_eq!(of(&text), want);
@@ -333,31 +362,25 @@ fn mappings_are_admitted_against_the_rows_canonical_folders() {
         odd[..1].make_ascii_lowercase();
         assert_eq!(of(&odd), want, "{odd}");
     }
-    // A relative spelling, a folder no row holds and one that does not exist are unknown.
+    // A relative spelling and a folder that does not exist are unknown; a folder no row holds is not.
     assert_eq!(of("a"), None);
     assert_eq!(of("../a"), None);
-    assert_eq!(of(&home.folder("b").to_string_lossy()), None);
     assert_eq!(of(&format!("{text}/missing")), None);
-    // The inert anchor is read through the same fact, and a row of the root that runs makes it not inert.
-    assert!(folder_of(&[fact(&row, true)], &text).unwrap().inert);
-    assert!(!folder_of(&[fact(&row, true), fact(&row, false)], &text).unwrap().inert);
+    assert!(of(&home.folder("b").to_string_lossy()).is_some());
 
     // Through the load: two spellings of one folder are one folder (M1's alias rule against real paths).
     home.chat_toml(&[text.clone(), format!("{text}/../a")]);
     let read = |p: &Path| config::read_file(p);
-    let loaded = Config::load(&home.config(), &read, &|f| folder_of(&rows, f));
+    let loaded = Config::load(&home.config(), &read, &canon_of);
     assert_eq!(loaded.unwrap_err(), ConfigError::FolderRepeated(2));
-    home.chat_toml(&[text.clone()]);
-    let loaded = Config::load(&home.config(), &read, &|f| folder_of(&[fact(&row, true)], f));
-    assert_eq!(loaded.unwrap_err(), ConfigError::InertAnchor(1));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn lifecycles_retirement_stops_the_running_service_within_its_bound() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, listener) = (Registry::new(), Arc::new(Fake::default()));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&listener));
+    let chat = begin(&home, &Observed::new(), &registry, gives(&listener));
     assert_eq!(settled(&chat).await, Status::Running);
     assert!(chat.service().is_some());
     assert_eq!(registry.len(), 1);
@@ -390,9 +413,9 @@ async fn a_stop_that_does_not_finish_is_reported_incomplete_and_final() {
     // retirement's thread had not reached the chat within the bound), forced by holding the phase lock across it.
     for late in [false, true] {
         let home = Home::new(Some(SELF));
-        let row = home.configured();
+        home.configured();
         let (registry, listener) = (Registry::new(), Arc::new(Fake { hang: true, ..Fake::default() }));
-        let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&listener));
+        let chat = begin(&home, &Observed::new(), &registry, gives(&listener));
         assert_eq!(settled(&chat).await, Status::Running);
 
         let held = late.then(|| chat.shared.lock());
@@ -412,9 +435,9 @@ async fn a_stop_that_does_not_finish_is_reported_incomplete_and_final() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_under_way_when_retirement_comes_is_ended_with_it() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let registry = Registry::new();
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, pending());
+    let chat = begin(&home, &Observed::new(), &registry, pending());
     assert_eq!(chat.status(), Status::Starting);
     let done = retire(&registry, LONG);
     assert!(done.incomplete.is_empty(), "{done:?}");
@@ -425,10 +448,10 @@ async fn a_start_under_way_when_retirement_comes_is_ended_with_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn retirement_that_began_first_refuses_the_start() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
     retire(&registry, LONG);
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, never(&called));
+    let chat = begin(&home, &Observed::new(), &registry, never(&called));
     assert_eq!(chat.status(), Status::Stopped);
     assert!(chat.service().is_none());
     assert!(!called.load(Ordering::SeqCst), "a registrant after retirement began must not start");
@@ -437,9 +460,9 @@ async fn retirement_that_began_first_refuses_the_start() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_that_fails_leaves_the_chat_off_with_its_code_and_a_private_lock_folder_is_given() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let registry = Registry::new();
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, refuses("down"));
+    let chat = begin(&home, &Observed::new(), &registry, refuses("down"));
     assert_eq!(settled(&chat).await, Status::Failed("down"));
     assert!(chat.status().to_string().contains("down"));
     assert!(chat.service().is_none());
@@ -453,7 +476,7 @@ async fn a_start_that_fails_leaves_the_chat_off_with_its_code_and_a_private_lock
         *record.lock().unwrap() = Some(dir.to_path_buf());
         Box::pin(async move { Err("seen") })
     });
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &Registry::new(), start);
+    let chat = begin(&home, &Observed::new(), &Registry::new(), start);
     settled(&chat).await;
     let dir = seen.lock().unwrap().clone().unwrap();
     assert_eq!(dir, home.comm().join("chat"));
@@ -464,9 +487,9 @@ async fn a_start_that_fails_leaves_the_chat_off_with_its_code_and_a_private_lock
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dropped_chat_lets_its_listener_go_and_a_start_after_a_stop_is_a_new_chat() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, first) = (Registry::new(), Arc::new(Fake::default()));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&first));
+    let chat = begin(&home, &Observed::new(), &registry, gives(&first));
     assert_eq!(settled(&chat).await, Status::Running);
     // Dropped without a stop: nothing here holds the listener, so its own drop ends it (chat guarantee 22).
     drop((chat, registry));
@@ -480,11 +503,11 @@ async fn a_dropped_chat_lets_its_listener_go_and_a_start_after_a_stop_is_a_new_c
 
     // After a stop, a start is a second `begin`, with a registry of its own.
     let (registry, second) = (Registry::new(), Arc::new(Fake::default()));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&second));
+    let chat = begin(&home, &Observed::new(), &registry, gives(&second));
     assert_eq!(settled(&chat).await, Status::Running);
     assert!(retire(&registry, LONG).incomplete.is_empty());
     let (registry, third) = (Registry::new(), Arc::new(Fake::default()));
-    let again = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, gives(&third));
+    let again = begin(&home, &Observed::new(), &registry, gives(&third));
     assert_eq!(settled(&again).await, Status::Running);
     assert_eq!(chat.status(), Status::Stopped, "the first chat stays stopped");
     assert_eq!(second.stops.load(Ordering::SeqCst), 1);
@@ -504,9 +527,9 @@ fn holding(guard: Arc<()>) -> Starter<Fake> {
 #[tokio::test(flavor = "multi_thread")]
 async fn retiring_a_start_under_way_drops_its_future() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, probe) = (Registry::new(), Arc::new(()));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, holding(probe.clone()));
+    let chat = begin(&home, &Observed::new(), &registry, holding(probe.clone()));
     // The start task holds the probe from its first poll until it is dropped by the abort.
     while Arc::strong_count(&probe) == 1 {
         tokio::task::yield_now().await;
@@ -526,7 +549,7 @@ async fn retiring_a_start_under_way_drops_its_future() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, listener) = (Arc::new(Registry::new()), Arc::new(Fake::default()));
     let (reg, made) = (registry.clone(), listener.clone());
     // The retirement runs inside the start, just before it returns its service.
@@ -537,7 +560,7 @@ async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
             Ok(made)
         })
     });
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, start);
+    let chat = begin(&home, &Observed::new(), &registry, start);
     let stopped = async {
         while listener.stops.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
@@ -553,12 +576,12 @@ async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     // A file where the folder belongs.
     std::fs::create_dir_all(home.comm()).unwrap();
     std::fs::write(home.comm().join("chat"), "not a folder").unwrap();
     let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, never(&called));
+    let chat = begin(&home, &Observed::new(), &registry, never(&called));
     assert_eq!(chat.status(), Status::Failed("lock"));
     assert_eq!(registry.len(), 0);
     assert!(!called.load(Ordering::SeqCst));
@@ -567,7 +590,7 @@ async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_the_start() {
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let registry = Arc::new(Registry::new());
     let retiring = Arc::new(std::sync::Mutex::new(None));
     // Right after the chat is registered, a retirement starts and is given time to reach `request_stop`: with the
@@ -579,7 +602,7 @@ async fn a_retirement_reaching_request_stop_between_register_and_starting_finds_
         *slot.lock().unwrap() = Some(std::thread::spawn(move || retire(&reg, LONG)));
         std::thread::sleep(Duration::from_millis(50));
     }));
-    let chat = begin(&home, &[fact(&row, false)], &Observed::new(), &registry, pending());
+    let chat = begin(&home, &Observed::new(), &registry, pending());
     let done = retiring.lock().unwrap().take().unwrap().join().unwrap();
     assert!(done.incomplete.is_empty(), "{done:?}");
     assert_eq!(chat.status(), Status::Stopped, "a start began after its retirement was reported complete");
@@ -635,11 +658,13 @@ async fn two_daemons_on_one_comm_folder_run_one_listener() {
     let one = Home::new(Some(SELF));
     let mut two = Home::new(Some(SELF));
     two.env = two.env.with("SOT_COMM_HOME", one.comm());
-    let (rows, tries) = ([one.configured(), two.configured()], [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))]);
+    one.configured();
+    two.configured();
+    let tries = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
     let registries = [Registry::new(), Registry::new()];
     let start = |home: &Home, i: usize| {
         let read = |p: &Path| config::read_file(p);
-        Chat::<Service>::begin(&home.env, &[fact(&rows[i], false)], &read, &registries[i], counting(&fake, &tries[i]), FAST)
+        Chat::<Service>::begin(&home.env, &read, &registries[i], counting(&fake, &tries[i]), FAST)
     };
     let first = start(&one, 0);
     assert_eq!(settled(&first).await, Status::Running);
@@ -677,13 +702,13 @@ async fn a_held_start_starts_once_the_holder_lets_go() {
 
     // A held start ends with its retirement, and with the topology naming another computer the hub.
     let (registry, held) = (Registry::new(), Home::new(Some(SELF)));
-    let row = held.configured();
-    let retired = Chat::<Fake>::begin(&held.env, &[fact(&row, false)], &|p| config::read_file(p), &registry, refuses("held"), FAST);
+    held.configured();
+    let retired = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &registry, refuses("held"), FAST);
     tokio::time::sleep(5 * FAST).await;
     assert_eq!(retired.status(), Status::Starting);
     assert!(retire(&registry, LONG).incomplete.is_empty());
     assert_eq!(retired.status(), Status::Stopped);
-    let moved = Chat::<Fake>::begin(&held.env, &[fact(&row, false)], &|p| config::read_file(p), &Registry::new(), refuses("held"), FAST);
+    let moved = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &Registry::new(), refuses("held"), FAST);
     held.list("elsewhere");
     until("the held start gives up", || moved.status() == Status::NotHub).await;
 }
@@ -693,7 +718,7 @@ async fn a_held_start_survives_a_topology_that_does_not_parse() {
     // A hosts.toml being edited (unparsable, or briefly gone) is not another computer named the hub: the held start
     // keeps trying and starts when the lock comes.
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (listener, free, tries) = (Arc::new(Fake::default()), Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
     let (made, open, count) = (listener.clone(), free.clone(), tries.clone());
     let start: Starter<Fake> = Box::new(move |_, _, _| {
@@ -701,7 +726,7 @@ async fn a_held_start_survives_a_topology_that_does_not_parse() {
         let (made, open) = (made.clone(), open.load(Ordering::SeqCst));
         Box::pin(async move { if open { Ok(made) } else { Err("held") } })
     });
-    let chat = Chat::begin(&home.env, &[fact(&row, false)], &|p| config::read_file(p), &Registry::new(), start, FAST);
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), start, FAST);
     for what in ["unparsable", "missing"] {
         match what {
             "unparsable" => home.write("hosts.toml", "hub = \n[[["),
@@ -728,9 +753,9 @@ async fn a_chat_whose_topology_names_another_hub_steps_down_and_a_broken_topolog
     assert!(names_another_hub(&home.env));
 
     let home = Home::new(Some(SELF));
-    let row = home.configured();
+    home.configured();
     let (registry, listener) = (Registry::new(), Arc::new(Fake::default()));
-    let chat = Chat::begin(&home.env, &[fact(&row, false)], &|p| config::read_file(p), &registry, gives(&listener), FAST);
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &registry, gives(&listener), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
     // A topology that does not parse, one that is gone, and one naming this computer: the chat runs on through many asks.
     for what in ["unparsable", "missing", "this computer"] {
@@ -784,7 +809,7 @@ async fn world() -> World {
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
     rows.insert(row("beta", &folders[1]));
-    let chat = begin(&home, &row_facts(&rows), &Observed::new(), &Registry::new(), gives(&Arc::new(Fake::default())));
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&Arc::new(Fake::default())));
     assert_eq!(settled(&chat).await, Status::Running);
     World { _home: home, rows, chat, alpha, folders }
 }
@@ -849,24 +874,24 @@ async fn no_action_is_admitted_unless_the_service_runs() {
 
     // Not the hub, a hub with no chat.toml, one with no secrets, and one whose start failed.
     let other = Home::new(Some("elsewhere"));
-    let folder = other.configured();
-    assert!(unavailable(&begin(&other, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    other.configured();
+    assert!(unavailable(&begin(&other, &Observed::new(), &Registry::new(), refuses("x")), "r"));
     let bare = Home::new(Some(SELF));
-    assert!(unavailable(&begin(&bare, &[], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    assert!(unavailable(&begin(&bare, &Observed::new(), &Registry::new(), refuses("x")), "r"));
     let no_secrets = Home::new(Some(SELF));
-    let folder = no_secrets.configured();
+    no_secrets.configured();
     std::fs::remove_file(no_secrets.config().join(SECRETS_FILE)).unwrap();
-    assert!(unavailable(&begin(&no_secrets, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("x")), "r"));
+    assert!(unavailable(&begin(&no_secrets, &Observed::new(), &Registry::new(), refuses("x")), "r"));
     let failing = Home::new(Some(SELF));
-    let folder = failing.configured();
-    let chat = begin(&failing, &[fact(&folder, false)], &Observed::new(), &Registry::new(), refuses("down"));
+    failing.configured();
+    let chat = begin(&failing, &Observed::new(), &Registry::new(), refuses("down"));
     assert_eq!(settled(&chat).await, Status::Failed("down"));
     assert!(unavailable(&chat, "r"));
 
     // Starting, and stopped after running.
     let starting = Home::new(Some(SELF));
-    let folder = starting.configured();
-    let chat = begin(&starting, &[fact(&folder, false)], &Observed::new(), &Registry::new(), pending());
+    starting.configured();
+    let chat = begin(&starting, &Observed::new(), &Registry::new(), pending());
     assert_eq!(chat.status(), Status::Starting);
     assert!(unavailable(&chat, "r"));
     let w = world().await;
@@ -904,20 +929,20 @@ async fn resolve_joins_the_mapping_with_the_row_and_the_service_status() {
     starting.delivering_toml(&[folder.to_string_lossy().into_owned()]);
     let rows = Workspaces::new();
     let id = rows.insert(row("alpha", &folder)).workspace_id.clone();
-    let chat = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), pending());
+    let chat = begin(&starting, &Observed::new(), &Registry::new(), pending());
     assert_eq!(chat.resolve(&rows, &id), mapped(false));
-    let failed = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("down"));
+    let failed = begin(&starting, &Observed::new(), &Registry::new(), refuses("down"));
     assert_eq!(settled(&failed).await, Status::Failed("down"));
     assert_eq!(failed.resolve(&rows, &id), mapped(false));
     std::fs::remove_file(starting.config().join(SECRETS_FILE)).unwrap();
-    let bare = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("x"));
+    let bare = begin(&starting, &Observed::new(), &Registry::new(), refuses("x"));
     assert_eq!(bare.status(), Status::Secrets(ConfigError::Missing));
     assert_eq!(bare.resolve(&rows, &id), mapped(false));
     starting.write(CONFIG_FILE, "workspace = [[[");
-    let refused = begin(&starting, &row_facts(&rows), &Observed::new(), &Registry::new(), refuses("x"));
+    let refused = begin(&starting, &Observed::new(), &Registry::new(), refuses("x"));
     assert!(matches!(refused.resolve(&rows, &id), Ok((Resolution::Invalid(ConfigError::Malformed(_)), false))));
     let non_hub = Home::new(Some("elsewhere"));
-    let chat = begin(&non_hub, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    let chat = begin(&non_hub, &Observed::new(), &Registry::new(), refuses("x"));
     assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::NotHub, false)));
 }
 
@@ -928,11 +953,11 @@ async fn resolve_asks_the_hub_fact_first_and_the_row_before_the_file() {
     let id = rows.insert(row("alpha", &folders.folder("a"))).workspace_id.clone();
     // A non-hub answers `NotHub` even for an id it does not know.
     let other = Home::new(Some("elsewhere"));
-    let chat = begin(&other, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    let chat = begin(&other, &Observed::new(), &Registry::new(), refuses("x"));
     assert_eq!(chat.resolve(&rows, "ws-nothing-0"), Ok((Resolution::NotHub, false)));
     // A hub with no chat.toml: `Invalid(Missing)` for a row it has, `StaleRow` for one it has not.
     let bare = Home::new(Some(SELF));
-    let chat = begin(&bare, &[], &Observed::new(), &Registry::new(), refuses("x"));
+    let chat = begin(&bare, &Observed::new(), &Registry::new(), refuses("x"));
     assert_eq!(chat.resolve(&rows, &id), Ok((Resolution::Invalid(ConfigError::Missing), false)));
     assert_eq!(chat.resolve(&rows, "ws-nothing-0"), Err(ChatCode::StaleRow));
 }
