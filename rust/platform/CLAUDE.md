@@ -31,7 +31,7 @@ where each lives).
    sees the old file or the new one and never a delete-pending error (reported as access denied); limit: where Windows or the
    file system has no such rename (before Windows 10 1709, or a file system that answers `STATUS_INVALID_PARAMETER`,
    `STATUS_NOT_SUPPORTED`, `STATUS_INVALID_INFO_CLASS` or `STATUS_INVALID_DEVICE_REQUEST`) the classic replace is the
-   fallback, which leaves the replaced file delete-pending for a moment, and a reader opening the name then can be denied. Rests on
+   fallback, which leaves the replaced file delete-pending for a moment, and a reader opening the name then can be denied; a name another program holds open without delete sharing fails the write, after the transient-hold retry's `RETRY_DEADLINE_MS`, with a sharing violation (os error 32) on the POSIX path and access denied (5) on the fallback, the old file whole either way. Rests on
    renameat2/renamex_np/MoveFileEx for a publication, the rename relative to the record's folder (Unix `renameat`,
    Windows by handle) for a record, and the folder's flush (on Windows `FlushFileBuffers` on a folder handle); only
    linux, macos and windows build.
