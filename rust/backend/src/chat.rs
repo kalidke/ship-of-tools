@@ -195,7 +195,7 @@ fn current_row(workspaces: &Workspaces, id: &str) -> Option<RowFact> {
 
 /// A mapping's folder as chat's `Canon` asks for it: through the same canonicalizer as the rows' own roots, with no row
 /// needed (a row made later in the folder is admitted at its first action).
-fn canon_of(folder: &str) -> Option<String> {
+pub(crate) fn canon_of(folder: &str) -> Option<String> {
     canonical(Path::new(folder)).map(|c| c.to_string_lossy().into_owned())
 }
 

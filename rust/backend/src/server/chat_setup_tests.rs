@@ -346,7 +346,8 @@ async fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(dir.join(SECRETS_FILE)).unwrap().permissions().mode() & 0o077, 0, "the secrets are the owner's alone");
     }
-    let loaded = config::Config::load(&dir, &|p| config::read_file(p), &|f| std::fs::canonicalize(f).ok().map(|c| c.to_string_lossy().into_owned())).unwrap();
+    // Through the daemon's own canonicalizer, so the spelling compared is the one the daemon writes and loads.
+    let loaded = config::Config::load(&dir, &|p| config::read_file(p), &crate::chat::canon_of).unwrap();
     assert_eq!(loaded.mappings().collect::<Vec<_>>(), [(w.folders[0].to_str().unwrap(), "C0PUB")]);
     let text = log.text();
     assert!(text.contains("connected from a window"), "the capture saw no connect");
