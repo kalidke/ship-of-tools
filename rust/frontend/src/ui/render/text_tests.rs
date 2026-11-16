@@ -162,3 +162,26 @@ fn a_run_shaped_last_frame_is_not_shaped_again_wherever_it_is_drawn() {
     assert_eq!(runs.shape(&mut fonts, metrics, 801, 600, &[]), 0);
     assert!(runs.buffers.is_empty());
 }
+
+/// The signature leaves the font size out, so a buffer matched by its text is right only because a metrics change
+/// re-shapes every held buffer in place: after `set_metrics` a reused buffer, a spare one taken by a new run and a fresh
+/// one all lay their line out at the new size, and nothing is shaped again for the change alone. Italic is in the
+/// signature: an italic run is not the plain one's buffer.
+#[test]
+fn a_metrics_change_reaches_the_reused_the_spare_and_the_fresh_buffer() {
+    let mut fonts = FontSystem::new();
+    let (small, large) = (Metrics::new(14.0, 18.0), Metrics::new(28.0, 36.0));
+    let mut runs = ShapedRuns::default();
+    assert_eq!(runs.shape(&mut fonts, small, 800, 600, &[run("alpha"), run("beta")]), 2);
+    runs.set_metrics(&mut fonts, large);
+    // `alpha` is held; `gamma` takes the buffer `beta` leaves; `delta` is a buffer made new at the larger metrics.
+    assert_eq!(runs.shape(&mut fonts, large, 800, 600, &[run("alpha"), run("gamma"), run("delta")]), 2);
+    for (slot, buffer) in runs.buffers.iter_mut().enumerate() {
+        buffer.shape_until_scroll(&mut fonts, false);
+        let heights: Vec<f32> = buffer.layout_runs().map(|r| r.line_height).collect();
+        assert_eq!((buffer.metrics().font_size, heights), (28.0, vec![36.0]), "slot {slot}");
+    }
+    let mut italic = run("alpha");
+    italic.italic = true;
+    assert_eq!(runs.shape(&mut fonts, large, 800, 600, &[run("alpha"), italic]), 1, "an italic run is its own buffer");
+}

@@ -627,10 +627,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   (`shape`, which lends the font system to one buffer build or resize), the chrome draw (`draw_chrome`), text and
   overlay preparation and their paint, and the atlas trim are its operations; the cell backend is read through
   `chrome()`. The text layer keeps one frame of shaped runs (`render::text::ShapedRuns`, one for the chrome and one for
-  the overlay): a run takes the buffer the last frame shaped for the same text, bold, italic and size, whatever slot it
+  the overlay): a run takes the buffer the last frame shaped for the same text, bold, italic and surface size, whatever slot it
   sat in, and only a run with no such buffer is shaped, into a buffer the last frame no longer needs, so a ring that
-  moves a row or a row that gains a run shapes only what is new (`text::tests::a_run_shaped_last_frame_is_not_shaped_again_wherever_it_is_drawn`,
-  which also pins that a resized surface shapes every run again, the signature holding the size;
+  moves a row or a row that gains a run shapes only what is new. The signature leaves the font size out: a metrics
+  change re-shapes every held buffer in place (`set_metrics`), which is what makes a buffer matched by its text right
+  (`render::text::tests::{a_run_shaped_last_frame_is_not_shaped_again_wherever_it_is_drawn` (which also pins that a
+  resized surface shapes every run again), `a_metrics_change_reaches_the_reused_the_spare_and_the_fresh_buffer`},
   `drawer::terminal::vt::tests::a_screen_one_row_further_up_the_ring_shapes_only_the_row_that_came_into_view`). The native pane-mapping fixture checks rejection and clamping against the window's own metrics, with
   points outside any geometry.
 - `Brushes` privately owns the render resources' quad stage: the pipeline (lent immutably to whoever builds a quad of

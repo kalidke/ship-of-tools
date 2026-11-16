@@ -110,10 +110,14 @@ fn spaces_are_not_text() {
     let backend = backend_with(&[(1, "a", Style::default()), (3, "b", Style::default())]);
     let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
     assert_eq!(lines.iter().map(|l| (l.text.as_str(), l.x)).collect::<Vec<_>>(), [(" a b", 0.0)]);
-    // A blank cell of another style ends a run and makes none of its own, and its background is still a rectangle.
+    // A blank cell with the run's own foreground is trimmed off its end, and its background is still a rectangle.
     let red = Style::default().fg(Color::Red);
     let backend = backend_with(&[(0, "a", Style::default()), (1, " ", Style::default().bg(Color::Blue)), (2, "b", red)]);
     let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
     assert_eq!(lines.iter().map(|l| (l.text.as_str(), l.x)).collect::<Vec<_>>(), [("a", 0.0), ("b", 2.0)]);
     assert_eq!(backend.project_backs(0.0, 0.0, 1.0, 1.0), vec![quad(1.0, 1.0, (36, 114, 200))]);
+    // A space-only run of another foreground makes no run of its own and ends the run before it.
+    let backend = backend_with(&[(0, "a", Style::default()), (1, " ", red), (2, " ", red), (3, "b", Style::default())]);
+    let lines = backend.project_lines(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(lines.iter().map(|l| (l.text.as_str(), l.x)).collect::<Vec<_>>(), [("a", 0.0), ("b", 3.0)]);
 }
