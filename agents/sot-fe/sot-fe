@@ -174,12 +174,8 @@
 #              posted: fix it, or wait and post once more); exit 3 with `unknown: ...` or `no answer: ...` (the post
 #              MAY exist: never post again; read the thread first). Test the exit code, not the words. A reply is
 #              public to every member of the channel.
-#              With --file <path> it shares that file instead (a figure, or any regular file of at most 16 MiB), under
-#              the same rules, with the text, if any, as its comment: ONE `chat.post_file`. The path, relative to the
-#              working folder or absolute, must lie under the row's folder ($SOT_WORKSPACE_ROOT) as written, with no
-#              `..`, or it is refused (exit 2) before an endpoint is found; links inside the folder are followed by the
-#              daemon, which reads the file itself and refuses the chat's own configuration folder. Waits 120 s for
-#              the share. Prints `posted <ts>`, or `posted file <id>` when Slack named no message.
+#              With --file <path> it shares a file of the row's folder instead, the text as its comment: ONE
+#              `chat.post_file`, waiting 120 s (agents/CLAUDE.md says its rules).
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One

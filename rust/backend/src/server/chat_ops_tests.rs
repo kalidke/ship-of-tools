@@ -45,6 +45,10 @@ const OPS: &[(&str, Answer)] = &[
 pub(super) const OK: u8 = 0;
 pub(super) const HOLD: u8 = 1;
 pub(super) const DROP: u8 = 2;
+/// A file's first upload step refused by Slack.
+const ASK_REFUSED: u8 = 3;
+/// A file's share answered 429.
+const SHARE_LIMITED: u8 = 4;
 
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
@@ -67,6 +71,15 @@ pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
         let now = mode.load(Ordering::SeqCst);
         if path.ends_with("/files.completeUploadExternal") && now == DROP {
             return Reply::Drop;
+        }
+        if path.ends_with("/files.completeUploadExternal") && now == SHARE_LIMITED {
+            return Reply::Status { code: 429, headers: vec![("Retry-After".into(), "7".into())], body: b"{}".to_vec() };
+        }
+        if path.ends_with("/files.getUploadURLExternal") && now == ASK_REFUSED {
+            return Reply::json(&json!({"ok": false, "error": "invalid_arguments"}));
+        }
+        if path == upload.path() && now == HOLD {
+            return Reply::Hang;
         }
         if let Some(r) = upload.reply(seen, port) {
             return r;
@@ -556,26 +569,36 @@ async fn a_row_posts_a_file_of_its_folder_under_its_own_handle_once() {
     let reply = cli.ask(21, op::CHAT_POST_FILE, file_post("ws-gone-0000", "C0AAAA", "row", "alpha-h", "files:no-such.png")).await;
     assert_eq!(code(&reply), "stale_row", "{reply}");
     assert_eq!(calls(&fake), 0, "a refused file post reached Slack");
-    // Under its handle: the three steps once, the file's bytes and base name, into the thread, with the comment.
+    // Under its handle it is posted (the steps themselves are goal 1's test, `a_rows_figure_reaches_its_thread_once`).
     let posted = cli.ask(30, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
     assert_eq!(posted, json!({"outcome": "posted", "file": "F0FILE", "ts": "1700000800.000100"}));
-    let seen = fake.seen();
-    let steps: Vec<_> = seen.iter().filter(|s| is_upload_call(&s.path())).collect();
-    assert_eq!(steps.len(), 3, "{:?}", uploads(&fake));
-    assert_eq!(steps[0].param("filename").as_deref(), Some("fit.png"));
-    assert_eq!((steps[1].body.as_slice(), steps[1].authorization.as_deref()), (PNG, None));
-    let share = steps[2].json().unwrap();
-    assert_eq!((share["channel_id"].as_str(), share["thread_ts"].as_str()), (Some("C0AAAA"), Some("1700000050.000000")), "{share}");
-    assert_eq!(share["initial_comment"], "alpha-h (row via Ship of Tools): the fit");
+    assert_eq!(uploads(&fake).len(), 3);
     // A share that is never acknowledged is unknown, and is not sent again.
     mode.store(DROP, Ordering::SeqCst);
     let unknown = cli.ask(31, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
     assert_eq!(unknown, json!({"outcome": "unknown"}));
     assert_eq!(uploads(&fake).len(), 6, "the unacknowledged share was sent again: {:?}", uploads(&fake));
+    // Slack's refusal of the first step shares nothing: `refused`, steps 2 and 3 never sent (the tool's exit 2).
+    mode.store(ASK_REFUSED, Ordering::SeqCst);
+    let refused = cli.ask(32, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
+    assert_eq!(refused, json!({"outcome": "refused", "code": "failed"}));
+    assert_eq!(uploads(&fake).len(), 7, "a step after a refused first step was sent: {:?}", uploads(&fake));
+    // A share Slack limits is `limited` with its wait (exit 2), sent once.
+    mode.store(SHARE_LIMITED, Ordering::SeqCst);
+    let limited = cli.ask(33, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
+    assert_eq!(limited, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": false}));
+    assert_eq!(uploads(&fake).len(), 10);
+}
+
+/// Runs `then` just before the daemon opens the file at `path`, once: a test's stand-in for another process acting
+/// between the composition of a node and the open.
+#[cfg(unix)]
+fn before_open(path: std::path::PathBuf, then: impl FnOnce() + Send + 'static) {
+    crate::chat::ops::BEFORE_OPEN.lock().unwrap().push((path, Box::new(then)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_file_outside_the_folder_or_in_the_config_folder_is_never_read_or_sent() {
+async fn a_file_outside_the_folder_or_of_the_config_folder_is_refused_before_slack() {
     let mode = Arc::new(AtomicU8::new(OK));
     let fake = slack(&mode).await;
     let rig = rig(&fake).await;
@@ -587,14 +610,32 @@ async fn a_file_outside_the_folder_or_in_the_config_folder_is_never_read_or_sent
     std::fs::write(folder.join("big.bin"), vec![7u8; MAX_CHAT_FILE + 1]).unwrap();
     std::fs::write(folder.join("max.bin"), vec![7u8; MAX_CHAT_FILE]).unwrap();
     std::fs::create_dir(folder.join("sub")).unwrap();
-    let config = rig._home.config();
+    std::fs::create_dir(folder.join("figs")).unwrap();
+    std::fs::write(folder.join("figs/fit.png"), PNG).unwrap();
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(&config, folder.join("conf")).unwrap();
-        std::os::unix::fs::symlink(config.join(config::SECRETS_FILE), folder.join("secrets.png")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), folder.join("results")).unwrap();
+        use std::os::unix::fs::symlink;
+        let config = rig._home.config();
+        symlink(&config, folder.join("conf")).unwrap();
+        symlink(config.join(config::SECRETS_FILE), folder.join("secrets.png")).unwrap();
+        symlink(outside.path(), folder.join("results")).unwrap();
+        symlink(folder.join("figs/fit.png"), folder.join("alias.png")).unwrap();
         let fifo = std::ffi::CString::new(folder.join("pipe.png").to_string_lossy().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        // A hard link is the secrets file under a name inside the project.
+        std::fs::hard_link(config.join(config::SECRETS_FILE), folder.join("hard.png")).unwrap();
+        // A folder of the project swapped for a link to the configuration folder between the composition and the open.
+        std::fs::create_dir(folder.join("d")).unwrap();
+        std::fs::write(folder.join("d").join(config::SECRETS_FILE), b"a decoy").unwrap();
+        let (d, held, to) = (folder.join("d"), folder.join("d-held"), config.clone());
+        before_open(folder.join("d").join(config::SECRETS_FILE), move || {
+            std::fs::rename(&d, &held).unwrap();
+            symlink(&to, &d).unwrap();
+        });
+        // A kernel file whose size says nothing of what a read gives.
+        if cfg!(target_os = "linux") {
+            symlink("/proc/self/environ", folder.join("env.png")).unwrap();
+        }
     }
     let mut cli = connect(rig.services.clone()).await;
     let mut refused = vec![
@@ -608,24 +649,58 @@ async fn a_file_outside_the_folder_or_in_the_config_folder_is_never_read_or_sent
         ("figs/fit.png", "not_a_file"),
     ];
     if cfg!(unix) {
-        refused.extend([("files:pipe.png", "not_a_file"), ("files:conf/chat-secrets.toml", "not_a_file"), ("files:conf/chat.toml", "not_a_file"), ("files:secrets.png", "not_a_file")]);
+        refused.extend([
+            ("files:pipe.png", "not_a_file"),
+            ("files:conf/chat-secrets.toml", "not_a_file"),
+            ("files:conf/chat.toml", "not_a_file"),
+            ("files:secrets.png", "not_a_file"),
+            ("files:hard.png", "not_a_file"),
+            ("files:d/chat-secrets.toml", "not_a_file"),
+        ]);
+    }
+    if cfg!(target_os = "linux") {
+        refused.push(("files:env.png", "not_a_file"));
     }
     for (n, (node, want)) in refused.into_iter().enumerate() {
         let reply = tokio::time::timeout(std::time::Duration::from_secs(10), cli.ask(10 + n as u64, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", node))).await.expect("a refusal waited");
         assert_eq!((code(&reply), reply.get("outcome")), (want, None), "{node}: {reply}");
     }
     assert_eq!(calls(&fake), 0, "a refused file reached Slack");
-    // A file of exactly the bound posts, and so does one a link in the folder reaches outside the configuration folder.
-    let mut posts = vec!["files:max.bin"];
+    // A file of exactly the bound posts, and so do one a link in the folder reaches outside the configuration folder
+    // and a link to a file of another name, shared under the link's own name.
+    let mut posts = vec![("files:max.bin", "max.bin", MAX_CHAT_FILE)];
     if cfg!(unix) {
-        posts.push("files:results/o.png");
+        posts.extend([("files:results/o.png", "o.png", PNG.len()), ("files:alias.png", "alias.png", PNG.len())]);
     }
-    for (n, node) in posts.iter().enumerate() {
+    for (n, (node, _, _)) in posts.iter().enumerate() {
         let reply = cli.ask(40 + n as u64, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", node)).await;
         assert_eq!(reply["outcome"], "posted", "{node}: {reply}");
     }
-    let sizes: Vec<usize> = fake.seen().iter().filter(|s| s.path() == Upload::new().path()).map(|s| s.body.len()).collect();
-    assert_eq!(sizes, [MAX_CHAT_FILE, PNG.len()][..posts.len()], "the bytes sent are the files'");
+    let seen = fake.seen();
+    let names: Vec<String> = seen.iter().filter(|s| s.path().ends_with("/files.getUploadURLExternal")).filter_map(|s| s.param("filename")).collect();
+    let sizes: Vec<usize> = seen.iter().filter(|s| s.path() == Upload::new().path()).map(|s| s.body.len()).collect();
+    assert_eq!(names, posts.iter().map(|p| p.1.to_string()).collect::<Vec<_>>(), "each share is named by its node");
+    assert_eq!(sizes, posts.iter().map(|p| p.2).collect::<Vec<_>>(), "the bytes sent are the files'");
+}
+
+/// No file is read before a transfer permit is held: with two shares under way, a third is `busy`, and since its file
+/// does not exist, a read before the permit would have answered `not_a_file`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_third_file_post_at_once_is_busy_before_its_file_is_read() {
+    let mode = Arc::new(AtomicU8::new(HOLD));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
+    std::fs::write(rig.folders[0].join("fit.png"), PNG).unwrap();
+    let mut cli = connect(rig.services.clone()).await;
+    for id in [10, 11] {
+        cli.send(id, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:fit.png")).await;
+    }
+    let held = Upload::new().path().to_string();
+    sot_chat::fake_slack::eventually("two uploads held", || fake.seen().iter().filter(|s| s.path() == held).count() == 2).await;
+    let third = cli.ask(12, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:no-such.png")).await;
+    assert_eq!((code(&third), third.get("outcome")), ("busy", None), "{third}");
+    fake.shutdown().await;
 }
 
 #[test]

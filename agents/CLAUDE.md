@@ -355,16 +355,19 @@ of each.
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
   (messaging's `sot-comm`); a Codex row is not woken for channel mail.
 - `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]` shares a file of the row's folder (a figure, or
-  any regular file of at most 16 MiB) under the same rules: the row and handle refused as above, then the path, made
-  absolute by joining a relative one to `$PWD` without resolving links, refused (exit 2, before an endpoint) unless it
-  lies under `$SOT_WORKSPACE_ROOT/` as written with no `..` part; the rest is the node id `files:<rel>`. It sends one
-  `chat.post_file` of kind `row` with that id, the thread and the comment, waits 120 s, and prints `posted <ts>` or
-  `posted file <id>` (Slack named no message) with the same exit codes. The daemon reads the file itself and refuses
-  anything not a readable regular file of the folder, or inside the chat's configuration folder (chat contract, D13).
-  Limit: on a Windows hub the root is `C:\...` and Git Bash's path `/c/...`, so the tool refuses (nothing sent); the
-  suite runs on Linux and macOS bash 3.2, not Git Bash. `tests/test-sot-fe-chat.sh`'s file cases: outside a row, the
-  folder or with no handle refused before an endpoint, one resolve then one `chat.post_file` with the node id, thread and
-  comment, each outcome's words and code, and no answer as one request.
+  any regular file of at most 16 MiB) under the same rules: the row and handle refused as above, then the path (a
+  relative one joined to `$PWD`) made relative to `$SOT_WORKSPACE_ROOT` by comm-lib's `sot_relative_to`, the one owner
+  of that rule (one spelling of both, so Git Bash's `/c/...` meets a `C:\...` root; a link above the folder resolved,
+  one inside it never), and refused (exit 2, before an endpoint) when it is outside the folder, the folder itself, or has
+  a `..` part; the rest is the node id `files:<rel>`. It sends one `chat.post_file` of kind `row` with that id, the
+  thread and the comment, waits 120 s, and prints `posted <ts>` or `posted file <id>` (Slack named no message) with the
+  same exit codes. The daemon reads the file itself and refuses anything not a readable regular file of the folder, and
+  the chat's configuration files (chat contract, D13). Unmeasured until a person's first use: that `--thread` shares
+  into the thread and that the share reads back as the row's (the figures plan's LP2 and LP4). The suite runs on Linux
+  and macOS bash 3.2; the Windows spelling rests on `sot_relative_to`'s own tests, and no Git Bash run of this verb has
+  been made. `tests/test-sot-fe-chat.sh`'s file cases: outside a row, the folder or with no handle refused before an
+  endpoint, one resolve then one `chat.post_file` with the node id, thread and comment (or neither), a path spelled
+  through a link above the folder, each outcome's words and code, and no answer as one request.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,

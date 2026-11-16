@@ -125,17 +125,16 @@ send_chat_post() {
     _chat_posted "$(_chat_ask chat.post "$req")"
 }
 
-# The node id (`files:<rel>`) of the file at $1, a path in the row's folder as written: a relative one is joined to
-# $PWD, links are never resolved, and the result must lie under $SOT_WORKSPACE_ROOT/ with no `..` part; the daemon reads
-# the file itself. Prints nothing and returns 1 otherwise. (A Windows root, C:\..., never matches Git Bash's /c/...:
-# such a post is refused here.)
+# The node id (`files:<rel>`) of the file at $1, a path in the row's folder: a relative one is joined to $PWD, and the
+# result is made relative to $SOT_WORKSPACE_ROOT by comm-lib's sot_relative_to (one spelling of both, so Git Bash's
+# /c/... meets a C:\... root, and a link above the folder is resolved, never one inside it); a path outside it, the
+# folder itself, or one with a `..` part prints nothing and returns 1. The daemon reads the file itself.
 _chat_node_id() {
-    local path="$1" root="${SOT_WORKSPACE_ROOT:-}" rel
-    [ -n "$root" ] || return 1
-    case "$path" in /*) : ;; *) path="$PWD/$path" ;; esac
-    root="${root%/}"
-    case "$path" in "$root"/?*) rel="${path#"$root"/}" ;; *) return 1 ;; esac
-    case "/$rel/" in */../*) return 1 ;; esac
+    local path="$1" rel
+    [ -n "${SOT_WORKSPACE_ROOT:-}" ] || return 1
+    case "$path" in /*|[A-Za-z]:[\\/]*) : ;; *) path="$PWD/$path" ;; esac
+    rel="$(sot_relative_to "$SOT_WORKSPACE_ROOT" "$path")" || return 1
+    case "/$rel/" in //|/./|*/../*) return 1 ;; esac
     printf 'files:%s' "$rel"
 }
 

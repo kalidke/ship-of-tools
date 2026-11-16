@@ -2178,6 +2178,7 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
         let api = new_api(&fake);
         let outcome = api
             .post_file(
+                api.transfer().unwrap(),
                 "C0CHAN",
                 Some("1700000100.000000"),
                 PostKind::Row,
@@ -2220,7 +2221,7 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
         );
 
         // A person's file with no comment and no thread: the label alone, at the channel's top level.
-        let outcome = api.post_file("C0CHAN", None, PostKind::Person, "Ada Test", "a.png", PNG.to_vec(), None).await;
+        let outcome = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada Test", "a.png", PNG.to_vec(), None).await;
         assert!(matches!(outcome, Ok(FileOutcome::Posted { .. })), "{outcome:?}");
         let body = fake.seen().pop().unwrap().json().unwrap();
         assert_eq!(body["initial_comment"], "Ada Test (person via Ship of Tools)");
@@ -2248,20 +2249,19 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
             ("C0CHAN", None, "Ada", "a.png", PNG, Some(&over)),
         ];
         for (channel, thread, name, file, bytes, comment) in cases {
-            let r = api.post_file(channel, thread, PostKind::Person, name, file, bytes.to_vec(), comment).await;
+            let r = api.post_file(api.transfer().unwrap(), channel, thread, PostKind::Person, name, file, bytes.to_vec(), comment).await;
             assert!(r.is_err(), "{channel} {name:?} {file:.10} {} {:?}", bytes.len(), comment.map(str::len));
         }
         assert_eq!(fake.seen().len(), before, "nothing sent for a refused input");
-        let exact = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), Some(&fits)).await;
+        let exact = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), Some(&fits)).await;
         assert!(matches!(exact, Ok(FileOutcome::Posted { .. })), "the bound itself is carried");
-        let full_size = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", vec![7u8; MAX_CHAT_FILE], None).await;
+        let full_size = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada", "a.png", vec![7u8; MAX_CHAT_FILE], None).await;
         assert!(matches!(full_size, Ok(FileOutcome::Posted { .. })), "a file of exactly the bound is carried");
         assert_eq!(fake.seen().iter().rev().nth(1).unwrap().body.len(), MAX_CHAT_FILE);
 
         let before = fake.seen().len();
         api.close();
-        let closed = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), None).await;
-        assert_eq!(closed, Err(ApiError::Closed));
+        assert_eq!(api.transfer().err(), Some(ApiError::Closed), "a closed client grants no transfer");
         assert_eq!(fake.seen().len(), before);
         fake.shutdown().await;
     })
@@ -2304,7 +2304,7 @@ async fn only_the_share_can_be_unknown() {
         .await;
         let short = Duration::from_millis(300);
         let api = new_api(&fake).with_deadlines(short, short, short).with_transfer_deadline(short);
-        let post = |file: &'static str| api.post_file("C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None);
+        let post = |file: &'static str| api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None);
 
         for before_the_share in ["drop1", "drop2"] {
             let got = post(before_the_share).await;
@@ -2337,7 +2337,8 @@ async fn a_share_with_no_ts_is_posted_with_its_file() {
                 upload.reply(seen, port).unwrap_or(Reply::Drop)
             })
             .await;
-            let got = new_api(&fake).post_file("G0PRIV", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+            let api = new_api(&fake);
+            let got = api.post_file(api.transfer().unwrap(), "G0PRIV", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
             assert_eq!(got, Ok(FileOutcome::Posted { file: "F0FILE".into(), ts: want.clone() }), "{want:?}");
             fake.shutdown().await;
         }
@@ -2383,9 +2384,9 @@ async fn a_file_share_read_back_through_history_keeps_its_origin() {
         .await;
         let api = ready(&fake).await;
         let a = api
-            .post_file("C0CHAN", None, PostKind::Row, "build-7", "fig.png", PNG.to_vec(), Some("the <fit> & more"))
+            .post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "fig.png", PNG.to_vec(), Some("the <fit> & more"))
             .await;
-        let b = api.post_file("C0CHAN", None, PostKind::Person, "R&D <Ada>", "b.png", PNG.to_vec(), None).await;
+        let b = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "R&D <Ada>", "b.png", PNG.to_vec(), None).await;
         let posted: Vec<String> = [a, b]
             .into_iter()
             .map(|o| match o {
@@ -2421,7 +2422,8 @@ async fn a_foreign_upload_url_is_refused_before_any_byte_and_nothing_is_shared()
                 upload.reply(seen, port).unwrap_or(Reply::Drop)
             })
             .await;
-            let got = new_api(&fake).post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+            let api = new_api(&fake);
+            let got = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
             assert_eq!(got, Ok(FileOutcome::Refused(code.into())), "{host}");
             assert_eq!(steps(&fake), [ASK], "{host}: only the first step was sent");
             assert_eq!(fake.connections(), 1, "{host}: no connection to the upload host");
@@ -2445,15 +2447,14 @@ async fn a_third_transfer_is_busy_at_once_and_a_dropped_one_frees_its_permit() {
         let api = Arc::new(new_api(&fake));
         let hang = |api: Arc<Api>| {
             tokio::spawn(async move {
-                api.post_file("C0CHAN", None, PostKind::Row, "build-7", "hang.png", PNG.to_vec(), None).await
+                api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "hang.png", PNG.to_vec(), None).await
             })
         };
         let (first, second) = (hang(api.clone()), hang(api.clone()));
         eventually("two transfers under way", || fake.seen().len() == 2).await;
 
         let start = Instant::now();
-        let third = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "ok.png", PNG.to_vec(), None).await;
-        assert_eq!(third, Ok(FileOutcome::Refused("busy".into())));
+        assert_eq!(api.transfer().err(), Some(ApiError::Http(HttpError::Busy)), "a third transfer");
         assert!(start.elapsed() < Duration::from_secs(1), "busy at once");
         assert_eq!(fake.seen().len(), 2, "the third sent nothing");
 
@@ -2461,7 +2462,7 @@ async fn a_third_transfer_is_busy_at_once_and_a_dropped_one_frees_its_permit() {
         first.abort();
         let _ = first.await;
         for _ in 0..2 {
-            let got = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "ok.png", PNG.to_vec(), None).await;
+            let got = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "ok.png", PNG.to_vec(), None).await;
             assert!(matches!(got, Ok(FileOutcome::Posted { .. })), "{got:?}");
         }
         second.abort();
@@ -2502,7 +2503,7 @@ async fn a_file_post_shows_no_token_or_private_url_in_any_error() {
         let api = new_api(&fake);
         let mut shown = Vec::new();
         for file in ["echo1.png", "html1.png", "foreign.png", "refused2.png", "echo3.png", "refused3.png", ""] {
-            let got = api.post_file("C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None).await;
+            let got = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None).await;
             shown.push(match got {
                 Ok(outcome) => format!("{outcome:?}"),
                 Err(e) => format!("{e:?} {e}"),
@@ -2590,7 +2591,7 @@ async fn a_rate_limit_refuses_a_file_post_unsent() {
         })
         .await;
         let api = new_api(&fake);
-        let post = || api.post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None);
+        let post = || api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None);
         assert_eq!(post().await, Ok(FileOutcome::Limited { retry_after: Duration::from_secs(5), assumed: false }));
         // While the wait runs, the first step is a read refused without a request.
         assert!(matches!(post().await, Ok(FileOutcome::Limited { assumed: false, .. })));
@@ -2606,7 +2607,8 @@ async fn a_rate_limit_refuses_a_file_post_unsent() {
             upload.reply(seen, port).unwrap_or(Reply::Drop)
         })
         .await;
-        let got = new_api(&fake).post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+        let api = new_api(&fake);
+        let got = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
         assert_eq!(got, Ok(FileOutcome::Limited { retry_after: Duration::from_secs(7), assumed: false }));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(shared(&fake), 1);
@@ -2885,8 +2887,7 @@ async fn a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_rea
         let before = fake.seen().len();
         let start = Instant::now();
         assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Http(HttpError::Busy)));
-        let post = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
-        assert_eq!(post, Ok(FileOutcome::Refused("busy".into())));
+        assert_eq!(api.transfer().err(), Some(ApiError::Http(HttpError::Busy)), "a post's transfer");
         assert!(start.elapsed() < Duration::from_secs(1), "busy at once");
         assert_eq!(fake.seen().len(), before, "neither sent anything");
         first.abort();

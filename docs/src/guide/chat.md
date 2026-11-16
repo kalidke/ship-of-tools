@@ -215,15 +215,16 @@ does not come back to the row.
 ### A row's figure
 
 A row's agent shares a file, such as a figure, with `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]`,
-under the same rules as its reply: for the row it runs in, under its handle, into the thread or the channel, once. The
-file is one of the row's folder: a relative path is taken from the folder the command runs in, and a path that is not
-under the row's folder, or that has a `..` in it, is refused before anything is sent. A link inside the folder is
-followed, so a `data/results` link to another disk can be posted, but nothing inside the chat's own configuration
-folder, which holds its tokens. Any regular file of at most 16 MiB can be posted; Slack shows it under the label
+under the same rules as its reply: for the row it runs in, under its handle, into the thread (not yet seen against
+Slack itself) or the channel, once. The file is one of the row's folder: a relative path is taken from the folder the
+command runs in, and a path that is not under the row's folder, or that has a `..` in it, is refused before anything is
+sent. A link inside the folder is followed, so a `data/results` link to another disk can be posted, but the chat's own
+configuration files, which hold its tokens, are refused by what file was opened, whatever name reached it (on Windows,
+by its path only). Any regular file of at most 16 MiB can be posted; Slack shows it under the label
 `<handle> (row via Ship of Tools)`, then the comment if there is one, and keeps a PNG's pixels but not its text chunks.
 It prints `posted <ts>`, or `posted file <id>` when Slack named no message, and exits 0; the other exit codes are the
-reply's. The drawer shows the share as the row's message with its file line. On a Windows hub the command refuses every
-path (its shell spells the folder differently from the daemon), and nothing is sent.
+reply's. The drawer shows the share as the row's message with its file line (unmeasured against Slack itself until a
+person's first use).
 
 ## Moving the hub
 

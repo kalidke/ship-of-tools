@@ -23,7 +23,6 @@ use sot_protocol::Frame;
 
 use super::watch::Conn;
 use super::Chat;
-use crate::files::confine::path_within_root;
 use crate::rows::handle::bound_handle;
 use crate::rows::{Workspace, Workspaces};
 
@@ -202,8 +201,8 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
 }
 
 /// `chat.post_file`: one file of the row's folder shared once. In order, each refusal before anything is read or sent
-/// past it: admission, [`may_post`] (`bad_request`), the file ([`read_file`]: `not_a_file`, `too_large`), then the one
-/// `Api::post_file`, whose outcome is the reply's and is never retried.
+/// past it: admission, [`may_post`] (`bad_request`), a transfer permit (`busy`), the file ([`read_file`]: `not_a_file`,
+/// `too_large`), then the one `Api::post_file`, whose outcome is the reply's and is never retried.
 pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_POST_FILE;
     let req = match decode::<ChatPostFileReq>(payload) {
@@ -224,6 +223,11 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let Some(ws) = rows.resolve(Some(&req.target.row)) else {
         return Ok(refuse(req_id, NAME, ChatCode::StaleRow));
     };
+    // The permit before the read: no file is read into memory without one, so `MAX_TRANSFERS` files at most are held.
+    let transfer = match api.transfer() {
+        Ok(t) => t,
+        Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
+    };
     let (node_id, secrets) = (req.node_id.clone(), config::config_dir(&chat.env));
     let read = tokio::task::spawn_blocking(move || read_file(&ws, &node_id, secrets.as_deref())).await;
     let (file_name, bytes) = match read.unwrap_or(Err(ChatCode::Failed)) {
@@ -233,7 +237,7 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let refused_post = |code| reply(req_id, NAME, &ChatPostFileRes::Refused { code });
     let (channel, thread) = (req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()));
     // The one call: nothing below sends again, whatever it answers.
-    let outcome = api.post_file(channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
+    let outcome = api.post_file(transfer, channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
         Ok(FileOutcome::Posted { file, ts }) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts }),
@@ -248,24 +252,79 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
 /// The file `node_id` names beneath the row's root, read whole once, so the bytes shared are the bytes read: its base
 /// name (the node's own, a link's name and not its target's) and 1 to `MAX_CHAT_FILE` bytes. The id is composed by the
 /// read resolver, which refuses `..` and absolute parts and follows links (a `data/results` link to another disk
-/// posts). Its canonical path is refused when it lies in the chat's configuration folder, which holds the secrets, and
-/// is the path opened, as a regular file only (`open_regular`: a FIFO, a device or a folder is refused without a wait).
-/// Anything not readable so is `not_a_file`; more than the bound is `too_large`. Runs on the blocking pool.
+/// posts), and opened as a regular file only (`open_regular`: a FIFO, a device or a folder is refused without a wait).
+/// The opened file is then judged, so no spelling and no swap between a check and the open reaches the secrets: on Unix
+/// the file is refused when its (device, inode) is the configuration folder's or any of its entries' (a hard link
+/// included); on Windows, where std has no stable file id, when its canonical path lies in that folder. Only the size
+/// the open file states is read: 0 (an empty file, or a kernel file such as `/proc/self/environ`) is `not_a_file`, more
+/// than the bound `too_large`, and a file that gives fewer bytes is `not_a_file`. Runs on the blocking pool, under the
+/// caller's transfer permit.
 fn read_file(ws: &Workspace, node_id: &str, secrets: Option<&Path>) -> Result<(String, Vec<u8>), ChatCode> {
     let files = ws.files_mode().map_err(|_| ChatCode::NotAFile)?;
     let path = files.node_id_to_path(node_id).map_err(|_| ChatCode::NotAFile)?;
     let name = path.file_name().and_then(|n| n.to_str()).ok_or(ChatCode::NotAFile)?.to_string();
-    let real = super::canonical(&path).ok_or(ChatCode::NotAFile)?;
-    if secrets.and_then(super::canonical).is_some_and(|dir| path_within_root(&real, &dir)) {
+    #[cfg(test)]
+    run_before_open(&path);
+    let file = sot_platform::host::open_regular(&path).map_err(|_| ChatCode::NotAFile)?;
+    let meta = file.metadata().map_err(|_| ChatCode::NotAFile)?;
+    if is_configuration(&path, &meta, secrets)? {
         return Err(ChatCode::NotAFile);
     }
-    let file = sot_platform::host::open_regular(&real).map_err(|_| ChatCode::NotAFile)?;
-    let mut bytes = Vec::new();
-    file.take(MAX_CHAT_FILE as u64 + 1).read_to_end(&mut bytes).map_err(|_| ChatCode::NotAFile)?;
-    match bytes.len() {
-        0 => Err(ChatCode::NotAFile),
-        n if n > MAX_CHAT_FILE => Err(ChatCode::TooLarge),
-        _ => Ok((name, bytes)),
+    let len = match meta.len() {
+        0 => return Err(ChatCode::NotAFile),
+        n if n > MAX_CHAT_FILE as u64 => return Err(ChatCode::TooLarge),
+        n => n,
+    };
+    let mut bytes = Vec::with_capacity(len as usize);
+    file.take(len).read_to_end(&mut bytes).map_err(|_| ChatCode::NotAFile)?;
+    if bytes.len() as u64 != len {
+        return Err(ChatCode::NotAFile);
+    }
+    Ok((name, bytes))
+}
+
+/// Whether the opened file (`meta`, its handle's) is the configuration folder or one of its entries, by (device,
+/// inode). A folder that is missing protects nothing; one that cannot be listed refuses every file.
+#[cfg(unix)]
+fn is_configuration(_path: &Path, meta: &std::fs::Metadata, dir: Option<&Path>) -> Result<bool, ChatCode> {
+    use std::os::unix::fs::MetadataExt;
+    let Some(dir) = dir else { return Ok(false) };
+    let same = |m: &std::fs::Metadata| (m.dev(), m.ino()) == (meta.dev(), meta.ino());
+    match std::fs::metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(ChatCode::NotAFile),
+        Ok(m) if same(&m) => return Ok(true),
+        Ok(_) => {}
+    }
+    for entry in std::fs::read_dir(dir).map_err(|_| ChatCode::NotAFile)? {
+        let entry = entry.map_err(|_| ChatCode::NotAFile)?;
+        if std::fs::metadata(entry.path()).is_ok_and(|m| same(&m)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Windows: the canonical path of the opened name in the configuration folder (canonical). Limit: a name, not the
+/// file, so a hard link or a swap of a folder between this and the open reaches the folder's files.
+#[cfg(not(unix))]
+fn is_configuration(path: &Path, _meta: &std::fs::Metadata, dir: Option<&Path>) -> Result<bool, ChatCode> {
+    let real = super::canonical(path).ok_or(ChatCode::NotAFile)?;
+    Ok(dir.and_then(super::canonical).is_some_and(|dir| crate::files::confine::path_within_root(&real, &dir)))
+}
+
+/// A test's actions to run just before the file at a path is opened, each once.
+#[cfg(test)]
+pub(crate) static BEFORE_OPEN: std::sync::Mutex<Vec<(std::path::PathBuf, Box<dyn FnOnce() + Send>)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn run_before_open(path: &Path) {
+    let then = {
+        let mut held = BEFORE_OPEN.lock().unwrap();
+        held.iter().position(|(p, _)| p == path).map(|i| held.remove(i).1)
+    };
+    if let Some(then) = then {
+        then();
     }
 }
 

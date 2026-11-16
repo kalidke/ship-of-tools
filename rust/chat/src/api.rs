@@ -14,7 +14,7 @@ use std::time::Duration;
 use reqwest::Url;
 use serde_json::{json, Value};
 use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
@@ -428,14 +428,17 @@ pub enum PostOutcome {
     Unknown,
 }
 
+/// One of the `MAX_TRANSFERS` transfer permits, from `Api::transfer`: held by whoever reads a file for a post, so no
+/// file is read into memory before its permit, and by `Api::post_file` across all three steps; freed when dropped.
+pub struct Transfer(#[allow(dead_code)] OwnedSemaphorePermit);
+
 /// How a file post ended. Only the share (the third step) can post a file, and it was submitted at most once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileOutcome {
     /// Shared: the file's id, and the share's `ts` when Slack's answer names it.
     Posted { file: String, ts: Option<Ts> },
     /// Definitely not shared: Slack's rejection of the share (its code), or any failure before the share was sent
-    /// (the code of the step that failed, `busy` for a transfer over `MAX_TRANSFERS`, `closed` for a client closed
-    /// between the upload and the share).
+    /// (the code of the step that failed, `closed` for a client closed between the upload and the share).
     Refused(String),
     /// Slack was rate limited at the first step or the share; nothing was shared and nothing is resent.
     Limited {
@@ -784,7 +787,16 @@ impl Api {
         Ok(post_outcome(self.http.send(request).await))
     }
 
-    /// Share a file once, as `kind` named `name`: Slack's three steps under one transfer permit. Step 1 is a read
+    /// One transfer permit, taken at once: `Err(Http(Busy))` while `MAX_TRANSFERS` are held, `Err(Closed)` for a closed
+    /// client. Owned, so a caller that drops it (or a future holding it) frees it.
+    pub fn transfer(&self) -> Result<Transfer, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
+        self.transfers.clone().try_acquire_owned().map(Transfer).map_err(|_| ApiError::Http(HttpError::Busy))
+    }
+
+    /// Share a file once, as `kind` named `name`: Slack's three steps under the caller's transfer permit. Step 1 is a read
     /// (`files.getUploadURLExternal`, under the read rules); step 2 posts the bytes to the URL it answered, with no
     /// authorization; step 3 (`files.completeUploadExternal`) is the share, the only mutation, read as a post's answer
     /// is. Its `initial_comment` is the label `<name> (<kind> via Ship of Tools)`, then `: ` and the comment when there
@@ -793,6 +805,7 @@ impl Api {
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file(
         &self,
+        _transfer: Transfer,
         channel: &str,
         thread: Option<&str>,
         kind: PostKind,
@@ -820,10 +833,6 @@ impl Api {
             None => label,
         })?;
         let share_url = self.url("files.completeUploadExternal", &[])?;
-        // Owned, so a caller that drops this future frees it with the future.
-        let Ok(_permit) = self.transfers.clone().try_acquire_owned() else {
-            return Ok(FileOutcome::Refused(HttpError::Busy.code().into()));
-        };
         let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
         let v = match self.read("files.getUploadURLExternal", &params, MAX_BODY).await {
             Ok(v) => v,
@@ -869,9 +878,7 @@ impl Api {
         if !valid_id(channel) || !valid_id(file) {
             return Err(ApiError::BadRequest);
         }
-        let Ok(_permit) = self.transfers.clone().try_acquire_owned() else {
-            return Err(ApiError::Http(HttpError::Busy));
-        };
+        let _permit = self.transfer()?;
         let v = self.read("files.info", &[("file", file.into())], MAX_BODY).await?;
         let info = v.get("file").filter(|f| answered_id(f, "id") == Some(file)).ok_or(ApiError::Malformed)?;
         if !shared_in(info, channel) {
