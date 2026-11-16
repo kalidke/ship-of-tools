@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
-use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_MIME, MAX_NAME};
 use crate::watch::MAX_CHANNELS;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
@@ -32,11 +32,11 @@ pub const TRANSFER_DEADLINE: Duration = Duration::from_secs(60);
 /// Transfers at once, per `Api` (one daemon's): the next is refused `busy` at once, so at most this many files'
 /// bytes are held for the network.
 pub const MAX_TRANSFERS: usize = 2;
-/// The upload URL Slack's first upload step answers: a longer one is `malformed`.
-const MAX_UPLOAD_URL: usize = 2048;
+/// A URL Slack answers (an upload's, a file's): a longer one is `malformed`.
+const MAX_URL: usize = 2048;
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
-pub use sot_protocol::ops::{MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED, MAX_PAGE};
+pub use sot_protocol::ops::{MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED, MAX_PAGE, MAX_THUMB};
 /// The most messages one scan asks for: Slack's documented maximum for a history read.
 pub const MAX_SCAN: u16 = 999;
 /// Author names kept; the oldest entry leaves first.
@@ -446,6 +446,38 @@ pub enum FileOutcome {
     Unknown,
 }
 
+/// Which rendition of a file a fetch reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileVariant {
+    /// Slack's small rendition (at most `MAX_THUMB` bytes), or a small original when Slack made none.
+    Thumb,
+    /// The file as posted (at most `MAX_CHAT_FILE` bytes).
+    Original,
+}
+
+/// What a fetch of a picture came to short of an error: Slack's answer was a picture, or the call knows it is not one
+/// the chat carries. Nothing is shared or changed either way.
+#[derive(Clone, PartialEq, Eq)]
+pub enum FileFetch {
+    /// The picture's bytes, and the `image/*` type Slack served them as.
+    Image { mime: String, bytes: Vec<u8> },
+    /// The file's type is not a picture the chat shows, or Slack answered something that is not an image (its sign-in
+    /// page).
+    NotAnImage,
+    /// The file or its rendition is over the bound of its variant, by Slack's word or by the bytes counted as they came.
+    TooLarge,
+}
+
+impl fmt::Debug for FileFetch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FileFetch::Image { mime, bytes } => write!(f, "Image {{ mime: {mime:?}, bytes: {} }}", bytes.len()),
+            FileFetch::NotAnImage => f.write_str("NotAnImage"),
+            FileFetch::TooLarge => f.write_str("TooLarge"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Deadlines {
     read: Duration,
@@ -794,7 +826,7 @@ impl Api {
             Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
             Err(e) => return Ok(FileOutcome::Refused(refusal(&e))),
         };
-        let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_UPLOAD_URL);
+        let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_URL);
         let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
             return Ok(FileOutcome::Refused(ApiError::Malformed.code().into()));
         };
@@ -819,6 +851,67 @@ impl Api {
         let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes())
             .bearer(self.token.clone());
         Ok(share_outcome(self.http.send(share).await, channel))
+    }
+
+    /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be
+    /// shared in `channel` and a PNG, JPEG, GIF or WebP, then one GET of the rendition, with the bearer, bounded by the
+    /// variant (`MAX_THUMB` or `MAX_CHAT_FILE`) while it streams. A thumbnail is Slack's `thumb_360`, `thumb_480` or
+    /// `thumb_160`, else a small original. Input it cannot carry, and a file that is not the channel's, are `Err` unsent.
+    pub async fn fetch_file(&self, channel: &str, file: &str, variant: FileVariant) -> Result<FileFetch, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
+        if !valid_id(channel) || !valid_id(file) {
+            return Err(ApiError::BadRequest);
+        }
+        let Ok(_permit) = self.transfers.clone().try_acquire_owned() else {
+            return Err(ApiError::Http(HttpError::Busy));
+        };
+        let v = self.read("files.info", &[("file", file.into())], MAX_BODY).await?;
+        let info = v.get("file").filter(|f| answered_id(f, "id") == Some(file)).ok_or(ApiError::Malformed)?;
+        if !shared_in(info, channel) {
+            return Err(ApiError::BadRequest);
+        }
+        if !info.get("mimetype").and_then(Value::as_str).is_some_and(|m| PICTURES.contains(&m)) {
+            return Ok(FileFetch::NotAnImage);
+        }
+        let url = |key: &str| info.get(key).and_then(Value::as_str).filter(|u| !u.is_empty() && u.len() <= MAX_URL);
+        let (bound, deadline) = match variant {
+            FileVariant::Thumb => (MAX_THUMB, self.deadlines.read),
+            FileVariant::Original => (MAX_CHAT_FILE, self.deadlines.transfer),
+        };
+        let thumb = (variant == FileVariant::Thumb).then(|| ["thumb_360", "thumb_480", "thumb_160"].into_iter().find_map(url));
+        let url = match thumb.flatten() {
+            Some(thumb) => thumb,
+            // The original: its size, by Slack's word, is checked before any byte is asked for.
+            None => {
+                let original = url("url_private_download").or_else(|| url("url_private")).ok_or(ApiError::Malformed)?;
+                match info.get("size").and_then(Value::as_u64) {
+                    Some(size) if size <= bound as u64 => original,
+                    Some(_) => return Ok(FileFetch::TooLarge),
+                    None => return Err(ApiError::Malformed),
+                }
+            }
+        };
+        let request = Request::get(url, deadline).max_body(bound).bearer(self.token.clone());
+        let response = match self.http.send(request).await {
+            Ok(response) => response,
+            Err(HttpError::TooLarge) => return Ok(FileFetch::TooLarge),
+            Err(e) => return Err(ApiError::Http(e)),
+        };
+        match response.status() {
+            429 => return Err(self.rate_limited(&response)),
+            200..=299 => {}
+            other => return Err(ApiError::Status(other)),
+        }
+        // Slack answers a sign-in page, as HTML, to a download it will not serve.
+        let Some(mime) = image_type(&response) else {
+            return Ok(FileFetch::NotAnImage);
+        };
+        if response.body().is_empty() {
+            return Err(ApiError::Malformed);
+        }
+        Ok(FileFetch::Image { mime, bytes: response.body().to_vec() })
     }
 
     /// The channels the bot can see: every public channel and the private ones it is in, as many pages as `MAX_LISTED`
@@ -1048,6 +1141,15 @@ impl Api {
         Ok(url.into())
     }
 
+    /// A rate limit's answer: reads wait out its retry header (the longest wait in force).
+    fn rate_limited(&self, response: &Response) -> ApiError {
+        let (retry_after, assumed) = retry_after(response);
+        let until = Instant::now() + retry_after;
+        let mut eligible = self.eligible.lock().unwrap();
+        *eligible = Some(eligible.map_or(until, |t| t.max(until)));
+        ApiError::Limited { retry_after, assumed }
+    }
+
     /// One read, its response bounded by `max_body`: refused while a rate limit's wait is running, one request
     /// otherwise, and the answer is the JSON object with `ok: true` or an error.
     async fn read(
@@ -1072,18 +1174,8 @@ impl Api {
             .max_body(max_body)
             .bearer(self.token.clone());
         let response = self.http.send(request).await.map_err(ApiError::Http)?;
-        let limited = |api: &Api| {
-            let (retry_after, assumed) = retry_after(&response);
-            let until = Instant::now() + retry_after;
-            let mut eligible = api.eligible.lock().unwrap();
-            *eligible = Some(eligible.map_or(until, |t| t.max(until)));
-            ApiError::Limited {
-                retry_after,
-                assumed,
-            }
-        };
         match response.status() {
-            429 => return Err(limited(self)),
+            429 => return Err(self.rate_limited(&response)),
             200..=299 => {}
             other => return Err(ApiError::Status(other)),
         }
@@ -1091,13 +1183,36 @@ impl Api {
         match v.get("ok").and_then(Value::as_bool) {
             Some(true) => Ok(v),
             Some(false) => match error_code(&v) {
-                Some("ratelimited") => Err(limited(self)),
+                Some("ratelimited") => Err(self.rate_limited(&response)),
                 Some(code) => Err(ApiError::Slack(code.into())),
                 None => Err(ApiError::Slack("unknown_error".into())),
             },
             None => Err(ApiError::Malformed),
         }
     }
+}
+
+/// The types of file the chat shows as pictures, as `files.info`'s `mimetype` gives them.
+const PICTURES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// Whether a `files.info` file is shared in `channel`: the channel is one of its `channels` or `groups`, or a key of
+/// `shares.public` or `shares.private`.
+fn shared_in(file: &Value, channel: &str) -> bool {
+    let listed = |key: &str| {
+        file.get(key).and_then(Value::as_array).is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(channel)))
+    };
+    let shared = |kind: &str| {
+        file.pointer(&format!("/shares/{kind}")).and_then(Value::as_object).is_some_and(|m| m.contains_key(channel))
+    };
+    listed("channels") || listed("groups") || shared("public") || shared("private")
+}
+
+/// An answer's `Content-Type` when it is an image's: `image/` and a short subtype, parameters dropped, lower case.
+fn image_type(response: &Response) -> Option<String> {
+    let kind = response.header("content-type")?.split(';').next()?.trim().to_ascii_lowercase();
+    let subtype = kind.strip_prefix("image/")?;
+    let plain = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"+.-_".contains(&b);
+    (kind.len() <= MAX_MIME && !subtype.is_empty() && subtype.bytes().all(plain)).then_some(kind)
 }
 
 /// An `auth.test` answer's `team_id`: `Malformed` when missing or not an id.
