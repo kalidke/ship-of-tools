@@ -15,12 +15,13 @@ use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
 use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// What a chat op name gets from the server: a handler, or (an event) the unknown-op answer a request carrying its
-/// name gets.
+/// What a chat op name gets from the server: a handler, or the unknown-op answer a request carrying its name gets
+/// (an event; a request the wire declares and the daemon does not yet serve).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     Handled,
     Event,
+    Unserved,
 }
 
 /// Every chat op name of the wire and its answer; the walk below fails for a name missing here.
@@ -32,6 +33,9 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_UNWATCH, Answer::Handled),
     (op::CHAT_CHANGED, Answer::Event),
     (op::CHAT_STATUS, Answer::Event),
+    (op::CHAT_CONNECT, Answer::Unserved),
+    (op::CHAT_CHANNELS, Answer::Unserved),
+    (op::CHAT_PAIR, Answer::Unserved),
 ];
 
 /// What the fake answers a chat call with.
@@ -344,7 +348,7 @@ async fn every_chat_op_name_has_a_handler_or_a_stated_answer() {
         let reply = conn.ask(100 + n as u64, name, history(&rig.alpha, "C0AAAA")).await;
         match answer {
             // The events are the daemon's to send: a request carrying the name is an unknown op.
-            Answer::Event => assert!(reply["error"].as_str().unwrap().starts_with("unknown op"), "{name}: {reply}"),
+            Answer::Event | Answer::Unserved => assert!(reply["error"].as_str().unwrap().starts_with("unknown op"), "{name}: {reply}"),
             // A running service and a current row: a name with a handler is neither unknown nor `unavailable`.
             Answer::Handled => {
                 assert!(!reply["error"].as_str().unwrap_or("").starts_with("unknown op"), "{name}: {reply}");

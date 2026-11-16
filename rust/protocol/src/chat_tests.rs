@@ -193,3 +193,54 @@ fn a_records_names_are_bounded_at_decode() {
     assert!(with(vec![name("U1", &"n".repeat(MAX_NAME))]).is_ok());
     assert!(with(vec![name("U1", &"n".repeat(MAX_NAME + 1))]).is_err());
 }
+
+/// Percent-decodes `s`: every `%XX` is one byte.
+fn unescaped(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it() {
+    let m: serde_json::Value = serde_json::from_str(SLACK_APP_MANIFEST).unwrap();
+    assert_eq!(m["settings"]["socket_mode_enabled"], true);
+    assert_eq!(m["settings"]["token_rotation_enabled"], false);
+    assert_eq!(m["settings"]["org_deploy_enabled"], false);
+    assert_eq!(m["display_information"]["name"], "Ship of Tools");
+    assert_eq!(m["features"]["bot_user"]["display_name"], "Ship of Tools");
+    let scopes: Vec<&str> = m["oauth_config"]["scopes"]["bot"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    for want in [
+        "channels:history",
+        "channels:read",
+        "channels:join",
+        "groups:history",
+        "groups:read",
+        "users:read",
+        "chat:write",
+        "chat:write.customize",
+        "files:read",
+        "files:write",
+    ] {
+        assert!(scopes.contains(&want), "the bot scope {want} is missing");
+    }
+    assert_eq!(scopes.len(), 10, "no scope beyond the ones named");
+    let events: Vec<&str> = m["settings"]["event_subscriptions"]["bot_events"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(events, ["message.channels", "message.groups"]);
+
+    let url = slack_app_url();
+    let (head, body) = url.split_once("manifest_json=").unwrap();
+    assert_eq!(head, "https://api.slack.com/apps?new_app=1&");
+    assert!(body.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b)), "a byte outside the unreserved set is not escaped");
+    assert_eq!(unescaped(body), SLACK_APP_MANIFEST);
+}

@@ -53,6 +53,28 @@ pub(crate) fn at_most<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: u
     d.deserialize_seq(Cap::<T, N>(std::marker::PhantomData))
 }
 
+/// The Slack app's manifest, JSON as Slack's manifest page reads it: the app and its bot named `Ship of Tools`, the bot
+/// scopes the chat reads and posts with (`channels:join` so the app joins a public channel itself; `files:read` and
+/// `files:write` for the figures to come, so one install serves the app's life), the two message events, Socket Mode on,
+/// and token rotation off (a rotating bot token expires).
+pub const SLACK_APP_MANIFEST: &str = r#"{"display_information":{"name":"Ship of Tools"},"features":{"bot_user":{"display_name":"Ship of Tools","always_online":true}},"oauth_config":{"scopes":{"bot":["channels:history","channels:read","channels:join","groups:history","groups:read","users:read","chat:write","chat:write.customize","files:read","files:write"]}},"settings":{"event_subscriptions":{"bot_events":["message.channels","message.groups"]},"org_deploy_enabled":false,"socket_mode_enabled":true,"token_rotation_enabled":false}}"#;
+
+const SLACK_NEW_APP: &str = "https://api.slack.com/apps?new_app=1&manifest_json=";
+
+/// The address that opens Slack's create-an-app dialog with [`SLACK_APP_MANIFEST`] filled in: the manifest percent-encoded
+/// whole, every byte outside the unreserved set (letters, digits, `-`, `.`, `_`, `~`). It holds no secret.
+pub fn slack_app_url() -> String {
+    let mut url = String::from(SLACK_NEW_APP);
+    for b in SLACK_APP_MANIFEST.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            url.push(b as char);
+        } else {
+            url.push_str(&format!("%{b:02X}"));
+        }
+    }
+    url
+}
+
 /// A Slack timestamp: exactly `<seconds>.<six digits>`, kept as the decimal string, never a float. Slack answers a
 /// bound with any other number of fraction digits as an empty page and no error, so a bad bound must be refused
 /// before it is sent; this type is the only way to hold one.

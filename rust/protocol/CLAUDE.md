@@ -113,10 +113,11 @@ name is in this crate's one op table.
 12. **Every chat payload is typed and bounded at decode, and every chat op is in the one table.** `ops/chat.rs`: requests
     `chat.resolve {row}`, `chat.watch {target}`, `chat.unwatch {target}`, `chat.history {target, thread?, after?, upper?, limit,
     cursor?}`, `chat.post {target, thread?, kind, name, text}` (`text` is plain text, what the person typed; chat's door escapes it, built; empty text is refused there, unsent, with any other input the post cannot carry. A window must post only to a hub whose hello says `HelloRes.posts_plain_text` (the window's check is built: fe-net writes no post on a connection whose hello did not say it and answers `ChatEvt::PostNotSent`, `net/CLAUDE.md`; a window posts through `chat.send`, `ui/CLAUDE.md`), the same kind of flag as guarantee 13's `takes_drawing`: true from a daemon whose door escapes, defaulted and left out when false, so an older hub, which sends the text as given, reads as false; test `a_hello_reply_says_whether_the_daemon_posts_plain_text_and_stays_additive`), each with a reply, and the events `chat.changed` (puts and deletes in
-    a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot). `target` is
+    a watched channel) and `chat.status` (`service`, `gap`, and the channels that need a new snapshot), and the setup family a window sends to
+    set the chat up (below). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A `mapped` resolve reply may carry `name`, the channel's name (public or private, as the channel is mapped; from the daemon's cache, whose names are already cleaned and at most 160 bytes), absent when the daemon does not know it and from a daemon before it (a reader then shows the id); a reader before it ignores the field, and this reader takes a `name` that is empty, over 160 bytes or not a string as no name with the reply still `mapped`, since a cosmetic field is never a reason to refuse the mapping (tests `chat_tests.rs`: `every_request_reply_and_event_keeps_its_shape`, `an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed`, `a_name_that_is_too_long_or_not_a_string_reads_as_no_name`). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
-    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
+    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`, and the setup family's `bot_token_refused`, `app_token_refused`, `other_workspace`, `not_in_channel`, `channel_taken`, `not_saved`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
@@ -125,10 +126,33 @@ name is in this crate's one op table.
     reads a member added later safely: a `ChatCode` as `other`, a `service` as `other` (not running; resync every watch), a
     watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
+    **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, app_token}` answers
+    `{workspace}`, `chat.channels {}` answers `{channels: [{id, name, private, member}], more}`, and `chat.pair {row, channel?}`
+    answers `{}` (an absent or null `channel` unpairs the row's folder). A token field is a `ChatToken`: serialized as its
+    string, at most `MAX_TOKEN` (512) bytes, its `Debug` the text `<redacted>`, no `Display` (its bytes are read by `expose`, in
+    the one place that sends or checks them), so a derived `Debug` of a request that holds one prints no byte of it; a decode
+    refusal names no byte either. A channel list holds at most `MAX_LISTED` (1,000) entries, a name 160 bytes, a channel an id
+    (`is_id`); `more` says the list was cut there. The decoder bounds the entries and the name, not the escaped size: a full
+    list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
+    character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
+    (`not_connected`, `tokens_refused`, `start_failed`; a later reason reads as `other`); an older window reads the state as
+    `invalid`, which it shows as its no-configuration words. `chat::SLACK_APP_MANIFEST` is the Slack app's manifest as JSON
+    (the app and bot named `Ship of Tools`; the bot scopes `channels:history`, `channels:read`, `channels:join`,
+    `groups:history`, `groups:read`, `users:read`, `chat:write`, `chat:write.customize`, `files:read` and `files:write`;
+    the events `message.channels` and `message.groups`; Socket Mode on, token rotation and org deploy off), and
+    `chat::slack_app_url()` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by the manifest with every
+    byte outside the unreserved set percent-encoded; it holds no secret. Mechanism: three new ops, one new resolve state
+    and six new codes, all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
+    ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves none of the three yet (it answers them
+    as unknown ops). Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
+    `an_older_reader_reads_unconfigured_as_invalid`, `a_full_channel_list_fits_the_envelope`,
+    `the_setup_payloads_stop_at_their_bounds`, and the extended `every_request_reply_and_event_keeps_its_shape`,
+    `the_chat_ops_are_declared_in_the_one_table`, `every_code_has_its_one_text`; `chat_tests.rs`:
+    `the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`.
     A request's `kind` is the other direction: an older daemon refuses a kind it does not know, with a `bad_request` code.
     A `limited` wait is clamped to an hour (`MAX_RETRY_SECS`). A `chat.post` reply with no `error` field that does not decode
     as `ChatPostRes` is read as `unknown`, never resent (an `error` reply is a refusal only with a refusal `ChatCode`, or as an older daemon's exact unknown-op answer, which fe-net reads as `Unsupported`; any other `error` reply, with another code or none, such as `handler_error` from a panic after the send began, is `unknown`, never refused and never resent):
-    wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's (`ops::chat::on_chat_post`, test `a_post_answered_by_a_handler_error_is_unknown_never_refused`). `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The seven names are in `op_table!`, so `op::ALL` and the
+    wire cannot hold that rule (a decode failure is the reader's), so it is fe-net's (`ops::chat::on_chat_post`, test `a_post_answered_by_a_handler_error_is_unknown_never_refused`). `ChatRefusal.code` is absent in an older daemon's unknown-op refusal (`{error}` alone). The ten names (the setup family's three included) are in `op_table!`, so `op::ALL` and the
     admission fixture (refused `unauthenticated` and closed before hello) cover them. `bus.lost` stays the event bus's loss;
     `chat.status` is the service's and a watch's, not a second one. Mechanism: new ops and payloads only, so `PROTOCOL_VERSION`
     stays 4; an older daemon answers a chat op as any unknown op. Limits: the daemon serves all five requests (`chat/ops.rs`) and both events (`chat/watch.rs`); a `chat.watch` reply says `complete` when the owner already holds the channel's snapshot and `pending` otherwise, never `needed` (a channel that owes a snapshot is told by a `chat.status` entry, to which the window answers with `chat.watch`), and a window never resyncs on a reply; a duplicate JSON key in a frame's payload is not refused (the codec reads a
@@ -188,7 +212,7 @@ name is in this crate's one op table.
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix, page-reply and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -202,7 +226,7 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 `PROTOCOL_VERSION`, `op::ALL`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
 `is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
-`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits}`; the shell twin `sot_hello_frame`
+`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits, SLACK_APP_MANIFEST, slack_app_url}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
 ## Does not
@@ -225,7 +249,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
 | 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
-| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12) |
+| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it` |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 

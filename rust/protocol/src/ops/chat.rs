@@ -13,6 +13,10 @@ pub const MAX_CURSOR: usize = 1024;
 pub const MAX_WATCHED: usize = 32;
 /// The longest wait a `limited` post reply can name, in seconds.
 pub const MAX_RETRY_SECS: u64 = 3600;
+/// The most channels a `chat.channels` reply lists (the daemon's list is cut at this bound and says `more`).
+pub const MAX_LISTED: usize = 1000;
+/// A Slack token's longest form on the wire.
+pub const MAX_TOKEN: usize = 512;
 const MAX_ROW: usize = 256;
 
 /// A channel id: 1 to 64 ASCII letters, digits, `_` and `-`.
@@ -65,6 +69,18 @@ pub enum ChatCode {
     TooManyWatches,
     Limited,
     Busy,
+    /// Slack refused the bot token a `chat.connect` named.
+    BotTokenRefused,
+    /// Slack refused the app-level token a `chat.connect` named.
+    AppTokenRefused,
+    /// The token belongs to another Slack workspace than the one the chat is set up for.
+    OtherWorkspace,
+    /// The app is not in the channel a `chat.pair` named, and could not join it.
+    NotInChannel,
+    /// Another project's folder already maps the channel a `chat.pair` named.
+    ChannelTaken,
+    /// The chat's files could not be written (or the one there is was refused by the load).
+    NotSaved,
     Failed,
     #[serde(other)]
     Other,
@@ -82,6 +98,12 @@ impl ChatCode {
             ChatCode::TooManyWatches => "too many channels are watched",
             ChatCode::Limited => "the chat service is rate limited",
             ChatCode::Busy => "the chat service is busy",
+            ChatCode::BotTokenRefused => "Slack refused the bot token",
+            ChatCode::AppTokenRefused => "Slack refused the app-level token",
+            ChatCode::OtherWorkspace => "the chat is set up for another Slack workspace",
+            ChatCode::NotInChannel => "the app is not in that channel",
+            ChatCode::ChannelTaken => "another project already uses that channel",
+            ChatCode::NotSaved => "the chat settings could not be saved",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -117,10 +139,109 @@ pub enum ChatResolveRes {
         name: Option<String>,
     },
     Unmapped,
-    /// Also a state added later: a reader takes it as no usable mapping.
+    /// The hub's chat is off for a reason a `chat.connect` fixes.
+    Unconfigured { reason: ChatUnconfigured },
+    /// Also a state added later: a reader takes it as no usable mapping (an older window shows `unconfigured` as its
+    /// no-configuration words).
     #[serde(other)]
     Invalid,
 }
+
+/// Why the hub's chat is off, when connecting fixes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatUnconfigured {
+    /// No `chat.toml` or no `chat-secrets.toml`.
+    NotConnected,
+    /// The saved tokens are refused (by the load or by Slack).
+    TokensRefused,
+    /// The service failed to start.
+    StartFailed,
+    /// A reason added later.
+    #[serde(other)]
+    Other,
+}
+
+/// A Slack token on the wire: serialized as its string, at most `MAX_TOKEN` bytes, and never printed (`Debug` is
+/// `<redacted>`; there is no `Display`), so a derived `Debug` of a request that holds one leaks no byte of it.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct ChatToken(String);
+
+impl TryFrom<String> for ChatToken {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, String> {
+        if s.len() <= MAX_TOKEN { Ok(ChatToken(s)) } else { Err(format!("more than {MAX_TOKEN} bytes")) }
+    }
+}
+
+impl Serialize for ChatToken {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl std::fmt::Debug for ChatToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl ChatToken {
+    /// The token's bytes, for the one place that sends or checks them.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+/// `chat.connect`: the two tokens of a Slack app (`xoxb-` and `xapp-`); the daemon checks both before it saves either.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatConnectReq {
+    pub bot_token: ChatToken,
+    pub app_token: ChatToken,
+}
+
+/// Reply to `chat.connect`: the Slack workspace the bot token belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatConnectRes {
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
+    pub workspace: String,
+}
+
+/// `chat.channels`: the channels the picker offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatChannelsReq {}
+
+/// One listed channel: its id, its name as the daemon cleaned it, whether it is private, whether the app is in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatChannelInfo {
+    pub id: ChatChannel,
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
+    pub name: String,
+    pub private: bool,
+    pub member: bool,
+}
+
+/// Reply to `chat.channels`, at most `MAX_LISTED` entries; `more`: the list was cut there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatChannelsRes {
+    #[serde(deserialize_with = "at_most::<_, _, MAX_LISTED>")]
+    pub channels: Vec<ChatChannelInfo>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
+}
+
+/// `chat.pair`: map the row's folder to `channel`, or, with none (absent or null), unmap it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatPairReq {
+    #[serde(deserialize_with = "within::<_, MAX_ROW>")]
+    pub row: String,
+    #[serde(default)]
+    pub channel: Option<ChatChannel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatPairRes {}
 
 /// `chat.watch`: register the channel and begin its snapshot. Also the request to resync after a status asks for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -16,6 +16,15 @@ fn target_json() -> Value {
     json!({"row": "ws-a-1", "workspace": "T1", "channel": "C1"})
 }
 
+/// A token built at run time, so no literal looks like one to a secret scan.
+fn token(prefix: &str, n: usize) -> ChatToken {
+    ChatToken::try_from(format!("{prefix}{}", "a1".repeat(n))).unwrap()
+}
+
+fn channel(id: &str) -> ChatChannel {
+    ChatChannel::try_from(id.to_string()).unwrap()
+}
+
 fn record(text: &str) -> ChatRecord {
     ChatRecord { ts: ts("1.000001"), thread_ts: ts("1.000001"), text: text.into(), ..ChatRecord::fixture() }
 }
@@ -35,7 +44,18 @@ fn pinned<T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug>(value: 
 
 #[test]
 fn the_chat_ops_are_declared_in_the_one_table() {
-    for name in ["chat.resolve", "chat.watch", "chat.unwatch", "chat.history", "chat.post", "chat.changed", "chat.status"] {
+    for name in [
+        "chat.resolve",
+        "chat.watch",
+        "chat.unwatch",
+        "chat.history",
+        "chat.post",
+        "chat.changed",
+        "chat.status",
+        "chat.connect",
+        "chat.channels",
+        "chat.pair",
+    ] {
         assert!(op::ALL.contains(&name), "{name} is not in op::ALL");
     }
 }
@@ -91,6 +111,104 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"service": "running", "gap": true, "resync": ["C1"]}),
     );
     pinned(ChatRefusal { code: Some(ChatCode::TooManyWatches) }, json!({"code": "too_many_watches"}));
+    pinned(
+        ChatResolveRes::Unconfigured { reason: ChatUnconfigured::TokensRefused },
+        json!({"state": "unconfigured", "reason": "tokens_refused"}),
+    );
+    pinned(
+        ChatConnectReq { bot_token: token("xoxb-", 2), app_token: token("xapp-", 2) },
+        json!({"bot_token": "xoxb-a1a1", "app_token": "xapp-a1a1"}),
+    );
+    pinned(ChatConnectRes { workspace: "T1".into() }, json!({"workspace": "T1"}));
+    pinned(ChatChannelsReq {}, json!({}));
+    pinned(
+        ChatChannelsRes {
+            channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: false, member: true }],
+            more: true,
+        },
+        json!({"channels": [{"id": "C1", "name": "general", "private": false, "member": true}], "more": true}),
+    );
+    pinned(ChatChannelsRes { channels: vec![], more: false }, json!({"channels": []}));
+    pinned(ChatPairReq { row: "ws-a-1".into(), channel: Some(channel("C1")) }, json!({"row": "ws-a-1", "channel": "C1"}));
+    pinned(ChatPairReq { row: "ws-a-1".into(), channel: None }, json!({"row": "ws-a-1", "channel": null}));
+    pinned(ChatPairRes {}, json!({}));
+}
+
+/// An absent channel unpairs as a null one does.
+#[test]
+fn a_pair_with_no_channel_key_unpairs() {
+    let req: ChatPairReq = serde_json::from_value(json!({"row": "r"})).unwrap();
+    assert_eq!(req.channel, None);
+}
+
+/// A token is a `ChatToken` in a request's derived `Debug`, plain or pretty, and a decode refusal names no byte of it.
+#[test]
+fn a_connect_request_formats_no_token_byte() {
+    let (bot, app) = (token("xoxb-", 20), token("xapp-", 20));
+    let req = ChatConnectReq { bot_token: bot.clone(), app_token: app.clone() };
+    for shown in [format!("{req:?}"), format!("{req:#?}"), format!("{bot:?}"), format!("{:?}", Some(&app))] {
+        assert!(!shown.contains("a1a1") && !shown.contains("xoxb") && !shown.contains("xapp"), "a Debug form holds token bytes");
+        assert!(shown.contains("<redacted>"), "a Debug form says the token is redacted");
+    }
+    // The wire still carries the bytes whole, and the accessor is how the one sender reads them.
+    let wire = serde_json::to_string(&req).unwrap();
+    assert!(wire.contains(bot.expose()) && wire.contains(app.expose()));
+    let too_long = json!({"bot_token": format!("xoxb-{}", "a1".repeat(300)), "app_token": "xapp-a"});
+    let refused = serde_json::from_value::<ChatConnectReq>(too_long).unwrap_err().to_string();
+    assert!(!refused.contains("a1a1"), "a decode refusal holds token bytes");
+}
+
+/// The resolve reply as a window before `unconfigured` decoded it: the new state reads as the state it keeps for any
+/// later one, which the window shows as its no-configuration words.
+#[test]
+fn an_older_reader_reads_unconfigured_as_invalid() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    enum Before {
+        Unmapped,
+        #[serde(other)]
+        Invalid,
+    }
+    for reason in ["not_connected", "tokens_refused", "start_failed", "from_the_future"] {
+        let reply = json!({"state": "unconfigured", "reason": reason});
+        assert_eq!(serde_json::from_value::<Before>(reply).unwrap(), Before::Invalid, "{reason}");
+    }
+    let later = json!({"state": "unconfigured", "reason": "from_the_future"});
+    assert_eq!(serde_json::from_value::<ChatResolveRes>(later).unwrap(), ChatResolveRes::Unconfigured { reason: ChatUnconfigured::Other });
+}
+
+/// A full list, each name at its bound and doubled by escaping (the daemon's names carry no control character, which
+/// would be six bytes each), fits one frame; the decoder bounds the entries and the name, not the escaped size.
+#[test]
+fn a_full_channel_list_fits_the_envelope() {
+    let entry = ChatChannelInfo { id: channel(&"C".repeat(64)), name: "\"".repeat(MAX_NAME), private: true, member: true };
+    let full = ChatChannelsRes { channels: vec![entry; MAX_LISTED], more: true };
+    let bytes = serde_json::to_vec(&full).unwrap().len();
+    assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES, "{bytes} bytes of a full list");
+}
+
+#[test]
+fn the_setup_payloads_stop_at_their_bounds() {
+    let connect = |n: usize| json!({"bot_token": "b".repeat(n), "app_token": "a"});
+    assert!(serde_json::from_value::<ChatConnectReq>(connect(MAX_TOKEN)).is_ok());
+    assert!(serde_json::from_value::<ChatConnectReq>(connect(MAX_TOKEN + 1)).is_err());
+    let app = |n: usize| json!({"bot_token": "b", "app_token": "a".repeat(n)});
+    assert!(serde_json::from_value::<ChatConnectReq>(app(MAX_TOKEN)).is_ok());
+    assert!(serde_json::from_value::<ChatConnectReq>(app(MAX_TOKEN + 1)).is_err());
+    let entry = json!({"id": "C1", "name": "n", "private": false, "member": false});
+    let list = |n: usize| json!({"channels": vec![entry.clone(); n]});
+    assert!(serde_json::from_value::<ChatChannelsRes>(list(MAX_LISTED)).is_ok());
+    assert!(serde_json::from_value::<ChatChannelsRes>(list(MAX_LISTED + 1)).is_err());
+    let named = |n: usize| json!({"channels": [{"id": "C1", "name": "n".repeat(n), "private": false, "member": false}]});
+    assert!(serde_json::from_value::<ChatChannelsRes>(named(MAX_NAME)).is_ok());
+    assert!(serde_json::from_value::<ChatChannelsRes>(named(MAX_NAME + 1)).is_err());
+    let bad_id = json!({"channels": [{"id": "C 1", "name": "n", "private": false, "member": false}]});
+    assert!(serde_json::from_value::<ChatChannelsRes>(bad_id).is_err());
+    let row = |n: usize| json!({"row": "r".repeat(n), "channel": "C1"});
+    assert!(serde_json::from_value::<ChatPairReq>(row(256)).is_ok());
+    assert!(serde_json::from_value::<ChatPairReq>(row(257)).is_err());
+    assert!(serde_json::from_value::<ChatPairReq>(json!({"row": "r", "channel": "c 1"})).is_err());
+    assert!(serde_json::from_value::<ChatConnectRes>(json!({"workspace": "T".repeat(65)})).is_err());
 }
 
 #[test]
@@ -284,10 +402,20 @@ fn every_code_has_its_one_text() {
         (ChatCode::TooManyWatches, "too many channels are watched"),
         (ChatCode::Limited, "the chat service is rate limited"),
         (ChatCode::Busy, "the chat service is busy"),
+        (ChatCode::BotTokenRefused, "Slack refused the bot token"),
+        (ChatCode::AppTokenRefused, "Slack refused the app-level token"),
+        (ChatCode::OtherWorkspace, "the chat is set up for another Slack workspace"),
+        (ChatCode::NotInChannel, "the app is not in that channel"),
+        (ChatCode::ChannelTaken, "another project already uses that channel"),
+        (ChatCode::NotSaved, "the chat settings could not be saved"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
+    }
+    for code in ["bot_token_refused", "app_token_refused", "other_workspace", "not_in_channel", "channel_taken", "not_saved"] {
+        let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
+        assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }
 }
