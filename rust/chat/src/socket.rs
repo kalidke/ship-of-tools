@@ -84,8 +84,12 @@ pub enum SocketError {
     BadRequest,
     /// The HTTP core or the websocket failed, a URL that is not a validated Slack host (`destination`) included.
     Http(HttpError),
-    /// Slack answered `apps.connections.open` with a status or `ok: false` that refuses the app.
+    /// Slack answered `apps.connections.open` that the app token is bad: 401 or 403, or `ok: false` with one of
+    /// `api::TOKEN_REFUSALS` or `missing_scope` (a token made without `connections:write`).
     Rejected,
+    /// Slack answered `apps.connections.open` with any other status or `ok: false` code (a 429, a 5xx, `ratelimited`,
+    /// `internal_error`, a code it cannot read): Slack's state, not the token's.
+    Unavailable,
     /// The answer to `apps.connections.open` has no usable URL.
     Malformed,
 }
@@ -96,6 +100,7 @@ impl SocketError {
             SocketError::BadRequest => "bad_request",
             SocketError::Http(e) => e.code(),
             SocketError::Rejected => "rejected",
+            SocketError::Unavailable => "unavailable",
             SocketError::Malformed => "malformed",
         }
     }
@@ -439,13 +444,19 @@ async fn connection_url(http: &Http, app: &Secret, base: &str) -> Result<String,
     )
     .bearer(app.clone());
     let response = http.send(request).await.map_err(SocketError::Http)?;
-    if response.status() != 200 {
-        return Err(SocketError::Rejected);
+    match response.status() {
+        200 => {}
+        401 | 403 => return Err(SocketError::Rejected),
+        _ => return Err(SocketError::Unavailable),
     }
     let v: Value = serde_json::from_slice(response.body()).map_err(|_| SocketError::Malformed)?;
     match v.get("ok").and_then(Value::as_bool) {
         Some(true) => {}
-        Some(false) => return Err(SocketError::Rejected),
+        Some(false) => {
+            let code = v.get("error").and_then(Value::as_str).unwrap_or_default();
+            let token = crate::api::TOKEN_REFUSALS.contains(&code) || code == "missing_scope";
+            return Err(if token { SocketError::Rejected } else { SocketError::Unavailable });
+        }
         None => return Err(SocketError::Malformed),
     }
     v.get("url")

@@ -461,6 +461,11 @@ pub async fn identify(http: &Http, bot: Secret) -> Result<Identified, ApiError> 
     identify_at(http, bot, BASE.into()).await
 }
 
+/// Slack's error codes that name the token itself as bad, as against the request or Slack's own state (a rate limit, an
+/// internal error, an outage): only these make a setup check a refusal of the token.
+pub const TOKEN_REFUSALS: [&str; 6] =
+    ["not_authed", "invalid_auth", "token_revoked", "token_expired", "account_inactive", "not_allowed_token_type"];
+
 /// `identify` against the fixture's base (`FakeSlack::url("slack.com", "/api/")`), for another crate's tests. Exists
 /// under `cfg(test)` or the `test-support` feature alone, like `Service::start_at`.
 #[cfg(any(test, feature = "test-support"))]

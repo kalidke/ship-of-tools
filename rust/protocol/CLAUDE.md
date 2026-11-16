@@ -143,8 +143,8 @@ name is in this crate's one op table.
     `chat::slack_app_url()` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by the manifest with every
     byte outside the unreserved set percent-encoded; it holds no secret. Mechanism: three new ops, one new resolve state
     and six new codes, all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
-    ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves none of the three yet (it answers them
-    as unknown ops). Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
+    ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves all three (chat's guarantees 30 and 31);
+    no window sends them yet. Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
     `an_older_reader_reads_unconfigured_as_invalid`, `a_full_channel_list_fits_the_envelope`,
     `the_setup_payloads_stop_at_their_bounds`, and the extended `every_request_reply_and_event_keeps_its_shape`,
     `the_chat_ops_are_declared_in_the_one_table`, `every_code_has_its_one_text`; `chat_tests.rs`:

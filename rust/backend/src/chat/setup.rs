@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome};
+use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
 use sot_chat::config::{self, ConfigError, PairError, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::Service;
@@ -38,11 +38,21 @@ pub(crate) struct Verifier {
 }
 
 impl Verifier {
-    /// `api::identify` and `socket::check_app_token`, each through a client of its own.
+    /// `api::identify` and `socket::check_app_token` through one client, made at the first check, so every connect's
+    /// calls share its bound on operations at once (`http::MAX_OPERATIONS`).
     pub(crate) fn product() -> Verifier {
+        let client = Arc::new(std::sync::OnceLock::new());
+        let one = move || client.get_or_init(Http::new).clone();
+        let other = one.clone();
         Verifier {
-            identify: Box::new(|bot| Box::pin(async move { sot_chat::api::identify(&Http::new().map_err(ApiError::Http)?, bot).await })),
-            app: Box::new(|app| Box::pin(async move { sot_chat::socket::check_app_token(&Http::new().map_err(SocketError::Http)?, app).await })),
+            identify: Box::new(move |bot| {
+                let http = one();
+                Box::pin(async move { sot_chat::api::identify(&http.map_err(ApiError::Http)?, bot).await })
+            }),
+            app: Box::new(move |app| {
+                let http = other();
+                Box::pin(async move { sot_chat::socket::check_app_token(&http.map_err(SocketError::Http)?, app).await })
+            }),
         }
     }
 
@@ -81,81 +91,84 @@ pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     }
 }
 
-/// `chat.connect`, in order: a window's connection only (`bad_request`); this daemon booted as the hub and the
-/// topology still names it (`unavailable`); each token in the load's grammar; the bot token's identity
-/// (`bot_token_refused`, a transport failure `failed`); the app token's open (`app_token_refused`, likewise). Then, under
-/// the setup lock, `chat.toml` read as it is now: another workspace's is `other_workspace`, one the load refuses is
-/// `not_saved`, a missing one is written fresh after the secrets; the secrets through the private write; then the
-/// reload, and the reply `{workspace}` once the reload's wait ends. Nothing is written before both tokens pass.
+/// `chat.connect`: two tokens checked with Slack, saved, and the chat reloaded from its files. The order and its codes
+/// are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking pool: the writes answer their reason as a
+/// value, and this task logs it.
 pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_CONNECT;
     let req = match (window, serde_json::from_value::<ChatConnectReq>(payload)) {
         (true, Ok(r)) => r,
-        _ => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BadRequest)),
+        _ => return Ok(refuse(req_id, NAME, ChatCode::BadRequest)),
     };
     if chat.shared.closed_now() {
-        return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Unavailable));
+        return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
     let env = chat.env.clone();
     if !tokio::task::spawn_blocking(move || is_hub(&env)).await.unwrap_or(false) {
-        return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Unavailable));
+        return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
-    let Ok(bot) = config::bot_token(req.bot_token.expose()) else { return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BotTokenRefused)) };
-    let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::AppTokenRefused)) };
+    let Ok(bot) = config::bot_token(req.bot_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)) };
+    let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)) };
     drop(req);
+    // Only Slack's answers that name the token refuse it; a rate limit, an outage or a transport failure is `failed`.
     let workspace = match (chat.verify.identify)(bot.clone()).await {
         Ok(id) => id.workspace,
-        Err(ApiError::Slack(_)) => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BotTokenRefused)),
+        Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)),
         Err(e) => {
             tracing::warn!(code = e.code(), "project chat: a connect could not check the bot token");
-            return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Failed));
+            return Ok(refuse(req_id, NAME, ChatCode::Failed));
         }
     };
     match (chat.verify.app)(app.clone()).await {
         Ok(()) => {}
-        Err(SocketError::Rejected) => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::AppTokenRefused)),
+        Err(SocketError::Rejected) => return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)),
         Err(e) => {
             tracing::warn!(code = e.code(), "project chat: a connect could not check the app-level token");
-            return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Failed));
+            return Ok(refuse(req_id, NAME, ChatCode::Failed));
         }
     }
     let held = chat.setup().await;
-    let env = chat.env.clone();
-    let named = workspace.clone();
-    let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &app)).await.unwrap_or(Err(ChatCode::NotSaved));
-    if let Err(code) = saved {
-        return Ok(refuse(req_id, op::CHAT_CONNECT, code));
+    // A retirement that began while Slack was asked: nothing is written for a daemon that is going away.
+    if chat.shared.closed_now() {
+        return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
+    }
+    let (env, named) = (chat.env.clone(), workspace.clone());
+    let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &app)).await;
+    if let Err((code, why)) = saved.unwrap_or(Err((ChatCode::NotSaved, Some("the write's task ended".into())))) {
+        if let Some(why) = why {
+            tracing::warn!(%why, "project chat: a connect saved nothing");
+        }
+        return Ok(refuse(req_id, NAME, code));
     }
     let status = chat.reload(&held, rows).await;
-    tracing::info!(workspace, %status, "project chat: connected from a window");
-    reply(req_id, op::CHAT_CONNECT, &ChatConnectRes { workspace })
+    tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
+    reply(req_id, NAME, &ChatConnectRes { workspace })
 }
+
+/// Why the connect's writes did not happen: the reply's code and, for the caller to log, a fixed reason with the load's
+/// refusal or the error's kind, never a value of the files.
+type Unsaved = (ChatCode, Option<String>);
 
 /// The connect's writes, the caller holding the setup lock: `chat.toml` as the one load reads it now decides (a
 /// topology that no longer names this computer is `unavailable`), then the secrets, then a fresh `chat.toml` if there
-/// was none. Each refusal and failed write is logged by its code or error kind alone.
-fn save_tokens(env: &Env, workspace: &str, bot: &Secret, app: &Secret) -> Result<(), ChatCode> {
-    let Some(dir) = config::config_dir(env) else {
-        tracing::warn!("project chat: a connect found no config folder");
-        return Err(ChatCode::NotSaved);
-    };
+/// was none. It logs nothing: it runs on the blocking pool, and its reason goes back to the caller.
+fn save_tokens(env: &Env, workspace: &str, bot: &Secret, app: &Secret) -> Result<(), Unsaved> {
+    let not_saved = |why: String| (ChatCode::NotSaved, Some(why));
+    let dir = config::config_dir(env).ok_or_else(|| not_saved("no config folder".into()))?;
     let fresh = match <Chat>::load(env, &config::read_file).config {
-        None => return Err(ChatCode::Unavailable),
-        Some(Ok(c)) if c.workspace() != workspace => return Err(ChatCode::OtherWorkspace),
+        None => return Err((ChatCode::Unavailable, None)),
+        Some(Ok(c)) if c.workspace() != workspace => return Err((ChatCode::OtherWorkspace, None)),
         Some(Ok(_)) => None,
-        Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|_| ChatCode::NotSaved)?),
-        Some(Err(e)) => {
-            tracing::warn!(refusal = %e, "project chat: a connect leaves a refused chat.toml as it is");
-            return Err(ChatCode::NotSaved);
-        }
+        Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?),
+        Some(Err(e)) => return Err(not_saved(format!("a refused chat.toml is left as it is: {e}"))),
     };
-    let written = config::secrets(workspace, bot, app)
-        .map_err(|_| None)
-        .and_then(|text| config::write_secrets(&dir, &text, Writers::platform()).map_err(|e| Some(e.kind())))
-        .and_then(|()| fresh.map_or(Ok(()), |text| config::write_config(&dir, &text, Writers::platform()).map_err(|e| Some(e.kind()))));
-    written.map_err(|kind| {
-        tracing::warn!(?kind, "project chat: a connect could not write the chat's files");
-        ChatCode::NotSaved
-    })
+    let text = config::secrets(workspace, bot, app).map_err(|e| not_saved(format!("the secrets' text: {e}")))?;
+    let written = |e: std::io::Error| not_saved(format!("a write failed: {:?}", e.kind()));
+    config::write_secrets(&dir, &text, Writers::platform()).map_err(written)?;
+    if let Some(text) = fresh {
+        config::write_config(&dir, &text, Writers::platform()).map_err(written)?;
+    }
+    Ok(())
 }
 
 /// `chat.channels`: the channels the app can see, with whether it is in each; the daemon's own list, whole or an error.

@@ -288,8 +288,10 @@ Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml
 computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
 from a window checks both tokens with Slack first and writes nothing if either is refused; then the daemon writes
 `chat-secrets.toml` whole, private to your account from the moment it is made, writes a `chat.toml` of the workspace and
-no channel when there is none, and restarts the chat from the files, with no daemon restart. A connect leaves an
-existing `chat.toml` as it is, and is refused when that file names another workspace or is itself refused. After editing either file by hand, restart the daemon (on
+no channel when there is none, and restarts the chat from the files, with no daemon restart; no window sends this request yet. A connect leaves an
+existing `chat.toml` as it is, and is refused when that file names another workspace or is itself refused. Only Slack's
+answer that a token is bad refuses it; a Slack outage or rate limit, or no network, fails the connect with nothing
+written, and it can be tried again. After editing either file by hand, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
 by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused
@@ -299,7 +301,7 @@ daemon's log, on the "project chat" line, as a fixed explanation that starts wit
 (`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a key that the other
 file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that
 Slack refuses or cannot reach (a rejected token, no network)
-is logged as "project chat did not start" and stays failed until the daemon restarts or a window connects Slack again.
+is logged as "project chat did not start" and stays failed until the daemon restarts or a connect from a window (not sent yet) saves the tokens again.
 
 A window can pair a project's folder with a channel, or unpair it, and the daemon then rewrites `chat.toml` whole and
 starts the chat again from the two files, with no restart; no window sends this request yet. The daemon keeps every key

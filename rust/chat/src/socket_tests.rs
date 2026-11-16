@@ -630,8 +630,16 @@ async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
                 "/api/nourl/apps.connections.open" => Reply::json(&json!({"ok": true})),
                 "/api/html/apps.connections.open" => Reply::ok(format!("<html>{APP}</html>").as_bytes()),
                 "/api/refused/apps.connections.open" => {
-                    Reply::json(&json!({"ok": false, "error": format!("invalid_auth {APP}")}))
+                    Reply::json(&json!({"ok": false, "error": "invalid_auth", "warning": APP}))
                 }
+                "/api/limited/apps.connections.open" => {
+                    Reply::json(&json!({"ok": false, "error": format!("ratelimited {APP}")}))
+                }
+                "/api/down/apps.connections.open" => Reply::Status {
+                    code: 503,
+                    headers: Vec::new(),
+                    body: APP.as_bytes().to_vec(),
+                },
                 "/api/status/apps.connections.open" => Reply::Status {
                     code: 401,
                     headers: Vec::new(),
@@ -661,6 +669,8 @@ async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
             ("html", SocketError::Malformed),
             ("refused", SocketError::Rejected),
             ("status", SocketError::Rejected),
+            ("limited", SocketError::Unavailable),
+            ("down", SocketError::Unavailable),
         ] {
             let got = check(mode).await.unwrap_err();
             assert_eq!(got, want, "{mode}");
@@ -678,7 +688,7 @@ async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
         // No URL was dialed, good or foreign: no upgrade was asked and no socket was ever open.
         assert!(fake.seen().iter().all(|s| !s.upgrade), "a websocket was dialed");
         assert_eq!(fake.sockets().2, 0);
-        assert_eq!(fake.seen().len(), 9, "one request a check");
+        assert_eq!(fake.seen().len(), 11, "one request a check");
         fake.shutdown().await;
     })
     .await;
