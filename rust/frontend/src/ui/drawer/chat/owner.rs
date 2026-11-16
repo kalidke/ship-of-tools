@@ -424,6 +424,8 @@ impl ChatOwner {
             ChatEvt::Resolved { .. } => Vec::new(),
             // The drawer answers the setup's replies (the Connect step's and the picker's) before the owner sees them.
             ChatEvt::Connect { .. } | ChatEvt::ConnectUnknown | ChatEvt::Channels { .. } | ChatEvt::Paired { .. } | ChatEvt::PairUnknown { .. } => Vec::new(),
+            // No window asks for a picture yet: the pictures owner is the next landing's.
+            ChatEvt::File { .. } => Vec::new(),
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),
             ChatEvt::Posted { req, reply } => {

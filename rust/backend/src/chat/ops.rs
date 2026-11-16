@@ -1,4 +1,4 @@
-//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post` and `chat.post_file`, each a job (never the
+//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file` and `chat.file`, each a job (never the
 //! loop), and `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
@@ -10,16 +10,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Deserialize;
-use sot_chat::api::{ApiError, Bounds, Continuation, FileOutcome, HistoryQuery, PostKind, PostOutcome};
+use sot_chat::api::{ApiError, Bounds, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome};
 use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
 use sot_protocol::ops::{
-    op, ChatChannel, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
+    op, ChatChannel, ChatCode, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
     ChatPostReq, ChatPostRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
     ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE,
 };
 use sot_protocol::reply::HandlerOutput;
-use sot_protocol::Frame;
+use sot_protocol::{BlobDescriptor, Frame};
 
 use super::watch::Conn;
 use super::Chat;
@@ -325,6 +325,40 @@ fn run_before_open(path: &Path) {
     };
     if let Some(then) = then {
         then();
+    }
+}
+
+/// `chat.file`: one picture of the target's channel, read once through `Api::fetch_file` after admission, its bytes the
+/// reply's blob (`blob.len` their count, within the variant's bound by the call's own). Slack's having no thumbnail yet is
+/// `failed`, which a reader may ask again; a file that is no picture the chat shows, or over its bound, is final.
+pub(crate) async fn file(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_FILE;
+    let req = match decode::<ChatFileReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+    };
+    let variant = match req.variant {
+        ChatFileVariant::Thumb => FileVariant::Thumb,
+        ChatFileVariant::Original => FileVariant::Original,
+    };
+    match api.fetch_file(req.target.channel.as_str(), &req.file, variant).await {
+        Ok(FileFetch::Image { mime, bytes }) => {
+            let blob = BlobDescriptor { len: bytes.len() as u64, mime: mime.clone() };
+            let body = serde_json::to_value(ChatFileRes { mime, blob })?;
+            Ok(vec![(Frame::res(req_id, NAME, body), Some(bytes))])
+        }
+        Ok(FileFetch::NotAnImage) => Ok(refuse(req_id, NAME, ChatCode::NotAnImage)),
+        Ok(FileFetch::TooLarge) => Ok(refuse(req_id, NAME, ChatCode::TooLarge)),
+        Ok(FileFetch::NoThumbnail) => Ok(refuse(req_id, NAME, ChatCode::Failed)),
+        Err(e) => Ok(refuse(req_id, NAME, code_of(&e))),
     }
 }
 

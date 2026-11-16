@@ -66,7 +66,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`), `chat.file` (no event: its owner asks again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:
@@ -77,7 +77,7 @@ through the channel types below.
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
-  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatConnect, ChatChannels, ChatPair}`
+  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatFile, ChatConnect, ChatChannels, ChatPair}`
   and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
@@ -93,13 +93,22 @@ through the channel types below.
   connection that ends first, a `handler_error` and an answer that does not parse give `ChatEvt::ConnectUnknown` or
   `PairUnknown { row, channel }` once, never a refusal, and the owner resolves again and never sends it again (tests
   `a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_again`, `the_setup_replies_carry_their_request_and_refusal`).
+  `ChatFile` asks for one picture of the target's channel (`chat.file`) and is the one chat reply that takes the frame's
+  blob: `ChatEvt::File { req, reply }`, `reply` `Done(ChatPicture { mime, bytes })` only when the blob is the length the
+  reply declares and within the request's own variant's bound (`MAX_THUMB` for a thumbnail, `MAX_CHAT_FILE` for an
+  original), else `Refused(Failed)`, since the codec read the blob before the decode (a declared length past `MAX_CHAT_FILE`
+  does not decode and is `Refused(Other)`, as any answer that does not parse); a refusal is its code and an older
+  daemon's unknown-op answer `Unsupported`; `ChatPicture`'s `Debug` prints the byte count. It is not replayable and gets
+  no event when its connection ends, waiting or in flight: its owner asks again at `Connected` (tests
+  `a_file_reply_carries_its_request_and_its_bytes`, `a_file_read_without_its_answer_ends_with_no_event_and_is_never_written_again`).
+  No window sends it yet.
   `ChatChannels` is a read: replayable while waiting, like a resolve, and given no event when its connection ends with it in flight. A token
   the window sends is a wire `ChatToken` (`Debug` is `<redacted>`); the connect's pending entry and its events name nothing
   of it and fe-net logs the op name alone, so a token reaches the daemon and nothing else (test
   `a_connect_formats_and_logs_no_token_byte`); a token held elsewhere in the window is the owner's to keep out of its own
   `Debug` and status line. Limits: fe-net does
   not order posts, does not resync after `bus.lost`, a `chat.status` or an `Unreadable`, and does not pace resyncs; a
-  watch, history or resolve in flight when a connection ends gets no event. Those are the chat owner's (`ui/drawer/chat/`,
+  watch, history, picture or resolve in flight when a connection ends gets no event. Those are the chat owner's (`ui/drawer/chat/`,
   fe-ui's contract), which `ui/events.rs` routes `IncomingEvt::Chat`, `BusLost` and each link's coming and going to.
 - The row's selection is one typed edge, `OutgoingReq::SelectionSet { req }` (a text selection, a drawing or a clear) and
   `IncomingEvt::Selection { req, reply }` (transport/ops/selection.rs). A reply carries the request it answers, so a clear's
@@ -137,7 +146,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
-`page.reply`, `selection.set`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.connect`, `chat.channels`, `chat.pair`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
+`page.reply`, `selection.set`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.file`, `chat.connect`, `chat.channels`, `chat.pair`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

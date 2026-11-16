@@ -347,6 +347,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::CHAT_HISTORY => crate::chat::ops::history(req_id, payload, chat, workspaces).await,
         op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_POST_FILE => crate::chat::ops::post_file(req_id, payload, chat, workspaces, shared.window).await,
+        op::CHAT_FILE => crate::chat::ops::file(req_id, payload, chat, workspaces).await,
         op::CHAT_WATCH => crate::chat::ops::watch(req_id, payload, chat, workspaces, &shared.chat_conn).await,
         op::CHAT_UNWATCH => crate::chat::ops::unwatch(req_id, payload, chat, &shared.chat_conn).await,
         // The setup ops: a window's, and jobs (Slack's calls, the files' writes and the reload's wait).

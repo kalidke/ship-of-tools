@@ -11,7 +11,7 @@ use crate::lifecycle::retire::Registry;
 use crate::server::conn::handle_connection;
 use serde_json::{json, Value};
 use sot_chat::config;
-use sot_chat::fake_slack::{FakeSlack, Identity, Reply, Upload};
+use sot_chat::fake_slack::{FakeSlack, Files, Identity, Reply, Upload};
 use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -31,7 +31,7 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_HISTORY, Answer::Handled),
     (op::CHAT_POST, Answer::Handled),
     (op::CHAT_POST_FILE, Answer::Handled),
-    (op::CHAT_FILE, Answer::Unserved),
+    (op::CHAT_FILE, Answer::Handled),
     (op::CHAT_WATCH, Answer::Handled),
     (op::CHAT_UNWATCH, Answer::Handled),
     (op::CHAT_CHANGED, Answer::Event),
@@ -701,6 +701,82 @@ async fn a_third_file_post_at_once_is_busy_before_its_file_is_read() {
     let third = cli.ask(12, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:no-such.png")).await;
     assert_eq!((code(&third), third.get("outcome")), ("busy", None), "{third}");
     fake.shutdown().await;
+}
+
+/// A fake that names the workspace and answers one file's `files.info` and URLs, the file shared in alpha's channel.
+async fn files_slack(files: Files) -> FakeSlack {
+    let files = Files { channels: vec!["C0AAAA".into()], ..files };
+    FakeSlack::start(Identity::Trusted, move |seen, port| {
+        if seen.path().ends_with("/auth.test") {
+            return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
+        }
+        files.reply(seen, port).unwrap_or_else(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+    })
+    .await
+}
+
+fn file_req(row: &str, variant: &str) -> Value {
+    json!({"target": target(row, "C0AAAA"), "file": "F0PIC", "variant": variant})
+}
+
+/// The requests a fetch makes: `files.info` and the file URLs (the service's own start is not counted).
+fn fetches(fake: &FakeSlack) -> usize {
+    fake.seen().iter().filter(|s| s.path() == "/api/files.info" || !s.path().starts_with("/api/")).count()
+}
+
+/// The reply payload to request `id` and its blob.
+async fn reply_with_blob(conn: &mut Conn, id: u64) -> (Value, Option<Vec<u8>>) {
+    loop {
+        let (frame, blob) = codec::read_frame(&mut conn.crx).await.unwrap();
+        if frame.kind == Kind::Res && frame.id == id {
+            return (frame.payload, blob);
+        }
+    }
+}
+
+/// `chat.file` answers a picture's bytes as the frame's blob, its `len` their count; no thumbnail yet is `failed` (asked
+/// again), a file over its bound or no picture is its final code; a stale row fetches nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_reply_carries_its_bytes_as_its_blob() {
+    let fake = files_slack(Files::new()).await;
+    let r = rig(&fake).await;
+    let mut conn = connect(r.services.clone()).await;
+    for (n, (variant, want)) in [("thumb", &b"\x89PNG thumbnail bytes"[..]), ("original", &b"\x89PNG original bytes"[..])].into_iter().enumerate() {
+        let id = 10 + n as u64;
+        conn.send(id, op::CHAT_FILE, file_req(&r.alpha, variant)).await;
+        let (payload, blob) = reply_with_blob(&mut conn, id).await;
+        assert_eq!(payload, json!({"mime": "image/png", "blob": {"len": want.len(), "mime": "image/png"}}), "{variant}");
+        assert_eq!(blob.as_deref(), Some(want), "{variant}");
+    }
+    assert_eq!(fetches(&fake), 4, "one files.info and one GET for each");
+    // Removed, then replaced under a new id: the old id fetches nothing.
+    r.rows.remove_by_id(&r.alpha).unwrap();
+    r.rows.insert(row("alpha", &r.folders[0]));
+    let (payload, blob) = { conn.send(20, op::CHAT_FILE, file_req(&r.alpha, "thumb")).await; reply_with_blob(&mut conn, 20).await };
+    assert_eq!((code(&payload), blob), ("stale_row", None), "{payload}");
+    assert_eq!(fetches(&fake), 4, "a stale row reached Slack");
+    fake.shutdown().await;
+
+    // No thumbnail and an original over the bound: neither is fetched.
+    let big = Files { thumb_keys: vec![], size: Some(sot_protocol::ops::MAX_CHAT_FILE as u64 + 1), ..Files::new() };
+    let fake = files_slack(big).await;
+    let r = rig(&fake).await;
+    let mut conn = connect(r.services.clone()).await;
+    assert_eq!(code(&conn.ask(30, op::CHAT_FILE, file_req(&r.alpha, "thumb")).await), "failed");
+    assert_eq!(code(&conn.ask(31, op::CHAT_FILE, file_req(&r.alpha, "original")).await), "too_large");
+    assert!(downloads_none(&fake), "a file over its bound was downloaded");
+    fake.shutdown().await;
+
+    let fake = files_slack(Files { mimetype: "application/pdf".into(), ..Files::new() }).await;
+    let r = rig(&fake).await;
+    let mut conn = connect(r.services.clone()).await;
+    assert_eq!(code(&conn.ask(40, op::CHAT_FILE, file_req(&r.alpha, "original")).await), "not_an_image");
+    assert!(downloads_none(&fake), "a PDF was downloaded");
+    fake.shutdown().await;
+}
+
+fn downloads_none(fake: &FakeSlack) -> bool {
+    fake.seen().iter().all(|s| s.path().starts_with("/api/"))
 }
 
 #[test]

@@ -347,6 +347,9 @@ pub enum OutgoingReq {
     /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
     /// owner sends the next only after the last one's reply.
     ChatPost { req: sot_protocol::ops::ChatPostReq },
+    /// One picture of a channel's (`chat.file`); its reply carries the bytes. Not replayable: a read whose connection ends
+    /// gets no event, and the owner asks again at `Connected`.
+    ChatFile { req: sot_protocol::ops::ChatFileReq },
     /// The chat's setup, a window's alone. `ChatConnect` carries the two tokens and is written on one connection at
     /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`).
     /// `ChatChannels` is a read. `ChatPair` is written on one connection at most; no channel unpairs the row.
@@ -433,13 +436,13 @@ impl OutgoingReq {
     /// it is written on the connection current when it is dequeued, or on none (`Outbox::retire`), and a write that
     /// got no answer ends as the unknown outcome its kind already has (`PendingGuard`). One arm per variant, so a new
     /// kind decides. The marked arms (the `false` ones) each already have an outcome for a connection that
-    /// ended, or (`ChatWatch`, `ChatHistory`) are asked again by their owner on the next connection. The other writes stay replayable
+    /// ended, or (`ChatWatch`, `ChatHistory`, `ChatFile`) are asked again by their owner on the next connection. The other writes stay replayable
     /// because a connection's end gives their callers no outcome yet, so ending one unsent would leave its caller
     /// waiting; they are queued with their owners (`ConceptWrite`, `FileWrite`, `FileDelete`, `DirCreate`,
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -553,6 +556,10 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::ChatPost { req } => {
             let kind = PendingKind::ChatPost { req: req.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_POST, req, Some(kind)).await?
+        }
+        OutgoingReq::ChatFile { req } => {
+            let kind = PendingKind::ChatFile { req: req.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_FILE, req, Some(kind)).await?
         }
         OutgoingReq::ChatConnect { bot_token, app_token } => {
             let req = sot_protocol::ops::ChatConnectReq { bot_token, app_token };

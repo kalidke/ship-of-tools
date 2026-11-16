@@ -237,3 +237,62 @@ fn the_setup_replies_carry_their_request_and_refusal() {
     assert!(shown[6].starts_with("Chat(Channels { reply: Unsupported })"), "{}", shown[6]);
     assert_eq!(shown[7], "Chat(ConnectUnknown)");
 }
+
+fn file_req(variant: &str) -> ChatFileReq {
+    serde_json::from_value(serde_json::json!({ "target": target(), "file": "F0PIC", "variant": variant })).unwrap()
+}
+
+fn file_answer(len: usize) -> serde_json::Value {
+    serde_json::json!({ "mime": "image/png", "blob": { "len": len, "mime": "image/png" } })
+}
+
+/// A `chat.file` reply carries the request it answers and the frame's blob as its bytes; a blob past its own variant's
+/// bound (a thumbnail's `MAX_THUMB`, though within the wire's `MAX_CHAT_FILE`) or other than it declares is
+/// `Refused(Failed)`; a refusal is its code, and an older daemon's unknown-op answer is `Unsupported`.
+#[test]
+fn a_file_reply_carries_its_request_and_its_bytes() {
+    let over = MAX_THUMB + 1;
+    let cases: Vec<(&str, serde_json::Value, Option<Vec<u8>>, &str)> = vec![
+        ("thumb", file_answer(3), Some(b"png".to_vec()), "Done(ChatPicture { mime: \"image/png\", bytes: 3 })"),
+        ("thumb", file_answer(MAX_THUMB), Some(vec![0; MAX_THUMB]), "Done(ChatPicture { mime: \"image/png\", bytes: 262144 })"),
+        ("original", file_answer(over), Some(vec![0; over]), "Done(ChatPicture { mime: \"image/png\", bytes: 262145 })"),
+        ("thumb", file_answer(over), Some(vec![0; over]), "Refused(Failed)"),
+        ("thumb", file_answer(4), Some(b"png".to_vec()), "Refused(Failed)"),
+        ("thumb", file_answer(3), None, "Refused(Failed)"),
+        ("original", serde_json::json!({ "error": "x", "code": "not_an_image" }), None, "Refused(NotAnImage)"),
+        ("original", serde_json::json!({ "error": "x", "code": "too_large" }), None, "Refused(TooLarge)"),
+        ("thumb", serde_json::json!({ "error": "unknown op: chat.file" }), None, "Unsupported"),
+    ];
+    for (variant, payload, blob, want) in cases {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending = HashMap::from([(1, PendingKind::ChatFile { req: file_req(variant) })]);
+        handle_response_frame(Frame::res(1, op::CHAT_FILE, payload.clone()), blob, &mut pending, &evt_tx, &"h".to_string());
+        assert!(pending.is_empty(), "the reply consumed its entry");
+        let shown: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        let reply = shown[0].split("reply: ").nth(1).unwrap_or(&shown[0]);
+        let named = if variant == "thumb" { "variant: Thumb" } else { "variant: Original" };
+        assert!(shown[0].contains("file: \"F0PIC\"") && shown[0].contains(named), "{shown:?}");
+        assert!(reply.starts_with(want), "{variant} {payload} -> {}", shown[0]);
+    }
+}
+
+/// A picture read waiting for its answer when its connection ends gives no event, and one still queued then is dropped
+/// unwritten: the owner asks again at `Connected`, never a later connection on its own.
+#[tokio::test]
+async fn a_file_read_without_its_answer_ends_with_no_event_and_is_never_written_again() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    {
+        let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+        guard.insert(4, PendingKind::ChatFile { req: file_req("original") });
+    }
+    let (out_tx, out_rx) = outgoing_channel();
+    let mut outbox = Outbox::new(out_rx);
+    out_tx.send(OutgoingReq::ChatFile { req: file_req("thumb") }).unwrap();
+    out_tx.send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+    outbox.retire(&evt_tx, &"h".to_string()).await;
+    drop(out_tx);
+    assert_eq!(evt_rx.try_iter().count(), 0, "a picture read ended with an event");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatResolve { .. })), "only the resolve is kept");
+    assert!(outbox.recv().await.is_none());
+}

@@ -1,10 +1,10 @@
-//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
-//! Their replies (on_chat_*: the reply frame becomes an `IncomingEvt::Chat`), and the `chat.changed` and `chat.status` events.
+//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.file, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
+//! Their replies (on_chat_*: the reply frame becomes an `IncomingEvt::Chat`; `chat.file`'s alone carries a blob), and the `chat.changed` and `chat.status` events.
 
 use super::*;
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostReq,
-    ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes,
+    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostReq,
+    ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes, MAX_CHAT_FILE, MAX_THUMB,
 };
 
 /// What a chat request's reply came to, apart from the answer itself.
@@ -37,10 +37,25 @@ pub(crate) enum ChatEvt {
     Paired { row: String, channel: Option<ChatChannel>, reply: ChatReply<ChatPairRes> },
     /// As `ConnectUnknown`, for a `chat.pair`: the file may have been written.
     PairUnknown { row: String, channel: Option<ChatChannel> },
+    /// A `chat.file`'s reply: the picture's bytes, within its variant's bound, or why there are none. A read: a connection
+    /// that ends first gives no event, and the owner asks again at `Connected`.
+    File { req: ChatFileReq, reply: ChatReply<ChatPicture> },
     Changed(ChatChangedEvt),
     Status(ChatStatusEvt),
     /// A pushed `chat.changed` or `chat.status` that did not parse: what it carried is lost, so the owner resyncs.
     Unreadable,
+}
+
+/// A picture's bytes from `chat.file`, as the daemon served them; its `Debug` prints the byte count, not the bytes.
+pub(crate) struct ChatPicture {
+    pub(crate) mime: String,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ChatPicture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChatPicture {{ mime: {:?}, bytes: {} }}", self.mime, self.bytes.len())
+    }
 }
 
 pub(crate) async fn send_chat<W: AsyncWrite + Unpin>(
@@ -93,6 +108,25 @@ pub(crate) fn on_chat_post(frame: Frame, emit: &impl Fn(IncomingEvt), req: ChatP
         other => other,
     };
     emit(IncomingEvt::Chat(ChatEvt::Posted { req, reply }));
+}
+
+/// The codec read the blob before this decode, so its length is checked here against the request's own variant (a
+/// thumbnail's `MAX_THUMB`, not the wire's `MAX_CHAT_FILE`): a reply over it, or whose blob is not the one it declares,
+/// is `Refused(Failed)`.
+pub(crate) fn on_chat_file(frame: Frame, blob: Option<Vec<u8>>, emit: &impl Fn(IncomingEvt), req: ChatFileReq) {
+    let bound = match req.variant {
+        ChatFileVariant::Thumb => MAX_THUMB,
+        ChatFileVariant::Original => MAX_CHAT_FILE,
+    };
+    let reply = match chat_reply::<ChatFileRes>(frame) {
+        ChatReply::Done(res) => match blob {
+            Some(bytes) if bytes.len() as u64 == res.blob.len && bytes.len() <= bound => ChatReply::Done(ChatPicture { mime: res.mime, bytes }),
+            _ => ChatReply::Refused(ChatCode::Failed),
+        },
+        ChatReply::Unsupported => ChatReply::Unsupported,
+        ChatReply::Refused(code) => ChatReply::Refused(code),
+    };
+    emit(IncomingEvt::Chat(ChatEvt::File { req, reply }));
 }
 
 /// A connect or a pair is written once, so, as for a post, only a reply that proves nothing was saved says so: an error

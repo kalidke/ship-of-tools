@@ -133,6 +133,10 @@ pub(super) enum PendingKind {
     ChatPost {
         req: sot_protocol::ops::ChatPostReq,
     },
+    /// A `chat.file`: its reply carries the picture as the frame's blob. A read: no event when its connection ends.
+    ChatFile {
+        req: sot_protocol::ops::ChatFileReq,
+    },
     /// A `chat.connect`: names nothing of its tokens. A connection that ends before the reply is the unknown outcome.
     ChatConnect,
     ChatChannels,
@@ -381,6 +385,7 @@ pub(super) fn handle_response_frame(
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),
             PendingKind::ChatPost { req } => on_chat_post(frame, &emit, req),
+            PendingKind::ChatFile { req } => on_chat_file(frame, blob, &emit, req),
             PendingKind::ChatConnect => on_chat_connect(frame, &emit),
             PendingKind::ChatChannels => on_chat_channels(frame, &emit),
             PendingKind::ChatPair { row, channel } => on_chat_pair(frame, &emit, row, channel),
