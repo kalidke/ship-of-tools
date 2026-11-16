@@ -156,6 +156,8 @@ impl State {
         } else if chat_apply(self, chat_move(action)) {
         } else if action == Some(Action::ReturnNav) {
             anyhow::ensure!(self.chat.close_thread(), "Escape closed no thread");
+        } else if action == Some(Action::ChatThreadClose) {
+            anyhow::ensure!(self.leave_chat_thread(), "ArrowLeft closed no thread");
         } else if action == Some(Action::ChatSend) {
             self.send_chat_draft();
         } else if action == Some(Action::Paste) {
@@ -315,6 +317,14 @@ impl State {
         self.witness_key(Key::Named(NamedKey::Escape), (false, false), Some(Action::ReturnNav))?;
         self.witness_frame(&mut frames, &newest, "Escape")?;
         anyhow::ensure!(self.chat.marked() == Some(newest.clone()), "the mark did not return with the channel");
+        // ArrowRight opens it again, and ArrowLeft over the empty draft closes it as Escape did.
+        self.witness_key(Key::Named(NamedKey::ArrowRight), (false, false), Some(Action::ChatThreadOpen))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_frame(&mut frames, &newest, "thread again")?;
+        anyhow::ensure!(self.chat.thread_len() == 4, "the thread holds {} again", self.chat.thread_len());
+        self.witness_key(Key::Named(NamedKey::ArrowLeft), (false, false), Some(Action::ChatThreadClose))?;
+        self.witness_frame(&mut frames, &newest, "ArrowLeft")?;
+        anyhow::ensure!(self.chat.thread_len() == 0 && self.chat.marked() == Some(newest.clone()), "ArrowLeft left the thread open or the mark away");
 
         // A resize with 256 records of 8 KiB: the held 200 are edited to 8 KiB and 56 newer arrive, by `chat.changed`.
         let batches: Vec<Vec<u32>> = (1..=256).collect::<Vec<u32>>().chunks(20).map(<[u32]>::to_vec).collect();
@@ -346,7 +356,7 @@ impl State {
 
         let first = daemon.seen.clone();
         anyhow::ensure!(
-            (first.resolves, first.watches, first.snapshots, first.pages, first.threads) == (1, 1, 1, 9, 1),
+            (first.resolves, first.watches, first.snapshots, first.pages, first.threads) == (1, 1, 1, 9, 2),
             "the connection carried {first:?}"
         );
 

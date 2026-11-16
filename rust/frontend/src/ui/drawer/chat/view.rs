@@ -168,6 +168,14 @@ pub(super) fn settle(count: usize, body_h: f32, (mut i, mut dy): (usize, f32), m
     (i..count).any(|j| { end += height(j); end > body_h + FOLLOW_SLACK_PX }).then_some((i, dy))
 }
 
+/// The way from position `a` to `b` (`None` follows the newest) toward older records, in pixels.
+fn distance(count: usize, body_h: f32, a: Option<(usize, f32)>, b: Option<(usize, f32)>, mut height: impl FnMut(usize) -> f32) -> f32 {
+    let mut at = |p: Option<(usize, f32)>| p.unwrap_or_else(|| (count - 1, body_h - height(count - 1)));
+    let ((ia, dya), (ib, dyb)) = (at(a), at(b));
+    let between: f32 = (ia.min(ib)..ia.max(ib)).map(&mut height).sum();
+    if ia > ib { between - dya + dyb } else { -between - dya + dyb }
+}
+
 /// How far a key moves the position.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::ui) enum Step {
@@ -294,6 +302,10 @@ pub(in crate::ui) struct ChatView {
     /// The mark keys since the last frame, in order (`true` toward older records): the frame that spends them knows the
     /// records, and folds them one at a time, each with its clamp.
     mark_keys: Vec<bool>,
+    /// The first of those keys' instant and length: a mark key that leaves the view eases there with them.
+    mark_asked: Option<(Instant, Duration)>,
+    /// The motion is a mark key's, toward the mark: until it rests, the mark stays where the key put it.
+    marking: bool,
     /// The text selected in one record's body (never its header), and that record.
     selection: FlowedSelection,
     selected: Option<(Ts, Key)>,
@@ -349,6 +361,7 @@ impl ChatView {
         // record, which crosses the top and so covers all of the body but one line.
         let mut mark = held_mark;
         let keys = std::mem::take(&mut self.mark_keys);
+        let mark_asked = self.mark_asked.take();
         let from = if !keys.is_empty() && count > 0 {
             let i = keys.iter().fold(mark, |at, older| Some(at.map_or(count - 1, |i| if *older { i.saturating_sub(1) } else { (i + 1).min(count - 1) }))).expect("a key");
             mark = Some(i);
@@ -357,22 +370,36 @@ impl ChatView {
             if top.is_some_and(|t| t >= 0.0 && t + h <= body.h) {
                 from
             } else {
-                self.motion.stop();
                 let above = top.map_or(spots.first().is_none_or(|p| i < p.index), |t| t < 0.0);
-                let from = settle(count, body.h, (i, if above || h > body.h { 0.0 } else { body.h - h }), &mut height);
-                spots = place(count, body.h, from, &mut height);
-                from
+                let to = settle(count, body.h, (i, if above || h > body.h { 0.0 } else { body.h - h }), &mut height);
+                match mark_asked.filter(|(_, length)| !length.is_zero()) {
+                    // Eased: the motion owes the way from where the view is to where the move at once puts it, and rests there.
+                    Some((when, length)) => {
+                        let way = distance(count, body.h, from, to, &mut height);
+                        self.motion.ask(way - self.motion.owed(), when, length);
+                        self.marking = true;
+                        from
+                    }
+                    None => {
+                        self.motion.stop();
+                        spots = place(count, body.h, to, &mut height);
+                        to
+                    }
+                }
             }
         } else {
             from
         };
-        // A record's band starts below its divider, so its first line is the one that must fit.
+        // A record's band starts below its divider, so its first line is the one that must fit (to the float noise of a glide's
+        // spends, so a glide that rests on a mark keeps it).
         let line = BODY_LINE_H * scale;
-        let mut seen: Vec<usize> = spots.iter().filter(|p| p.top >= 0.0 && p.top + cache[&used[&p.index]].day + line <= body.h).map(|p| p.index).collect();
+        let fits = |top: f32, day: f32| top >= -FOLLOW_SLACK_PX && top + day + line <= body.h + FOLLOW_SLACK_PX;
+        let mut seen: Vec<usize> = spots.iter().filter(|p| fits(p.top, cache[&used[&p.index]].day)).map(|p| p.index).collect();
         if seen.is_empty() {
             seen = spots.first().map(|p| p.index).into_iter().collect();
         }
-        if let Some(i) = mark {
+        self.marking &= self.motion.moving();
+        if let Some(i) = mark.filter(|_| !self.marking) {
             mark = seen.iter().copied().min_by_key(|s| s.abs_diff(i)).or(mark);
         }
         self.mark = mark.map(|i| records[i].0.ts.clone());
@@ -507,6 +534,7 @@ impl ChatView {
             Step::Page => self.pending.1 += n,
         }
         self.asked.get_or_insert((now, length));
+        self.marking = false;
     }
 
     /// Whether frames must keep coming: something is owed.
@@ -521,15 +549,17 @@ impl ChatView {
         self.clear_selection();
     }
 
-    /// A mark key moves the mark one record toward older records (`older`) or newer; it takes effect at the next frame.
-    pub(super) fn mark(&mut self, older: bool) {
+    /// A mark key moves the mark one record toward older records (`older`) or newer; it takes effect at the next frame, and a
+    /// view it moves eases over `length` from `now` (at that frame when it is zero).
+    pub(super) fn mark(&mut self, older: bool, now: Instant, length: Duration) {
         self.mark_keys.push(older);
+        self.mark_asked.get_or_insert((now, length));
     }
 
     /// A row change: the reader follows the newest, and the old row's mark is no one's.
     pub(super) fn reset(&mut self) {
         self.latest();
-        (self.mark, self.mark_keys) = (None, Vec::new());
+        (self.mark, self.mark_keys, self.mark_asked) = (None, Vec::new(), None);
         self.clear_selection();
     }
 

@@ -27,6 +27,11 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
                 state.window.request_redraw();
                 return Break(());
             }
+            // ArrowLeft leaves an open thread as Escape does, only over an empty draft; else it does nothing, as before.
+            if action == Some(Action::ChatThreadClose) && !event.repeat && state.leave_chat_thread() {
+                state.window.request_redraw();
+                return Break(());
+            }
             if drawer::chat::chat_key(state, key, label) {
                 return Break(());
             }

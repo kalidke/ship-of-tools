@@ -184,9 +184,10 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.down` | `ArrowDown` | Move down through the displayed text. |
 | `preview.start` | `Home` | Scroll to the beginning of the displayed text. |
 | `chat.latest` | `End` | Return the Chat drawer to the newest message and follow it. |
-| `chat.mark_older` | `ArrowUp` | Mark the next older message in the Chat drawer, or the newest when none is marked; the view moves to show it. |
-| `chat.mark_newer` | `ArrowDown` | Mark the next newer message in the Chat drawer, or the newest when none is marked; the view moves to show it. |
+| `chat.mark_older` | `ArrowUp` | Mark the next older message in the Chat drawer, or the newest when none is marked; the view eases to show it. |
+| `chat.mark_newer` | `ArrowDown` | Mark the next newer message in the Chat drawer, or the newest when none is marked; the view eases to show it. |
 | `chat.thread_open` | `ArrowRight` | Open the marked message's thread in the Chat drawer, showing its parent and replies; Escape closes it. |
+| `chat.thread_close` | `ArrowLeft` | Close the open thread in the Chat drawer, as Escape does; only while the draft is empty. |
 | `chat.copy_selection` | `Primary+c` / `Primary+Shift+c` | Copy the text selected in a Chat message, or the marked message's text when none is selected. |
 | `chat.send` | `Enter` | Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made. |
 | `chat.newline` | `Shift+Enter` | Continue the chat draft on another line. |

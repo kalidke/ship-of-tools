@@ -165,9 +165,10 @@ actions! {
     PreviewDown, "preview.down", ["ArrowDown"], "Scroll down one line", "Move down through the displayed text.", "Text", Text;
     PreviewStart, "preview.start", ["Home"], "Document start", "Scroll to the beginning of the displayed text.", "Text", Text;
     ChatLatest, "chat.latest", ["End"], "Newest message", "Return the Chat drawer to the newest message and follow it.", "Chat", Chat;
-    ChatMarkOlder, "chat.mark_older", ["ArrowUp"], "Older message", "Mark the next older message in the Chat drawer, or the newest when none is marked; the view moves to show it.", "Chat", Chat;
-    ChatMarkNewer, "chat.mark_newer", ["ArrowDown"], "Newer message", "Mark the next newer message in the Chat drawer, or the newest when none is marked; the view moves to show it.", "Chat", Chat;
+    ChatMarkOlder, "chat.mark_older", ["ArrowUp"], "Older message", "Mark the next older message in the Chat drawer, or the newest when none is marked; the view eases to show it.", "Chat", Chat;
+    ChatMarkNewer, "chat.mark_newer", ["ArrowDown"], "Newer message", "Mark the next newer message in the Chat drawer, or the newest when none is marked; the view eases to show it.", "Chat", Chat;
     ChatThreadOpen, "chat.thread_open", ["ArrowRight"], "Open thread", "Open the marked message's thread in the Chat drawer, showing its parent and replies; Escape closes it.", "Chat", Chat;
+    ChatThreadClose, "chat.thread_close", ["ArrowLeft"], "Close thread", "Close the open thread in the Chat drawer, as Escape does; only while the draft is empty.", "Chat", Chat;
     ChatCopySelection, "chat.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy the text selected in a Chat message, or the marked message's text when none is selected.", "Chat", Chat;
     ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made.", "Chat", Chat;
     ChatNewline, "chat.newline", ["Shift+Enter"], "Insert newline", "Continue the chat draft on another line.", "Chat", Chat;

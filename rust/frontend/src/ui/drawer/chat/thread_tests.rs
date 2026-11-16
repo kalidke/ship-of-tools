@@ -88,7 +88,7 @@ fn body() -> ScreenRect {
 /// Presses the mark keys (`true` toward older messages), as a frame spends them, and opens the marked message's thread.
 fn open(d: &mut ChatDrawer, fonts: &mut FontSystem, keys: &[bool]) -> Vec<Out> {
     d.layout(fonts, body(), 1.0, body());
-    keys.iter().for_each(|older| d.mark(*older));
+    keys.iter().for_each(|older| d.mark(*older, Instant::now(), Duration::ZERO));
     d.layout(fonts, body(), 1.0, body());
     d.open_thread()
 }
@@ -104,7 +104,7 @@ fn a_thread_opening_or_closing_leaves_nothing_owed() {
     let short = || ScreenRect { h: 100.0, ..body() };
     let (mut d, _) = channel(&(0..20).map(top).collect::<Vec<_>>());
     d.layout(&mut fonts, short(), 1.0, short());
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, short(), 1.0, short());
     // One page at once puts the reader off the newest; the next is eased over a length no frame of the test outlasts.
     d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
@@ -118,6 +118,34 @@ fn a_thread_opening_or_closing_leaves_nothing_owed() {
     d.close_thread();
     d.layout(&mut fonts, short(), 1.0, short());
     assert!(!d.moving() && !d.following(), "the channel's view returns where it was, owing nothing");
+}
+
+#[test]
+fn left_closes_the_thread_only_over_an_empty_draft() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let (mut d, _) = channel(&held);
+    let parent = held[2].ts.clone();
+    let row = shown("ROW1");
+    // No thread open: nothing closes, and the mark stays.
+    open(&mut d, &mut fonts, &[true]);
+    assert!(d.close_thread());
+    assert!(!d.leave_thread(row.as_ref()), "no thread to close");
+    // A draft with anything in it, a space included, keeps the thread open.
+    open(&mut d, &mut fonts, &[]);
+    for text in ["hi", " "] {
+        d.edit(row.as_ref(), Edit::Text(text)).unwrap();
+        assert!(!d.leave_thread(row.as_ref()), "{text:?}");
+        assert_eq!(d.title(), " chat · CH1 · thread ", "{text:?}");
+        while d.draft().is_some_and(|(t, _)| !t.is_empty()) {
+            d.edit(row.as_ref(), Edit::Backspace).unwrap();
+        }
+    }
+    // An empty draft: it closes as Escape does, the channel back with the mark on the parent.
+    assert!(d.leave_thread(row.as_ref()));
+    d.layout(&mut fonts, body(), 1.0, body());
+    assert_eq!((d.marked(), d.title(), d.placed_text().len()), (Some(parent), " chat · CH1 ".to_string(), 3));
+    assert!(!d.leave_thread(row.as_ref()), "nothing to close");
 }
 
 #[test]
@@ -305,7 +333,7 @@ fn thread_view_compose_and_back_keep_target() {
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.title(), " chat · CH1 · thread ");
     assert!(d.placed_text().len() == 1 && d.placed_text()[0].contains("message 1"), "{:?}", d.placed_text());
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
     d.open_thread();
     assert!(d.placed_text()[0].contains("message 1"), "{:?}", d.placed_text());
@@ -336,7 +364,7 @@ fn thread_view_compose_and_back_keep_target() {
     // The channel's place is kept: a reader scrolled up is still there after the thread closes.
     let (mut d, _) = channel(&(0..20).map(top).collect::<Vec<_>>());
     d.layout(&mut fonts, body(), 1.0, body());
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
     d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
@@ -383,7 +411,7 @@ fn thread_view_compose_and_back_keep_target() {
     // The thread's view never moves the channel's reading place: the owner holds no anchor (the channel's oldest give way) and asks for no page.
     let (mut d, at) = channel_with(&(0..20).map(top).collect::<Vec<_>>(), Some("older"));
     d.layout(&mut fonts, body(), 1.0, body());
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());
     d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, body(), 1.0, body());

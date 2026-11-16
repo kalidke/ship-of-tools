@@ -96,7 +96,7 @@ fn primary_k_opens_the_chat_drawer_and_primary_shift_k_is_free() {
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.copy_selection", "chat.send", "chat.newline"] {
+    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.thread_close", "chat.copy_selection", "chat.send", "chat.newline"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");

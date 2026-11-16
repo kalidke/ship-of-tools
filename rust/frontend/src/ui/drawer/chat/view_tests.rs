@@ -438,8 +438,11 @@ fn the_keys_and_the_wheel_reach_the_view_only_in_the_chat_tenant() {
     assert_eq!(name(Pane::Chat, NamedKey::ArrowDown, false), Some("chat.mark_newer"));
     assert_eq!(name(Pane::Chat, NamedKey::ArrowUp, true), Some("view.scroll_line_up"));
     assert_eq!(name(Pane::Repl, NamedKey::ArrowUp, false), Some("repl.history_prev"));
+    // ArrowLeft closes a thread in the Chat alone; the nav keeps its collapse.
+    assert_eq!(name(Pane::Chat, NamedKey::ArrowLeft, false), Some("chat.thread_close"));
+    assert_eq!(name(Pane::Nav, NamedKey::ArrowLeft, false), Some("nav.collapse"));
     for pane in [Pane::Nav, Pane::Preview, Pane::Repl, Pane::Terminal, Pane::Monitor, Pane::Agent, Pane::Help] {
-        for key in [NamedKey::ArrowUp, NamedKey::ArrowDown] {
+        for key in [NamedKey::ArrowUp, NamedKey::ArrowDown, NamedKey::ArrowLeft] {
             assert!(!name(pane, key, false).is_some_and(|n| n.starts_with("chat.")), "{pane:?} {key:?}");
         }
     }
@@ -542,25 +545,25 @@ fn the_mark_is_a_held_record_and_in_view() {
     let top = |view: &ChatView, shown: &[(String, f32)]| (view.anchor.is_some(), top_of(shown));
     view.reset();
     // No mark: either key marks the newest, and a mark on the newest wholly in view leaves the view following.
-    view.mark(false);
+    view.mark(false, Instant::now(), Duration::ZERO);
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert_eq!((number(&view), view.anchor.is_none()), (Some(19), true));
     assert_eq!(view.placed_marks().iter().filter(|m| **m).count(), 1);
     assert_eq!(*view.placed_marks().last().unwrap(), true, "the newest is placed last: {shown:?}");
     // Moving on, with the cache warm: the mark is the view's own and only one record carries it.
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert_eq!(number(&view), Some(18));
     assert_eq!(view.placed_marks().iter().position(|m| *m), Some(shown.len() - 2));
     assert_eq!(view.placed_marks().iter().filter(|m| **m).count(), 1);
     // The newest is the end: ArrowDown on it stays there.
-    view.mark(false);
-    view.mark(false);
+    view.mark(false, Instant::now(), Duration::ZERO);
+    view.mark(false, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &held, h);
     assert_eq!(number(&view), Some(19));
     // A mark moved above the body puts that record's top at the body's top.
     for _ in 0..4 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert_eq!(number(&view), Some(15));
@@ -568,7 +571,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     assert!(top(&view, &shown).1 .0 == "15" && near(top(&view, &shown).1 .1, 0.0), "{shown:?}");
     // A mark moved below the body puts its bottom at the body's foot: the newest, wholly in view, follows again.
     for _ in 0..4 {
-        view.mark(false);
+        view.mark(false, Instant::now(), Duration::ZERO);
     }
     let shown = lay(&mut view, &mut fonts, &held, h);
     assert_eq!((number(&view), view.anchor.is_none()), (Some(19), true), "{shown:?}");
@@ -580,7 +583,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     assert!(last < 19 && number(&view) == Some(last), "{last} {:?}", number(&view));
     // A page down that leaves it above the body does the same at the other edge.
     for _ in 0..4 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     lay(&mut view, &mut fonts, &held, h);
     for _ in 0..3 {
@@ -592,9 +595,9 @@ fn the_mark_is_a_held_record_and_in_view() {
     assert_eq!(number(&view), Some(first), "{shown:?}");
     // A resync that drops the marked record passes the mark to the nearest newer held one.
     view.reset();
-    view.mark(true);
-    view.mark(true);
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
+    view.mark(true, Instant::now(), Duration::ZERO);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &held, h);
     assert_eq!(number(&view), Some(17));
     let fewer: Vec<ChatRecord> = held.iter().filter(|r| r.ts != held[17].ts).cloned().collect();
@@ -604,7 +607,7 @@ fn the_mark_is_a_held_record_and_in_view() {
     let older: Vec<ChatRecord> = held[..17].to_vec();
     lay(&mut view, &mut fonts, &older, h);
     assert_eq!(number(&view), None);
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &older, h);
     assert_eq!(number(&view), Some(16));
     // A record taller than the body shows its top when marked.
@@ -612,18 +615,18 @@ fn the_mark_is_a_held_record_and_in_view() {
     tall[10] = rec_at(&tall[10].ts.as_str().to_string(), &format!("{}message 10", "word ".repeat(300)));
     view.reset();
     for _ in 0..16 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     let shown = lay(&mut view, &mut fonts, &tall, h);
     assert!(top_of(&shown).0 == "4" && near(top_of(&shown).1, 0.0), "an unplaced record above shows its top: {shown:?}");
     for _ in 0..6 {
-        view.mark(false);
+        view.mark(false, Instant::now(), Duration::ZERO);
     }
     let shown = lay(&mut view, &mut fonts, &tall, h);
     assert_eq!(number(&view), Some(10));
     assert!(top_of(&shown).0 == "10" && near(top_of(&shown).1, 0.0), "{shown:?}");
     // A change of the watched target clears the mark and the position.
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     lay(&mut view, &mut fonts, &older, h);
     view.reset();
@@ -642,7 +645,7 @@ fn a_row_change_clears_the_mark() {
     let page = serde_json::from_value(serde_json::json!({ "records": held, "next": null })).unwrap();
     d.on_evt(&"a".to_string(), ChatEvt::History { req: history_req(&outs), reply: ChatReply::Done(page) }, at);
     let mut fonts = FontSystem::new();
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     d.layout(&mut fonts, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 }, 1.0, ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 100.0 });
     assert_eq!(d.marked(), Some(held[19].ts.clone()));
     d.tick(shown("S"), at + Duration::from_secs(1));
@@ -665,7 +668,7 @@ fn the_layout_returns_this_frames_rectangles() {
     let first = d.layout(&mut fonts, body, 1.0, inside);
     assert_eq!(first[0].h, 140.0, "the first frame's background is the drawer's inside");
     assert!(of_color(&first, BAND).is_empty());
-    d.mark(true);
+    d.mark(true, Instant::now(), Duration::ZERO);
     let quads = d.layout(&mut fonts, body, 1.0, inside);
     assert_eq!(of_color(&quads, BAND).len(), 1, "the mark moved in this frame is drawn in it");
 }
@@ -686,7 +689,7 @@ fn the_marks_first_line_is_inside_the_body() {
     let mut view = ChatView::default();
     let header_in = |top: Option<f32>| top.is_some_and(|t| t >= 0.0 && t + BODY_LINE_H <= 100.0);
     for _ in 0..3 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     assert!(header_in(lay_px(&mut view, &mut fonts, &held, 100.0)));
     assert_eq!(view.mark.as_ref().map(|t| t.as_str()[7..10].to_string()), Some("017".into()));
@@ -697,7 +700,7 @@ fn the_marks_first_line_is_inside_the_body() {
     // A page down that leaves the mark above the body.
     view.reset();
     for _ in 0..8 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     lay_px(&mut view, &mut fonts, &held, 100.0);
     view.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
@@ -720,7 +723,7 @@ fn the_marks_first_line_is_inside_the_body() {
     // An arrival while following lifts the marked record out of the top.
     view.reset();
     for _ in 0..2 {
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
     }
     assert!(header_in(lay_px(&mut view, &mut fonts, &held, 100.0)));
     for n in 20..24 {
@@ -738,11 +741,11 @@ fn mark_keys_fold_one_at_a_time() {
     let mut marked = |keys: &[bool], first: &[bool]| {
         let mut view = ChatView::default();
         for k in first {
-            view.mark(*k);
+            view.mark(*k, Instant::now(), Duration::ZERO);
         }
         lay_px(&mut view, &mut fonts, &held, 400.0);
         for k in keys {
-            view.mark(*k);
+            view.mark(*k, Instant::now(), Duration::ZERO);
         }
         lay_px(&mut view, &mut fonts, &held, 400.0);
         view.mark.as_ref().map(|t| t.as_str()[7..10].parse::<usize>().unwrap())
@@ -812,14 +815,14 @@ fn chat_and_preview_copy_same_utf8_ranges() {
     // The copy is the selection's bytes; with none it is the marked message's shown text, the header left out.
     view.clear_selection();
     assert_eq!(view.copy_text(), None, "no selection and no mark");
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_in(&mut view, &mut fonts, &held, BODY);
     assert_eq!(view.mark.as_ref(), Some(&held[2].ts));
     assert_eq!(view.copy_text().as_deref(), Some("https://x?a=1&b=2"));
     drag(&mut view, &held[1].ts, (1, 0), (1, 4));
     assert_eq!(view.copy_text().as_deref(), Some("a < "), "the selection comes first");
-    view.mark(true);
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_in(&mut view, &mut fonts, &held, BODY);
     view.clear_selection();
     assert_eq!(view.copy_text().as_deref(), Some(TEXT), "a marked message's lines, as the record holds them");
@@ -1094,7 +1097,7 @@ fn the_mark_is_a_band_and_moving_it_keeps_the_selection() {
             if view.mark.as_ref() == Some(&held[marked].ts) {
                 break;
             }
-            view.mark(true);
+            view.mark(true, Instant::now(), Duration::ZERO);
             lay_drawer(&mut view, &mut fonts, &held);
         }
         assert_eq!(view.mark.as_ref(), Some(&held[marked].ts), "the mark reaches record {marked}");
@@ -1173,7 +1176,7 @@ fn the_selection_lies_over_every_fill_and_is_the_last_rect() {
     let held = [rec_at("1700000001.000100", "first"), rec_by("1700000002.000100", "Ada", "drawer", "second record of words")];
     let mut view = ChatView::default();
     lay_drawer(&mut view, &mut fonts, &held);
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.mark.as_ref(), Some(&held[1].ts));
     drag(&mut view, &held[1].ts, (1, 0), (1, 6));
@@ -1268,7 +1271,7 @@ fn the_marked_continuation_shows_its_time_in_the_gutter() {
         lay(&mut view);
         assert_eq!(view.areas().len(), 2, "no mark, no time");
         // With no mark a key marks the newest.
-        view.mark(false);
+        view.mark(false, Instant::now(), Duration::ZERO);
         lay(&mut view);
         let areas = view.areas();
         assert_eq!((view.mark.as_ref(), areas.len()), (Some(&held[1].ts), 3));
@@ -1282,7 +1285,7 @@ fn the_marked_continuation_shows_its_time_in_the_gutter() {
         let right = stamp.x + last.x + last.w;
         assert!(right <= body.x + (GUTTER_PX - 4.0) * scale && right >= body.x + (GUTTER_PX - 12.0) * scale, "right-aligned near the gutter's edge: {right}");
         // Moving the mark to the header takes the time away: a marked header shows none.
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
         lay(&mut view);
         assert_eq!((view.mark.as_ref(), view.areas().len()), (Some(&held[0].ts), 2));
     }
@@ -1295,10 +1298,10 @@ fn the_marked_text_skips_only_the_lead() {
     let held = [by_ada(0, "alpha\nbeta"), by_ada(30, "gamma\ndelta")];
     let mut view = ChatView::default();
     lay_drawer(&mut view, &mut fonts, &held);
-    view.mark(false);
+    view.mark(false, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.marked_text().as_deref(), Some("gamma\ndelta"), "a continuation has no lead");
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.marked_text().as_deref(), Some("alpha\nbeta"), "a header's line is skipped");
 }
@@ -1412,10 +1415,10 @@ fn a_divider_is_neither_selected_nor_copied() {
         view.clear_selection();
     }
     // The marked message's copy is its body alone.
-    view.mark(false);
+    view.mark(false, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.marked_text().as_deref(), Some("gamma delta"));
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.marked_text().as_deref(), Some("alpha beta"));
 }
@@ -1665,7 +1668,7 @@ fn a_copy_gives_the_shown_text() {
     assert_eq!(drag(&mut view, &held[0].ts, (2, at("notes")), (2, at("#dev"))).as_deref(), Some("notes and @ada, "));
     assert_eq!(drag(&mut view, &held[0].ts, (2, at("@ada")), (2, at("Jan"))).as_deref(), Some("@ada, #dev @here "));
     view.clear_selection();
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.copy_text().as_deref(), Some(shown), "the marked message's shown text");
     assert!(!view.copy_text().unwrap().contains("x.test"));
@@ -1755,7 +1758,7 @@ fn a_copy_of_a_code_block_is_its_text() {
     lay_drawer(&mut view, &mut fonts, &held);
     let lines: Vec<String> = view.placed_buffers()[0].lines.iter().map(|l| l.text().to_string()).collect();
     assert_eq!(lines[2..].join("|"), "a| |b|x| |y| |z", "every empty line is one space in the buffer");
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.copy_text().as_deref(), Some("a\n\nb\nx\n\ny\n \nz"), "the marked message's text");
     view.clear_selection();
@@ -1781,7 +1784,7 @@ fn a_copy_leaves_out_edited() {
         let held = [edited_by_ada(0, text)];
         let mut view = ChatView::default();
         lay_drawer(&mut view, &mut fonts, &held);
-        view.mark(true);
+        view.mark(true, Instant::now(), Duration::ZERO);
         lay_drawer(&mut view, &mut fonts, &held);
         view.copy_text()
     };
@@ -1948,11 +1951,68 @@ fn a_move_by_another_rule_ends_the_motion_where_it_is() {
     view.scroll(false, Step::Page, t0, GLIDE);
     lay_at(&mut view, &mut fonts, &held, h, ms(8));
     assert!(view.moving() && view.mark.as_ref() == Some(&held[11].ts), "the mark passes to the first record in view");
-    view.mark(true);
+    view.mark(true, Instant::now(), Duration::ZERO);
     for at in [16, 75] {
         let (text, top) = top_of(&lay_at(&mut view, &mut fonts, &held, h, ms(at)));
         assert!(text == "10" && near(top, 0.0) && !view.moving(), "{at} ms: message {text} at {top}");
     }
+}
+
+/// A view anchored with record `top` at the body's top and record `marked` marked, laid out once at `at`.
+fn anchored(fonts: &mut FontSystem, held: &[ChatRecord], h: f32, top: usize, marked: usize, at: Instant) -> ChatView {
+    let mut view = ChatView::default();
+    (view.anchor, view.mark) = (Some((held[top].ts.clone(), 0.0)), Some(held[marked].ts.clone()));
+    lay_at(&mut view, fonts, held, h, at);
+    view
+}
+
+#[test]
+fn an_arrow_that_marks_out_of_view_eases_there() {
+    let (mut fonts, held, h) = thirty();
+    let t0 = Instant::now();
+    let ms = |n: u64| t0 + Duration::from_millis(n);
+    // From record 10 at the top (10 to 13 whole, 14 crossing the foot): Up from 10 marks 9, above the body; Down from 13
+    // marks 14, across the foot.
+    for (marked, older, want) in [(10, true, 9), (13, false, 14)] {
+        // With a zero length the view moves at the next frame and owes nothing: the place an eased move rests at.
+        let mut once = anchored(&mut fonts, &held, h, 10, marked, t0);
+        once.mark(older, t0, Duration::ZERO);
+        lay_at(&mut once, &mut fonts, &held, h, t0);
+        let rest = place_of(&once, &held, h);
+        assert!(!once.moving() && !near(rest, 10.0) && once.mark.as_ref() == Some(&held[want].ts), "{older}: at once to {rest}");
+        // Eased: nothing moves at the key's frame, the frames move part of the way with the mark already on its record, and
+        // the motion rests where the move at once rests, at the length.
+        let mut view = anchored(&mut fonts, &held, h, 10, marked, t0);
+        view.mark(older, t0, GLIDE);
+        lay_at(&mut view, &mut fonts, &held, h, t0);
+        assert!(view.moving() && near(place_of(&view, &held, h), 10.0) && view.mark.as_ref() == Some(&held[want].ts), "{older}");
+        for at in [8, 75] {
+            lay_at(&mut view, &mut fonts, &held, h, ms(at));
+            let place = place_of(&view, &held, h);
+            assert!(view.moving() && (place - 10.0) * (rest - place) > 0.0, "{older} {at} ms: {place} between 10 and {rest}");
+            assert_eq!(view.mark.as_ref(), Some(&held[want].ts), "{older} {at} ms: the mark stays on its record");
+        }
+        lay_at(&mut view, &mut fonts, &held, h, ms(150));
+        assert!(!view.moving() && near(place_of(&view, &held, h), rest), "{older}: rests at {} not {rest}", place_of(&view, &held, h));
+        assert_eq!(view.mark.as_ref(), Some(&held[want].ts));
+    }
+    // A mark that stays in view moves no view and begins no motion.
+    let mut view = anchored(&mut fonts, &held, h, 10, 12, t0);
+    view.mark(true, t0, GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(8));
+    assert!(!view.moving() && near(place_of(&view, &held, h), 10.0) && view.mark.as_ref() == Some(&held[11].ts));
+    // A second press during the glide carries on from where the view is and rests at its own key's length, where two
+    // presses at once rest.
+    let mut view = anchored(&mut fonts, &held, h, 10, 10, t0);
+    view.mark(true, t0, GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, t0);
+    lay_at(&mut view, &mut fonts, &held, h, ms(40));
+    view.mark(true, ms(50), GLIDE);
+    lay_at(&mut view, &mut fonts, &held, h, ms(50));
+    lay_at(&mut view, &mut fonts, &held, h, ms(150));
+    assert!(view.moving() && place_of(&view, &held, h) > 8.0, "still gliding at the first key's length");
+    lay_at(&mut view, &mut fonts, &held, h, ms(200));
+    assert!(!view.moving() && near(place_of(&view, &held, h), 8.0) && view.mark.as_ref() == Some(&held[8].ts), "{} {:?}", place_of(&view, &held, h), view.mark);
 }
 
 #[test]
@@ -2039,7 +2099,7 @@ fn the_rules_move_no_line_and_are_never_selected_or_copied() {
         assert_eq!(view.selected_text().as_deref(), Some(&r.text[..5]), "a press on the rule is a press on the record below it");
     }
     view.clear_selection();
-    view.mark(false);
+    view.mark(false, Instant::now(), Duration::ZERO);
     lay_drawer(&mut view, &mut fonts, &held);
     assert_eq!(view.marked_text().as_deref(), Some("delta line"));
     assert_eq!(view.placed_tops(), tops, "marking moves nothing");

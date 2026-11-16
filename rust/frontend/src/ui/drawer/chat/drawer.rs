@@ -317,8 +317,8 @@ impl ChatDrawer {
     }
 
     /// A mark key moves the mark (`view::ChatView::mark`).
-    pub(in crate::ui) fn mark(&mut self, older: bool) {
-        self.view.mark(older);
+    pub(in crate::ui) fn mark(&mut self, older: bool, now: Instant, length: Duration) {
+        self.view.mark(older, now, length);
     }
 
     /// The reader asks for the newest.
@@ -360,6 +360,11 @@ impl ChatDrawer {
     fn restart_thread(&mut self) -> Vec<Out> {
         self.give_up_read();
         self.thread_outs(Thread::start)
+    }
+
+    /// ArrowLeft: closes the open thread as Escape does, but only while `row`'s draft is empty; whether it closed.
+    pub(in crate::ui) fn leave_thread(&mut self, row: Option<&ResultRowIdentity>) -> bool {
+        !row.and_then(|r| self.compose.draft(r)).is_some_and(|d| !d.text.is_empty()) && self.close_thread()
     }
 
     /// The open thread's read in flight is given up, so one held behind it is cancelled and its reply, if it comes, is dropped.

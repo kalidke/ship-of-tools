@@ -95,6 +95,12 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// ArrowLeft in the Chat tenant: closes the open thread over an empty draft of the row the chat shows; whether it closed.
+    pub(in crate::ui) fn leave_chat_thread(&mut self) -> bool {
+        let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
+        self.chat.leave_thread(row.as_ref())
+    }
+
     pub(in crate::ui) fn on_chat(&mut self, host: &HostKey, evt: ChatEvt) {
         self.with_chat(|c, now| c.on_evt(host, evt, now));
     }
@@ -265,7 +271,10 @@ pub(in crate::ui) fn chat_apply(state: &mut State, mv: Option<Move>) -> bool {
             state.chat.scroll(up, step, now, length);
         }
         Some(Move::Latest) => state.chat.latest(),
-        Some(Move::Mark(older)) => state.chat.mark(older),
+        Some(Move::Mark(older)) => {
+            let (now, length) = state.scroll_ask();
+            state.chat.mark(older, now, length);
+        }
         Some(Move::Thread) => state.with_chat(|c, _| c.open_thread()),
         None => return false,
     }
