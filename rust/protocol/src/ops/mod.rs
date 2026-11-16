@@ -514,7 +514,7 @@ pub mod op {
     pub const CHAT_CHANGED: &str = "chat.changed";
     /// Server to client push: the service's phase and the watches that need a snapshot, [`crate::ops::ChatStatusEvt`].
     pub const CHAT_STATUS: &str = "chat.status";
-    /// Set the chat up from a window: [`crate::ops::ChatConnectReq`] (two tokens), reply [`crate::ops::ChatConnectRes`].
+    /// Set the chat up from a window: [`crate::ops::ChatConnectReq`] (three tokens), reply [`crate::ops::ChatConnectRes`].
     pub const CHAT_CONNECT: &str = "chat.connect";
     /// The channels the picker offers: [`crate::ops::ChatChannelsReq`], reply [`crate::ops::ChatChannelsRes`].
     pub const CHAT_CHANNELS: &str = "chat.channels";

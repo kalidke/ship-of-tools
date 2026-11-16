@@ -118,8 +118,12 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"state": "unconfigured", "reason": "tokens_refused"}),
     );
     pinned(
-        ChatConnectReq { bot_token: token("xoxb-", 2), app_token: token("xapp-", 2) },
+        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: None, app_token: token("xapp-", 2) },
         json!({"bot_token": "xoxb-a1a1", "app_token": "xapp-a1a1"}),
+    );
+    pinned(
+        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2) },
+        json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1"}),
     );
     pinned(ChatConnectRes { workspace: "T1".into() }, json!({"workspace": "T1"}));
     pinned(ChatChannelsReq {}, json!({}));
@@ -147,14 +151,15 @@ fn a_pair_with_no_channel_key_unpairs() {
 #[test]
 fn a_connect_request_formats_no_token_byte() {
     let (bot, app) = (token("xoxb-", 20), token("xapp-", 20));
-    let req = ChatConnectReq { bot_token: bot.clone(), app_token: app.clone() };
-    for shown in [format!("{req:?}"), format!("{req:#?}"), format!("{bot:?}"), format!("{:?}", Some(&app))] {
-        assert!(!shown.contains("a1a1") && !shown.contains("xoxb") && !shown.contains("xapp"), "a Debug form holds token bytes");
+    let user = token("xoxp-", 20);
+    let req = ChatConnectReq { bot_token: bot.clone(), user_token: Some(user.clone()), app_token: app.clone() };
+    for shown in [format!("{req:?}"), format!("{req:#?}"), format!("{bot:?}"), format!("{:?}", Some(&app)), format!("{user:?}")] {
+        assert!(!shown.contains("a1a1") && !shown.contains("xoxb") && !shown.contains("xoxp") && !shown.contains("xapp"), "a Debug form holds token bytes");
         assert!(shown.contains("<redacted>"), "a Debug form says the token is redacted");
     }
     // The wire still carries the bytes whole, and the accessor is how the one sender reads them.
     let wire = serde_json::to_string(&req).unwrap();
-    assert!(wire.contains(bot.expose()) && wire.contains(app.expose()));
+    assert!(wire.contains(bot.expose()) && wire.contains(app.expose()) && wire.contains(user.expose()));
     let too_long = json!({"bot_token": format!("xoxb-{}", "a1".repeat(300)), "app_token": "xapp-a"});
     let refused = serde_json::from_value::<ChatConnectReq>(too_long).unwrap_err().to_string();
     assert!(!refused.contains("a1a1"), "a decode refusal holds token bytes");
@@ -187,6 +192,18 @@ fn a_full_channel_list_fits_the_envelope() {
     let full = ChatChannelsRes { channels: vec![entry; MAX_LISTED], more: true };
     let bytes = serde_json::to_vec(&full).unwrap().len();
     assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES, "{bytes} bytes of a full list");
+}
+
+/// A connect carries a user token an older payload lacks: the old shape decodes with `None`, `None` is not written, and
+/// the user token is bounded like the others.
+#[test]
+fn a_connect_carries_a_user_token_an_older_payload_lacks() {
+    let old: ChatConnectReq = serde_json::from_value(json!({"bot_token": "b", "app_token": "a"})).unwrap();
+    assert_eq!(old.user_token, None);
+    assert!(!serde_json::to_string(&old).unwrap().contains("user_token"));
+    let user = |n: usize| json!({"bot_token": "b", "user_token": "u".repeat(n), "app_token": "a"});
+    assert!(serde_json::from_value::<ChatConnectReq>(user(MAX_TOKEN)).is_ok());
+    assert!(serde_json::from_value::<ChatConnectReq>(user(MAX_TOKEN + 1)).is_err());
 }
 
 #[test]
@@ -406,6 +423,9 @@ fn every_code_has_its_one_text() {
         (ChatCode::Busy, "the chat service is busy"),
         (ChatCode::BotTokenRefused, "Slack refused the bot token"),
         (ChatCode::AppTokenRefused, "Slack refused the app-level token"),
+        (ChatCode::UserTokenRefused, "Slack refused the user token"),
+        (ChatCode::NoUserToken, "the hub holds no Slack token that posts as you; connect Slack again"),
+        (ChatCode::NotAMember, "you are not in that channel in Slack; join it there first"),
         (ChatCode::OtherWorkspace, "the chat is set up for another Slack workspace"),
         (ChatCode::NotInChannel, "the app is not in that channel"),
         (ChatCode::ChannelTaken, "another project already uses that channel"),
@@ -419,7 +439,7 @@ fn every_code_has_its_one_text() {
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }

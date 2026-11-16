@@ -350,10 +350,10 @@ pub enum OutgoingReq {
     /// One picture of a channel's (`chat.file`); its reply carries the bytes. Not replayable: a read whose connection ends
     /// gets no event, and the owner asks again at `Connected`.
     ChatFile { req: sot_protocol::ops::ChatFileReq },
-    /// The chat's setup, a window's alone. `ChatConnect` carries the two tokens and is written on one connection at
+    /// The chat's setup, a window's alone. `ChatConnect` carries the three tokens and is written on one connection at
     /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`).
     /// `ChatChannels` is a read. `ChatPair` is written on one connection at most; no channel unpairs the row.
-    ChatConnect { bot_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken },
+    ChatConnect { bot_token: sot_protocol::ops::ChatToken, user_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken },
     ChatChannels,
     ChatPair { row: String, channel: Option<sot_protocol::ops::ChatChannel> },
     /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Not replayable: a request waiting
@@ -561,8 +561,8 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
             let kind = PendingKind::ChatFile { req: req.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_FILE, req, Some(kind)).await?
         }
-        OutgoingReq::ChatConnect { bot_token, app_token } => {
-            let req = sot_protocol::ops::ChatConnectReq { bot_token, app_token };
+        OutgoingReq::ChatConnect { bot_token, user_token, app_token } => {
+            let req = sot_protocol::ops::ChatConnectReq { bot_token, user_token: Some(user_token), app_token };
             send_chat(&mut tx, pending, id, op::CHAT_CONNECT, req, Some(PendingKind::ChatConnect)).await?
         }
         OutgoingReq::ChatChannels => {

@@ -69,6 +69,9 @@ pub enum IncomingEvt {
         /// the drawer reopens each entry the link's end closed (`State::on_repl_running`). Empty from a daemon that
         /// predates the field.
         repl_running: Vec<u64>,
+        /// The daemon posts a person's chat post under their own Slack user token (`HelloRes::posts_as_person`); false from a
+        /// daemon that predates it, which posts it as the app. The Chat drawer's hint says which.
+        posts_as_person: bool,
     },
     Disconnected {
         reason: String,

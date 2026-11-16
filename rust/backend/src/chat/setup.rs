@@ -1,4 +1,4 @@
-//! The window's setup ops: `chat.connect`, which checks two tokens with Slack, saves them and reloads the chat from its
+//! The window's setup ops: `chat.connect`, which checks three tokens with Slack, saves them and reloads the chat from its
 //! files with no daemon restart; `chat.channels`, the picker's list; and `chat.pair`, which maps a row's folder to a
 //! channel or unmaps it, rewrites `chat.toml` and reloads. All three are jobs, taken from a window's connection only (a
 //! row's agent has no use for them, and no token goes on a command line). The edit of a file and the reload that follows
@@ -30,8 +30,8 @@ use crate::rows::Workspaces;
 
 type Checked<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
-/// The connect's two Slack checks: the bot token's identity with no workspace expected, then the app token's one
-/// `apps.connections.open`. The product's reach Slack ([`Verifier::product`]); a test's reach the fake.
+/// The connect's Slack checks: the bot token's identity with no workspace expected (and the user token's, by the same
+/// `identify`), then the app token's one `apps.connections.open`. The product's reach Slack ([`Verifier::product`]); a test's reach the fake.
 pub(crate) struct Verifier {
     pub(crate) identify: Box<dyn Fn(Secret) -> Checked<Identified, ApiError> + Send + Sync>,
     pub(crate) app: Box<dyn Fn(Secret) -> Checked<(), SocketError> + Send + Sync>,
@@ -81,7 +81,8 @@ impl Verifier {
 }
 
 /// Why the hub's chat is off when a connect fixes it: no `chat.toml` or no secrets, secrets the load refused, a start
-/// that failed. A refused `chat.toml` is not one (a connect never rewrites it), nor is any other status.
+/// that failed. A refused `chat.toml` is not one (a connect never rewrites it), nor is any other status; nor is a running
+/// chat that holds no user token, which only a person's post cares about (its refusal says so).
 pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     match status {
         Status::Refused(ConfigError::Missing) | Status::Secrets(ConfigError::Missing) => Some(ChatUnconfigured::NotConnected),
@@ -91,7 +92,7 @@ pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     }
 }
 
-/// `chat.connect`: two tokens checked with Slack, saved, and the chat reloaded from its files. The order and its codes
+/// `chat.connect`: three tokens checked with Slack, saved, and the chat reloaded from its files. The order and its codes
 /// are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking pool: the writes answer their reason as a
 /// value, and this task logs it.
 pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
@@ -107,7 +108,10 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     if !tokio::task::spawn_blocking(move || is_hub(&env)).await.unwrap_or(false) {
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
+    // A connect with no user token (an older window's) is refused before any check: nothing is saved for it.
+    let Some(user_token) = req.user_token.as_ref() else { return Ok(refuse(req_id, NAME, ChatCode::BadRequest)) };
     let Ok(bot) = config::bot_token(req.bot_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)) };
+    let Ok(user) = config::user_token(user_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::UserTokenRefused)) };
     let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)) };
     drop(req);
     // Only Slack's answers that name the token refuse it; a rate limit, an outage or a transport failure is `failed`.
@@ -119,6 +123,16 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
             return Ok(refuse(req_id, NAME, ChatCode::Failed));
         }
     };
+    // The same check of the user token, which must name the bot's workspace: a person's post goes there.
+    match (chat.verify.identify)(user.clone()).await {
+        Ok(id) if id.workspace == workspace => {}
+        Ok(_) => return Ok(refuse(req_id, NAME, ChatCode::UserTokenRefused)),
+        Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => return Ok(refuse(req_id, NAME, ChatCode::UserTokenRefused)),
+        Err(e) => {
+            tracing::warn!(code = e.code(), "project chat: a connect could not check the user token");
+            return Ok(refuse(req_id, NAME, ChatCode::Failed));
+        }
+    }
     match (chat.verify.app)(app.clone()).await {
         Ok(()) => {}
         Err(SocketError::Rejected) => return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)),
@@ -133,7 +147,7 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
     let (env, named) = (chat.env.clone(), workspace.clone());
-    let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &app)).await;
+    let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &user, &app)).await;
     if let Err((code, why)) = saved.unwrap_or(Err((ChatCode::NotSaved, Some("the write's task ended".into())))) {
         if let Some(why) = why {
             tracing::warn!(%why, "project chat: a connect saved nothing");
@@ -151,8 +165,9 @@ type Unsaved = (ChatCode, Option<String>);
 
 /// The connect's writes, the caller holding the setup lock: `chat.toml` as the one load reads it now decides (a
 /// topology that no longer names this computer is `unavailable`), then the secrets, then a fresh `chat.toml` if there
-/// was none. It logs nothing: it runs on the blocking pool, and its reason goes back to the caller.
-fn save_tokens(env: &Env, workspace: &str, bot: &Secret, app: &Secret) -> Result<(), Unsaved> {
+/// was none. It logs nothing of its own: it runs on the blocking pool, and its reason goes back to the caller (the one load it makes
+/// can log its fixed warnings: an ignored mapping, secrets with no user token).
+fn save_tokens(env: &Env, workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Result<(), Unsaved> {
     let not_saved = |why: String| (ChatCode::NotSaved, Some(why));
     let dir = config::config_dir(env).ok_or_else(|| not_saved("no config folder".into()))?;
     let fresh = match <Chat>::load(env, &config::read_file).config {
@@ -162,7 +177,7 @@ fn save_tokens(env: &Env, workspace: &str, bot: &Secret, app: &Secret) -> Result
         Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?),
         Some(Err(e)) => return Err(not_saved(format!("a refused chat.toml is left as it is: {e}"))),
     };
-    let text = config::secrets(workspace, bot, app).map_err(|e| not_saved(format!("the secrets' text: {e}")))?;
+    let text = config::secrets(workspace, bot, user, app).map_err(|e| not_saved(format!("the secrets' text: {e}")))?;
     let written = |e: std::io::Error| not_saved(format!("a write failed: {:?}", e.kind()));
     config::write_secrets(&dir, &text, Writers::platform()).map_err(written)?;
     if let Some(text) = fresh {

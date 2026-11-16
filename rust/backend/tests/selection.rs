@@ -33,6 +33,7 @@ async fn connect_as_window(env: &Env) -> (Conn, u64) {
     assert_eq!(reply.payload["takes_drawing"], serde_json::json!(true), "{:?}", reply.payload);
     // And the other hello flag: chat's door escapes a post's text, so a window may post to this daemon.
     assert_eq!(reply.payload["posts_plain_text"], serde_json::json!(true), "{:?}", reply.payload);
+    assert_eq!(reply.payload["posts_as_person"], serde_json::json!(true), "{:?}", reply.payload);
     (conn, 2)
 }
 

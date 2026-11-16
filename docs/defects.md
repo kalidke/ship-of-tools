@@ -748,6 +748,7 @@ owned by `docs/CLAUDE.md`.
   a shown picture; a narrower route of about 10 lines exists (a `Context` flag and a scope for `PreviewDraw` alone),
   left because the state is transient or the refusal's own status line already says why. Drawing on a PDF page is
   `DRAW-ON-PDF-PAGES`.
+- **CHAT-NAME-UNSHOWN-FOR-PERSON** [note] The drawer asks once for `[chat] name` and sends it with every person's post, but a hub that posts with the person's own token shows the person's Slack name and sends the name nowhere. The prompt serves only an older hub. Fix when no hub is older: drop the prompt and send an empty name (the daemon checks a name only for a row's post). From reading code.
 
 ## distribution
 
@@ -1031,6 +1032,22 @@ owned by `docs/CLAUDE.md`.
   (`Chat::launch`, `rust/backend/src/chat.rs`). `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
   window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
   reading code; never seen.
+- **CHAT-PERSON-POST-NOT-ANSWERED** [person] A post from the Chat drawer reached Slack as the app's own message: a
+  `chat.postMessage` made with the bot token under the custom author `<name> (person via Ship of Tools)` (`Api::post`,
+  `rust/chat/src/api.rs`). Another responder in the channel, which skips every message with a `bot_id`, never answered it
+  (seen by the maintainer, 2026-11-16: "the point was that if post from here as me, the bot should answer"). Fixed in the
+  tree, not yet checked in use: a person's post now goes out with the person's own Slack user token, carrying only the
+  channel, the text and the thread; a hub with no such token, or whose token Slack refused, posts nothing for the person and
+  the window's Connect step asks for a connect; a row's post stays the app's. What remains unmeasured is the premise the goal
+  rests on: that Slack's message for a post made with a user token has no `bot_id` and no `subtype` (`rust/chat/CLAUDE.md`
+  guarantee 2; every test reads the post back in the shape that premise assumes). Check at a person's first post on a release
+  candidate, with a control (a message typed in Slack's own app is answered); close this item then, and if the responder
+  still does not answer, keep it open with that evidence.
+- **CHAT-DRAWER-ORIGIN-LEGACY** [note] Nothing makes a `Drawer` post since a person's post went out with their own
+  token. `normalize`'s reading of an own post's `person` metadata, username suffix and file-share label, `mail`'s `the
+  chat drawer` role and the window's `DRAWER` badge serve only posts made before. Deleting them changes the wire
+  (`Origin::Drawer`, which an older reader takes as `other`), and older drawer posts would then read as the app's `Bot`
+  and not as mail. From reading code.
 
 ## records
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Deserialize;
-use sot_chat::api::{ApiError, Bounds, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome};
+use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome};
 use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
 use sot_protocol::ops::{
@@ -41,6 +41,7 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
         ApiError::Http(HttpError::Busy) => ChatCode::Busy,
         ApiError::Limited { .. } => ChatCode::Limited,
         ApiError::Closed => ChatCode::Unavailable,
+        ApiError::NoPersonToken => ChatCode::NoUserToken,
         ApiError::BadRequest | ApiError::BadBound | ApiError::Altered => ChatCode::BadRequest,
         ApiError::Http(
             HttpError::Timeout
@@ -63,11 +64,15 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
     }
 }
 
-/// The code of a post Slack or the client refused before it was sent or definitely not posted.
-pub(crate) fn post_refusal_code(why: &str) -> ChatCode {
-    match why {
-        why if why == HttpError::Busy.code() => ChatCode::Busy,
-        why if why == HttpError::Invalid.code() => ChatCode::BadRequest,
+/// The code of a post Slack or the client refused before it was sent or definitely not posted. By the post's kind,
+/// because Slack's words mean two things: `not_in_channel` is the app's on a row's post and the person's on theirs, and
+/// a code that names the token on a person's post is their user token (the API has already forgotten it).
+pub(crate) fn post_refusal_code(kind: PostKind, why: &str) -> ChatCode {
+    match (kind, why) {
+        (_, why) if why == HttpError::Busy.code() => ChatCode::Busy,
+        (_, why) if why == HttpError::Invalid.code() => ChatCode::BadRequest,
+        (PostKind::Person, "not_in_channel") => ChatCode::NotAMember,
+        (PostKind::Person, why) if refuses_the_token(why) => ChatCode::NoUserToken,
         _ => ChatCode::Failed,
     }
 }
@@ -192,7 +197,7 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     match outcome {
         Err(e) => refused_post(code_of(&e)),
         Ok(PostOutcome::Posted(ts)) => reply(req_id, NAME, &ChatPostRes::Posted { ts }),
-        Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
+        Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
         Ok(PostOutcome::Limited { retry_after, assumed }) => {
             reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
@@ -213,7 +218,8 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
         Ok(s) => s,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    if !may_post(req.kind, &req.name, &req.target.row, rows, window) {
+    // A person's file is not shared yet (it would go out under the app's token): refused before anything is read.
+    if req.kind == ChatPostKind::Person || !may_post(req.kind, &req.name, &req.target.row, rows, window) {
         return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
     }
     let api = match service.api() {
@@ -241,7 +247,7 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     match outcome {
         Err(e) => refused_post(code_of(&e)),
         Ok(FileOutcome::Posted { file, ts }) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts }),
-        Ok(FileOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
+        Ok(FileOutcome::Refused(why)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
         Ok(FileOutcome::Limited { retry_after, assumed }) => {
             reply(req_id, NAME, &ChatPostFileRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }

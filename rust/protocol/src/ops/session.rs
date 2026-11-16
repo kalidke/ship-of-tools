@@ -169,6 +169,10 @@ pub struct HelloRes {
     /// the field sends the text as given, so a window posts to it only when this is true. Left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub posts_plain_text: bool,
+    /// True when this daemon posts a person's `chat.post` under the person's own Slack user token (chat guarantee 12). A
+    /// daemon built before the field posts it as the app, so a window tells the person which it is. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub posts_as_person: bool,
 }
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the

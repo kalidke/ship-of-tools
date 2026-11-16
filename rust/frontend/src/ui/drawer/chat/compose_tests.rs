@@ -442,22 +442,45 @@ fn a_pasted_control_character_or_a_name_past_the_bound_is_refused_whole() {
     assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
 }
 
+/// The hint says what a post will be by the connection's hello: the person's own message on a daemon that posts as them, the
+/// app's on one that does not (or has not said), and the daemon's end of the link forgets the word.
+#[test]
+fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello() {
+    let (mut d, at) = watching();
+    let host = "a".to_string();
+    let said = |d: &ChatDrawer| compose_rows(&d.compose_text(false).expect("the foot's text"), 120, 10).join(" ");
+    assert!(said(&d).contains("as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you)"), "{}", said(&d));
+    d.set_posts_as_person(&host, true);
+    assert!(said(&d).contains("as your own message, from your Slack account"), "{}", said(&d));
+    assert!(!said(&d).contains("the app's message"));
+    d.set_posts_as_person(&host, false);
+    assert!(said(&d).contains("the app's message"));
+    // The link's end forgets the word: the next hello says it again.
+    d.set_posts_as_person(&host, true);
+    d.on_connection(&host, false, at);
+    d.on_connection(&host, true, at);
+    d.tick(Some(row("R")), at);
+    d.tick(Some(row("R")), at + Duration::from_millis(200));
+    d.on_evt(&host, mapped("R"), at + Duration::from_millis(210));
+    assert!(said(&d).contains("the app's message"), "{}", said(&d));
+}
+
 #[test]
 fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
     use super::compose::ComposeText;
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused), 80, 10);
+    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, true), 80, 10);
     assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
     assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
     let said = hint(false)[1..].join(" ");
-    assert_eq!(said, format!("What you post appears in the channel with your name, marked as sent through your app. {chord} changes this project's channel."));
+    assert_eq!(said, format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel."));
     // The prompt row comes first at any height, and a narrow drawer wraps it.
-    assert_eq!(compose_rows(&ComposeText::of(None, None, false), 80, 1), ["> type a message and press Enter to post it"]);
-    assert!(compose_rows(&ComposeText::of(None, None, false), 80, 0).is_empty());
-    assert!(compose_rows(&ComposeText::of(None, None, false), 20, 10).iter().all(|r| r.chars().count() <= 20));
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, true), 80, 1), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false, true), 80, 0).is_empty());
+    assert!(compose_rows(&ComposeText::of(None, None, false, true), 20, 10).iter().all(|r| r.chars().count() <= 20));
     // Anything typed, or a destination to name, is the draft's own foot.
-    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false), 80, 10), ["> hi"]);
-    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false), 80, 10), ["> ", "to C1"]);
+    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, true), 80, 10), ["> hi"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, true), 80, 10), ["> ", "to C1"]);
 }
 
 #[test]

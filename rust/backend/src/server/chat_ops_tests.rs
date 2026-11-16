@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::chat::ops::{code_of, post_refusal_code};
-use sot_chat::api::ApiError;
+use sot_chat::api::{ApiError, PostKind};
 use sot_chat::http::HttpError;
 use sot_protocol::ops::{ChatCode, MAX_CHAT_FILE};
 use crate::chat::tests::{row, Home, SELF};
@@ -49,6 +49,9 @@ pub(super) const DROP: u8 = 2;
 const ASK_REFUSED: u8 = 3;
 /// A file's share answered 429.
 const SHARE_LIMITED: u8 = 4;
+/// A post Slack refuses `not_in_channel`, and one it refuses `invalid_auth` (the token it was made with is dead).
+const NOT_IN_CHANNEL: u8 = 5;
+const TOKEN_GONE: u8 = 6;
 
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
@@ -89,7 +92,12 @@ pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
         } else if path.ends_with("/conversations.history") {
             if now == HOLD { Reply::Hang } else { Reply::json(&json!({"ok": true, "messages": [], "has_more": false})) }
         } else if path.ends_with("/chat.postMessage") {
-            if now == DROP { Reply::Drop } else { Reply::json(&json!({"ok": true, "ts": "1700000000.000100"})) }
+            match now {
+                DROP => Reply::Drop,
+                NOT_IN_CHANNEL => Reply::json(&json!({"ok": false, "error": "not_in_channel"})),
+                TOKEN_GONE => Reply::json(&json!({"ok": false, "error": "invalid_auth"})),
+                _ => Reply::json(&json!({"ok": true, "ts": "1700000000.000100"})),
+            }
         } else {
             Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
         }
@@ -799,10 +807,67 @@ fn each_api_error_has_its_stated_code() {
         (ApiError::Repeated, ChatCode::Failed),
         (ApiError::Missing, ChatCode::Failed),
         (ApiError::TooLarge, ChatCode::Failed),
+        (ApiError::NoPersonToken, ChatCode::NoUserToken),
     ] {
         assert_eq!(code_of(&e), want, "{e:?}");
     }
-    for (why, want) in [(HttpError::Busy.code(), ChatCode::Busy), (HttpError::Invalid.code(), ChatCode::BadRequest), ("destination", ChatCode::Failed), ("http_403", ChatCode::Failed), ("channel_not_found", ChatCode::Failed)] {
-        assert_eq!(post_refusal_code(why), want, "{why}");
+    // By the post's kind: `not_in_channel` is the app's on a row's post and the person's on theirs, and a code that names the
+    // token is the person's user token only on a person's post.
+    for (kind, why, want) in [
+        (PostKind::Person, HttpError::Busy.code(), ChatCode::Busy),
+        (PostKind::Row, HttpError::Busy.code(), ChatCode::Busy),
+        (PostKind::Person, HttpError::Invalid.code(), ChatCode::BadRequest),
+        (PostKind::Person, "destination", ChatCode::Failed),
+        (PostKind::Person, "http_403", ChatCode::Failed),
+        (PostKind::Person, "channel_not_found", ChatCode::Failed),
+        (PostKind::Person, "not_in_channel", ChatCode::NotAMember),
+        (PostKind::Row, "not_in_channel", ChatCode::Failed),
+        (PostKind::Person, "invalid_auth", ChatCode::NoUserToken),
+        (PostKind::Person, "token_revoked", ChatCode::NoUserToken),
+        (PostKind::Person, "missing_scope", ChatCode::NoUserToken),
+        (PostKind::Row, "invalid_auth", ChatCode::Failed),
+        (PostKind::Row, "missing_scope", ChatCode::Failed),
+    ] {
+        assert_eq!(post_refusal_code(kind, why), want, "{kind:?} {why}");
     }
+}
+
+/// Slack's refusal of a person's post by what it means: `not_in_channel` is theirs to fix (`not_a_member`) and the token
+/// stays, so the row still resolves mapped; a code naming the token forgets it, the post answers `no_user_token` (which
+/// brings the window's Connect step), the resolve still says mapped and the next post is refused with no `chat.postMessage` sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_persons_post_slack_refuses_is_not_a_member_or_forgets_the_token() {
+    let mode = Arc::new(AtomicU8::new(NOT_IN_CHANNEL));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    let mut conn = connect_window(rig.services.clone()).await;
+    let posts = |fake: &FakeSlack| fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).count();
+    let refused = conn.ask(2, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await;
+    assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("refused"), Some("not_a_member")), "{refused}");
+    let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    assert_eq!(resolved["state"], "mapped", "the token is kept: {resolved}");
+
+    mode.store(TOKEN_GONE, Ordering::SeqCst);
+    let gone = conn.ask(4, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await;
+    assert_eq!((gone["outcome"].as_str(), gone["code"].as_str()), (Some("refused"), Some("no_user_token")), "{gone}");
+    let resolved = conn.ask(5, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
+    assert_eq!(resolved["state"], "mapped", "a resolve says nothing of the token: {resolved}");
+    let before = posts(&fake);
+    let again = conn.ask(6, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await;
+    assert_eq!(again["code"], "no_user_token", "{again}");
+    assert_eq!(posts(&fake), before, "a forgotten token's next post was sent");
+}
+
+/// A person's file is refused for what it is, even from a window and even for a file that does not exist: `bad_request`
+/// before anything is read, never `not_a_file`, and nothing reaches Slack (a person's share is built with its caller).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_persons_file_post_from_a_window_is_refused_before_any_read() {
+    let mode = Arc::new(AtomicU8::new(OK));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    let mut window = connect_window(rig.services.clone()).await;
+    let reply = window.ask(2, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "tester", "files:no-such.png")).await;
+    assert_eq!((code(&reply), reply.get("outcome")), ("bad_request", None), "{reply}");
+    assert_eq!(calls(&fake), 0, "a person's file reached Slack");
+    assert!(uploads(&fake).is_empty());
 }

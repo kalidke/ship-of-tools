@@ -106,6 +106,8 @@ pub(in crate::ui) struct ChatDrawer {
     pair_sent: Option<ResultRowIdentity>,
     /// The drawer has the keys (State sets it each frame): only then does an unmapped row open the picker by itself.
     focused: bool,
+    /// The hosts whose hello said the daemon posts a person's chat post under their own token; the hint says so only for these.
+    posts_as_person: std::collections::HashSet<HostKey>,
 }
 
 /// What holds the drawer's body in place of the records, one at a time. Whatever it is, the drawer parks the channel's view
@@ -259,8 +261,21 @@ impl ChatDrawer {
 
     /// The tokens the Connect step holds, for a test that a step kept or dropped them.
     #[cfg(test)]
-    pub(super) fn setup_held(&self) -> Option<(Option<String>, Option<String>)> {
-        self.connect().map(|c| (c.held().0.map(str::to_string), c.held().1.map(str::to_string)))
+    pub(super) fn setup_held(&self) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        self.connect().map(|c| {
+            let (bot, user, app) = c.held();
+            (bot.map(str::to_string), user.map(str::to_string), app.map(str::to_string))
+        })
+    }
+
+    /// The connection's hello said whether the daemon posts a person's chat post under their own Slack token (State, at
+    /// each `Connected`); gone when the link is. The compose hint says what a post will be by it.
+    pub(in crate::ui) fn set_posts_as_person(&mut self, host: &HostKey, yes: bool) {
+        if yes {
+            self.posts_as_person.insert(host.clone());
+        } else {
+            self.posts_as_person.remove(host);
+        }
     }
 
     /// The login the person's app is named for (State sets `connect::login()`; a test its own).
@@ -323,6 +338,9 @@ impl ChatDrawer {
 
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
+        if !up {
+            self.posts_as_person.remove(host);
+        }
         self.cancel_name();
         // A link change of a modal screen's host ends it, and any token it holds.
         if self.modal.as_ref().is_some_and(|m| m.host() == host) {
@@ -406,6 +424,12 @@ impl ChatDrawer {
                 outs
             }
             ChatEvt::Posted { req, reply } => {
+                // A hub that holds no token that posts as the person (never held, or Slack stopped accepting it): the Connect step
+                // takes the channel's place for the row shown, its post-as-you screen first. The draft stays the row's.
+                let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == req.target.row);
+                if shown && matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken })) {
+                    self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
+                }
                 let mut made = None;
                 let mut outs = self.owner_outs(|o| {
                     made = o.on_posted(host, &req, reply, now);
@@ -848,7 +872,8 @@ impl ChatDrawer {
             None if self.thread.is_none() && !elsewhere => None,
             None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
-        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused))
+        let as_person = self.rows.row().is_some_and(|r| self.posts_as_person.contains(&r.host));
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person))
     }
 
     pub(in crate::ui) fn set_foot(&mut self, rows: u16) {

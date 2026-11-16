@@ -70,7 +70,8 @@ pub fn slack_app_name(login: &str) -> String {
 
 /// The Slack app's manifest, JSON as Slack's manifest page reads it: the app and its bot named `name`
 /// ([`slack_app_name`]), the bot scopes the chat reads and posts with (`channels:join` so the app joins a public channel
-/// itself; `files:read` and `files:write` for the figures to come, so one install serves the app's life), the two message
+/// itself; `files:read` and `files:write` for the figures to come, so one install serves the app's life), the user
+/// scopes the installer's own token posts with (`chat:write`, and `files:write` for a person's file), the two message
 /// events, Socket Mode on, and token rotation off (a rotating bot token expires).
 pub fn slack_app_manifest(name: &str) -> String {
     serde_json::json!({
@@ -79,7 +80,7 @@ pub fn slack_app_manifest(name: &str) -> String {
         "oauth_config": {"scopes": {"bot": [
             "channels:history", "channels:read", "channels:join", "groups:history", "groups:read", "users:read",
             "chat:write", "chat:write.customize", "files:read", "files:write",
-        ]}},
+        ], "user": ["chat:write", "files:write"]}},
         "settings": {
             "event_subscriptions": {"bot_events": ["message.channels", "message.groups"]},
             "org_deploy_enabled": false,

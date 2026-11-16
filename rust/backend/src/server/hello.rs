@@ -200,6 +200,8 @@ pub async fn handle_hello(
         takes_drawing: true,
         // Chat's door escapes a post's text (chat guarantee 12).
         posts_plain_text: true,
+        // A person's chat post goes out under their own user token (chat guarantee 12).
+        posts_as_person: true,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

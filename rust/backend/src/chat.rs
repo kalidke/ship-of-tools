@@ -249,7 +249,7 @@ pub(crate) struct Chat<L: Listener = Service> {
     env: Env,
     /// How a start is made, the boot's and each reload's.
     start: Arc<Starter<L>>,
-    /// How a connect checks two tokens with Slack before anything is saved.
+    /// How a connect checks its tokens with Slack before anything is saved.
     verify: setup::Verifier,
     /// `begin`'s pace of the retry of a held start and of the hub fact's asks.
     check: Duration,
@@ -287,6 +287,9 @@ impl<L: Listener> Chat<L> {
                 Err(e) => return off(Some(config), Status::Secrets(e)),
             },
         };
+        if credentials.user.is_none() {
+            tracing::warn!("chat-secrets.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer");
+        }
         // The comm folder's, not this daemon's: every daemon that files into these inboxes takes the same lock.
         let Some(locks) = crate::comm::home::chat_dir(env) else { return off(Some(config), Status::Failed("lock")) };
         Load { config: Some(config), off: Status::Stopped, start: Some((credentials, locks)) }
@@ -337,8 +340,7 @@ impl<L: Listener> Chat<L> {
             // hub (a missing or unparsable one, as an edit in progress leaves, ends nothing), the phase staying
             // `Starting` so `running` keeps waiting. The credentials are cloned per try and never formatted.
             let made = loop {
-                let tokens = Credentials { bot: credentials.bot.clone(), app: credentials.app.clone() };
-                match start(config, tokens, &locks).await {
+                match start(config, credentials.clone(), &locks).await {
                     Err("held") => {
                         if !std::mem::replace(&mut held, true) {
                             tracing::warn!("project chat is held by another daemon on this comm folder; trying again");

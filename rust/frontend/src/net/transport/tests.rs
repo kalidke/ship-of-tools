@@ -311,6 +311,22 @@ async fn a_hello_naming_runs_still_running_reopens_them_and_an_old_daemon_names_
     assert_eq!(seen, [("named-runs", true, vec![true]), ("old-daemon", false, vec![])]);
 }
 
+/// The hello's word on whether the daemon posts a person's chat post under their own token reaches the window in the
+/// `Connected` event, and a daemon that predates it reads as posting as the app.
+#[tokio::test]
+async fn a_hello_says_whether_the_daemon_posts_as_the_person_and_an_old_daemon_does_not() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut says = hello_ok();
+    says["posts_as_person"] = serde_json::json!(true);
+    let mut seen = Vec::new();
+    for (host, reply) in [("posts-as-person", says), ("old-daemon-chat", hello_ok())] {
+        let events = events_until_the_daemon_closes(host, reply, Vec::new()).await;
+        let flagged = events.iter().any(|e| e.starts_with("Connected") && e.contains("posts_as_person: true"));
+        seen.push((host, flagged));
+    }
+    assert_eq!(seen, [("posts-as-person", true), ("old-daemon-chat", false)]);
+}
+
 /// The accepted hello sets the connection's `takes_drawing` and `posts_plain_text` each from what the daemon said; a hello
 /// without a field leaves it false. An earlier release's hello (a drawing taken, no word on plain text) tells the two
 /// apart: the window may send it a drawing and must not post to it.

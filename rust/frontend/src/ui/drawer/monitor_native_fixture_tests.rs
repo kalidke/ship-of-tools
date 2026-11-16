@@ -62,6 +62,7 @@ impl State {
                 resolved: ResolvedDial::Local,
                 backend_version: "test".into(),
                 repl_running: Vec::new(),
+                posts_as_person: false,
             };
             events
                 .send((host.clone(), connected))

@@ -1310,21 +1310,25 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
 - The Connect step (`drawer/chat/connect.rs`): a shown row whose hub answers `unconfigured` gets the step in the modal slot
   (in place of a picker), and so does `Connect Slack again`, last in the picker over an empty filter (alone under a list
   that failed); one screen at a time, as the setup guide shows them: the start (`not_connected`, `start_failed`, a later
-  reason) or the refused tokens' screen (`tokens_refused`), steps 1 to 3 with Left and Right between them, connecting,
-  connected. The app is named `slack_app_name(login)`, the login read once per process by exact name (`USER`, or
+  reason), the refused tokens' screen (`tokens_refused`) or the post-as-you screen (brought by a person's post the hub refused `no_user_token`, never by `chat.resolve`: the hub
+  holds no token that posts as the person, or Slack stopped accepting it; titled `post as you`, a step a person leaves, never
+  one another answer ends), steps 1 to 3 with Left and Right between them (step 2
+  takes the user token and the bot token from one page, step 3 the app-level token), connecting, connected. The labels of
+  Slack's OAuth page that step 2 and its hint name (a User OAuth Token beside the Bot User OAuth Token, User Token Scopes,
+  Add an OAuth Scope, Reinstall to Workspace) are from Slack's documentation and unseen: check them at the first real connect. The app is named `slack_app_name(login)`, the login read once per process by exact name (`USER`, or
   `USERNAME` on Windows; `connect::login`, which `tick_chat` hands the drawer), and the picker's invite line names the same
   app. Enter on the start opens `slack_app_url` of that name through `browser_open::open_page`, and Primary+C on step 1
-  copies its manifest; on the refused tokens' screen Enter opens Slack's list of apps and Left the manifest page. While
+  copies its manifest; on the refused tokens' screen and the post-as-you screen Enter opens Slack's list of apps (and goes to step 2) and Left the manifest page (step 1). While
   the step shows, `connect_key` (through `connect_action`, which the native witness runs) takes every key in the drawer
   before the picker and the name prompt: PageUp and PageDown scroll, Left, Right and the copy chord are the step's, and
   Enter, Escape and paste are read by the prompts' one machine (`prompt_step`), so a paste is a token and nothing else:
-  trimmed, `xoxb-` is the bot token and `xapp-` the app-level token (in either order, at any screen before connecting),
+  trimmed, `xoxb-` is the bot token, `xoxp-` the user token and `xapp-` the app-level token (in any order, at any screen before connecting; step 2 moves to step 3 once its two are held),
   anything else is dropped unshown with the status line's words; `ChatDrawer::edit` refuses a draft while the step shows.
-  A token is held as a `ChatToken` and drawn as its prefix and its length alone. With both held, one `chat.connect` goes to
+  A token is held as a `ChatToken` and drawn as its prefix and its length alone. With all three held, one `chat.connect` goes to
   the row's host. One connect is in flight at a time, held by the drawer (`connect_sent`), so Escape while connecting
   (whose keys line says the check goes on) and a step begun since never send a second until its reply, and a reply only
-  ever acts on the step that is connecting. A refused token (`bot_token_refused`, `app_token_refused`) returns to its step
-  with Slack's words and keeps the other; any other reply drops both (a refusal shows its words on the first screen);
+  ever acts on the step that is connecting. A refused token (`bot_token_refused`, `user_token_refused`, `app_token_refused`) returns to its step
+  with Slack's words and keeps the others; any other reply drops all three (a refusal shows its words on the first screen);
   `ConnectUnknown` ends a connecting step with a status line; a connect fe-net could not queue reads as `unavailable`
   (`never_written`). Any reply resolves the row again at once. Another answer for the row ends a step begun from
   `unconfigured` while the person is still pasting, never one connecting or connected, nor one a person asked for. Enter on
@@ -1333,7 +1337,13 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   the app with the login), `left_and_right_move_between_steps_and_the_refused_screen_opens_its_pages`,
   `a_pasted_token_is_never_drawn` (the title, body and compose rows after each paste),
   `a_paste_in_the_connect_step_never_reaches_the_draft` (with a draft begun while the row was mapped),
-  `both_tokens_go_in_one_request_and_none_is_kept_once_connected`,
+  `all_three_tokens_go_in_one_request_and_none_is_kept_once_connected`,
+  `step_two_takes_the_user_and_bot_tokens_in_either_order_and_one_connect_carries_all_three`,
+  `a_refused_user_token_returns_to_step_two_and_keeps_the_others`,
+  `a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps`,
+  `a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft` (a post the hub refuses `no_user_token` opens the step for the row shown, and resolves nothing again;
+  the draft is kept), `the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello` (`compose_tests.rs`: a post goes out as
+  the person's on a hub whose hello says `posts_as_person`, and the hint says so only then; otherwise it says the app's),
   `every_end_of_a_connect_frees_the_slot_and_a_refusal_keeps_the_other_token_through_the_next_frames` (a reply of each
   kind, `ConnectUnknown`, `never_written` and a link drop, each then ticked, and a fresh step's two pastes sent),
   `a_clipped_screen_says_there_is_more_and_every_scroll_moves_it`, `a_paste_that_is_no_slack_token_is_dropped_unshown`,

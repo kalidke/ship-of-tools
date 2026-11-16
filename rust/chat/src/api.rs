@@ -89,6 +89,8 @@ pub enum ApiError {
     TooLarge,
     /// The owner closed this client (its service stopped): nothing is sent.
     Closed,
+    /// A person's post, and no user token is held: nothing is sent, and the bot's token is never used in its place.
+    NoPersonToken,
 }
 
 impl ApiError {
@@ -108,6 +110,7 @@ impl ApiError {
             ApiError::Missing => "missing_continuation",
             ApiError::TooLarge => "continuation_too_large",
             ApiError::Closed => "closed",
+            ApiError::NoPersonToken => "no_person_token",
         }
     }
 }
@@ -393,7 +396,7 @@ pub struct ScanPage {
     pub limited: bool,
 }
 
-/// Whose post this is. The kind is carried in the metadata and the username suffix, as `normalize` reads them.
+/// Whose post this is. The kind is carried in a row's metadata and username suffix, as `normalize` reads them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PostKind {
     /// A person at the window.
@@ -504,6 +507,8 @@ struct Names {
 pub struct Api {
     http: Http,
     token: Secret,
+    /// The user token a person's post goes out under. Forgotten when Slack refuses it; never replaced by `token`.
+    person: Mutex<Option<Secret>>,
     workspace: String,
     base: String,
     deadlines: Deadlines,
@@ -523,7 +528,7 @@ pub struct Identified {
     pub own: Identity,
 }
 
-/// Who a bot token is, with no workspace expected: one `auth.test` under the read rules (guarantee 28). The setup asks
+/// Who a token (the bot's, or the user token's) is, with no workspace expected: one `auth.test` under the read rules (guarantee 28). The setup asks
 /// it before anything is saved; the service's `Api::auth_test` keeps its workspace check.
 pub async fn identify(http: &Http, bot: Secret) -> Result<Identified, ApiError> {
     identify_at(http, bot, BASE.into()).await
@@ -533,6 +538,12 @@ pub async fn identify(http: &Http, bot: Secret) -> Result<Identified, ApiError> 
 /// internal error, an outage): only these make a setup check a refusal of the token.
 pub const TOKEN_REFUSALS: [&str; 6] =
     ["not_authed", "invalid_auth", "token_revoked", "token_expired", "account_inactive", "not_allowed_token_type"];
+
+/// Whether a Slack code names the token or its scope as bad (`TOKEN_REFUSALS` or `missing_scope`): the codes a person's
+/// token is forgotten for, and the daemon's reply `no_user_token` is made of.
+pub fn refuses_the_token(code: &str) -> bool {
+    TOKEN_REFUSALS.contains(&code) || code == "missing_scope"
+}
 
 /// `identify` against the fixture's base (`FakeSlack::url("slack.com", "/api/")`), for another crate's tests. Exists
 /// under `cfg(test)` or the `test-support` feature alone, like `Service::start_at`.
@@ -564,6 +575,7 @@ impl Api {
         Api {
             http,
             token,
+            person: Mutex::new(None),
             workspace,
             base,
             deadlines: Deadlines {
@@ -577,6 +589,34 @@ impl Api {
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
             transfers: Arc::new(Semaphore::new(MAX_TRANSFERS)),
+        }
+    }
+
+    /// This client with the person's user token (`None`: a person's post is refused unsent).
+    pub fn with_person(mut self, token: Option<Secret>) -> Api {
+        self.person = Mutex::new(token);
+        self
+    }
+
+    /// Whether a user token is held for a person's post: false from the start with none, and after Slack refused it.
+    pub fn posts_as_person(&self) -> bool {
+        self.person.lock().unwrap().is_some()
+    }
+
+    /// The token a post of `kind` goes out under: the bot's for a row, the person's for a person, and never the bot's in
+    /// its place.
+    fn poster(&self, kind: PostKind) -> Result<Secret, ApiError> {
+        match kind {
+            PostKind::Row => Ok(self.token.clone()),
+            PostKind::Person => self.person.lock().unwrap().clone().ok_or(ApiError::NoPersonToken),
+        }
+    }
+
+    /// Forget the person's token when Slack's refusal `code` names the token or its scope as bad. The refusal itself
+    /// is still the caller's answer; a restart reads the file again.
+    fn forget_if_refused(&self, kind: PostKind, code: &str) {
+        if kind == PostKind::Person && refuses_the_token(code) {
+            *self.person.lock().unwrap() = None;
         }
     }
 
@@ -745,8 +785,9 @@ impl Api {
         self.own.lock().unwrap().clone().ok_or(ApiError::NoIdentity)
     }
 
-    /// Post once under a custom author. `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused
-    /// before anything is sent (`Err`); from there the result is a `PostOutcome`, and no path resends.
+    /// Post once: a row's under a custom author, a person's under their own user token and with nothing of the app
+    /// (`Err(NoPersonToken)` unsent when none is held; never the bot's token instead). `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused before anything is sent (`Err`); from
+    /// there the result is a `PostOutcome`, and no path resends.
     pub async fn post(
         &self,
         channel: &str,
@@ -761,19 +802,19 @@ impl Api {
         let thread = thread
             .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
             .transpose()?;
-        if !valid_id(channel) || !author_ok(name) {
+        if !valid_id(channel) || (kind == PostKind::Row && !author_ok(name)) {
             return Err(ApiError::BadRequest);
         }
         let text = slack_text(text)?;
-        let mut body = json!({
-            "channel": channel,
-            "text": text,
-            "username": format!("{name} ({} via Ship of Tools)", kind.word()),
-            "metadata": {
+        let token = self.poster(kind)?;
+        let mut body = json!({"channel": channel, "text": text});
+        if kind == PostKind::Row {
+            body["username"] = format!("{name} ({} via Ship of Tools)", kind.word()).into();
+            body["metadata"] = json!({
                 "event_type": "sot_chat_post",
                 "event_payload": {"kind": kind.word(), "name": name},
-            },
-        });
+            });
+        }
         if let Some(parent) = thread {
             body["thread_ts"] = parent.as_str().into();
         }
@@ -783,8 +824,12 @@ impl Api {
             JSON,
             body.to_string().into_bytes(),
         )
-        .bearer(self.token.clone());
-        Ok(post_outcome(self.http.send(request).await))
+        .bearer(token);
+        let outcome = post_outcome(self.http.send(request).await);
+        if let PostOutcome::Refused(code) = &outcome {
+            self.forget_if_refused(kind, code);
+        }
+        Ok(outcome)
     }
 
     /// One transfer permit, taken at once: `Err(Http(Busy))` while `MAX_TRANSFERS` are held, `Err(Closed)` for a closed
@@ -801,7 +846,8 @@ impl Api {
     /// authorization; step 3 (`files.completeUploadExternal`) is the share, the only mutation, read as a post's answer
     /// is. Its `initial_comment` is the label `<name> (<kind> via Ship of Tools)`, then `: ` and the comment when there
     /// is one, made Slack's by `slack_text`. Input the post cannot carry is `Err` unsent; from there the result is a
-    /// `FileOutcome`, a failure before the share is never `Unknown`, and no path resends.
+    /// `FileOutcome`, a failure before the share is never `Unknown`, and no path resends. A person's share is `Err`
+    /// unsent: it would go out under the app's token.
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file(
         &self,
@@ -824,7 +870,7 @@ impl Api {
             && file_name.len() <= MAX_FILENAME
             && !file_name.contains(|c: char| c.is_control() || c == '/' || c == '\\');
         let bytes_ok = !bytes.is_empty() && bytes.len() <= MAX_CHAT_FILE;
-        if !valid_id(channel) || !author_ok(name) || !file_name_ok || !bytes_ok || comment == Some("") {
+        if kind != PostKind::Row || !valid_id(channel) || !author_ok(name) || !file_name_ok || !bytes_ok || comment == Some("") {
             return Err(ApiError::BadRequest);
         }
         let label = format!("{name} ({} via Ship of Tools)", kind.word());

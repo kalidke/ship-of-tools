@@ -280,13 +280,13 @@ The project chat's configuration, two TOML files in the config folder (`~/.confi
 `%LOCALAPPDATA%\sot\config` on Windows). How to make the Slack app, its tokens and the IDs these files hold is in
 [Setting up Slack](../guide/chat-setup.md).
 
-*Status: the daemon reads both files and connects to Slack with the two tokens. The Chat drawer shows the channel's held messages (see
-[The project chat](../guide/chat.md)), and a person's post goes out under `[chat] name` of `settings.toml`; mail is not built.*
+*Status: the daemon reads both files and connects to Slack with the tokens. The Chat drawer shows the channel's held messages (see
+[The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token; mail is not built.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
 computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
-from a window checks both tokens with Slack first and writes nothing if either is refused; then the daemon writes
+from a window checks all three tokens with Slack first and writes nothing if any is refused; then the daemon writes
 `chat-secrets.toml` whole, private to your account from the moment it is made, writes a `chat.toml` of the workspace and
 no channel when there is none, and restarts the chat from the files, with no daemon restart. The Chat drawer's Connect
 step sends this request ([Setting up Slack](../guide/chat-setup.md)). A connect leaves an
@@ -323,12 +323,15 @@ Each file is a regular file of at most 64 KiB, and only the keys below are accep
 | `[[mapping]]` | table | one per project | `folder`, an absolute path of a project's folder (a folder with no row maps nothing until a row is made in it, and the window's default row, which runs no agent, never takes a channel), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may also repeat `workspace`, which must match, and may carry its own `mail_after` (below), for example `mail_after = "1731283200.000000"`. Two entries for one folder, or one channel for two folders, are refused. |
 | `mail_after` | Slack timestamp (`<seconds>.<six digits>`), a quoted string | no | Setting it makes the file delivering: at most 32 mappings are allowed (an ignored one counts), and each mapping needs its own `mail_after`, set to the time you add the mapping, so a channel added later never has its backlog turned into mail. A channel's floor is the later of its mapping's value and this one. Write the current Unix time (`date +%s`, then `.000000`) and never copy another mapping's value. A value that is not a timestamp is refused even when the hub's `mail_after` is unset. A delivering file files a member's new post in a mapped channel as one line of mail to the row, once, also after a restart of the daemon (every start reads the inboxes). A post made while the daemon was down or the connection was lost, and a post whose filing was refused (the row had no live session, say), are found by a recovery pass, which reads the channel back to its floor; a post another connection on the chat app's token took waits for the next hello or the 6-hour sweep. A pass reads in proportion to the channel's posts since the floor (about 52 reads, 80 seconds, for 50,000 posts), so a floor moved forward by hand shortens it. |
 
-`chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`) and `app_token` (it starts `xapp-`), each token
-letters, digits and hyphens up to 512 bytes. Keep the file private to your account; the
+`chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`), `app_token` (it starts `xapp-`) and `user_token`
+(it starts `xoxp-`), each token letters, digits and hyphens up to 512 bytes. The user token is the one a person's post goes
+out under, so Slack shows the post as yours; it is optional in the file, and a file without it still runs the chat (rows
+post and mail is filed) while a person's post waits until Slack is connected again from the Chat drawer. A daemon from before
+the user token refuses a file that holds the key, and leaves the chat off, until the line is removed or the daemon is updated. Keep the file private to your account; the
 daemon never prints a token and masks one in its log, but it does not check the permissions of a file written by hand
 (the one a window's connect writes is owner-only).
 
-`chat-secrets.toml` has one form: those three top-level keys, never a `[[workspace]]` table, and one workspace. A tool
+`chat-secrets.toml` has one form: those four top-level keys, never a `[[workspace]]` table, and one workspace. A tool
 that needs several workspaces keeps its own file at its own path.
 
 A `chat.toml` of one mapping:
@@ -347,6 +350,7 @@ A `chat-secrets.toml`, with placeholder tokens:
 ```toml
 workspace = "T0EXAMPLE"
 bot_token = "xoxb-replace-with-the-bot-token"
+user_token = "xoxp-replace-with-the-user-token"
 app_token = "xapp-replace-with-the-app-token"
 ```
 

@@ -53,6 +53,17 @@ fn credentials(config: &Config) -> Credentials {
     Credentials::parse(&text, config).unwrap()
 }
 
+/// `credentials` with a user token, built at run time like the others.
+fn credentials_with_user(config: &Config) -> Credentials {
+    let text = format!(
+        "workspace = \"{WS}\"\nbot_token = \"{}\"\napp_token = \"{}\"\nuser_token = \"{}\"\n",
+        ["xoxb", "-sentinel-bot-aaaa"].concat(),
+        ["xapp", "-sentinel-app-bbbb"].concat(),
+        ["xoxp", "-sentinel-user-cccc"].concat()
+    );
+    Credentials::parse(&text, config).unwrap()
+}
+
 fn timing() -> Timing {
     Timing {
         open: Duration::from_secs(5),
@@ -608,6 +619,30 @@ async fn a_dropped_service_ends_its_watch() {
         assert_eq!(watches.loaded("C0AAAA", t, Vec::new(), &service), Loaded::Complete);
         drop(service);
         assert_eq!(watches.state("C0AAAA"), Some(State::Needed), "a watch of a dropped service served as complete");
+    })
+    .await;
+}
+
+/// The one function that makes the service's `Api` from its credentials hands it the user token, so a person's post
+/// has a token to go out under (the product's start and the test's are the same call).
+#[tokio::test]
+async fn the_service_api_holds_the_credentials_user_token() {
+    bounded(async {
+        let dir = Scratch::new("person");
+        let fake = holding_fake(WS).await;
+        let config = config();
+        let url = fake.url("slack.com", "/api/");
+        let with = Service::start_for_test(&config, credentials_with_user(&config), fake.http(), &dir.0, url.clone(), timing())
+            .await
+            .expect("service with a user token");
+        assert!(with.api().unwrap().posts_as_person());
+        with.stop(Duration::from_secs(3)).await;
+        let without = Service::start_for_test(&config, credentials(&config), fake.http(), &dir.0, url, timing())
+            .await
+            .expect("service without one");
+        assert!(!without.api().unwrap().posts_as_person());
+        without.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
     })
     .await;
 }

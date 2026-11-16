@@ -80,6 +80,13 @@ pub enum ChatCode {
     BotTokenRefused,
     /// Slack refused the app-level token a `chat.connect` named.
     AppTokenRefused,
+    /// Slack refused the user token a `chat.connect` named.
+    UserTokenRefused,
+    /// The hub holds no Slack token that posts as the person (never held, or Slack refused it and the chat forgot it): a
+    /// post's refusal, which brings the window's Connect step. `chat.resolve` says nothing of it.
+    NoUserToken,
+    /// The person is not in the channel they posted to.
+    NotAMember,
     /// The token belongs to another Slack workspace than the one the chat is set up for.
     OtherWorkspace,
     /// The app is not in the channel a `chat.pair` named, and could not join it.
@@ -113,6 +120,9 @@ impl ChatCode {
             ChatCode::Busy => "the chat service is busy",
             ChatCode::BotTokenRefused => "Slack refused the bot token",
             ChatCode::AppTokenRefused => "Slack refused the app-level token",
+            ChatCode::UserTokenRefused => "Slack refused the user token",
+            ChatCode::NoUserToken => "the hub holds no Slack token that posts as you; connect Slack again",
+            ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
             ChatCode::OtherWorkspace => "the chat is set up for another Slack workspace",
             ChatCode::NotInChannel => "the app is not in that channel",
             ChatCode::ChannelTaken => "another project already uses that channel",
@@ -210,10 +220,13 @@ impl ChatToken {
     }
 }
 
-/// `chat.connect`: the two tokens of a Slack app (`xoxb-` and `xapp-`); the daemon checks both before it saves either.
+/// `chat.connect`: the three tokens of a Slack app (`xoxb-`, `xoxp-` and `xapp-`); the daemon checks them all before it
+/// saves any. A request with no `user_token` (an older window's) decodes with `None` and is refused `bad_request`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatConnectReq {
     pub bot_token: ChatToken,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_token: Option<ChatToken>,
     pub app_token: ChatToken,
 }
 

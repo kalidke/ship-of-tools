@@ -145,17 +145,19 @@ fn marker_in(text: &str) -> bool {
 #[tokio::test]
 async fn a_connect_formats_and_logs_no_token_byte() {
     let log = sot_platform::test_log::capture();
-    let req = OutgoingReq::ChatConnect { bot_token: token("xoxb"), app_token: token("xapp") };
+    let req = OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp") };
     assert!(!marker_in(&format!("{req:?}")), "the request's Debug holds a token");
     let mut wire = Vec::new();
     let mut pending = HashMap::new();
     send_request(&mut wire, &mut pending, 7, req).await.unwrap();
     let line = String::from_utf8(wire).unwrap();
-    assert!(line.contains("\"op\":\"chat.connect\"") && marker_in(&line), "the daemon is sent both tokens");
+    assert!(line.contains("\"op\":\"chat.connect\"") && marker_in(&line), "the daemon is sent the tokens");
+    assert_eq!(line.matches(&"7".repeat(24)).count(), 3, "all three tokens, whole, in the one request");
     assert!(!marker_in(&format!("{pending:?}")), "the pending entry holds a token");
     let replies = [
         serde_json::json!({ "workspace": "T1" }),
         serde_json::json!({ "error": "x", "code": "bot_token_refused" }),
+        serde_json::json!({ "error": "x", "code": "user_token_refused" }),
         serde_json::json!({ "error": "handler failed", "code": "handler_error" }),
         serde_json::json!({ "error": "unknown op: chat.connect" }),
     ];
@@ -182,7 +184,7 @@ async fn a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_a
     }
     let (out_tx, out_rx) = outgoing_channel();
     let mut outbox = Outbox::new(out_rx);
-    out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), app_token: token("xapp") }).unwrap();
+    out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp") }).unwrap();
     out_tx.send(OutgoingReq::ChatPair { row: "r2".into(), channel: None }).unwrap();
     out_tx.send(OutgoingReq::ChatChannels).unwrap();
     outbox.retire(&evt_tx, &"h".to_string()).await;

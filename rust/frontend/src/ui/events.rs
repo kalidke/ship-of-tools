@@ -50,6 +50,8 @@ impl State {
                     resolved,
                     backend_version,
                     repl_running,
+                    // Read into the Chat drawer by `note_host_connection`, before this match.
+                    posts_as_person: _,
                 } => {
                     self.on_repl_running(&event_host, repl_running);
                     self.on_connected(event_host, session_id, revision, project_root, proxy, resolved, backend_version)
@@ -319,6 +321,9 @@ impl State {
     }
 
     fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::net::transport::IncomingEvt) {
+        if let crate::net::transport::IncomingEvt::Connected { posts_as_person, .. } = &evt {
+            self.chat.set_posts_as_person(event_host, *posts_as_person);
+        }
         if let crate::net::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
             self.record_declared_host(&event_host, declared.clone());
             // Session-listing brief decision 2: a reconnecting hub's

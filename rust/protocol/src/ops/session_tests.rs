@@ -76,6 +76,19 @@ mod hello_version_tests {
         assert_eq!(serde_json::to_value(&res).unwrap()["posts_plain_text"], serde_json::json!(true));
     }
 
+    /// A hello reply says whether the daemon posts a person's chat post under the person's own token (`posts_as_person`),
+    /// additive both ways, so a window can say which a post will be.
+    #[test]
+    fn a_hello_reply_says_whether_the_daemon_posts_as_the_person_and_stays_additive() {
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"posts_plain_text":true}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert!(!res.posts_as_person, "an older daemon reads as posting as the app");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("posts_as_person"), None, "false is not written");
+        let says = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"posts_as_person":true}"#;
+        let res: HelloRes = serde_json::from_str(says).expect("a reply with the field");
+        assert_eq!(serde_json::to_value(&res).unwrap()["posts_as_person"], serde_json::json!(true));
+    }
+
     #[test]
     fn proxy_connect_req_round_trips_and_token_is_optional() {
         // ADR 0035 handshake shapes. `token` absent on the wire must parse

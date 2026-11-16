@@ -189,6 +189,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         resolved,
         backend_version: hello_res.app_version.clone(),
         repl_running: hello_res.repl_running.clone(),
+        posts_as_person: hello_res.posts_as_person,
     });
     window.request_redraw();
     // (round 2, finding 14): the declaration, not only the
