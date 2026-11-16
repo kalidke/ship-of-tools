@@ -676,3 +676,165 @@ fn the_real_read_refuses_by_kind_and_the_loader_by_code() {
         E::Unreadable
     );
 }
+
+// The setup's writes (the daemon's chat setup is their one caller).
+
+fn secret(s: &str) -> crate::http::Secret {
+    crate::http::Secret::new(s)
+}
+
+/// A text holds no byte of the fixtures' tokens past their prefix; the assertion names the place, never the text.
+fn no_token(shown: &str, place: &str) {
+    assert!(!shown.contains("sentinel"), "a token byte in {place}");
+}
+
+#[test]
+fn a_fresh_file_and_a_secrets_text_parse_back_and_format_no_token() {
+    let text = fresh("T0AAAA").unwrap();
+    let c = Config::parse(&text, &rows).unwrap();
+    assert_eq!(c.workspace(), "T0AAAA");
+    assert_eq!(c.mappings().count(), 0);
+    assert_eq!(c.mail_after(), None);
+    assert_eq!(fresh("t0aaaa"), Err(E::BadId));
+    assert_eq!(fresh("T0AAAA\"\nmail_after = \"1.000000"), Err(E::BadId));
+    let s = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&app())).unwrap();
+    no_token(&format!("{s} {s:?} {s:#?}"), "the secrets text's formats");
+    let back = Credentials::parse(s.expose(), &c).unwrap();
+    assert_eq!((back.bot.expose(), back.app.expose()), (bot().as_str(), app().as_str()));
+    // Each token passes the load's grammar first: a swap, a twin, a quote, a space or a bare prefix is `BadToken`.
+    let quoted = format!("{}\"x", bot());
+    let spaced = format!("{} x", app());
+    for (b, a) in [(app(), bot()), (bot(), bot()), (quoted, app()), (bot(), spaced), ("xoxb-".to_string(), app())] {
+        let e = crate::config::secrets("T0AAAA", &secret(&b), &secret(&a)).map(drop).unwrap_err();
+        assert_eq!(e, E::BadToken);
+        no_token(&format!("{e} {e:?}"), "a refusal");
+    }
+    assert_eq!(crate::config::secrets("nope", &secret(&bot()), &secret(&app())).map(drop).unwrap_err(), E::BadId);
+}
+
+#[test]
+fn pairing_edits_one_mapping_keeps_what_it_ignores_and_returns_only_what_loads() {
+    let pair = |text: &str, folder: &str, channel: Option<&str>| pair(text, folder, channel, None, &rows);
+    // A hand-written file: a comment, a listed channel no mapping holds, a mapping whose folder is gone, and a mapping.
+    let hand = format!(
+        "# the lab's chat\nworkspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\", \"C0EEEE\"]\n{}{}",
+        mapping("/work/gone", "C0CCCC"),
+        mapping("/work/a", "C0AAAA"),
+    );
+    let mapped = |text: &str| Config::parse(text, &rows).unwrap().mappings().map(|(f, c)| (f.to_string(), c.to_string())).collect::<Vec<_>>();
+    let listed = |text: &str| text.parse::<toml::Table>().unwrap()["channels"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let pairs = |v: &[(&str, &str)]| v.iter().map(|(f, c)| (f.to_string(), c.to_string())).collect::<Vec<_>>();
+    // A new pairing: appended and listed; the ignored mapping and the unmapped listed channel stay; the comment goes.
+    let one = pair(&hand, "/work/b", Some("C0DDDD")).unwrap().unwrap();
+    assert_eq!(mapped(&one), pairs(&[("/work/a", "C0AAAA"), ("/work/b", "C0DDDD")]));
+    assert_eq!(Config::parse(&one, &rows).unwrap().ignored(), [1]);
+    assert_eq!(listed(&one), ["C0AAAA", "C0CCCC", "C0EEEE", "C0DDDD"]);
+    assert!(!one.contains("the lab's chat"));
+    // The same pairing again, or an alias of its folder, changes nothing.
+    assert_eq!(pair(&one, "/work/b", Some("C0DDDD")), Ok(None));
+    assert_eq!(pair(&hand, "/link/a", Some("C0AAAA")), Ok(None));
+    // A folder's own mapping is replaced, matched through its alias, and its old channel leaves `channels`.
+    let moved = pair(&one, "/link/a", Some("C0BBBB")).unwrap().unwrap();
+    assert_eq!(mapped(&moved), pairs(&[("/work/b", "C0DDDD"), ("/work/a", "C0BBBB")]));
+    assert_eq!(listed(&moved), ["C0CCCC", "C0EEEE", "C0DDDD", "C0BBBB"]);
+    // Unpairing removes the mapping and its channel; unpairing a folder with none changes nothing.
+    let off = pair(&one, "/work/b", None).unwrap().unwrap();
+    assert_eq!(mapped(&off), pairs(&[("/work/a", "C0AAAA")]));
+    assert_eq!(listed(&off), ["C0AAAA", "C0CCCC", "C0EEEE"]);
+    assert_eq!(pair(&off, "/work/b", None), Ok(None));
+    let none = pair(&off, "/work/a", None).unwrap().unwrap();
+    assert_eq!(mapped(&none), []);
+    assert!(Config::parse(&none, &rows).is_ok());
+    // A channel of another folder that exists is taken; one of a folder that is gone is taken over.
+    assert_eq!(pair(&hand, "/work/b", Some("C0AAAA")), Err(PairError::ChannelTaken));
+    let over = pair(&hand, "/work/b", Some("C0CCCC")).unwrap().unwrap();
+    assert_eq!(mapped(&over), pairs(&[("/work/a", "C0AAAA"), ("/work/b", "C0CCCC")]));
+    assert_eq!(Config::parse(&over, &rows).unwrap().ignored(), [] as [usize; 0]);
+    assert_eq!(listed(&over), ["C0AAAA", "C0CCCC", "C0EEEE"]);
+    // A channel that is not a Slack id never reaches the file.
+    assert_eq!(pair(&hand, "/work/b", Some("C0\"]")), Err(PairError::Config(E::BadId)));
+    // A result the load would refuse is refused with its code: a file pushed past the read's cap.
+    let mut n = 0;
+    let full = loop {
+        let ids: Vec<String> = (0..n).map(|i| format!("\"C{i:07}\"")).collect();
+        let text = format!("workspace = \"T0AAAA\"\nchannels = [{}]\n", ids.join(", "));
+        let shown = text.parse::<toml::Table>().unwrap().to_string();
+        if shown.len() as u64 > MAX_FILE - 40 {
+            break shown;
+        }
+        n += 200.min(((MAX_FILE - 40) as usize - shown.len()) / 12 + 1);
+    };
+    assert!(full.len() as u64 <= MAX_FILE);
+    assert_eq!(pair(&full, "/work/a", Some("C0AAAA")), Err(PairError::Config(E::Malformed(None))));
+}
+
+#[test]
+fn a_refused_file_is_never_rewritten() {
+    for text in [
+        "workspace = \"T0AAAA\"\nchannels = [\n".to_string(),
+        chat("extra = 1\n"),
+        chat(&mapping("/work/a", "C0ZZZZ")),
+        chat(&(mapping("/work/a", "C0AAAA") + &mapping("/link/a", "C0BBBB"))),
+        chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"T0ZZZZ\"\n")),
+        chat(&("mail_after = \"5.000000\"\n".to_string() + &mapping("/work/a", "C0AAAA"))),
+    ] {
+        let code = Config::parse(&text, &rows).unwrap_err();
+        for channel in [Some("C0BBBB"), None] {
+            assert_eq!(pair(&text, "/work/a", channel, None, &rows), Err(PairError::Config(code)));
+        }
+    }
+}
+
+#[test]
+fn a_delivering_files_new_mapping_carries_the_floor_it_is_given() {
+    let ts = |s: &str| sot_protocol::chat::Ts::parse(s).unwrap();
+    let text = chat(&(String::from("mail_after = \"5.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "6.000000")));
+    let new = pair(&text, "/work/b", Some("C0BBBB"), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    let c = Config::parse(&new, &rows).unwrap();
+    assert_eq!(c.floor("C0BBBB"), Some(ts("9.000000")));
+    // The other mapping keeps its own floor, never the new one's, and the hub's stays.
+    assert_eq!(c.floor("C0AAAA"), Some(ts("6.000000")));
+    assert_eq!(c.mail_after(), Some(&ts("5.000000")));
+    // With no floor the edit is refused by the load's own rule.
+    assert_eq!(pair(&text, "/work/b", Some("C0BBBB"), None, &rows), Err(PairError::Config(E::MappingWithoutFloor(2))));
+    // A file that is not delivering takes no floor on the new mapping.
+    let plain = pair(&chat(""), "/work/b", Some("C0BBBB"), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    assert!(!plain.contains("mail_after"));
+}
+
+#[test]
+fn the_secrets_go_through_the_private_writer_alone() {
+    let wrote = RefCell::new(Vec::new());
+    let config = |p: &Path, b: &[u8]| -> io::Result<()> {
+        wrote.borrow_mut().push(("config", p.to_path_buf(), b.to_vec()));
+        Ok(())
+    };
+    let private = |p: &Path, b: &[u8]| -> io::Result<()> {
+        wrote.borrow_mut().push(("private", p.to_path_buf(), b.to_vec()));
+        Ok(())
+    };
+    let observed = Writers { config: &config, secrets: &private };
+    let s = Scratch::new("writers");
+    let dir = s.0.join("made").join("sot");
+    let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&app())).unwrap();
+    write_secrets(&dir, &text, observed).unwrap();
+    write_config(&dir, &fresh("T0AAAA").unwrap(), observed).unwrap();
+    let seen = wrote.borrow();
+    assert_eq!(seen.len(), 2);
+    assert_eq!((seen[0].0, &seen[0].1), ("private", &dir.join(SECRETS_FILE)));
+    assert!(seen[0].2 == text.expose().as_bytes(), "the secrets writer was not given the secrets text");
+    assert_eq!((seen[1].0, &seen[1].1), ("config", &dir.join(CONFIG_FILE)));
+    // The missing folder was made, and nothing was written into it but through the writers.
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    // Platform's pair: both files load back, and the secrets file is owner-only.
+    write_secrets(&dir, &text, Writers::platform()).unwrap();
+    write_config(&dir, &fresh("T0AAAA").unwrap(), Writers::platform()).unwrap();
+    let c = Config::load(&dir, &read_file, &rows).unwrap();
+    assert!(Credentials::read(&dir, &read_file, &c).is_ok());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |name: &str| std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(SECRETS_FILE), 0o600);
+    }
+}

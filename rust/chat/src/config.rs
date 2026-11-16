@@ -3,7 +3,8 @@
 //! refusal is a fixed code with a fixed explanation: a value from either file is never quoted, a key is quoted only
 //! when a table of these files accepts it (the caller says which file refused), and the library's own parse errors
 //! (which quote the source) are never formatted. Reading the secrets is its own call, so a caller that is
-//! not the hub never opens that file.
+//! not the hub never opens that file. The daemon's setup writes both files whole, each text one the load admits, through
+//! an injected writer pair: `chat.toml` durably, the secrets durably and owner-only.
 
 use crate::http::Secret;
 use crate::normalize::ts_key;
@@ -380,10 +381,16 @@ pub struct Credentials {
 
 /// A token of the form `prefix` (the forms platform's log masker knows) then letters, digits and hyphens (the characters platform's masker reads as one token), at most 512 bytes.
 fn token(t: &toml::Table, key: &str, prefix: &str) -> Result<Secret, ConfigError> {
-    let s = t
-        .get(key)
-        .and_then(toml::Value::as_str)
-        .ok_or(ConfigError::Malformed(None))?;
+    token_form(
+        t.get(key)
+            .and_then(toml::Value::as_str)
+            .ok_or(ConfigError::Malformed(None))?,
+        prefix,
+    )
+}
+
+/// The token grammar alone, for the load and for the secrets text the daemon writes.
+fn token_form(s: &str, prefix: &str) -> Result<Secret, ConfigError> {
     if s.len() > prefix.len()
         && s.len() <= 512
         && s.starts_with(prefix)
@@ -412,4 +419,164 @@ impl Credentials {
             app: token(&t, "app_token", "xapp-")?,
         })
     }
+}
+
+/// A text the load admits whole: within `MAX_FILE` (else `Malformed`, as the read refuses it) and through `Config::parse`.
+fn admitted(text: String, canon: Canon) -> Result<String, ConfigError> {
+    if text.len() as u64 > MAX_FILE {
+        return Err(ConfigError::Malformed(None));
+    }
+    Config::parse(&text, canon)?;
+    Ok(text)
+}
+
+/// A `chat.toml` of `workspace` and no channel, which the load admits; a workspace that is not a Slack id is `BadId`.
+pub fn fresh(workspace: &str) -> Result<String, ConfigError> {
+    if !is_slack_id(workspace) {
+        return Err(ConfigError::BadId);
+    }
+    let mut t = toml::Table::new();
+    t.insert("workspace".into(), workspace.into());
+    t.insert("channels".into(), toml::Value::Array(Vec::new()));
+    admitted(t.to_string(), &|_| None)
+}
+
+/// The text of `chat-secrets.toml` for `workspace` and its two tokens, as a `Secret` (so it formats as a mask). Each
+/// token passes the load's own grammar before any text is made (`BadToken`), and the text is parsed back by
+/// `Credentials::parse` before it is returned.
+pub fn secrets(workspace: &str, bot: &Secret, app: &Secret) -> Result<Secret, ConfigError> {
+    let config = Config::parse(&fresh(workspace)?, &|_| None)?;
+    token_form(bot.expose(), "xoxb-")?;
+    token_form(app.expose(), "xapp-")?;
+    let mut t = toml::Table::new();
+    t.insert("workspace".into(), workspace.into());
+    t.insert("bot_token".into(), bot.expose().into());
+    t.insert("app_token".into(), app.expose().into());
+    let text = t.to_string();
+    Credentials::parse(&text, &config)?;
+    Ok(Secret::new(text))
+}
+
+/// Why a pairing was not made: the current file refused as it stands, or the edit's result refused by the load (each
+/// its `ConfigError`); or the channel is mapped to another folder that exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairError {
+    Config(ConfigError),
+    ChannelTaken,
+}
+
+impl From<ConfigError> for PairError {
+    fn from(e: ConfigError) -> PairError {
+        PairError::Config(e)
+    }
+}
+
+/// `chat.toml`'s text with `folder` paired with `channel`, or unpaired for `None`; `None` when nothing changes. A text
+/// the load refuses is refused as it stands and never rewritten. The folder's own mapping (matched by its canonical
+/// spelling) is dropped; for a channel, a mapping of it whose folder does not canonicalize is dropped (taken over),
+/// one to another existing folder is `ChannelTaken`, and `{folder, channel}` is appended, with `mail_after = floor`
+/// when the file is delivering, its channel listed. A channel whose mapping the edit dropped and that no mapping holds
+/// after it leaves `channels`. Ignored mappings and every other key stay; comments and key order do not. The result is
+/// what the load admits, or the edit is refused with its code.
+pub fn pair(
+    text: &str,
+    folder: &str,
+    channel: Option<&str>,
+    floor: Option<Ts>,
+    canon: Canon,
+) -> Result<Option<String>, PairError> {
+    let config = Config::parse(text, canon)?;
+    if channel.is_some_and(|c| !is_slack_id(c)) {
+        return Err(ConfigError::BadId.into());
+    }
+    let mut t = parse_table(text)?;
+    let target = canon(folder).unwrap_or_else(|| folder.to_string());
+    let field = |m: &toml::Value, k: &str| m.get(k).and_then(toml::Value::as_str).map(str::to_string);
+    let entries = match t.remove("mapping") {
+        None => Vec::new(),
+        Some(toml::Value::Array(a)) => a,
+        Some(_) => return Err(ConfigError::Malformed(None).into()),
+    };
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for m in entries {
+        let (Some(f), Some(c)) = (field(&m, "folder"), field(&m, "channel")) else {
+            return Err(ConfigError::Malformed(None).into());
+        };
+        let own = canon(&f).unwrap_or_else(|| f.clone()) == target;
+        if own && channel == Some(c.as_str()) {
+            return Ok(None);
+        }
+        if own || channel == Some(c.as_str()) {
+            if !own && canon(&f).is_some() {
+                return Err(PairError::ChannelTaken);
+            }
+            dropped.push(c);
+        } else {
+            kept.push(m);
+        }
+    }
+    if let Some(c) = channel {
+        let mut m = toml::Table::new();
+        m.insert("folder".into(), target.into());
+        m.insert("channel".into(), c.into());
+        if let (Some(_), Some(f)) = (config.mail_after(), &floor) {
+            m.insert("mail_after".into(), f.as_str().into());
+        }
+        kept.push(toml::Value::Table(m));
+    } else if dropped.is_empty() {
+        return Ok(None);
+    }
+    let held: Vec<String> = kept.iter().filter_map(|m| field(m, "channel")).collect();
+    let Some(toml::Value::Array(listed)) = t.get_mut("channels") else {
+        return Err(ConfigError::Malformed(None).into());
+    };
+    listed.retain(|v| v.as_str().is_none_or(|s| !dropped.iter().any(|d| d == s) || held.iter().any(|h| h == s)));
+    if let Some(c) = channel {
+        if !listed.iter().any(|v| v.as_str() == Some(c)) {
+            listed.push(c.into());
+        }
+    }
+    if !kept.is_empty() {
+        t.insert("mapping".into(), toml::Value::Array(kept));
+    }
+    Ok(Some(admitted(t.to_string(), canon)?))
+}
+
+/// One whole-file write, as [`Reader`] is the one read: a test observes it, the product's are platform's.
+pub type Write<'a> = &'a dyn Fn(&Path, &[u8]) -> io::Result<()>;
+
+/// The configuration's two writes: `chat.toml` through `config`, `chat-secrets.toml` through `secrets` alone, which
+/// must leave the file owner-only.
+#[derive(Clone, Copy)]
+pub struct Writers<'a> {
+    pub config: Write<'a>,
+    pub secrets: Write<'a>,
+}
+
+impl Writers<'static> {
+    /// Platform's durable write for `chat.toml` and its private durable write (owner-only from the temporary file's
+    /// creation) for the secrets.
+    pub fn platform() -> Writers<'static> {
+        Writers {
+            config: &sot_platform::host::write_durable,
+            secrets: &sot_platform::host::write_durable_private,
+        }
+    }
+}
+
+/// Makes a missing `dir`, then writes the file whole through `write`.
+fn save(dir: &Path, name: &str, bytes: &[u8], write: Write) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    write(&dir.join(name), bytes)
+}
+
+/// Writes `chat.toml` in `dir` whole, through the config writer.
+pub fn write_config(dir: &Path, text: &str, writers: Writers) -> io::Result<()> {
+    save(dir, CONFIG_FILE, text.as_bytes(), writers.config)
+}
+
+/// Writes `chat-secrets.toml` in `dir` whole, through the private writer alone.
+pub fn write_secrets(dir: &Path, secret: &Secret, writers: Writers) -> io::Result<()> {
+    save(dir, SECRETS_FILE, secret.expose().as_bytes(), writers.secrets)
 }

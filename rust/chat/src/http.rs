@@ -42,6 +42,11 @@ impl Secret {
     pub fn new(value: impl Into<String>) -> Secret {
         Secret(value.into())
     }
+
+    /// The value itself, for the one place that must hold it whole: the secrets file's write.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Debug for Secret {
