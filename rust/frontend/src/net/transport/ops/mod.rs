@@ -37,7 +37,7 @@ fn is_unsupported(op: &str, payload: &serde_json::Value) -> bool {
 
 pub(super) use {chat::*, concept::*, files::*, kernel::*, monitor::*, pages::*, preview::*, repl::*, selection::*, tree::*, workspace::*};
 pub(crate) use {
-    chat::{ChatEvt, ChatReply},
+    chat::{ChatEvt, ChatPicture, ChatReply},
     concept::ConceptWriteResult,
     files::{DirCreateResult, FileDeleteResult, FileWriteResult},
     kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ScanModule, ScanType},

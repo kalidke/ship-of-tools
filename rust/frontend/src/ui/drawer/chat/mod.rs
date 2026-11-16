@@ -17,6 +17,7 @@ mod drawer;
 mod mrkdwn;
 mod owner;
 mod picker;
+mod pictures;
 mod project;
 mod row_channel;
 mod thread;
