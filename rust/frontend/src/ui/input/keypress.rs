@@ -77,7 +77,7 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
     // mode switch, etc.) silently clears it. Same pattern
     // as the now-retired exit-confirm.
     let was_destroy_pending = state.selected.take_destroy_arm();
-    let label = key_label(&event.logical_key);
+    let label = key_texts(&event.logical_key, state.keys_take_secrets()).0;
     let ctrl = modifiers.control_key();
     let alt = modifiers.alt_key();
     let shift = modifiers.shift_key();
@@ -87,6 +87,16 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
     let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
         Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
     (action, (label, context, was_destroy_pending))
+}
+
+/// A key as the last-key cell and the log say it: its label and its logged form. While the keys go to a screen that takes
+/// secrets (`State::keys_take_secrets`), a typed character is neither: both say `<typed>`, so a token typed by hand reaches
+/// no log line and no drawn cell; a named key (Enter, Escape, the arrows) is said as always.
+pub(in crate::ui) fn key_texts(logical: &Key, secret: bool) -> (String, String) {
+    match logical {
+        Key::Character(_) if secret => ("<typed>".into(), "<typed>".into()),
+        _ => (key_label(logical), format!("{logical:?}")),
+    }
 }
 
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
@@ -120,8 +130,9 @@ fn route_key_layers(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPre
     let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
     help_key(state, key, context.clone())?;
 
+    let logged = key_texts(&event.logical_key, state.keys_take_secrets()).1;
     tracing::info!(
-        ?event.logical_key,
+        logical_key = %logged,
         label = %label,
         repeat = event.repeat,
         ctrl,

@@ -15,7 +15,7 @@ app's connections, so two people sharing one app's tokens each miss messages.
 
 Open the Chat drawer on a project. While Slack is not connected, the drawer shows **set up Slack** and leads you
 through three steps on Slack's website, one screen each; Left and Right move between the steps, PageUp and PageDown
-scroll a screen taller than the drawer (its keys stay at the foot), and Escape closes the drawer (opening it again
+(or the mouse wheel) scroll a screen taller than the drawer, which says `PageDown for more` above its keys, and Escape closes the drawer (opening it again
 starts over at the first screen). Have Slack's website open and signed in, in your web browser (the Slack desktop app
 is not enough).
 

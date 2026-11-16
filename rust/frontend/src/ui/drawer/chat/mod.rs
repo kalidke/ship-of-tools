@@ -70,6 +70,14 @@ impl State {
         }
     }
 
+    /// Whether the keys go to a modal screen that takes secrets: the Connect step, shown in the drawer that has the keys.
+    /// Then no typed character is logged or shown (`keypress::key_texts`).
+    pub(in crate::ui) fn keys_take_secrets(&self) -> bool {
+        self.focus_prompts.focus() == PaneFocus::Repl
+            && crate::ui::input::help::DrawerInput::of(self.layout_help.drawer()) == crate::ui::input::help::DrawerInput::Chat
+            && self.chat.in_setup()
+    }
+
     /// Enter in the Chat tenant: posts the draft of the row the chat shows, under `[chat] name`; a refusal goes to the status line.
     pub(in crate::ui) fn send_chat_draft(&mut self) {
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());

@@ -5,6 +5,8 @@ use sot_protocol::chat::{slack_app_manifest, slack_app_url};
 use sot_protocol::ops::{ChatChannelsRes, ChatCode, ChatConnectRes, ChatUnconfigured};
 
 use super::compose::Edit;
+use super::drawer::never_written;
+use super::view::Step;
 use super::connect::{Asks, Connect, Screen};
 use super::drawer::ChatDrawer;
 use super::owner::Out;
@@ -210,7 +212,7 @@ fn a_paste_in_the_connect_step_never_reaches_the_draft() {
 }
 
 #[test]
-fn the_tokens_leave_with_the_request_and_nothing_keeps_them() {
+fn both_tokens_go_in_one_request_and_none_is_kept_once_connected() {
     let mut c = step(ChatUnconfigured::NotConnected);
     assert!(c.key(PASTE, Some(&bot()), false).0.is_none());
     let (out, _) = c.key(PASTE, Some(&app()), false);
@@ -450,14 +452,116 @@ fn the_keys_stay_in_view_and_the_screen_scrolls_in_a_small_drawer() {
     let first = d.body().unwrap().lines(w, h);
     assert!(!first.join(" ").contains("App-Level Token   not pasted yet"));
     for _ in 0..10 {
-        d.scroll_modal(false, Instant::now(), Duration::ZERO);
+        d.scroll(false, Step::Page, Instant::now(), Duration::ZERO);
     }
     let last = d.body().unwrap().lines(w, h);
     assert!(last.join(" ").contains("App-Level Token   not pasted yet"), "PageDown reaches the field");
     assert_eq!(last[h - 1], first[h - 1], "the keys stay");
-    d.scroll_modal(true, Instant::now(), Duration::ZERO);
+    d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
     assert_ne!(d.body().unwrap().lines(w, h), last, "PageUp moves back");
     // A new screen starts at its top.
     key(&mut d, LEFT);
     assert_eq!(d.body().unwrap().scroll, 0);
+}
+
+/// How a connect ends, each followed by what fe-net would deliver.
+#[derive(Debug, Clone, Copy)]
+enum End {
+    Done,
+    AppRefused,
+    BotRefused,
+    OtherWorkspace,
+    Unsupported,
+    Unknown,
+    NeverWritten,
+    LinkDrop,
+}
+
+/// Every way a connect ends frees the one-connect slot (a fresh step's two pastes send), and a refused token keeps the other
+/// one through the frames that follow, while the row is resolved again.
+#[test]
+fn every_end_of_a_connect_frees_the_slot_and_a_refusal_keeps_the_other_token_through_the_next_frames() {
+    use End::*;
+    for end in [Done, AppRefused, BotRefused, OtherWorkspace, Unsupported, Unknown, NeverWritten, LinkDrop] {
+        let (mut d, t) = in_step("not_connected");
+        paste(&mut d, &bot());
+        let outs = paste(&mut d, &app()).0;
+        assert_eq!(connects(&outs).len(), 1, "{end:?}: the first connect");
+        match end {
+            Done => drop(d.on_evt(&host(), connected("T1"), t)),
+            AppRefused => drop(d.on_evt(&host(), refused(ChatCode::AppTokenRefused), t)),
+            BotRefused => drop(d.on_evt(&host(), refused(ChatCode::BotTokenRefused), t)),
+            OtherWorkspace => drop(d.on_evt(&host(), refused(ChatCode::OtherWorkspace), t)),
+            Unsupported => drop(d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Unsupported }, t)),
+            Unknown => drop(d.on_evt(&host(), ChatEvt::ConnectUnknown, t)),
+            NeverWritten => {
+                let evt = never_written(&outs[0].1).expect("a connect that could not be queued is told");
+                drop(d.on_evt(&host(), evt, t));
+            }
+            LinkDrop => {
+                d.on_connection(&host(), false, t);
+                d.on_connection(&host(), true, t);
+                drop(d.on_evt(&host(), ChatEvt::ConnectUnknown, t));
+            }
+        }
+        // The frames after: the row is asked again (its stand reads `Resolving`), and a refused token's step keeps the other.
+        for ms in [10, 20] {
+            d.tick(shown("ROW1"), t + Duration::from_millis(ms));
+        }
+        match end {
+            AppRefused => assert_eq!(d.setup_held(), Some((Some(bot()), None)), "{end:?}: the bot token is kept"),
+            BotRefused => assert_eq!(d.setup_held(), Some((None, Some(app()))), "{end:?}: the app token is kept"),
+            _ => {}
+        }
+        // The hub answers `unconfigured` again; a step begun now (after the drawer was hidden) sends its two tokens.
+        d.hide();
+        d.tick(None, t + Duration::from_millis(30));
+        d.tick(shown("ROW1"), t + Duration::from_millis(40));
+        d.tick(shown("ROW1"), t + Duration::from_millis(300));
+        d.on_evt(&host(), unconfigured("not_connected"), t + Duration::from_millis(310));
+        d.tick(shown("ROW1"), t + Duration::from_millis(320));
+        assert!(d.in_setup(), "{end:?}: a new step");
+        paste(&mut d, &bot());
+        assert_eq!(connects(&paste(&mut d, &app()).0).len(), 1, "{end:?}: the slot was not freed");
+    }
+}
+
+/// A screen taller than the drawer says that more is below until its last row shows; the wheel and Alt+Up and Alt+Down
+/// (a line step) scroll it as PageUp and PageDown do.
+#[test]
+fn a_clipped_screen_says_there_is_more_and_every_scroll_moves_it() {
+    let (w, h) = (50, 11);
+    let (mut d, _) = in_step("not_connected");
+    key(&mut d, RIGHT);
+    key(&mut d, RIGHT);
+    let end = d.body().unwrap().scroll_end(w, h);
+    assert!(end > 1);
+    d.set_body_end(end, h as u16);
+    assert!(d.body().unwrap().lines(w, h).contains(&super::picker::MORE.to_string()), "the top of a clipped screen says so");
+    d.scroll(false, Step::Line, Instant::now(), Duration::ZERO);
+    assert_eq!(d.body().unwrap().scroll, 1, "a line step moves one row");
+    for _ in 0..end {
+        d.scroll(false, Step::Line, Instant::now(), Duration::ZERO);
+    }
+    let rows = d.body().unwrap().lines(w, h);
+    assert_eq!(d.body().unwrap().scroll, end);
+    assert!(!rows.contains(&super::picker::MORE.to_string()), "the end of the screen says nothing more");
+    // A screen that fits says nothing either.
+    let (d, _) = in_step("not_connected");
+    assert!(!d.body().unwrap().lines(400, 60).contains(&super::picker::MORE.to_string()));
+}
+
+/// While the Connect step has the keys a typed character is neither logged nor shown as the last key; elsewhere, and for
+/// named keys, the key is said as always.
+#[test]
+fn a_typed_character_is_neither_logged_nor_shown_while_the_keys_take_secrets() {
+    use crate::ui::input::keypress::key_texts;
+    use winit::keyboard::{Key, NamedKey};
+    let typed = Key::Character("x".into());
+    assert_eq!(key_texts(&typed, true), ("<typed>".into(), "<typed>".into()));
+    let (label, logged) = key_texts(&typed, false);
+    assert_eq!(label, "x");
+    assert!(logged.contains('x'));
+    let enter = Key::Named(NamedKey::Enter);
+    assert_eq!(key_texts(&enter, true), key_texts(&enter, false));
 }

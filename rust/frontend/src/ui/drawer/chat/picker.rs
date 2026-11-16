@@ -190,6 +190,9 @@ pub(in crate::ui) struct Body {
     pub(super) scroll: u16,
 }
 
+/// What a body says while it holds more rows below than it shows.
+pub(super) const MORE: &str = "PageDown for more";
+
 /// `text` wrapped to `width`: each of its lines alone, a blank one kept, and a numbered item's own lines indented under its
 /// words.
 fn wrapped(text: &str, width: usize) -> Vec<String> {
@@ -214,15 +217,22 @@ impl Body {
 
     /// The rows for a body `width` cells wide and `height` tall: the head, the entries (a window that keeps the choice in view,
     /// at least three rows) and the guide, wrapped, from `scroll` rows down and cut at the height; the pinned line, wrapped,
-    /// below a blank row at the foot.
+    /// below a blank row at the foot. While rows remain below, `MORE` says so: in that blank row, or with no pinned line in
+    /// the last row.
     pub(in crate::ui) fn lines(&self, width: usize, height: usize) -> Vec<String> {
         let (room, content, pin) = self.parts(width, height);
-        let start = usize::from(self.scroll).min(content.len().saturating_sub(room));
+        let end = content.len().saturating_sub(room);
+        let start = usize::from(self.scroll).min(end);
+        let more = start < end;
         let mut out: Vec<String> = content.into_iter().skip(start).take(room).collect();
         if !pin.is_empty() {
             out.resize(room, String::new());
-            out.push(String::new());
+            out.push(if more { MORE.to_string() } else { String::new() });
             out.extend(pin);
+        } else if more {
+            if let Some(last) = out.last_mut() {
+                MORE.clone_into(last);
+            }
         }
         out.into_iter().take(height).collect()
     }

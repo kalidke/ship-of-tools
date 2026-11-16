@@ -321,7 +321,7 @@ pub(in crate::ui) fn connect_action(state: &mut State, action: Option<Action>, k
     let pressed = match action {
         Some(Action::ScrollPageUp | Action::ScrollPageDown) => {
             let (now, length) = state.scroll_ask();
-            state.chat.scroll_modal(action == Some(Action::ScrollPageUp), now, length);
+            state.chat.scroll(action == Some(Action::ScrollPageUp), super::Step::Page, now, length);
             None
         }
         Some(Action::ChatThreadClose | Action::ChatThreadOpen | Action::ChatCopySelection) => (!repeat).then_some((action, None)),

@@ -280,6 +280,7 @@ impl State {
         self.witness_show(host, events)?;
         self.witness_pump(events, sent, &mut daemon)?;
         // A draft begun in the mapped channel; then the hub's chat goes unconfigured, seen at the link's return.
+        anyhow::ensure!(!self.keys_take_secrets(), "a mapped channel's keys are taken as secret");
         self.witness_key(Key::Character("a".into()), (false, false), None)?;
         anyhow::ensure!(self.chat.draft().map(|d| d.0) == Some("a"), "the draft was not begun");
         daemon.unconfigured = true;
@@ -289,6 +290,10 @@ impl State {
         self.witness_pump(events, sent, &mut daemon)?;
         self.redraw()?;
         anyhow::ensure!(self.chat.in_setup(), "unconfigured began no Connect step");
+        // While the step has the keys, a typed character is neither logged nor shown as the last key.
+        anyhow::ensure!(self.keys_take_secrets(), "the Connect step's keys are not taken as secret");
+        let typed = crate::ui::input::keypress::key_texts(&Key::Character("q".into()), self.keys_take_secrets());
+        anyhow::ensure!(typed == ("<typed>".to_string(), "<typed>".to_string()), "a typed key is said as {typed:?}");
         // Ctrl+V twice through the window's clipboard: each is a token, the draft is untouched, one connect goes.
         for token in [format!("{}{}", "xoxb-", "Q".repeat(40)), format!("{}{}", "xapp-", "Q".repeat(40))] {
             write_clipboard_text(token).map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;

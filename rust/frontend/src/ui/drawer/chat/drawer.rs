@@ -257,6 +257,12 @@ impl ChatDrawer {
         self.connect().is_some()
     }
 
+    /// The tokens the Connect step holds, for a test that a step kept or dropped them.
+    #[cfg(test)]
+    pub(super) fn setup_held(&self) -> Option<(Option<String>, Option<String>)> {
+        self.connect().map(|c| (c.held().0.map(str::to_string), c.held().1.map(str::to_string)))
+    }
+
     /// The login the person's app is named for (State sets `connect::login()`; a test its own).
     pub(in crate::ui) fn set_login(&mut self, login: &'static str) {
         self.login = login;
@@ -288,9 +294,12 @@ impl ChatDrawer {
         (outs, asks)
     }
 
-    /// PageUp and PageDown over a modal screen: its body moves a third of its rows, eased over `length`.
-    pub(in crate::ui) fn scroll_modal(&mut self, up: bool, now: Instant, length: Duration) {
-        let page = i32::from((self.body_end.1 / 3).max(1));
+    /// A scroll over a modal screen: its body moves a third of its rows for a page, one for a line, eased over `length`.
+    fn scroll_modal(&mut self, up: bool, step: Step, now: Instant, length: Duration) {
+        let page = match step {
+            Step::Page => i32::from((self.body_end.1 / 3).max(1)),
+            Step::Line => 1,
+        };
         let end = self.body_end.0;
         if let Some(m) = self.modal.as_mut() {
             let rows = m.motion.ask_rows(if up { -page } else { page }, now, length);
@@ -656,8 +665,13 @@ impl ChatDrawer {
     }
 
     /// A key or the wheel asks to move the reader through the records (`view::ChatView::scroll`).
+    /// Over a modal screen the key or the wheel scrolls its body instead (PageUp, PageDown, the wheel, Alt+Up and Alt+Down alike).
     pub(in crate::ui) fn scroll(&mut self, up: bool, step: Step, now: Instant, length: Duration) {
-        self.view.scroll(up, step, now, length);
+        if self.modal.is_some() {
+            self.scroll_modal(up, step, now, length);
+        } else {
+            self.view.scroll(up, step, now, length);
+        }
     }
 
     /// Whether the reader's scroll is still arriving, so frames must keep coming.
