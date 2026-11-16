@@ -87,6 +87,7 @@ fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], private:
         let _ = delete_on_close(&file);
         return Err(e);
     }
+    crate::hold_point!("platform.beneath.renamed", last);
     drop(file);
     at(Step::Renamed)?;
     dir.sync_all()
