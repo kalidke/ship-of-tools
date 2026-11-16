@@ -1,11 +1,13 @@
 //! The project chat in the daemon: the one place `sotd` names `sot-chat`. It decides whether this daemon is the
 //! configured hub before it reads any chat file, admits chat's mappings against the disk, starts the
-//! one service off the boot path, and retires it through lifecycle's registry. `ops` serves the request ops.
+//! one service off the boot path, reloads both files and starts again on a change, and retires it through lifecycle's
+//! registry. `ops` serves the request ops.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution};
@@ -47,10 +49,11 @@ impl Listener for Service {
 pub(crate) const HUB_CHECK: Duration = Duration::from_secs(60);
 
 /// How a start is made: from the admitted configuration and credentials and the lock folder, once per try (a start
-/// refused `held` is tried again). The product's is [`start_service`].
+/// refused `held` is tried again, and a reload starts again). The product's is [`start_service`].
 pub(crate) type Starter<L> = Box<
-    dyn for<'a> FnMut(&'a Config, Credentials, &'a Path) -> Pin<Box<dyn Future<Output = Result<Arc<L>, &'static str>> + Send + 'a>>
-        + Send,
+    dyn for<'a> Fn(&'a Config, Credentials, &'a Path) -> Pin<Box<dyn Future<Output = Result<Arc<L>, &'static str>> + Send + 'a>>
+        + Send
+        + Sync,
 >;
 
 pub(crate) fn start_service<'a>(config: &'a Config, credentials: Credentials, dir: &'a Path) -> Pin<Box<dyn Future<Output = Result<Arc<Service>, &'static str>> + Send + 'a>> {
@@ -105,13 +108,20 @@ enum Phase<L> {
 struct Shared<L> {
     phase: Mutex<Phase<L>>,
     off: Condvar,
-    /// Woken when a start ends, in `Running` or in `Off`.
+    /// Woken when a start ends, in `Running` or in `Off`, and when a stop ends.
     started: Notify,
+    /// No start may begin: the chat never registered with lifecycle (not the hub at its boot, or its registration
+    /// refused) or its retirement began. Set and read under the phase lock.
+    closed: AtomicBool,
+    /// The hub fact's watches running now.
+    #[cfg(test)]
+    steps: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<L> Shared<L> {
     fn new() -> Arc<Self> {
-        Arc::new(Shared { phase: Mutex::new(Phase::Off(Status::NotHub)), off: Condvar::new(), started: Notify::new() })
+        let phase = Mutex::new(Phase::Off(Status::NotHub));
+        Arc::new(Shared { phase, off: Condvar::new(), started: Notify::new(), closed: AtomicBool::new(false), #[cfg(test)] steps: Default::default() })
     }
 
     fn lock(&self) -> MutexGuard<'_, Phase<L>> {
@@ -125,14 +135,17 @@ impl<L> Shared<L> {
     }
 }
 
-/// A running chat's watch on the hub fact: each `check`, while the chat runs, it asks the topology and, when another
-/// computer is named the hub, stops the service (freeing the lock) and leaves the status `NotHub`. It holds the chat
-/// only between asks, so a dropped chat ends it.
-async fn step_down_when_another_hub<L: Listener>(chat: std::sync::Weak<Chat<L>>, env: Env, check: Duration) {
+/// A running service's watch on the hub fact: each `check`, while that service runs, it asks the topology and, when
+/// another computer is named the hub, stops the service (freeing the lock) and leaves the status `NotHub`. It holds the
+/// chat only between asks, so a dropped chat ends it, and it ends when its service is no longer the one running, so a
+/// reload's service has the one watch of its own.
+async fn step_down_when_another_hub<L: Listener>(chat: Weak<Chat<L>>, service: Weak<L>, env: Env, check: Duration) {
+    #[cfg(test)]
+    let _counted = chat.upgrade().map(|c| Counted::new(&c.shared.steps));
     loop {
         tokio::time::sleep(check).await;
         let Some(chat) = chat.upgrade() else { return };
-        if !matches!(*chat.shared.lock(), Phase::Running(_)) {
+        if !matches!(&*chat.shared.lock(), Phase::Running(l) if std::ptr::eq(Arc::as_ptr(l), service.as_ptr())) {
             return;
         }
         let e = env.clone();
@@ -140,6 +153,25 @@ async fn step_down_when_another_hub<L: Listener>(chat: std::sync::Weak<Chat<L>>,
             chat.stop_as(Status::NotHub);
             return;
         }
+    }
+}
+
+/// One count in `Shared::steps` while it lives.
+#[cfg(test)]
+struct Counted(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Counted {
+    fn new(steps: &Arc<std::sync::atomic::AtomicUsize>) -> Counted {
+        steps.fetch_add(1, Ordering::SeqCst);
+        Counted(steps.clone())
+    }
+}
+
+#[cfg(test)]
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -200,12 +232,23 @@ pub(crate) fn names_another_hub(env: &Env) -> bool {
     names_other_hub(&sot_topology::load_in(env), &crate::comm::mail::filer::comm_self_host_in(env))
 }
 
+/// What one load of the chat's files gave.
+struct Load {
+    /// `None`: this computer is not the hub, and no chat file was opened.
+    config: Option<Result<Config, ConfigError>>,
+    /// The status the chat is off with until a start: `Stopped` when it may start.
+    off: Status,
+    /// What a start needs: both files admitted and the lock folder made.
+    start: Option<(Credentials, PathBuf)>,
+}
+
 /// The daemon's chat. Decided at construction: a daemon that is not the hub holds no configuration and no service,
 /// and never reads a chat file again. Once it runs, it asks the topology each [`HUB_CHECK`] and steps down when
 /// another computer is named the hub.
 pub(crate) struct Chat<L: Listener = Service> {
-    /// `None` on a daemon that is not the hub.
-    config: Option<Result<Config, ConfigError>>,
+    /// What the last load gave (`None` on a daemon that is not the hub), swapped by a reload only while no service runs,
+    /// so a service and its owner see one configuration for their life.
+    config: Mutex<Arc<Option<Result<Config, ConfigError>>>>,
     shared: Arc<Shared<L>>,
     /// The runtime that stops the service; `None` only for a chat that never started one.
     handle: Option<Handle>,
@@ -213,26 +256,28 @@ pub(crate) struct Chat<L: Listener = Service> {
     hub: Arc<watch::Hub>,
     /// The environment `begin` was given: the owner's state folder and every filing are read through it.
     env: Env,
+    /// How a start is made, the boot's and each reload's.
+    start: Arc<Starter<L>>,
+    /// `begin`'s pace of the retry of a held start and of the hub fact's asks.
+    check: Duration,
+    /// One reload at a time.
+    #[cfg(test)]
+    setup: tokio::sync::Mutex<()>,
 }
 
 impl<L: Listener> Chat<L> {
-    /// Admit, then start. In order: the hub fact; `chat.toml` against the disk; `chat-secrets.toml` (the only open of it
-    /// in the daemon, through `read`); the lock folder (the comm folder's `chat/`); registration with `registry`; then `start` on a task of its
-    /// own, so boot never waits on Slack. A missing `chat.toml` leaves the chat off and writes nothing. A mapping
-    /// needs no row: one whose folder does not exist is ignored and logged by its ordinal, and a row made later in a
-    /// mapped folder is admitted at its first action. `check` is the pace of the retry of a start refused `held` and of the hub fact's asks (`HUB_CHECK`; the
-    /// tests shorten it). Must run inside the daemon's runtime.
-    fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
-        let shared = Shared::new();
-        let chat = |config, status| {
-            *shared.lock() = Phase::Off(status);
-            Arc::new(Chat { config, shared: shared.clone(), handle: Some(Handle::current()), hub: watch::Hub::new(), env: env.clone() })
-        };
+    /// The one load, the boot's and each reload's, and the only caller of `Config::load` and `Credentials::read`. In
+    /// order: the hub fact; `chat.toml` against the disk; `chat-secrets.toml` (the only open of it in the daemon, through
+    /// `read`); the lock folder (the comm folder's `chat/`). A missing `chat.toml` leaves the chat off and writes
+    /// nothing. A mapping needs no row: one whose folder does not exist is ignored and logged by its ordinal, and a row
+    /// made later in a mapped folder is admitted at its first action.
+    fn load(env: &Env, read: Reader) -> Load {
+        let off = |config, off| Load { config, off, start: None };
         if !is_hub(env) {
-            return chat(None, Status::NotHub);
+            return off(None, Status::NotHub);
         }
         let Some(dir) = config::config_dir(env) else {
-            return chat(Some(Err(ConfigError::Missing)), Status::Refused(ConfigError::Missing));
+            return off(Some(Err(ConfigError::Missing)), Status::Refused(ConfigError::Missing));
         };
         let config = Config::load(&dir, read, &canon_of);
         if let Ok(admitted) = &config {
@@ -243,27 +288,58 @@ impl<L: Listener> Chat<L> {
         let credentials = match &config {
             Err(e) => {
                 let refused = Status::Refused(*e);
-                return chat(Some(config), refused);
+                return off(Some(config), refused);
             }
             Ok(admitted) => match Credentials::read(&dir, read, admitted) {
                 Ok(c) => c,
-                Err(e) => return chat(Some(config), Status::Secrets(e)),
+                Err(e) => return off(Some(config), Status::Secrets(e)),
             },
         };
         // The comm folder's, not this daemon's: every daemon that files into these inboxes takes the same lock.
-        let Some(locks) = crate::comm::home::chat_dir(env) else { return chat(Some(config), Status::Failed("lock")) };
-        let this = chat(Some(config), Status::Stopped);
+        let Some(locks) = crate::comm::home::chat_dir(env) else { return off(Some(config), Status::Failed("lock")) };
+        Load { config: Some(config), off: Status::Stopped, start: Some((credentials, locks)) }
+    }
+
+    /// Load, register, then start. A hub registers with `registry` whatever its load gave, so a start a reload makes
+    /// later retires with the daemon; a daemon that is not the hub registers nothing and never starts. The start runs on
+    /// a task of its own, so boot never waits on Slack. `check` is the pace of the retry of a start refused `held` and
+    /// of the hub fact's asks (`HUB_CHECK`; the tests shorten it). Must run inside the daemon's runtime.
+    fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
+        let load = Self::load(env, read);
+        let shared = Shared::new();
+        *shared.lock() = Phase::Off(load.off);
+        let (config, handle, start) = (Mutex::new(Arc::new(load.config)), Some(Handle::current()), Arc::new(start));
+        let this = Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: env.clone(), start, check, #[cfg(test)] setup: Default::default() });
+        if this.config().is_none() {
+            this.shared.closed.store(true, Ordering::SeqCst);
+            return this;
+        }
         // The phase lock is taken before the registration and held until `Starting` is in place: a retirement that
         // reaches `request_stop` in between waits for it, and so finds the start and aborts it. The start task's own
         // completion takes the same lock.
-        let (task_chat, shared, env) = (this.clone(), this.shared.clone(), env.clone());
-        let mut phase = shared.lock();
+        let mut phase = this.shared.lock();
         if !registry.register(this.clone()) {
-            return this;
+            this.shared.closed.store(true, Ordering::SeqCst);
+        } else if let Some((credentials, locks)) = load.start {
+            this.launch(&mut phase, credentials, locks);
         }
+        drop(phase);
+        this
+    }
+
+    /// The configuration of the last load.
+    fn config(&self) -> Arc<Option<Result<Config, ConfigError>>> {
+        self.config.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The start, on a task, the phase then `Starting`: tried again each `check` while refused `held`, then `Running`
+    /// with a hub fact's watch of its own, or off with its status. The caller holds the phase lock, and has found the
+    /// chat not closed under it.
+    fn launch(self: &Arc<Self>, phase: &mut Phase<L>, credentials: Credentials, locks: PathBuf) {
+        let (task_chat, env, check, start) = (self.clone(), self.env.clone(), self.check, self.start.clone());
         let task = Handle::current().spawn(async move {
-            let Some(Ok(config)) = &task_chat.config else { return };
-            let mut start = start;
+            let loaded = task_chat.config();
+            let Some(Ok(config)) = loaded.as_ref() else { return };
             let mut held = false;
             // A start refused `held` is tried again each `check` until a readable topology names another computer the
             // hub (a missing or unparsable one, as an edit in progress leaves, ends nothing), the phase staying
@@ -284,21 +360,22 @@ impl<L: Listener> Chat<L> {
                     other => break other.map_err(Status::Failed),
                 }
             };
-            // No more tries: what the starter and the tokens hold goes now, not with the chat.
+            // No more tries: the tokens go now, not with the chat.
             drop((start, credentials));
             let running = {
                 let shared = &task_chat.shared;
                 let mut phase = shared.lock();
                 match (made, matches!(*phase, Phase::Starting(_))) {
                     (Ok(l), true) => {
+                        let mine = Arc::downgrade(&l);
                         *phase = Phase::Running(l);
                         shared.started.notify_waiters();
-                        true
+                        Some(mine)
                     }
                     // Retired while the start was under way: the service it made ends at once.
                     (Ok(l), false) => {
                         tokio::spawn(async move { l.stop(STOP_WITHIN).await });
-                        false
+                        None
                     }
                     (Err(status), true) => {
                         drop(phase);
@@ -307,20 +384,18 @@ impl<L: Listener> Chat<L> {
                             _ => tracing::warn!("project chat is off: the topology names another computer as the hub"),
                         }
                         shared.set_off(status);
-                        false
+                        None
                     }
-                    (Err(_), false) => false,
+                    (Err(_), false) => None,
                 }
             };
-            if running {
+            if let Some(mine) = running {
                 let weak = Arc::downgrade(&task_chat);
-                drop(task_chat);
-                step_down_when_another_hub(weak, env, check).await;
+                drop((task_chat, loaded));
+                step_down_when_another_hub(weak, mine, env, check).await;
             }
         });
         *phase = Phase::Starting(task.abort_handle());
-        drop(phase);
-        this
     }
 
     /// `begin` alone, for a test that wants no boot task: the owner then starts with a first watch. `server::run`
@@ -334,7 +409,10 @@ impl<L: Listener> Chat<L> {
     #[cfg(test)]
     pub(crate) fn off() -> Arc<Chat<L>> {
         let shared = Shared::new();
-        Arc::new(Chat { config: None, shared, handle: Handle::try_current().ok(), hub: watch::Hub::new(), env: Env::empty() })
+        shared.closed.store(true, Ordering::SeqCst);
+        let (config, handle) = (Mutex::new(Arc::new(None)), Handle::try_current().ok());
+        let start: Arc<Starter<L>> = Arc::new(Box::new(|_, _, _| Box::pin(std::future::pending())));
+        Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: Env::empty(), start, check: HUB_CHECK, setup: Default::default() })
     }
 
     pub(crate) fn hub(&self) -> &Arc<watch::Hub> {
@@ -377,7 +455,7 @@ impl<L: Listener> Chat<L> {
     /// M2 for a canonical folder: a daemon that is not the hub says so, and a hub answers from its load. It says
     /// nothing of the service.
     fn mapping(&self, folder: &str) -> Resolution {
-        match &self.config {
+        match self.config().as_ref() {
             None => Resolution::NotHub,
             Some(c) => config::resolve(c, folder),
         }
@@ -387,7 +465,7 @@ impl<L: Listener> Chat<L> {
     /// takes a running service. Not the hub: `NotHub`. A row that is gone: `StaleRow`. The inert anchor: `Unmapped`.
     /// Every service status shows the file's mapping, and only `Running` delivers; a refused `chat.toml` is `Invalid`.
     pub(crate) fn resolve(&self, rows: &Workspaces, row: &str) -> Result<(Resolution, bool), ChatCode> {
-        if self.config.is_none() {
+        if self.config().is_none() {
             return Ok((Resolution::NotHub, false));
         }
         let fact = current_row(rows, row).ok_or(ChatCode::StaleRow)?;
@@ -457,6 +535,60 @@ impl<L: Listener> Chat<L> {
     }
 }
 
+/// How long a reload waits for what runs to stop, and then for its start to end.
+#[cfg(test)]
+pub(crate) const SETUP_WAIT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+impl<L: Listener> Chat<L> {
+    /// The reload, one at a time: what runs stops as a retirement stops it (a start aborted, or the delivery ended and
+    /// the service stopped) and its owner is waited for; then the boot's load, the configuration swapped while nothing
+    /// runs, and the boot's launch, then `started` (the product's starts the owner). A chat that is closed starts
+    /// nothing. Answers the status the start ended in, or the status at [`SETUP_WAIT`]; a stop that outlasts it starts
+    /// nothing.
+    async fn reload_then(self: &Arc<Self>, started: impl FnOnce(&Arc<Self>)) -> Status {
+        let _one = self.setup.lock().await;
+        if self.shared.closed.load(Ordering::SeqCst) {
+            return self.status();
+        }
+        let stopped = async {
+            self.stop_as(Status::Stopped);
+            self.stopped().await;
+            self.hub.owner_ended().await;
+        };
+        if tokio::time::timeout(SETUP_WAIT, stopped).await.is_err() {
+            return self.status();
+        }
+        let load = Self::load(&self.env, &config::read_file);
+        *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(load.config);
+        {
+            let mut phase = self.shared.lock();
+            if !self.shared.closed.load(Ordering::SeqCst) {
+                *phase = Phase::Off(load.off);
+                if let Some((credentials, locks)) = load.start {
+                    self.launch(&mut phase, credentials, locks);
+                }
+            }
+        }
+        started(self);
+        let _ = tokio::time::timeout(SETUP_WAIT, self.running()).await;
+        self.status()
+    }
+
+    /// Until the phase is `Off`.
+    async fn stopped(&self) {
+        loop {
+            let changed = self.shared.started.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if matches!(*self.shared.lock(), Phase::Off(_)) {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
 impl Chat<Service> {
     /// The boot's one task: when the service is running, log it once and start the hub's owner, which serves the
     /// socket with no window open. `ensure_owner` stays the one start; a watch that comes first starts it too.
@@ -468,7 +600,7 @@ impl Chat<Service> {
             // The mapped channels' names, looked up once in the background (`Api::channel_names`, which holds the
             // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
             // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.
-            if let (Some(Ok(config)), Ok(api)) = (&chat.config, service.api()) {
+            if let (Some(Ok(config)), Ok(api)) = (chat.config().as_ref(), service.api()) {
                 let channels: Vec<String> = config.mappings().map(|(_, channel)| channel.to_string()).collect();
                 drop(tokio::spawn(async move {
                     for (channel, code) in api.channel_names(&channels).await {
@@ -492,6 +624,12 @@ impl Chat<Service> {
         drop(chat.start_owner(rows.clone()));
         chat
     }
+
+    /// Load both files again and start from them, with no daemon restart: [`Chat::reload_then`] with the owner's start.
+    #[cfg(test)]
+    pub(crate) async fn reload(self: &Arc<Self>, rows: &Workspaces) -> Status {
+        self.reload_then(|chat| drop(chat.start_owner(rows.clone()))).await
+    }
 }
 
 impl<L: Listener> Participant for Chat<L> {
@@ -502,7 +640,13 @@ impl<L: Listener> Participant for Chat<L> {
     /// The chat has no admission to close yet: a handler's `admit` refuses `unavailable` once the stop begins.
     fn close_admission(&self) {}
 
+    /// Marks the chat closed under the phase lock first, so a reload's start, which looks for the mark under it, either
+    /// came before and is ended here or begins nothing.
     fn request_stop(&self) {
+        {
+            let _phase = self.shared.lock();
+            self.shared.closed.store(true, Ordering::SeqCst);
+        }
         self.stop_as(Status::Stopped);
     }
 
