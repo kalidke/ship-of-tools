@@ -78,7 +78,7 @@ impl Table {
 }
 
 enum Owner {
-    /// None runs: none started yet, or the last one's service ended, so the next running service's starts one.
+    /// No owner runs: none started yet, or the last one's service ended, so the next running service starts one.
     Idle,
     Running,
 }
@@ -474,6 +474,8 @@ impl Own {
             self.publish(&mut watches);
             self.drive();
         }
+        // A test's hold point, keyed by the hub's address, between the service's stop and the owner's end.
+        sot_platform::hold_point_async!("chat.owner.end", Arc::as_ptr(&self.hub) as usize);
         self.end();
     }
 

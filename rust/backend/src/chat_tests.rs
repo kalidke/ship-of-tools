@@ -124,12 +124,17 @@ impl Observed {
 struct Fake {
     stops: AtomicUsize,
     hang: bool,
+    /// When set, a stop waits for one permit.
+    gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Listener for Fake {
     fn stop(&self, _within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             self.stops.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                drop(gate.acquire().await);
+            }
             if self.hang {
                 std::future::pending::<()>().await;
             }
@@ -827,9 +832,10 @@ fn stops(listeners: &[Arc<Fake>]) -> Vec<usize> {
     listeners.iter().map(|l| l.stops.load(Ordering::SeqCst)).collect()
 }
 
-/// The reload of a chat of fakes, which has no owner to start.
+/// The reload of a chat of fakes, which has no owner to start, under the setup lock.
 async fn reload(chat: &Arc<Chat<Fake>>) -> Status {
-    chat.reload_then(|_| {}).await
+    let held = chat.setup().await;
+    chat.reload_then(&held, |_| {}).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -850,7 +856,7 @@ async fn a_reload_applies_new_tokens_and_a_new_mapping_with_no_daemon_restart() 
     let bot = BOT.replace("aaaa", "cccc");
     home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{bot}\"\napp_token = \"{APP}\"\n"));
     home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
-    assert_eq!(chat.reload(&rows).await, Status::Running);
+    assert_eq!(chat.reload(&chat.setup().await, &rows).await, Status::Running);
     // The first service stopped, freeing the workspace's lock: the second start took it at its first try.
     assert_eq!(first.status(), sot_chat::service::Status::Stopped);
     assert_eq!(tries.load(Ordering::SeqCst), 2);
@@ -887,7 +893,8 @@ async fn a_reload_after_retirement_began_starts_nothing() {
     assert_eq!(tries.load(Ordering::SeqCst), 1, "a reload after the retirement started a service");
     assert!(chat.service().is_none());
 
-    // A daemon that was not the hub at its boot registered nothing, so a reload starts nothing even once it is the hub.
+    // A daemon that was not the hub at its boot registered nothing, so a reload starts nothing even once it is the hub,
+    // and reads nothing: no configuration, and no lock folder made by a load.
     let other = Home::new(Some("elsewhere"));
     other.configured();
     let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
@@ -896,6 +903,86 @@ async fn a_reload_after_retirement_began_starts_nothing() {
     assert_eq!(reload(&chat).await, Status::NotHub);
     assert!(!called.load(Ordering::SeqCst));
     assert_eq!(registry.len(), 0);
+    assert!(chat.config().is_none());
+    assert!(!other.comm().exists(), "a closed chat's reload loaded the files");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_while_a_reload_waits_for_the_stop_starts_and_swaps_nothing() {
+    let home = Home::new(Some(SELF));
+    let (a, b) = (home.configured(), home.folder("b"));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listeners = vec![Arc::new(Fake { gate: Some(gate.clone()), ..Fake::default() }), Arc::new(Fake::default())];
+    let (registry, tries) = (Arc::new(Registry::new()), Arc::new(AtomicUsize::new(0)));
+    let chat = begin(&home, &Observed::new(), &registry, in_turn(&listeners, &tries));
+    assert_eq!(settled(&chat).await, Status::Running);
+    home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
+    let reloading = tokio::spawn({
+        let chat = chat.clone();
+        async move { reload(&chat).await }
+    });
+    // The reload's stop is held; the retirement begins while it waits.
+    until("the reload's stop", || listeners[0].stops.load(Ordering::SeqCst) == 1).await;
+    let reg = registry.clone();
+    let retiring = tokio::task::spawn_blocking(move || retire(&reg, LONG));
+    until("the retirement's mark", || chat.shared.closed_now()).await;
+    gate.add_permits(1);
+    assert!(retiring.await.unwrap().incomplete.is_empty());
+    assert_eq!(reloading.await.unwrap(), Status::Stopped);
+    assert_eq!(tries.load(Ordering::SeqCst), 1, "a reload started a service after the retirement began");
+    assert!(chat.service().is_none());
+    assert_eq!(chat.mapping(&b.to_string_lossy()), Resolution::Unmapped, "the configuration was swapped after the retirement began");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_holder_of_the_setup_lock_edits_the_files_and_reloads() {
+    let home = Home::new(Some(SELF));
+    let (registry, tries, listeners) = (Registry::new(), Arc::new(AtomicUsize::new(0)), fakes(1));
+    let chat = begin(&home, &Observed::new(), &registry, in_turn(&listeners, &tries));
+    assert_eq!(chat.status(), Status::Refused(ConfigError::Missing));
+    let held = chat.setup().await;
+    home.configured();
+    assert_eq!(chat.reload_then(&held, |_| {}).await, Status::Running);
+    assert!(chat.setup.try_lock().is_err(), "the holder still holds the lock after its reload");
+    drop(held);
+    assert!(chat.setup.try_lock().is_ok());
+}
+
+/// A reload past `SETUP_WAIT`, bounded so that a reload that never answers fails rather than hangs.
+async fn reload_within_bound(chat: &Arc<Chat<Fake>>) -> Status {
+    tokio::time::timeout(4 * SETUP_WAIT, reload(chat)).await.expect("the reload never answered")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_whose_stop_outlasts_setup_wait_starts_nothing_and_says_so() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (listeners, tries) = (vec![Arc::new(Fake { hang: true, ..Fake::default() }), Arc::new(Fake::default())], Arc::new(AtomicUsize::new(0)));
+    let chat = begin(&home, &Observed::new(), &Registry::new(), in_turn(&listeners, &tries));
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert_eq!(reload_within_bound(&chat).await, Status::Stopping);
+    assert_eq!(tries.load(Ordering::SeqCst), 1);
+    assert!(log.text().contains("gave up waiting for the chat to stop"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_whose_start_outlasts_setup_wait_answers_starting_and_says_so() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (listener, tries) = (Arc::new(Fake::default()), Arc::new(AtomicUsize::new(0)));
+    let (made, count) = (listener.clone(), tries.clone());
+    // The boot's start gives the listener; the reload's never ends.
+    let start: Starter<Fake> = Box::new(move |_, _, _| {
+        let first = count.fetch_add(1, Ordering::SeqCst) == 0;
+        let made = made.clone();
+        Box::pin(async move { if first { Ok(made) } else { std::future::pending().await } })
+    });
+    let chat = begin(&home, &Observed::new(), &Registry::new(), start);
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert_eq!(reload_within_bound(&chat).await, Status::Starting);
+    assert!(log.text().contains("stopped waiting for its start"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -957,14 +1044,15 @@ async fn one_step_down_watch_runs_after_two_reloads() {
     for _ in 0..2 {
         assert_eq!(reload(&chat).await, Status::Running);
     }
-    let steps = || chat.shared.steps.load(Ordering::SeqCst);
-    // A stopped service's watch ends at its next ask; the running service keeps its own.
-    until("one watch on the hub fact", || steps() == 1).await;
+    // Each hub fact watch holds its service weakly: a stopped service's watch ends at its next ask, and the running
+    // service keeps its own.
+    let watches = || listeners.iter().map(Arc::weak_count).collect::<Vec<_>>();
+    until("one watch on the hub fact", || watches() == [0, 0, 1]).await;
     tokio::time::sleep(5 * FAST).await;
-    assert_eq!(steps(), 1);
+    assert_eq!(watches(), [0, 0, 1]);
     home.list("elsewhere");
     until("the step-down", || chat.status() == Status::NotHub).await;
-    until("no watch left", || steps() == 0).await;
+    until("no watch left", || watches() == [0, 0, 0]).await;
     assert_eq!(stops(&listeners), [1, 1, 1]);
 }
 

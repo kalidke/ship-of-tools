@@ -176,7 +176,7 @@ async fn the_owner_runs_after_a_reload_with_no_watch() {
     let chat = w.start(&w.fake).await;
     // The file now delivers: the reload's owner opens the delivery with no watch and no window.
     w.home.delivering_toml(&[w.folder.clone()]);
-    assert_eq!(chat.reload(&w.rows).await, Status::Running);
+    assert_eq!(chat.reload(&chat.setup().await, &w.rows).await, Status::Running);
     let target = ChatTarget { row: w.rows.list()[0].workspace_id.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
     super::chat_watch_tests::after_hello(&chat, &w.rows, &target).await;
     until("the first socket's end", || w.fake.sockets().0 == 1).await;

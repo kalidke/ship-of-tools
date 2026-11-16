@@ -503,7 +503,7 @@ async fn a_watch_through_a_reload_is_told_and_its_next_watch_is_served_by_the_ne
     let mut conn = connect(rig.services.clone()).await;
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
-    assert_eq!(chat.reload(&rig.rows).await, Status::Running);
+    assert_eq!(chat.reload(&chat.setup().await, &rig.rows).await, Status::Running);
     // The watch is told its channel needs a snapshot, as at any stop.
     let (name, payload) = conn.evt("a chat.status for the reload's stop").await;
     assert_eq!(name, op::CHAT_STATUS, "{payload}");
@@ -519,6 +519,35 @@ async fn a_watch_through_a_reload_is_told_and_its_next_watch_is_served_by_the_ne
     complete(&hub, &["C0AAAA"]).await;
     lv.feed.send(message("C0AAAA", 1)).unwrap();
     assert_eq!(conn.put_ts("the post through the new service").await, stamp(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_starts_its_service_only_after_the_old_owner_ended() {
+    let (fake, lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let (chat, hub) = (rig.services.chat.clone(), rig.services.chat.hub().clone());
+    until("the boot's owner", || hub.running()).await;
+    // The old owner is held between its service's stop and its end.
+    let arm = Holds::here().arm("chat.owner.end").key(Arc::as_ptr(&hub) as usize).hold(1);
+    let reloading = tokio::spawn({
+        let (chat, rows) = (chat.clone(), rig.rows.clone());
+        async move { chat.reload(&chat.setup().await, &rows).await }
+    });
+    arm.reached_async(0).await;
+    until("the old service off", || chat.status() == Status::Stopped).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!reloading.is_finished(), "the reload went on while the old owner had not ended");
+    arm.release(0);
+    assert_eq!(bounded("the reload", reloading).await.unwrap(), Status::Running);
+    // The new service's owner serves a watch and a post.
+    after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
+    until("the first socket's end", || fake.sockets().0 == 1).await;
+    until("the new owner", || hub.running()).await;
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    assert_eq!(conn.put_ts("the post through the new owner").await, stamp(1));
 }
 
 #[tokio::test(flavor = "multi_thread")]
