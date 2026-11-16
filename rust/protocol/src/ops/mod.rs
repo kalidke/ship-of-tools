@@ -505,6 +505,11 @@ pub mod op {
     pub const CHAT_HISTORY: &str = "chat.history";
     /// One post, never resent: [`crate::ops::ChatPostReq`], reply [`crate::ops::ChatPostRes`].
     pub const CHAT_POST: &str = "chat.post";
+    /// One file shared, never resent: [`crate::ops::ChatPostFileReq`], reply [`crate::ops::ChatPostFileRes`].
+    pub const CHAT_POST_FILE: &str = "chat.post_file";
+    /// The bytes of one picture of the channel, as the reply's blob: [`crate::ops::ChatFileReq`], reply
+    /// [`crate::ops::ChatFileRes`].
+    pub const CHAT_FILE: &str = "chat.file";
     /// Server to client push: messages put or deleted in a watched channel, [`crate::ops::ChatChangedEvt`].
     pub const CHAT_CHANGED: &str = "chat.changed";
     /// Server to client push: the service's phase and the watches that need a snapshot, [`crate::ops::ChatStatusEvt`].

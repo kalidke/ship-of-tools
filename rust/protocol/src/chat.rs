@@ -148,7 +148,7 @@ pub struct ChatName {
 }
 
 /// `deserialize_with` for an id: `is_id`, which the length bound is part of.
-fn an_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+pub(crate) fn an_id<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     let s = String::deserialize(d)?;
     if !is_id(&s) {
         return Err(D::Error::custom("not an id"));

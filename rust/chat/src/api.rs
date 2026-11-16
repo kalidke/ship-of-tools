@@ -29,8 +29,6 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 pub const POST_DEADLINE: Duration = Duration::from_secs(30);
 /// A file's bytes on the wire (a post's upload): up to `MAX_CHAT_FILE` on a slow link.
 pub const TRANSFER_DEADLINE: Duration = Duration::from_secs(60);
-/// The largest file a post carries.
-pub const MAX_CHAT_FILE: usize = 16 << 20;
 /// Transfers at once, per `Api` (one daemon's): the next is refused `busy` at once, so at most this many files'
 /// bytes are held for the network.
 pub const MAX_TRANSFERS: usize = 2;
@@ -38,7 +36,7 @@ pub const MAX_TRANSFERS: usize = 2;
 const MAX_UPLOAD_URL: usize = 2048;
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
-pub use sot_protocol::ops::{MAX_CURSOR, MAX_LISTED, MAX_PAGE};
+pub use sot_protocol::ops::{MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED, MAX_PAGE};
 /// The most messages one scan asks for: Slack's documented maximum for a history read.
 pub const MAX_SCAN: u16 = 999;
 /// Author names kept; the oldest entry leaves first.

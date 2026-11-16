@@ -50,6 +50,8 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.unwatch",
         "chat.history",
         "chat.post",
+        "chat.post_file",
+        "chat.file",
         "chat.changed",
         "chat.status",
         "chat.connect",
@@ -408,14 +410,131 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotInChannel, "the app is not in that channel"),
         (ChatCode::ChannelTaken, "another project already uses that channel"),
         (ChatCode::NotSaved, "the chat settings could not be saved"),
+        (ChatCode::NotAFile, "the file is not a readable file in the row's folder"),
+        (ChatCode::TooLarge, "the file is larger than the chat carries"),
+        (ChatCode::NotAnImage, "the file is not a picture the chat shows"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "other_workspace", "not_in_channel", "channel_taken", "not_saved"] {
+    for code in ["bot_token_refused", "app_token_refused", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
+    }
+}
+
+fn post_file_json() -> Value {
+    json!({"target": target_json(), "thread": "1.000001", "kind": "row", "name": "r", "node_id": "files:figs/a.png", "comment": "fig 1"})
+}
+
+fn file_res(len: u64, mime: &str) -> Value {
+    json!({"mime": mime, "blob": {"len": len, "mime": mime}})
+}
+
+#[test]
+fn the_file_pair_keeps_its_shape_and_its_bounds() {
+    pinned(
+        ChatPostFileReq {
+            target: target(),
+            thread: Some(ts("1.000001")),
+            kind: ChatPostKind::Row,
+            name: "r".into(),
+            node_id: "files:figs/a.png".into(),
+            comment: Some("fig 1".into()),
+        },
+        post_file_json(),
+    );
+    pinned(
+        ChatPostFileReq { target: target(), thread: None, kind: ChatPostKind::Person, name: "p".into(), node_id: "files:a".into(), comment: None },
+        json!({"target": target_json(), "thread": null, "kind": "person", "name": "p", "node_id": "files:a", "comment": null}),
+    );
+    pinned(
+        ChatPostFileRes::Posted { file: "F1".into(), ts: Some(ts("3.000003")) },
+        json!({"outcome": "posted", "file": "F1", "ts": "3.000003"}),
+    );
+    pinned(ChatPostFileRes::Posted { file: "F1".into(), ts: None }, json!({"outcome": "posted", "file": "F1"}));
+    pinned(ChatPostFileRes::Refused { code: ChatCode::NotAFile }, json!({"outcome": "refused", "code": "not_a_file"}));
+    pinned(
+        ChatPostFileRes::Limited { retry_after_secs: 30, assumed: false },
+        json!({"outcome": "limited", "retry_after_secs": 30, "assumed": false}),
+    );
+    pinned(ChatPostFileRes::Unknown, json!({"outcome": "unknown"}));
+    pinned(
+        ChatFileReq { target: target(), file: "F1".into(), variant: ChatFileVariant::Thumb },
+        json!({"target": target_json(), "file": "F1", "variant": "thumb"}),
+    );
+    pinned(
+        ChatFileReq { target: target(), file: "F1".into(), variant: ChatFileVariant::Original },
+        json!({"target": target_json(), "file": "F1", "variant": "original"}),
+    );
+    let res: ChatFileRes = serde_json::from_value(file_res(10, "image/png")).unwrap();
+    assert_eq!((res.mime.as_str(), res.blob.len, res.blob.mime.as_str()), ("image/png", 10, "image/png"));
+    assert_eq!(serde_json::to_value(&res).unwrap(), file_res(10, "image/png"));
+
+    // The bounds, each at its edge and one past.
+    assert_eq!((MAX_CHAT_FILE, MAX_THUMB), (16 * 1024 * 1024, 256 * 1024));
+    let req = |f: &dyn Fn(&mut Value)| {
+        let mut v = post_file_json();
+        f(&mut v);
+        serde_json::from_value::<ChatPostFileReq>(v).is_ok()
+    };
+    assert!(req(&|v| v["node_id"] = json!("n".repeat(MAX_NODE_ID))));
+    assert!(!req(&|v| v["node_id"] = json!("n".repeat(MAX_NODE_ID + 1))));
+    assert!(req(&|v| v["comment"] = json!("c".repeat(MAX_TEXT))));
+    assert!(!req(&|v| v["comment"] = json!("c".repeat(MAX_TEXT + 1))));
+    assert!(req(&|v| v["name"] = json!("n".repeat(MAX_NAME))));
+    assert!(!req(&|v| v["name"] = json!("n".repeat(MAX_NAME + 1))));
+    assert!(req(&|v| {
+        v.as_object_mut().unwrap().remove("comment");
+    }));
+    assert!(!req(&|v| v["node_id"] = json!(5)));
+    assert!(!req(&|v| v["thread"] = json!("1.12345")));
+    assert!(!req(&|v| v["kind"] = json!("bot")));
+    let file = |id: &str, variant: &str| json!({"target": target_json(), "file": id, "variant": variant});
+    assert!(serde_json::from_value::<ChatFileReq>(file(&"F".repeat(64), "thumb")).is_ok());
+    for bad in ["", "F 1", "F/1", "Fé", &"F".repeat(65)] {
+        assert!(serde_json::from_value::<ChatFileReq>(file(bad, "thumb")).is_err(), "{bad:?}");
+    }
+    assert!(serde_json::from_value::<ChatFileReq>(file("F1", "large")).is_err(), "a variant of this reader's two");
+    let reply = |len: u64, mime: &str| serde_json::from_value::<ChatFileRes>(file_res(len, mime)).is_ok();
+    assert!(reply(MAX_CHAT_FILE as u64, "image/png"));
+    assert!(!reply(MAX_CHAT_FILE as u64 + 1, "image/png"));
+    assert!(!reply(u64::MAX, "image/png"));
+    assert!(reply(0, &"m".repeat(crate::chat::MAX_MIME)));
+    assert!(!reply(0, &"m".repeat(crate::chat::MAX_MIME + 1)));
+    assert!(serde_json::from_value::<ChatFileRes>(json!({"mime": "image/png"})).is_err(), "a reply names its blob");
+    let posted = |id: &str| serde_json::from_value::<ChatPostFileRes>(json!({"outcome": "posted", "file": id})).is_ok();
+    assert!(posted("F1") && !posted("") && !posted("F 1") && !posted(&"F".repeat(65)));
+}
+
+#[test]
+fn a_file_outcome_or_code_added_later_reads_as_the_safe_one() {
+    let post: ChatPostFileRes = serde_json::from_value(json!({"outcome": "queued", "file": "F1"})).unwrap();
+    assert_eq!(post, ChatPostFileRes::Unknown);
+    let wait = |n: u64| match serde_json::from_value::<ChatPostFileRes>(json!({"outcome": "limited", "retry_after_secs": n, "assumed": true})).unwrap() {
+        ChatPostFileRes::Limited { retry_after_secs, .. } => retry_after_secs,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((wait(30), wait(u64::MAX)), (30, MAX_RETRY_SECS));
+    let refused: ChatPostFileRes = serde_json::from_value(json!({"outcome": "refused", "code": "from_the_future"})).unwrap();
+    assert_eq!(refused, ChatPostFileRes::Refused { code: ChatCode::Other });
+    // The codes of this pair, read by a reader before them (no such variants), are `other`.
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Before {
+        BadRequest,
+        #[serde(other)]
+        Other,
+    }
+    for code in ["not_a_file", "too_large", "not_an_image"] {
+        assert_eq!(serde_json::from_value::<Before>(json!(code)).unwrap(), Before::Other, "{code}");
+        assert_ne!(serde_json::from_value::<ChatCode>(json!(code)).unwrap(), ChatCode::Other, "{code}");
+    }
+    // An older daemon answers either op as an unknown op: a refusal with no code.
+    for op in ["chat.post_file", "chat.file"] {
+        let r: ChatRefusal = serde_json::from_value(json!({"error": format!("unknown op: {op}")})).unwrap();
+        assert_eq!(r.code, None);
     }
 }

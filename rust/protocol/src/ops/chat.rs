@@ -1,7 +1,7 @@
 // the project chat's operations and events (B2d): what the window and the daemon say about one watched channel
 
 use super::*;
-use crate::chat::{at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_NAME, MAX_TEXT};
+use crate::chat::{an_id, at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_MIME, MAX_NAME, MAX_TEXT};
 
 /// The most messages a history page asks for or holds.
 pub const MAX_PAGE: u16 = 20;
@@ -17,6 +17,13 @@ pub const MAX_RETRY_SECS: u64 = 3600;
 pub const MAX_LISTED: usize = 1000;
 /// A Slack token's longest form on the wire.
 pub const MAX_TOKEN: usize = 512;
+/// The largest file the chat posts or a picture it opens, in bytes: one copy of the number, for the daemon's read, the
+/// upload and a reply's blob.
+pub const MAX_CHAT_FILE: usize = 16 * 1024 * 1024;
+/// The largest thumbnail a `chat.file` reply carries for the `thumb` variant, in bytes.
+pub const MAX_THUMB: usize = 256 * 1024;
+/// A `chat.post_file` node id (`files:<rel>`): the project-relative name of the file to post.
+pub const MAX_NODE_ID: usize = 4096;
 const MAX_ROW: usize = 256;
 
 /// A channel id: 1 to 64 ASCII letters, digits, `_` and `-`.
@@ -81,6 +88,12 @@ pub enum ChatCode {
     ChannelTaken,
     /// The chat's files could not be written (or the one there is was refused by the load).
     NotSaved,
+    /// A file to post is not a readable regular file in the row's folder (or is the chat's own configuration).
+    NotAFile,
+    /// A file is larger than the chat carries.
+    TooLarge,
+    /// A file is not one of the pictures the chat shows, or Slack answered something that is not a picture.
+    NotAnImage,
     Failed,
     #[serde(other)]
     Other,
@@ -104,6 +117,9 @@ impl ChatCode {
             ChatCode::NotInChannel => "the app is not in that channel",
             ChatCode::ChannelTaken => "another project already uses that channel",
             ChatCode::NotSaved => "the chat settings could not be saved",
+            ChatCode::NotAFile => "the file is not a readable file in the row's folder",
+            ChatCode::TooLarge => "the file is larger than the chat carries",
+            ChatCode::NotAnImage => "the file is not a picture the chat shows",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -374,6 +390,91 @@ pub enum ChatPostRes {
     /// Also what a reader takes an outcome added later for: the post may exist, so it is never resent.
     #[serde(other)]
     Unknown,
+}
+
+/// `chat.post_file`: one file of the row's project shared once into the channel, never resent. `node_id` is the file's
+/// `files:<rel>` id, composed by the daemon beneath the row's root. `name` is the author shown in the file's label. A
+/// `comment` rides after the label. The bytes are never in a request: the daemon reads the file itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatPostFileReq {
+    pub target: ChatTarget,
+    #[serde(default)]
+    pub thread: Option<Ts>,
+    pub kind: ChatPostKind,
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
+    pub name: String,
+    #[serde(deserialize_with = "within::<_, MAX_NODE_ID>")]
+    pub node_id: String,
+    #[serde(default, deserialize_with = "comment")]
+    pub comment: Option<String>,
+}
+
+fn comment<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    struct Bounded(#[serde(deserialize_with = "within::<_, MAX_TEXT>")] String);
+    Ok(Option::<Bounded>::deserialize(d)?.map(|b| b.0))
+}
+
+/// Reply to `chat.post_file`, by `outcome`, as a post's: `refused` shared nothing; `limited` is unsent; `unknown` means
+/// the share may exist and is never resent. `posted` names the file Slack made and, when Slack's answer carried it, the
+/// `ts` of the message that shares it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ChatPostFileRes {
+    Posted {
+        #[serde(deserialize_with = "an_id")]
+        file: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ts: Option<Ts>,
+    },
+    Refused { code: ChatCode },
+    Limited {
+        #[serde(deserialize_with = "retry_wait")]
+        retry_after_secs: u64,
+        assumed: bool,
+    },
+    /// Also what a reader takes an outcome added later for: the share may exist, so it is never resent.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Which bytes of a channel's picture `chat.file` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatFileVariant {
+    /// Slack's small rendition (at most `MAX_THUMB` bytes).
+    Thumb,
+    /// The file as posted (at most `MAX_CHAT_FILE` bytes).
+    Original,
+}
+
+/// `chat.file`: the bytes of one picture shared in the target's channel. `file` is a record's file id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatFileReq {
+    pub target: ChatTarget,
+    #[serde(deserialize_with = "an_id")]
+    pub file: String,
+    pub variant: ChatFileVariant,
+}
+
+/// Reply to `chat.file`. The picture's bytes are the frame's trailing blob, not this JSON. `blob` is the codec's
+/// descriptor (`len` = the byte count, at most `MAX_CHAT_FILE`; REQUIRED, or the reader takes the next envelope for
+/// bytes). The codec reads the blob before this decode, so the decoder's bound refuses the reply but not the read: the
+/// reader checks `len` against its request's variant before it asks (fe-net does).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatFileRes {
+    #[serde(deserialize_with = "within::<_, MAX_MIME>")]
+    pub mime: String,
+    #[serde(deserialize_with = "blob_within")]
+    pub blob: BlobDescriptor,
+}
+
+fn blob_within<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BlobDescriptor, D::Error> {
+    let b = BlobDescriptor::deserialize(d)?;
+    if b.len > MAX_CHAT_FILE as u64 {
+        return Err(serde::de::Error::custom("more than the chat's file bound"));
+    }
+    Ok(b)
 }
 
 /// `chat.changed` evt: messages put or deleted in a watched channel, at most a page of each. A put is a new message or
