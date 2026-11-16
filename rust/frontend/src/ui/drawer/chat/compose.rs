@@ -105,7 +105,7 @@ pub(in crate::ui) enum ComposeText {
 const PLACEHOLDER: &str = "type a message and press Enter to post it";
 fn hint() -> String {
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    format!("What you post appears in the channel with your name, marked as sent through your app. {chord} changes this project's channel.")
+    format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel.")
 }
 
 /// The one row the foot shows while it asks for the name.

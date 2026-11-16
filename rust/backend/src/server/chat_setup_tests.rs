@@ -25,6 +25,9 @@ struct Slack {
     channels: Mutex<Vec<Fact>>,
     join: Mutex<&'static str>,
     auth: Mutex<&'static str>,
+    /// What `auth.test` answers a user token (`xoxp-`) with, and the workspace it names.
+    user: Mutex<&'static str>,
+    user_team: Mutex<&'static str>,
     open: Mutex<&'static str>,
     feed: tokio::sync::mpsc::UnboundedSender<Value>,
 }
@@ -48,14 +51,21 @@ fn channel_json((id, name, private, member): Fact) -> Value {
 /// says hello and then sends what `feed` is given.
 async fn slack() -> (FakeSlack, Arc<Slack>) {
     let (feed, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), open: Mutex::new("ok"), feed });
+    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), user: Mutex::new("ok"), user_team: Mutex::new("T0AAAA"), open: Mutex::new("ok"), feed });
     let (held, rx) = (state.clone(), Arc::new(tokio::sync::Mutex::new(rx)));
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         let known = |id: &str| held.channels.lock().unwrap().iter().copied().find(|c| c.0 == id);
         let wanted = seen.param("channel").or_else(|| seen.json().and_then(|j| j["channel"].as_str().map(str::to_string))).unwrap_or_default();
-        if path.ends_with("/auth.test") {
+        // Each token its own identity: the user token's is a person's, with no bot id.
+        let by_user = seen.authorization.as_deref().is_some_and(|a| a.starts_with("Bearer xoxp-"));
+        if path.ends_with("/auth.test") && by_user {
+            let team = *held.user_team.lock().unwrap();
+            answer(*held.user.lock().unwrap(), Reply::json(&json!({"ok": true, "team_id": team, "user_id": "U0PERSON"})))
+        } else if path.ends_with("/auth.test") {
             answer(*held.auth.lock().unwrap(), Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"})))
+        } else if path.ends_with("/chat.postMessage") {
+            Reply::json(&json!({"ok": true, "ts": "1700000999.000100"}))
         } else if path.ends_with("/apps.connections.open") {
             let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
             answer(*held.open.lock().unwrap(), Reply::json(&json!({"ok": true, "url": url})))
@@ -160,9 +170,11 @@ impl World {
         self.fake.seen().iter().filter(|s| s.path().ends_with(name)).count()
     }
 
-    /// The services this world has started: one `auth.test` for each.
+    /// The services this world has started: one `auth.test` under the bot's token for each (a connect's check of the
+    /// user token is another bearer's).
     fn starts(&self) -> usize {
-        self.calls("/auth.test")
+        let by_bot = |s: &&sot_chat::fake_slack::Seen| s.authorization.as_deref().is_some_and(|a| a.starts_with("Bearer xoxb-"));
+        self.fake.seen().iter().filter(|s| s.path().ends_with("/auth.test")).filter(by_bot).count()
     }
 
     fn file(&self) -> String {
@@ -335,8 +347,17 @@ fn app(body: &str) -> String {
     format!("xapp-{body}-{}", "5".repeat(12))
 }
 
+fn user(body: &str) -> String {
+    format!("xoxp-{body}-{}", "6".repeat(12))
+}
+
+/// A connect of the three tokens, the user token `user("1")`.
 fn connect_req(bot: &str, app: &str) -> Value {
-    json!({"bot_token": bot, "app_token": app})
+    connect_with(bot, &user("1"), app)
+}
+
+fn connect_with(bot: &str, user: &str, app: &str) -> Value {
+    json!({"bot_token": bot, "user_token": user, "app_token": app})
 }
 
 /// Every file of the config folder and its bytes.
@@ -350,11 +371,15 @@ fn files(home: &Home) -> Vec<(String, Vec<u8>)> {
     all
 }
 
-/// The secrets file holds exactly the three keys, with these tokens; it says so without printing them.
-fn secrets_hold(home: &Home, bot: &str, app: &str) -> bool {
+/// The secrets file holds exactly the four keys, with these tokens; it says so without printing them.
+fn secrets_hold(home: &Home, bot: &str, user: &str, app: &str) -> bool {
     let text = std::fs::read_to_string(home.config().join(SECRETS_FILE)).unwrap();
     let t: toml::Table = text.parse().unwrap();
-    t.len() == 3 && t["workspace"].as_str() == Some("T0AAAA") && t["bot_token"].as_str() == Some(bot) && t["app_token"].as_str() == Some(app)
+    t.len() == 4
+        && t["workspace"].as_str() == Some("T0AAAA")
+        && t["bot_token"].as_str() == Some(bot)
+        && t["user_token"].as_str() == Some(user)
+        && t["app_token"].as_str() == Some(app)
 }
 
 /// One capture's bytes, shared by every thread that logs into it.
@@ -402,12 +427,12 @@ fn holds_no_token(what: &str, text: &str, bodies: &[&str]) {
     }
 }
 
-/// The plan's done test: from a hub with no chat file, a window connects with two tokens, lists the channels, pairs its
-/// row, watches the channel and gets a socket post as `chat.changed`; afterwards the secrets are the three keys and
+/// From a hub with no chat file, a window connects with three tokens, lists the channels, pairs its
+/// row, watches the channel and gets a socket post as `chat.changed`; afterwards the secrets are the four keys and
 /// owner-only, `chat.toml` loads with the mapping, and no reply, event or log line of any thread held a token's bytes.
 #[test]
 fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
-    let bodies = ["6c6d6e6f", "7a7b7c7d"];
+    let bodies = ["6c6d6e6f", "7a7b7c7d", "5f5e5d5c"];
     let mut seen = Vec::new();
     let text = logged(|| async {
         let w = world(None, &[public("C0PUB", false)]).await;
@@ -415,7 +440,8 @@ fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
         assert_eq!(chat.status(), Status::Refused(config::ConfigError::Missing));
         let (b, a) = (bot(bodies[0]), app(bodies[1]));
         let mut conn = connect_window(w.services.clone()).await;
-        let connected = conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await;
+        let u = user(bodies[2]);
+        let connected = conn.ask(2, op::CHAT_CONNECT, connect_with(&b, &u, &a)).await;
         assert_eq!(connected, json!({"workspace": "T0AAAA"}));
         assert_eq!(chat.status(), Status::Running);
         assert_eq!(w.file(), fresh(), "a connect with no chat.toml writes the fresh one");
@@ -440,7 +466,7 @@ fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
         assert_eq!(put["put"][0]["ts"], stamp(1).as_str(), "{put}");
 
         let dir = w.home.config();
-        assert!(secrets_hold(&w.home, &b, &a), "the secrets file holds other keys or tokens");
+        assert!(secrets_hold(&w.home, &b, &u, &a), "the secrets file holds other keys or tokens");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -475,7 +501,9 @@ fn each_answer_of_the_two_checks_has_its_code_and_writes_nothing() {
             ("bot form", connect_req("nope", &a), "bot_token_refused"),
             ("bot charset", connect_req(&format!("{b}!"), &a), "bot_token_refused"),
             ("app form", connect_req(&b, &bot("2")), "app_token_refused"),
-            ("undecodable", json!({"bot_token": b, "app_token": 7}), "bad_request"),
+            ("user form", connect_with(&b, "nope", &a), "user_token_refused"),
+            ("no user token", json!({"bot_token": b, "app_token": a}), "bad_request"),
+            ("undecodable", json!({"bot_token": b, "user_token": user("1"), "app_token": 7}), "bad_request"),
         ] {
             let reply = conn.ask(10, op::CHAT_CONNECT, req).await;
             assert_eq!(code(&reply), want, "{what}");
@@ -554,12 +582,17 @@ async fn a_retirement_that_begins_while_slack_is_asked_writes_nothing() {
     let (fake_for_checks, _held) = slack().await;
     let Verifier { identify, app: open } = Verifier::at(&fake_for_checks);
     let (e, g) = (entered.clone(), gate.clone());
+    // Only the first check (the bot's) is held: the connect asks the user token's after it.
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let held_checks = Verifier {
         identify: Box::new(move |bot| {
             let (asked, e, g) = (identify(bot), e.clone(), g.clone());
+            let held = first.swap(false, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async move {
-                e.notify_one();
-                g.notified().await;
+                if held {
+                    e.notify_one();
+                    g.notified().await;
+                }
                 asked.await
             })
         }),
@@ -598,7 +631,7 @@ async fn a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed() {
     let (b, a) = (bot("3"), app("3"));
     let mut conn = connect_window(w.services.clone()).await;
     assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await, json!({"workspace": "T0AAAA"}));
-    assert!(secrets_hold(&w.home, &b, &a), "the tokens were not saved");
+    assert!(secrets_hold(&w.home, &b, &user("1"), &a), "the tokens were not saved");
     assert_eq!(w.services.chat.status(), Status::Failed("down"));
     let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
     assert_eq!(resolved, json!({"state": "unconfigured", "reason": "start_failed"}));
@@ -667,9 +700,163 @@ async fn a_connect_while_running_replaces_the_tokens_and_restarts() {
     let mut conn = connect_window(w.services.clone()).await;
     assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await, json!({"workspace": "T0AAAA"}));
     assert_eq!(w.services.chat.status(), Status::Running, "the reloaded chat is not running");
-    assert!(secrets_hold(&w.home, &b, &a), "the secrets file does not hold the new tokens");
+    assert!(secrets_hold(&w.home, &b, &user("1"), &a), "the secrets file does not hold the new tokens");
     assert_eq!(w.file(), toml, "a connect rewrote an admitted chat.toml");
     assert_eq!(auth(&b), 2, "the new bot token: the connect's identify and the restarted service's own auth.test");
     let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
     assert_eq!((resolved["state"].as_str(), resolved["channel"].as_str()), (Some("mapped"), Some("C0AAAA")), "{resolved}");
+}
+
+/// The user token's own check, in the connect's order after the bot's: its absence and its form before any call, Slack's
+/// answers that name the token (and another workspace) refuse it, Slack's state and the transport are `failed`, and
+/// nothing is written for any.
+#[test]
+fn each_answer_of_the_user_tokens_check_has_its_code_and_writes_nothing() {
+    let bodies = ["1a1b1c1d", "2a2b2c2d", "3a3b3c3d"];
+    let mut replies = Vec::new();
+    let text = logged(|| async {
+        let w = world(None, &[]).await;
+        let before = files(&w.home);
+        let (b, u, a) = (bot(bodies[0]), user(bodies[1]), app(bodies[2]));
+        let mut conn = connect_window(w.services.clone()).await;
+        for (what, req, want) in [
+            ("absent", json!({"bot_token": b, "app_token": a}), "bad_request"),
+            ("form", connect_with(&b, "nope", &a), "user_token_refused"),
+            ("the bot's form", connect_with(&b, &b, &a), "user_token_refused"),
+            ("charset", connect_with(&b, &format!("{u}!"), &a), "user_token_refused"),
+        ] {
+            let reply = conn.ask(10, op::CHAT_CONNECT, req).await;
+            assert_eq!(code(&reply), want, "{what}");
+            assert_eq!(files(&w.home), before, "{what}: the config folder changed");
+            replies.push(reply.to_string());
+        }
+        assert!(w.fake.seen().is_empty(), "a form refusal called Slack");
+        for (how, team, want) in [
+            ("invalid_auth", "T0AAAA", "user_token_refused"),
+            ("token_revoked", "T0AAAA", "user_token_refused"),
+            ("ok", "T0OTHER", "user_token_refused"),
+            ("internal_error", "T0AAAA", "failed"),
+            ("ratelimited", "T0AAAA", "failed"),
+            ("503", "T0AAAA", "failed"),
+            ("drop", "T0AAAA", "failed"),
+        ] {
+            (*w.slack.user.lock().unwrap(), *w.slack.user_team.lock().unwrap()) = (how, team);
+            let reply = conn.ask(20, op::CHAT_CONNECT, connect_with(&b, &u, &a)).await;
+            assert_eq!(code(&reply), want, "the user token's check answered {how} for {team}");
+            assert_eq!(files(&w.home), before, "{how} for {team}: the config folder changed");
+            replies.push(reply.to_string());
+        }
+        assert_eq!(w.services.chat.status(), Status::Refused(config::ConfigError::Missing));
+    });
+    holds_no_token("the daemon's log", &text, &bodies);
+    for (n, reply) in replies.iter().enumerate() {
+        holds_no_token(&format!("reply {n}"), reply, &bodies);
+    }
+}
+
+/// A hub whose secrets file was written before the user token (three keys) runs: resolve says `no_user_token`, a
+/// person's post is refused with no `chat.postMessage` sent, a row's post goes out, and the load warned once.
+#[test]
+fn a_hub_whose_secrets_hold_no_user_token_says_so_and_posts_nothing_for_a_person() {
+    let warning = "chat-secrets.toml holds no user token";
+    let text = logged(|| async {
+        let home = Home::new(Some(SELF));
+        home.configured();
+        // The same secrets with the user token's line gone.
+        let kept: String = std::fs::read_to_string(home.config().join(SECRETS_FILE)).unwrap().lines().filter(|l| !l.starts_with("user_token")).map(|l| format!("{l}\n")).collect();
+        home.write(SECRETS_FILE, &kept);
+        let w = world_on(home, &[], None, None).await;
+        assert_eq!(w.services.chat.status(), Status::Running);
+        w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+        let mut conn = connect_window(w.services.clone()).await;
+        let resolved = conn.ask(2, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!(resolved, json!({"state": "unconfigured", "reason": "no_user_token"}));
+        let sent = |w: &World| w.calls("/chat.postMessage");
+        let person = json!({"target": w.target(0, "C0AAAA"), "kind": "person", "name": "tester", "text": "hello"});
+        let refused = conn.ask(3, op::CHAT_POST, person).await;
+        assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("refused"), Some("no_user_token")), "{refused}");
+        assert_eq!(sent(&w), 0, "a person's post reached Slack with no user token");
+        let row = json!({"target": w.target(0, "C0AAAA"), "kind": "row", "name": "alpha-h", "text": "done"});
+        let posted = conn.ask(4, op::CHAT_POST, row).await;
+        assert_eq!(posted["outcome"], "posted", "{posted}");
+        assert_eq!(sent(&w), 1, "a row's post is the app's, and goes out");
+    });
+    assert_eq!(text.matches(warning).count(), 1, "{text}");
+}
+
+/// The done test, through a real window connection against the fake Slack in one daemon process: a hub with no chat
+/// file, a connect of three tokens, a pairing and a watch; a person's post goes out under the user token with nothing of
+/// the app, comes back through the socket as the person's own message (a member's), and a row's post goes out under the
+/// bot token as the app's. No log line of any thread, reply or event holds a byte of any token.
+#[test]
+fn a_window_connects_three_tokens_and_its_post_goes_out_as_the_person() {
+    let bodies = ["4a4b4c4d", "5a5b5c5d", "6a6b6c6d"];
+    let mut seen = Vec::new();
+    let text = logged(|| async {
+        let w = world(None, &[public("C0PUB", false)]).await;
+        let chat = w.services.chat.clone();
+        let (b, u, a) = (bot(bodies[0]), user(bodies[1]), app(bodies[2]));
+        let mut conn = connect_window(w.services.clone()).await;
+        let connected = conn.ask(2, op::CHAT_CONNECT, connect_with(&b, &u, &a)).await;
+        assert_eq!(connected, json!({"workspace": "T0AAAA"}));
+        assert!(secrets_hold(&w.home, &b, &u, &a), "the secrets hold other keys or tokens");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(w.home.config().join(SECRETS_FILE)).unwrap().permissions().mode() & 0o077, 0, "owner-only");
+        }
+        let unmapped = conn.ask(3, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!(unmapped, json!({"state": "unmapped"}), "a hub holding the user token is not unconfigured");
+        let paired = conn.pair(&w.ids[0], Some("C0PUB")).await;
+        assert_eq!(paired, json!({}));
+        after_hello(&chat, &w.rows, &w.target(0, "C0PUB")).await;
+        let watched = conn.ask(4, op::CHAT_WATCH, json!({"target": w.target(0, "C0PUB")})).await;
+        assert!(matches!(watched["state"].as_str(), Some("pending" | "complete")), "{watched}");
+        let hub = chat.hub().clone();
+        let probe = hub.connect();
+        until("the snapshot", || probe.conn.state("C0PUB") == sot_protocol::ops::ChatWatchState::Complete).await;
+
+        // A person's post: one `chat.postMessage` under the user token, with the channel and the text and nothing else.
+        let person = json!({"target": w.target(0, "C0PUB"), "kind": "person", "name": "tester", "text": "hello"});
+        let posted = conn.ask(5, op::CHAT_POST, person).await;
+        assert_eq!(posted["outcome"], "posted", "{posted}");
+        let sent: Vec<_> = w.fake.seen().into_iter().filter(|s| s.path().ends_with("/chat.postMessage")).collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].authorization.as_deref(), Some(&*format!("Bearer {u}")), "the person's bearer");
+        let body = sent[0].json().unwrap();
+        let mut keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["channel", "text"], "nothing of the app rides a person's post");
+
+        // Slack sends the post as the person's own message: their user, an app id, no bot id.
+        w.slack.feed.send(json!({
+            "type": "events_api", "envelope_id": "env-1",
+            "payload": {"team_id": "T0AAAA", "event": {"type": "message", "channel": "C0PUB", "user": "U0PERSON", "app_id": "A0APP", "ts": stamp(1), "text": "hello"}},
+        })).unwrap();
+        let put = loop {
+            let (frame, _) = codec::read_frame(&mut conn.crx).await.unwrap();
+            if frame.kind == Kind::Evt && frame.op == op::CHAT_CHANGED {
+                break frame.payload;
+            }
+        };
+        assert_eq!((put["put"][0]["origin"].as_str(), put["put"][0]["author"]["id"].as_str()), (Some("member"), Some("U0PERSON")), "{put}");
+
+        // A row's post is the app's, under the bot token, with its author and metadata.
+        w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+        let mut cli = connect(w.services.clone()).await;
+        let row = json!({"target": w.target(0, "C0PUB"), "kind": "row", "name": "alpha-h", "text": "done"});
+        let row_posted = cli.ask(6, op::CHAT_POST, row).await;
+        assert_eq!(row_posted["outcome"], "posted", "{row_posted}");
+        let sent: Vec<_> = w.fake.seen().into_iter().filter(|s| s.path().ends_with("/chat.postMessage")).collect();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].authorization.as_deref(), Some(&*format!("Bearer {b}")), "the bot's bearer");
+        let body = sent[1].json().unwrap();
+        assert_eq!(body["username"], "alpha-h (row via Ship of Tools)");
+        assert_eq!(body["metadata"]["event_type"], "sot_chat_post");
+        seen.extend([connected, unmapped, paired, watched, posted, put, row_posted].map(|v| v.to_string()));
+    });
+    holds_no_token("the daemon's log", &text, &bodies);
+    for (n, reply) in seen.iter().enumerate() {
+        holds_no_token(&format!("reply or event {n}"), reply, &bodies);
+    }
 }

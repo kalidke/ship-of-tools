@@ -89,7 +89,7 @@ through the channel types below.
   `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
   `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`).
   The setup requests are the same edge (`ChatEvt::{Connect, Channels, Paired}`, each reply `Done`, `Unsupported` or `Refused(code)`).
-  `ChatConnect` and `ChatPair` are written on one connection at most (not replayable), since either may have been saved: a
+  `ChatConnect` (three tokens: `bot_token`, `user_token`, `app_token`; its `Debug`, pending kind, event and log line print no byte of any, `a_connect_formats_and_logs_no_token_byte`) and `ChatPair` are written on one connection at most (not replayable), since either may have been saved: a
   connection that ends first, a `handler_error` and an answer that does not parse give `ChatEvt::ConnectUnknown` or
   `PairUnknown { row, channel }` once, never a refusal, and the owner resolves again and never sends it again (tests
   `a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_again`, `the_setup_replies_carry_their_request_and_refusal`).

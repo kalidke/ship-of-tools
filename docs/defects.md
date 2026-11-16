@@ -748,6 +748,7 @@ owned by `docs/CLAUDE.md`.
   a shown picture; a narrower route of about 10 lines exists (a `Context` flag and a scope for `PreviewDraw` alone),
   left because the state is transient or the refusal's own status line already says why. Drawing on a PDF page is
   `DRAW-ON-PDF-PAGES`.
+- **CHAT-NAME-UNSHOWN-FOR-PERSON** [note] The drawer asks once for `[chat] name` and sends it with every person's post, but a hub that posts with the person's own token shows the person's Slack name and sends the name nowhere. The prompt serves only an older hub. Fix when no hub is older: drop the prompt and send an empty name (the daemon checks a name only for a row's post). From reading code.
 
 ## distribution
 
@@ -1031,6 +1032,11 @@ owned by `docs/CLAUDE.md`.
   (`Chat::launch`, `rust/backend/src/chat.rs`). `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
   window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
   reading code; never seen.
+- **CHAT-DRAWER-ORIGIN-LEGACY** [note] Nothing makes a `Drawer` post since a person's post went out with their own
+  token. `normalize`'s reading of an own post's `person` metadata, username suffix and file-share label, `mail`'s `the
+  chat drawer` role and the window's `DRAWER` badge serve only posts made before. Deleting them changes the wire
+  (`Origin::Drawer`, which an older reader takes as `other`), and older drawer posts would then read as the app's `Bot`
+  and not as mail. From reading code.
 
 ## records
 
@@ -1073,6 +1079,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-PERSON-POST-NOT-ANSWERED** (chat) [person] closed by the landing that fixes it, 2026-11-16, seen in use by a person ("the point was that if post from here as me, the bot should answer"): a post from the Chat drawer reached Slack as the app's own message, under the custom author `<name> (person via Ship of Tools)` and the bot token, and another responder in the channel that skips every message with a `bot_id` never answered it. A person's post now goes out with their own Slack user token (`xoxp-`), carrying only the channel, the text and the thread; a hub with no such token posts nothing for the person and asks for a connect (the Connect step's `post as you` screen). Not yet checked in use: that Slack's message for a post made with a user token has no `bot_id` and no `subtype` (`rust/chat/CLAUDE.md` guarantee 2); it is checked at a person's first post on a release candidate, and this item reopens with that evidence if the responder still does not answer.
 - **CHAT-TEST-VERBATIM-FOLDER** (chat) [note] closed by the landing that fixes it, 2026-11-16, a red in a hosted run (Windows), no use: the setup tests' end-to-end test loaded `chat.toml` through `std::fs::canonicalize`, which on Windows gives the verbatim spelling (`\\?\C:\...`), and compared it with the daemon's spelling, which `canonical` de-verbatims. The test now loads through the daemon's own canonicalizer (`chat::canon_of`); no other chat or setup test used `std::fs::canonicalize` in its place.
 - **CHAT-SETUP-NEEDS-FILES** (chat) [person] closed by the landing that fixes it, 2026-11-16, seen by a person reading the guide: setting the chat up took making and editing `chat-secrets.toml` and `chat.toml` on the hub, with a daemon restart for each change, and the guide did not say which steps were once per workspace and which per project. The Chat drawer now connects a workspace (the Connect step, `drawer/chat/connect.rs`: the person makes their own app and pastes its two tokens) and picks each project's channel (the picker), the daemon writing both files and applying them with no restart; the guide leads with both.
 - **CHAT-GUIDE-ONE-COMPUTER-HUB** (records) [note] closed by the landing that fixes it, 2026-11-16, a note from reading code, never seen: `guide/chat-setup.md` said a person on one computer runs the chat there, but the daemon's hub fact needed `hosts.toml` to parse and name this computer, so a computer with no `hosts.toml` ran no chat. A computer with no `hosts.toml` and a name is now its own hub for the chat (`is_hub`, `a_computer_with_no_hosts_toml_runs_its_own_chat_and_a_broken_one_does_not`); one whose file does not parse is still not.

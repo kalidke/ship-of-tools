@@ -84,15 +84,16 @@ async fn private_redirect_keeps_slack_auth_and_refuses_foreign_destinations() {
         .await;
         let http = fake.http();
         let bearer = || Secret::new(TOKEN);
-        let want = format!("Bearer {TOKEN}");
 
-        // A Slack-host redirect, absolute and relative, keeps the authorization on every hop.
-        for (start, last_host) in [
-            ("/start-slack", "api.slack.com"),
-            ("/start-relative", "files.slack.com"),
-        ] {
+        // A Slack-host redirect, absolute and relative, keeps the authorization on every hop, a person's user token
+        // as the bot's.
+        let person = ["xox", "p-sentinel-person-not-a-credential"].concat();
+        for (token, start, last_host) in [TOKEN, person.as_str()].into_iter().flat_map(|t| {
+            [(t, "/start-slack", "api.slack.com"), (t, "/start-relative", "files.slack.com")]
+        }) {
+            let want = format!("Bearer {token}");
             let response = http
-                .send(get(&fake, "files.slack.com", start).bearer(bearer()))
+                .send(get(&fake, "files.slack.com", start).bearer(Secret::new(token)))
                 .await
                 .expect(start);
             assert_eq!((response.status(), response.body()), (200, &b"final"[..]));

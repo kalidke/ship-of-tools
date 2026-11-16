@@ -10,6 +10,8 @@ use sot_chat::service::Service;
 pub(crate) const SELF: &str = "hub-box";
 const BOT: &str = "xoxb-1111-2222-aaaa";
 const APP: &str = "xapp-1-A111-2222-bbbb";
+/// The person's user token, split so no source line holds a token-shaped literal for the secret scanner.
+const USER: &str = concat!("xox", "p-3333-4444-dddd");
 /// A bound no test relies on meeting: it only has to be long enough for a stop that finishes.
 const LONG: Duration = Duration::from_secs(60);
 
@@ -90,7 +92,7 @@ impl Home {
     }
 
     pub(crate) fn secrets(&self) {
-        self.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\n"));
+        self.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\nuser_token = \"{USER}\"\n"));
     }
 
     /// Both files, with one mapped row.
@@ -350,6 +352,29 @@ async fn a_mapped_folder_with_no_row_at_start_leaves_the_other_projects_mapped()
     let text = log.text();
     assert!(text.contains("mapping=2") && text.contains("is ignored"), "{text}");
     assert!(!text.contains(&*gone.to_string_lossy()), "the ignored folder's path is not logged");
+}
+
+/// Each load whose secrets hold no user token says so once, in fixed words with no data; one that holds it says nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_load_whose_secrets_hold_no_user_token_warns_once_in_fixed_words() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    let row = home.folder("a");
+    home.chat_toml(&[row.to_string_lossy().into_owned()]);
+    home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\n"));
+    let warning = "chat-secrets.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer";
+    let listener = Arc::new(Fake::default());
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    assert_eq!(settled(&chat).await, Status::Running);
+    let text = log.text();
+    assert_eq!(text.matches(warning).count(), 1, "{text}");
+    assert!(!text.contains("xox") && !text.contains("xapp"), "a token form in the log");
+
+    // The same home with the user token added: a new load says nothing more.
+    home.secrets();
+    let again = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    assert_eq!(settled(&again).await, Status::Running);
+    assert_eq!(log.text().matches(warning).count(), 1, "a user token was held, and the load warned");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -211,6 +211,16 @@ fn unescaped(s: &str) -> String {
     String::from_utf8(out).unwrap()
 }
 
+/// The user scopes are exactly the two the person's own token needs; the bot scopes, events and settings are the ones
+/// the test below pins.
+#[test]
+fn the_manifest_asks_to_post_and_share_files_as_the_installer() {
+    let m: serde_json::Value = serde_json::from_str(&slack_app_manifest("Ship of Tools (lab-user)")).unwrap();
+    let user: Vec<&str> = m["oauth_config"]["scopes"]["user"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert_eq!(user, ["chat:write", "files:write"]);
+    assert_eq!(m["oauth_config"]["scopes"].as_object().unwrap().len(), 2, "the bot and the user scopes, nothing else");
+}
+
 #[test]
 fn the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it() {
     let manifest = slack_app_manifest("Ship of Tools (lab-user)");

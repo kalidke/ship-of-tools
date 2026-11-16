@@ -129,6 +129,7 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         },
         OutgoingReq::ChatConnect {
             bot_token: serde_json::from_value(serde_json::json!("ccn.bot")).unwrap(),
+            user_token: serde_json::from_value(serde_json::json!("ccn.user")).unwrap(),
             app_token: serde_json::from_value(serde_json::json!("ccn.app")).unwrap(),
         },
         OutgoingReq::ChatChannels,

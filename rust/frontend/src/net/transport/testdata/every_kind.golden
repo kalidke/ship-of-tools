@@ -49,7 +49,7 @@
 > {"v":4,"id":50,"kind":"req","op":"chat.unwatch","payload":{"target":{"channel":"Ccu","row":"cu.row","workspace":"cu.ws"}}}
 > {"v":4,"id":51,"kind":"req","op":"chat.history","payload":{"after":null,"cursor":null,"limit":7,"target":{"channel":"Cch","row":"ch.row","workspace":"ch.ws"},"thread":null,"upper":null}}
 > {"v":4,"id":52,"kind":"req","op":"chat.post","payload":{"kind":"row","name":"cp.name","target":{"channel":"Ccp","row":"cp.row","workspace":"cp.ws"},"text":"cp.text","thread":null}}
-> {"v":4,"id":53,"kind":"req","op":"chat.connect","payload":{"app_token":"ccn.app","bot_token":"ccn.bot"}}
+> {"v":4,"id":53,"kind":"req","op":"chat.connect","payload":{"app_token":"ccn.app","bot_token":"ccn.bot","user_token":"ccn.user"}}
 > {"v":4,"id":54,"kind":"req","op":"chat.channels","payload":{}}
 > {"v":4,"id":55,"kind":"req","op":"chat.pair","payload":{"channel":"Ccpr","row":"cpr.row"}}
 > {"v":4,"id":56,"kind":"req","op":"selection.set","payload":{"selection":null,"workspace_id":"sel.ws"}}

@@ -21,32 +21,38 @@ is not enough).
 
 1. **Make the app.** Press Enter: your browser opens Slack's page that makes your app, already named
    `Ship of Tools (<the name you sign in to this computer with>)` (you can change it there; it is the name Slack shows
-   for your app). The app can list your workspace's channels, read and post in the ones it is in, and post your
-   messages; it cannot read direct messages or channels it is not in. Click **Next**, then **Create**, then
+   for your app). The app can list your workspace's channels, read and post in the ones it is in, and, with your own
+   token, post your messages as you; it cannot read direct messages or channels it is not in. Click **Next**, then **Create**, then
    **Install to Workspace**, then **Allow**, and press Enter in the drawer. If Slack says the app needs an
    administrator's approval, send the request and wait for Slack's message that it is approved; then, on the app's page
    in Slack, click **Install to Workspace** and **Allow**. (If you closed the drawer meanwhile, open it and press Right
    on the first screen to go straight to step 2.) If Slack's page was empty, press `Ctrl+C` (`Cmd+C` on a Mac) on this
    step to copy the app's description, then at [api.slack.com/apps](https://api.slack.com/apps) click
    **Create New App**, **From a manifest**, choose your workspace, paste it, **Next**, **Create**.
-2. **The first token.** Slack shows the app's **Bot User OAuth Token**, which starts with `xoxb-` (if not, at
-   api.slack.com/apps click your app, then **OAuth & Permissions**). Click **Copy**, click in the drawer and press
-   `Ctrl+V` (`Cmd+V` on a Mac).
-3. **The second token.** In Slack's menu on the left, click **Basic Information**; under **App-Level Tokens** click
+2. **The first two tokens.** Slack shows the app's **User OAuth Token**, which starts with `xoxp-` and lets Ship of
+   Tools post your messages as you, and its **Bot User OAuth Token**, which starts with `xoxb-` (if not, at
+   api.slack.com/apps click your app, then **OAuth & Permissions**). Click **Copy** beside one, click in the drawer and
+   press `Ctrl+V` (`Cmd+V` on a Mac); then do the same with the other, in either order. If the page shows no User
+   OAuth Token, your app was made before Ship of Tools posted as you: on that page, under **User Token Scopes**, click
+   **Add an OAuth Scope** and choose `chat:write`, then again for `files:write`; then click **Reinstall to Workspace**
+   and **Allow**, and the token shows at the top.
+3. **The last token.** In Slack's menu on the left, click **Basic Information**; under **App-Level Tokens** click
    **Generate Token and Scopes**, type a name (`messages`), click **Add Scope**, choose `connections:write`, click
    **Generate**, then **Copy**. Click in the drawer and press `Ctrl+V`.
 
 A token is a long code, like a password, that lets Ship of Tools act as your app: paste it only in the drawer. The
 drawer shows a pasted token as its first five characters and its length, and a paste that is not a Slack token is
-dropped; a paste in these steps never goes into a message. Once both are pasted, the drawer checks them with Slack
+dropped; a paste in these steps never goes into a message. Once all three are pasted, the drawer checks them with Slack
 (**connecting…**). Closing the drawer then does not stop the check: the hub finishes it, and a new try waits for its
-answer. The drawer says **connected**, with the workspace's ID; the hub keeps the two tokens in its settings folder,
+answer. The drawer says **connected**, with the workspace's ID; the hub keeps the three tokens in its settings folder,
 readable only by your account, and Enter goes on to choosing the project's channel. If Slack refuses a token, the
-drawer goes back to its step and says so; the other token is kept, so paste the refused one again.
+drawer goes back to its step and says so; the other tokens are kept, so paste the refused one again.
 
 If Slack later stops accepting the saved tokens (the app was removed from the workspace, say), the drawer says so.
-Press Enter to open your list of Slack apps: if your app is in it, click it and copy its two tokens again (steps 2 and
-3 follow in the drawer); if it is not, press Left to make the app again (step 1). To give the hub new tokens at any
+Press Enter to open your list of Slack apps: if your app is in it, click it and copy its three tokens again (steps 2 and
+3 follow in the drawer); if it is not, press Left to make the app again (step 1). A hub connected before Ship of Tools
+posted your messages as you shows the same screen, titled `post as you`, in place of the channel until its tokens are
+copied again; a post you make meanwhile is refused with that reason and your draft is kept. To give the hub new tokens at any
 time, choose **Connect Slack again**, last in the channel list (`Ctrl+Shift+K`).
 
 ## Per project: choose its channel
@@ -87,6 +93,9 @@ The drawer writes the same two files a person can write. To write them yourself 
        always_online: true
    oauth_config:
      scopes:
+       user:
+         - chat:write
+         - files:write
        bot:
          - channels:history
          - channels:read
@@ -108,7 +117,7 @@ The drawer writes the same two files a person can write. To write them yourself 
      token_rotation_enabled: false
    ```
 
-   Copy the **Bot User OAuth Token** (`xoxb-`), and make an App-Level Token with the scope `connections:write` as in
+   Copy the **User OAuth Token** (`xoxp-`) and the **Bot User OAuth Token** (`xoxb-`), and make an App-Level Token with the scope `connections:write` as in
    step 3 above (`xapp-`).
 2. Open Slack in a web browser and click the channel. The address looks like
    `https://app.slack.com/client/T0123ABCD/C0456EFGH`: `T0123ABCD` is your workspace's ID and `C0456EFGH` the
@@ -119,6 +128,7 @@ The drawer writes the same two files a person can write. To write them yourself 
    ```toml
    workspace = "T0123ABCD"
    bot_token = "xoxb-..."
+   user_token = "xoxp-..."
    app_token = "xapp-..."
    ```
 

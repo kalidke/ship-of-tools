@@ -259,8 +259,11 @@ impl ChatDrawer {
 
     /// The tokens the Connect step holds, for a test that a step kept or dropped them.
     #[cfg(test)]
-    pub(super) fn setup_held(&self) -> Option<(Option<String>, Option<String>)> {
-        self.connect().map(|c| (c.held().0.map(str::to_string), c.held().1.map(str::to_string)))
+    pub(super) fn setup_held(&self) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        self.connect().map(|c| {
+            let (bot, user, app) = c.held();
+            (bot.map(str::to_string), user.map(str::to_string), app.map(str::to_string))
+        })
     }
 
     /// The login the person's app is named for (State sets `connect::login()`; a test its own).
@@ -406,6 +409,11 @@ impl ChatDrawer {
                 outs
             }
             ChatEvt::Posted { req, reply } => {
+                // A hub that holds no token that posts as the person: the row is resolved again, so its `unconfigured`
+                // brings the Connect step in place of the channel.
+                if matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken })) {
+                    self.rows.resolve_again(host, &req.target.row);
+                }
                 let mut made = None;
                 let mut outs = self.owner_outs(|o| {
                     made = o.on_posted(host, &req, reply, now);

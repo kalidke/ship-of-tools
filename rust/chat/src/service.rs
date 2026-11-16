@@ -95,8 +95,8 @@ impl Service {
         http: Http,
         dir: &Path,
     ) -> Result<Service, ServiceError> {
-        let api = Api::new(http.clone(), credentials.bot, config.workspace()).map_err(ServiceError::Api)?;
-        Service::launch(config.workspace(), credentials.app, api, http, dir, BASE.into(), Timing::PRODUCT).await
+        let (app, api) = Service::api_of(config, credentials, &http)?;
+        Service::launch(config.workspace(), app, api, http, dir, BASE.into(), Timing::PRODUCT).await
     }
 
     /// `start` against the fixture's base URL (`FakeSlack::url("slack.com", "/api/")`), with the product's timing.
@@ -122,10 +122,17 @@ impl Service {
         base: String,
         timing: Timing,
     ) -> Result<Service, ServiceError> {
+        let (app, api) = Service::api_of(config, credentials, &http)?;
+        Service::launch(config.workspace(), app, api.with_base(base.clone()), http, dir, base, timing).await
+    }
+
+    /// The one place the credentials become an `Api` (the bot's token and the person's), and the app-level token left
+    /// for the listener. The product's start and the test's both go through it.
+    fn api_of(config: &Config, credentials: Credentials, http: &Http) -> Result<(Secret, Api), ServiceError> {
         let api = Api::new(http.clone(), credentials.bot, config.workspace())
             .map_err(ServiceError::Api)?
-            .with_base(base.clone());
-        Service::launch(config.workspace(), credentials.app, api, http, dir, base, timing).await
+            .with_person(credentials.user);
+        Ok((credentials.app, api))
     }
 
     async fn launch(

@@ -697,19 +697,29 @@ fn a_fresh_file_and_a_secrets_text_parse_back_and_format_no_token() {
     assert_eq!(c.mail_after(), None);
     assert_eq!(fresh("t0aaaa"), Err(E::BadId));
     assert_eq!(fresh("T0AAAA\"\nmail_after = \"1.000000"), Err(E::BadId));
-    let s = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&app())).unwrap();
+    let s = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
     no_token(&format!("{s} {s:?} {s:#?}"), "the secrets text's formats");
     let back = Credentials::parse(s.expose(), &c).unwrap();
     assert_eq!((back.bot.expose(), back.app.expose()), (bot().as_str(), app().as_str()));
+    assert_eq!(back.user.as_ref().map(|u| u.expose()), Some(user().as_str()));
     // Each token passes the load's grammar first: a swap, a twin, a quote, a space or a bare prefix is `BadToken`.
     let quoted = format!("{}\"x", bot());
     let spaced = format!("{} x", app());
-    for (b, a) in [(app(), bot()), (bot(), bot()), (quoted, app()), (bot(), spaced), ("xoxb-".to_string(), app())] {
-        let e = crate::config::secrets("T0AAAA", &secret(&b), &secret(&a)).map(drop).unwrap_err();
+    for (b, u, a) in [
+        (app(), user(), bot()),
+        (bot(), user(), bot()),
+        (quoted, user(), app()),
+        (bot(), user(), spaced),
+        ("xoxb-".to_string(), user(), app()),
+        (bot(), bot(), app()),
+        (bot(), app(), app()),
+        (bot(), "xoxp-".to_string(), app()),
+    ] {
+        let e = crate::config::secrets("T0AAAA", &secret(&b), &secret(&u), &secret(&a)).map(drop).unwrap_err();
         assert_eq!(e, E::BadToken);
         no_token(&format!("{e} {e:?}"), "a refusal");
     }
-    assert_eq!(crate::config::secrets("nope", &secret(&bot()), &secret(&app())).map(drop).unwrap_err(), E::BadId);
+    assert_eq!(crate::config::secrets("nope", &secret(&bot()), &secret(&user()), &secret(&app())).map(drop).unwrap_err(), E::BadId);
 }
 
 #[test]
@@ -816,7 +826,7 @@ fn the_secrets_go_through_the_private_writer_alone() {
     let observed = Writers { config: &config, secrets: &private };
     let s = Scratch::new("writers");
     let dir = s.0.join("made").join("sot");
-    let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&app())).unwrap();
+    let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
     write_secrets(&dir, &text, observed).unwrap();
     write_config(&dir, &fresh("T0AAAA").unwrap(), observed).unwrap();
     let seen = wrote.borrow();
@@ -837,4 +847,44 @@ fn the_secrets_go_through_the_private_writer_alone() {
         let mode = |name: &str| std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(SECRETS_FILE), 0o600);
     }
+}
+
+fn user() -> String {
+    ["xoxp", "-sentinel-user-cccc"].concat()
+}
+
+#[test]
+fn a_user_token_is_optional_of_its_own_form_and_formats_as_a_mask() {
+    let with = |user: &str| format!("{}user_token = \"{user}\"\n", secrets());
+    let long = |p: &str, n: usize| format!("{p}{}", "a".repeat(n - p.len()));
+    // A file written before the key loads, with no person's token.
+    assert!(creds(&secrets()).unwrap().user.is_none());
+    // A four-key file loads with it, and every format of the credentials is a mask.
+    let c = creds(&with(&user())).unwrap();
+    assert_eq!(c.user.as_ref().map(|u| u.expose()), Some(user().as_str()));
+    no_token(&format!("{c:?} {c:#?}"), "the credentials' format");
+    // The token's own form is `xoxp-`: the bot's, the app's, a bare prefix, a space and a wrong type are refused.
+    for (i, bad) in [bot(), app(), "xoxp-".to_string(), format!("{} x", user()), long("xoxp-", 513)].iter().enumerate() {
+        assert_eq!(creds(&with(bad)).map(drop), Err(E::BadToken), "bad token {i}");
+    }
+    assert_eq!(creds(&format!("{}user_token = [\"{}\"]\n", secrets(), user())).map(drop), Err(E::Malformed(None)));
+    assert!(creds(&with(&long("xoxp-", 512))).is_ok());
+    // The pasted grammar is the same function, and the others do not take it.
+    assert!(user_token(&user()).is_ok());
+    assert_eq!((user_token(&bot()).map(drop), bot_token(&user()).map(drop), app_token(&user()).map(drop)), (Err(E::BadToken), Err(E::BadToken), Err(E::BadToken)));
+    // A fifth key is still refused, unnamed; the user token's own key in `chat.toml` is named as another table's.
+    assert_eq!(creds(&format!("{}extra = 1\n", with(&user()))).map(drop), Err(E::UnknownKey(None)));
+    assert_eq!(parse(&chat("user_token = \"x\"\n")).map(drop), Err(E::UnknownKey(Some("user_token"))));
+}
+
+#[test]
+fn a_secrets_text_holds_the_three_tokens_and_parses_back() {
+    let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
+    let t: toml::Table = text.expose().parse().unwrap();
+    let mut keys: Vec<&str> = t.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["app_token", "bot_token", "user_token", "workspace"], "exactly the four keys");
+    assert_eq!(t["user_token"].as_str(), Some(user().as_str()));
+    let loaded = creds(text.expose()).unwrap();
+    assert_eq!((loaded.bot.expose(), loaded.user.map(|u| u.expose().to_string()), loaded.app.expose()), (bot().as_str(), Some(user()), app().as_str()));
 }

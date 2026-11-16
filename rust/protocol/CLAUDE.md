@@ -126,7 +126,7 @@ name is in this crate's one op table.
     reads a member added later safely: a `ChatCode` as `other`, a `service` as `other` (not running; resync every watch), a
     watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
-    **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, app_token}` answers
+    **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`) answers
     `{workspace}`, `chat.channels {}` answers `{channels: [{id, name, private, member}], more}`, and `chat.pair {row, channel?}`
     answers `{}` (an absent or null `channel` unpairs the row's folder). A token field is a `ChatToken`: serialized as its
     string, at most `MAX_TOKEN` (512) bytes, its `Debug` the text `<redacted>`, no `Display` (its bytes are read by `expose`, in
@@ -135,19 +135,19 @@ name is in this crate's one op table.
     (`is_id`); `more` says the list was cut there. The decoder bounds the entries and the name, not the escaped size: a full
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
     character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
-    (`not_connected`, `tokens_refused`, `start_failed`; a later reason reads as `other`); an older window reads the state as
+    (`not_connected`, `tokens_refused`, `start_failed`, and `no_user_token`: the chat runs but no user token is held for a person's post; a later reason reads as `other`); an older window reads the state as
     `invalid`, which it shows as its no-configuration words. `chat::slack_app_manifest(name)` is the Slack app's manifest as
     JSON (the app and bot named `name`, which `chat::slack_app_name(login)` makes `Ship of Tools (<login>)`, the login cut
     so the whole is at most `MAX_APP_NAME` (35) characters, Slack's limit, or `Ship of Tools` for a blank login: each
     person makes their own app, since people sharing one app's tokens each miss messages; the bot scopes `channels:history`, `channels:read`, `channels:join`,
-    `groups:history`, `groups:read`, `users:read`, `chat:write`, `chat:write.customize`, `files:read` and `files:write`;
+    `groups:history`, `groups:read`, `users:read`, `chat:write`, `chat:write.customize`, `files:read` and `files:write`, and the user scopes `chat:write` and `files:write` (the installer's own token posts and shares files as them; an administrator who approves apps sees them);
     the events `message.channels` and `message.groups`; Socket Mode on, token rotation and org deploy off), and
     `chat::slack_app_url(name)` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by that manifest with every
     byte outside the unreserved set percent-encoded; it holds no secret. Mechanism: three new ops, one new resolve state
-    and six new codes, all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
+    and six new codes, then the codes `user_token_refused` (the connect's refusal of the user token), `no_user_token` (the hub holds no token that posts as the person) and `not_a_member` (the person is not in the channel), with the reason `no_user_token`; each text is fixed (`every_code_has_its_one_text`), all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
     ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves all three (chat's guarantees 30 and 31);
     the window's Connect step sends `chat.connect` (fe-ui's Chat owner). Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
-    `an_older_reader_reads_unconfigured_as_invalid`, `a_full_channel_list_fits_the_envelope`,
+    `an_older_reader_reads_unconfigured_as_invalid`, `a_connect_carries_a_user_token_an_older_payload_lacks`, `the_no_user_token_reason_round_trips`, `a_full_channel_list_fits_the_envelope`,
     `the_setup_payloads_stop_at_their_bounds`, and the extended `every_request_reply_and_event_keeps_its_shape`,
     `the_chat_ops_are_declared_in_the_one_table`, `every_code_has_its_one_text`; `chat_tests.rs`:
     `the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_apps_name_carries_the_login_cut_to_slacks_limit`.
@@ -252,7 +252,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
 | 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
-| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_apps_name_carries_the_login_cut_to_slacks_limit` |
+| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_manifest_asks_to_post_and_share_files_as_the_installer`, `the_apps_name_carries_the_login_cut_to_slacks_limit` |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 

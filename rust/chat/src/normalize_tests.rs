@@ -462,6 +462,14 @@ fn a_prefix_in_an_own_posts_text_is_only_text() {
     assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, text));
 }
 
+/// Pins what already holds (green before the person's post changed): a post made with a person's own token has their
+/// `user`, the app's `app_id` and no `bot_id`, and it is a member's, not an own post of the app's bot.
+#[test]
+fn a_post_made_with_a_persons_token_reads_as_theirs() {
+    let r = new(json!({"ts": "1700000000.000100", "user": "U0PERSON", "app_id": "A0APP", "text": "hello"}));
+    assert_eq!((r.origin, r.author.id.as_str(), r.text.as_str()), (Origin::Member, "U0PERSON", "hello"));
+}
+
 #[test]
 fn with_no_identity_supplied_a_member_with_a_forged_prefix_is_a_member() {
     let none = Context {

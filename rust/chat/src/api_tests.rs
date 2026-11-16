@@ -18,6 +18,8 @@ use crate::http::{HttpError, Secret};
 use crate::normalize::MAX_TEXT;
 
 const TOKEN: &str = "sentinel-bot-token-not-a-credential";
+/// The person's user token, a different bearer from the bot's so a test can tell which one a request carried.
+const PERSON: &str = "sentinel-person-token-not-a-credential";
 const WS: &str = "T0TEAM";
 const OWN_USER: &str = "U0BOT";
 const OWN_BOT: &str = "B0BOT";
@@ -33,9 +35,15 @@ async fn bounded<T>(body: impl Future<Output = T>) -> T {
         .expect("the test exceeded its bound")
 }
 
+/// An `Api` holding the bot's token and the person's.
 fn new_api(fake: &FakeSlack) -> Api {
+    new_api_with(fake, Some(PERSON))
+}
+
+fn new_api_with(fake: &FakeSlack, person: Option<&str>) -> Api {
     Api::new(fake.http(), Secret::new(TOKEN), WS)
         .unwrap()
+        .with_person(person.map(Secret::new))
         .with_base(fake.url("slack.com", "/api/"))
 }
 
@@ -521,7 +529,7 @@ async fn a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown() {
         })
         .await;
         let api = ready(&fake).await;
-        let post = |c: &'static str| api.post(c, None, PostKind::Person, "Ada Test", "hello");
+        let post = |c: &'static str| api.post(c, None, PostKind::Row, "tester Test", "hello");
 
         assert!(matches!(post("C0OK").await, Ok(PostOutcome::Posted(ts)) if ts.as_str() == "1700000700.000100"));
         let sent = fake.seen().into_iter().find(|s| s.path() == "/api/chat.postMessage").unwrap();
@@ -529,10 +537,10 @@ async fn a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown() {
         assert_eq!(sent.authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
         let body = sent.json().unwrap();
         assert_eq!(body["text"], "hello", "no text prefix of any form");
-        assert_eq!(body["username"], "Ada Test (person via Ship of Tools)");
+        assert_eq!(body["username"], "tester Test (row via Ship of Tools)");
         assert_eq!(
             body["metadata"],
-            json!({"event_type": "sot_chat_post", "event_payload": {"kind": "person", "name": "Ada Test"}})
+            json!({"event_type": "sot_chat_post", "event_payload": {"kind": "row", "name": "tester Test"}})
         );
         assert!(body.get("thread_ts").is_none());
 
@@ -569,10 +577,10 @@ async fn a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown() {
             (None, "Ada", big.as_str()),
             (Some("1700000100.12345"), "Ada", "hi"),
         ] {
-            let r = api.post("C0OK", thread, PostKind::Person, name, text).await;
+            let r = api.post("C0OK", thread, PostKind::Row, name, text).await;
             assert!(r.is_err(), "{name:?} {text:.5}");
         }
-        assert!(api.post("bad id", None, PostKind::Person, "Ada", "hi").await.is_err());
+        assert!(api.post("bad id", None, PostKind::Row, "tester", "hi").await.is_err());
         assert_eq!(fake.seen().len(), before);
         fake.shutdown().await;
     })
@@ -1395,11 +1403,16 @@ async fn a_post_read_back_through_history_keeps_its_origin() {
                     let body = seen.json().unwrap();
                     let mut store = store.lock().unwrap();
                     let ts = format!("1700000{:03}.000100", store.len() + 1);
-                    // As Slack stores it: the app's bot id and user, the custom username, the metadata.
-                    store.push(json!({
-                        "ts": ts, "bot_id": OWN_BOT, "user": OWN_USER, "text": body["text"],
-                        "username": body["username"], "metadata": body["metadata"],
-                    }));
+                    // As Slack stores it: a person's token makes the person's own message (their user and the app's
+                    // `app_id`, no bot id), the bot's the app's, with the custom username and the metadata.
+                    if seen.authorization.as_deref() == Some(&*format!("Bearer {PERSON}")) {
+                        store.push(json!({"ts": ts, "user": "U0PERSON", "app_id": "A0APP", "text": body["text"]}));
+                    } else {
+                        store.push(json!({
+                            "ts": ts, "bot_id": OWN_BOT, "user": OWN_USER, "text": body["text"],
+                            "username": body["username"], "metadata": body["metadata"],
+                        }));
+                    }
                     Reply::json(&json!({"ok": true, "ts": ts}))
                 }
                 "/api/conversations.history" => {
@@ -1437,21 +1450,19 @@ async fn a_post_read_back_through_history_keeps_its_origin() {
             .unwrap();
         let by_ts = |ts: &str| page.records.iter().find(|r| r.ts.as_str() == ts).unwrap();
         let person = by_ts(&posted[0]);
-        assert_eq!(
-            (person.origin, person.author.name.as_str()),
-            (Origin::Drawer, "Ada Test")
-        );
+        assert_eq!((person.origin, person.author.id.as_str()), (Origin::Member, "U0PERSON"), "an ordinary message of theirs");
         assert_eq!(person.text, "from a person");
         let row = by_ts(&posted[1]);
         assert_eq!(
             (row.origin, row.author.name.as_str()),
             (Origin::Row, "build-7")
         );
-        // Every request carried the bot authorization and nothing else did.
-        assert!(fake
-            .seen()
-            .iter()
-            .all(|s| s.authorization.as_deref() == Some(&*format!("Bearer {TOKEN}"))));
+        // The person's post carried their token and every other request the bot's.
+        let (person_post, bot) = (format!("Bearer {PERSON}"), format!("Bearer {TOKEN}"));
+        let posts: Vec<Seen> = fake.seen().into_iter().filter(|s| s.path() == "/api/chat.postMessage").collect();
+        assert_eq!(posts[0].authorization.as_deref(), Some(&*person_post));
+        let by = |a: &str| fake.seen().iter().filter(|s| s.authorization.as_deref() == Some(a)).count();
+        assert_eq!((by(&person_post), by(&bot)), (1, fake.seen().len() - 1), "every request had one of the two");
         fake.shutdown().await;
     })
     .await;
@@ -1504,7 +1515,7 @@ async fn a_message_text_is_sent_escaped_and_bounded_escaped() {
         let first = sent(&fake).remove(0);
         let mut keys: Vec<&str> = first.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["channel", "metadata", "text", "username"]);
+        assert_eq!(keys, ["channel", "text"]);
 
         // A mention token typed by a person is text, not a ping.
         assert!(matches!(post("<!channel> <@U0BOT>".into()).await, Ok(PostOutcome::Posted(_))));
@@ -2220,18 +2231,18 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
             "the label and the comment, escaped"
         );
 
-        // A person's file with no comment and no thread: the label alone, at the channel's top level.
-        let outcome = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada Test", "a.png", PNG.to_vec(), None).await;
+        // A row's file with no comment and no thread: the label alone, at the channel's top level.
+        let outcome = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "tester Test", "a.png", PNG.to_vec(), None).await;
         assert!(matches!(outcome, Ok(FileOutcome::Posted { .. })), "{outcome:?}");
         let body = fake.seen().pop().unwrap().json().unwrap();
-        assert_eq!(body["initial_comment"], "Ada Test (person via Ship of Tools)");
+        assert_eq!(body["initial_comment"], "tester Test (row via Ship of Tools)");
         assert!(body.get("thread_ts").is_none());
         assert_eq!(shared(&fake), 2);
 
         // Input a file post cannot carry is refused before anything is sent; the bound is on the escaped label and
         // comment together.
         let before = fake.seen().len();
-        let fits = "x".repeat(MAX_TEXT - "Ada (person via Ship of Tools): ".len());
+        let fits = "x".repeat(MAX_TEXT - "tester (row via Ship of Tools): ".len());
         let over = format!("{fits}&");
         let long_name = "x".repeat(257);
         let big = vec![0u8; MAX_CHAT_FILE + 1];
@@ -2249,13 +2260,13 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
             ("C0CHAN", None, "Ada", "a.png", PNG, Some(&over)),
         ];
         for (channel, thread, name, file, bytes, comment) in cases {
-            let r = api.post_file(api.transfer().unwrap(), channel, thread, PostKind::Person, name, file, bytes.to_vec(), comment).await;
+            let r = api.post_file(api.transfer().unwrap(), channel, thread, PostKind::Row, name, file, bytes.to_vec(), comment).await;
             assert!(r.is_err(), "{channel} {name:?} {file:.10} {} {:?}", bytes.len(), comment.map(str::len));
         }
         assert_eq!(fake.seen().len(), before, "nothing sent for a refused input");
-        let exact = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), Some(&fits)).await;
+        let exact = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "tester", "a.png", PNG.to_vec(), Some(&fits)).await;
         assert!(matches!(exact, Ok(FileOutcome::Posted { .. })), "the bound itself is carried");
-        let full_size = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "Ada", "a.png", vec![7u8; MAX_CHAT_FILE], None).await;
+        let full_size = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "tester", "a.png", vec![7u8; MAX_CHAT_FILE], None).await;
         assert!(matches!(full_size, Ok(FileOutcome::Posted { .. })), "a file of exactly the bound is carried");
         assert_eq!(fake.seen().iter().rev().nth(1).unwrap().body.len(), MAX_CHAT_FILE);
 
@@ -2386,7 +2397,7 @@ async fn a_file_share_read_back_through_history_keeps_its_origin() {
         let a = api
             .post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", "fig.png", PNG.to_vec(), Some("the <fit> & more"))
             .await;
-        let b = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "R&D <Ada>", "b.png", PNG.to_vec(), None).await;
+        let b = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "R&D <tester>", "b.png", PNG.to_vec(), None).await;
         let posted: Vec<String> = [a, b]
             .into_iter()
             .map(|o| match o {
@@ -2400,8 +2411,8 @@ async fn a_file_share_read_back_through_history_keeps_its_origin() {
         assert_eq!((row.origin, row.author.name.as_str()), (Origin::Row, "build-7"));
         assert_eq!(row.text, "the &lt;fit&gt; &amp; more", "the comment, as Slack's text");
         assert_eq!(row.files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["fig.png"]);
-        let person = by_ts(&posted[1]);
-        assert_eq!((person.origin, person.author.name.as_str(), person.text.as_str()), (Origin::Drawer, "R&D <Ada>", ""));
+        let second = by_ts(&posted[1]);
+        assert_eq!((second.origin, second.author.name.as_str(), second.text.as_str()), (Origin::Row, "R&D <tester>", ""));
         fake.shutdown().await;
     })
     .await;
@@ -2937,6 +2948,123 @@ async fn each_variant_is_read_under_its_own_deadline() {
             assert_eq!(api.fetch_file("C0CHAN", "F0PIC", variant).await, Err(ApiError::Http(HttpError::Timeout)), "{variant:?}");
             assert!(start.elapsed() < Duration::from_secs(10), "{variant:?} ended at its own deadline");
         }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The keys of a request's JSON body, sorted.
+fn keys(seen: &Seen) -> Vec<String> {
+    let mut keys: Vec<String> = seen.json().unwrap().as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
+#[tokio::test]
+async fn a_persons_post_goes_with_their_token_and_names_nothing_of_the_app() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or(Reply::json(&json!({"ok": true, "ts": "1700000700.000100"})))
+        })
+        .await;
+        let api = ready(&fake).await;
+        let posts = |fake: &FakeSlack| -> Vec<Seen> {
+            fake.seen().into_iter().filter(|s| s.path() == "/api/chat.postMessage").collect()
+        };
+
+        let posted = api.post("C0CHAN", None, PostKind::Person, "tester Test", "a <b> & c").await;
+        assert!(matches!(posted, Ok(PostOutcome::Posted(_))), "{posted:?}");
+        let thread = api.post("C0CHAN", Some("1700000100.000000"), PostKind::Person, "tester Test", "re").await;
+        assert!(matches!(thread, Ok(PostOutcome::Posted(_))), "{thread:?}");
+        // The name is neither checked nor sent for a person's post.
+        let unnamed = api.post("C0CHAN", None, PostKind::Person, "", "no name").await;
+        assert!(matches!(unnamed, Ok(PostOutcome::Posted(_))), "{unnamed:?}");
+
+        let sent = posts(&fake);
+        assert_eq!(sent.len(), 3);
+        for s in &sent {
+            assert_eq!(s.authorization.as_deref(), Some(&*format!("Bearer {PERSON}")), "the person's bearer");
+        }
+        assert_eq!(keys(&sent[0]), ["channel", "text"], "no username, metadata, icon or label");
+        assert_eq!(sent[0].json().unwrap()["text"], "a &lt;b&gt; &amp; c", "the text is Slack's, escaped");
+        assert_eq!(keys(&sent[1]), ["channel", "text", "thread_ts"]);
+        assert_eq!(sent[1].json().unwrap()["thread_ts"], "1700000100.000000");
+        assert_eq!(keys(&sent[2]), ["channel", "text"]);
+
+        // A row's post in the same client is unchanged: the bot's bearer, its author and its metadata.
+        let row = api.post("C0CHAN", None, PostKind::Row, "build-7", "hi").await;
+        assert!(matches!(row, Ok(PostOutcome::Posted(_))), "{row:?}");
+        let row = posts(&fake).pop().unwrap();
+        assert_eq!(row.authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        assert_eq!(keys(&row), ["channel", "metadata", "text", "username"]);
+        assert_eq!(row.json().unwrap()["username"], "build-7 (row via Ship of Tools)");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_token_is_forgotten() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            match seen.json().unwrap_or_default()["channel"].as_str().unwrap_or("") {
+                "C0NOTIN" => Reply::json(&json!({"ok": false, "error": "not_in_channel"})),
+                "C0REVOKED" => Reply::json(&json!({"ok": false, "error": "token_revoked"})),
+                "C0SCOPE" => Reply::json(&json!({"ok": false, "error": "missing_scope"})),
+                "C0GONE" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
+                _ => Reply::json(&json!({"ok": true, "ts": "1700000700.000100"})),
+            }
+        })
+        .await;
+        let posts = |fake: &FakeSlack| calls(fake, "chat.postMessage");
+
+        // None held: nothing is sent, and the bot's token is not used in its place.
+        let bare = new_api_with(&fake, None);
+        assert!(!bare.posts_as_person());
+        let got = bare.post("C0CHAN", None, PostKind::Person, "tester", "hi").await;
+        assert_eq!(got, Err(ApiError::NoPersonToken));
+        // A person's share is refused unsent too, with or without a token: it would go out under the bot's.
+        for api in [&bare, &new_api(&fake)] {
+            let file = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "tester", "a.png", PNG.to_vec(), None).await;
+            assert_eq!(file, Err(ApiError::BadRequest));
+        }
+        assert_eq!((posts(&fake), steps(&fake).len()), (0, 0), "no request of any kind");
+        assert_eq!(ApiError::NoPersonToken.code(), "no_person_token");
+        // A row's post is not the person's: it still goes out.
+        assert!(matches!(bare.post("C0CHAN", None, PostKind::Row, "build-7", "hi").await, Ok(PostOutcome::Posted(_))));
+
+        // Not being in the channel is the person's to fix: the token is kept.
+        let api = new_api(&fake);
+        assert!(api.posts_as_person());
+        let got = api.post("C0NOTIN", None, PostKind::Person, "tester", "hi").await;
+        assert_eq!(got, Ok(PostOutcome::Refused("not_in_channel".into())));
+        assert!(api.posts_as_person(), "kept");
+        // So is a channel that is not found.
+        let got = api.post("C0GONE", None, PostKind::Person, "tester", "hi").await;
+        assert_eq!(got, Ok(PostOutcome::Refused("channel_not_found".into())));
+        assert!(api.posts_as_person(), "kept");
+
+        // A refusal that names the token or its scope forgets it, and the answer is still the refusal. The next post
+        // is refused unsent.
+        for (channel, code) in [("C0REVOKED", "token_revoked"), ("C0SCOPE", "missing_scope")] {
+            let api = new_api(&fake);
+            let got = api.post(channel, None, PostKind::Person, "tester", "hi").await;
+            assert_eq!(got, Ok(PostOutcome::Refused(code.into())));
+            assert!(!api.posts_as_person(), "{code}: forgotten");
+            let before = posts(&fake);
+            let again = api.post("C0CHAN", None, PostKind::Person, "tester", "hi").await;
+            assert_eq!(again, Err(ApiError::NoPersonToken), "{code}");
+            assert_eq!(posts(&fake), before, "{code}: nothing sent");
+        }
+
+        // A row's refused post leaves the person's token alone.
+        let api = new_api(&fake);
+        let got = api.post("C0REVOKED", None, PostKind::Row, "build-7", "hi").await;
+        assert_eq!(got, Ok(PostOutcome::Refused("token_revoked".into())));
+        assert!(api.posts_as_person(), "a row's refusal is the bot token's");
         fake.shutdown().await;
     })
     .await;

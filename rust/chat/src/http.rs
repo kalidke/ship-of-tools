@@ -122,7 +122,7 @@ impl fmt::Display for HttpError {
 
 impl Error for HttpError {}
 
-/// One operation: a method, a URL, an optional bot authorization, an optional body and its deadline. The URL may be
+/// One operation: a method, a URL, an optional authorization (the bot's or the person's), an optional body and its deadline. The URL may be
 /// private (a file download); it never formats.
 pub struct Request {
     method: Method,
@@ -172,7 +172,7 @@ impl Request {
         self
     }
 
-    /// Send the bot authorization with each hop of this operation.
+    /// Send the authorization (the bot's or the person's token) with each hop of this operation.
     pub fn bearer(mut self, token: Secret) -> Request {
         self.bearer = Some(token);
         self

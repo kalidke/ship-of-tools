@@ -450,7 +450,7 @@ fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
     assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
     assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
     let said = hint(false)[1..].join(" ");
-    assert_eq!(said, format!("What you post appears in the channel with your name, marked as sent through your app. {chord} changes this project's channel."));
+    assert_eq!(said, format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel."));
     // The prompt row comes first at any height, and a narrow drawer wraps it.
     assert_eq!(compose_rows(&ComposeText::of(None, None, false), 80, 1), ["> type a message and press Enter to post it"]);
     assert!(compose_rows(&ComposeText::of(None, None, false), 80, 0).is_empty());
