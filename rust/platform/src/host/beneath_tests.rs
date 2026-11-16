@@ -638,7 +638,8 @@ fn a_final_name_held_without_delete_sharing_fails_the_write() {
     std::fs::write(root.join("f.txt"), b"old").unwrap();
     let _held = std::fs::OpenOptions::new().read(true).share_mode(1 | 2).open(root.join("f.txt")).unwrap();
     let err = write_beneath(&root, "f.txt", b"new").unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(5));
+    // The rename with POSIX semantics answers a sharing violation (32); the classic replace it falls back to answers 5.
+    assert_eq!(err.raw_os_error(), Some(32));
     assert_eq!(std::fs::read(root.join("f.txt")).unwrap(), b"old");
     assert_eq!(entries(&root), ["f.txt"]);
 }
