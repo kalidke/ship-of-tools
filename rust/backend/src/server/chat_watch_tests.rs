@@ -125,7 +125,13 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
                     hello.acquire().await.unwrap().forget();
                     peer.send(&json!({"type": "hello", "num_connections": 1})).await;
                     let mut rx = rx.lock().await;
-                    while let Some(envelope) = rx.recv().await {
+                    // Until the client goes, so a later socket (a reload's) takes the feed.
+                    loop {
+                        let envelope = tokio::select! {
+                            e = rx.recv() => e,
+                            () = peer.drain() => None,
+                        };
+                        let Some(envelope) = envelope else { break };
                         peer.send(&envelope).await;
                         if peer.recv(Duration::from_secs(10)).await.is_some() {
                             acked.fetch_add(1, Ordering::SeqCst);
@@ -483,9 +489,36 @@ async fn a_service_stop_reaches_watchers_as_status() {
     assert!(matches!(payload["service"].as_str(), Some("stopping" | "stopped")), "{payload}");
     assert_eq!(payload["resync"], json!(["C0AAAA"]), "every watch is told to resync");
     // Their watches ended with the service, and none begins after it.
-    eventually("the owner's end", || hub.ended()).await;
+    eventually("the owner's end", || !hub.running()).await;
     assert!(hub.slots().is_empty());
     assert_eq!(code(&other.ask(5, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await), "unavailable");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watch_through_a_reload_is_told_and_its_next_watch_is_served_by_the_new_service() {
+    let (fake, lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let (chat, hub) = (rig.services.chat.clone(), rig.services.chat.hub().clone());
+    let first = chat.admit(&rig.rows, &alpha_target(&rig)).unwrap();
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    assert_eq!(chat.reload(&rig.rows).await, Status::Running);
+    // The watch is told its channel needs a snapshot, as at any stop.
+    let (name, payload) = conn.evt("a chat.status for the reload's stop").await;
+    assert_eq!(name, op::CHAT_STATUS, "{payload}");
+    assert_eq!(payload["resync"], json!(["C0AAAA"]), "{payload}");
+    // A new service with an owner of its own, and the first service's socket gone.
+    let second = chat.admit(&rig.rows, &alpha_target(&rig)).unwrap();
+    assert!(!Arc::ptr_eq(&first, &second));
+    after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
+    until("the first socket's end", || fake.sockets().0 == 1).await;
+    until("the new owner", || hub.running()).await;
+    // The next watch is served by the new service, and a post reaches the connection through it.
+    assert!(ok_watch(&conn.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    complete(&hub, &["C0AAAA"]).await;
+    lv.feed.send(message("C0AAAA", 1)).unwrap();
+    assert_eq!(conn.put_ts("the post through the new service").await, stamp(1));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -78,10 +78,9 @@ impl Table {
 }
 
 enum Owner {
+    /// None runs: none started yet, or the last one's service ended, so the next running service's starts one.
     Idle,
     Running,
-    /// The service stopped: this daemon's chat does not start again.
-    Ended,
 }
 
 pub(crate) struct Hub {
@@ -89,6 +88,8 @@ pub(crate) struct Hub {
     kick: Notify,
     events: broadcast::Sender<Evt>,
     owner: Mutex<Owner>,
+    /// Woken when an owner ends.
+    idle: Notify,
     conns: AtomicU64,
     /// The stop's way to the owner: a request to end the delivery, carrying the answer's sender. `None` until an owner
     /// runs; a send that fails, or an answer dropped unsent, means no owner is left to wait for.
@@ -108,6 +109,7 @@ impl Hub {
             kick: Notify::new(),
             events: broadcast::channel(EVENTS_QUEUE).0,
             owner: Mutex::new(Owner::Idle),
+            idle: Notify::new(),
             conns: AtomicU64::new(0),
             ending: Mutex::new(None),
             timing: Mutex::new(Timing::PRODUCT),
@@ -146,15 +148,25 @@ impl Hub {
         lock(&self.table).slots.iter().map(|(c, t)| (*c, t.channel.as_str().to_string())).collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn ended(&self) -> bool {
-        matches!(*lock(&self.owner), Owner::Ended)
-    }
-
     /// Whether the owner is running.
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {
         matches!(*lock(&self.owner), Owner::Running)
+    }
+
+    /// Until no owner runs: a reload starts its service only after the last one's owner ended, or the new service's
+    /// `ensure_owner` would find the old owner running and start none.
+    #[cfg(test)]
+    pub(super) async fn owner_ended(&self) {
+        loop {
+            let ended = self.idle.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
+            if matches!(*lock(&self.owner), Owner::Idle) {
+                return;
+            }
+            ended.await;
+        }
     }
 
     /// A service another `Watches` already serves is refused.
@@ -162,7 +174,6 @@ impl Hub {
         let mut owner = lock(&self.owner);
         match *owner {
             Owner::Running => Ok(()),
-            Owner::Ended => Err(ChatCode::Unavailable),
             Owner::Idle => {
                 let watches = service.watches().ok_or(ChatCode::Unavailable)?;
                 *owner = Owner::Running;
@@ -475,7 +486,8 @@ impl Own {
     /// The delivery for the hub's delivering channels, whose states are read and whose records the model hands over from
     /// here on; the start's read of the inboxes begins. A channel whose state cannot be read stays off.
     fn open_mail(&self, watches: &mut Watches, tx: mpsc::Sender<Done>) -> Option<Mail> {
-        let Some(Ok(config)) = &self.chat.config else { return None };
+        let loaded = self.chat.config();
+        let Some(Ok(config)) = loaded.as_ref() else { return None };
         let dir = sot_platform::host::state_dir::daemon_state_dir_in(&self.chat.env).join("chat");
         let (mut states, mut folders) = (Vec::new(), Vec::new());
         for (folder, channel) in config.mappings() {
@@ -685,7 +697,8 @@ impl Own {
         }
     }
 
-    /// The service stopped: every watching connection is told its channels need a snapshot, and every watch ends.
+    /// The service stopped: every watching connection is told its channels need a snapshot, every watch ends, and the
+    /// owner is idle again, for the next service a reload starts (a stopped service gives no second `Watches`).
     fn end(self) {
         let phase = match self.service.status() {
             Status::Stopping => ChatService::Stopping,
@@ -698,7 +711,8 @@ impl Own {
         table.states.clear();
         drop(table);
         self.hub.send(Evt::Status(Arc::new(status)));
-        *lock(&self.hub.owner) = Owner::Ended;
+        *lock(&self.hub.owner) = Owner::Idle;
+        self.hub.idle.notify_waiters();
     }
 }
 

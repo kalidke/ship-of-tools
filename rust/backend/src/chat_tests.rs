@@ -306,7 +306,7 @@ async fn a_hub_with_missing_or_refused_files_is_off_and_writes_nothing() {
     assert_eq!(chat.status(), Status::Secrets(ConfigError::Missing));
     assert_eq!(seen.opened().len(), 2);
     assert!(!called.load(Ordering::SeqCst));
-    assert_eq!(registry.len(), 0, "nothing started, so nothing to retire");
+    assert_eq!(registry.len(), 3, "an off hub registers, so a start a reload makes retires with the daemon");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -560,13 +560,14 @@ async fn retiring_a_start_under_way_drops_its_future() {
     home.configured();
     let (registry, probe) = (Registry::new(), Arc::new(()));
     let chat = begin(&home, &Observed::new(), &registry, holding(probe.clone()));
-    // The start task holds the probe from its first poll until it is dropped by the abort.
-    while Arc::strong_count(&probe) == 1 {
+    // The starter, which the chat keeps for a reload, holds one probe; the start task holds a second from its first
+    // poll until it is dropped by the abort.
+    while Arc::strong_count(&probe) <= 2 {
         tokio::task::yield_now().await;
     }
     assert!(retire(&registry, LONG).incomplete.is_empty());
     let dropped = async {
-        while Arc::strong_count(&probe) > 1 {
+        while Arc::strong_count(&probe) > 2 {
             tokio::task::yield_now().await;
         }
     };
@@ -604,7 +605,7 @@ async fn a_start_that_finishes_as_retirement_arrives_is_stopped_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
+async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_and_registered() {
     let home = Home::new(Some(SELF));
     home.configured();
     // A file where the folder belongs.
@@ -613,7 +614,7 @@ async fn a_lock_folder_that_cannot_be_made_leaves_the_chat_off_unregistered() {
     let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
     let chat = begin(&home, &Observed::new(), &registry, never(&called));
     assert_eq!(chat.status(), Status::Failed("lock"));
-    assert_eq!(registry.len(), 0);
+    assert_eq!(registry.len(), 1);
     assert!(!called.load(Ordering::SeqCst));
 }
 
@@ -805,6 +806,166 @@ async fn a_chat_whose_topology_names_another_hub_steps_down_and_a_broken_topolog
     assert!(chat.service().is_none());
     assert!(retire(&registry, LONG).incomplete.is_empty());
     assert_eq!(listener.stops.load(Ordering::SeqCst), 1, "a retirement after the step-down stops nothing again");
+}
+
+// ---- the reload ----
+
+/// Each start gives the next of `listeners` (the last again once they run out), and counts the tries.
+fn in_turn(listeners: &[Arc<Fake>], tries: &Arc<AtomicUsize>) -> Starter<Fake> {
+    let (listeners, tries) = (listeners.to_vec(), tries.clone());
+    Box::new(move |_, _, _| {
+        let made = listeners[tries.fetch_add(1, Ordering::SeqCst).min(listeners.len() - 1)].clone();
+        Box::pin(async move { Ok(made) })
+    })
+}
+
+fn fakes(n: usize) -> Vec<Arc<Fake>> {
+    (0..n).map(|_| Arc::new(Fake::default())).collect()
+}
+
+fn stops(listeners: &[Arc<Fake>]) -> Vec<usize> {
+    listeners.iter().map(|l| l.stops.load(Ordering::SeqCst)).collect()
+}
+
+/// The reload of a chat of fakes, which has no owner to start.
+async fn reload(chat: &Arc<Chat<Fake>>) -> Status {
+    chat.reload_then(|_| {}).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_applies_new_tokens_and_a_new_mapping_with_no_daemon_restart() {
+    let fake = slack().await;
+    let home = Home::new(Some(SELF));
+    let (a, b) = (home.configured(), home.folder("b"));
+    let rows = Workspaces::new();
+    let alpha = rows.insert(row("alpha", &a)).workspace_id.clone();
+    let beta = rows.insert(row("beta", &b)).workspace_id.clone();
+    let (registry, tries) = (Registry::new(), Arc::new(AtomicUsize::new(0)));
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), HUB_CHECK, Timing::PRODUCT);
+    assert_eq!(settled(&chat).await, Status::Running);
+    let first = chat.admit(&rows, &target(&alpha, "T0AAAA", "C0AAAA")).unwrap();
+    assert_eq!(chat.admit(&rows, &target(&beta, "T0AAAA", "C0BBBB")).err(), Some(ChatCode::Unmapped));
+
+    // A new bot token and a second mapping, written while the chat runs.
+    let bot = BOT.replace("aaaa", "cccc");
+    home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{bot}\"\napp_token = \"{APP}\"\n"));
+    home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
+    assert_eq!(chat.reload(&rows).await, Status::Running);
+    // The first service stopped, freeing the workspace's lock: the second start took it at its first try.
+    assert_eq!(first.status(), sot_chat::service::Status::Stopped);
+    assert_eq!(tries.load(Ordering::SeqCst), 2);
+    let identified = |token: &str| fake.seen().iter().filter(|s| s.path().ends_with("/auth.test") && s.authorization.as_deref().is_some_and(|h| h.ends_with(token))).count();
+    assert_eq!((identified(BOT), identified(&bot)), (1, 1), "each token's identity read once, the second by the reload");
+    let second = chat.admit(&rows, &target(&beta, "T0AAAA", "C0BBBB")).expect("the new mapping is admitted");
+    assert!(!Arc::ptr_eq(&first, &second));
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hub_booted_without_chat_toml_starts_at_its_first_reload_and_retires_with_the_daemon() {
+    let home = Home::new(Some(SELF));
+    let (registry, tries, listeners) = (Registry::new(), Arc::new(AtomicUsize::new(0)), fakes(1));
+    let chat = begin(&home, &Observed::new(), &registry, in_turn(&listeners, &tries));
+    assert_eq!(chat.status(), Status::Refused(ConfigError::Missing));
+    assert_eq!(registry.len(), 1);
+    home.configured();
+    assert_eq!(reload(&chat).await, Status::Running);
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    assert_eq!((stops(&listeners), chat.status()), (vec![1], Status::Stopped));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_after_retirement_began_starts_nothing() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (registry, tries, listeners) = (Registry::new(), Arc::new(AtomicUsize::new(0)), fakes(2));
+    let chat = begin(&home, &Observed::new(), &registry, in_turn(&listeners, &tries));
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert!(retire(&registry, LONG).incomplete.is_empty());
+    assert_eq!(reload(&chat).await, Status::Stopped);
+    assert_eq!(tries.load(Ordering::SeqCst), 1, "a reload after the retirement started a service");
+    assert!(chat.service().is_none());
+
+    // A daemon that was not the hub at its boot registered nothing, so a reload starts nothing even once it is the hub.
+    let other = Home::new(Some("elsewhere"));
+    other.configured();
+    let (registry, called) = (Registry::new(), Arc::new(AtomicBool::new(false)));
+    let chat = begin(&other, &Observed::new(), &registry, never(&called));
+    other.list(SELF);
+    assert_eq!(reload(&chat).await, Status::NotHub);
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(registry.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_during_a_reload_stops_what_it_started() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (registry, listeners, tries) = (Arc::new(Registry::new()), fakes(2), Arc::new(AtomicUsize::new(0)));
+    let (reg, made, count) = (registry.clone(), listeners.clone(), tries.clone());
+    // The retirement comes inside the reload's start, just before it returns its service.
+    let start: Starter<Fake> = Box::new(move |_, _, _| {
+        let n = count.fetch_add(1, Ordering::SeqCst).min(1);
+        let (reg, made) = (reg.clone(), made[n].clone());
+        Box::pin(async move {
+            if n == 1 {
+                assert!(retire(&reg, LONG).incomplete.is_empty());
+            }
+            Ok(made)
+        })
+    });
+    let chat = begin(&home, &Observed::new(), &registry, start);
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert_eq!(reload(&chat).await, Status::Stopped);
+    until("the reload's service stops", || stops(&listeners) == [1, 1]).await;
+    assert!(chat.service().is_none());
+    assert_eq!(chat.status(), Status::Stopped);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_reloads_at_once_run_one_after_the_other() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (listeners, tries, inflight, most) = (fakes(3), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (made, count, now, peak) = (listeners.clone(), tries.clone(), inflight.clone(), most.clone());
+    let start: Starter<Fake> = Box::new(move |_, _, _| {
+        let l = made[count.fetch_add(1, Ordering::SeqCst).min(2)].clone();
+        let (now, peak) = (now.clone(), peak.clone());
+        Box::pin(async move {
+            peak.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            now.fetch_sub(1, Ordering::SeqCst);
+            Ok(l)
+        })
+    });
+    let chat = begin(&home, &Observed::new(), &Registry::new(), start);
+    assert_eq!(settled(&chat).await, Status::Running);
+    let both = tokio::join!(reload(&chat), reload(&chat));
+    assert_eq!(both, (Status::Running, Status::Running));
+    assert_eq!((tries.load(Ordering::SeqCst), most.load(Ordering::SeqCst)), (3, 1));
+    assert_eq!(stops(&listeners), [1, 1, 0], "each reload stopped the service before it and started its own");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_step_down_watch_runs_after_two_reloads() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let (listeners, tries) = (fakes(3), Arc::new(AtomicUsize::new(0)));
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), in_turn(&listeners, &tries), FAST);
+    assert_eq!(settled(&chat).await, Status::Running);
+    for _ in 0..2 {
+        assert_eq!(reload(&chat).await, Status::Running);
+    }
+    let steps = || chat.shared.steps.load(Ordering::SeqCst);
+    // A stopped service's watch ends at its next ask; the running service keeps its own.
+    until("one watch on the hub fact", || steps() == 1).await;
+    tokio::time::sleep(5 * FAST).await;
+    assert_eq!(steps(), 1);
+    home.list("elsewhere");
+    until("the step-down", || chat.status() == Status::NotHub).await;
+    until("no watch left", || steps() == 0).await;
+    assert_eq!(stops(&listeners), [1, 1, 1]);
 }
 
 // ---- M3: the adapter every chat action passes ----
