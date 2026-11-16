@@ -12,8 +12,12 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
     // theirs can reach the REPL's draft or scrollback or the chat's. The Terminal's keys go to its pty, paste first.
     match help::DrawerInput::of(state.layout_help.drawer()) {
         help::DrawerInput::Chat => {
-            // The channel picker, when open, takes the keys first; then the name prompt, when the foot asks.
-            if drawer::chat::picker_key(state, &key, &label) || drawer::chat::name_key(state, &key, &label) {
+            // The Connect step takes every key while it shows (a paste there is a token, never the draft's); then the channel
+            // picker, when open; then the name prompt, when the foot asks.
+            if drawer::chat::connect_key(state, &key, &label)
+                || drawer::chat::picker_key(state, &key, &label)
+                || drawer::chat::name_key(state, &key, &label)
+            {
                 return Break(());
             }
             if drawer::chat::chat_apply(state, drawer::chat::chat_move(action)) {

@@ -71,6 +71,8 @@ pub(super) struct ChromeView<'a> {
     pub(super) chat_compose: Option<&'a crate::ui::drawer::chat::ComposeText>,
     /// How many compose rows were drawn, for the records' body to leave room for.
     pub(super) chat_foot: u16,
+    /// How far the drawn chat body scrolls, and the rows it had (`ChatDrawer::set_body_end`).
+    pub(super) chat_body_end: (u16, u16),
     pub(super) monitor_host_connected: bool,
     pub(super) monitor_host_label: &'a HostKey,
     pub(super) repl_input: &'a String,
@@ -444,7 +446,9 @@ impl ChromeView<'_> {
     ) {
         let ChromeView { drawer, chat_body, chat_compose, help_state, help_bindings, .. } = *self;
         if let Some(body) = chat_body.filter(|_| drawer == DrawerContent::Chat) {
-            let lines: Vec<RtLine> = body.lines(repl_rect.width as usize, repl_rect.height as usize).into_iter().map(RtLine::from).collect();
+            let (width, height) = (repl_rect.width as usize, repl_rect.height as usize);
+            self.chat_body_end = (body.scroll_end(width, height), repl_rect.height);
+            let lines: Vec<RtLine> = body.lines(width, height).into_iter().map(RtLine::from).collect();
             frame.render_widget(Paragraph::new(lines), repl_rect);
         }
         if let Some(text) = chat_compose.filter(|_| drawer == DrawerContent::Chat) {

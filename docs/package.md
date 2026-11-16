@@ -222,7 +222,7 @@ shown text, never shared with the agent), and the native witness (the real windo
 virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
 hub's chat configuration. Setting the chat up from the window is in progress: the daemon's `chat.connect` (two tokens
 checked with Slack, the secrets written owner-only, the chat restarted from its files with no daemon restart),
-`chat.resolve`'s `unconfigured`, `chat.channels` and `chat.pair` have landed, and the window's channel picker sends the last two (an unmapped row opens it, and so does `chat.setup`, `Primary+Shift+K`); no window sends `chat.connect` yet. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
+`chat.resolve`'s `unconfigured`, `chat.channels` and `chat.pair` have landed, and the window sends all three: the channel picker the last two (an unmapped row opens it, and so does `chat.setup`, `Primary+Shift+K`), and the Connect step `chat.connect` (a row whose hub answers `unconfigured`, or `Connect Slack again` in the picker, leads the person through making their own Slack app, named for their login, and pasting its two tokens). The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
 bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection,
 an author's messages grouped under one header with a tile in a gutter, and day dividers with the time alone in the
 header and Slack's thread summary, and Slack's inline styles (bold, italic, strike and code, by the drawer's reading of

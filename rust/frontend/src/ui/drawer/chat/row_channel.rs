@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatReply, OutgoingReq};
-use sot_protocol::ops::{ChatCode, ChatResolveRes};
+use sot_protocol::ops::{ChatCode, ChatResolveRes, ChatUnconfigured};
 use crate::ui::app::NAV_FIRE_DEBOUNCE;
 use crate::ui::chrome::cell_row;
 use crate::ui::ResultRowIdentity;
@@ -40,6 +40,8 @@ pub(super) enum Stand {
     Resolving,
     Mapped,
     Unmapped,
+    /// The hub's chat is off for a reason a connect fixes: the drawer shows the Connect step.
+    Unconfigured(ChatUnconfigured),
     NoConfig,
     NotHub,
     RowGone,
@@ -55,6 +57,7 @@ impl Stand {
             Stand::Resolving => "reading…".into(),
             Stand::Mapped => String::new(),
             Stand::Unmapped => "no channel".into(),
+            Stand::Unconfigured(_) => "Slack is not connected".into(),
             Stand::NoConfig => "the hub has no usable chat configuration: its daemon log says why".into(),
             Stand::NotHub => format!("the chat runs on the hub, not on {host}"),
             Stand::RowGone => ChatCode::StaleRow.text().into(),
@@ -115,6 +118,11 @@ impl RowChannel {
     /// owner takes the same target twice as nothing).
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool) {
         if up { self.connected.insert(host.clone()); } else { self.connected.remove(host); }
+        self.ask_again(host);
+    }
+
+    /// The wanted row on `host` is resolved again on the next frame (a link changed, or a connect was answered).
+    pub(super) fn ask_again(&mut self, host: &HostKey) {
         self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(ask_again);
     }
 
@@ -133,6 +141,7 @@ impl RowChannel {
         let stand = match reply {
             ChatReply::Done(ChatResolveRes::Mapped { .. }) => Stand::Mapped,
             ChatReply::Done(ChatResolveRes::Unmapped) => Stand::Unmapped,
+            ChatReply::Done(ChatResolveRes::Unconfigured { reason }) => Stand::Unconfigured(*reason),
             ChatReply::Done(_) => Stand::NoConfig,
             ChatReply::Unsupported => Stand::NoChat,
             ChatReply::Refused(ChatCode::Unavailable) => Stand::NotHub,

@@ -172,6 +172,7 @@ fn paint_chrome_nav(
         chat_title: " chat · C1 reading… ",
         chat_compose,
         chat_foot: 0,
+        chat_body_end: (0, 0),
         monitor_host_connected: true,
         monitor_host_label: &host,
         repl_input: &repl_input,

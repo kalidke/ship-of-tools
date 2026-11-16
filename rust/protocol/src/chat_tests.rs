@@ -213,12 +213,13 @@ fn unescaped(s: &str) -> String {
 
 #[test]
 fn the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it() {
-    let m: serde_json::Value = serde_json::from_str(SLACK_APP_MANIFEST).unwrap();
+    let manifest = slack_app_manifest("Ship of Tools (lab-user)");
+    let m: serde_json::Value = serde_json::from_str(&manifest).unwrap();
     assert_eq!(m["settings"]["socket_mode_enabled"], true);
     assert_eq!(m["settings"]["token_rotation_enabled"], false);
     assert_eq!(m["settings"]["org_deploy_enabled"], false);
-    assert_eq!(m["display_information"]["name"], "Ship of Tools");
-    assert_eq!(m["features"]["bot_user"]["display_name"], "Ship of Tools");
+    assert_eq!(m["display_information"]["name"], "Ship of Tools (lab-user)");
+    assert_eq!(m["features"]["bot_user"]["display_name"], "Ship of Tools (lab-user)");
     let scopes: Vec<&str> = m["oauth_config"]["scopes"]["bot"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
     for want in [
         "channels:history",
@@ -238,9 +239,26 @@ fn the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it() {
     let events: Vec<&str> = m["settings"]["event_subscriptions"]["bot_events"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
     assert_eq!(events, ["message.channels", "message.groups"]);
 
-    let url = slack_app_url();
+    let url = slack_app_url("Ship of Tools (lab-user)");
     let (head, body) = url.split_once("manifest_json=").unwrap();
     assert_eq!(head, "https://api.slack.com/apps?new_app=1&");
     assert!(body.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%".contains(&b)), "a byte outside the unreserved set is not escaped");
-    assert_eq!(unescaped(body), SLACK_APP_MANIFEST);
+    assert_eq!(unescaped(body), manifest);
+}
+
+/// D5: each person's own app is named for their login, cut to Slack's limit, and a name that needs escaping stays one
+/// JSON string.
+#[test]
+fn the_apps_name_carries_the_login_cut_to_slacks_limit() {
+    assert_eq!(slack_app_name("lab-user"), "Ship of Tools (lab-user)");
+    assert_eq!(slack_app_name("  "), "Ship of Tools");
+    assert_eq!(slack_app_name(""), "Ship of Tools");
+    let long = slack_app_name("abcdefghijklmnopqrstuvwxyz");
+    assert_eq!(long.chars().count(), MAX_APP_NAME);
+    assert_eq!(long, "Ship of Tools (abcdefghijklmnopqrs)");
+    // Slack counts characters, not bytes: a cut never splits one.
+    assert_eq!(slack_app_name(&"é".repeat(40)).chars().count(), MAX_APP_NAME);
+    let odd = slack_app_name("a\"b\nc");
+    let m: serde_json::Value = serde_json::from_str(&slack_app_manifest(&odd)).unwrap();
+    assert_eq!(m["display_information"]["name"], "Ship of Tools (a\"bc)");
 }

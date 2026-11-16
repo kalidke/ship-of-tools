@@ -422,7 +422,7 @@ impl ChatOwner {
         match evt {
             // The drawer (`ChatDrawer`) answers a resolve before the owner sees it.
             ChatEvt::Resolved { .. } => Vec::new(),
-            // The setup's replies belong to the Connect step and the picker; no request of theirs is sent yet.
+            // The drawer answers the setup's replies (the Connect step's and the picker's) before the owner sees them.
             ChatEvt::Connect { .. } | ChatEvt::ConnectUnknown | ChatEvt::Channels { .. } | ChatEvt::Paired { .. } | ChatEvt::PairUnknown { .. } => Vec::new(),
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),
             ChatEvt::History { req, reply } => self.on_history(host, &req, reply, now),

@@ -32,7 +32,7 @@ impl State {
                 help::Confirmation::Stale
             } else { help::Confirmation::None },
             workspace_locked: self.editor.is_editing(),
-            picker, prompt, editing, modal: editing || prompt || picker, chat_picking: pane == help::Pane::Chat && self.chat.picking(),
+            picker, prompt, editing, modal: editing || prompt || picker, chat_picking: pane == help::Pane::Chat && (self.chat.picking() || self.chat.in_setup()),
             restore: self.layout_help.restore_available(self.focus_prompts.focus(), self.layout_gates()),
             session: self.nav.tree().rows().get(self.nav.tree().selected()).is_some_and(|r| r.node.kind == "session"),
             alternate_screen: match pane {

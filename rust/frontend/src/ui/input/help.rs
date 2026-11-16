@@ -51,7 +51,7 @@ pub struct Context {
     pub restore: bool,
     pub session: bool,
     pub alternate_screen: bool,
-    /// The Chat drawer's channel picker is open.
+    /// The Chat drawer shows a modal screen (the channel picker or the Connect step), whose own words name its keys.
     pub chat_picking: bool,
 }
 /// Who the drawer's keys, paste, wheel and line scroll reach: the one decision every handler matches, with no

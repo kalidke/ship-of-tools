@@ -12,6 +12,7 @@ use crate::ui::persist::settings::Settings;
 use sot_platform::host::env::Env;
 
 mod compose;
+mod connect;
 mod drawer;
 mod mrkdwn;
 mod owner;
@@ -21,6 +22,7 @@ mod row_channel;
 mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
+pub(in crate::ui) use connect::connect_key;
 pub(in crate::ui) use drawer::ChatDrawer;
 pub(in crate::ui) use picker::Body;
 pub(in crate::ui) use view::{ChatHit, Step};
@@ -29,6 +31,8 @@ pub(in crate::ui) use view::ChatView;
 use owner::Out;
 #[cfg(test)]
 mod compose_tests;
+#[cfg(test)]
+mod connect_tests;
 #[cfg(test)]
 mod mrkdwn_tests;
 #[cfg(test)]
@@ -132,6 +136,7 @@ impl State {
     pub(in crate::ui) fn tick_chat(&mut self) {
         let wanted = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
         self.chat.set_focused(self.focus_prompts.focus() == PaneFocus::Repl);
+        self.chat.set_login(connect::login());
         let mut settling = false;
         self.with_chat(|c, now| {
             let (outs, wait) = c.tick(wanted, now);

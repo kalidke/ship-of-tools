@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget};
+use sot_protocol::chat::slack_app_name;
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -12,11 +13,14 @@ use crate::ui::ResultRowIdentity;
 use crate::ui::render::quad::ScreenRect;
 
 use super::compose::{Compose, ComposeText, Edit};
+use super::connect::{Asks, Connect};
 use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
 use super::picker::{pair_words, Body, Pick, Picker};
 use super::row_channel::{RowChannel, Stand};
 use super::thread::Thread;
 use super::view::{ChatHit, ChatView, Step};
+use crate::ui::input::keybindings::Action;
+use crate::ui::motion::ScrollMotion;
 
 /// A `chat.history` request in flight. `orphan`: its reader gave it up, so its reply is dropped.
 struct Read {
@@ -87,14 +91,46 @@ pub(in crate::ui) struct ChatDrawer {
     notice: Option<String>,
     /// The name being typed at the drawer's foot, while Enter found none set: the keys edit it, not the draft.
     asking: Option<String>,
-    /// The channel picker, which holds the channel's view meanwhile, and the row whose picker Escape closed: it opens by
-    /// itself for an unmapped row, once, until the row changes.
-    picker: Option<Picker>,
+    /// The one modal screen (the Connect step or the channel picker), which holds the channel's view meanwhile, and the row
+    /// whose picker Escape closed: the picker opens by itself for an unmapped row, once, until the row changes.
+    modal: Option<Modal>,
     dismissed: Option<ResultRowIdentity>,
+    /// The one `chat.connect` in flight, whatever has become of the step that sent it: no step sends another until its
+    /// reply, so a reply is only ever the connecting step's.
+    connect_sent: Option<HostKey>,
+    /// The login the person's app is named for (`connect::login`, set by State).
+    login: &'static str,
+    /// How far the last frame's modal body could scroll, and the rows it had: the scroll's bound and its page.
+    body_end: (u16, u16),
     /// The one `chat.pair` in flight, whatever has become of the picker that sent it: nothing is sent until its reply.
     pair_sent: Option<ResultRowIdentity>,
     /// The drawer has the keys (State sets it each frame): only then does an unmapped row open the picker by itself.
     focused: bool,
+}
+
+/// What holds the drawer's body in place of the records, one at a time. Whatever it is, the drawer parks the channel's view
+/// behind it, scrolls its body, routes the keys to it first, and ends it at a row change, a hidden drawer and a link change
+/// of its host.
+struct Modal {
+    kind: Kind,
+    parked: ChatView,
+    /// The body's rows scrolled past, and the eased motion toward what PageUp and PageDown asked.
+    scroll: u16,
+    motion: ScrollMotion,
+}
+
+enum Kind {
+    Connect(Connect),
+    Picker(Picker),
+}
+
+impl Modal {
+    fn host(&self) -> &HostKey {
+        match &self.kind {
+            Kind::Connect(c) => c.host(),
+            Kind::Picker(p) => &p.row.host,
+        }
+    }
 }
 
 /// What a request that could not be queued is told, as if the hub had refused it `unavailable`: a post, a pair or a channel
@@ -105,6 +141,7 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
         OutgoingReq::ChatPost { req } => ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Refused { code: refused }) },
         OutgoingReq::ChatPair { row, channel } => ChatEvt::Paired { row: row.clone(), channel: channel.clone(), reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatChannels => ChatEvt::Channels { reply: ChatReply::Refused(refused) },
+        OutgoingReq::ChatConnect { .. } => ChatEvt::Connect { reply: ChatReply::Refused(refused) },
         _ => return None,
     })
 }
@@ -137,22 +174,136 @@ impl ChatDrawer {
             self.cancel_name();
         }
         if step.changed {
-            // Another row's records are not the reader's place, and its thread and its picker are no one's.
+            // Another row's records are not the reader's place, and its thread and its modal screen are no one's.
             self.close_thread();
-            self.close_picker();
+            self.close_modal();
             self.dismissed = None;
             self.view.reset();
             outs = self.owner_outs(ChatOwner::stop);
         }
         outs.extend(step.resolve);
+        self.follow_setup();
         // An unmapped row opens the picker by itself while the drawer has the keys, once per row (Escape keeps it closed).
-        if self.focused && self.picker.is_none() && self.rows.stand() == Stand::Unmapped && self.dismissed.as_ref() != self.rows.row() {
+        if self.focused && self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.dismissed.as_ref() != self.rows.row() {
             let row = self.rows.row().cloned();
             outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
         }
         outs.extend(self.owner_outs(|o| o.tick(now)));
         outs.extend(self.thread_outs(|t| t.tick(now)));
         (outs, step.settling)
+    }
+
+    /// The Connect step follows the row's stand: `unconfigured` begins it (in place of the picker) or tells it the reason
+    /// again; another answer ends one begun from `unconfigured` while the person is still pasting (`Connect::ends_on_another_answer`).
+    fn follow_setup(&mut self) {
+        match self.rows.stand() {
+            Stand::Unconfigured(reason) => match self.modal.as_mut().map(|m| &mut m.kind) {
+                Some(Kind::Connect(c)) => c.reason(reason),
+                _ => {
+                    if let Some(host) = self.rows.row().map(|r| r.host.clone()) {
+                        self.open_modal(Kind::Connect(Connect::new(host, reason, self.login, true)));
+                    }
+                }
+            },
+            Stand::Resolving => {}
+            _ => {
+                if self.connect().is_some_and(Connect::ends_on_another_answer) {
+                    self.close_modal();
+                }
+            }
+        }
+    }
+
+    /// The modal screen takes the body: the channel's view (or a modal's before it) is set aside, the thread closed and the name
+    /// prompt ended.
+    fn open_modal(&mut self, kind: Kind) {
+        self.close_modal();
+        self.close_thread();
+        self.cancel_name();
+        let parked = self.parked_view();
+        self.modal = Some(Modal { kind, parked, scroll: 0, motion: ScrollMotion::default() });
+    }
+
+    /// The modal screen ends, dropping what it holds, and the channel's view returns.
+    fn close_modal(&mut self) -> Option<Kind> {
+        let m = self.modal.take()?;
+        self.view = m.parked;
+        Some(m.kind)
+    }
+
+    fn connect(&self) -> Option<&Connect> {
+        match self.modal.as_ref().map(|m| &m.kind) {
+            Some(Kind::Connect(c)) => Some(c),
+            _ => None,
+        }
+    }
+
+    fn picker(&self) -> Option<&Picker> {
+        match self.modal.as_ref().map(|m| &m.kind) {
+            Some(Kind::Picker(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn picker_mut(&mut self) -> Option<&mut Picker> {
+        match self.modal.as_mut().map(|m| &mut m.kind) {
+            Some(Kind::Picker(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Whether the Connect step shows: every key in the drawer is then its own (`connect::connect_action`).
+    pub(in crate::ui) fn in_setup(&self) -> bool {
+        self.connect().is_some()
+    }
+
+    /// The login the person's app is named for (State sets `connect::login()`; a test its own).
+    pub(in crate::ui) fn set_login(&mut self, login: &'static str) {
+        self.login = login;
+    }
+
+    /// A key in the Connect step (`Connect::key`). Enter on the connected screen opens the picker once the row has resolved
+    /// again; until then it says so.
+    pub(super) fn setup_key(&mut self, action: Option<Action>, paste: Option<&str>) -> (Vec<Out>, Asks) {
+        let busy = self.connect_sent.is_some();
+        let Some(Kind::Connect(c)) = self.modal.as_mut().map(|m| &mut m.kind) else { return (Vec::new(), Asks::default()) };
+        let screen = c.title();
+        let (out, mut asks) = c.key(action, paste, busy);
+        if c.title() != screen {
+            self.modal.iter_mut().for_each(|m| (m.scroll, m.motion) = (0, ScrollMotion::default()));
+        }
+        if let Some((host, _)) = &out {
+            self.connect_sent = Some(host.clone());
+        }
+        let mut outs: Vec<Out> = out.into_iter().collect();
+        if asks.done {
+            if matches!(self.rows.stand(), Stand::Mapped | Stand::Unmapped) {
+                self.close_modal();
+                let row = self.rows.row().cloned();
+                outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
+            } else {
+                asks.notice = Some("reading the hub again: press Enter in a moment".into());
+            }
+        }
+        (outs, asks)
+    }
+
+    /// PageUp and PageDown over a modal screen: its body moves a third of its rows, eased over `length`.
+    pub(in crate::ui) fn scroll_modal(&mut self, up: bool, now: Instant, length: Duration) {
+        let page = i32::from((self.body_end.1 / 3).max(1));
+        let end = self.body_end.0;
+        if let Some(m) = self.modal.as_mut() {
+            let rows = m.motion.ask_rows(if up { -page } else { page }, now, length);
+            m.scroll = m.scroll.saturating_add_signed(rows as i16).min(end);
+        }
+    }
+
+    /// What the chrome found the last frame's modal body to hold: how far it scrolls, and its rows.
+    pub(in crate::ui) fn set_body_end(&mut self, end: u16, rows: u16) {
+        self.body_end = (end, rows);
+        if let Some(m) = self.modal.as_mut() {
+            m.scroll = m.scroll.min(end);
+        }
     }
 
     /// When the owner's next short-paced watch is due (`ChatOwner::next_ask`), or the wanted row is next resolved for its
@@ -164,8 +315,9 @@ impl ChatDrawer {
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
         self.cancel_name();
-        if self.picker.as_ref().is_some_and(|p| &p.row.host == host) {
-            self.close_picker();
+        // A link change of a modal screen's host ends it, and any token it holds.
+        if self.modal.as_ref().is_some_and(|m| m.host() == host) {
+            self.close_modal();
         }
         self.flight.clear(host);
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
@@ -199,9 +351,30 @@ impl ChatDrawer {
             }
             ChatEvt::Resolved { .. } => Vec::new(),
             ChatEvt::Channels { reply } => {
-                if let Some(p) = self.picker.as_mut().filter(|p| &p.row.host == host) {
+                if let Some(p) = self.picker_mut().filter(|p| &p.row.host == host) {
                     p.on_channels(reply);
                 }
+                Vec::new()
+            }
+            // Any connect reply changes what the hub answers: the row is resolved again at once. Only the connecting step sent
+            // it (`connect_sent`), so only that step reads it.
+            ChatEvt::Connect { reply } => {
+                self.connect_sent = self.connect_sent.take().filter(|h| h != host);
+                if let Some(Kind::Connect(c)) = self.modal.as_mut().map(|m| &mut m.kind) {
+                    if c.host() == host {
+                        c.answered(reply);
+                    }
+                }
+                self.rows.ask_again(host);
+                Vec::new()
+            }
+            ChatEvt::ConnectUnknown => {
+                self.connect_sent = self.connect_sent.take().filter(|h| h != host);
+                if self.connect().is_some_and(|c| c.host() == host && c.connecting()) {
+                    self.close_modal();
+                }
+                self.notice = Some("Slack may be connected: the hub did not answer before the link ended; reading it again".into());
+                self.rows.ask_again(host);
                 Vec::new()
             }
             ChatEvt::Paired { row, channel, reply } => {
@@ -248,7 +421,7 @@ impl ChatDrawer {
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to write for".into()) };
         // Enter over an unmapped row with nothing typed asks for its channel.
-        if self.picker.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
+        if self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
             return self.open_picker(Some(row));
         }
         if self.owner.posting_row().is_some() {
@@ -283,21 +456,16 @@ impl ChatDrawer {
             Stand::Unmapped => false,
             other => return Err(other.words(self.rows.host())),
         };
-        if self.picker.is_some() {
+        if self.picker().is_some() {
             return Ok(Vec::new());
         }
-        self.close_thread();
-        self.cancel_name();
-        let parked = self.parked_view();
-        self.picker = Some(Picker::new(row.clone(), mapped, parked));
+        self.open_modal(Kind::Picker(Picker::new(row.clone(), mapped, slack_app_name(self.login))));
         Ok(vec![(row.host.clone(), OutgoingReq::ChatChannels)])
     }
 
     /// The picker ends, and the channel's view returns.
     fn close_picker(&mut self) -> bool {
-        let Some(p) = self.picker.take() else { return false };
-        self.view = p.parked;
-        true
+        self.picker().is_some() && self.close_modal().is_some()
     }
 
     /// Escape: the picker closes and does not open by itself again for this row until the row or its link changes.
@@ -312,16 +480,16 @@ impl ChatDrawer {
     }
 
     pub(in crate::ui) fn picking(&self) -> bool {
-        self.picker.is_some()
+        self.picker().is_some()
     }
 
     /// The picker's keys: Up and Down choose, typing narrows, and a channel link is picked as an entry is.
     pub(in crate::ui) fn picker_step(&mut self, down: bool) {
-        self.picker.iter_mut().for_each(|p| p.step(down));
+        self.picker_mut().into_iter().for_each(|p| p.step(down));
     }
 
     pub(in crate::ui) fn picker_edit(&mut self, edit: Edit) {
-        if let Some(p) = self.picker.as_mut() {
+        if let Some(p) = self.picker_mut() {
             p.edit(edit);
         }
     }
@@ -330,7 +498,7 @@ impl ChatDrawer {
         if self.pair_sent.is_some() {
             return Vec::new();
         }
-        let pick = self.picker.as_mut().and_then(Picker::enter);
+        let pick = self.picker_mut().and_then(Picker::enter);
         self.picked(pick)
     }
 
@@ -338,16 +506,21 @@ impl ChatDrawer {
         if self.pair_sent.is_some() {
             return Err("setting this project's channel…");
         }
-        let pick = self.picker.as_mut().map(|p| p.paste(text)).transpose()?;
+        let pick = self.picker_mut().map(|p| p.paste(text)).transpose()?;
         Ok(self.picked(pick))
     }
 
     /// What picking an entry sends: one `chat.pair` for a channel, or for none, and nothing more until its reply.
     fn picked(&mut self, pick: Option<Pick>) -> Vec<Out> {
-        let (Some(pick), Some(row)) = (pick, self.picker.as_ref().map(|p| p.row.clone())) else { return Vec::new() };
+        let (Some(pick), Some(row)) = (pick, self.picker().map(|p| p.row.clone())) else { return Vec::new() };
         let channel = match pick {
             Pick::Channel(c) => Some(c),
             Pick::Unpair => None,
+            // New tokens: the Connect step takes the picker's place, and stays until the person leaves it.
+            Pick::Reconnect => {
+                self.open_modal(Kind::Connect(Connect::new(row.host, ChatUnconfigured::NotConnected, self.login, false)));
+                return Vec::new();
+            }
         };
         self.pair_sent = Some(row.clone());
         vec![(row.host, OutgoingReq::ChatPair { row: row.workspace_id, channel })]
@@ -360,14 +533,14 @@ impl ChatDrawer {
     fn on_paired(&mut self, host: &HostKey, row: &str, channel: Option<&ChatChannel>, reply: Option<&ChatReply<ChatPairRes>>) {
         self.pair_sent = self.pair_sent.take().filter(|r| &r.host != host || r.workspace_id != row);
         self.rows.resolve_again(host, row);
-        let ours = self.picker.as_ref().is_some_and(|p| p.sent() && &p.row.host == host && p.row.workspace_id == row);
-        let private = ours && channel.is_some_and(|c| self.picker.as_ref().is_some_and(|p| p.is_private(c)));
+        let ours = self.picker().is_some_and(|p| p.sent() && &p.row.host == host && p.row.workspace_id == row);
+        let private = ours && channel.is_some_and(|c| self.picker().is_some_and(|p| p.is_private(c)));
         let words = match reply {
-            Some(reply) => pair_words(reply, private),
+            Some(reply) => pair_words(reply, private, &slack_app_name(self.login)),
             None => Some("the channel may have been set: the title shows what the hub has".into()),
         };
         if ours {
-            self.picker.iter_mut().for_each(Picker::paired);
+            self.picker_mut().into_iter().for_each(Picker::paired);
             if words.is_none() || reply.is_none() {
                 self.close_picker();
                 // A project set to no channel stays so until a person asks.
@@ -382,8 +555,9 @@ impl ChatDrawer {
     /// What the body says instead of records: the picker, or, for an unmapped row, how to pick a channel, or that the channel
     /// is empty. While a pair is in flight, that it is.
     pub(in crate::ui) fn body(&self) -> Option<Body> {
-        let mut body = match (&self.picker, self.rows.stand()) {
-            (Some(p), _) => p.body(),
+        let mut body = match (self.modal.as_ref(), self.rows.stand()) {
+            (Some(Modal { kind: Kind::Connect(c), scroll, .. }), _) => return Some(Body { scroll: *scroll, ..c.body() }),
+            (Some(Modal { kind: Kind::Picker(p), scroll, .. }), _) => Body { scroll: *scroll, ..p.body() },
             (None, Stand::Unmapped) => Body::words("this project has no channel: press Enter to pick one"),
             (None, _) if self.thread.is_none() && self.owner.no_messages() => return Some(Body::words("no messages")),
             _ => return None,
@@ -437,8 +611,10 @@ impl ChatDrawer {
 
     /// The title: the channel, then the words of the outcome (the row's, or for a mapped row the fill's).
     pub(in crate::ui) fn title(&self) -> String {
-        if let Some(p) = &self.picker {
-            return p.title();
+        match self.modal.as_ref().map(|m| &m.kind) {
+            Some(Kind::Connect(c)) => return c.title(),
+            Some(Kind::Picker(p)) => return p.title(),
+            None => {}
         }
         let host = self.rows.host();
         let words = match (self.rows.stand(), self.owner.fill()) {
@@ -465,10 +641,14 @@ impl ChatDrawer {
     pub(in crate::ui) fn layout(&mut self, fonts: &mut cosmic_text::FontSystem, body: ScreenRect, scale: f32, inside: ScreenRect) -> Vec<crate::ui::render::cells::CellQuad> {
         let now = chrono::Local::now();
         // The thread's records are its own; the channel's reader keeps the place it left.
-        // The picker's own view holds no record.
-        let records = if self.picker.is_some() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
+        // A modal screen's own view holds no record; its body scrolls on its eased motion.
+        if let Some(m) = self.modal.as_mut() {
+            let rows = m.motion.spend_rows(std::time::Instant::now(), f32::from(self.body_end.1.max(1)));
+            m.scroll = m.scroll.saturating_add_signed(rows as i16).min(self.body_end.0);
+        }
+        let records = if self.modal.is_some() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
-        if self.thread.is_none() && self.picker.is_none() {
+        if self.thread.is_none() && self.modal.is_none() {
             self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
             self.owner.reaches(self.view.at_oldest);
         }
@@ -482,7 +662,7 @@ impl ChatDrawer {
 
     /// Whether the reader's scroll is still arriving, so frames must keep coming.
     pub(in crate::ui) fn moving(&self) -> bool {
-        self.view.moving()
+        self.view.moving() || self.modal.as_ref().is_some_and(|m| m.motion.moving())
     }
 
     /// A mark key moves the mark (`view::ChatView::mark`).
@@ -562,6 +742,7 @@ impl ChatDrawer {
 
     /// The chat is not shown: no record is prepared.
     pub(in crate::ui) fn hide(&mut self) {
+        self.close_modal();
         self.close_thread();
         self.cancel_name();
         self.view.hide();
@@ -604,6 +785,10 @@ impl ChatDrawer {
     /// line's words.
     pub(in crate::ui) fn edit(&mut self, row: Option<&ResultRowIdentity>, edit: Edit) -> Result<(), &'static str> {
         let Some(row) = row else { return Err("no row to write for") };
+        // A paste in the Connect step is a token: it is never typed into a draft, which Enter would post.
+        if self.in_setup() {
+            return Err("connect Slack first");
+        }
         if self.owner.posting_row() == Some((&row.host, row.workspace_id.as_str())) {
             return Err("posting…");
         }
@@ -629,7 +814,7 @@ impl ChatDrawer {
 
     /// `compose_text` at a given time and offset, which the parent's time in `reply in thread of` is shown against.
     pub(super) fn compose_text_at(&self, focused: bool, now: i64, offset: chrono::FixedOffset) -> Option<ComposeText> {
-        if self.picker.is_some() {
+        if self.modal.is_some() {
             return None;
         }
         if let Some(name) = &self.asking {

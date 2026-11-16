@@ -136,19 +136,21 @@ name is in this crate's one op table.
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
     character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
     (`not_connected`, `tokens_refused`, `start_failed`; a later reason reads as `other`); an older window reads the state as
-    `invalid`, which it shows as its no-configuration words. `chat::SLACK_APP_MANIFEST` is the Slack app's manifest as JSON
-    (the app and bot named `Ship of Tools`; the bot scopes `channels:history`, `channels:read`, `channels:join`,
+    `invalid`, which it shows as its no-configuration words. `chat::slack_app_manifest(name)` is the Slack app's manifest as
+    JSON (the app and bot named `name`, which `chat::slack_app_name(login)` makes `Ship of Tools (<login>)`, the login cut
+    so the whole is at most `MAX_APP_NAME` (35) characters, Slack's limit, or `Ship of Tools` for a blank login: each
+    person makes their own app, since people sharing one app's tokens each miss messages; the bot scopes `channels:history`, `channels:read`, `channels:join`,
     `groups:history`, `groups:read`, `users:read`, `chat:write`, `chat:write.customize`, `files:read` and `files:write`;
     the events `message.channels` and `message.groups`; Socket Mode on, token rotation and org deploy off), and
-    `chat::slack_app_url()` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by the manifest with every
+    `chat::slack_app_url(name)` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by that manifest with every
     byte outside the unreserved set percent-encoded; it holds no secret. Mechanism: three new ops, one new resolve state
     and six new codes, all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
     ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves all three (chat's guarantees 30 and 31);
-    no window sends them yet. Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
+    the window's Connect step sends `chat.connect` (fe-ui's Chat owner). Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
     `an_older_reader_reads_unconfigured_as_invalid`, `a_full_channel_list_fits_the_envelope`,
     `the_setup_payloads_stop_at_their_bounds`, and the extended `every_request_reply_and_event_keeps_its_shape`,
     `the_chat_ops_are_declared_in_the_one_table`, `every_code_has_its_one_text`; `chat_tests.rs`:
-    `the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`.
+    `the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_apps_name_carries_the_login_cut_to_slacks_limit`.
     A request's `kind` is the other direction: an older daemon refuses a kind it does not know, with a `bad_request` code.
     A `limited` wait is clamped to an hour (`MAX_RETRY_SECS`). A `chat.post` reply with no `error` field that does not decode
     as `ChatPostRes` is read as `unknown`, never resent (an `error` reply is a refusal only with a refusal `ChatCode`, or as an older daemon's exact unknown-op answer, which fe-net reads as `Unsupported`; any other `error` reply, with another code or none, such as `handler_error` from a panic after the send began, is `unknown`, never refused and never resent):
@@ -227,7 +229,7 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 `PROTOCOL_VERSION`, `op::ALL`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
 `is_release_build`, `version_line`,
 `annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
-`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits, SLACK_APP_MANIFEST, slack_app_url}`; the shell twin `sot_hello_frame`
+`video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits, slack_app_name, slack_app_manifest, slack_app_url}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
 ## Does not
@@ -250,7 +252,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 8 | the byte pipe | `pipe_tests.rs`: `bytes_cross_both_ways_and_the_pipe_ends_when_the_client_closes`, `the_pipe_ends_when_the_upstream_closes_though_the_client_stays_open` |
 | 9 | the link family | `ops/link_tests.rs`: `link_payloads_keep_their_shape`; the window's reading of an old bridge's daemon refusal: topology's `link/tests.rs` `an_old_bridge_and_another_link_number_are_refusals_a_person_reads` |
 | 11 | the chat record | `chat_tests.rs`: `a_timestamp_has_exactly_six_fraction_digits`, `a_bad_timestamp_in_json_is_refused`, `the_record_wire_shape_is_stable`, `a_record_round_trips_and_an_older_shape_without_the_optional_fields_parses`, `a_record_is_bounded_at_decode` |
-| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it` |
+| 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_apps_name_carries_the_login_cut_to_slacks_limit` |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 

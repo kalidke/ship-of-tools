@@ -94,13 +94,13 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     let rows = d.body().unwrap().lines(80, 5);
     assert_eq!(rows.len(), 5);
     assert_eq!(rows.iter().filter(|l| l.starts_with("> ")).count(), 1);
-    // A read that fails says why and offers nothing to pick; the picker does not hide.
+    // A read that fails says why and offers only to connect Slack again; the picker does not hide.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert_eq!(shown_lines(&d)[0], "could not list the channels: the chat is not available here");
-    assert!(d.picker_enter().is_empty());
+    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  new tokens for the hub"]);
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Unsupported }, at);
     assert_eq!(shown_lines(&d)[0], "the hub's daemon must be updated to list channels");
+    assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn a_prompt_takes_the_keys_that_edit_and_close_it_and_leaves_the_rest_to_the_dra
 
 #[test]
 fn the_body_draws_the_choice_in_view_and_the_guide_below_it() {
-    let body = Body { head: String::new(), entries: (0..30).map(|i| (format!("#c{i}"), "")).collect(), chosen: 20, guide: "a guide that wraps over two rows".into() };
+    let body = Body { head: String::new(), entries: (0..30).map(|i| (format!("#c{i}"), "")).collect(), chosen: 20, guide: "a guide that wraps over two rows".into(), ..Body::default() };
     let rows = body.lines(20, 10);
     assert!(rows.len() <= 10);
     assert!(rows.iter().any(|t| t.starts_with("> #c20")), "{rows:?}");

@@ -18,6 +18,7 @@ struct Seen {
     pages: u32,
     threads: u32,
     posts: Vec<(String, Option<String>)>,
+    connects: u32,
 }
 
 /// What the stand-in daemon holds: a channel of `top` messages, `ts(1)` the oldest, and what the connection carried.
@@ -25,6 +26,8 @@ struct Daemon {
     host: HostKey,
     top: u32,
     seen: Seen,
+    /// The hub answers `unconfigured` to a resolve until a connect is made.
+    unconfigured: bool,
 }
 
 fn ts(i: u32) -> Ts {
@@ -56,6 +59,15 @@ impl Daemon {
         let top = self.top;
         let short = |i: u32| record(&ts(i), &ts(i), 60, if i == top { 3 } else { 0 });
         match req {
+            OutgoingReq::ChatResolve { row } if self.unconfigured => {
+                self.seen.resolves += 1;
+                let off = serde_json::json!({ "state": "unconfigured", "reason": "not_connected" });
+                Some(ChatEvt::Resolved { row, reply: ChatReply::Done(serde_json::from_value::<ChatResolveRes>(off).unwrap()) })
+            }
+            OutgoingReq::ChatConnect { .. } => {
+                (self.seen.connects, self.unconfigured) = (self.seen.connects + 1, false);
+                Some(ChatEvt::Connect { reply: ChatReply::Done(sot_protocol::ops::ChatConnectRes { workspace: "WS1".into() }) })
+            }
             OutgoingReq::ChatResolve { row } => {
                 self.seen.resolves += 1;
                 // The hub names the channel (a nameless answer is asked again, `RowChannel`), so one resolve is all this carries.
@@ -91,6 +103,20 @@ impl Daemon {
             }
             _ => None,
         }
+    }
+}
+
+/// The link's hello, as the window's connection reports it.
+fn connected() -> IncomingEvt {
+    IncomingEvt::Connected {
+        session_id: "session".into(),
+        revision: 0,
+        host: None,
+        project_root: None,
+        proxy: false,
+        resolved: ResolvedDial::Local,
+        backend_version: "test".into(),
+        repl_running: Vec::new(),
     }
 }
 
@@ -142,14 +168,15 @@ impl State {
     }
 
     /// A key pressed in the window: resolved by the real bindings under the real help context (so the pane the drawer maps to
-    /// decides the action), then routed as `drawer_pane_key` and `chat_key` route it. A winit `KeyEvent` cannot be built
-    /// outside the event loop, so those two functions themselves are not called.
+    /// decides the action), then routed as `drawer_pane_key` and `chat_key` route it, the Connect step's `connect_action`
+    /// first. A winit `KeyEvent` cannot be built outside the event loop, so those two functions themselves are not called.
     fn witness_key(&mut self, key: Key, (ctrl, alt): (bool, bool), expect: Option<Action>) -> Result<()> {
         let context = self.help_context();
         let mods = Modifiers { ctrl, alt, shift: false, super_: false };
         let action = self.bindings.resolve(&key, Some(&key), mods, context.consumes_text(), |a| context.allows(a));
         anyhow::ensure!(action == expect, "{key:?} resolved to {action:?}, not {expect:?}");
-        if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
+        if super::connect::connect_action(self, action, &key, false, (ctrl, alt, false), "witness") {
+        } else if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
             anyhow::ensure!(line_scroll_target(self.focus_prompts.focus(), self.layout_help.drawer()) == LineScroll::Chat, "Alt+Up is not the chat's");
             let (now, length) = self.scroll_ask();
             self.chat.scroll(action == Some(Action::ScrollLineUp), Step::Line, now, length);
@@ -194,6 +221,18 @@ impl State {
     /// event queue, and every step presents. It prints the frame times and asserts none (the machine's GPU decides them).
     #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
     pub(in crate::ui) fn a_chat_of_200_messages_scrolls_posts_and_recovers(&mut self) -> Result<()> {
+        self.witness_with(Self::witness_run)
+    }
+
+    /// The Connect step through the window's real key path: a paste there is a token, never the row's draft, and the two
+    /// tokens leave in one `chat.connect`.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn a_paste_in_the_connect_step_is_a_token_and_never_the_draft(&mut self) -> Result<()> {
+        self.witness_with(Self::connect_run)
+    }
+
+    /// Runs `run` on a chat of its own (one link, one row), and gives the window back as it was.
+    fn witness_with(&mut self, run: fn(&mut Self, &HostKey, &Sender<(HostKey, IncomingEvt)>, &mut Requests) -> Result<()>) -> Result<()> {
         let host: HostKey = "<chat-host>".to_string();
         let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
         let (events, receiver) = std::sync::mpsc::channel();
@@ -206,7 +245,7 @@ impl State {
         );
         self.chat = ChatDrawer::default();
         let length = self.settings.smooth_scroll_ms;
-        let result = self.witness_run(&host, &events, &mut sent);
+        let result = run(self, &host, &events, &mut sent);
         self.chat = ChatDrawer::default();
         self.settings.smooth_scroll_ms = length;
         let (conns, evt_rx, (saved_host, saved_row), name, (drawer, focus)) = saved;
@@ -220,8 +259,51 @@ impl State {
         result
     }
 
+    /// Lists one row, shows Chat with the drawer focused, and brings the link up past the resolve's debounce.
+    fn witness_show(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>) -> Result<()> {
+        let mut row = crate::ui::nav::ws_info("chat", "chat-session");
+        row.workspace_id = "ROW1".into();
+        self.on_workspaces(host.clone(), vec![row]);
+        self.switch_to_workspace(host.clone(), Some("chat".into()), None, false);
+        self.layout_help.toggle_drawer(DrawerContent::Chat, self.focus_prompts.focus());
+        anyhow::ensure!(self.layout_help.chat_shown(), "the drawer did not show Chat");
+        self.set_focus(PaneFocus::Repl);
+        events.send((host.clone(), connected())).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        self.drain_events();
+        std::thread::sleep(crate::ui::app::NAV_FIRE_DEBOUNCE + std::time::Duration::from_millis(100));
+        Ok(())
+    }
+
+    fn connect_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
+        let mut daemon = Daemon { host: host.clone(), top: 3, seen: Seen::default(), unconfigured: false };
+        let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        self.witness_show(host, events)?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        // A draft begun in the mapped channel; then the hub's chat goes unconfigured, seen at the link's return.
+        self.witness_key(Key::Character("a".into()), (false, false), None)?;
+        anyhow::ensure!(self.chat.draft().map(|d| d.0) == Some("a"), "the draft was not begun");
+        daemon.unconfigured = true;
+        send(IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        send(connected())?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.redraw()?;
+        anyhow::ensure!(self.chat.in_setup(), "unconfigured began no Connect step");
+        // Ctrl+V twice through the window's clipboard: each is a token, the draft is untouched, one connect goes.
+        for token in [format!("{}{}", "xoxb-", "Q".repeat(40)), format!("{}{}", "xapp-", "Q".repeat(40))] {
+            write_clipboard_text(token).map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;
+            self.witness_key(Key::Character("v".into()), (true, false), Some(Action::Paste))?;
+            anyhow::ensure!(self.chat.draft().map(|d| d.0) == Some("a"), "a paste in the Connect step reached the draft");
+        }
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.connects == 1, "{} connects went", daemon.seen.connects);
+        anyhow::ensure!(self.chat.title() == " chat · connected ", "the title says {:?}", self.chat.title());
+        self.redraw()?;
+        Ok(())
+    }
+
     fn witness_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
-        let mut daemon = Daemon { host: host.clone(), top: 200, seen: Seen::default() };
+        let mut daemon = Daemon { host: host.clone(), top: 200, seen: Seen::default(), unconfigured: false };
         let mut frames = Vec::new();
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         let mut row = crate::ui::nav::ws_info("chat", "chat-session");
@@ -237,16 +319,7 @@ impl State {
         self.layout_help.toggle_drawer(DrawerContent::Chat, self.focus_prompts.focus());
         anyhow::ensure!(self.layout_help.chat_shown(), "the drawer did not show Chat");
         self.set_focus(PaneFocus::Repl);
-        send(IncomingEvt::Connected {
-            session_id: "session".into(),
-            revision: 0,
-            host: None,
-            project_root: None,
-            proxy: false,
-            resolved: ResolvedDial::Local,
-            backend_version: "test".into(),
-            repl_running: Vec::new(),
-        })?;
+        send(connected())?;
         self.drain_events();
         std::thread::sleep(crate::ui::app::NAV_FIRE_DEBOUNCE + std::time::Duration::from_millis(100));
         let mut newest = ts(200);
@@ -365,16 +438,7 @@ impl State {
         self.witness_pump(events, sent, &mut daemon)?;
         self.witness_frame(&mut frames, &newest, "disconnected")?;
         let down = daemon.seen.clone();
-        send(IncomingEvt::Connected {
-            session_id: "session".into(),
-            revision: 0,
-            host: None,
-            project_root: None,
-            proxy: false,
-            resolved: ResolvedDial::Local,
-            backend_version: "test".into(),
-            repl_running: Vec::new(),
-        })?;
+        send(connected())?;
         self.witness_pump(events, sent, &mut daemon)?;
         self.witness_frame(&mut frames, &newest, "reconnected")?;
         let back = daemon.seen.clone();

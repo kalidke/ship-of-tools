@@ -53,19 +53,50 @@ pub(crate) fn at_most<'de, D: Deserializer<'de>, T: Deserialize<'de>, const N: u
     d.deserialize_seq(Cap::<T, N>(std::marker::PhantomData))
 }
 
-/// The Slack app's manifest, JSON as Slack's manifest page reads it: the app and its bot named `Ship of Tools`, the bot
-/// scopes the chat reads and posts with (`channels:join` so the app joins a public channel itself; `files:read` and
-/// `files:write` for the figures to come, so one install serves the app's life), the two message events, Socket Mode on,
-/// and token rotation off (a rotating bot token expires).
-pub const SLACK_APP_MANIFEST: &str = r#"{"display_information":{"name":"Ship of Tools"},"features":{"bot_user":{"display_name":"Ship of Tools","always_online":true}},"oauth_config":{"scopes":{"bot":["channels:history","channels:read","channels:join","groups:history","groups:read","users:read","chat:write","chat:write.customize","files:read","files:write"]}},"settings":{"event_subscriptions":{"bot_events":["message.channels","message.groups"]},"org_deploy_enabled":false,"socket_mode_enabled":true,"token_rotation_enabled":false}}"#;
+/// The longest app name Slack's manifest takes (`display_information.name`), in characters; the bot's display name
+/// (80 at Slack) is held to it too, so the two stay one name.
+pub(crate) const MAX_APP_NAME: usize = 35;
+
+/// The app's name for the person signed in to this computer as `login`: `Ship of Tools (<login>)`, the login cut from its
+/// end so the whole fits [`MAX_APP_NAME`] characters; a blank login, or a cut that leaves nothing, gives `Ship of Tools`.
+/// Each person makes their own app (two people sharing one app's tokens each miss messages), so the name says whose.
+pub fn slack_app_name(login: &str) -> String {
+    const BASE: &str = "Ship of Tools";
+    let room = MAX_APP_NAME - BASE.len() - " ()".len();
+    let login: String = login.trim().chars().filter(|c| !c.is_control()).take(room).collect();
+    let login = login.trim();
+    if login.is_empty() { BASE.to_string() } else { format!("{BASE} ({login})") }
+}
+
+/// The Slack app's manifest, JSON as Slack's manifest page reads it: the app and its bot named `name`
+/// ([`slack_app_name`]), the bot scopes the chat reads and posts with (`channels:join` so the app joins a public channel
+/// itself; `files:read` and `files:write` for the figures to come, so one install serves the app's life), the two message
+/// events, Socket Mode on, and token rotation off (a rotating bot token expires).
+pub fn slack_app_manifest(name: &str) -> String {
+    serde_json::json!({
+        "display_information": {"name": name},
+        "features": {"bot_user": {"display_name": name, "always_online": true}},
+        "oauth_config": {"scopes": {"bot": [
+            "channels:history", "channels:read", "channels:join", "groups:history", "groups:read", "users:read",
+            "chat:write", "chat:write.customize", "files:read", "files:write",
+        ]}},
+        "settings": {
+            "event_subscriptions": {"bot_events": ["message.channels", "message.groups"]},
+            "org_deploy_enabled": false,
+            "socket_mode_enabled": true,
+            "token_rotation_enabled": false,
+        },
+    })
+    .to_string()
+}
 
 const SLACK_NEW_APP: &str = "https://api.slack.com/apps?new_app=1&manifest_json=";
 
-/// The address that opens Slack's create-an-app dialog with [`SLACK_APP_MANIFEST`] filled in: the manifest percent-encoded
-/// whole, every byte outside the unreserved set (letters, digits, `-`, `.`, `_`, `~`). It holds no secret.
-pub fn slack_app_url() -> String {
+/// The address that opens Slack's create-an-app dialog with [`slack_app_manifest`] of `name` filled in: the manifest
+/// percent-encoded whole, every byte outside the unreserved set (letters, digits, `-`, `.`, `_`, `~`). It holds no secret.
+pub fn slack_app_url(name: &str) -> String {
     let mut url = String::from(SLACK_NEW_APP);
-    for b in SLACK_APP_MANIFEST.bytes() {
+    for b in slack_app_manifest(name).bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
             url.push(b as char);
         } else {
