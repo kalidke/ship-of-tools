@@ -1,6 +1,8 @@
 //! The one place a suite builds a command for `sotd`: the built binary (`sotd_command`), or a copy or link of it for a
 //! suite that tests how the daemon was started (`sotd_command_at`). Either inherits no `SOT_` variable the runner
-//! holds, so a daemon reads only the variables its test sets, and the Julia binary the runner found (`julia_binary`).
+//! holds, so a daemon reads only the variables its test sets, no `CLAUDE_CONFIG_DIR` (a production daemon's unit
+//! carries none, so a row's Claude folder is its account's or its `HOME`'s, never the runner's account), and the Julia
+//! binary the runner found (`julia_binary`).
 //! The built binary's path (`sotd_exe`) is private here.
 //! `sotd_daemon_at` and `sotd_client_of` start a daemon, or a client that finds one through `local_endpoint()`, at a
 //! label given by the caller; both refuse this box's own daemon's endpoint before anything starts. `end_daemon` ends a
@@ -22,14 +24,14 @@ pub fn sotd_program() -> PathBuf {
     sotd_exe()
 }
 
-/// A command for `sotd` with every inherited `SOT_` variable removed, and `SOT_JULIA_BIN` set to [`julia_binary`] when
-/// one is found.
+/// A command for `sotd` with every inherited `SOT_` variable and `CLAUDE_CONFIG_DIR` removed, and `SOT_JULIA_BIN` set
+/// to [`julia_binary`] when one is found.
 pub fn sotd_command() -> Command {
     sotd_command_at(&sotd_exe())
 }
 
 /// [`sotd_command`] for the binary at `program`, a copy of the built `sotd` or a link to one, for a suite that tests
-/// how the daemon was started. The same `SOT_` scrub and `SOT_JULIA_BIN`.
+/// how the daemon was started. The same scrub and `SOT_JULIA_BIN`.
 #[allow(dead_code)] // only some suites start `sotd` from another path
 pub fn sotd_command_at(program: &Path) -> Command {
     let mut cmd = Command::new(program);
@@ -38,6 +40,7 @@ pub fn sotd_command_at(program: &Path) -> Command {
             cmd.env_remove(name);
         }
     }
+    cmd.env_remove("CLAUDE_CONFIG_DIR");
     if let Some(julia) = julia_binary() {
         cmd.env("SOT_JULIA_BIN", julia);
     }
@@ -89,7 +92,7 @@ fn probe_julia() -> Option<String> {
 /// folders' wait of at most 2 s each, then the guard's drain of what is left, within its 10 s bound
 /// (`sot_containment::guard::DRAIN_BOUND`).
 #[cfg(target_os = "linux")]
-const STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+pub(super) const STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Ends a serving daemon this suite launched, and reaps it. On Linux the launched process is the daemon's lifetime
 /// guard and the daemon is its child: TERM, which the guard forwards, ends the daemon through its terminal (each

@@ -101,6 +101,149 @@ async fn capsule_backend_test_env_drop_cleans_up_legs_and_daemon() {
     );
 }
 
+/// What `Env`'s `Drop` does is done when the test's process ends without it. The child is this test rerun
+/// (`test_isolated`): it starts a ready capsule row through the support, publishes its state root, folders and
+/// daemon, and kills itself with SIGKILL, so no `Drop` runs. Within 45 s no capsule over its state root is left, then
+/// its daemon has ended and its folders are gone. Red without the support's reaper: the row's supervisor and the
+/// daemon outlive the child (where a user manager answers, the supervisor in a scope of its own, as in the leak seen
+/// on 2026-11-15). What is left is ended before any assert: the daemon through the pidfd opened while the child
+/// lived, the capsules through `kill_verified`, the folders by their absolute paths.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn a_test_killed_outright_leaves_no_capsule_daemon_or_folder() {
+    use sot_platform::identity::challenge_unix::{pidfd_open, poll_pidfd_readable};
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::ExitStatusExt;
+    const NAME: &str = "platform::a_test_killed_outright_leaves_no_capsule_daemon_or_folder";
+    const CHILD: &str = "SOT_TEST_KILLED_OUTRIGHT_CHILD";
+    if let Some(dir) = std::env::var_os(CHILD) {
+        return killed_outright_child(NAME, PathBuf::from(dir)).await;
+    }
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first");
+    let dir = tempfile::Builder::new().prefix("sotko-").tempdir_in("/tmp").expect("a scratch folder");
+    let (mut command, entry) = sot_platform::test_isolated::test_command(NAME);
+    let out = std::fs::File::create(dir.path().join("out")).expect("the child's output file");
+    command
+        .env(CHILD, dir.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(out.try_clone().expect("clone the output file"))
+        .stderr(out);
+    let mut child = command.spawn().expect("spawn the child test");
+    let child_pid = child.id();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let record = loop {
+        if let Ok(text) = std::fs::read_to_string(dir.path().join("ready")) {
+            break Some(text);
+        }
+        if child.try_wait().ok().flatten().is_some() || Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let field = |key: &str| {
+        record.as_deref().and_then(|text| text.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('=')))
+    };
+    let (root, tmp, runtime) = (
+        field("root").map(PathBuf::from),
+        field("tmp").map(PathBuf::from),
+        field("runtime").map(PathBuf::from),
+    );
+    // While the child lives it is the daemon's parent and has not reaped it, so the number names the daemon.
+    let daemon = field("daemon").and_then(|pid| pidfd_open(pid.parse().ok()?).ok());
+    let before = root.as_deref().map(own_capsule_pids).unwrap_or_default();
+    std::fs::write(dir.path().join("go"), "").expect("release the child");
+    let status = sot_platform::test_isolated::wait_within(&mut child, Duration::from_secs(60));
+
+    let left = root
+        .as_deref()
+        .map(|root| poll_until_no_capsule_pids(root, Duration::from_secs(45)))
+        .unwrap_or_default();
+    let ended = |fd: &std::os::fd::OwnedFd, bound| matches!(poll_pidfd_readable(fd.as_raw_fd(), bound), Ok(true));
+    let daemon_ended = daemon.as_ref().is_some_and(|fd| ended(fd, Duration::from_secs(5)));
+    let folders = [&tmp, &runtime].map(|folder| folder.clone().filter(|f| f.is_absolute()));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while folders.iter().flatten().any(|f| f.exists()) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let folders_left: Vec<PathBuf> = folders.iter().flatten().filter(|f| f.exists()).cloned().collect();
+
+    // Cleanup before any assert, never panicking: the daemon, then the capsules, then the folders.
+    if let Some(fd) = daemon.as_ref().filter(|_| !daemon_ended) {
+        for (signal, bound) in [(libc::SIGTERM, Duration::from_secs(20)), (libc::SIGKILL, BOUND)] {
+            let no_info = std::ptr::null::<libc::c_void>();
+            // SAFETY: pidfd_send_signal takes a pidfd, a signal number, a null siginfo and flags 0.
+            unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd.as_raw_fd(), signal, no_info, 0) };
+            if ended(fd, bound) {
+                break;
+            }
+        }
+    }
+    if let Some(root) = root.as_deref() {
+        let end = Instant::now() + Duration::from_secs(10);
+        while let Ok(pids) = try_own_capsule_pids(root) {
+            if pids.is_empty() || Instant::now() >= end {
+                break;
+            }
+            let _ = kill_verified(&RealProcFs, &pids, &sot_capsule_exe(), root);
+        }
+    }
+    for folder in &folders_left {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    let out = std::fs::read_to_string(dir.path().join("out")).unwrap_or_default();
+    assert!(record.is_some(), "the child never wrote its ready record; its output:\n{out}");
+    assert_eq!(status.signal(), Some(libc::SIGKILL), "the child ended by SIGKILL ({status}); its output:\n{out}");
+    entry.assert_once(child_pid);
+    assert!(
+        !before.is_empty() && daemon.is_some(),
+        "precondition: a live capsule ({before:?}) and daemon while the child ran"
+    );
+    assert!(
+        left.is_empty() && daemon_ended && folders_left.is_empty(),
+        "a test killed outright: capsules left {left:?}, its daemon ended {daemon_ended}, folders left {folders_left:?}"
+    );
+}
+
+/// The child of [`a_test_killed_outright_leaves_no_capsule_daemon_or_folder`]: a ready row through the support, its
+/// record in `dir`, then, at the parent's word, its own SIGKILL.
+#[cfg(target_os = "linux")]
+async fn killed_outright_child(name: &str, dir: PathBuf) {
+    sot_platform::test_isolated::enter(name);
+    let env = Env::new("ko");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let create = serde_json::json!({
+        "label": "ko-row",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "none",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    next_id += 1;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+    let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND).await;
+    let daemon = env.daemon.borrow().as_ref().map(std::process::Child::id).expect("the daemon this env spawned");
+    let record = format!(
+        "root={}\ntmp={}\nruntime={}\ndaemon={daemon}\n",
+        env.state_root.display(),
+        env._tmp.path().display(),
+        env._runtime_tmp.path().display(),
+    );
+    std::fs::write(dir.join("ready.part"), record).expect("write the ready record");
+    std::fs::rename(dir.join("ready.part"), dir.join("ready")).expect("publish the ready record");
+    let go = dir.join("go");
+    let end = Instant::now() + Duration::from_secs(60);
+    while !go.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The test's process ends as a killed one: no Drop runs.
+    // SAFETY: raise sends this process a signal.
+    unsafe { libc::raise(libc::SIGKILL) };
+}
+
 /// ADR 0043 decision 23 (LU5a): `workspace.create` with `"runtime":
 /// "capsule"` is refused OUTRIGHT — before any row persists — when the
 /// state root resolves onto a VOLATILE filesystem (tmpfs here; ramfs is

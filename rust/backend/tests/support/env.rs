@@ -69,6 +69,11 @@ pub struct Env {
     /// has already stopped it (so `Drop` does not redundantly re-stop an
     /// already-gone unit — harmless either way, but quieter).
     pub user_service_unit: RefCell<Option<String>>,
+    /// This env's reaper (`reaper.rs`): a process of its own that does what `Drop` does when this test's process ends
+    /// without running it (killed by a timeout or a signal, or aborted). Declared last, so on an ordinary end its pipe
+    /// closes after `Drop` and the folders above are done, and it finds nothing left.
+    #[cfg(target_os = "linux")]
+    reaper: Reaper,
 }
 
 impl Env {
@@ -173,6 +178,12 @@ impl Env {
         let (home_root, comm_root) = comm_isolation_dirs(tmp.path());
         let socket_path = test_socket_path(runtime_tmp.path(), tag);
         let holds = sot_platform::test_hold::Holds::folder(&tmp.path().join("holds"));
+        #[cfg(target_os = "linux")]
+        let reaper = {
+            let mut folders = vec![tmp.path(), runtime_tmp.path()];
+            folders.extend(state_root_tmp.as_ref().map(tempfile::TempDir::path));
+            Reaper::start(&folders, &state_root, &socket_path)
+        };
         Self {
             _tmp: tmp,
             _runtime_tmp: runtime_tmp,
@@ -187,7 +198,27 @@ impl Env {
             holds,
             daemon: RefCell::new(None),
             user_service_unit: RefCell::new(None),
+            #[cfg(target_os = "linux")]
+            reaper,
         }
+    }
+
+    /// Track `child`, the daemon a spawn just launched, so `Drop` ends it, and tell the reaper.
+    fn hold_daemon(&self, child: Child) {
+        #[cfg(target_os = "linux")]
+        let pid = child.id();
+        let previous = self.daemon.borrow_mut().replace(child);
+        debug_assert!(previous.is_none(), "a daemon was spawned while a prior daemon was still tracked");
+        #[cfg(target_os = "linux")]
+        self.reap_daemon(pid);
+    }
+
+    /// The daemon `pid` launched on this env (the process the spawn returned: on Linux the daemon's guard), which the
+    /// reaper ends when the test's process ends without `Drop`. A suite that launches one through a command of its own
+    /// calls it right after the spawn.
+    #[cfg(target_os = "linux")]
+    pub fn reap_daemon(&self, pid: u32) {
+        self.reaper.daemon(pid);
     }
 
     /// The bounded, deliberate daemon teardown every test in this file
@@ -275,8 +306,7 @@ impl Env {
             .stderr(stderr)
             .spawn()
             .expect("spawn sotd");
-        let previous = self.daemon.borrow_mut().replace(child);
-        debug_assert!(previous.is_none(), "spawn_sotd called while a prior daemon was still tracked");
+        self.hold_daemon(child);
     }
 
     /// The daemon's log of record for THIS env, per platform (`sot_platform::host::state_dir::daemon_state_dir().join("sotd.log")`): Windows joins
@@ -494,8 +524,7 @@ impl Env {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sotd");
-        let previous = self.daemon.borrow_mut().replace(child);
-        debug_assert!(previous.is_none(), "spawn_sotd_with_path_and_env called while a prior daemon was still tracked");
+        self.hold_daemon(child);
     }
 
     /// [`Env::spawn_sotd`], plus `extra` env vars — for a test-only knob
@@ -529,11 +558,7 @@ impl Env {
             cmd.env(k, v);
         }
         let child = cmd.spawn().expect("spawn sotd");
-        let previous = self.daemon.borrow_mut().replace(child);
-        debug_assert!(
-            previous.is_none(),
-            "spawn_sotd_at called while a prior daemon was still tracked"
-        );
+        self.hold_daemon(child);
     }
 
     /// ADR 0043 decision 32 (lane L2), test 1's own precondition: launches
@@ -589,6 +614,7 @@ impl Env {
             .arg(&self.socket_path)
             .arg("--project-root")
             .arg(&self.daemon_project_root);
+        self.reaper.unit(&unit);
         sot_platform::test_wait::run_within(&mut command, BOUND).ok();
         // Tracked BEFORE returning, not after — a panic between here and
         // the caller ever reading the return value must still leave
@@ -682,43 +708,15 @@ impl Drop for Env {
             end_daemon(&mut child);
         }
 
-        // (2) sweep this env's own capsule processes, REPEATED until a
-        // pass finds none or 2 s (5 s on Windows) pass. A capsule outlives a
-        // killed daemon BY DESIGN (it breaks away from the daemon's job),
-        // so without this a test's processes stay alive after the test
-        // ends. Each is ended through a handle opened before its identity
-        // is read again (`kill_verified`, `kill_by_handle`), never by a
-        // bare discovered pid. Supervisors come first in the listing, so a
-        // supervisor ended on this pass cannot start anything after it.
-        // Best-effort: never panics, but every failure and every process
-        // left behind is named on stderr before the folders go.
+        // (2) sweep this env's own capsule processes (`sweep_capsules`). A
+        // capsule outlives a killed daemon BY DESIGN (it breaks away from
+        // the daemon's job), so without this a test's processes stay alive
+        // after the test ends. Best-effort: never panics, but every process
+        // left behind is named on stderr before the folders go. When this
+        // `Drop` never runs, the reaper does the same.
         #[cfg(any(windows, target_os = "linux"))]
-        {
-            let deadline = Instant::now() + if cfg!(windows) { Duration::from_secs(5) } else { Duration::from_secs(2) };
-            loop {
-                let pids = match try_own_capsule_pids(&self.state_root) {
-                    Ok(pids) => pids,
-                    Err(error) => {
-                        eprintln!("Env::drop: cannot list the capsule processes over {:?}: {error}", self.state_root);
-                        break;
-                    }
-                };
-                if pids.is_empty() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    eprintln!("Env::drop: leaves capsule processes {pids:?} over {:?}", self.state_root);
-                    break;
-                }
-                #[cfg(target_os = "linux")]
-                let ended = kill_verified(&RealProcFs, &pids, &sot_capsule_exe(), &self.state_root);
-                #[cfg(windows)]
-                let ended = kill_by_handle(&self.state_root, &pids);
-                if let Err(error) = ended {
-                    eprintln!("Env::drop: could not end capsule processes {pids:?}: {error}");
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if let Err(error) = sweep_capsules(&self.state_root) {
+            eprintln!("Env::drop: {error}");
         }
 
         // (4) `_tmp`/`_runtime_tmp` remove themselves right after this

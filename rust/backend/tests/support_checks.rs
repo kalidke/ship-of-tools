@@ -18,6 +18,16 @@ fn a_daemon_is_handed_the_julia_binary_the_runner_found() {
     assert_eq!(given, support::julia_binary());
 }
 
+/// The command the support gives a daemon removes the runner's `CLAUDE_CONFIG_DIR`, so a daemon a Claude session's test
+/// starts never hands that account's folder to a row of the default account (a production daemon has none).
+#[test]
+fn a_daemon_is_handed_no_claude_config_dir_of_the_runner() {
+    let removed = support::sotd_command()
+        .get_envs()
+        .any(|(name, value)| name == "CLAUDE_CONFIG_DIR" && value.is_none());
+    assert!(removed, "the daemon's command keeps the runner's CLAUDE_CONFIG_DIR");
+}
+
 /// A `/proc` the test writes: each pid's command line, or the error reading it gives.
 struct FakeProc {
     entries: Vec<(u32, std::io::Result<Vec<u8>>)>,
