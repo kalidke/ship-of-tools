@@ -9,6 +9,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{
@@ -35,6 +36,39 @@ use crate::host::paths::simplify_verbatim;
 use crate::host::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
 
 const FOLDER_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+
+/// The final names this process's writers are renaming onto, or have renamed onto and not yet closed their handle on.
+/// That handle shares no deletion, so from the rename until its close returns it refuses every other rename over the
+/// name, however long its thread takes to reach the close. A second writer of the name waits here for that close
+/// instead of spending its retry window on it. Names compare without ASCII case, whatever their folders.
+static RENAMING: (Mutex<Vec<String>>, Condvar) = (Mutex::new(Vec::new()), Condvar::new());
+
+/// One writer's turn at a final name: taken before a rename's attempt, dropped after a refused attempt, or after the
+/// close of the handle a rename was made by.
+struct Turn<'a>(&'a str);
+
+impl<'a> Turn<'a> {
+    fn take(name: &'a str) -> Self {
+        let (names, freed) = &RENAMING;
+        let mut names = names.lock().unwrap_or_else(PoisonError::into_inner);
+        while names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            names = freed.wait(names).unwrap_or_else(PoisonError::into_inner);
+        }
+        names.push(name.to_owned());
+        Turn(name)
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let (names, freed) = &RENAMING;
+        let mut names = names.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = names.iter().position(|n| n.eq_ignore_ascii_case(self.0)) {
+            names.swap_remove(i);
+        }
+        freed.notify_all();
+    }
+}
 
 /// The Windows [`super::write_beneath_at`].
 pub(super) fn write_beneath_at(
@@ -75,20 +109,25 @@ fn utf8(name: &OsStr) -> io::Result<&str> {
 
 /// Create the temporary file in `dir` exclusively, held with share-read alone so no other open can rename or delete it.
 /// Once renamed, that handle holds the final name without delete sharing, which refuses every other writer's rename over
-/// the name, so it is closed at the rename, before the folder's sync. A `private` file is created with the owner-only
-/// protected descriptor, which the rename by handle keeps; otherwise it inherits the folder's.
+/// the name, so it is closed at the rename, before the folder's sync, and the writer keeps its turn at the name until
+/// that close returns. A `private` file is created with the owner-only protected descriptor, which the rename by handle
+/// keeps; otherwise it inherits the folder's.
 fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], private: bool, at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
     let owner_only = if private { Some(owner_protected_pipe_descriptor().map_err(io::Error::other)?) } else { None };
     let security = owner_only.as_ref().map_or(null(), |d| d.as_ptr() as *const c_void);
     let file = nt_create(dir, temp, GENERIC_WRITE | DELETE | SYNCHRONIZE, FILE_SHARE_READ, FILE_CREATE, FILE_NON_DIRECTORY_FILE, security)
         .map_err(status_error)?;
-    if let Err(e) = write_and_rename(dir, &file, last, bytes, at) {
-        // The handle names the temporary file alone; a failure here changes nothing.
-        let _ = delete_on_close(&file);
-        return Err(e);
-    }
+    let turn = match write_and_rename(dir, &file, last, bytes, at) {
+        Ok(turn) => turn,
+        Err(e) => {
+            // The handle names the temporary file alone; a failure here changes nothing.
+            let _ = delete_on_close(&file);
+            return Err(e);
+        }
+    };
     crate::hold_point!("platform.beneath.renamed", last);
     drop(file);
+    drop(turn);
     at(Step::Renamed)?;
     dir.sync_all()
 }
@@ -143,8 +182,9 @@ fn walk(root: &Path, folders: &[&str], make: bool, at: &mut impl FnMut(Step) -> 
     Ok(dir)
 }
 
-/// Write, sync, rename within the folder; nothing is renamed unless it answers `Ok`.
-fn write_and_rename(dir: &File, mut file: &File, last: &str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<()> {
+/// Write, sync, rename within the folder; nothing is renamed unless it answers `Ok`, with the turn the caller drops after
+/// it closes `file`.
+fn write_and_rename<'a>(dir: &File, mut file: &File, last: &'a str, bytes: &[u8], at: &mut impl FnMut(Step) -> io::Result<()>) -> io::Result<Turn<'a>> {
     at(Step::Temp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -157,7 +197,9 @@ fn write_and_rename(dir: &File, mut file: &File, last: &str, bytes: &[u8], at: &
 /// name meanwhile gets the old or the new file, and it replaces a name another program holds open with delete sharing,
 /// or a link to a folder. The classic replace leaves the old file delete-pending under the name, which fails a
 /// concurrent open as access denied, so it is the answer only where the file system or Windows has no POSIX rename.
-fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
+/// Each attempt is made in the writer's turn at `name`, which `Ok` returns still held; the wait for a turn is another
+/// writer's rename and close, not a scanner's hold, and is not counted in the retry window.
+fn rename_into<'a>(file: &File, dir: &File, name: &'a str) -> io::Result<Turn<'a>> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let head = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
     // The call refuses a length below the whole structure, which a one-unit name does not fill.
@@ -169,8 +211,11 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
         (*info).FileNameLength = (wide.len() * 2) as u32;
         std::ptr::copy_nonoverlapping(wide.as_ptr(), std::ptr::addr_of_mut!((*info).FileName) as *mut u16, wide.len());
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
+    let mut deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
+        let asked = std::time::Instant::now();
+        let turn = Turn::take(name);
+        deadline += asked.elapsed();
         let set = |class, flags: u32| {
             let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
             unsafe { (*info).Anonymous.Flags = flags };
@@ -181,8 +226,9 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
             s = set(FileRenameInformation, FILE_RENAME_REPLACE_IF_EXISTS);
         }
         if s >= 0 {
-            return Ok(());
+            return Ok(turn);
         }
+        drop(turn);
         let e = status_error(s);
         if !is_transient_hold(&e) || std::time::Instant::now() >= deadline {
             return Err(e);
