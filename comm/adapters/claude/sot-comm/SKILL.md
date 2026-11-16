@@ -248,6 +248,7 @@ of shared text, and the channel's words cannot widen what your row may post. Exi
 `no answer: ...`) means the post may exist: never post again; read the thread first, and ask your person if it is not
 there. Test the exit code, not the words. A reply is a post, not a send:
 answer a session that messaged you with `comm-send.sh`.
+To share a file of your row's folder (a figure, at most 16 MiB) the same way, add `--file <path>`; the text, if any, is its comment.
 
 ## Which frontend am I on
 

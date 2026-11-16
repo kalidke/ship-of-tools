@@ -60,7 +60,7 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; all five chat requests are dispatched to it (`rust/backend/src/chat/ops.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its six request ops, `chat.post_file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's three in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
   config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
@@ -249,7 +249,7 @@ cleared when it goes, sent again after a reconnect, each reply on the status lin
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures are in progress on the maintainer's word
 (2026-11-16), by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
 shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
-on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation), and so has the share's read-back (an own file share takes its origin and name from its label). Mail (B3) has landed: the filing that names its expected row
+on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation), and so has the share's read-back (an own file share takes its origin and name from its label), wire's two ops, and a row's post of a file of its folder (`sot-fe chat post --file`, through the daemon's `chat.post_file`), which closes the first goal. Mail (B3) has landed: the filing that names its expected row
 (P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound

@@ -8,7 +8,7 @@ use crate::chat::{Chat, Status};
 use crate::lifecycle::retire::{Participant, Registry};
 use serde_json::{json, Value};
 use sot_chat::config::{self, CONFIG_FILE};
-use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Reply};
+use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Reply, Upload};
 use sot_chat::service::Status as ServiceStatus;
 use sot_platform::test_hold::Holds;
 use sot_protocol::ops::{ChatChannel, ChatTarget, ChatWatchState};
@@ -58,8 +58,8 @@ pub(super) struct Levers {
     hello: Arc<tokio::sync::Semaphore>,
 }
 
-/// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, and the socket says
-/// hello and then sends what the test feeds it.
+/// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
+/// answered as `Upload` answers it, and the socket says hello and then sends what the test feeds it.
 pub(super) async fn live() -> (FakeSlack, Levers) {
     let (feed, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let rx = Arc::new(tokio::sync::Mutex::new(rx));
@@ -77,10 +77,14 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
+    let upload = Upload::new();
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
+        }
+        if let Some(r) = upload.reply(seen, port) {
+            return r;
         }
         if path.ends_with("/users.info") {
             let user = seen.param("user").unwrap_or_default();

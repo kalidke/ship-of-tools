@@ -4,14 +4,14 @@ use super::*;
 use crate::chat::ops::{code_of, post_refusal_code};
 use sot_chat::api::ApiError;
 use sot_chat::http::HttpError;
-use sot_protocol::ops::ChatCode;
+use sot_protocol::ops::{ChatCode, MAX_CHAT_FILE};
 use crate::chat::tests::{row, Home, SELF};
 use crate::chat::{Chat, Status};
 use crate::lifecycle::retire::Registry;
 use crate::server::conn::handle_connection;
 use serde_json::{json, Value};
 use sot_chat::config;
-use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
+use sot_chat::fake_slack::{FakeSlack, Identity, Reply, Upload};
 use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -30,7 +30,7 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_RESOLVE, Answer::Handled),
     (op::CHAT_HISTORY, Answer::Handled),
     (op::CHAT_POST, Answer::Handled),
-    (op::CHAT_POST_FILE, Answer::Unserved),
+    (op::CHAT_POST_FILE, Answer::Handled),
     (op::CHAT_FILE, Answer::Unserved),
     (op::CHAT_WATCH, Answer::Handled),
     (op::CHAT_UNWATCH, Answer::Handled),
@@ -49,16 +49,28 @@ pub(super) const DROP: u8 = 2;
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
 fn is_chat_call(path: &str) -> bool {
-    path.ends_with("/conversations.history") || path.ends_with("/conversations.replies") || path.ends_with("/chat.postMessage") || path.ends_with("/users.info")
+    path.ends_with("/conversations.history") || path.ends_with("/conversations.replies") || path.ends_with("/chat.postMessage") || path.ends_with("/users.info") || is_upload_call(path)
 }
 
-/// A fake Slack whose history and post answers follow `mode`; `auth.test` names the workspace and the socket's ticket
-/// is refused, so the service runs with no live socket.
+/// A step of a file's upload (`fake_slack::Upload`'s three).
+fn is_upload_call(path: &str) -> bool {
+    path.ends_with("/files.getUploadURLExternal") || path == Upload::new().path() || path.ends_with("/files.completeUploadExternal")
+}
+
+/// A fake Slack whose history and post answers follow `mode`, and which answers a file's three upload steps as
+/// `Upload` does (the share dropped under `DROP`); `auth.test` names the workspace and the socket's ticket is refused,
+/// so the service runs with no live socket.
 pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
-    let mode = mode.clone();
-    FakeSlack::start(Identity::Trusted, move |seen, _| {
+    let (mode, upload) = (mode.clone(), Upload::new());
+    FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         let now = mode.load(Ordering::SeqCst);
+        if path.ends_with("/files.completeUploadExternal") && now == DROP {
+            return Reply::Drop;
+        }
+        if let Some(r) = upload.reply(seen, port) {
+            return r;
+        }
         if path.ends_with("/auth.test") {
             Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
         } else if path.ends_with("/conversations.history") {
@@ -508,6 +520,112 @@ async fn row_verbs_target_current_thread_and_submit_once() {
     let sent: Vec<Value> = fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).filter_map(|s| s.json()).collect();
     assert_eq!(sent.len(), 2, "one post for the window's and one for the row's");
     assert_eq!((sent[1]["thread_ts"].as_str(), sent[1]["username"].as_str()), (Some(thread), Some("alpha-h (row via Ship of Tools)")), "{}", sent[1]);
+}
+
+/// A file's bytes, as a test writes them into a row's folder.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n synthetic picture bytes";
+
+/// A row's file post as the verb sends it: the row's bound handle as the name, the file by its node id.
+fn file_post(row: &str, channel: &str, kind: &str, name: &str, node_id: &str) -> Value {
+    json!({"target": target(row, channel), "thread": "1700000050.000000", "kind": kind, "name": name, "node_id": node_id, "comment": "the fit"})
+}
+
+/// The upload steps the fake saw, by path.
+fn uploads(fake: &FakeSlack) -> Vec<String> {
+    fake.seen().iter().map(|s| s.path()).filter(|p| is_upload_call(p)).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_posts_a_file_of_its_folder_under_its_own_handle_once() {
+    let mode = Arc::new(AtomicU8::new(OK));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
+    std::fs::create_dir(rig.folders[0].join("figs")).unwrap();
+    std::fs::write(rig.folders[0].join("figs/fit.png"), PNG).unwrap();
+    let mut cli = connect(rig.services.clone()).await;
+    // A person's file from a connection that is not a window, and a row's under another name, are refused before the
+    // file is read: a file that does not exist still answers `bad_request`, never `not_a_file`.
+    for (n, (kind, name, node)) in [("person", "alpha-h", "files:figs/fit.png"), ("row", "someone-else", "files:figs/fit.png"), ("row", "ALPHA-H", "files:no-such.png")].into_iter().enumerate() {
+        let reply = cli.ask(10 + n as u64, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", kind, name, node)).await;
+        assert_eq!((code(&reply), reply.get("outcome")), ("bad_request", None), "{kind} {name}: {reply}");
+    }
+    // The other row's channel, and a row that is gone: the recheck refuses each before anything is read or sent.
+    let reply = cli.ask(20, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0BBBB", "row", "alpha-h", "files:no-such.png")).await;
+    assert_eq!(code(&reply), "stale_mapping", "{reply}");
+    let reply = cli.ask(21, op::CHAT_POST_FILE, file_post("ws-gone-0000", "C0AAAA", "row", "alpha-h", "files:no-such.png")).await;
+    assert_eq!(code(&reply), "stale_row", "{reply}");
+    assert_eq!(calls(&fake), 0, "a refused file post reached Slack");
+    // Under its handle: the three steps once, the file's bytes and base name, into the thread, with the comment.
+    let posted = cli.ask(30, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
+    assert_eq!(posted, json!({"outcome": "posted", "file": "F0FILE", "ts": "1700000800.000100"}));
+    let seen = fake.seen();
+    let steps: Vec<_> = seen.iter().filter(|s| is_upload_call(&s.path())).collect();
+    assert_eq!(steps.len(), 3, "{:?}", uploads(&fake));
+    assert_eq!(steps[0].param("filename").as_deref(), Some("fit.png"));
+    assert_eq!((steps[1].body.as_slice(), steps[1].authorization.as_deref()), (PNG, None));
+    let share = steps[2].json().unwrap();
+    assert_eq!((share["channel_id"].as_str(), share["thread_ts"].as_str()), (Some("C0AAAA"), Some("1700000050.000000")), "{share}");
+    assert_eq!(share["initial_comment"], "alpha-h (row via Ship of Tools): the fit");
+    // A share that is never acknowledged is unknown, and is not sent again.
+    mode.store(DROP, Ordering::SeqCst);
+    let unknown = cli.ask(31, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
+    assert_eq!(unknown, json!({"outcome": "unknown"}));
+    assert_eq!(uploads(&fake).len(), 6, "the unacknowledged share was sent again: {:?}", uploads(&fake));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_outside_the_folder_or_in_the_config_folder_is_never_read_or_sent() {
+    let mode = Arc::new(AtomicU8::new(OK));
+    let fake = slack(&mode).await;
+    let rig = rig(&fake).await;
+    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
+    let folder = &rig.folders[0];
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("o.png"), PNG).unwrap();
+    std::fs::write(folder.join("empty.png"), b"").unwrap();
+    std::fs::write(folder.join("big.bin"), vec![7u8; MAX_CHAT_FILE + 1]).unwrap();
+    std::fs::write(folder.join("max.bin"), vec![7u8; MAX_CHAT_FILE]).unwrap();
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let config = rig._home.config();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&config, folder.join("conf")).unwrap();
+        std::os::unix::fs::symlink(config.join(config::SECRETS_FILE), folder.join("secrets.png")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), folder.join("results")).unwrap();
+        let fifo = std::ffi::CString::new(folder.join("pipe.png").to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    }
+    let mut cli = connect(rig.services.clone()).await;
+    let mut refused = vec![
+        ("files:../b/x.png", "not_a_file"),
+        ("files:/etc/hostname", "not_a_file"),
+        ("files:", "not_a_file"),
+        ("files:sub", "not_a_file"),
+        ("files:no-such.png", "not_a_file"),
+        ("files:empty.png", "not_a_file"),
+        ("files:big.bin", "too_large"),
+        ("figs/fit.png", "not_a_file"),
+    ];
+    if cfg!(unix) {
+        refused.extend([("files:pipe.png", "not_a_file"), ("files:conf/chat-secrets.toml", "not_a_file"), ("files:conf/chat.toml", "not_a_file"), ("files:secrets.png", "not_a_file")]);
+    }
+    for (n, (node, want)) in refused.into_iter().enumerate() {
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), cli.ask(10 + n as u64, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", node))).await.expect("a refusal waited");
+        assert_eq!((code(&reply), reply.get("outcome")), (want, None), "{node}: {reply}");
+    }
+    assert_eq!(calls(&fake), 0, "a refused file reached Slack");
+    // A file of exactly the bound posts, and so does one a link in the folder reaches outside the configuration folder.
+    let mut posts = vec!["files:max.bin"];
+    if cfg!(unix) {
+        posts.push("files:results/o.png");
+    }
+    for (n, node) in posts.iter().enumerate() {
+        let reply = cli.ask(40 + n as u64, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", node)).await;
+        assert_eq!(reply["outcome"], "posted", "{node}: {reply}");
+    }
+    let sizes: Vec<usize> = fake.seen().iter().filter(|s| s.path() == Upload::new().path()).map(|s| s.body.len()).collect();
+    assert_eq!(sizes, [MAX_CHAT_FILE, PNG.len()][..posts.len()], "the bytes sent are the files'");
 }
 
 #[test]

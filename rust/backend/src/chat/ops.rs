@@ -1,27 +1,31 @@
-//! The chat's request ops: `chat.resolve`, `chat.history` and `chat.post`, each a job (never the loop), and
-//! `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
+//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post` and `chat.post_file`, each a job (never the
+//! loop), and `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
 //! unknown outcome is the reply's, for the client to settle by reading history.
 
+use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Deserialize;
-use sot_chat::api::{ApiError, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome};
-use sot_chat::config::Resolution;
+use sot_chat::api::{ApiError, Bounds, Continuation, FileOutcome, HistoryQuery, PostKind, PostOutcome};
+use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
 use sot_protocol::ops::{
-    op, ChatChannel, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveReq,
-    ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper, ChatWatchReq, ChatWatchRes,
+    op, ChatChannel, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
+    ChatPostReq, ChatPostRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
+    ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE,
 };
 use sot_protocol::reply::HandlerOutput;
 use sot_protocol::Frame;
 
 use super::watch::Conn;
 use super::Chat;
+use crate::files::confine::path_within_root;
 use crate::rows::handle::bound_handle;
-use crate::rows::Workspaces;
+use crate::rows::{Workspace, Workspaces};
 
 /// A refusal: the standard error payload with the fixed text and the code, never Slack's or a library's words.
 pub(super) fn refuse(req_id: u64, op: &str, code: ChatCode) -> HandlerOutput {
@@ -144,10 +148,28 @@ pub(crate) async fn history(req_id: u64, payload: serde_json::Value, chat: &Arc<
     reply(req_id, NAME, &ChatHistoryRes { records: page.records, next: page.next.map(|c| c.as_str().to_string()), limited: page.limited })
 }
 
-/// `chat.post`. After admission, two refusals by the connection's declared role and the row's bound handle, each
-/// `bad_request` before any Slack call: a person's post only from a window (a row's own `Drawer` post would be mail to
-/// itself), and a row's post only under its own bound handle. The role is the client's own declaration, so this is
-/// attribution among one account's programs, not a security boundary.
+/// Who posts as whom, for `chat.post` and `chat.post_file` alike, checked after admission and before any Slack call: a
+/// person's post only from a window (a row's own `Drawer` post would be mail to itself), and a row's post only under its
+/// own bound handle. The role is the client's own declaration, so this is attribution among one account's programs, not
+/// a security boundary.
+fn may_post(kind: ChatPostKind, name: &str, row: &str, rows: &Workspaces, window: bool) -> bool {
+    match kind {
+        ChatPostKind::Person => window,
+        ChatPostKind::Row => {
+            let all = rows.list();
+            rows.resolve(Some(row)).is_some_and(|ws| bound_handle(&ws, &all) == name)
+        }
+    }
+}
+
+fn post_kind(kind: ChatPostKind) -> PostKind {
+    match kind {
+        ChatPostKind::Person => PostKind::Person,
+        ChatPostKind::Row => PostKind::Row,
+    }
+}
+
+/// `chat.post`. After admission, [`may_post`]'s two refusals, each `bad_request` before any Slack call.
 pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_POST;
     let req = match decode::<ChatPostReq>(payload) {
@@ -158,27 +180,16 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
         Ok(s) => s,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    let allowed = match req.kind {
-        ChatPostKind::Person => window,
-        ChatPostKind::Row => {
-            let all = rows.list();
-            rows.resolve(Some(&req.target.row)).is_some_and(|ws| bound_handle(&ws, &all) == req.name)
-        }
-    };
-    if !allowed {
+    if !may_post(req.kind, &req.name, &req.target.row, rows, window) {
         return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
     }
     let api = match service.api() {
         Ok(a) => a,
         Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
     };
-    let kind = match req.kind {
-        ChatPostKind::Person => PostKind::Person,
-        ChatPostKind::Row => PostKind::Row,
-    };
     let refused_post = |code| reply(req_id, NAME, &ChatPostRes::Refused { code });
     // The one call: nothing below sends again, whatever it answers.
-    let outcome = api.post(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), kind, &req.name, &req.text).await;
+    let outcome = api.post(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), post_kind(req.kind), &req.name, &req.text).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
         Ok(PostOutcome::Posted(ts)) => reply(req_id, NAME, &ChatPostRes::Posted { ts }),
@@ -187,6 +198,74 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
             reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
         Ok(PostOutcome::Unknown) => reply(req_id, NAME, &ChatPostRes::Unknown),
+    }
+}
+
+/// `chat.post_file`: one file of the row's folder shared once. In order, each refusal before anything is read or sent
+/// past it: admission, [`may_post`] (`bad_request`), the file ([`read_file`]: `not_a_file`, `too_large`), then the one
+/// `Api::post_file`, whose outcome is the reply's and is never retried.
+pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_POST_FILE;
+    let req = match decode::<ChatPostFileReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    if !may_post(req.kind, &req.name, &req.target.row, rows, window) {
+        return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
+    }
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+    };
+    let Some(ws) = rows.resolve(Some(&req.target.row)) else {
+        return Ok(refuse(req_id, NAME, ChatCode::StaleRow));
+    };
+    let (node_id, secrets) = (req.node_id.clone(), config::config_dir(&chat.env));
+    let read = tokio::task::spawn_blocking(move || read_file(&ws, &node_id, secrets.as_deref())).await;
+    let (file_name, bytes) = match read.unwrap_or(Err(ChatCode::Failed)) {
+        Ok(file) => file,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let refused_post = |code| reply(req_id, NAME, &ChatPostFileRes::Refused { code });
+    let (channel, thread) = (req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()));
+    // The one call: nothing below sends again, whatever it answers.
+    let outcome = api.post_file(channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
+    match outcome {
+        Err(e) => refused_post(code_of(&e)),
+        Ok(FileOutcome::Posted { file, ts }) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts }),
+        Ok(FileOutcome::Refused(why)) => refused_post(post_refusal_code(&why)),
+        Ok(FileOutcome::Limited { retry_after, assumed }) => {
+            reply(req_id, NAME, &ChatPostFileRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
+        }
+        Ok(FileOutcome::Unknown) => reply(req_id, NAME, &ChatPostFileRes::Unknown),
+    }
+}
+
+/// The file `node_id` names beneath the row's root, read whole once, so the bytes shared are the bytes read: its base
+/// name (the node's own, a link's name and not its target's) and 1 to `MAX_CHAT_FILE` bytes. The id is composed by the
+/// read resolver, which refuses `..` and absolute parts and follows links (a `data/results` link to another disk
+/// posts). Its canonical path is refused when it lies in the chat's configuration folder, which holds the secrets, and
+/// is the path opened, as a regular file only (`open_regular`: a FIFO, a device or a folder is refused without a wait).
+/// Anything not readable so is `not_a_file`; more than the bound is `too_large`. Runs on the blocking pool.
+fn read_file(ws: &Workspace, node_id: &str, secrets: Option<&Path>) -> Result<(String, Vec<u8>), ChatCode> {
+    let files = ws.files_mode().map_err(|_| ChatCode::NotAFile)?;
+    let path = files.node_id_to_path(node_id).map_err(|_| ChatCode::NotAFile)?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or(ChatCode::NotAFile)?.to_string();
+    let real = super::canonical(&path).ok_or(ChatCode::NotAFile)?;
+    if secrets.and_then(super::canonical).is_some_and(|dir| path_within_root(&real, &dir)) {
+        return Err(ChatCode::NotAFile);
+    }
+    let file = sot_platform::host::open_regular(&real).map_err(|_| ChatCode::NotAFile)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_CHAT_FILE as u64 + 1).read_to_end(&mut bytes).map_err(|_| ChatCode::NotAFile)?;
+    match bytes.len() {
+        0 => Err(ChatCode::NotAFile),
+        n if n > MAX_CHAT_FILE => Err(ChatCode::TooLarge),
+        _ => Ok((name, bytes)),
     }
 }
 

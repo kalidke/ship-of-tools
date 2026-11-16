@@ -13,11 +13,11 @@ use crate::rows::{Workspace, Workspaces};
 use serde_json::{json, Value};
 use sot_chat::config;
 use sot_chat::delivery::Timing;
-use sot_chat::fake_slack::{FakeSlack, History};
+use sot_chat::fake_slack::{FakeSlack, History, Upload};
 use sot_chat::service::{Service, Status as ServiceStatus};
 use sot_platform::test_hold::Holds;
 use sot_protocol::chat::Ts;
-use sot_protocol::ops::{ChatChannel, ChatTarget};
+use sot_protocol::ops::{op, ChatChannel, ChatTarget};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -568,6 +568,64 @@ async fn with_the_window_closed_a_channel_post_becomes_marked_mail_and_the_rows_
     send_at(&lv, t, "e-t");
     w.filed_count(4).await;
     assert_eq!(w.filed(), vec![p.to_string(), r.to_string(), s.to_string(), t.to_string()]);
+    stop(chat);
+}
+
+/// Goal 1 of the figures plan: a row's file in its folder reaches its thread through the three upload steps once, the
+/// bytes unauthorized and the share under the row's label, and reads back as the row's own, never as mail.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rows_figure_reaches_its_thread_once() {
+    let q = "1700000050.000000";
+    let png: &[u8] = b"\x89PNG\r\n\x1a\n a row's synthetic figure";
+    let w = world(true).await;
+    std::fs::write(std::path::Path::new(&w.folder).join("fig.png"), png).unwrap();
+    let chat = w.start(&w.fake).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    services.chat = chat.clone();
+    services.workspaces = w.rows.clone();
+    let mut conn = super::chat_ops_tests::connect(services).await;
+    let target = super::chat_ops_tests::target(&w.rows.list()[0].workspace_id, "C0AAAA");
+    let req = json!({"target": target, "thread": q, "kind": "row", "name": "alpha-h", "node_id": "files:fig.png", "comment": "the fit"});
+    let posted = conn.ask(10, op::CHAT_POST_FILE, req).await;
+    assert_eq!(posted["outcome"], "posted", "{posted}");
+    let ts = posted["ts"].as_str().expect("the share's ts").to_string();
+
+    // One of each step: the bytes are the file's and carry no authorization; the share names the channel, the thread
+    // and the row's label.
+    let seen = w.fake.seen();
+    let step = |path: &str| seen.iter().filter(|s| s.path() == path).collect::<Vec<_>>();
+    let (ask, bytes, share) = (step("/api/files.getUploadURLExternal"), step(Upload::new().path()), step("/api/files.completeUploadExternal"));
+    assert_eq!((ask.len(), bytes.len(), share.len()), (1, 1, 1));
+    assert_eq!((bytes[0].body.as_slice(), bytes[0].authorization.as_deref()), (png, None));
+    let body = share[0].json().unwrap();
+    assert_eq!((body["channel_id"].as_str(), body["thread_ts"].as_str()), (Some("C0AAAA"), Some(q)), "{body}");
+    assert_eq!(body["initial_comment"], "alpha-h (row via Ship of Tools): the fit");
+
+    // As Slack stores the share: the app's own file_share in the thread, its comment the text. Read back through
+    // history it is the row's, under the row's name.
+    let file = json!([{"id": "F0FILE", "name": "fig.png", "mimetype": "image/png", "size": png.len()}]);
+    let stored = json!({"ts": ts, "thread_ts": q, "subtype": "file_share", "bot_id": "B0BOT", "user": "U0BOT", "text": body["initial_comment"], "files": file});
+    let parent = json!({"ts": q, "thread_ts": q, "bot_id": "B0OTHER", "text": "the run", "reply_count": 1, "latest_reply": ts});
+    serve(&w.lv, History::new().raw(parent).raw(stored.clone()));
+    let page = conn.ask(11, op::CHAT_HISTORY, json!({"target": target, "thread": q, "limit": 5})).await;
+    let records = page["records"].as_array().unwrap_or_else(|| panic!("{page}"));
+    let record = records.iter().find(|r| r["ts"] == ts.as_str()).unwrap_or_else(|| panic!("{page}"));
+    let read = (record["origin"].as_str(), record["author"]["name"].as_str(), record["text"].as_str());
+    assert_eq!(read, (Some("row"), Some("alpha-h"), Some("the fit")), "{record}");
+
+    // The socket sends the share and then a member's post: only the member's is mail.
+    let mut event = message("C0AAAA", 1);
+    event["envelope_id"] = json!("e-share");
+    let mut shared = stored;
+    shared["type"] = json!("message");
+    shared["channel"] = json!("C0AAAA");
+    event["payload"]["event"] = shared;
+    w.lv.feed.send(event).unwrap();
+    send(&w.lv, 2, "e2");
+    w.filed_count(1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(w.filed(), vec![stamp(2)], "the row's figure was filed as mail");
     stop(chat);
 }
 
