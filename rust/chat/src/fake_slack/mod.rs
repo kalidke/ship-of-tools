@@ -2,6 +2,7 @@
 //! hand-written against `tokio-rustls` (no HTTP framework), that records what it receives and answers as a test's
 //! script says. It reaches no network and needs no credentials. A request that asks to upgrade may be answered with
 //! `Reply::socket`: the selected library's server handshake, then a script that drives the websocket (`ws.rs`).
+//! `Upload` (`upload.rs`) answers Slack's three file upload steps.
 //!
 //! Test-only certificates, fixed so no run generates one. They were made once with OpenSSL 3.0 (`openssl ca` with
 //! `-startdate 20250101000000Z`, so a host whose clock is behind still accepts them, and `-enddate 21261013000000Z`),
@@ -30,8 +31,10 @@ use tokio_rustls::TlsAcceptor;
 use crate::http::Http;
 
 mod history;
+mod upload;
 mod ws;
 pub use history::History;
+pub use upload::Upload;
 pub use ws::{Flood, WsPeer};
 
 /// The names the test resolver maps to loopback: Slack's, two lookalikes, a foreign host, and one Slack name the

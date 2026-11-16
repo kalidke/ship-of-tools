@@ -246,8 +246,10 @@ downloaded at install, and no copy is loaded into the kernel). Also in progress,
 built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
-or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures (B4 with P3, P7, P8) wait for the
-maintainer's word after the first stage is measured. Mail (B3) has landed: the filing that names its expected row
+or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures are in progress on the maintainer's word
+(2026-11-16), by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
+shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
+on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation). Mail (B3) has landed: the filing that names its expected row
 (P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound

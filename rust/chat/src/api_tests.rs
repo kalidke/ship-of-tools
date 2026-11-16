@@ -9,10 +9,11 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    identify_at, Api, ApiError, Bounds, Channel, Continuation, HistoryQuery, Identified, JoinOutcome, PostKind,
-    PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CURSOR, MAX_LISTED, MAX_NAMES, MAX_RETRY, MAX_SCAN,
+    identify_at, Api, ApiError, Bounds, Channel, Continuation, FileOutcome, HistoryQuery, Identified, JoinOutcome,
+    PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED, MAX_NAMES, MAX_RETRY,
+    MAX_SCAN,
 };
-use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen};
+use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen, Upload};
 use crate::http::{HttpError, Secret};
 use crate::normalize::MAX_TEXT;
 
@@ -2146,6 +2147,358 @@ async fn a_join_is_sent_once_and_already_in_channel_is_joined() {
         api.close();
         assert_eq!(api.join("C0OK").await, Err(ApiError::Closed));
         assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A picture's bytes, synthetic.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n synthetic picture bytes";
+/// The first upload step and the share.
+const ASK: &str = "/api/files.getUploadURLExternal";
+const SHARE: &str = "/api/files.completeUploadExternal";
+
+/// The paths the fake saw, `auth.test` left out.
+fn steps(fake: &FakeSlack) -> Vec<String> {
+    fake.seen().iter().map(Seen::path).filter(|p| p != "/api/auth.test").collect()
+}
+
+fn shared(fake: &FakeSlack) -> usize {
+    calls(fake, "files.completeUploadExternal")
+}
+
+#[tokio::test]
+async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
+    bounded(async {
+        let upload = Upload::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            upload.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = new_api(&fake);
+        let outcome = api
+            .post_file(
+                "C0CHAN",
+                Some("1700000100.000000"),
+                PostKind::Row,
+                "build-7",
+                "fig 1.png",
+                PNG.to_vec(),
+                Some("the <!channel> & its fit"),
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            Ok(FileOutcome::Posted { file: "F0FILE".into(), ts: Some(ts("1700000800.000100")) })
+        );
+        let seen = fake.seen();
+        let paths: Vec<String> = seen.iter().map(Seen::path).collect();
+        assert_eq!(paths, [ASK, "/upload/v1/F0FILE", SHARE], "three requests, in order, once");
+        let bearer = format!("Bearer {TOKEN}");
+
+        let (ask, bytes, share) = (&seen[0], &seen[1], &seen[2]);
+        assert_eq!(ask.method, "GET");
+        assert_eq!(ask.param("filename").as_deref(), Some("fig 1.png"));
+        assert_eq!(ask.param("length"), Some(PNG.len().to_string()));
+        assert_eq!(ask.authorization.as_deref(), Some(&*bearer));
+
+        assert_eq!(bytes.method, "POST");
+        assert!(bytes.host.starts_with("files.slack.com:"), "{}", bytes.host);
+        assert_eq!(bytes.body, PNG, "the bytes sent are the bytes given");
+        assert_eq!(bytes.authorization, None, "the upload carries no authorization");
+
+        assert_eq!(share.method, "POST");
+        assert_eq!(share.authorization.as_deref(), Some(&*bearer));
+        let body = share.json().unwrap();
+        assert_eq!(body["files"], json!([{"id": "F0FILE", "title": "fig 1.png"}]));
+        assert_eq!(body["channel_id"], "C0CHAN");
+        assert_eq!(body["thread_ts"], "1700000100.000000");
+        assert_eq!(
+            body["initial_comment"],
+            "build-7 (row via Ship of Tools): the &lt;!channel&gt; &amp; its fit",
+            "the label and the comment, escaped"
+        );
+
+        // A person's file with no comment and no thread: the label alone, at the channel's top level.
+        let outcome = api.post_file("C0CHAN", None, PostKind::Person, "Ada Test", "a.png", PNG.to_vec(), None).await;
+        assert!(matches!(outcome, Ok(FileOutcome::Posted { .. })), "{outcome:?}");
+        let body = fake.seen().pop().unwrap().json().unwrap();
+        assert_eq!(body["initial_comment"], "Ada Test (person via Ship of Tools)");
+        assert!(body.get("thread_ts").is_none());
+        assert_eq!(shared(&fake), 2);
+
+        // Input a file post cannot carry is refused before anything is sent; the bound is on the escaped label and
+        // comment together.
+        let before = fake.seen().len();
+        let fits = "x".repeat(MAX_TEXT - "Ada (person via Ship of Tools): ".len());
+        let over = format!("{fits}&");
+        let long_name = "x".repeat(257);
+        let big = vec![0u8; MAX_CHAT_FILE + 1];
+        let cases: [(&str, Option<&str>, &str, &str, &[u8], Option<&str>); 11] = [
+            ("bad id", None, "Ada", "a.png", PNG, None),
+            ("C0CHAN", Some("1700000100.12345"), "Ada", "a.png", PNG, None),
+            ("C0CHAN", None, "", "a.png", PNG, None),
+            ("C0CHAN", None, "Ada", "", PNG, None),
+            ("C0CHAN", None, "Ada", "dir/a.png", PNG, None),
+            ("C0CHAN", None, "Ada", "a\nb.png", PNG, None),
+            ("C0CHAN", None, "Ada", &long_name, PNG, None),
+            ("C0CHAN", None, "Ada", "a.png", b"", None),
+            ("C0CHAN", None, "Ada", "a.png", &big, None),
+            ("C0CHAN", None, "Ada", "a.png", PNG, Some("")),
+            ("C0CHAN", None, "Ada", "a.png", PNG, Some(&over)),
+        ];
+        for (channel, thread, name, file, bytes, comment) in cases {
+            let r = api.post_file(channel, thread, PostKind::Person, name, file, bytes.to_vec(), comment).await;
+            assert!(r.is_err(), "{channel} {name:?} {file:.10} {} {:?}", bytes.len(), comment.map(str::len));
+        }
+        assert_eq!(fake.seen().len(), before, "nothing sent for a refused input");
+        let exact = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), Some(&fits)).await;
+        assert!(matches!(exact, Ok(FileOutcome::Posted { .. })), "the bound itself is carried");
+        let full_size = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", vec![7u8; MAX_CHAT_FILE], None).await;
+        assert!(matches!(full_size, Ok(FileOutcome::Posted { .. })), "a file of exactly the bound is carried");
+        assert_eq!(fake.seen().iter().rev().nth(1).unwrap().body.len(), MAX_CHAT_FILE);
+
+        let before = fake.seen().len();
+        api.close();
+        let closed = api.post_file("C0CHAN", None, PostKind::Person, "Ada", "a.png", PNG.to_vec(), None).await;
+        assert_eq!(closed, Err(ApiError::Closed));
+        assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// Each step's failure by the file's name: `drop1` and `hang1` at step 1, `drop2` and `hang2` at the upload, and at
+/// the share `drop3`, `hang3`, `five` (a 503) and `noid` (an `ok` without the file).
+#[tokio::test]
+async fn only_the_share_can_be_unknown() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, port| {
+            let path = seen.path();
+            if path == ASK {
+                let file = seen.param("filename").unwrap_or_default();
+                return match file.as_str() {
+                    "drop1" => Reply::Drop,
+                    "hang1" => Reply::Hang,
+                    _ => Reply::json(&json!({
+                        "ok": true, "file_id": "F0FILE", "upload_url": format!("https://files.slack.com:{port}/upload/{file}"),
+                    })),
+                };
+            }
+            if path == SHARE {
+                let file = seen.json().and_then(|b| b["files"][0]["title"].as_str().map(String::from));
+                return match file.as_deref().unwrap_or_default() {
+                    "drop3" => Reply::Drop,
+                    "hang3" => Reply::Hang,
+                    "five" => status(503, &[], &json!({})),
+                    "noid" => Reply::json(&json!({"ok": true, "files": []})),
+                    _ => Reply::json(&json!({"ok": true, "files": [{"id": "F0FILE"}]})),
+                };
+            }
+            match path.as_str() {
+                "/upload/drop2" => Reply::Drop,
+                "/upload/hang2" => Reply::Hang,
+                _ => Reply::ok(b"OK"),
+            }
+        })
+        .await;
+        let short = Duration::from_millis(300);
+        let api = new_api(&fake).with_deadlines(short, short, short).with_transfer_deadline(short);
+        let post = |file: &'static str| api.post_file("C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None);
+
+        for before_the_share in ["drop1", "drop2"] {
+            let got = post(before_the_share).await;
+            assert!(matches!(got, Ok(FileOutcome::Refused(_))), "{before_the_share}: {got:?}");
+        }
+        for before_the_share in ["hang1", "hang2"] {
+            assert_eq!(post(before_the_share).await, Ok(FileOutcome::Refused("timeout".into())), "{before_the_share}");
+        }
+        assert_eq!(shared(&fake), 0, "no share is sent after a failure before it");
+
+        for at_the_share in ["drop3", "hang3", "five", "noid"] {
+            assert_eq!(post(at_the_share).await, Ok(FileOutcome::Unknown), "{at_the_share}");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(shared(&fake), 4, "each share sent once, never again");
+        assert_eq!(post("good").await, Ok(FileOutcome::Posted { file: "F0FILE".into(), ts: None }));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_share_with_no_ts_is_posted_with_its_file() {
+    bounded(async {
+        for (upload, want) in [
+            (Upload::new().no_ts(), None),
+            (Upload::new().private(), Some(ts("1700000800.000100"))),
+        ] {
+            let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+                upload.reply(seen, port).unwrap_or(Reply::Drop)
+            })
+            .await;
+            let got = new_api(&fake).post_file("G0PRIV", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+            assert_eq!(got, Ok(FileOutcome::Posted { file: "F0FILE".into(), ts: want.clone() }), "{want:?}");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_foreign_upload_url_is_refused_before_any_byte_and_nothing_is_shared() {
+    bounded(async {
+        let long = format!("/upload/{}", "x".repeat(2100));
+        for (host, path, code) in [
+            ("other.example", "/upload/v1/F0FILE", "destination"),
+            ("evilslack.com", "/upload/v1/F0FILE", "destination"),
+            ("slack.com.evil.example", "/upload/v1/F0FILE", "destination"),
+            ("files.slack.com", long.as_str(), "malformed"),
+        ] {
+            let upload = Upload::new().upload_to(host, path);
+            let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+                upload.reply(seen, port).unwrap_or(Reply::Drop)
+            })
+            .await;
+            let got = new_api(&fake).post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+            assert_eq!(got, Ok(FileOutcome::Refused(code.into())), "{host}");
+            assert_eq!(steps(&fake), [ASK], "{host}: only the first step was sent");
+            assert_eq!(fake.connections(), 1, "{host}: no connection to the upload host");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_third_transfer_is_busy_at_once_and_a_dropped_one_frees_its_permit() {
+    bounded(async {
+        let upload = Upload::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.param("filename").as_deref() == Some("hang.png") {
+                return Reply::Hang;
+            }
+            upload.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = Arc::new(new_api(&fake));
+        let hang = |api: Arc<Api>| {
+            tokio::spawn(async move {
+                api.post_file("C0CHAN", None, PostKind::Row, "build-7", "hang.png", PNG.to_vec(), None).await
+            })
+        };
+        let (first, second) = (hang(api.clone()), hang(api.clone()));
+        eventually("two transfers under way", || fake.seen().len() == 2).await;
+
+        let start = Instant::now();
+        let third = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "ok.png", PNG.to_vec(), None).await;
+        assert_eq!(third, Ok(FileOutcome::Refused("busy".into())));
+        assert!(start.elapsed() < Duration::from_secs(1), "busy at once");
+        assert_eq!(fake.seen().len(), 2, "the third sent nothing");
+
+        // A caller that drops its transfer frees the permit with it; one that ends frees its own.
+        first.abort();
+        let _ = first.await;
+        for _ in 0..2 {
+            let got = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "ok.png", PNG.to_vec(), None).await;
+            assert!(matches!(got, Ok(FileOutcome::Posted { .. })), "{got:?}");
+        }
+        second.abort();
+        let _ = second.await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_file_post_shows_no_token_or_private_url_in_any_error() {
+    bounded(async {
+        const SECRET_PATH: &str = "/upload/v1/sentinel-private-upload";
+        let echo = format!("invalid auth https://files.slack.com{SECRET_PATH} {TOKEN}");
+        // Each file fails at one step by its name; every answer echoes the token or the upload URL.
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            let path = seen.path();
+            let title = seen.json().and_then(|b| b["files"][0]["title"].as_str().map(String::from));
+            let at = |host: &str, file: &str| format!("https://{host}:{port}{SECRET_PATH}?t={TOKEN}&f={file}");
+            match (path.as_str(), seen.param("filename").or(title).as_deref()) {
+                (ASK, Some("echo1.png")) => Reply::json(&json!({"ok": false, "error": echo})),
+                (SHARE, Some("echo3.png")) => Reply::json(&json!({"ok": false, "error": echo})),
+                (_, Some("html1.png")) => Reply::ok(format!("<html>{TOKEN} {SECRET_PATH}</html>").as_bytes()),
+                (_, Some("foreign.png")) => {
+                    Reply::json(&json!({"ok": true, "file_id": "F0FILE", "upload_url": at("other.example", "x")}))
+                }
+                (ASK, Some(file)) => {
+                    Reply::json(&json!({"ok": true, "file_id": "F0FILE", "upload_url": at("files.slack.com", file)}))
+                }
+                (SECRET_PATH, _) if seen.param("f").as_deref() == Some("refused2.png") => {
+                    status(403, &[], &json!({"error": TOKEN}))
+                }
+                (SECRET_PATH, _) => Reply::ok(TOKEN.as_bytes()),
+                _ => status(400, &[], &json!({"error": format!("{TOKEN} {SECRET_PATH}")})),
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let mut shown = Vec::new();
+        for file in ["echo1.png", "html1.png", "foreign.png", "refused2.png", "echo3.png", "refused3.png", ""] {
+            let got = api.post_file("C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None).await;
+            shown.push(match got {
+                Ok(outcome) => format!("{outcome:?}"),
+                Err(e) => format!("{e:?} {e}"),
+            });
+        }
+        let want = [
+            "Refused(\"unknown_error\")",
+            "Refused(\"malformed\")",
+            "Refused(\"destination\")",
+            "Refused(\"http_403\")",
+            "Unknown",
+            "Refused(\"http_400\")",
+            "BadRequest bad_request",
+        ];
+        assert_eq!(shown, want);
+        for text in &shown {
+            for secret in [TOKEN, "sentinel-private", "files.slack.com", "other.example", "127.0.0.1", "upload"] {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_rate_limit_refuses_a_file_post_unsent() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if seen.path() == ASK {
+                status(429, &[("Retry-After", "5")], &json!({}))
+            } else {
+                Reply::Drop
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let post = || api.post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None);
+        assert_eq!(post().await, Ok(FileOutcome::Limited { retry_after: Duration::from_secs(5), assumed: false }));
+        // While the wait runs, the first step is a read refused without a request.
+        assert!(matches!(post().await, Ok(FileOutcome::Limited { assumed: false, .. })));
+        assert_eq!(steps(&fake), [ASK], "one request, nothing uploaded or shared");
+        fake.shutdown().await;
+
+        // A share that is limited is returned with its wait and is not resent.
+        let upload = Upload::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == SHARE {
+                return status(429, &[("Retry-After", "7")], &json!({}));
+            }
+            upload.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let got = new_api(&fake).post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+        assert_eq!(got, Ok(FileOutcome::Limited { retry_after: Duration::from_secs(7), assumed: false }));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(shared(&fake), 1);
         fake.shutdown().await;
     })
     .await;

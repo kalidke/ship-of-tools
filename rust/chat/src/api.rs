@@ -1,23 +1,24 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
-//! configured), channel history and thread replies (paged), `chat.postMessage` under a custom author, the channel
-//! picker's calls (the channel list, one channel's facts, one join), and author names through a bounded cache. Every
-//! call goes out through
+//! configured), channel history and thread replies (paged), `chat.postMessage` under a custom author, a file shared
+//! into a channel (Slack's three upload steps), the channel picker's calls (the channel list, one channel's facts, one
+//! join), and author names through a bounded cache. Every call goes out through
 //! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
-//! No socket, no file call, no configuration: the caller hands in the `Secret`.
+//! No socket, no file method, no configuration: the caller hands in the `Secret` and a file's bytes.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::Url;
 use serde_json::{json, Value};
 use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts};
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
-use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_MENTIONS, MAX_NAME};
+use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
 use crate::watch::MAX_CHANNELS;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
@@ -26,6 +27,15 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 /// A post is never resent, so its wait is longer than a read's: giving up early turns an acknowledgement still on its
 /// way into `Unknown` for the person to resolve.
 pub const POST_DEADLINE: Duration = Duration::from_secs(30);
+/// A file's bytes on the wire (a post's upload): up to `MAX_CHAT_FILE` on a slow link.
+pub const TRANSFER_DEADLINE: Duration = Duration::from_secs(60);
+/// The largest file a post carries.
+pub const MAX_CHAT_FILE: usize = 16 << 20;
+/// Transfers at once, per `Api` (one daemon's): the next is refused `busy` at once, so at most this many files'
+/// bytes are held for the network.
+pub const MAX_TRANSFERS: usize = 2;
+/// The upload URL Slack's first upload step answers: a longer one is `malformed`.
+const MAX_UPLOAD_URL: usize = 2048;
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
 pub use sot_protocol::ops::{MAX_CURSOR, MAX_LISTED, MAX_PAGE};
@@ -420,11 +430,30 @@ pub enum PostOutcome {
     Unknown,
 }
 
+/// How a file post ended. Only the share (the third step) can post a file, and it was submitted at most once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// Shared: the file's id, and the share's `ts` when Slack's answer names it.
+    Posted { file: String, ts: Option<Ts> },
+    /// Definitely not shared: Slack's rejection of the share (its code), or any failure before the share was sent
+    /// (the code of the step that failed, `busy` for a transfer over `MAX_TRANSFERS`, `closed` for a client closed
+    /// between the upload and the share).
+    Refused(String),
+    /// Slack was rate limited at the first step or the share; nothing was shared and nothing is resent.
+    Limited {
+        retry_after: Duration,
+        assumed: bool,
+    },
+    /// The share was sent and not acknowledged: the file may or may not be in the channel. Never resent.
+    Unknown,
+}
+
 #[derive(Clone, Copy)]
 struct Deadlines {
     read: Duration,
     post: Duration,
     names: Duration,
+    transfer: Duration,
 }
 
 #[derive(Default)]
@@ -446,6 +475,8 @@ pub struct Api {
     eligible: Mutex<Option<Instant>>,
     names: Mutex<Names>,
     closed: AtomicBool,
+    /// `MAX_TRANSFERS` permits, each held across every step of one transfer.
+    transfers: Arc<Semaphore>,
 }
 
 /// A bot token's workspace and bot, as one `auth.test` names them before any workspace is configured.
@@ -502,11 +533,13 @@ impl Api {
                 read: READ_DEADLINE,
                 post: POST_DEADLINE,
                 names: NAMES_DEADLINE,
+                transfer: TRANSFER_DEADLINE,
             },
             own: Mutex::new(None),
             eligible: Mutex::new(None),
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
+            transfers: Arc::new(Semaphore::new(MAX_TRANSFERS)),
         }
     }
 
@@ -524,7 +557,13 @@ impl Api {
 
     #[cfg(test)]
     pub(crate) fn with_deadlines(mut self, read: Duration, post: Duration, names: Duration) -> Api {
-        self.deadlines = Deadlines { read, post, names };
+        self.deadlines = Deadlines { read, post, names, transfer: self.deadlines.transfer };
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_transfer_deadline(mut self, transfer: Duration) -> Api {
+        self.deadlines.transfer = transfer;
         self
     }
 
@@ -682,11 +721,10 @@ impl Api {
         if self.closed.load(Ordering::SeqCst) {
             return Err(ApiError::Closed);
         }
-        let name_ok = !name.is_empty() && name == clean(name, MAX_NAME).0 && name.len() <= MAX_NAME;
         let thread = thread
             .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
             .transpose()?;
-        if !valid_id(channel) || !name_ok {
+        if !valid_id(channel) || !author_ok(name) {
             return Err(ApiError::BadRequest);
         }
         let text = slack_text(text)?;
@@ -710,6 +748,79 @@ impl Api {
         )
         .bearer(self.token.clone());
         Ok(post_outcome(self.http.send(request).await))
+    }
+
+    /// Share a file once, as `kind` named `name`: Slack's three steps under one transfer permit. Step 1 is a read
+    /// (`files.getUploadURLExternal`, under the read rules); step 2 posts the bytes to the URL it answered, with no
+    /// authorization; step 3 (`files.completeUploadExternal`) is the share, the only mutation, read as a post's answer
+    /// is. Its `initial_comment` is the label `<name> (<kind> via Ship of Tools)`, then `: ` and the comment when there
+    /// is one, made Slack's by `slack_text`. Input the post cannot carry is `Err` unsent; from there the result is a
+    /// `FileOutcome`, a failure before the share is never `Unknown`, and no path resends.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn post_file(
+        &self,
+        channel: &str,
+        thread: Option<&str>,
+        kind: PostKind,
+        name: &str,
+        file_name: &str,
+        bytes: Vec<u8>,
+        comment: Option<&str>,
+    ) -> Result<FileOutcome, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
+        let thread = thread
+            .map(|t| Ts::parse(t).map_err(|_| ApiError::BadBound))
+            .transpose()?;
+        let file_name_ok = !file_name.is_empty()
+            && file_name.len() <= MAX_FILENAME
+            && !file_name.contains(|c: char| c.is_control() || c == '/' || c == '\\');
+        let bytes_ok = !bytes.is_empty() && bytes.len() <= MAX_CHAT_FILE;
+        if !valid_id(channel) || !author_ok(name) || !file_name_ok || !bytes_ok || comment == Some("") {
+            return Err(ApiError::BadRequest);
+        }
+        let label = format!("{name} ({} via Ship of Tools)", kind.word());
+        let label = slack_text(&match comment {
+            Some(c) => format!("{label}: {c}"),
+            None => label,
+        })?;
+        let share_url = self.url("files.completeUploadExternal", &[])?;
+        // Owned, so a caller that drops this future frees it with the future.
+        let Ok(_permit) = self.transfers.clone().try_acquire_owned() else {
+            return Ok(FileOutcome::Refused(HttpError::Busy.code().into()));
+        };
+        let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
+        let v = match self.read("files.getUploadURLExternal", &params, MAX_BODY).await {
+            Ok(v) => v,
+            Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
+            Err(e) => return Ok(FileOutcome::Refused(refusal(&e))),
+        };
+        let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_UPLOAD_URL);
+        let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
+            return Ok(FileOutcome::Refused(ApiError::Malformed.code().into()));
+        };
+        // The upload URL carries its own grant: no bearer, and `Http` refuses a host that is not Slack's before a byte.
+        let upload = Request::post(upload_url, self.deadlines.transfer, "application/octet-stream", bytes);
+        match self.http.send(upload).await {
+            Ok(r) if (200..=299).contains(&r.status()) => {}
+            Ok(r) => return Ok(FileOutcome::Refused(format!("http_{}", r.status()))),
+            Err(e) => return Ok(FileOutcome::Refused(e.code().into())),
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            return Ok(FileOutcome::Refused(ApiError::Closed.code().into()));
+        }
+        let mut body = json!({
+            "files": [{"id": file, "title": file_name}],
+            "channel_id": channel,
+            "initial_comment": label,
+        });
+        if let Some(parent) = thread {
+            body["thread_ts"] = parent.as_str().into();
+        }
+        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes())
+            .bearer(self.token.clone());
+        Ok(share_outcome(self.http.send(share).await, channel))
     }
 
     /// The channels the bot can see: every public channel and the private ones it is in, as many pages as `MAX_LISTED`
@@ -1117,6 +1228,22 @@ fn retry_after(response: &Response) -> (Duration, bool) {
     }
 }
 
+/// A post's author name: as `clean` leaves it, within `MAX_NAME`.
+fn author_ok(name: &str) -> bool {
+    !name.is_empty() && name == clean(name, MAX_NAME).0 && name.len() <= MAX_NAME
+}
+
+/// A failure before a share as the code its refusal carries: the HTTP core's, Slack's, a status as `http_<code>`, or
+/// the call's own.
+fn refusal(e: &ApiError) -> String {
+    match e {
+        ApiError::Http(h) => h.code().into(),
+        ApiError::Slack(code) => code.clone(),
+        ApiError::Status(s) => format!("http_{s}"),
+        other => other.code().into(),
+    }
+}
+
 /// The one way a request body gets a `text`: plain text made Slack's, so no `<!channel>` or `<@U1>` in it pings or
 /// mentions. Empty, or escaped past the bound, it is refused unsent.
 fn slack_text(text: &str) -> Result<String, ApiError> {
@@ -1197,5 +1324,26 @@ fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
         Ack::Refused(code) => PostOutcome::Refused(code),
         Ack::Limited { retry_after, assumed } => PostOutcome::Limited { retry_after, assumed },
         Ack::Unknown => PostOutcome::Unknown,
+    }
+}
+
+/// A share's answer: the acknowledgement, read for `files[0].id` (an `ok` with none is `Unknown`) and the share's `ts`
+/// in `channel`, public or private, which Slack's answer can lack.
+fn share_outcome(result: Result<Response, HttpError>, channel: &str) -> FileOutcome {
+    match acknowledgement(result) {
+        Ack::Done(v) => {
+            let shared = v.pointer("/files/0");
+            let Some(file) = shared.and_then(|f| answered_id(f, "id")) else {
+                return FileOutcome::Unknown;
+            };
+            let ts = ["public", "private"]
+                .iter()
+                .find_map(|kind| shared?.get("shares")?.get(*kind)?.get(channel)?.get(0)?.get("ts")?.as_str())
+                .and_then(|t| Ts::parse(t).ok());
+            FileOutcome::Posted { file: file.into(), ts }
+        }
+        Ack::Refused(code) => FileOutcome::Refused(code),
+        Ack::Limited { retry_after, assumed } => FileOutcome::Limited { retry_after, assumed },
+        Ack::Unknown => FileOutcome::Unknown,
     }
 }
