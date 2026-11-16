@@ -1026,11 +1026,6 @@ owned by `docs/CLAUDE.md`.
 
 ## records
 
-- **CHAT-GUIDE-ONE-COMPUTER-HUB** [note] `docs/src/guide/chat-setup.md` says the chat runs on the one computer a person
-  uses ("If you use Ship of Tools on one computer, that is the one"), but a computer with no `hosts.toml` runs no chat:
-  the daemon's hub fact needs topology to parse and name this computer (`is_hub`, `rust/backend/src/chat.rs`), and a
-  missing file names none. The guide is to say what is true. Found reading code; never seen.
-
 - **FOUR-NUMBERS-TWICE-NAMES** [note] `scripts/four-numbers.jl` should list the twice pairs a pass adds, by name, at each
   landing, as it lists removed tests (23 of one pass's 25 added twice names were door wrappers and generic names).
 - **FOUR-NUMBERS-REMOVED-TESTS** [note] `scripts/four-numbers.jl` lists the tests a pass removed, by name, and the report
@@ -1070,6 +1065,7 @@ owned by `docs/CLAUDE.md`.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 
+- **CHAT-GUIDE-ONE-COMPUTER-HUB** (records) [note] closed by the landing that fixes it, 2026-11-16, a note from reading code, never seen: `guide/chat-setup.md` said a person on one computer runs the chat there, but the daemon's hub fact needed `hosts.toml` to parse and name this computer, so a computer with no `hosts.toml` ran no chat. A computer with no `hosts.toml` and a name is now its own hub for the chat (`is_hub`, `a_computer_with_no_hosts_toml_runs_its_own_chat_and_a_broken_one_does_not`); one whose file does not parse is still not.
 - **CHAT-MAPPING-NEEDS-ROW-AT-START** (chat) [note] closed by the landing that fixes it, 2026-11-15, a note from reading code, never seen: `Config::load` admitted a mapping against the rows the daemon had at its start, so a mapped folder with no row then, or a removed one after a restart, refused `chat.toml` and turned the chat off for every project. A mapping is now admitted against the disk: a folder that does not exist is ignored and logged by its ordinal, and a row made later in a mapped folder is admitted at its first action.
 - **TEST-CAPSULE-OUTLIVES-TEST** (rows) closed by the landing that fixes it, 2026-11-15, seen by a session on the hub computer: a row capsule a `comm_wake` test started (`sot-capsule supervise` in a user scope, its parent the user manager, two stub `claude` legs under it) ran for eight days after its test process ended without `Env`'s `Drop`, the only thing that ended a test's capsules; its legs carried the runner's `CLAUDE_CONFIG_DIR`, a real account's. Each `Env` now starts a reaper (`rust/backend/tests/support/reaper.rs`), this test binary rerun outside the test's process tree, session and group, which at its pipe's end ends the env's units, daemons (each one whose command line names the env's `--project-root`, in `Env`'s one tracking setter or told by a suite that launches its own) and capsules, and removes its folders unless a process still names one; its limits are the item TEST-REAPER-LIMITS; `capsule_workspaces::platform::a_test_killed_outright_leaves_no_capsule_daemon_or_folder` kills a test with SIGKILL and finds none left. The support's daemon command removes `CLAUDE_CONFIG_DIR`, as a production daemon has none (`support_checks::a_daemon_is_handed_no_claude_config_dir_of_the_runner`).
 - **CHAT-SETUP-UNDOCUMENTED** (records) closed by the landing that fixes it, 2026-11-15, seen in use by a person: the manual said how to write `chat.toml` and `chat-secrets.toml` but not how to make the Slack app they need, which permissions it takes, where its two tokens and the workspace and channel IDs come from, or that the app must be added to each channel, so no one could set the chat up from the manual alone. A first-time setup page, `guide/chat-setup.md`, now does, with the app's manifest from the Slack calls and events the chat makes, linked from the chat guide and the configuration reference.

@@ -284,8 +284,8 @@ The project chat's configuration, two TOML files in the config folder (`~/.confi
 [The project chat](../guide/chat.md)), and a person's post goes out under `[chat] name` of `settings.toml`; mail is not built.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
-`SOT_SELF_HOST` or its host name, as its `hub`. A computer with no `hosts.toml`, or another computer, runs no chat and
-opens neither file. Both files are read once, when the daemon starts. After editing either file, restart the daemon (on
+`SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
+computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read once, when the daemon starts. After editing either file, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
 by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused

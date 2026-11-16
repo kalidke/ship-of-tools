@@ -176,12 +176,16 @@ fn canon_of(folder: &str) -> Option<String> {
     canonical(Path::new(folder)).map(|c| c.to_string_lossy().into_owned())
 }
 
-/// Strict hub admission: topology's current load and parse, which must name this computer as its one explicit hub. A
-/// missing or invalid topology, and a computer with no name, are not the hub (`comm_topology_hub` accepts a missing
-/// file, and the store keeps an earlier parse after the file is gone; neither may admit the chat).
+/// Hub admission: topology's current load and parse. A computer with no `hosts.toml` is its own hub (a lone computer);
+/// a file that parses must name this computer as its hub; an invalid topology and a computer with no name are not the
+/// hub (the store keeps an earlier parse after the file is gone, so it is not asked).
 pub(crate) fn is_hub(env: &Env) -> bool {
-    let me = crate::comm::mail::filer::comm_self_host_in(env);
-    matches!(sot_topology::load_in(env), Ok(Some((_, t))) if !me.is_empty() && t.hub == me)
+    hub_here(&sot_topology::load_in(env), &crate::comm::mail::filer::comm_self_host_in(env))
+}
+
+/// Messaging's rule for its comm folder's hub, with a name required even when the file is missing.
+fn hub_here(topology: &Result<Option<(PathBuf, sot_topology::Topology)>, String>, me: &str) -> bool {
+    !me.is_empty() && crate::comm::mail::filer::comm_topology_hub(topology, me)
 }
 
 /// Whether `topology` names a computer other than `me` as the hub: only a topology that parses, and a self-name that is

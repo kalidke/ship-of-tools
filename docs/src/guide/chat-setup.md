@@ -4,8 +4,8 @@ Ship of Tools can show a Slack channel next to each project, in the Chat drawer 
 sets that up from nothing. You need to be allowed to add apps to your Slack workspace.
 
 The chat runs on one computer: the one that runs your project sessions. If you use Ship of Tools on one computer, that
-is the one. If you have several, it is the one your `hosts.toml` names as `hub`. Every window shows the chat of that
-computer. The files below go on it.
+is the one, with no `hosts.toml` needed. If you have several, it is the one your `hosts.toml` names as `hub`. Every
+window shows the chat of that computer. The files below go on it.
 
 ## 1. Make a Slack app
 

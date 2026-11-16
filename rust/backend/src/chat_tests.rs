@@ -179,11 +179,11 @@ async fn settled<L: Listener>(chat: &Chat<L>) -> Status {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn only_hub_reads_chat_credentials_from_platform_config() {
-    // Not the hub: another computer is, the topology is missing, or it does not parse. Both chat files are in every
-    // home, and nothing opens either.
+    // Not the hub: another computer is, or the topology does not parse. Both chat files are in every home, and nothing
+    // opens either.
     let invalid = Home::new(None);
     invalid.write("hosts.toml", "hub = \n[[[");
-    let others = [("another hub", Home::new(Some("elsewhere"))), ("no hosts.toml", Home::new(None)), ("invalid hosts.toml", invalid)];
+    let others = [("another hub", Home::new(Some("elsewhere"))), ("invalid hosts.toml", invalid)];
     for (what, home) in &others {
         let row = home.configured();
         let (seen, registry, called) = (Observed::new(), Registry::new(), Arc::new(AtomicBool::new(false)));
@@ -219,6 +219,36 @@ async fn only_hub_reads_chat_credentials_from_platform_config() {
     chat.request_stop();
     assert!(chat.wait_retired(LONG));
     assert_eq!(seen.opened(), both, "a running chat read a chat file again");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computer_with_no_hosts_toml_runs_its_own_chat_and_a_broken_one_does_not() {
+    // The predicate: a missing topology with a name is this computer's own hub; a nameless computer, a topology that
+    // does not parse and one naming another computer are not.
+    let named = |hub: &str| sot_topology::load_in(&Home::new(Some(hub)).env);
+    assert!(hub_here(&Ok(None), SELF));
+    assert!(!hub_here(&Ok(None), ""), "a computer with no name");
+    assert!(!hub_here(&Err("unreadable".into()), SELF));
+    assert!(hub_here(&named(SELF), SELF) && !hub_here(&named("elsewhere"), SELF));
+
+    // No hosts.toml: the chat opens both files and runs, and a hosts.toml still missing steps nothing down.
+    let alone = Home::new(None);
+    alone.configured();
+    let (seen, listener) = (Observed::new(), Arc::new(Fake::default()));
+    let chat = begin(&alone, &seen, &Registry::new(), gives(&listener));
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert_eq!(seen.opened(), vec![alone.config().join(CONFIG_FILE), alone.config().join(SECRETS_FILE)]);
+    assert!(!names_another_hub(&alone.env));
+
+    // A hosts.toml that does not parse: not the hub, nothing opened, no start.
+    let broken = Home::new(None);
+    broken.configured();
+    broken.write("hosts.toml", "hub = \n[[[");
+    let (seen, called) = (Observed::new(), Arc::new(AtomicBool::new(false)));
+    let chat = begin(&broken, &seen, &Registry::new(), never(&called));
+    assert_eq!(chat.status(), Status::NotHub);
+    assert_eq!(seen.opened(), Vec::<PathBuf>::new());
+    assert!(!called.load(Ordering::SeqCst));
 }
 
 /// The log line is `Status`'s display: a refused `chat.toml` and a refused `chat-secrets.toml` say which file.

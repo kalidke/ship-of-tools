@@ -224,10 +224,13 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    through `secrets` alone; `Writers::platform()` is platform's `write_durable` and `write_durable_private` (owner-only
    from the temporary file's creation). They are the crate's only file writes outside `state.rs`. `Secret::expose`
    (crate-private) hands a value whole to the secrets write, its one product caller.
-   **The caller (`rust/backend/src/chat.rs`, `Chat::begin`, C1).** In order, and only as the hub: topology's current
-   `sot_topology::load_in` must parse and name this computer (`SOT_SELF_HOST` or its host name) as its explicit hub, so a
-   missing or invalid topology, a computer with no name and another hub are all `NotHub` (`comm_topology_hub` accepts a
-   missing file and `TopologyStore::refresh` keeps an earlier parse; neither is used); then `Config::load` against the
+   **The caller (`rust/backend/src/chat.rs`, `Chat::begin`, C1).** In order, and only as the hub: this computer has a name
+   (`SOT_SELF_HOST` or its host name) and topology's current `sot_topology::load_in` either finds no `hosts.toml`, so a
+   lone computer is its own hub, or parses and names this computer as its hub (messaging's `comm_topology_hub` with the
+   name required); an invalid topology, a computer with no name and another hub are all `NotHub`
+   (`a_computer_with_no_hosts_toml_runs_its_own_chat_and_a_broken_one_does_not`; `TopologyStore::refresh` keeps an
+   earlier parse and is not used). The limit: on a shared home with no `hosts.toml` every daemon counts as the hub; the
+   comm folder's lock (guarantee 22) still admits one listener and the others wait `held`; then `Config::load` against the
    daemon's rows through one canonicalizer (an absolute folder, resolved through symlinks, `.`, `..` and a trailing
    slash, de-verbatimed and in the system's letter case on Windows; a relative spelling or a folder that does not exist
    is unknown); then `Credentials::read`; then the lock folder (messaging's `chat_dir`: the comm folder made whole, then its `chat/` private; never made by chat itself); then registration with
