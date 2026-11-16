@@ -347,6 +347,12 @@ pub enum OutgoingReq {
     /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
     /// owner sends the next only after the last one's reply.
     ChatPost { req: sot_protocol::ops::ChatPostReq },
+    /// The chat's setup, a window's alone. `ChatConnect` carries the two tokens and is written on one connection at
+    /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`).
+    /// `ChatChannels` is a read. `ChatPair` is written on one connection at most; no channel unpairs the row.
+    ChatConnect { bot_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken },
+    ChatChannels,
+    ChatPair { row: String, channel: Option<sot_protocol::ops::ChatChannel> },
     /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Not replayable: a request waiting
     /// or unanswered when its connection ends yields one `SelectionReply::Ended`, and the window's share, the one
     /// sender, sets its current state again after a reconnect. Reply surfaces as `IncomingEvt::Selection`.
@@ -433,7 +439,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -468,6 +474,7 @@ impl OutgoingReq {
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
             | OutgoingReq::ChatResolve { .. }
+            | OutgoingReq::ChatChannels
             | OutgoingReq::ChatUnwatch { .. }
             | OutgoingReq::FileDownload { .. }
             | OutgoingReq::FileUpload { .. }
@@ -546,6 +553,17 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::ChatPost { req } => {
             let kind = PendingKind::ChatPost { req: req.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_POST, req, Some(kind)).await?
+        }
+        OutgoingReq::ChatConnect { bot_token, app_token } => {
+            let req = sot_protocol::ops::ChatConnectReq { bot_token, app_token };
+            send_chat(&mut tx, pending, id, op::CHAT_CONNECT, req, Some(PendingKind::ChatConnect)).await?
+        }
+        OutgoingReq::ChatChannels => {
+            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq {}, Some(PendingKind::ChatChannels)).await?
+        }
+        OutgoingReq::ChatPair { row, channel } => {
+            let kind = PendingKind::ChatPair { row: row.clone(), channel: channel.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_PAIR, sot_protocol::ops::ChatPairReq { row, channel }, Some(kind)).await?
         }
         OutgoingReq::QuartoOpen { path, execute } => send_quarto_open(&mut tx, pending, id, path, execute).await?,
         OutgoingReq::ReplRunFile { eval_id, path, fresh, workspace_id } => send_repl_run_file(&mut tx, pending, id, eval_id, path, fresh, workspace_id).await?,

@@ -127,6 +127,12 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
             }))
             .unwrap(),
         },
+        OutgoingReq::ChatConnect {
+            bot_token: serde_json::from_value(serde_json::json!("ccn.bot")).unwrap(),
+            app_token: serde_json::from_value(serde_json::json!("ccn.app")).unwrap(),
+        },
+        OutgoingReq::ChatChannels,
+        OutgoingReq::ChatPair { row: s("cpr.row"), channel: Some(serde_json::from_value(serde_json::json!("Ccpr")).unwrap()) },
         OutgoingReq::SelectionSet {
             req: serde_json::from_value(serde_json::json!({ "workspace_id": "sel.ws", "selection": null })).unwrap(),
         },

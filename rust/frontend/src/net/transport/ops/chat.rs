@@ -1,10 +1,10 @@
-//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post: the requests (send_chat: write the frame, then record its PendingKind).
+//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
 //! Their replies (on_chat_*: the reply frame becomes an `IncomingEvt::Chat`), and the `chat.changed` and `chat.status` events.
 
 use super::*;
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt,
-    ChatTarget, ChatWatchRes,
+    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostReq,
+    ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes,
 };
 
 /// What a chat request's reply came to, apart from the answer itself.
@@ -27,6 +27,16 @@ pub(crate) enum ChatEvt {
     Posted { req: ChatPostReq, reply: ChatReply<ChatPostRes> },
     /// Refused here, never written: the connection's daemon does not say its door posts plain text (T20), so the post was not made.
     PostNotSent { req: ChatPostReq },
+    /// A `chat.connect`'s reply. It names nothing of the request, so no token is held here.
+    Connect { reply: ChatReply<ChatConnectRes> },
+    /// The connection ended, or the daemon's answer did not prove it, before a `chat.connect` was answered: the tokens
+    /// may have been saved, so the owner resolves again and never sends the request again.
+    ConnectUnknown,
+    Channels { reply: ChatReply<ChatChannelsRes> },
+    /// A `chat.pair`'s reply, with the row and the channel it named (none: the row was unpaired).
+    Paired { row: String, channel: Option<ChatChannel>, reply: ChatReply<ChatPairRes> },
+    /// As `ConnectUnknown`, for a `chat.pair`: the file may have been written.
+    PairUnknown { row: String, channel: Option<ChatChannel> },
     Changed(ChatChangedEvt),
     Status(ChatStatusEvt),
     /// A pushed `chat.changed` or `chat.status` that did not parse: what it carried is lost, so the owner resyncs.
@@ -83,6 +93,34 @@ pub(crate) fn on_chat_post(frame: Frame, emit: &impl Fn(IncomingEvt), req: ChatP
         other => other,
     };
     emit(IncomingEvt::Chat(ChatEvt::Posted { req, reply }));
+}
+
+/// A connect or a pair is written once, so, as for a post, only a reply that proves nothing was saved says so: an error
+/// reply whose code is not one of the wire's refusals (`handler_error`) and an answer that does not parse may have been
+/// carried out, and are the unknown outcome (`None`).
+fn proven<T: serde::de::DeserializeOwned>(frame: Frame) -> Option<ChatReply<T>> {
+    match chat_reply(frame) {
+        ChatReply::Refused(ChatCode::Other) => None,
+        reply => Some(reply),
+    }
+}
+
+pub(crate) fn on_chat_connect(frame: Frame, emit: &impl Fn(IncomingEvt)) {
+    emit(IncomingEvt::Chat(match proven(frame) {
+        Some(reply) => ChatEvt::Connect { reply },
+        None => ChatEvt::ConnectUnknown,
+    }));
+}
+
+pub(crate) fn on_chat_channels(frame: Frame, emit: &impl Fn(IncomingEvt)) {
+    emit(IncomingEvt::Chat(ChatEvt::Channels { reply: chat_reply(frame) }));
+}
+
+pub(crate) fn on_chat_pair(frame: Frame, emit: &impl Fn(IncomingEvt), row: String, channel: Option<ChatChannel>) {
+    emit(IncomingEvt::Chat(match proven(frame) {
+        Some(reply) => ChatEvt::Paired { row, channel, reply },
+        None => ChatEvt::PairUnknown { row, channel },
+    }));
 }
 
 /// `chat.changed` and `chat.status`, pushed unasked; one that does not parse is a warning and a `ChatEvt::Unreadable`.

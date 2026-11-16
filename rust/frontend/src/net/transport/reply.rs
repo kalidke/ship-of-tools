@@ -133,6 +133,15 @@ pub(super) enum PendingKind {
     ChatPost {
         req: sot_protocol::ops::ChatPostReq,
     },
+    /// A `chat.connect`: names nothing of its tokens. A connection that ends before the reply is the unknown outcome.
+    ChatConnect,
+    ChatChannels,
+    /// A `chat.pair`: its answer is about THIS row and channel (none: an unpair), and a connection that ends before it
+    /// is the unknown outcome.
+    ChatPair {
+        row: String,
+        channel: Option<sot_protocol::ops::ChatChannel>,
+    },
     ReplRunFile {
         eval_id: u64,
         path: String,
@@ -249,6 +258,9 @@ impl Drop for PendingGuard<'_> {
                     req,
                     reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Unknown),
                 }),
+                // Written once and never again, and the daemon may have saved it before the connection ended.
+                PendingKind::ChatConnect => IncomingEvt::Chat(ChatEvt::ConnectUnknown),
+                PendingKind::ChatPair { row, channel } => IncomingEvt::Chat(ChatEvt::PairUnknown { row, channel }),
                 // Not replayable: the window's share sets its state again after a reconnect.
                 PendingKind::SelectionSet { req } => IncomingEvt::Selection { req, reply: SelectionReply::Ended },
                 _ => continue,
@@ -369,6 +381,9 @@ pub(super) fn handle_response_frame(
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),
             PendingKind::ChatPost { req } => on_chat_post(frame, &emit, req),
+            PendingKind::ChatConnect => on_chat_connect(frame, &emit),
+            PendingKind::ChatChannels => on_chat_channels(frame, &emit),
+            PendingKind::ChatPair { row, channel } => on_chat_pair(frame, &emit, row, channel),
             PendingKind::ReplRunFile { eval_id, path, fresh } => {
                 if frame.payload.get("frames").is_some() {
                     eval_running(pending, eval_id);

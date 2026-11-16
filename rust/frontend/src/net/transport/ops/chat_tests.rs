@@ -130,3 +130,110 @@ async fn a_chat_post_whose_write_fails_is_still_unknown() {
     let ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
     assert!(matches!(ended.as_slice(), [e] if e.contains("Posted") && e.contains("Done(Unknown)")), "{ended:?}");
 }
+
+/// Fixture tokens built at run time (a literal would trip the secret scan); each carries a marker no other text holds.
+fn token(kind: &str) -> sot_protocol::ops::ChatToken {
+    serde_json::from_value(serde_json::json!(format!("{kind}-{}", "7".repeat(24)))).unwrap()
+}
+
+fn marker_in(text: &str) -> bool {
+    text.contains(&"7".repeat(24))
+}
+
+/// A token the window sends reaches the daemon whole and nowhere else: not the request's `Debug`, not the pending
+/// entry, not a log line of the write, not an event of any reply to it. A failure names the place, never the text.
+#[tokio::test]
+async fn a_connect_formats_and_logs_no_token_byte() {
+    let log = sot_platform::test_log::capture();
+    let req = OutgoingReq::ChatConnect { bot_token: token("xoxb"), app_token: token("xapp") };
+    assert!(!marker_in(&format!("{req:?}")), "the request's Debug holds a token");
+    let mut wire = Vec::new();
+    let mut pending = HashMap::new();
+    send_request(&mut wire, &mut pending, 7, req).await.unwrap();
+    let line = String::from_utf8(wire).unwrap();
+    assert!(line.contains("\"op\":\"chat.connect\"") && marker_in(&line), "the daemon is sent both tokens");
+    assert!(!marker_in(&format!("{pending:?}")), "the pending entry holds a token");
+    let replies = [
+        serde_json::json!({ "workspace": "T1" }),
+        serde_json::json!({ "error": "x", "code": "bot_token_refused" }),
+        serde_json::json!({ "error": "handler failed", "code": "handler_error" }),
+        serde_json::json!({ "error": "unknown op: chat.connect" }),
+    ];
+    for (n, reply) in replies.into_iter().enumerate() {
+        let mut pending = HashMap::from([(1, PendingKind::ChatConnect)]);
+        let shown = events(&mut pending, vec![Frame::res(1, op::CHAT_CONNECT, reply)]);
+        assert!(!marker_in(&format!("{shown:?}")), "an event of reply {n} holds a token");
+    }
+    assert!(!marker_in(&log.text()), "a log line holds a token");
+    assert!(log.text().contains("chat.connect"), "the write was logged by its op name");
+}
+
+/// A connect or a pair that got no answer is unknown once when its connection ends, and one still waiting then is ended
+/// the same way and never written; a channel read waiting beside them is kept for the next connection.
+#[tokio::test]
+async fn a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_again() {
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    let channel: sot_protocol::ops::ChatChannel = serde_json::from_value(serde_json::json!("C9")).unwrap();
+    {
+        let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+        guard.insert(4, PendingKind::ChatConnect);
+        guard.insert(5, PendingKind::ChatPair { row: "r1".into(), channel: Some(channel.clone()) });
+        guard.insert(6, PendingKind::ChatChannels);
+    }
+    let (out_tx, out_rx) = outgoing_channel();
+    let mut outbox = Outbox::new(out_rx);
+    out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), app_token: token("xapp") }).unwrap();
+    out_tx.send(OutgoingReq::ChatPair { row: "r2".into(), channel: None }).unwrap();
+    out_tx.send(OutgoingReq::ChatChannels).unwrap();
+    outbox.retire(&evt_tx, &"h".to_string()).await;
+    drop(out_tx);
+    let mut ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
+    ended.sort();
+    assert_eq!(ended.len(), 4, "{ended:?}");
+    assert_eq!(ended.iter().filter(|e| e.starts_with("Chat(ConnectUnknown)")).count(), 2, "{ended:?}");
+    assert!(ended.iter().any(|e| e.contains("PairUnknown { row: \"r1\", channel: Some(ChatChannel(\"C9\")) }")), "{ended:?}");
+    assert!(ended.iter().any(|e| e.contains("PairUnknown { row: \"r2\", channel: None }")), "{ended:?}");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatChannels)), "only the read is kept");
+    assert!(outbox.recv().await.is_none());
+}
+
+/// A reply carries the request it answers (a connect's names nothing of its tokens); an error reply is its code; an
+/// older daemon's unknown-op answer is `Unsupported`; a connect or pair is unknown unless the reply proves it was not
+/// carried out.
+#[test]
+fn the_setup_replies_carry_their_request_and_refusal() {
+    let channel: sot_protocol::ops::ChatChannel = serde_json::from_value(serde_json::json!("C9")).unwrap();
+    let mut pending = HashMap::from([
+        (1, PendingKind::ChatConnect),
+        (2, PendingKind::ChatChannels),
+        (3, PendingKind::ChatPair { row: "r".into(), channel: Some(channel.clone()) }),
+        (4, PendingKind::ChatPair { row: "r".into(), channel: None }),
+        (5, PendingKind::ChatConnect),
+        (6, PendingKind::ChatPair { row: "r".into(), channel: None }),
+        (7, PendingKind::ChatChannels),
+        (8, PendingKind::ChatConnect),
+    ]);
+    let list = serde_json::json!({ "channels": [{ "id": "C9", "name": "lab", "private": false, "member": true }], "more": true });
+    let shown = events(
+        &mut pending,
+        vec![
+            Frame::res(1, op::CHAT_CONNECT, serde_json::json!({ "workspace": "T1" })),
+            Frame::res(2, op::CHAT_CHANNELS, list),
+            Frame::res(3, op::CHAT_PAIR, serde_json::json!({ "error": "x", "code": "channel_taken" })),
+            Frame::res(4, op::CHAT_PAIR, serde_json::json!({})),
+            Frame::res(5, op::CHAT_CONNECT, serde_json::json!({ "error": "x", "code": "app_token_refused" })),
+            Frame::res(6, op::CHAT_PAIR, serde_json::json!({ "error": "a panic's text", "code": "handler_error" })),
+            Frame::res(7, op::CHAT_CHANNELS, serde_json::json!({ "error": "unknown op: chat.channels" })),
+            Frame::res(8, op::CHAT_CONNECT, serde_json::json!({ "workspace": 5 })),
+        ],
+    );
+    assert!(pending.is_empty(), "every reply consumed its entry");
+    assert!(shown[0].starts_with("Chat(Connect { reply: Done(ChatConnectRes { workspace: \"T1\" }) })"), "{}", shown[0]);
+    assert!(shown[1].starts_with("Chat(Channels { reply: Done(") && shown[1].contains("more: true"), "{}", shown[1]);
+    assert!(shown[2].contains("Paired { row: \"r\", channel: Some(ChatChannel(\"C9\")), reply:") && shown[2].contains("Refused(ChannelTaken)"), "{}", shown[2]);
+    assert!(shown[3].contains("Paired { row: \"r\", channel: None, reply: Done("), "{}", shown[3]);
+    assert!(shown[4].starts_with("Chat(Connect { reply: Refused(AppTokenRefused) })"), "{}", shown[4]);
+    assert_eq!(shown[5], "Chat(PairUnknown { row: \"r\", channel: None })");
+    assert!(shown[6].starts_with("Chat(Channels { reply: Unsupported })"), "{}", shown[6]);
+    assert_eq!(shown[7], "Chat(ConnectUnknown)");
+}

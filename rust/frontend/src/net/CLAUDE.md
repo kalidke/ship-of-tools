@@ -77,7 +77,7 @@ through the channel types below.
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
-  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost}`
+  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatConnect, ChatChannels, ChatPair}`
   and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
@@ -87,7 +87,17 @@ through the channel types below.
   reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
   ends first are unknown, never refused, so the window never offers to resend (tests
   `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
-  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`). Limits: fe-net does
+  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`).
+  The setup requests are the same edge (`ChatEvt::{Connect, Channels, Paired}`, each reply `Done`, `Unsupported` or `Refused(code)`).
+  `ChatConnect` and `ChatPair` are written on one connection at most (not replayable), since either may have been saved: a
+  connection that ends first, a `handler_error` and an answer that does not parse give `ChatEvt::ConnectUnknown` or
+  `PairUnknown { row, channel }` once, never a refusal, and the owner resolves again and never sends it again (tests
+  `a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_again`, `the_setup_replies_carry_their_request_and_refusal`).
+  `ChatChannels` is a read: replayable while waiting, like a resolve, and given no event when its connection ends with it in flight. A token
+  the window sends is a wire `ChatToken` (`Debug` is `<redacted>`); the connect's pending entry and its events name nothing
+  of it and fe-net logs the op name alone, so a token reaches the daemon and nothing else (test
+  `a_connect_formats_and_logs_no_token_byte`); a token held elsewhere in the window is the owner's to keep out of its own
+  `Debug` and status line. Limits: fe-net does
   not order posts, does not resync after `bus.lost`, a `chat.status` or an `Unreadable`, and does not pace resyncs; a
   watch, history or resolve in flight when a connection ends gets no event. Those are the chat owner's (`ui/drawer/chat/`,
   fe-ui's contract), which `ui/events.rs` routes `IncomingEvt::Chat`, `BusLost` and each link's coming and going to.
@@ -127,7 +137,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
 `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
 `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
-`page.reply`, `selection.set`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
+`page.reply`, `selection.set`, `chat.resolve`, `chat.watch`, `chat.unwatch`, `chat.history`, `chat.post`, `chat.connect`, `chat.channels`, `chat.pair`, `chat.changed`, `chat.status`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.
