@@ -1,6 +1,7 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
-//! configured), channel history and thread replies (paged),
-//! `chat.postMessage` under a custom author, and author names through a bounded cache. Every call goes out through
+//! configured), channel history and thread replies (paged), `chat.postMessage` under a custom author, the channel
+//! picker's calls (the channel list, one channel's facts, one join), and author names through a bounded cache. Every
+//! call goes out through
 //! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
 //! No socket, no file call, no configuration: the caller hands in the `Secret`.
 
@@ -36,6 +37,12 @@ pub const MAX_NAMES: usize = 1024;
 pub const ASSUMED_RETRY: Duration = Duration::from_secs(30);
 /// A hostile or mistaken retry header cannot silence reads longer than this.
 pub const MAX_RETRY: Duration = Duration::from_secs(sot_protocol::ops::MAX_RETRY_SECS);
+
+/// The channel list's page size, and the pages one list follows: at most `MAX_LISTED` channels, the rest unlisted.
+const LIST_PAGE: usize = 200;
+const MAX_LIST_PAGES: usize = 5;
+/// The most channels one list returns.
+pub const MAX_LISTED: usize = LIST_PAGE * MAX_LIST_PAGES;
 
 const BASE: &str = "https://slack.com/api/";
 const JSON: &str = "application/json; charset=utf-8";
@@ -119,6 +126,35 @@ impl std::error::Error for ApiError {}
 pub struct Identity {
     pub user_id: String,
     pub bot_id: Option<String>,
+}
+
+/// A channel as `conversations.list` and `conversations.info` give it. `private` is true unless Slack says the channel is
+/// not private, and `member` false unless it says the bot is in it, so a reply that does not say never offers more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Channel {
+    pub id: String,
+    pub name: String,
+    pub private: bool,
+    pub member: bool,
+}
+
+/// The channels the bot can see, at most `MAX_LISTED`; `more` when Slack had a page left at the bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelList {
+    pub channels: Vec<Channel>,
+    pub more: bool,
+}
+
+/// How a join ended. It was submitted at most once, whatever the outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinOutcome {
+    /// Slack acknowledged it, or said the bot was already in the channel.
+    Joined,
+    /// Definitely not joined: Slack's rejection (its code), or the request never left (`busy`, `invalid`, `destination`).
+    Refused(String),
+    /// No usable acknowledgement (a rate limit included): the bot may or may not be in. Never resent; the caller reads
+    /// the channel.
+    Unknown,
 }
 
 /// The upper bound of a query. One variant at most, so `before` and `until` cannot both be asked for.
@@ -665,6 +701,74 @@ impl Api {
         Ok(post_outcome(self.http.send(request).await))
     }
 
+    /// The channels the bot can see: every public channel and the private ones it is in, as many pages as `MAX_LISTED`
+    /// allows, each page one read. The list is whole or an error; `more` says Slack had another page when it stopped.
+    pub async fn channels(&self) -> Result<ChannelList, ApiError> {
+        let mut channels = Vec::new();
+        let mut sent: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let mut params = vec![
+                ("types", "public_channel,private_channel".to_string()),
+                ("exclude_archived", "true".to_string()),
+                ("limit", LIST_PAGE.to_string()),
+            ];
+            params.extend(sent.clone().map(|c| ("cursor", c)));
+            let v = self.read("conversations.list", &params, MAX_BODY).await?;
+            let page = v
+                .get("channels")
+                .and_then(Value::as_array)
+                .filter(|c| c.len() <= LIST_PAGE)
+                .ok_or(ApiError::Malformed)?;
+            channels.extend(page.iter().filter_map(listed));
+            let next = v.pointer("/response_metadata/next_cursor").and_then(Value::as_str).unwrap_or("");
+            if next.is_empty() {
+                return Ok(ChannelList { channels, more: false });
+            }
+            if next.len() > MAX_CURSOR {
+                return Err(ApiError::TooLarge);
+            }
+            if sent.as_deref() == Some(next) {
+                return Err(ApiError::Repeated);
+            }
+            sent = Some(next.into());
+        }
+        Ok(ChannelList { channels, more: true })
+    }
+
+    /// One channel's facts, from one `conversations.info`. An id that is no channel's is refused unsent.
+    pub async fn channel(&self, id: &str) -> Result<Channel, ApiError> {
+        if !valid_id(id) || !is_channel_id(id) {
+            return Err(ApiError::BadRequest);
+        }
+        let v = self.read("conversations.info", &[("channel", id.into())], MAX_BODY).await?;
+        let raw = v.get("channel").ok_or(ApiError::Malformed)?;
+        channel_facts(raw, id.into()).ok_or(ApiError::Malformed)
+    }
+
+    /// Join a public channel once. Input that is no channel's id is `Err` unsent; from there the result is a
+    /// `JoinOutcome`, and no path resends.
+    pub async fn join(&self, channel: &str) -> Result<JoinOutcome, ApiError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ApiError::Closed);
+        }
+        if !valid_id(channel) || !is_channel_id(channel) {
+            return Err(ApiError::BadRequest);
+        }
+        let request = Request::post(
+            self.url("conversations.join", &[])?,
+            self.deadlines.post,
+            JSON,
+            json!({"channel": channel}).to_string().into_bytes(),
+        )
+        .bearer(self.token.clone());
+        Ok(match acknowledgement(self.http.send(request).await) {
+            Ack::Done(_) => JoinOutcome::Joined,
+            Ack::Refused(code) if code == "already_in_channel" => JoinOutcome::Joined,
+            Ack::Refused(code) => JoinOutcome::Refused(code),
+            Ack::Limited { .. } | Ack::Unknown => JoinOutcome::Unknown,
+        })
+    }
+
     /// A member's display name: `display_name`, then `real_name`, then `name`, from the cache or `users.info`. Any
     /// failure gives the id, and a failure is not remembered.
     pub async fn author_name(&self, user: &str) -> String {
@@ -771,10 +875,8 @@ impl Api {
     /// not be in a private one and sees its label or id. A mapped private channel's name is in the cache, so a mention of
     /// it shows the name too.
     async fn channel_name(&self, channel: &str, mapped: bool) -> Result<String, ApiError> {
-        let v = self.read("conversations.info", &[("channel", channel.into())], MAX_BODY).await?;
-        let public = v.pointer("/channel/is_private").and_then(Value::as_bool) == Some(false);
-        let name = v.pointer("/channel/name").and_then(Value::as_str).map(|s| clean(s, MAX_NAME).0);
-        name.filter(|s| (public || mapped) && !s.is_empty()).ok_or(ApiError::Malformed)
+        let facts = self.channel(channel).await?;
+        (mapped || !facts.private).then_some(facts.name).ok_or(ApiError::Malformed)
     }
 
     async fn lookup(&self, user: &str, mapped: bool) -> Result<String, ApiError> {
@@ -913,6 +1015,23 @@ fn unnamed(r: &ChatRecord) -> bool {
     r.origin == Origin::Member && r.author.name.is_empty() && !r.author.id.is_empty()
 }
 
+/// A channel entry of a list: `None` for one with no valid channel id or no name left after cleaning.
+fn listed(raw: &Value) -> Option<Channel> {
+    let id = raw.get("id").and_then(Value::as_str).filter(|id| valid_id(id) && is_channel_id(id))?;
+    channel_facts(raw, id.into())
+}
+
+/// The facts of a channel object, under `id`; `None` for one whose name is missing or empty once cleaned.
+fn channel_facts(raw: &Value, id: String) -> Option<Channel> {
+    let name = raw.get("name").and_then(Value::as_str).map(|s| clean(s, MAX_NAME).0).filter(|s| !s.is_empty())?;
+    Some(Channel {
+        id,
+        name,
+        private: raw.get("is_private").and_then(Value::as_bool) != Some(false),
+        member: raw.get("is_member").and_then(Value::as_bool) == Some(true),
+    })
+}
+
 /// Whether an id names a channel (`C…`, `G…`), as a person's begins `U` or `W`.
 fn is_channel_id(id: &str) -> bool {
     id.starts_with(['C', 'G'])
@@ -1007,19 +1126,30 @@ fn error_code(v: &Value) -> Option<&str> {
 
 /// A mutation's answer. It is `Refused` or `Limited` only when Slack said so (a 429 or other non-5xx failure, or
 /// `ok: false` with a known, non-transient code); `Unknown` in every other case that is not an acknowledgement.
-fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
+enum Ack {
+    /// `ok: true`, with the body.
+    Done(Value),
+    Refused(String),
+    Limited {
+        retry_after: Duration,
+        assumed: bool,
+    },
+    Unknown,
+}
+
+fn acknowledgement(result: Result<Response, HttpError>) -> Ack {
     let response = match result {
         Ok(response) => response,
         // Nothing left this machine.
         Err(e @ (HttpError::Busy | HttpError::Invalid | HttpError::Destination)) => {
-            return PostOutcome::Refused(e.code().into())
+            return Ack::Refused(e.code().into())
         }
         // Anything after a connection may have reached Slack: a timeout, a dropped answer, a redirect.
-        Err(_) => return PostOutcome::Unknown,
+        Err(_) => return Ack::Unknown,
     };
     let limited = || {
         let (retry_after, assumed) = retry_after(&response);
-        PostOutcome::Limited {
+        Ack::Limited {
             retry_after,
             assumed,
         }
@@ -1027,24 +1157,34 @@ fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
     match response.status() {
         429 => return limited(),
         200..=299 => {}
-        500..=599 => return PostOutcome::Unknown,
-        other => return PostOutcome::Refused(format!("http_{other}")),
+        500..=599 => return Ack::Unknown,
+        other => return Ack::Refused(format!("http_{other}")),
     }
     let Ok(v) = serde_json::from_slice::<Value>(response.body()) else {
-        return PostOutcome::Unknown;
+        return Ack::Unknown;
     };
     match v.get("ok").and_then(Value::as_bool) {
-        Some(true) => v
+        Some(true) => Ack::Done(v),
+        Some(false) => match error_code(&v) {
+            Some("ratelimited") => limited(),
+            Some("internal_error" | "fatal_error" | "request_timeout" | "service_unavailable")
+            | None => Ack::Unknown,
+            Some(code) => Ack::Refused(code.into()),
+        },
+        None => Ack::Unknown,
+    }
+}
+
+/// A post's answer: the acknowledgement, read for its `ts`; an `ok` with none is `Unknown`.
+fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
+    match acknowledgement(result) {
+        Ack::Done(v) => v
             .get("ts")
             .and_then(Value::as_str)
             .and_then(|t| Ts::parse(t).ok())
             .map_or(PostOutcome::Unknown, PostOutcome::Posted),
-        Some(false) => match error_code(&v) {
-            Some("ratelimited") => limited(),
-            Some("internal_error" | "fatal_error" | "request_timeout" | "service_unavailable")
-            | None => PostOutcome::Unknown,
-            Some(code) => PostOutcome::Refused(code.into()),
-        },
-        None => PostOutcome::Unknown,
+        Ack::Refused(code) => PostOutcome::Refused(code),
+        Ack::Limited { retry_after, assumed } => PostOutcome::Limited { retry_after, assumed },
+        Ack::Unknown => PostOutcome::Unknown,
     }
 }

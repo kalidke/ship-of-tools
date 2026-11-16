@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    identify_at, Api, ApiError, Identified, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome, ScanQuery,
-    ASSUMED_RETRY, MAX_CURSOR, MAX_NAMES, MAX_RETRY, MAX_SCAN,
+    identify_at, Api, ApiError, Bounds, Channel, Continuation, HistoryQuery, Identified, JoinOutcome, PostKind,
+    PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CURSOR, MAX_LISTED, MAX_NAMES, MAX_RETRY, MAX_SCAN,
 };
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen};
 use crate::http::{HttpError, Secret};
@@ -1923,6 +1923,229 @@ async fn a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent() {
             assert!(second.next.is_none());
             assert_eq!(fake.seen().len(), sent + 1, "{form:?}");
         }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// One `conversations.list` entry as Slack gives it, with the three facts the list keeps.
+fn listed(id: &str, name: &str, private: bool, member: bool) -> Value {
+    json!({"id": id, "name": name, "is_private": private, "is_member": member, "topic": {"value": "ignored"}})
+}
+
+fn channel_page(channels: Vec<Value>, next: &str) -> Reply {
+    Reply::json(&json!({"ok": true, "channels": channels, "response_metadata": {"next_cursor": next}}))
+}
+
+/// Two hundred channels whose ids carry `page`, the size of the page the list asks for.
+fn full_page(page: usize) -> Vec<Value> {
+    (0..200).map(|i| listed(&format!("C{page}X{i}"), &format!("n{page}-{i}"), false, i % 2 == 0)).collect()
+}
+
+#[tokio::test]
+async fn the_channel_list_follows_the_cursor_to_its_bound_and_fails_whole() {
+    bounded(async {
+        // The scenario the script plays, by name: the test sets it before each list.
+        let mode = Arc::new(Mutex::new("two".to_string()));
+        let fake = {
+            let mode = mode.clone();
+            FakeSlack::start(Identity::Trusted, move |seen, _| {
+                let page = seen.param("cursor").map(|c| c.trim_start_matches('p').parse::<usize>().unwrap_or(99)).unwrap_or(0);
+                match (mode.lock().unwrap().as_str(), page) {
+                    ("two", 0) => channel_page(
+                        vec![
+                            listed("C0OPEN", "open", false, true),
+                            listed("G0SECRET", "se\u{7}cret", true, true),
+                            json!({"id": "C0BARE", "name": "bare"}),
+                            json!({"name": "no id"}),
+                            json!({"id": "bad id", "name": "spaces"}),
+                            json!({"id": "D0DIRECT", "name": "dm"}),
+                            listed("C0EMPTY", " \u{7} ", false, true),
+                        ],
+                        "p1",
+                    ),
+                    ("two", 1) => channel_page(vec![listed("C0LATE", "late", true, false)], ""),
+                    // Every page names another cursor: the list stops at five pages, a thousand channels, and says more.
+                    ("endless", p) => channel_page(full_page(p), &format!("p{}", p + 1)),
+                    ("repeat", 0) => channel_page(full_page(0), "p1"),
+                    ("repeat", _) => channel_page(full_page(1), "p1"),
+                    ("huge", _) => channel_page(full_page(0), &"x".repeat(MAX_CURSOR + 1)),
+                    ("fits", 0) => channel_page(full_page(0), &"p".repeat(MAX_CURSOR)),
+                    ("fits", _) => channel_page(Vec::new(), ""),
+                    ("fails_second", 0) => channel_page(full_page(0), "p1"),
+                    ("fails_second", _) => Reply::json(&json!({"ok": false, "error": "missing_scope"})),
+                    ("limited_second", 0) => channel_page(full_page(0), "p1"),
+                    ("limited_second", _) => status(429, &[("Retry-After", "7")], &json!({})),
+                    ("no_array", _) => Reply::json(&json!({"ok": true, "channels": {}})),
+                    ("too_big", _) => channel_page((0..201).map(|i| listed(&format!("C{i}"), "n", false, true)).collect(), ""),
+                    // A page of the right size whose cursor is missing is the last one.
+                    ("no_cursor", _) => Reply::json(&json!({"ok": true, "channels": [listed("C0ONE", "one", false, true)]})),
+                    _ => Reply::Drop,
+                }
+            })
+            .await
+        };
+        let api = new_api(&fake);
+        let list = |mode_name: &str| {
+            *mode.lock().unwrap() = mode_name.to_string();
+            api.channels()
+        };
+
+        let got = list("two").await.expect("two pages");
+        assert!(!got.more);
+        let want = |id: &str, name: &str, private: bool, member: bool| Channel { id: id.into(), name: name.into(), private, member };
+        assert_eq!(
+            got.channels,
+            [
+                want("C0OPEN", "open", false, true),
+                want("G0SECRET", "secret", true, true),
+                // No `is_private` reads as private and no `is_member` as not a member.
+                want("C0BARE", "bare", true, false),
+                want("C0LATE", "late", true, false),
+            ],
+            "an entry with no valid channel id or no name is skipped, and a name is cleaned"
+        );
+        let seen = fake.seen();
+        assert_eq!(seen.len(), 2);
+        let first = &seen[0];
+        assert_eq!((first.method.as_str(), first.path().as_str()), ("GET", "/api/conversations.list"));
+        assert_eq!(first.authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        assert_eq!(first.param("types").as_deref(), Some("public_channel,private_channel"));
+        assert_eq!(first.param("exclude_archived").as_deref(), Some("true"));
+        assert_eq!(first.param("limit").as_deref(), Some("200"));
+        assert_eq!(first.param("cursor"), None);
+        assert_eq!(seen[1].param("cursor").as_deref(), Some("p1"), "the cursor Slack gave is the one sent back");
+
+        let before = fake.seen().len();
+        let got = list("endless").await.expect("the capped list");
+        assert_eq!((got.channels.len(), got.more, fake.seen().len() - before), (MAX_LISTED, true, 5), "five pages, then more");
+        assert_eq!(got.channels[0].id, "C0X0");
+
+        let before = fake.seen().len();
+        let got = list("no_cursor").await.expect("a missing cursor ends the list");
+        assert_eq!((got.channels.len(), got.more, fake.seen().len() - before), (1, false, 1));
+
+        // The list is whole or an error: no page is returned alone.
+        assert_eq!(list("repeat").await, Err(ApiError::Repeated));
+        assert_eq!(list("huge").await, Err(ApiError::TooLarge));
+        assert!(list("fits").await.is_ok(), "a cursor of exactly the bound is carried");
+        assert_eq!(list("fails_second").await, Err(ApiError::Slack("missing_scope".into())));
+        assert_eq!(list("no_array").await, Err(ApiError::Malformed));
+        assert_eq!(list("too_big").await, Err(ApiError::Malformed), "a page over what it was asked for");
+        // Last: a rate limit holds every later read.
+        assert!(matches!(list("limited_second").await, Err(ApiError::Limited { assumed: false, .. })));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_channels_facts_come_from_one_read_and_the_naming_rule_reads_them() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            let id = seen.param("channel").unwrap_or_default();
+            let info = |channel: Value| Reply::json(&json!({"ok": true, "channel": channel}));
+            match id.as_str() {
+                "C0PUB" => info(json!({"id": id, "name": "open", "is_private": false, "is_member": true})),
+                "C0PUBOUT" => info(json!({"name": "  out\u{7} ", "is_private": false, "is_member": false})),
+                "G0PRIV" => info(json!({"name": "secret", "is_private": true, "is_member": true})),
+                "C0NOFLAGS" => info(json!({"name": "unsure"})),
+                "C0EMPTY" => info(json!({"name": " \u{7} ", "is_private": false})),
+                "C0NONAME" => info(json!({"is_private": false})),
+                "C0GONE" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
+                _ => Reply::Drop,
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let fact = |id: &str, name: &str, private: bool, member: bool| Ok(Channel { id: id.into(), name: name.into(), private, member });
+
+        assert_eq!(api.channel("C0PUB").await, fact("C0PUB", "open", false, true));
+        assert_eq!(api.channel("C0PUBOUT").await, fact("C0PUBOUT", "out", false, false));
+        assert_eq!(api.channel("G0PRIV").await, fact("G0PRIV", "secret", true, true));
+        assert_eq!(api.channel("C0NOFLAGS").await, fact("C0NOFLAGS", "unsure", true, false), "a reply that does not say is private and not joined");
+        assert_eq!(api.channel("C0EMPTY").await, Err(ApiError::Malformed));
+        assert_eq!(api.channel("C0NONAME").await, Err(ApiError::Malformed));
+        assert_eq!(api.channel("C0GONE").await, Err(ApiError::Slack("channel_not_found".into())));
+        assert_eq!(calls(&fake, "conversations.info"), 7, "one read each");
+        assert_eq!(api.channel("U0PERSON").await, Err(ApiError::BadRequest));
+        assert_eq!(api.channel("bad id").await, Err(ApiError::BadRequest));
+        assert_eq!(calls(&fake, "conversations.info"), 7, "a refused id is not sent");
+
+        // The naming rule of guarantee 16 reads the same facts through the same function: a channel is named when it is not
+        // private, or when it is mapped; every one of these asks `conversations.info`, so none has a second reader.
+        let before = calls(&fake, "conversations.info");
+        for (id, named) in [("C0PUB", true), ("G0PRIV", false), ("C0NOFLAGS", false), ("C0EMPTY", false)] {
+            assert_eq!(api.author_name(id).await != id, named, "{id} unmapped");
+        }
+        assert_eq!(calls(&fake, "conversations.info"), before + 4);
+        assert!(api.channel_names(&["G0PRIV".into(), "C0NOFLAGS".into()]).await.is_empty());
+        assert_eq!((api.cached_name("G0PRIV").as_deref(), api.cached_name("C0NOFLAGS").as_deref()), (Some("secret"), Some("unsure")));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_join_is_sent_once_and_already_in_channel_is_joined() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            let body = seen.json().unwrap_or_default();
+            match body["channel"].as_str().unwrap_or("") {
+                "C0OK" => Reply::json(&json!({"ok": true, "channel": {"id": "C0OK"}})),
+                "C0WARN" => Reply::json(&json!({"ok": true, "warning": "already_in_channel"})),
+                "C0ALREADY" => Reply::json(&json!({"ok": false, "error": "already_in_channel"})),
+                "C0SCOPE" => Reply::json(&json!({"ok": false, "error": "missing_scope"})),
+                "G0PRIV" => Reply::json(&json!({"ok": false, "error": "method_not_supported_for_channel_type"})),
+                "C0GONE" => Reply::json(&json!({"ok": false, "error": "channel_not_found"})),
+                "C0ARCH" => Reply::json(&json!({"ok": false, "error": "is_archived"})),
+                "C0FOUR" => status(403, &[], &json!({})),
+                "C0INT" => Reply::json(&json!({"ok": false, "error": "internal_error"})),
+                "C0ODD" => Reply::json(&json!({"ok": false, "error": "Has Spaces https://x"})),
+                "C0NOOK" => Reply::json(&json!({"channel": {}})),
+                "C0TEXT" => Reply::ok(b"not json"),
+                "C0FIVE" => status(503, &[], &json!({})),
+                "C0RATE" => status(429, &[("Retry-After", "7")], &json!({})),
+                "C0RATE2" => Reply::json(&json!({"ok": false, "error": "ratelimited"})),
+                _ => Reply::Drop,
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+
+        for joined in ["C0OK", "C0WARN", "C0ALREADY"] {
+            assert_eq!(api.join(joined).await, Ok(JoinOutcome::Joined), "{joined}");
+        }
+        let sent = fake.seen().remove(0);
+        assert_eq!((sent.method.as_str(), sent.path().as_str()), ("POST", "/api/conversations.join"));
+        assert_eq!(sent.authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        assert_eq!(sent.json().unwrap(), json!({"channel": "C0OK"}));
+
+        for refused in ["C0SCOPE", "G0PRIV", "C0GONE", "C0ARCH"] {
+            let code = match refused {
+                "C0SCOPE" => "missing_scope",
+                "G0PRIV" => "method_not_supported_for_channel_type",
+                "C0GONE" => "channel_not_found",
+                _ => "is_archived",
+            };
+            assert_eq!(api.join(refused).await, Ok(JoinOutcome::Refused(code.into())), "{refused}");
+        }
+        assert_eq!(api.join("C0FOUR").await, Ok(JoinOutcome::Refused("http_403".into())));
+        // Nothing here is an acknowledgement or a definite refusal: a read settles whether the app is in.
+        let unknown = ["C0INT", "C0ODD", "C0NOOK", "C0TEXT", "C0FIVE", "C0RATE", "C0RATE2", "C0DROP"];
+        for id in unknown {
+            assert_eq!(api.join(id).await, Ok(JoinOutcome::Unknown), "{id}");
+        }
+        assert_eq!(calls(&fake, "conversations.join"), 3 + 4 + 1 + unknown.len(), "each join is one request, none resent");
+
+        // An id that is no channel's is refused before anything is sent, and so is a call on a closed client.
+        let before = fake.seen().len();
+        for bad in ["U0PERSON", "bad id", ""] {
+            assert_eq!(api.join(bad).await, Err(ApiError::BadRequest), "{bad:?}");
+        }
+        api.close();
+        assert_eq!(api.join("C0OK").await, Err(ApiError::Closed));
+        assert_eq!(fake.seen().len(), before);
         fake.shutdown().await;
     })
     .await;
