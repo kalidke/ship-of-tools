@@ -9,11 +9,11 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    identify_at, Api, ApiError, Bounds, Channel, Continuation, FileOutcome, HistoryQuery, Identified, JoinOutcome,
-    PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED, MAX_NAMES, MAX_RETRY,
-    MAX_SCAN,
+    identify_at, Api, ApiError, Bounds, Channel, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery,
+    Identified, JoinOutcome, PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED,
+    MAX_NAMES, MAX_RETRY, MAX_SCAN, MAX_THUMB,
 };
-use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen, Upload};
+use crate::fake_slack::{eventually, FakeSlack, Files, Identity, Reply, Seen, Upload};
 use crate::http::{HttpError, Secret};
 use crate::normalize::MAX_TEXT;
 
@@ -2524,6 +2524,56 @@ async fn a_file_post_shows_no_token_or_private_url_in_any_error() {
             }
         }
         fake.shutdown().await;
+
+        // A fetch's errors show neither the token nor a file's private URL either: each file fails at one place by its
+        // id, and every answer echoes the token or the URL.
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            let at = |host: &str, file: &str| format!("https://{host}:{port}{SECRET_PATH}?t={TOKEN}&f={file}");
+            let info = |url: String| Reply::json(&json!({"ok": true, "file": {
+                "id": seen.param("file"), "mimetype": "image/png", "size": 9, "url_private_download": url,
+                "shares": {"public": {"C0CHAN": [{"ts": "1700000800.000100"}]}}}}));
+            match (seen.path().as_str(), seen.param("file").as_deref()) {
+                ("/api/files.info", Some("F0ECHO")) => {
+                    Reply::json(&json!({"ok": false, "error": format!("invalid auth https://files.slack.com{SECRET_PATH} {TOKEN}")}))
+                }
+                ("/api/files.info", Some("F0HTML")) => Reply::ok(format!("<html>{TOKEN} {SECRET_PATH}</html>").as_bytes()),
+                ("/api/files.info", Some("F0FOREIGN")) => info(at("other.example", "x")),
+                ("/api/files.info", Some(file)) => info(at("files.slack.com", file)),
+                (SECRET_PATH, _) if seen.param("f").as_deref() == Some("F0DENIED") => {
+                    status(403, &[], &json!({"error": TOKEN}))
+                }
+                (SECRET_PATH, _) if seen.param("f").as_deref() == Some("F0PAGE") => {
+                    Reply::Status { code: 200, headers: vec![("Content-Type".into(), "text/html".into())], body: TOKEN.into() }
+                }
+                _ => status(400, &[], &json!({"error": format!("{TOKEN} {SECRET_PATH}")})),
+            }
+        })
+        .await;
+        let api = new_api(&fake);
+        let mut shown = Vec::new();
+        for file in ["F0ECHO", "F0HTML", "F0FOREIGN", "F0DENIED", "F0PAGE", "F0GONE", "bad id"] {
+            let got = api.fetch_file("C0CHAN", file, FileVariant::Original).await;
+            shown.push(match got {
+                Ok(outcome) => format!("{outcome:?}"),
+                Err(e) => format!("{e:?} {e}"),
+            });
+        }
+        let want = [
+            "Slack(\"unknown_error\") slack: unknown_error",
+            "Malformed malformed",
+            "Http(Destination) http: destination: the destination is not an HTTPS Slack host",
+            "Status(403) status: 403",
+            "NotAnImage",
+            "Status(400) status: 400",
+            "BadRequest bad_request",
+        ];
+        assert_eq!(shown, want);
+        for text in &shown {
+            for secret in [TOKEN, "sentinel-private", "files.slack.com", "other.example", "127.0.0.1", "upload"] {
+                assert!(!text.contains(secret), "{text}");
+            }
+        }
+        fake.shutdown().await;
     })
     .await;
 }
@@ -2560,6 +2610,272 @@ async fn a_rate_limit_refuses_a_file_post_unsent() {
         assert_eq!(got, Ok(FileOutcome::Limited { retry_after: Duration::from_secs(7), assumed: false }));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(shared(&fake), 1);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The fake answering one file's `files.info` and URLs, and nothing else.
+async fn files_fake(files: Files) -> FakeSlack {
+    FakeSlack::start(Identity::Trusted, move |seen, port| files.reply(seen, port).unwrap_or(Reply::Drop)).await
+}
+
+/// The requests that were not Slack API calls: the file URLs asked for.
+fn downloads(fake: &FakeSlack) -> Vec<Seen> {
+    fake.seen().into_iter().filter(|s| !s.path().starts_with("/api/")).collect()
+}
+
+fn image(bytes: &[u8]) -> Result<FileFetch, ApiError> {
+    Ok(FileFetch::Image { mime: "image/png".into(), bytes: bytes.to_vec() })
+}
+
+const THUMB_BYTES: &[u8] = b"\x89PNG thumbnail bytes";
+const ORIGINAL_BYTES: &[u8] = b"\x89PNG original bytes";
+
+#[tokio::test]
+async fn a_fetch_reads_only_a_picture_shared_in_its_channel() {
+    bounded(async {
+        // The thumbnail and the original of a file shared in the channel: each one `files.info` and one GET, with the
+        // bearer, to the file's host.
+        let fake = files_fake(Files::new()).await;
+        let api = new_api(&fake);
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, image(THUMB_BYTES));
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
+        let seen = fake.seen();
+        let paths: Vec<String> = seen.iter().map(Seen::path).collect();
+        assert_eq!(paths, ["/api/files.info", &Files::thumb_path("thumb_360"), "/api/files.info", Files::download_path()]);
+        let bearer = format!("Bearer {TOKEN}");
+        assert_eq!(seen[0].param("file").as_deref(), Some("F0PIC"));
+        for s in &seen {
+            assert_eq!((s.method.as_str(), s.authorization.as_deref()), ("GET", Some(&*bearer)), "{}", s.target);
+        }
+        assert!(seen[1].host.starts_with("files.slack.com:"), "{}", seen[1].host);
+
+        // The url_private is the original's when there is no download URL.
+        let fake = files_fake(Files::new().no_download()).await;
+        assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
+        assert_eq!(downloads(&fake)[0].path(), Files::private_path());
+
+        // Each row: the file, the channel asked, the variant, the answer and how many URLs were fetched.
+        let big = MAX_CHAT_FILE as u64 + 1;
+        let (thumb, original) = (FileVariant::Thumb, FileVariant::Original);
+        let cases: Vec<(&str, Files, &str, FileVariant, Result<FileFetch, ApiError>, usize)> = vec![
+            ("another channel's file", Files::new().shared_in(&["C0OTHER"]), "C0CHAN", original, Err(ApiError::BadRequest), 0),
+            ("a file shared nowhere", Files::new().shared_in(&[]), "C0CHAN", thumb, Err(ApiError::BadRequest), 0),
+            ("a PDF", Files::new().mimetype("application/pdf"), "C0CHAN", thumb, Ok(FileFetch::NotAnImage), 0),
+            ("an SVG", Files::new().mimetype("image/svg+xml"), "C0CHAN", original, Ok(FileFetch::NotAnImage), 0),
+            ("an original over the bound", Files::new().size(big), "C0CHAN", original, Ok(FileFetch::TooLarge), 0),
+            ("a thumbnail of one", Files::new().size(big), "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("an original of the bound", Files::new().size(big - 1), "C0CHAN", original, image(ORIGINAL_BYTES), 1),
+            ("the older keys", Files::new().listed_in(&["C0CHAN"]), "C0CHAN", thumb, image(THUMB_BYTES), 1),
+            ("a group by the older keys", Files::new().listed_in(&["G0PRIV"]), "G0PRIV", thumb, image(THUMB_BYTES), 1),
+            ("a private share", Files::new().shared_in(&["C0OTHER", "G0PRIV"]), "G0PRIV", thumb, image(THUMB_BYTES), 1),
+            ("a file shared in the channel", Files::new(), "C0CHAN", thumb, image(THUMB_BYTES), 1),
+        ];
+        for (what, files, channel, variant, want, gets) in cases {
+            let fake = files_fake(files).await;
+            assert_eq!(new_api(&fake).fetch_file(channel, "F0PIC", variant).await, want, "{what}");
+            assert_eq!(downloads(&fake).len(), gets, "{what}: a file URL is fetched only after every check");
+            fake.shutdown().await;
+        }
+
+        // Slack's answer is for another file, or says no; nothing is fetched.
+        let fake = files_fake(Files::new()).await;
+        let api = new_api(&fake);
+        assert_eq!(api.fetch_file("C0CHAN", "F0NONE", FileVariant::Thumb).await, Err(ApiError::Slack("file_not_found".into())));
+        let wrong = FakeSlack::start(Identity::Trusted, |seen, port| {
+            let mut other = Files::new().reply(seen, port).unwrap_or(Reply::Drop);
+            if let (Reply::Status { body, .. }, "/api/files.info") = (&mut other, seen.path().as_str()) {
+                *body = String::from_utf8_lossy(body).replace("F0PIC", "F0ELSE").into_bytes();
+            }
+            other
+        })
+        .await;
+        assert_eq!(new_api(&wrong).fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Malformed));
+        assert_eq!(downloads(&wrong).len(), 0);
+        wrong.shutdown().await;
+        // A URL over 2 KiB is none: the original has no usable one, and the thumbnail's own is still read.
+        let long = FakeSlack::start(Identity::Trusted, |seen, port| {
+            let mut info = Files::new().reply(seen, port).unwrap_or(Reply::Drop);
+            if let (Reply::Status { body, .. }, "/api/files.info") = (&mut info, seen.path().as_str()) {
+                let padded = format!("/files-pri/F0PIC/{}/", "x".repeat(2100));
+                *body = String::from_utf8_lossy(body).replace("/files-pri/F0PIC/", &padded).into_bytes();
+            }
+            info
+        })
+        .await;
+        let api = new_api(&long);
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Err(ApiError::Malformed));
+        assert_eq!(downloads(&long).len(), 0);
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, image(THUMB_BYTES));
+        long.shutdown().await;
+
+        // Input it cannot carry, and a closed client, send nothing.
+        let before = fake.seen().len();
+        for (channel, file) in [("bad id", "F0PIC"), ("C0CHAN", "bad id"), ("", "F0PIC"), ("C0CHAN", "")] {
+            assert_eq!(api.fetch_file(channel, file, FileVariant::Thumb).await, Err(ApiError::BadRequest), "{channel} {file}");
+        }
+        api.close();
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Closed));
+        assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one() {
+    bounded(async {
+        // The first of `thumb_360`, `thumb_480` and `thumb_160` that Slack names, whatever order it lists them.
+        for (keys, want) in [
+            (&["thumb_160", "thumb_480", "thumb_360"][..], "thumb_360"),
+            (&["thumb_160", "thumb_480"], "thumb_480"),
+            (&["thumb_160"], "thumb_160"),
+        ] {
+            let fake = files_fake(Files::new().thumb_keys(keys)).await;
+            assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, image(THUMB_BYTES), "{want}");
+            assert_eq!(downloads(&fake)[0].path(), Files::thumb_path(want));
+            fake.shutdown().await;
+        }
+
+        // With none, a small original stands in; one byte over `MAX_THUMB` is refused unsent; the original variant takes
+        // it whole.
+        let fake = files_fake(Files::new().thumb_keys(&[]).original(vec![7; MAX_THUMB])).await;
+        let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await;
+        assert_eq!(got, Ok(FileFetch::Image { mime: "image/png".into(), bytes: vec![7; MAX_THUMB] }));
+        assert_eq!(downloads(&fake)[0].path(), Files::download_path());
+        fake.shutdown().await;
+        let fake = files_fake(Files::new().thumb_keys(&[]).original(vec![7; MAX_THUMB + 1])).await;
+        let api = new_api(&fake);
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Ok(FileFetch::TooLarge));
+        assert_eq!(downloads(&fake).len(), 0, "a large original is never fetched for a thumbnail");
+        assert!(matches!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Ok(FileFetch::Image { .. })));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_answer_that_is_not_an_image_is_refused() {
+    bounded(async {
+        for (served, is_image) in [
+            (Some("text/html; charset=utf-8"), false),
+            (Some("application/octet-stream"), false),
+            (Some("image/"), false),
+            (None, false),
+            (Some("IMAGE/PNG; q=1"), true),
+        ] {
+            for variant in [FileVariant::Thumb, FileVariant::Original] {
+                let fake = files_fake(Files::new().content_type(served)).await;
+                let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
+                if is_image {
+                    assert!(matches!(got, Ok(FileFetch::Image { ref mime, .. }) if mime == "image/png"), "{got:?}");
+                } else {
+                    assert_eq!(got, Ok(FileFetch::NotAnImage), "{served:?} {variant:?}");
+                }
+                fake.shutdown().await;
+            }
+        }
+        // An image with no bytes is no picture either.
+        let fake = files_fake(Files::new().original(Vec::new())).await;
+        assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, Err(ApiError::Malformed));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_fetch_is_bounded_while_it_streams() {
+    bounded(async {
+        // `files.info` claims ten bytes; the answer is counted as it comes, so one byte over the variant's bound is too
+        // large and exactly the bound passes.
+        for (variant, bound) in [(FileVariant::Thumb, MAX_THUMB), (FileVariant::Original, MAX_CHAT_FILE)] {
+            for (len, want_ok) in [(bound + 1, false), (bound, true)] {
+                let files = Files::new().size(10);
+                let files = if variant == FileVariant::Thumb { files.thumb(vec![3; len]) } else { files.original(vec![3; len]) };
+                let fake = files_fake(files).await;
+                let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
+                let want = if want_ok { Ok(FileFetch::Image { mime: "image/png".into(), bytes: vec![3; len] }) } else { Ok(FileFetch::TooLarge) };
+                assert_eq!(got, want, "{variant:?} {len}");
+                fake.shutdown().await;
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_fetch_redirected_off_slack_sends_nothing_there() {
+    bounded(async {
+        // To a foreign host: refused before any request there, so the token never reaches it.
+        for host in ["other.example", "evilslack.com"] {
+            for variant in [FileVariant::Thumb, FileVariant::Original] {
+                let fake = files_fake(Files::new().redirecting_to(host)).await;
+                let got = new_api(&fake).fetch_file("C0CHAN", "F0PIC", variant).await;
+                assert_eq!(got, Err(ApiError::Http(HttpError::Destination)), "{host} {variant:?}");
+                for s in fake.seen() {
+                    assert!(s.host.starts_with("slack.com:") || s.host.starts_with("files.slack.com:"), "{}", s.host);
+                }
+                fake.shutdown().await;
+            }
+        }
+        // Within Slack the redirect is followed and the bearer rides it.
+        let fake = files_fake(Files::new().redirecting_to("files.slack.com")).await;
+        assert_eq!(new_api(&fake).fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, image(ORIGINAL_BYTES));
+        let seen = fake.seen();
+        assert_eq!(seen.last().unwrap().path(), Files::private_path());
+        assert_eq!(seen.last().unwrap().authorization, Some(format!("Bearer {TOKEN}")));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_read() {
+    bounded(async {
+        // Two originals that never answer hold both permits: a third fetch and a post are `busy` at once, sending
+        // nothing; a dropped fetch frees its permit.
+        let files = Files::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == Files::download_path() {
+                return Reply::Hang;
+            }
+            files.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = Arc::new(new_api(&fake));
+        let hang = |api: Arc<Api>| tokio::spawn(async move { api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await });
+        let (first, second) = (hang(api.clone()), hang(api.clone()));
+        eventually("two fetches under way", || downloads(&fake).len() == 2).await;
+        let before = fake.seen().len();
+        let start = Instant::now();
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Http(HttpError::Busy)));
+        let post = api.post_file("C0CHAN", None, PostKind::Row, "build-7", "a.png", PNG.to_vec(), None).await;
+        assert_eq!(post, Ok(FileOutcome::Refused("busy".into())));
+        assert!(start.elapsed() < Duration::from_secs(1), "busy at once");
+        assert_eq!(fake.seen().len(), before, "neither sent anything");
+        first.abort();
+        let _ = first.await;
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, image(THUMB_BYTES));
+        second.abort();
+        let _ = second.await;
+        fake.shutdown().await;
+
+        // A 429 on the file's URL sets the wait, so the next read is refused without a request.
+        let files = Files::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == Files::download_path() {
+                return status(429, &[("Retry-After", "5")], &json!({}));
+            }
+            files.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = new_api(&fake);
+        let limited = Err(ApiError::Limited { retry_after: Duration::from_secs(5), assumed: false });
+        assert_eq!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Original).await, limited);
+        let before = fake.seen().len();
+        assert!(matches!(api.fetch_file("C0CHAN", "F0PIC", FileVariant::Thumb).await, Err(ApiError::Limited { .. })));
+        assert_eq!(fake.seen().len(), before);
         fake.shutdown().await;
     })
     .await;

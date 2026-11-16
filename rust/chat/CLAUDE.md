@@ -2,9 +2,9 @@
 
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
-the first stage needs (`auth.test`, and `identify`, the setup's `auth.test` before a workspace is configured, history and replies, `chat.postMessage`, a file's share (`files.getUploadURLExternal`, the upload, `files.completeUploadExternal`), `users.info`, `conversations.info`, the picker's `conversations.list` and `conversations.join`), and `socket`, the Socket Mode
+the first stage needs (`auth.test`, and `identify`, the setup's `auth.test` before a workspace is configured, history and replies, `chat.postMessage`, a file's share (`files.getUploadURLExternal`, the upload, `files.completeUploadExternal`), the fetch of a picture of a channel (`files.info`, one GET of the file's URL), `users.info`, `conversations.info`, the picker's `conversations.list` and `conversations.join`), and `socket`, the Socket Mode
 listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel and its threads, and `delivery`, the filing queue, the schedule of passes and the commit of the boundary. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
-bot identity, read-pacing instant, name cache, closed flag and transfer permits (`MAX_TRANSFERS`, guarantee 32), a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and a `Delivery`'s filing queue (at most `MAX_QUEUED` records), the one filing in flight and each delivering channel's `State` (guarantee 27). `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
+bot identity, read-pacing instant, name cache, closed flag and transfer permits (`MAX_TRANSFERS`, guarantees 32 and 33), a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase and the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop for good), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and a `Delivery`'s filing queue (at most `MAX_QUEUED` records), the one filing in flight and each delivering channel's `State` (guarantee 27). `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
 ## Guarantees
 1. **Every message shape gives a result, never a panic or a silent drop.** `normalize(ctx, channel, raw)` returns
@@ -44,7 +44,9 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    marked sensitive. Only a GET follows redirects, at most three; a POST that is redirected, or a loop, is `Redirect`.
    Automatic redirects and ambient proxies are off. Limit: the one predicate is destination and authorization alike, so
    a request without the authorization goes only to Slack hosts too: a file's upload (guarantee 32) posts its bytes,
-   unauthenticated, to the URL Slack answered, and one off Slack is `Destination` before a connection; a non-Slack
+   unauthenticated, to the URL Slack answered, and one off Slack is `Destination` before a connection; a fetch
+   (guarantee 33) sends the authorization to the file's URL, which is checked the same way, and a redirect of it off
+   Slack's hosts is `Destination` before any request there; a non-Slack
    unauthenticated destination (a CDN, an upload host elsewhere) is a later, reviewed addition.
 6. **The server is verified, and the product has no way to weaken that.** `Http::new` trusts the bundled web roots
    (`webpki-roots`) through one rustls configuration (ring provider) and checks the certificate chain and the name; either
@@ -71,7 +73,7 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    (the deadline at the latest); a name lookup that outlives it keeps its blocking thread until the resolver returns.
 8. **A response body is bounded while it streams.** At most 1 MiB, or the request's own bound where it sets one (a
    scan's is `MAX_SCAN_BODY`, 16 MiB; a page over it is `TooLarge`, and what the walk does then is the traversal's),
-   counted as chunks arrive, whatever `Content-Length` claims (a gigabyte claimed over a two MiB body, an endless
+   counted as chunks arrive (a fetch's is `MAX_THUMB` or `MAX_CHAT_FILE`, guarantee 33), whatever `Content-Length` claims (a gigabyte claimed over a two MiB body, an endless
    chunkless body and one byte over the bound are `TooLarge`; a body of exactly the bound passes; a short claim ends the
    body at the claim).
 9. **One `send` is one request.** The library's retry is set to never, HTTP/1 has no protocol retry, and no idle
@@ -124,7 +126,7 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
    reads' wait.
 14. **Every operation has a stated deadline.** Reads 15 s, a post, a join and a file's share 30 s (none is resent, so an
-   early give-up only makes `Unknown`), a file's upload 60 s (`TRANSFER_DEADLINE`), all of a page's name lookups together 10 s; each through `Http`'s owner-held deadline.
+   early give-up only makes `Unknown`), a file's upload and a fetch's original 60 s (`TRANSFER_DEADLINE`), a fetch's thumbnail 15 s, all of a page's name lookups together 10 s; each through `Http`'s owner-held deadline.
 15. **Slack's text reaches no caller.** `ApiError` is a fixed code; Slack's `error` is carried only when it is
    `[a-z0-9_.]{1,64}`, else `unknown_error`; bodies and URLs are dropped; `auth.test` for another workspace is
    `WrongWorkspace`; history without the bot identity is `NoIdentity`, unsent.
@@ -678,6 +680,32 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    fake): that the upload URL is on a Slack host, that `thread_ts` shares into the thread (else the file lands at the
    top level and still reads `Posted`), and where step 3's answer puts the share's `ts`. Tests: see the table.
 
+
+33. **A picture is fetched only from a channel it is shared in, bounded before and while it streams, and only an image
+   is returned.** `Api::fetch_file(channel, file, variant)` (`FileVariant::Thumb` or `Original`) is a read under one of
+   the same `MAX_TRANSFERS` permits (guarantee 32), taken with `try_acquire_owned` before anything is sent, so a third
+   transfer at once, an upload included, is `Err(Http(Busy))` at once, and the permit is freed on every path. A closed
+   client, a channel or file that is no id, and (after one `files.info`, a read under guarantees 13 to 15) a file that is
+   not shared in `channel` (the channel is one of its `channels` or `groups`, or a key of `shares.public` or
+   `shares.private`) are `Err` with nothing downloaded; an `info` that is not the file asked for is `Malformed`. A file
+   whose `mimetype` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp` is `Ok(NotAnImage)`, unfetched. A
+   thumbnail is the first of `thumb_360`, `thumb_480` and `thumb_160` that Slack names, whatever the size of the
+   original; with none, the original stands in only when `files.info`'s `size` is at most `MAX_THUMB` (256 KiB), else
+   `Ok(TooLarge)` unfetched. An original (`url_private_download`, else `url_private`) is fetched only when its `size`
+   is at most `MAX_CHAT_FILE` (16 MiB), else `Ok(TooLarge)` unfetched; a missing `size` is `Malformed`. A URL is at
+   most 2 KiB. The one GET carries the bearer to a Slack host (guarantee 5), under the variant's deadline (a
+   thumbnail's is a read's 15 s, an original's `TRANSFER_DEADLINE`) and the variant's bound counted as the body
+   streams (guarantee 8), whatever `size` claimed: one byte over is `Ok(TooLarge)`. A 429 sets the reads' wait as any
+   read's does and is `Err(Limited)`; another status is `Err(Status)`; an answer whose `Content-Type` is not `image/`
+   and a short subtype is `Ok(NotAnImage)`, so Slack's sign-in page is never a picture; an image with no bytes is
+   `Malformed`. The result is `Image { mime, bytes }`, `mime` the served type lower-cased with its parameters
+   dropped. The file's URLs are held inside the call and never formatted; `ApiError` is a fixed code. Limits: a
+   fetch is never resent by the call and holds no more than the answer's body and its copy (at most 32 MiB for an
+   original, 64 MiB with two permits); `files.info` listing a bot's channels, `thumb_*` for every image type and the
+   served `Content-Type` are unmeasured until a person's first use (each built to fail closed against the fake: a fetch
+   that finds no channel is `BadRequest`, no thumbnail falls back to a small original or `TooLarge`). Tests: see the
+   table.
+
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
 
@@ -685,11 +713,11 @@ never holds another form.
 `normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key`; it re-exports wire's record bounds (`MAX_RECORD_BYTES`, `MAX_TEXT`, `MAX_FILES`, `MAX_ID`, `MAX_NAME`, `MAX_FILENAME`, `MAX_MIME`) and the id grammar `is_id` (as `valid_id`), which wire owns. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
 `MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
-`Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `FileOutcome`, `MAX_TRANSFERS`, `Channel`, `ChannelList`, `JoinOutcome`, `Identity`, `identify`, `Identified` (and, under `cfg(test)` or `test-support`, `identify_for_test`), `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR`, `MAX_LISTED`, `MAX_CHAT_FILE` (the largest file a post carries, 16 MiB) and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
+`Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `FileOutcome`, `FileVariant`, `FileFetch`, `MAX_TRANSFERS`, `Channel`, `ChannelList`, `JoinOutcome`, `Identity`, `identify`, `Identified` (and, under `cfg(test)` or `test-support`, `identify_for_test`), `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR`, `MAX_LISTED`, `MAX_CHAT_FILE` (the largest file a post or a fetched original carries, 16 MiB), `MAX_THUMB` (the largest thumbnail, 256 KiB) and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError`, `check_app_token` (and, under `cfg(test)` or `test-support`, `check_app_token_for_test`) and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
 `http.rs` also holds `Http::websocket`, the one way to a websocket, and `Http::check_websocket`, its destination check alone. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `traverse.rs`: `Order`, `Passed`, `Outcome`, `pass`, `MARGIN`, `MAX_PASS_READS`, `MAX_PASS_MAIL`. `delivery.rs`: `Delivery`, `Action`, `Filing`, `Verdict`, `Timing`, `FILE_GAP`, `MAX_QUEUED`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `resolve`, the token grammar for a pasted token (`bot_token`, `app_token`), the writes (`fresh`, `secrets`, `pair`, `PairError`, `Write`, `Writers`, `write_config`, `write_secrets`), `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack,
 its websocket peer (`ws.rs`), a channel that answers history as measured (`history.rs`, which states what it infers) and
-Slack's three upload steps (`upload.rs`, `Upload`).
+Slack's three upload steps (`upload.rs`, `Upload`) and one file's `files.info` and URLs (`files.rs`, `Files`).
 
 ## Calls in
 `sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, escape_text, post_text_fits, MAX_*}` (and `text_segments`, `TextSegment`; `page_reply::unsafe_char`), `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_LISTED, MAX_RETRY_SECS}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
@@ -722,7 +750,9 @@ it for real).
 test (`Reply`: a status, raw bytes, a hang, a stall after bytes, an endless body, a dropped connection), recording each
 request (with its path, query parameters, `Authorization` header and raw or JSON body), connection and handshake failure.
 `Upload` answers the three file upload steps as SlackClaw measured them, an upload URL on `files.slack.com` (or a host a
-test names) at the fixture's port, and a share with or without its `ts`. It flushes after every
+test names) at the fixture's port, and a share with or without its `ts`. `Files` answers one file's `files.info` (its
+channels as `shares` or as the older `channels` and `groups`, its `thumb_*` and original URLs on `files.slack.com`) and
+those URLs' bytes with a `Content-Type` a test sets, or a redirect; that a bot token's `files.info` lists the channels is inferred, not measured. It flushes after every
 write and its listener has a 4 KiB send buffer, so output left unflushed in the TLS session hangs on Linux as it did on
 Windows (`chat_operations_keep_bounds_after_caller_drop`, `/exact`, red until the flush). Its listener and connection tasks belong to the `FakeSlack`: `shutdown`
 joins them within five seconds and a drop aborts them. Its fixed certificates (a CA valid to 2126 whose key was discarded,
@@ -774,6 +804,7 @@ Paths are under `rust/chat/src/`.
 | 29 | the picker's calls | `api_tests.rs`: `the_channel_list_follows_the_cursor_to_its_bound_and_fails_whole` (the request's parameters and cursor, skipped entries, the five-page cap and `more`, a repeated or oversized cursor, a failure or a rate limit on a later page, a page of the wrong shape), `a_channels_facts_come_from_one_read_and_the_naming_rule_reads_them` (the facts, the defaults for what Slack leaves out, a refused id unsent, and `author_name` and `channel_names` agreeing with them), `a_join_is_sent_once_and_already_in_channel_is_joined` (each refusal, each unconfirmed answer, none resent, a bad id and a closed client unsent) |
 | 30 | the window's pairing | `server/chat_setup_tests.rs`: `a_window_pairs_a_row_with_a_public_channel_the_app_joins_and_watches_it_at_once`, `a_private_channel_the_app_is_not_in_is_refused_unjoined`, `a_join_without_the_scope_is_not_in_channel` (a refused join and an unacknowledged one, each sent once), `unpairing_removes_the_mapping_and_the_channel_and_the_row_reads_unmapped`, `a_channel_of_another_existing_folder_is_taken_and_one_of_a_missing_folder_is_taken_over`, `a_pair_that_changes_nothing_writes_and_reloads_nothing` (a hand comment survives), `a_delivering_files_new_mapping_floors_at_the_clock`, `a_hand_edited_file_the_load_refuses_is_never_rewritten`, `a_hub_deposed_since_its_boot_writes_nothing`, `the_channel_list_needs_a_running_service_and_a_window`; `dispatch_place_tests.rs`: the two ops are jobs |
 | 32 | a file shared once | `api_tests.rs`: `a_file_is_uploaded_unauthorized_and_shared_once_with_its_label` (three requests in order, step 1's name and length, the bytes equal and step 2 without authorization, step 3's file, channel, thread and escaped label; the label alone with no comment; every input refused unsent, the bounds themselves carried, a closed client), `only_the_share_can_be_unknown` (a drop or a timeout at step 1 or 2 refused with no share sent; a drop, a timeout, a 503 or an `ok` without the file at step 3 unknown, each sent once), `a_share_with_no_ts_is_posted_with_its_file` (and a private channel's share), `a_foreign_upload_url_is_refused_before_any_byte_and_nothing_is_shared` (`other.example`, two lookalikes, a URL over 2 KiB; one connection), `a_third_transfer_is_busy_at_once_and_a_dropped_one_frees_its_permit`, `a_file_post_shows_no_token_or_private_url_in_any_error` (sentinels in the upload URL and the token, echoed by each step), `a_rate_limit_refuses_a_file_post_unsent` (at step 1, and the wait refusing the next unsent; at step 3, sent once) |
+| 33 | a picture of the channel, bounded | `api_tests.rs`: `a_fetch_reads_only_a_picture_shared_in_its_channel` (the thumbnail and the original with the bearer, to the file's host; another channel's file, a file shared nowhere, a PDF, an SVG and an original over the bound each with no GET; a thumbnail of a large original; both membership forms and a private share; `url_private` without a download URL; a file Slack does not know, an `info` for another file, a bad id and a closed client), `a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one` (the three keys' order; a small original at exactly `MAX_THUMB`; one byte over refused with no GET), `an_answer_that_is_not_an_image_is_refused` (HTML, octet-stream, `image/` alone, no type; a type in capitals with parameters accepted; no bytes), `a_fetch_is_bounded_while_it_streams` (a false `size`; one byte over and exactly the bound, both variants), `a_fetch_redirected_off_slack_sends_nothing_there` (two foreign hosts, no request reaches them; a redirect within Slack keeps the bearer), `a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_read` (two stalled originals make a fetch and a post `busy` at once; a dropped one frees its permit; a 429 on the URL), and the token test `a_file_post_shows_no_token_or_private_url_in_any_error` (extended: a fetch's errors) |
 | 31 | a window's only; the hub fact at the op; both tokens checked, nothing written before; only Slack's answers that name the token refuse it, its state and the transport are `failed`; the closed mark read again under the lock; another workspace and a refused `chat.toml` refused and left as they are; the secrets owner-only and whole, a fresh `chat.toml` only when missing; a failed write `not_saved`; the reload; no token byte in a log line of any thread or a reply; the reply after a failed start; `resolve`'s `unconfigured` | `rust/backend/src/server/chat_setup_tests.rs`: the plan's done test `from_nothing_a_window_connects_pairs_and_reads_its_channel` (from no chat file a window connects, `chat.toml` is the fresh one, lists, pairs, watches and gets a socket post as `chat.changed`; the secrets owner-only and the three keys, `chat.toml` loads with the mapping, no token byte in a reply, an event or a log line of any thread), `each_answer_of_the_two_checks_has_its_code_and_writes_nothing` (the forms, the token refusals and Slack's state and the transport on each check), `a_connect_from_a_row_or_on_a_computer_that_is_not_the_hub_writes_nothing`, `a_retirement_that_begins_while_slack_is_asked_writes_nothing`, `a_write_that_fails_is_not_saved`, `a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`, `a_connect_naming_another_workspace_is_refused`, `resolve_says_unconfigured_for_each_reason_a_connect_fixes`, `a_connect_while_running_replaces_the_tokens_and_restarts`; `socket_tests.rs`: `an_app_token_check_opens_no_socket_and_refuses_a_foreign_url` (a 503 and `ratelimited` are `unavailable`); `dispatch_place_tests.rs`: `the_lists_are_disjoint_and_reasoned` (the setup ops are jobs) |
 
 ## Files
@@ -787,7 +818,7 @@ Paths are under `rust/chat/src/`.
 - `src/mail.rs`: the mail body, its reader and what is mail; `src/mail_tests.rs`: its tests.
 - `src/state.rs`: a delivering channel's boundary file and filed set; `src/state_tests.rs`: its tests.
 - `src/delivery.rs`: the filing queue, the passes' schedule and the commit; `src/delivery_tests.rs`: its tests.
-- `src/fake_slack/`: the fake (tests and the `test-support` feature), its websocket peer, its history and upload scripts and its certificates. `src/http_tests.rs`: the HTTP tests.
+- `src/fake_slack/`: the fake (tests and the `test-support` feature), its websocket peer, its history, upload and file scripts and its certificates. `src/http_tests.rs`: the HTTP tests.
 
 ## Start here
 `src/normalize.rs`, `normalize`; `src/http.rs`, `Http::send`; `src/api.rs`, `Api::history` and `Api::post`; `src/socket.rs`, `Worker::run` and `Worker::handle`.
