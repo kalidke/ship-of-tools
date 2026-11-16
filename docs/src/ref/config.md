@@ -277,7 +277,8 @@ other one. No port, no forward — read the actual endpoints from
 ## `chat.toml` and `chat-secrets.toml`
 
 The project chat's configuration, two TOML files in the config folder (`~/.config/sot` on Linux and macOS,
-`%LOCALAPPDATA%\sot\config` on Windows).
+`%LOCALAPPDATA%\sot\config` on Windows). How to make the Slack app, its tokens and the IDs these files hold is in
+[Setting up Slack](../guide/chat-setup.md).
 
 *Status: the daemon reads both files and connects to Slack with the two tokens. The Chat drawer shows the channel's held messages (see
 [The project chat](../guide/chat.md)), and a person's post goes out under `[chat] name` of `settings.toml`; mail is not built.*

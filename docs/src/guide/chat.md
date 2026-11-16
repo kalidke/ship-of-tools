@@ -1,5 +1,8 @@
 # The project chat
 
+To connect Ship of Tools to Slack the first time, or to give another project a channel, see
+[Setting up Slack](chat-setup.md).
+
 The Chat drawer (`Ctrl+K`) shows the messages of one Slack channel: the channel the selected row's folder maps to.
 The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
 a message that arrives takes the bottom line and lifts the rest. An empty channel shows `no messages`.
