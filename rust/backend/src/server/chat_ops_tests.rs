@@ -34,8 +34,8 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_CHANGED, Answer::Event),
     (op::CHAT_STATUS, Answer::Event),
     (op::CHAT_CONNECT, Answer::Unserved),
-    (op::CHAT_CHANNELS, Answer::Unserved),
-    (op::CHAT_PAIR, Answer::Unserved),
+    (op::CHAT_CHANNELS, Answer::Handled),
+    (op::CHAT_PAIR, Answer::Handled),
 ];
 
 /// What the fake answers a chat call with.

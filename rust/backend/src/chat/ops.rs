@@ -24,12 +24,12 @@ use crate::rows::handle::bound_handle;
 use crate::rows::Workspaces;
 
 /// A refusal: the standard error payload with the fixed text and the code, never Slack's or a library's words.
-fn refuse(req_id: u64, op: &str, code: ChatCode) -> HandlerOutput {
+pub(super) fn refuse(req_id: u64, op: &str, code: ChatCode) -> HandlerOutput {
     let payload = serde_json::json!({ "error": code.text(), "code": code });
     vec![(Frame::res(req_id, op, payload), None)]
 }
 
-fn reply<T: serde::Serialize>(req_id: u64, op: &str, body: &T) -> Result<HandlerOutput> {
+pub(super) fn reply<T: serde::Serialize>(req_id: u64, op: &str, body: &T) -> Result<HandlerOutput> {
     Ok(vec![(Frame::res(req_id, op, serde_json::to_value(body)?), None)])
 }
 
@@ -76,7 +76,7 @@ pub(super) async fn admitted(chat: &Arc<Chat>, rows: &Workspaces, target: ChatTa
 }
 
 /// A payload that does not decode (an unknown post `kind` included) is `bad_request`.
-fn decode<T: for<'de> Deserialize<'de>>(payload: serde_json::Value) -> Result<T, ChatCode> {
+pub(super) fn decode<T: for<'de> Deserialize<'de>>(payload: serde_json::Value) -> Result<T, ChatCode> {
     serde_json::from_value(payload).map_err(|_| ChatCode::BadRequest)
 }
 

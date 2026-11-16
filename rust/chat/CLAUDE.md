@@ -245,8 +245,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    registers nothing; a hub with no `chat.toml` is off (`Refused(Missing)`) and writes nothing; a malformed one opens no
    secret file. Every open at the boot goes through the one `Reader` passed to `begin` (a reload's through
    `config::read_file`), and `Chat::load` is the only caller of `Config::load` and `Credentials::read`: the status, its
-   words, `resolve`, a stop and a wait read memory. **The reload (`Chat::reload`; built, test-only until the setup ops
-   call it).** One at a time: a reload takes the held setup lock (`Chat::setup` gives the guard, `Setup`), so a holder
+   words, `resolve`, a stop and a wait read memory. **The reload (`Chat::reload`; `chat.pair` calls it, guarantee 30).** One at a time: a reload takes the held setup lock (`Chat::setup` gives the guard, `Setup`), so a holder
    edits the files and reloads under one lock with nothing to deadlock on
    (`a_holder_of_the_setup_lock_edits_the_files_and_reloads`). It stops what runs as a retirement does (a start
    aborted, or the delivery ended and the service stopped), waits for the phase `Off` and for the old owner's end (the
@@ -586,7 +585,7 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    app than the bot token's is not detected (its socket would connect and carry no event). Neither has a caller yet.
 29. **The picker's three calls are bounded, whole, and send a join once.** `Api::channels` is `conversations.list` with
    `types=public_channel,private_channel`, `exclude_archived=true` and `limit=200`, following Slack's cursor inside the
-   one call: at most five pages (`MAX_LISTED`, 1,000 channels), each page one read under guarantees 13 to 15 (its own
+   one call: at most five pages (wire's `MAX_LISTED`, 1,000 channels, held equal to the page size times the pages by a const assertion), each page one read under guarantees 13 to 15 (its own
    deadline, the retry header, the body bound), a page of more than 200 entries or with no `channels` array `Malformed`,
    a cursor over `MAX_CURSOR` (1 KiB) `TooLarge`, the cursor just sent coming back `Repeated`; a failure on any page is
    the call's, so the list is whole or an error, and `more` is true when a cursor remained after the fifth page. An entry
@@ -606,6 +605,30 @@ bot identity, read-pacing instant, name cache and closed flag, a `Socket`'s one 
    a private channel only after the app is invited (a person's step); a workspace of over 1,000 channels lists the first
    1,000 Slack returns and says `more`; the join's success path needs the `channels:join` scope, seen only in a person's
    use of an app made from the setup manifest, so the tests script its answers.
+30. **A window's pairing is admitted, joined, edited, written and reloaded under one lock, and refused the window's way.**
+   The daemon's `chat.channels` and `chat.pair` (`rust/backend/src/chat/setup.rs`, each a job) take a window's connection
+   only (`bad_request` from any other, before the payload is read), so no row's agent changes the project's chat.
+   `chat.channels` needs a running service (`unavailable`) and answers `Api::channels` (guarantee 29) as the wire's list:
+   the id, the cleaned name, `private` and `member`, `more` as the call says; a failure is `code_of`'s code and the list
+   is never partial. `chat.pair {row, channel?}` runs in this order: the row is admitted as an action is, with no mapping
+   needed since it may map to nothing yet (`Chat::admit_row`: `unavailable`, `stale_row`, the inert anchor `unmapped`);
+   for a channel, `Api::channel` gives its facts (one read), a member passes, a private channel the app is not in is
+   `not_in_channel` unjoined, a public one is joined once (`Api::join`: a refusal, whose Slack code is logged, is
+   `not_in_channel`; no acknowledgement is settled by one more read of the channel and never by a second join); then
+   the setup lock is taken (`Chat::setup`), after the Slack calls, so a slow call holds no other window's setup, and
+   under it, on the blocking pool, the hub fact is asked again (`unavailable`, so a hub deposed since its boot writes
+   nothing in the minute before it steps down), `chat.toml` is read through `config::read_file` (the reload's own read,
+   not the boot's injected `Reader`, which stays the boot's alone: the text edited is the text the reload will load, a
+   hand edit made since the start included), and `config::pair` edits it with the clock's now as the floor of a new
+   mapping in a delivering file. `channel_taken` is the edit's refusal; `not_saved` is a text the load refuses (never
+   rewritten), a missing file, a missing config folder or a failed write, each logged with a code or an error kind and
+   no text; an edit that changes nothing writes nothing and does not reload; a changed file is written whole through
+   `config::write_config` and reloaded under the same guard, and the reply is the reload's, after its `SETUP_WAIT`
+   (a reload that ended in another state than running is still a saved pairing: the window resolves again). Limits: the
+   row's folder is the one the admission read, so a row removed while the pairing waits for the lock still gets its
+   folder's mapping (a mapping needs no row); a join is a Slack side effect that stays when a later step refuses; the
+   reload costs every watching window a resync (guarantee 21). Tests, in `rust/backend/src/server/chat_setup_tests.rs`:
+   see the table. `chat.connect` is not here.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -614,13 +637,13 @@ never holds another form.
 `normalize.rs`: `normalize`, `Context`, `Normalized`, `Unrepresentable`, `ts_key`; it re-exports wire's record bounds (`MAX_RECORD_BYTES`, `MAX_TEXT`, `MAX_FILES`, `MAX_ID`, `MAX_NAME`, `MAX_FILENAME`, `MAX_MIME`) and the id grammar `is_id` (as `valid_id`), which wire owns. `http.rs`: `Http`,
 `Request`, `Response`, `Secret`, `HttpError`, `is_slack_host` and the bound constants (`MAX_OPERATIONS`, `MAX_BODY`,
 `MAX_SCAN_BODY`, `MAX_REDIRECTS`). `api.rs`: `Api`, `HistoryQuery`, `ScanQuery`, `Bounds`, `Upper`, `Continuation`,
-`Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Channel`, `ChannelList`, `JoinOutcome`, `MAX_LISTED`, `Identity`, `identify`, `Identified`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
+`Page`, `ScanPage`, `MAX_SCAN`, `PostKind`, `PostOutcome`, `Channel`, `ChannelList`, `JoinOutcome`, `Identity`, `identify`, `Identified`, `ApiError` and the deadline constants and `MAX_NAMES`, `ASSUMED_RETRY`; `MAX_PAGE`, `MAX_CURSOR`, `MAX_LISTED` and `MAX_RETRY` (wire's `MAX_RETRY_SECS`) are wire's, re-exported. `socket.rs`: `Socket`,
 `Gap`, `GapCause`, `Taken`, `Status`, `SocketError`, `check_app_token` and the bound constants (`MAX_PENDING`, `MAX_PENDING_BYTES`, `MAX_MESSAGE`);
 `http.rs` also holds `Http::websocket`, the one way to a websocket, and `Http::check_websocket`, its destination check alone. `service.rs`: `Service`, `Status`, `ServiceError`. `watch.rs`: `Watches`, `State`, `Loaded`, `Wake`, `WatchError` and the bound constants (`MAX_CHANNELS`, which wire's `MAX_WATCHED` repeats and `chat_and_wire_agree_on_the_numbers_they_share` holds equal, `MAX_KEPT`, `MAX_OVERLAY`). `mail.rs`: `SENDER`, `MAX_MAIL`, `Filed`, `is_mail`, `body`, `filed_of`. `state.rs`: `State`, `StateError`, `MAX_FILED`, `encode`, `decode`, `path`, `write`. `traverse.rs`: `Order`, `Passed`, `Outcome`, `pass`, `MARGIN`, `MAX_PASS_READS`, `MAX_PASS_MAIL`. `delivery.rs`: `Delivery`, `Action`, `Filing`, `Verdict`, `Timing`, `FILE_GAP`, `MAX_QUEUED`. `config.rs`: `Config`, `Credentials`, `Resolution`, `ConfigError`, `resolve`, the writes (`fresh`, `secrets`, `pair`, `PairError`, `Write`, `Writers`, `write_config`, `write_secrets`), `read_file`, `MAX_FILE`, `config_dir`, and the crate-private `is_slack_id`, the one grammar of a Slack id. `fake_slack/` (under `cfg(test)` or `test-support`): the scripted fake Slack,
 its websocket peer (`ws.rs`) and a channel that answers history as measured (`history.rs`, which states what it infers).
 
 ## Calls in
-`sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, escape_text, post_text_fits, MAX_*}` (and `text_segments`, `TextSegment`; `page_reply::unsafe_char`), `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_RETRY_SECS}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
+`sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, escape_text, post_text_fits, MAX_*}` (and `text_segments`, `TextSegment`; `page_reply::unsafe_char`), `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_LISTED, MAX_RETRY_SECS}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
 webpki-roots and tokio-tungstenite inside `http.rs` (`socket.rs` uses the library's `Message` and `Error` types; `api.rs` uses
 `reqwest::Url` to build query strings). Dev only: `sot_platform::test_isolated` (`sot-platform` with `test-support`).
 
@@ -698,6 +721,7 @@ Paths are under `rust/chat/src/`.
 | 27 | one queue, filed once, paced, after the start's read; passes owed, the backoff, the commit | `delivery_tests.rs`: `a_post_seen_live_and_by_a_pass_is_filed_once` (taken twice, in flight, out of `ts` order, the same `ts` in two channels, a live event then the pass's result and the reverse, each with a refusal that must not be retried), `live_mail_is_filed_once_and_a_refusal_owes_a_pass`, `an_omitted_live_record_owes_a_pass_and_is_not_filed`, `filings_are_at_least_file_gap_apart_from_a_return`, `nothing_is_filed_or_passed_before_the_starts_read_is_in`, `the_queue_and_a_channels_filed_set_are_bounded_and_a_dropped_post_owes_a_pass`, `a_post_at_or_below_the_boundary_is_never_queued_and_owes_nothing`, `a_returns_report_is_true_once_when_it_takes_the_set_past_its_bound`, `a_pass_is_owed_after_every_newer_gap_a_held_or_dropped_filing_and_by_the_sweep` (the sweep with nothing filed, one pass for one gap, `read_pace`, `Order.seen`), `the_commit_moves_the_boundary_to_h_or_to_the_last_filing_before_the_first_that_was_not` (the four cases, the `Truncated` limit and its owed pass), `a_commit_never_reaches_a_post_still_pending`, `a_commit_that_leaves_a_candidate_unfiled_backs_off`, `pass_candidates_never_take_the_queue_past_its_bound`, `a_live_filing_says_it_is_live`, `a_full_filed_set_is_drained_by_its_owed_pass`, `a_channels_failing_passes_never_starve_another` (a channel skipped or failing every time, another passed once), `a_gap_during_a_pass_owes_another`, `the_sweep_runs_from_the_last_completed_pass`, `a_pass_owed_by_a_refusal_is_not_owed_again_once_it_has_completed`, `backoff_doubles_to_its_cap_and_a_complete_pass_resets_it` (also a rate limit and a skipped pass) |
 | 28 | the setup's checks | `api_tests.rs`: `identify_answers_the_tokens_workspace_and_no_error_carries_a_token` (another workspace answered, `bot_id` dropped when invalid, one bearer request with no workspace sent, each `Malformed` case, Slack's code, an echoed token, 500, a 429 that refuses no later call, a dropped connection; no error shows the token or a URL); `socket_tests.rs`: `an_app_token_check_opens_no_socket_and_refuses_a_foreign_url` (one POST under the app token per check, a Slack URL accepted, a foreign or `ws` URL `destination`, a URL over 2 KiB, no URL and HTML `malformed`, `ok: false` and 401 `rejected`; no upgrade asked and no socket ever open; no error shows the token, the ticket or a host) |
 | 29 | the picker's calls | `api_tests.rs`: `the_channel_list_follows_the_cursor_to_its_bound_and_fails_whole` (the request's parameters and cursor, skipped entries, the five-page cap and `more`, a repeated or oversized cursor, a failure or a rate limit on a later page, a page of the wrong shape), `a_channels_facts_come_from_one_read_and_the_naming_rule_reads_them` (the facts, the defaults for what Slack leaves out, a refused id unsent, and `author_name` and `channel_names` agreeing with them), `a_join_is_sent_once_and_already_in_channel_is_joined` (each refusal, each unconfirmed answer, none resent, a bad id and a closed client unsent) |
+| 30 | the window's pairing | `server/chat_setup_tests.rs`: `a_window_pairs_a_row_with_a_public_channel_the_app_joins_and_watches_it_at_once`, `a_private_channel_the_app_is_not_in_is_refused_unjoined`, `a_join_without_the_scope_is_not_in_channel` (a refused join and an unacknowledged one, each sent once), `unpairing_removes_the_mapping_and_the_channel_and_the_row_reads_unmapped`, `a_channel_of_another_existing_folder_is_taken_and_one_of_a_missing_folder_is_taken_over`, `a_pair_that_changes_nothing_writes_and_reloads_nothing` (a hand comment survives), `a_delivering_files_new_mapping_floors_at_the_clock`, `a_hand_edited_file_the_load_refuses_is_never_rewritten`, `a_hub_deposed_since_its_boot_writes_nothing`, `the_channel_list_needs_a_running_service_and_a_window`, `from_the_connects_files_a_window_pairs_and_reads_its_channel` (the files a connect leaves, written through the config's writers, a reload, then list, pair, watch and a socket post as `chat.changed`, the secrets owner-only, no token in a reply or an event); `dispatch_place_tests.rs`: the two ops are jobs |
 
 ## Files
 - `Cargo.toml`: the manifest; the dependencies are listed at the head of this page.

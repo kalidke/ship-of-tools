@@ -156,7 +156,6 @@ impl Hub {
 
     /// Until no owner runs: a reload starts its service only after the last one's owner ended, or the new service's
     /// `ensure_owner` would find the old owner running and start none.
-    #[cfg(test)]
     pub(super) async fn owner_ended(&self) {
         loop {
             let ended = self.idle.notified();

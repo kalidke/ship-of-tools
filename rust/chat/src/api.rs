@@ -28,7 +28,7 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 pub const POST_DEADLINE: Duration = Duration::from_secs(30);
 /// All the name lookups for one page together: names are decoration, so the page is shown with ids after this.
 pub const NAMES_DEADLINE: Duration = Duration::from_secs(10);
-pub use sot_protocol::ops::{MAX_CURSOR, MAX_PAGE};
+pub use sot_protocol::ops::{MAX_CURSOR, MAX_LISTED, MAX_PAGE};
 /// The most messages one scan asks for: Slack's documented maximum for a history read.
 pub const MAX_SCAN: u16 = 999;
 /// Author names kept; the oldest entry leaves first.
@@ -38,11 +38,10 @@ pub const ASSUMED_RETRY: Duration = Duration::from_secs(30);
 /// A hostile or mistaken retry header cannot silence reads longer than this.
 pub const MAX_RETRY: Duration = Duration::from_secs(sot_protocol::ops::MAX_RETRY_SECS);
 
-/// The channel list's page size, and the pages one list follows: at most `MAX_LISTED` channels, the rest unlisted.
+/// The channel list's page size, and the pages one list follows: at most wire's `MAX_LISTED` channels, the rest unlisted.
 const LIST_PAGE: usize = 200;
 const MAX_LIST_PAGES: usize = 5;
-/// The most channels one list returns.
-pub const MAX_LISTED: usize = LIST_PAGE * MAX_LIST_PAGES;
+const _: () = assert!(LIST_PAGE * MAX_LIST_PAGES == MAX_LISTED);
 
 const BASE: &str = "https://slack.com/api/";
 const JSON: &str = "application/json; charset=utf-8";

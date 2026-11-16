@@ -285,7 +285,7 @@ The project chat's configuration, two TOML files in the config folder (`~/.confi
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
-computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read once, when the daemon starts. After editing either file, restart the daemon (on
+computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a pairing a window asks for (below). After editing either file by hand, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
 by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused
@@ -296,6 +296,14 @@ daemon's log, on the "project chat" line, as a fixed explanation that starts wit
 file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that
 Slack refuses or cannot reach (a rejected token, no network)
 is logged as "project chat did not start" and stays failed until the daemon restarts.
+
+A window can pair a project's folder with a channel, or unpair it, and the daemon then rewrites `chat.toml` whole and
+starts the chat again from the two files, with no restart; no window sends this request yet. The daemon keeps every key
+the file takes and every mapping it ignores, and drops comments and the order of keys. A new mapping in a delivering file
+gets a `mail_after` of the daemon's clock at that moment, so a channel's backlog is never turned into mail. A channel
+already mapped to another folder that exists is refused, one mapped to a folder that no longer exists is taken over, and
+a `chat.toml` the daemon refuses is never rewritten. A pairing that changes nothing writes nothing. Restarting the chat
+costs every open Chat drawer one resync.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
 

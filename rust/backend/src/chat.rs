@@ -22,6 +22,7 @@ use tokio::task::AbortHandle;
 
 pub(crate) mod mail;
 pub(crate) mod ops;
+pub(crate) mod setup;
 pub(crate) mod watch;
 
 use crate::lifecycle::retire::{Participant, Registry, RETIRE_WAIT};
@@ -125,13 +126,11 @@ impl<L> Shared<L> {
     }
 
     /// Read under the phase lock.
-    #[cfg(test)]
     fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 
     /// [`Shared::closed`], taking the phase lock to read it.
-    #[cfg(test)]
     fn closed_now(&self) -> bool {
         let _phase = self.lock();
         self.closed()
@@ -253,7 +252,6 @@ pub(crate) struct Chat<L: Listener = Service> {
     /// `begin`'s pace of the retry of a held start and of the hub fact's asks.
     check: Duration,
     /// One reload at a time.
-    #[cfg(test)]
     setup: tokio::sync::Mutex<()>,
 }
 
@@ -301,7 +299,7 @@ impl<L: Listener> Chat<L> {
         let hub = load.config.is_some();
         let shared = Shared::new(load.off, !hub);
         let (config, handle, start) = (Mutex::new(Arc::new(load.config)), Some(Handle::current()), Arc::new(start));
-        let this = Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: env.clone(), start, check, #[cfg(test)] setup: Default::default() });
+        let this = Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: env.clone(), start, check, setup: Default::default() });
         if !hub {
             return this;
         }
@@ -480,11 +478,7 @@ impl<L: Listener> Chat<L> {
     /// rows lock is held across a Slack call, and a call already made is not recalled when its row is removed
     /// afterwards; a later action, a watch's next snapshot included, is admitted again.
     pub(crate) fn admit(&self, rows: &Workspaces, target: &ChatTarget) -> Result<Arc<L>, ChatCode> {
-        let service = self.service().ok_or(ChatCode::Unavailable)?;
-        let fact = current_row(rows, &target.row).ok_or(ChatCode::StaleRow)?;
-        if fact.inert {
-            return Err(ChatCode::Unmapped);
-        }
+        let (service, fact) = self.admit_row(rows, &target.row)?;
         match self.mapping(&fact.canonical.to_string_lossy()) {
             Resolution::Mapped { workspace, channel, .. } => {
                 if workspace != target.workspace || channel != target.channel.as_str() {
@@ -494,6 +488,17 @@ impl<L: Listener> Chat<L> {
             _ => return Err(ChatCode::Unmapped),
         }
         Ok(service)
+    }
+
+    /// [`Chat::admit`] without the mapping check, for a pairing: the row may map to nothing yet. The service is running
+    /// and the row is the registry's current entry and not the inert anchor; answers the service and the row's folder.
+    pub(crate) fn admit_row(&self, rows: &Workspaces, row: &str) -> Result<(Arc<L>, RowFact), ChatCode> {
+        let service = self.service().ok_or(ChatCode::Unavailable)?;
+        let fact = current_row(rows, row).ok_or(ChatCode::StaleRow)?;
+        if fact.inert {
+            return Err(ChatCode::Unmapped);
+        }
+        Ok((service, fact))
     }
 
     /// The door for an unwatch, which hands out no service: it ends access and calls nothing, so it needs no current
@@ -531,15 +536,12 @@ impl<L: Listener> Chat<L> {
 }
 
 /// How long a reload waits for what runs to stop, and then for its start to end.
-#[cfg(test)]
 pub(crate) const SETUP_WAIT: Duration = Duration::from_secs(30);
 
 /// The setup lock, held: one reload, or one edit of the files and the reload after it, at a time. Made only by
 /// [`Chat::setup`], and a reload takes it, so a holder edits the files and reloads with no second lock to deadlock on.
-#[cfg(test)]
 pub(crate) struct Setup<'a>(tokio::sync::MutexGuard<'a, ()>);
 
-#[cfg(test)]
 impl<L: Listener> Chat<L> {
     /// Take the setup lock, waiting for a reload or an edit that holds it.
     pub(crate) async fn setup(&self) -> Setup<'_> {
@@ -639,7 +641,6 @@ impl Chat<Service> {
     }
 
     /// Load both files again and start from them, with no daemon restart: [`Chat::reload_then`] with the owner's start.
-    #[cfg(test)]
     pub(crate) async fn reload(self: &Arc<Self>, held: &Setup<'_>, rows: &Workspaces) -> Status {
         self.reload_then(held, |chat| drop(chat.start_owner(rows.clone()))).await
     }
