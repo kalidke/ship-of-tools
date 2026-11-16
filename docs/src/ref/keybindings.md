@@ -190,7 +190,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `chat.thread_close` | `ArrowLeft` | Close the open thread in the Chat drawer, as Escape does; only while the draft is empty. |
 | `chat.copy_selection` | `Primary+c` / `Primary+Shift+c` | Copy the text selected in a Chat message, or the marked message's text when none is selected. |
 | `chat.send` | `Enter` | Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made. |
-| `chat.setup` | `Primary+Shift+k` | Choose this project's Slack channel from a list, or set it to none or connect Slack again; Enter picks, Escape closes. |
+| `chat.setup` | `Primary+Shift+k` | Choose this project's Slack channel from a list, or set it to none; Enter picks, Escape closes. |
 | `chat.newline` | `Shift+Enter` | Continue the chat draft on another line. |
 | `preview.end` | `End` | Scroll to the end of the displayed text. |
 | `preview.half_up` | `Ctrl+u` | Scroll up half a pane. |

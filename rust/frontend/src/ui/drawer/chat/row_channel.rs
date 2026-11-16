@@ -64,6 +64,11 @@ impl Stand {
     }
 }
 
+/// The row is resolved again on the next frame: its answer, the names asked for and the retries are forgotten.
+fn ask_again(w: &mut Wanted) {
+    (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None);
+}
+
 /// What a frame's wanted row came to.
 #[derive(Default)]
 pub(super) struct Tick {
@@ -110,12 +115,12 @@ impl RowChannel {
     /// owner takes the same target twice as nothing).
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool) {
         if up { self.connected.insert(host.clone()); } else { self.connected.remove(host); }
-        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None));
+        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(ask_again);
     }
 
     /// A pairing was answered, whatever it said (the hub may have saved it): the row is resolved again on the next frame.
     pub(super) fn resolve_again(&mut self, host: &HostKey, row: &str) {
-        self.wanted.iter_mut().filter(|w| &w.id.host == host && w.id.workspace_id == row).for_each(|w| (w.asked, w.answer, w.nameless, w.retry_at) = (false, None, 0, None));
+        self.wanted.iter_mut().filter(|w| &w.id.host == host && w.id.workspace_id == row).for_each(ask_again);
     }
 
     /// When the wanted row is next resolved for its name, so the window can draw a frame at that moment.

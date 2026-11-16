@@ -51,6 +51,8 @@ pub struct Context {
     pub restore: bool,
     pub session: bool,
     pub alternate_screen: bool,
+    /// The Chat drawer's channel picker is open.
+    pub chat_picking: bool,
 }
 /// Who the drawer's keys, paste, wheel and line scroll reach: the one decision every handler matches, with no
 /// wildcard. Only `Repl` reaches the REPL's draft and scrollback; `Chat` reaches the chat's reading keys and its draft;
@@ -225,7 +227,9 @@ pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String
             Pane::Nav => &[Action::NavExpand, Action::NavOpen],
             Pane::Repl => &[Action::ReplSubmit, Action::ReplClear],
             Pane::Agent => &[Action::Paste, Action::CopySelection, Action::CopyOneLine],
-            Pane::Chat => &[Action::ChatSend, Action::ChatNewline, Action::ChatCopySelection],
+            // While the channel picker is open, Enter picks and the draft's hints would mislead: only Help is named.
+            Pane::Chat if context.chat_picking => &[],
+            Pane::Chat => &[Action::ChatSend, Action::ChatNewline, Action::ChatSetup, Action::ChatCopySelection],
             _ => &[],
         }
     };

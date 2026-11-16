@@ -96,6 +96,16 @@ pub(in crate::ui) enum ComposeText {
     Draft { lines: Vec<String>, to: Option<String> },
     /// The foot asks for the posting name: the name typed, with the cursor block while focused.
     Name(String),
+    /// Nothing typed and nothing to say of the destination: what to do, and the chord that changes the project's channel.
+    Hint { focused: bool },
+}
+
+/// What an empty draft shows after `> `, and under it, how the post appears and how the channel is changed (the chord is the
+/// default's, `Cmd` on macOS).
+const PLACEHOLDER: &str = "type a message and press Enter to post it";
+fn hint() -> String {
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+    format!("What you post appears in the channel with your name, marked as sent through your app. {chord} changes this project's channel.")
 }
 
 /// The one row the foot shows while it asks for the name.
@@ -104,6 +114,9 @@ const ASK: &str = "Name for your chat posts: ";
 impl ComposeText {
     pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool) -> Self {
         let text = draft.unwrap_or("");
+        if text.is_empty() && to.is_none() {
+            return ComposeText::Hint { focused };
+        }
         let mut lines = cell_lines(text);
         if lines.is_empty() || text.ends_with('\n') {
             lines.push(String::new());
@@ -127,6 +140,12 @@ impl ComposeText {
 pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
     let (lines, to) = match text {
         ComposeText::Draft { lines, to } => (lines, to),
+        ComposeText::Hint { focused } => {
+            let inner = width.saturating_sub(2).max(1);
+            let first = format!("{}{PLACEHOLDER}", if *focused { "█" } else { "" });
+            let rows = wrap_status(&first, inner, inner).into_iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " }));
+            return rows.chain(wrap_status(&hint(), width, width)).take(height).collect();
+        }
         ComposeText::Name(name) => {
             // The prompt and the end of the name, so the cursor stays in view.
             let name: Vec<char> = name.chars().collect();

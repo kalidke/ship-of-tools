@@ -65,7 +65,6 @@ pub(super) struct ChromeView<'a> {
     pub(super) preview_name: &'a Option<String>,
     pub(super) pinned_preview_node_id: &'a Option<String>,
     pub(super) drawer: DrawerContent,
-    pub(super) chat_empty: bool,
     pub(super) chat_body: Option<&'a crate::ui::drawer::chat::Body>,
     pub(super) chat_title: &'a str,
     /// What the Chat drawer's compose rows are made of, while it is shown with a channel to write to.
@@ -443,17 +442,9 @@ impl ChromeView<'_> {
         input_para: Paragraph<'static>,
         repl_split: ReplDrawerLayout,
     ) {
-        let ChromeView { drawer, chat_empty, chat_body, chat_compose, help_state, help_bindings, .. } = *self;
-        if drawer == DrawerContent::Chat && chat_empty {
-            frame.render_widget(Paragraph::new("no messages").style(Style::default().fg(Color::DarkGray)), repl_rect);
-        }
+        let ChromeView { drawer, chat_body, chat_compose, help_state, help_bindings, .. } = *self;
         if let Some(body) = chat_body.filter(|_| drawer == DrawerContent::Chat) {
-            let tone = |t| match t {
-                crate::ui::drawer::chat::Tone::Plain => Style::default(),
-                crate::ui::drawer::chat::Tone::Chosen => Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
-                crate::ui::drawer::chat::Tone::Muted => Style::default().fg(Color::DarkGray),
-            };
-            let lines: Vec<RtLine> = body.lines(repl_rect.width as usize, repl_rect.height as usize).into_iter().map(|(text, t)| RtLine::styled(text, tone(t))).collect();
+            let lines: Vec<RtLine> = body.lines(repl_rect.width as usize, repl_rect.height as usize).into_iter().map(RtLine::from).collect();
             frame.render_widget(Paragraph::new(lines), repl_rect);
         }
         if let Some(text) = chat_compose.filter(|_| drawer == DrawerContent::Chat) {

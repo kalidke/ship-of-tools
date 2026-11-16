@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::transport::{IncomingEvt, ResolvedDial};
+use crate::net::transport::{ChatReply, IncomingEvt, ResolvedDial};
 use crate::ui::drawer::repl::DraftEdit;
 use crate::ui::input::global_keys::{line_scroll_target, LineScroll};
 use crate::ui::input::keybindings::Modifiers;

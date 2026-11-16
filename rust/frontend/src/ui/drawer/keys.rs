@@ -16,11 +16,6 @@ pub(in crate::ui) fn drawer_pane_key(state: &mut State, key: KeyPress<'_>, label
             if drawer::chat::picker_key(state, &key, &label) || drawer::chat::name_key(state, &key, &label) {
                 return Break(());
             }
-            if action == Some(Action::ChatSetup) && !event.repeat {
-                state.open_chat_picker();
-                state.last_key = Some(label);
-                return Break(());
-            }
             if drawer::chat::chat_apply(state, drawer::chat::chat_move(action)) {
                 return Break(());
             }

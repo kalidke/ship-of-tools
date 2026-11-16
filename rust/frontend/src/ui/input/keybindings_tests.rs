@@ -727,3 +727,16 @@ fn the_quit_hint_names_the_bound_chord() {
     assert!(quit_hint(&rebound).starts_with(&rebound) && !quit_hint(&rebound).contains(&default));
     assert!(!quit_hint(&rebound).contains("program"), "no claim about what a program received");
 }
+
+/// The Chat border names the chord that changes the channel after the draft's keys, and, while the channel picker is open (where
+/// Enter picks, not posts), names none of the draft's.
+#[test]
+fn the_chat_border_names_the_chord_and_goes_quiet_while_the_picker_is_open() {
+    use crate::ui::input::help::{border, Context, Pane};
+    let b = KeyBindings::defaults();
+    let chat = Context { pane: Pane::Chat, ..Context::default() };
+    let shown = border(&chat, &b, 200);
+    assert!(shown.contains(&format!("{} {}", b.first_label(Action::ChatSetup), Action::ChatSetup.spec().label)), "{shown}");
+    let picking = border(&Context { chat_picking: true, ..chat }, &b, 200);
+    assert!(!picking.contains("Post") && !picking.contains(&Action::ChatSetup.spec().label.to_string()), "{picking}");
+}

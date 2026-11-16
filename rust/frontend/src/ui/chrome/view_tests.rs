@@ -84,7 +84,7 @@ fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
 /// preview's file name holds sixty more breaks, so its title is cut to fit.
 fn paint_chrome(size: (u16, u16), status: &str, tree: Vec<NavRow>) -> Vec<String> {
     paint_chrome_repl(size, status, tree,
-        ("x = AA08\tBB08\ny".into(), untrusted_repl_lines(), 0, DrawerContent::Repl), false).0
+        ("x = AA08\tBB08\ny".into(), untrusted_repl_lines(), 0, DrawerContent::Repl)).0
 }
 
 fn paint_chrome_repl(
@@ -92,9 +92,8 @@ fn paint_chrome_repl(
     status: &str,
     tree: Vec<NavRow>,
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
-    chat_empty: bool,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize)) {
-    let (rows, scroll, area, window, ..) = paint_chrome_chat(size, status, tree, repl, chat_empty, None);
+    let (rows, scroll, area, window, ..) = paint_chrome_chat(size, status, tree, repl, None);
     (rows, scroll, area, window)
 }
 
@@ -104,11 +103,10 @@ fn paint_chrome_chat(
     status: &str,
     tree: Vec<NavRow>,
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
-    chat_empty: bool,
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16) {
     let (rows, scroll, area, window, cells, foot, ..) =
-        paint_chrome_nav(size, status, tree, repl, chat_empty, chat_compose, NavFrame::default());
+        paint_chrome_nav(size, status, tree, repl, chat_compose, NavFrame::default());
     (rows, scroll, area, window, cells, foot)
 }
 
@@ -130,7 +128,6 @@ fn paint_chrome_nav(
     status: &str,
     tree: Vec<NavRow>,
     repl: (String, Vec<RtLine<'static>>, u16, DrawerContent),
-    chat_empty: bool,
     chat_compose: Option<&crate::ui::drawer::chat::ComposeText>,
     nav: NavFrame<'_>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
@@ -171,7 +168,6 @@ fn paint_chrome_nav(
         preview_name: &preview_name,
         pinned_preview_node_id: &pinned,
         drawer,
-        chat_empty,
         chat_body: nav.body,
         chat_title: " chat · C1 reading… ",
         chat_compose,
@@ -231,7 +227,7 @@ fn repl_drawer_layout_uses_the_owner_window() {
         for proposed in [4, 999] {
             let lines = (0..100).map(|i| RtLine::from(format!("log{i:02}"))).collect();
             let (rows, scroll, area, window) = paint_chrome_repl((200, 60), "ready", Vec::new(),
-                ("aa\nbb\ncc".into(), lines, proposed, drawer), false);
+                ("aa\nbb\ncc".into(), lines, proposed, drawer));
             let height = area.height as usize;
             assert!(height > 0);
             let expected = proposed.min((100 - height) as u16);
@@ -338,23 +334,12 @@ fn a_long_status_keeps_what_failed_its_cause_and_its_hint_whole() {
 }
 
 #[test]
-fn the_chat_drawer_draws_no_messages_only_when_told_the_channel_is_empty() {
-    let drawn = |drawer, chat_empty| {
-        let (rows, ..) = paint_chrome_repl((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), chat_empty);
-        rows.iter().any(|r| r.contains("no messages"))
-    };
-    assert!(drawn(DrawerContent::Chat, true));
-    assert!(!drawn(DrawerContent::Chat, false));
-    assert!(!drawn(DrawerContent::Repl, true), "only the chat drawer says it");
-}
-
-#[test]
-fn the_chat_drawer_draws_its_body_words_and_no_other_drawer_does() {
+fn the_chat_drawer_draws_its_body_and_no_other_drawer_does() {
     use crate::ui::drawer::chat::Body;
     let body = Body::words("this project has no channel: press Enter to pick one");
     let drawn = |drawer| {
         let frame = NavFrame { body: Some(&body), ..NavFrame::default() };
-        let (rows, ..) = paint_chrome_nav((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false, None, frame);
+        let (rows, ..) = paint_chrome_nav((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), None, frame);
         rows.iter().any(|r| r.contains("this project has no channel: press Enter to pick one"))
     };
     assert!(drawn(DrawerContent::Chat));
@@ -369,7 +354,7 @@ fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does()
     let text = ComposeText::Draft { lines: vec!["hello".into(), "wo".into()], to: Some("to C1".into()) };
     let drawn = |drawer, short: u16| {
         let (rows, _, _, _, cells, foot) =
-            paint_chrome_chat((120, 40 - short), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false, Some(&text));
+            paint_chrome_chat((120, 40 - short), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), Some(&text));
         (rows, cells, foot)
     };
     let (rows, cells, foot) = drawn(DrawerContent::Chat, 0);
@@ -389,7 +374,7 @@ fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does()
 #[test]
 fn the_chat_drawer_title_is_the_one_it_is_given_and_no_other_drawer_shows_it() {
     let titled = |drawer| {
-        let (rows, ..) = paint_chrome_repl((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer), false);
+        let (rows, ..) = paint_chrome_repl((200, 60), "ready", Vec::new(), (String::new(), Vec::new(), 0, drawer));
         rows.iter().any(|r| r.contains("chat · C1 reading…"))
     };
     assert!(titled(DrawerContent::Chat));
@@ -421,7 +406,7 @@ fn file_rows(n: usize, cursor: usize, pad: usize) -> Vec<NavRow> {
 /// lever, off here), so the fixture paints in the default mode.
 fn paint_nav(size: (u16, u16), status: &str, tree: Vec<NavRow>, nav: NavFrame) -> (Vec<String>, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let repl = (String::new(), Vec::new(), 0, DrawerContent::Repl);
-    let (rows, .., rect, segs, scroll) = paint_chrome_nav(size, status, tree, repl, false, None, nav);
+    let (rows, .., rect, segs, scroll) = paint_chrome_nav(size, status, tree, repl, None, nav);
     (rows, rect, segs, scroll)
 }
 

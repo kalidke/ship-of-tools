@@ -99,20 +99,21 @@ you post, the window asks for the name to post under.
 
 With Slack connected (the files above), you pick each project's channel in the window, with no file to edit and no restart.
 Select the project's row on the computer the chat runs on and open the Chat drawer (`Ctrl+K`). A project with no channel yet
-shows the list at once; press Escape to close it, and Enter later to open it again.
+shows the list once the drawer has the keys; press Escape to close it, and Enter later to open it again.
 
-- Type to narrow the list (case does not matter), `Up` and `Down` to choose, `Enter` to pick, `Esc` to close.
+- Type to narrow the list (case does not matter, and a `#` is ignored), `Up` and `Down` to choose, `Enter` to pick, `Esc` to close.
 - A channel the app is not in is marked `your app joins it when you pick it`: picking a public channel makes the app join
   it, and Slack then shows that your app joined. This needs the `channels:join` permission, which the manifest above does
   not have; an app made from it cannot join, and picking such a channel says so: invite the app to the channel, as in step 3.
 - A private channel is in the list only once you have invited your app to it (step 3), and is marked `private, app invited`.
 - If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
-  (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID.
+  (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
+  `G` and is made of capital letters and digits.
 - After you pick, the drawer shows the channel at once. Another project's channel cannot be picked again: it says that
   another project already uses it.
 
 To change a project's channel, or to give it none, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac; `chat.setup`) in the Chat
-drawer: the list then begins with `No channel for this project` and ends with `Connect Slack again`. The window writes the
+drawer: the list then begins with `No channel for this project`. The window writes the
 choice into `chat.toml` for you, whole: comments and the order of its keys are not kept.
 
 ## Adding another project later

@@ -388,9 +388,9 @@ fn thread_view_compose_and_back_keep_target() {
     let (mut d, at) = channel(&held);
     open(&mut d, &mut fonts, &[true]);
     resnapshot(&mut d, &[], None, at);
-    assert!(!d.no_messages(), "the thread is shown");
+    assert!(d.body().is_none(), "the thread is shown");
     d.close_thread();
-    assert!(d.no_messages());
+    assert!(d.body().is_some_and(|b| b.lines(40, 5) == ["no messages"]));
 
     // The channel's older-pages words are not shown over a thread.
     let (mut d, at) = channel(&held);
@@ -604,16 +604,21 @@ fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
                 let other = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH2", "delivers": false });
                 d.on_evt(&host(), answer("ROW1", other), at + Duration::from_secs(1));
             }
-            let text = if matches!(draft, Draft::None) { "> " } else { "> hi" };
             let rows = foot(&d);
+            // Nothing typed and nothing to say of the destination: the foot says what to type and names the chord instead.
+            if matches!((draft, view), (Draft::None, View::Channel)) {
+                assert!(rows[0].starts_with("> ") && rows[0].contains("type a message") && rows.join(" ").contains("Shift+K changes this project's channel"), "{rows:?}");
+                continue;
+            }
+            let text = if matches!(draft, Draft::None) { "> " } else { "> hi" };
             let (head, tail) = rows.split_first().unwrap();
             assert_eq!(head, text, "{draft:?} in {view:?}");
             let said = tail.first().map(String::as_str);
             let case = format!("{draft:?} in {view:?}, remapped {remap}: {rows:?}");
             let thread_line = |s: &str| s.starts_with("reply in thread of") && s.ends_with(" in CH1") == remap;
             match (draft, view, remap) {
-                (Draft::None, View::Channel, true) => assert_eq!(said, None, "{case}: the title's own channel"),
-                (Draft::None | Draft::Channel, View::Channel, false) => assert_eq!(said, None, "{case}"),
+                (Draft::None, View::Channel, _) => unreachable!("{case}: said above"),
+                (Draft::Channel, View::Channel, false) => assert_eq!(said, None, "{case}"),
                 (Draft::Channel, _, _) => assert_eq!(said, Some("to CH1"), "{case}"),
                 (Draft::None | Draft::Thread, _, _) => assert!(said.is_some_and(thread_line), "{case}"),
             }
@@ -718,7 +723,7 @@ fn only_a_posted_reply_rereads_and_an_empty_draft_names_the_open_thread() {
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let parent = held[1].ts.clone();
     let (mut d, at) = channel(&held);
-    assert_eq!(foot(&d), ["> "], "an empty draft for the title's channel has the prompt row alone");
+    assert!(foot(&d)[0].starts_with("> type a message"), "an empty draft for the title's channel has the prompt and its hint");
     let outs = open(&mut d, &mut fonts, &[true, true]);
     assert!(to_line(&d).starts_with(PARENT_STAMP), "{}", to_line(&d));
     on(&mut d, &history(&outs), page(&[reply_to(&parent, 1)], None), at);

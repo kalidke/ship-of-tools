@@ -4,8 +4,7 @@
 use std::time::Instant;
 
 use crate::net::dial::HostKey;
-use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
-use sot_protocol::ops::{ChatCode, ChatPairRes, ChatPostRes};
+use crate::net::transport::ChatEvt;
 use super::super::*;
 use crate::ui::input::keypress::KeyPress;
 use crate::ui::persist::chat_name::save_chat_name;
@@ -23,7 +22,7 @@ mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use drawer::ChatDrawer;
-pub(in crate::ui) use picker::{Body, Tone};
+pub(in crate::ui) use picker::Body;
 pub(in crate::ui) use view::{ChatHit, Step};
 #[cfg(test)]
 pub(in crate::ui) use view::ChatView;
@@ -53,25 +52,12 @@ impl State {
     /// the next connection, ask again).
     fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
         for (host, req) in f(&mut self.chat, Instant::now()) {
-            let post = if let OutgoingReq::ChatPost { req } = &req { Some(req.clone()) } else { None };
-            let unsent = match &req {
-                OutgoingReq::ChatPair { row, channel } => Some(OutgoingReq::ChatPair { row: row.clone(), channel: channel.clone() }),
-                OutgoingReq::ChatChannels => Some(OutgoingReq::ChatChannels),
-                _ => None,
-            };
+            let unsent = drawer::never_written(&req);
             if let Err(e) = self.send_to(&host, req) {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
-                // A post the channel refused was never written: the owner reads it as refused, not as waiting for a reply.
-                if let Some(req) = post {
-                    let reply = ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Unavailable });
-                    self.chat.on_evt(&host, ChatEvt::Posted { req, reply }, Instant::now());
-                }
-                // The same for a pair or a channel list that was never written: the picker is not left waiting.
-                let refused = ChatCode::Unavailable;
-                match unsent {
-                    Some(OutgoingReq::ChatPair { row, channel }) => drop(self.chat.on_evt(&host, ChatEvt::Paired { row, channel, reply: ChatReply::<ChatPairRes>::Refused(refused) }, Instant::now())),
-                    Some(OutgoingReq::ChatChannels) => drop(self.chat.on_evt(&host, ChatEvt::Channels { reply: ChatReply::Refused(refused) }, Instant::now())),
-                    _ => {}
+                // A request the channel refused was never written: its owner reads it as refused, not as waiting for a reply.
+                if let Some(evt) = unsent {
+                    self.chat.on_evt(&host, evt, Instant::now());
                 }
             }
         }
@@ -115,7 +101,7 @@ impl State {
     pub(in crate::ui) fn open_chat_picker(&mut self) {
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
         let mut refused = None;
-        self.with_chat(|c, _| c.open_picker(row.as_ref(), true).unwrap_or_else(|words| {
+        self.with_chat(|c, _| c.open_picker(row.as_ref()).unwrap_or_else(|words| {
             refused = Some(words);
             Vec::new()
         }));
@@ -145,6 +131,7 @@ impl State {
 
     pub(in crate::ui) fn tick_chat(&mut self) {
         let wanted = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
+        self.chat.set_focused(self.focus_prompts.focus() == PaneFocus::Repl);
         let mut settling = false;
         self.with_chat(|c, now| {
             let (outs, wait) = c.tick(wanted, now);
@@ -197,27 +184,49 @@ pub(in crate::ui) fn draft_edit(action: Option<Action>, key: &Key, (ctrl, alt, s
     }
 }
 
-/// What a key does to the name prompt.
+/// What a key does at a text prompt of the drawer (the posting name, the channel picker's filter; a token step is a third).
 #[derive(Debug, PartialEq)]
-pub(in crate::ui) enum NameStep<'a> {
-    Save,
-    Cancel,
+pub(in crate::ui) enum PromptStep<'a> {
+    Enter,
+    Escape,
     Paste,
     Edit(Edit<'a>),
     /// A held Enter, Escape or paste: taken, and nothing done.
     Held,
 }
 
-/// What a key is while the foot asks for the name, when it is the prompt's: Enter saves, Escape cancels, paste and the
-/// draft's edits edit the name; a reading key (scroll, mark, thread) is not (`None`), so it still acts.
-pub(in crate::ui) fn name_step<'a>(action: Option<Action>, key: &'a Key, repeat: bool, mods: (bool, bool, bool)) -> Option<NameStep<'a>> {
+/// What a key is while a prompt has the keys, when it is the prompt's: Enter, Escape, paste and the draft's edits; a reading
+/// key (scroll, mark, thread) is not (`None`), so it still acts.
+pub(in crate::ui) fn prompt_step<'a>(action: Option<Action>, key: &'a Key, repeat: bool, mods: (bool, bool, bool)) -> Option<PromptStep<'a>> {
     match action {
-        Some(Action::ChatSend | Action::ReturnNav | Action::Paste) if repeat => Some(NameStep::Held),
-        Some(Action::ChatSend) => Some(NameStep::Save),
-        Some(Action::ReturnNav) => Some(NameStep::Cancel),
-        Some(Action::Paste) => Some(NameStep::Paste),
-        _ => draft_edit(action, key, mods).map(NameStep::Edit),
+        Some(Action::ChatSend | Action::ReturnNav | Action::Paste) if repeat => Some(PromptStep::Held),
+        Some(Action::ChatSend) => Some(PromptStep::Enter),
+        Some(Action::ReturnNav) => Some(PromptStep::Escape),
+        Some(Action::Paste) => Some(PromptStep::Paste),
+        _ => draft_edit(action, key, mods).map(PromptStep::Edit),
     }
+}
+
+/// The one key handler of the drawer's prompts: `act` applies the step and answers the words for the status line, if any.
+/// Whether the key was taken.
+pub(in crate::ui) fn prompt_key(
+    state: &mut State,
+    key: &KeyPress<'_>,
+    label: &str,
+    act: impl FnOnce(&mut State, PromptStep<'_>) -> Option<&'static str>,
+) -> bool {
+    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
+    let Some(step) = prompt_step(action, &event.logical_key, event.repeat, (ctrl, alt, super_)) else { return false };
+    if let Some(words) = act(state, step) {
+        state.status.set(words);
+    }
+    prompt_done(state, label);
+    true
+}
+
+fn prompt_done(state: &mut State, label: &str) {
+    state.last_key = Some(label.to_string());
+    state.window.request_redraw();
 }
 
 /// Saves the typed name through `save_chat_name`; the words of the outcome. On success the prompt closes and the setting
@@ -232,90 +241,66 @@ pub(in crate::ui) fn apply_name(chat: &mut ChatDrawer, settings: &mut Settings, 
     }
 }
 
-/// A key while the foot asks for the posting name (`name_step`); whether it was taken.
+/// A key while the foot asks for the posting name (`prompt_step`): Enter saves it, Escape cancels, paste and typing edit it.
 pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
     if state.chat.asking().is_none() {
         return false;
     }
-    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
-    let Some(step) = name_step(action, &event.logical_key, event.repeat, (ctrl, alt, super_)) else { return false };
-    let refused = match step {
-        NameStep::Save => {
+    prompt_key(state, key, label, |state, step| match step {
+        PromptStep::Enter => {
             state.save_chat_name();
             None
         }
-        NameStep::Cancel => {
+        PromptStep::Escape => {
             state.chat.cancel_name();
             None
         }
-        NameStep::Paste => read_clipboard_text().and_then(|text| state.chat.edit_name(Edit::Text(&text)).err()),
-        NameStep::Edit(edit) => state.chat.edit_name(edit).err(),
-        NameStep::Held => None,
-    };
-    if let Some(words) = refused {
-        state.status.set(words);
-    }
-    state.last_key = Some(label.to_string());
-    state.window.request_redraw();
-    true
+        PromptStep::Paste => read_clipboard_text().and_then(|text| state.chat.edit_name(Edit::Text(&text)).err()),
+        PromptStep::Edit(edit) => state.chat.edit_name(edit).err(),
+        PromptStep::Held => None,
+    })
 }
 
-/// What a key does to the channel picker.
-#[derive(Debug, PartialEq)]
-pub(in crate::ui) enum PickStep<'a> {
-    Pick,
-    Close,
-    Choose(bool),
-    Paste,
-    Edit(Edit<'a>),
-    /// A held Enter, Escape or paste, or the chord that opened the picker: taken, and nothing done.
-    Held,
-}
-
-/// What a key is while the picker is open: Enter picks, Escape closes, Up and Down choose, paste is a channel link, and the
-/// draft's edits narrow the list; every other key reaches the drawer as before.
-pub(in crate::ui) fn pick_step<'a>(action: Option<Action>, key: &'a Key, repeat: bool, mods: (bool, bool, bool)) -> Option<PickStep<'a>> {
-    match action {
-        Some(Action::ChatSend | Action::ReturnNav | Action::Paste) if repeat => Some(PickStep::Held),
-        Some(Action::ChatSetup) => Some(PickStep::Held),
-        Some(Action::ChatSend) => Some(PickStep::Pick),
-        Some(Action::ReturnNav) => Some(PickStep::Close),
-        Some(Action::Paste) => Some(PickStep::Paste),
-        Some(Action::ChatMarkOlder) => Some(PickStep::Choose(false)),
-        Some(Action::ChatMarkNewer) => Some(PickStep::Choose(true)),
-        _ => draft_edit(action, key, mods).map(PickStep::Edit),
-    }
-}
-
-/// A key while the channel picker is open (`pick_step`); whether it was taken.
+/// A key while the channel picker is open: ArrowUp and ArrowDown choose, Enter picks, Escape closes, paste is a channel link
+/// and typing narrows the list (`prompt_key`); every other key reaches the drawer as before.
 pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
     if !state.chat.picking() {
         return false;
     }
-    let KeyPress { event, action, ctrl, alt, super_, .. } = *key;
-    let Some(step) = pick_step(action, &event.logical_key, event.repeat, (ctrl, alt, super_)) else { return false };
-    let mut refused = None;
-    match step {
-        PickStep::Pick => state.with_chat(|c, _| c.picker_enter()),
-        PickStep::Close => state.chat.dismiss_picker(),
-        PickStep::Choose(down) => state.chat.picker_step(down),
-        PickStep::Paste => {
+    if let Some(down) = match key.action {
+        Some(Action::ChatMarkOlder) => Some(false),
+        Some(Action::ChatMarkNewer) => Some(true),
+        _ => None,
+    } {
+        state.chat.picker_step(down);
+        prompt_done(state, label);
+        return true;
+    }
+    prompt_key(state, key, label, |state, step| match step {
+        PromptStep::Enter => {
+            state.with_chat(|c, _| c.picker_enter());
+            None
+        }
+        PromptStep::Escape => {
+            state.chat.dismiss_picker();
+            None
+        }
+        PromptStep::Paste => {
+            let mut refused = None;
             if let Some(text) = read_clipboard_text() {
                 state.with_chat(|c, _| c.picker_paste(&text).unwrap_or_else(|words| {
                     refused = Some(words);
                     Vec::new()
                 }));
             }
+            refused
         }
-        PickStep::Edit(edit) => state.chat.picker_edit(edit),
-        PickStep::Held => {}
-    }
-    if let Some(words) = refused {
-        state.status.set(words);
-    }
-    state.last_key = Some(label.to_string());
-    state.window.request_redraw();
-    true
+        PromptStep::Edit(edit) => {
+            state.chat.picker_edit(edit);
+            None
+        }
+        PromptStep::Held => None,
+    })
 }
 
 /// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft, and `chat.send` posts it; whether it was taken.
@@ -324,6 +309,10 @@ pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: Strin
     if action == Some(Action::ChatSend) {
         if !event.repeat {
             state.send_chat_draft();
+        }
+    } else if action == Some(Action::ChatSetup) {
+        if !event.repeat {
+            state.open_chat_picker();
         }
     } else if action == Some(Action::ChatCopySelection) {
         if !event.repeat {

@@ -1,6 +1,6 @@
 //! The channel picker: the list a person chooses a project's channel from (`chat.channels`, then one `chat.pair`), narrowed by
-//! typing. It holds the list and the choice and sends nothing; `ChatDrawer` sends what it returns and parks the channel's view
-//! behind it, as a thread does.
+//! typing. It holds the list and the choice and sends nothing; `ChatDrawer` sends what it returns, holds the one pair in flight
+//! and parks the channel's view behind the picker, as a thread does.
 
 use sot_protocol::ops::{ChatChannel, ChatChannelInfo, ChatChannelsRes, ChatCode};
 
@@ -21,8 +21,6 @@ pub(super) enum Pick {
     Channel(ChatChannel),
     /// The project has no channel again.
     Unpair,
-    /// New tokens (the Connect step).
-    Reconnect,
 }
 
 enum List {
@@ -33,29 +31,27 @@ enum List {
 
 pub(super) struct Picker {
     pub(super) row: ResultRowIdentity,
-    /// Opened by `chat.setup`: it ends in `Connect Slack again`.
-    setup: bool,
     /// The row has a channel: the list begins with `No channel for this project`.
     mapped: bool,
     filter: String,
     choice: usize,
     list: List,
-    /// A `chat.pair` is in flight: nothing more is sent until its reply.
+    /// This picker sent the pair in flight (`ChatDrawer::pair_sent`), so its reply is this picker's to close on.
     pairing: bool,
     /// The channel's view, set aside until the picker closes.
     pub(super) parked: ChatView,
 }
 
 impl Picker {
-    pub(super) fn new(row: ResultRowIdentity, setup: bool, mapped: bool, parked: ChatView) -> Self {
-        Picker { row, setup, mapped, filter: String::new(), choice: 0, list: List::Reading, pairing: false, parked }
+    pub(super) fn new(row: ResultRowIdentity, mapped: bool, parked: ChatView) -> Self {
+        Picker { row, mapped, filter: String::new(), choice: 0, list: List::Reading, pairing: false, parked }
     }
 
-    /// The entries, in order: the specials only over an empty filter (a narrowed list never unpairs or reconnects), the
+    /// The entries, in order: `No channel for this project` only over an empty filter (a narrowed list never unpairs), the
     /// channels by name. Each is its pick, its label and its mark.
     fn entries(&self) -> Vec<(Pick, String, &'static str)> {
         let List::Listed { channels, .. } = &self.list else { return Vec::new() };
-        let needle = self.filter.to_lowercase();
+        let needle = self.filter.strip_prefix('#').unwrap_or(&self.filter).to_lowercase();
         let mut shown: Vec<&ChatChannelInfo> = channels.iter().filter(|c| c.name.to_lowercase().contains(&needle)).collect();
         shown.sort_by_key(|c| c.name.to_lowercase());
         let plain = self.filter.is_empty();
@@ -67,20 +63,17 @@ impl Picker {
             let mark = match (c.private, c.member) {
                 (false, true) => "",
                 (false, false) => "your app joins it when you pick it",
-                (true, true) => "private, app invited",
-                (true, false) => "private, app not invited: invite it first",
+                // Slack lists a private channel only when the app is in it.
+                (true, _) => "private, app invited",
             };
             (Pick::Channel(c.id.clone()), format!("#{}", cell_row(&c.name)), mark)
         }));
-        if plain && self.setup {
-            out.push((Pick::Reconnect, "Connect Slack again".to_string(), ""));
-        }
         out
     }
 
     /// Where the choice begins: on the first channel, so a mapped row's Enter never unpairs by being pressed first.
     fn home(&self) -> usize {
-        usize::from(self.filter.is_empty() && self.mapped && self.entries().len() > 1)
+        usize::from(self.filter.is_empty() && self.mapped)
     }
 
     pub(super) fn on_channels(&mut self, reply: ChatReply<ChatChannelsRes>) {
@@ -106,27 +99,26 @@ impl Picker {
         self.choice = if down { (self.choice + 1).min(last) } else { self.choice.saturating_sub(1) };
     }
 
-    /// Enter: the chosen entry, once; a channel or an unpair waits for its reply (`pairing`).
+    /// Enter: the chosen entry. The drawer sends it, one pair at a time.
     pub(super) fn enter(&mut self) -> Option<Pick> {
-        if self.pairing {
-            return None;
-        }
         let (pick, ..) = self.entries().into_iter().nth(self.choice)?;
-        self.pairing = pick != Pick::Reconnect;
+        self.pairing = true;
         Some(pick)
     }
 
     /// A pasted channel link or id is picked as the list's entry is; any other paste is refused whole.
     pub(super) fn paste(&mut self, text: &str) -> Result<Pick, &'static str> {
-        if self.pairing {
-            return Err("setting this project's channel…");
-        }
         let channel = link_channel(text).ok_or("not pasted: that is not a Slack channel link")?;
         self.pairing = true;
         Ok(Pick::Channel(channel))
     }
 
-    /// A reply to the pair: the next Enter may go again.
+    /// Whether this picker sent the pair that was answered.
+    pub(super) fn sent(&self) -> bool {
+        self.pairing
+    }
+
+    /// The pair this picker sent was answered.
     pub(super) fn paired(&mut self) {
         self.pairing = false;
     }
@@ -147,11 +139,7 @@ impl Picker {
             List::Reading => ("reading Slack's channels…".to_string(), String::new()),
             List::Failed(words) => (words.clone(), "Esc to close.".to_string()),
             List::Listed { more, .. } => {
-                let head = match (self.pairing, entries.is_empty()) {
-                    (true, _) => "setting this project's channel…",
-                    (_, true) => "no channel matches",
-                    _ => "",
-                };
+                let head = if entries.is_empty() { "no channel matches" } else { "" };
                 let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
                 (head.to_string(), format!("{GUIDE}{INVITE}.{more}"))
             }
@@ -160,11 +148,13 @@ impl Picker {
     }
 }
 
-/// The channel id a pasted link names: its last path segment, when it is a channel id (`C…` or `G…`); an id alone is one.
+/// The channel id a pasted link names: its last path segment, when it has Slack's id shape (`C` or `G`, then capitals and
+/// digits, eight characters at least); an id alone is one. Any other paste (a word, a token) is no channel and is sent nowhere.
 pub(super) fn link_channel(text: &str) -> Option<ChatChannel> {
     let path = text.trim().split(['?', '#']).next()?;
     let segment = path.trim_end_matches('/').rsplit('/').next()?;
-    segment.starts_with(['C', 'G']).then(|| ChatChannel::try_from(segment.to_string()).ok()).flatten()
+    let shaped = segment.len() >= 8 && segment.starts_with(['C', 'G']) && segment.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    shaped.then(|| ChatChannel::try_from(segment.to_string()).ok()).flatten()
 }
 
 /// The words of a refused `chat.pair` (`private`: the channel is one the list marked private).
@@ -176,19 +166,6 @@ pub(super) fn pair_words(reply: &ChatReply<sot_protocol::ops::ChatPairRes>, priv
         ChatReply::Refused(ChatCode::NotInChannel) => format!("not set: the app could not join that channel; invite it: {INVITE}"),
         ChatReply::Refused(code) => format!("not set: {}", code.text()),
     })
-}
-
-/// `Connect Slack again`: the Connect step starts here; until it is built the status line says so.
-pub(super) fn connect_again() -> String {
-    "Connect Slack again is not available in this window yet".into()
-}
-
-/// How a body line is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::ui) enum Tone {
-    Plain,
-    Chosen,
-    Muted,
 }
 
 /// What the drawer shows in its body instead of records: a head, the entries (label and mark) with one chosen, and a guide.
@@ -206,20 +183,16 @@ impl Body {
 
     /// The rows for a body `width` cells wide and `height` tall: the head, the entries (a window that keeps the choice in view,
     /// at least three rows) and the guide, wrapped, cut at the height.
-    pub(in crate::ui) fn lines(&self, width: usize, height: usize) -> Vec<(String, Tone)> {
-        let wrap = |text: &str, tone| -> Vec<(String, Tone)> {
-            if text.is_empty() { Vec::new() } else { wrap_status(text, width, width).into_iter().map(|l| (l, tone)).collect() }
-        };
-        let head = wrap(&self.head, Tone::Plain);
-        let guide = wrap(&self.guide, Tone::Muted);
+    pub(in crate::ui) fn lines(&self, width: usize, height: usize) -> Vec<String> {
+        let wrap = |text: &str| if text.is_empty() { Vec::new() } else { wrap_status(text, width, width) };
+        let (head, guide) = (wrap(&self.head), wrap(&self.guide));
         let room = height.saturating_sub(head.len() + guide.len() + usize::from(!guide.is_empty())).max(3);
         let start = (self.chosen + 1).saturating_sub(room);
         let across = self.entries.iter().map(|(label, _)| label.chars().count()).max().unwrap_or(0);
         let rows = self.entries.iter().enumerate().skip(start).take(room).map(|(i, (label, mark))| {
-            let text = format!("{} {label:<across$}  {mark}", if i == self.chosen { '>' } else { ' ' });
-            (text.trim_end().to_string(), if i == self.chosen { Tone::Chosen } else { Tone::Plain })
+            format!("{} {label:<across$}  {mark}", if i == self.chosen { '>' } else { ' ' }).trim_end().to_string()
         });
-        let gap = (!guide.is_empty()).then(|| (String::new(), Tone::Plain));
+        let gap = (!guide.is_empty()).then(String::new);
         head.into_iter().chain(rows).chain(gap).chain(guide).take(height).collect()
     }
 }

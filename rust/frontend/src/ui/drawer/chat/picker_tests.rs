@@ -6,10 +6,11 @@ use sot_protocol::ops::{ChatChannel, ChatChannelsRes, ChatCode, ChatPairRes};
 use super::compose::Edit;
 use super::drawer::ChatDrawer;
 use super::owner::Out;
-use super::picker::{link_channel, Body, Tone};
+use super::drawer::never_written;
+use super::picker::{link_channel, Body};
 use super::row_channel_tests::answer;
 use super::thread_tests::{body, channel, joined, shown, top};
-use super::{pick_step, PickStep};
+use super::{prompt_step, PromptStep};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::input::keybindings::Action;
@@ -27,11 +28,14 @@ fn id(s: &str) -> ChatChannel {
 fn unmapped() -> (ChatDrawer, Instant, Vec<Out>) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
+    d.set_focused(true);
     d.on_connection(&host(), true, t0);
     d.tick(shown("ROW1"), t0);
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     let at = t0 + Duration::from_millis(210);
-    let outs = d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
+    // The frame after the answer opens the picker by itself, and asks for the list.
+    let outs = d.tick(shown("ROW1"), at + Duration::from_millis(1)).0;
     (d, at, outs)
 }
 
@@ -61,7 +65,7 @@ fn paired(row: &str, channel: Option<&str>, reply: ChatReply<ChatPairRes>) -> Ch
 }
 
 fn shown_lines(d: &ChatDrawer) -> Vec<String> {
-    d.body().expect("a body").lines(80, 24).into_iter().map(|(t, _)| t).collect()
+    d.body().expect("a body").lines(80, 24)
 }
 
 fn asks_resolve(d: &mut ChatDrawer, at: Instant) -> bool {
@@ -89,7 +93,7 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     // A short drawer keeps the choice in view and cuts the guide, never the entries' window below three rows.
     let rows = d.body().unwrap().lines(80, 5);
     assert_eq!(rows.len(), 5);
-    assert!(rows.iter().filter(|(_, t)| *t == Tone::Chosen).count() == 1);
+    assert_eq!(rows.iter().filter(|l| l.starts_with("> ")).count(), 1);
     // A read that fails says why and offers nothing to pick; the picker does not hide.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
@@ -103,6 +107,10 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
 fn typing_filters_and_enter_pairs_once() {
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), channels_reply(false), at);
+    // The `#` the entries are drawn with may be typed.
+    d.picker_edit(Edit::Text("#"));
+    assert!(shown_lines(&d)[0].starts_with("> #lab-general") && shown_lines(&d).len() > 4);
+    d.picker_edit(Edit::Backspace);
     d.picker_edit(Edit::Text("LAB"));
     assert_eq!(d.title(), " chat · choose this project's channel  filter: LAB ");
     let lines = shown_lines(&d);
@@ -143,6 +151,17 @@ fn a_pasted_channel_link_pairs_its_id_and_any_other_paste_goes_nowhere() {
         ("hello there", None),
         ("C04 56", None),
         ("", None),
+        // Words and secrets that merely start with C or G are not channels, and are sent nowhere.
+        ("General", None),
+        ("Contact", None),
+        ("Customers", None),
+        ("Cats", None),
+        ("C", None),
+        ("GOCSPX-abcdefghijklmnop", None),
+        ("Gx_secret-token-1234567890", None),
+        ("https://github.com/foo/Capital", None),
+        ("C0456EF", None),
+        ("c0456efgh", None),
     ] {
         assert_eq!(link_channel(text).as_ref().map(ChatChannel::as_str), want, "{text:?}");
     }
@@ -156,52 +175,48 @@ fn a_pasted_channel_link_pairs_its_id_and_any_other_paste_goes_nowhere() {
 }
 
 #[test]
-fn the_setup_chord_offers_no_channel_and_reconnect_on_a_mapped_row() {
+fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     let (mut d, at) = channel(&[]);
-    let outs = d.open_picker(shown("ROW1").as_ref(), true).unwrap();
+    let outs = d.open_picker(shown("ROW1").as_ref()).unwrap();
     assert_eq!(lists(&outs), 1);
     d.on_evt(&host(), channels_reply(false), at);
     let lines = shown_lines(&d);
     assert!(lines[0].starts_with("  No channel for this project") && lines[1].starts_with("> #lab-general"), "{lines:?}");
-    assert!(lines[5].starts_with("  Connect Slack again"), "{lines:?}");
-    // A narrowed list is channels alone.
+    // A narrowed list is channels alone, so typing never leaves Enter on the unpairing.
     d.picker_edit(Edit::Text("lab"));
-    assert!(!shown_lines(&d).iter().any(|l| l.contains("No channel for") || l.contains("Connect Slack")));
+    assert!(!shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     (0..3).for_each(|_| d.picker_edit(Edit::Backspace));
-    // `Connect Slack again` leaves the picker and calls the Connect step (a stub: the status line says so); nothing is sent.
-    (0..5).for_each(|_| d.picker_step(true));
-    assert!(d.picker_enter().is_empty());
-    assert!(!d.picking());
-    assert!(d.take_notice().unwrap().starts_with("Connect Slack again"));
+    assert!(shown_lines(&d)[1].starts_with("> #lab-general"), "the choice returns to the first channel");
     // `No channel for this project` unpairs, and the row then stays unpicked until a person asks.
-    d.open_picker(shown("ROW1").as_ref(), true).unwrap();
-    d.on_evt(&host(), channels_reply(false), at);
     d.picker_step(false);
     let sent = d.picker_enter();
     assert_eq!(pairs(&sent), [("ROW1".to_string(), None)]);
     d.on_evt(&host(), paired("ROW1", None, ChatReply::Done(ChatPairRes {})), at);
     assert!(!d.picking());
-    let answered = d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(1));
-    assert_eq!((lists(&answered), d.picking()), (0, false), "an unpaired row does not reopen the picker");
+    d.set_focused(true);
+    let answered = Duration::from_secs(1);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + answered);
+    let outs = d.tick(shown("ROW1"), at + answered * 2).0;
+    assert_eq!((lists(&outs), d.picking()), (0, false), "an unpaired row does not reopen the picker");
     assert_eq!(d.title(), " chat · no channel ");
     assert_eq!(shown_lines(&d), ["this project has no channel: press Enter to pick one"]);
     // Enter over it, with nothing typed, asks for the channels.
-    let outs = d.send(shown("ROW1").as_ref(), Some("tester"), at + Duration::from_secs(2)).unwrap();
+    let outs = d.send(shown("ROW1").as_ref(), Some("tester"), at + answered * 3).unwrap();
     assert_eq!((lists(&outs), d.picking()), (1, true));
-    // An unmapped row's chord has no `No channel` entry, and any other stand says its words.
+    // An unmapped row's chord opens the same list, and any other stand says its words.
     let (mut d, at, _) = unmapped();
     d.dismiss_picker();
-    d.open_picker(shown("ROW1").as_ref(), true).unwrap();
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
     d.on_evt(&host(), channels_reply(false), at);
-    assert!(shown_lines(&d)[0].starts_with("> #lab-general") && shown_lines(&d)[4].starts_with("  Connect Slack again"));
+    assert!(shown_lines(&d)[0].starts_with("> #lab-general") && !shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     let mut off = ChatDrawer::default();
     off.tick(shown("ROW1"), at);
-    assert_eq!(off.open_picker(shown("ROW1").as_ref(), true).unwrap_err(), "not connected");
+    assert_eq!(off.open_picker(shown("ROW1").as_ref()).unwrap_err(), "not connected");
     off.on_connection(&host(), true, at);
     off.tick(shown("ROW1"), at + Duration::from_millis(200));
     off.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "invalid" })), at + Duration::from_millis(210));
-    assert!(off.open_picker(shown("ROW1").as_ref(), true).unwrap_err().starts_with("the hub has no usable chat configuration"));
-    assert_eq!(off.open_picker(None, true).unwrap_err(), "no row to choose a channel for");
+    assert!(off.open_picker(shown("ROW1").as_ref()).unwrap_err().starts_with("the hub has no usable chat configuration"));
+    assert_eq!(off.open_picker(None).unwrap_err(), "no row to choose a channel for");
 }
 
 #[test]
@@ -238,28 +253,116 @@ fn a_pair_reply_resolves_the_row_again_and_not_in_channel_says_to_invite() {
 }
 
 #[test]
-fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once() {
-    // Escape closes it, and the same row's answer does not open it again; a link change does.
-    let (mut d, at, _) = unmapped();
+fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once_while_the_drawer_has_the_keys() {
+    // A drawer that does not have the keys asks Slack for nothing: the person scanning rows spends no list read.
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, t0);
+    d.tick(shown("ROW1"), t0);
+    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t0 + Duration::from_millis(210));
+    let at = t0 + Duration::from_secs(1);
+    assert_eq!((lists(&d.tick(shown("ROW1"), at).0), d.picking()), (0, false));
+    assert_eq!(d.title(), " chat · no channel ");
+    // With the keys it opens, once; Escape closes it, and neither the same row's next answer nor a link change opens it again.
+    d.set_focused(true);
+    assert_eq!((lists(&d.tick(shown("ROW1"), at + Duration::from_millis(16)).0), d.picking()), (1, true));
     d.dismiss_picker();
     assert!(!d.picking());
-    let again = d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(1));
-    assert_eq!(lists(&again), 0);
-    d.on_connection(&host(), false, at + Duration::from_secs(2));
-    d.on_connection(&host(), true, at + Duration::from_secs(3));
-    d.tick(shown("ROW1"), at + Duration::from_secs(4));
-    let outs = d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(5));
-    assert_eq!((lists(&outs), d.picking()), (1, true));
-    // A link change closes it; so does a row change, which restores nothing of the old row.
-    d.on_connection(&host(), false, at + Duration::from_secs(6));
+    assert_eq!(lists(&d.tick(shown("ROW1"), at + Duration::from_millis(32)).0), 0);
+    d.on_connection(&host(), false, at + Duration::from_secs(1));
+    d.on_connection(&host(), true, at + Duration::from_secs(2));
+    d.tick(shown("ROW1"), at + Duration::from_secs(3));
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(4));
+    assert_eq!((lists(&d.tick(shown("ROW1"), at + Duration::from_secs(5)).0), d.picking()), (0, false));
+    // A row change forgets the Escape: back on the row, it opens again.
+    d.tick(shown("ROW2"), at + Duration::from_secs(6));
+    d.tick(shown("ROW1"), at + Duration::from_secs(7));
+    d.tick(shown("ROW1"), at + Duration::from_secs(8));
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(9));
+    assert_eq!((lists(&d.tick(shown("ROW1"), at + Duration::from_secs(10)).0), d.picking()), (1, true));
+    // A link change closes it; so does a row change.
+    d.on_connection(&host(), false, at + Duration::from_secs(11));
     assert!(!d.picking());
     let (mut d, at, _) = unmapped();
     d.tick(shown("ROW2"), at + Duration::from_secs(1));
     assert!(!d.picking());
-    // A list read for no picker is nothing, and a reply from another host does not fill it.
+    // A reply from another host does not fill it.
     let (mut d, at, _) = unmapped();
     d.on_evt(&"b".to_string(), channels_reply(false), at);
     assert_eq!(shown_lines(&d), ["reading Slack's channels…"]);
+}
+
+#[test]
+fn one_pair_is_in_flight_across_escape_and_a_reopened_picker_is_never_closed_by_an_older_reply() {
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), channels_reply(false), at);
+    assert_eq!(pairs(&d.picker_enter()).len(), 1);
+    // Escape, and Enter over the empty draft: a new picker, with the first pair unanswered.
+    d.dismiss_picker();
+    d.send(shown("ROW1").as_ref(), Some("tester"), at).unwrap();
+    d.on_evt(&host(), channels_reply(false), at);
+    assert!(shown_lines(&d)[0].contains("setting this project's channel"));
+    assert!(d.picker_enter().is_empty(), "nothing is sent while a pair is unanswered");
+    assert_eq!(d.picker_paste("C0456EFGH").unwrap_err(), "setting this project's channel…");
+    // The first pair's reply does not close the new picker, and frees it to pick.
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Done(ChatPairRes {})), at);
+    assert!(d.picking());
+    assert_eq!(pairs(&d.picker_enter()).len(), 1);
+    // A row change while a pair is out leaves it out: the next row's picker waits for the reply too.
+    d.tick(shown("ROW2"), at + Duration::from_secs(1));
+    assert!(!d.picking());
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Done(ChatPairRes {})), at + Duration::from_secs(2));
+    assert!(d.take_notice().is_none());
+}
+
+#[test]
+fn a_late_refusal_for_another_row_says_nothing() {
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), channels_reply(false), at);
+    d.picker_enter();
+    d.tick(shown("ROW2"), at + Duration::from_secs(1));
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NotInChannel)), at + Duration::from_secs(2));
+    assert!(d.take_notice().is_none(), "the shown row is ROW2");
+    // The same refusal for the shown row is said.
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), channels_reply(false), at);
+    d.picker_enter();
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    assert!(d.take_notice().is_some());
+}
+
+#[test]
+fn a_request_that_could_not_be_queued_is_told_it_was_refused_unavailable() {
+    let post = serde_json::from_value(serde_json::json!({ "target": { "row": "ROW1", "workspace": "T1", "channel": "C1" },
+        "kind": "person", "name": "tester", "text": "hi" })).unwrap();
+    assert!(matches!(never_written(&OutgoingReq::ChatPost { req: post }),
+        Some(ChatEvt::Posted { reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Refused { code: ChatCode::Unavailable }), .. })));
+    assert!(matches!(never_written(&OutgoingReq::ChatPair { row: "ROW1".into(), channel: Some(id("C1")) }),
+        Some(ChatEvt::Paired { reply: ChatReply::Refused(ChatCode::Unavailable), .. })));
+    assert!(matches!(never_written(&OutgoingReq::ChatChannels), Some(ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) })));
+    assert!(never_written(&OutgoingReq::ChatResolve { row: "ROW1".into() }).is_none());
+    // Told so, the picker is not left waiting: its list says why, and a pair that was never queued is refused and frees the next.
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), never_written(&OutgoingReq::ChatChannels).unwrap(), at);
+    assert_eq!(shown_lines(&d)[0], "could not list the channels: the chat is not available here");
+    d.on_evt(&host(), channels_reply(false), at);
+    let sent = d.picker_enter();
+    assert!(d.picker_enter().is_empty());
+    let (_, req) = &sent[0];
+    d.on_evt(&host(), never_written(req).unwrap(), at);
+    assert!(d.picking() && d.take_notice().unwrap().starts_with("not set: the chat is not available here"));
+    assert_eq!(pairs(&d.picker_enter()).len(), 1);
+}
+
+#[test]
+fn an_empty_channel_says_no_messages_in_the_body_and_the_picker_and_a_thread_say_otherwise() {
+    let (mut d, _) = channel(&[]);
+    assert_eq!(d.body().unwrap().lines(40, 5), ["no messages"]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert_eq!(d.body().unwrap().lines(40, 5), ["reading Slack's channels…"]);
+    let (d, _) = channel(&[top(1)]);
+    assert!(d.body().is_none(), "a channel with a record says nothing");
 }
 
 #[test]
@@ -268,10 +371,18 @@ fn a_mapped_channels_records_return_when_the_picker_closes() {
     let mut fonts = FontSystem::new();
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(joined(&d).contains("message 3"));
-    d.open_picker(shown("ROW1").as_ref(), true).unwrap();
+    // The picker closes an open thread and a name prompt: a thread's Left key would give the channel's view back under it, and
+    // the prompt would come back after it.
+    d.mark(true, Instant::now(), Duration::ZERO);
+    d.layout(&mut fonts, body(), 1.0, body());
+    d.open_thread();
+    assert_eq!(d.thread_len(), 1);
+    d.ask_name();
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert_eq!((d.thread_len(), d.asking()), (0, None));
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(d.placed_text().is_empty(), "the picker's view holds no record");
-    assert!(!d.no_messages() && d.compose_text(true).is_none());
+    assert!(d.compose_text(true).is_none());
     d.dismiss_picker();
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(joined(&d).contains("message 3"));
@@ -279,24 +390,23 @@ fn a_mapped_channels_records_return_when_the_picker_closes() {
 }
 
 #[test]
-fn the_picker_takes_the_keys_that_edit_choose_and_close_it() {
+fn a_prompt_takes_the_keys_that_edit_and_close_it_and_leaves_the_rest_to_the_drawer() {
     let typed = Key::Character("l".into());
     let named = |k| Key::Named(k);
-    fn step<'a>(action: Option<Action>, key: &'a Key, repeat: bool) -> Option<PickStep<'a>> {
-        pick_step(action, key, repeat, (false, false, false))
+    fn step<'a>(action: Option<Action>, key: &'a Key, repeat: bool) -> Option<PromptStep<'a>> {
+        prompt_step(action, key, repeat, (false, false, false))
     }
-    assert_eq!(step(Some(Action::ChatSend), &named(NamedKey::Enter), false), Some(PickStep::Pick));
-    assert_eq!(step(Some(Action::ReturnNav), &named(NamedKey::Escape), false), Some(PickStep::Close));
-    assert_eq!(step(Some(Action::ChatMarkOlder), &named(NamedKey::ArrowUp), false), Some(PickStep::Choose(false)));
-    assert_eq!(step(Some(Action::ChatMarkNewer), &named(NamedKey::ArrowDown), true), Some(PickStep::Choose(true)));
-    assert_eq!(step(Some(Action::Paste), &typed, false), Some(PickStep::Paste));
-    assert_eq!(step(Some(Action::ChatSend), &named(NamedKey::Enter), true), Some(PickStep::Held));
-    assert_eq!(step(Some(Action::Paste), &typed, true), Some(PickStep::Held));
-    assert_eq!(step(Some(Action::ChatSetup), &typed, false), Some(PickStep::Held));
-    assert_eq!(step(None, &typed, false), Some(PickStep::Edit(Edit::Text("l"))));
-    assert_eq!(step(None, &named(NamedKey::Backspace), false), Some(PickStep::Edit(Edit::Backspace)));
-    // A reading key the picker does not use is left to the drawer.
-    assert_eq!(step(Some(Action::ScrollPageUp), &named(NamedKey::PageUp), false), None);
+    assert_eq!(step(Some(Action::ChatSend), &named(NamedKey::Enter), false), Some(PromptStep::Enter));
+    assert_eq!(step(Some(Action::ReturnNav), &named(NamedKey::Escape), false), Some(PromptStep::Escape));
+    assert_eq!(step(Some(Action::Paste), &typed, false), Some(PromptStep::Paste));
+    assert_eq!(step(Some(Action::ChatSend), &named(NamedKey::Enter), true), Some(PromptStep::Held));
+    assert_eq!(step(Some(Action::Paste), &typed, true), Some(PromptStep::Held));
+    assert_eq!(step(None, &typed, false), Some(PromptStep::Edit(Edit::Text("l"))));
+    assert_eq!(step(None, &named(NamedKey::Backspace), false), Some(PromptStep::Edit(Edit::Backspace)));
+    // The choosing keys, the chord and the reading keys are not a prompt's: the picker takes the first, `chat_key` the chord.
+    for a in [Action::ChatMarkOlder, Action::ChatMarkNewer, Action::ChatSetup, Action::ScrollPageUp] {
+        assert_eq!(step(Some(a), &named(NamedKey::ArrowUp), false), None, "{a:?}");
+    }
 }
 
 #[test]
@@ -304,6 +414,6 @@ fn the_body_draws_the_choice_in_view_and_the_guide_below_it() {
     let body = Body { head: String::new(), entries: (0..30).map(|i| (format!("#c{i}"), "")).collect(), chosen: 20, guide: "a guide that wraps over two rows".into() };
     let rows = body.lines(20, 10);
     assert!(rows.len() <= 10);
-    assert!(rows.iter().any(|(t, tone)| t.starts_with("> #c20") && *tone == Tone::Chosen), "{rows:?}");
-    assert!(rows.last().unwrap().0.ends_with("rows") && rows.last().unwrap().1 == Tone::Muted, "{rows:?}");
+    assert!(rows.iter().any(|t| t.starts_with("> #c20")), "{rows:?}");
+    assert!(rows.last().unwrap().ends_with("rows"), "{rows:?}");
 }

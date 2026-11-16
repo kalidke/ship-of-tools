@@ -4,7 +4,7 @@ use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTa
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
-use super::{apply_name, name_step, NameStep};
+use super::{apply_name, prompt_step, PromptStep};
 use crate::ui::persist::settings::Settings;
 use sot_protocol::chat::MAX_NAME;
 use super::drawer::ChatDrawer;
@@ -443,6 +443,24 @@ fn a_pasted_control_character_or_a_name_past_the_bound_is_refused_whole() {
 }
 
 #[test]
+fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
+    use super::compose::ComposeText;
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused), 80, 10);
+    assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
+    assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
+    let said = hint(false)[1..].join(" ");
+    assert_eq!(said, format!("What you post appears in the channel with your name, marked as sent through your app. {chord} changes this project's channel."));
+    // The prompt row comes first at any height, and a narrow drawer wraps it.
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false), 80, 1), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false), 80, 0).is_empty());
+    assert!(compose_rows(&ComposeText::of(None, None, false), 20, 10).iter().all(|r| r.chars().count() <= 20));
+    // Anything typed, or a destination to name, is the draft's own foot.
+    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false), 80, 10), ["> hi"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false), 80, 10), ["> ", "to C1"]);
+}
+
+#[test]
 fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height() {
     let (mut d, _) = asking();
     d.edit_name(Edit::Text("Ada")).unwrap();
@@ -451,25 +469,25 @@ fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height()
     assert!(compose_rows(&d.compose_text(true).unwrap(), 40, 0).is_empty(), "never more rows than the height");
 }
 
-fn step(action: Option<Action>, key: Key, repeat: bool, mods: (bool, bool, bool)) -> Option<NameStep<'static>> {
+fn step(action: Option<Action>, key: Key, repeat: bool, mods: (bool, bool, bool)) -> Option<PromptStep<'static>> {
     // The keys here are characters or named keys: `Edit::Text` borrows its text from the key, so the table leaks it.
     let key: &'static Key = Box::leak(Box::new(key));
-    name_step(action, key, repeat, mods)
+    prompt_step(action, key, repeat, mods)
 }
 
 #[test]
-fn name_step_says_what_each_key_is_to_the_prompt() {
+fn prompt_step_says_what_each_key_is_to_a_prompt() {
     let none = (false, false, false);
-    assert_eq!(step(Some(Action::ChatSend), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Save));
-    assert_eq!(step(Some(Action::ReturnNav), Key::Named(NamedKey::Escape), false, none), Some(NameStep::Cancel));
-    assert_eq!(step(Some(Action::Paste), ch("v"), false, (true, false, false)), Some(NameStep::Paste));
-    assert_eq!(step(Some(Action::ChatNewline), Key::Named(NamedKey::Enter), false, none), Some(NameStep::Edit(Edit::Newline)));
-    assert_eq!(step(None, ch("a"), false, none), Some(NameStep::Edit(Edit::Text("a"))));
-    assert_eq!(step(None, Key::Named(NamedKey::Space), false, none), Some(NameStep::Edit(Edit::Space)));
-    assert_eq!(step(None, Key::Named(NamedKey::Backspace), false, none), Some(NameStep::Edit(Edit::Backspace)));
+    assert_eq!(step(Some(Action::ChatSend), Key::Named(NamedKey::Enter), false, none), Some(PromptStep::Enter));
+    assert_eq!(step(Some(Action::ReturnNav), Key::Named(NamedKey::Escape), false, none), Some(PromptStep::Escape));
+    assert_eq!(step(Some(Action::Paste), ch("v"), false, (true, false, false)), Some(PromptStep::Paste));
+    assert_eq!(step(Some(Action::ChatNewline), Key::Named(NamedKey::Enter), false, none), Some(PromptStep::Edit(Edit::Newline)));
+    assert_eq!(step(None, ch("a"), false, none), Some(PromptStep::Edit(Edit::Text("a"))));
+    assert_eq!(step(None, Key::Named(NamedKey::Space), false, none), Some(PromptStep::Edit(Edit::Space)));
+    assert_eq!(step(None, Key::Named(NamedKey::Backspace), false, none), Some(PromptStep::Edit(Edit::Backspace)));
     // A held Enter, Escape or paste is taken and does nothing.
     for a in [Action::ChatSend, Action::ReturnNav, Action::Paste] {
-        assert_eq!(step(Some(a), ch("x"), true, none), Some(NameStep::Held));
+        assert_eq!(step(Some(a), ch("x"), true, none), Some(PromptStep::Held));
     }
     // A reading key is not the prompt's, so it still scrolls, marks and opens a thread.
     for a in [Action::ScrollPageUp, Action::ChatLatest, Action::ChatMarkOlder, Action::ChatThreadOpen] {

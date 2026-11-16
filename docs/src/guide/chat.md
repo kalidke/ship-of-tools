@@ -3,10 +3,11 @@
 To connect Ship of Tools to Slack the first time, or to give another project a channel, see
 [Setting up Slack](chat-setup.md).
 
-A project with no channel shows `no channel` in the title and a list of your Slack channels to pick from: type to narrow it,
-`Up` and `Down` to choose, `Enter` to pick, `Esc` to close. `Ctrl+Shift+K` (`chat.setup`) opens the list again for any project
-on the computer the chat runs on, with `No channel for this project` and `Connect Slack again` at its ends. How the list and
-its marks work is in [Setting up Slack](chat-setup.md).
+A project with no channel shows a list of your Slack channels to pick from when you open the Chat drawer on it: type to narrow
+it, `Up` and `Down` to choose, `Enter` to pick, `Esc` to close. After `Esc` the title reads `no channel`, and `Enter` opens the
+list again. `Ctrl+Shift+K` (`chat.setup`) opens it for any project on the computer the chat runs on, beginning with `No channel
+for this project` for one that has a channel. With nothing typed, the foot says `type a message and press Enter to post it` and
+names this chord. How the list and its marks work is in [Setting up Slack](chat-setup.md).
 
 The Chat drawer (`Ctrl+K`) shows the messages of one Slack channel: the channel the selected row's folder maps to.
 The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
