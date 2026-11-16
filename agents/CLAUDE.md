@@ -140,7 +140,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -354,6 +354,17 @@ of each.
   endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
   (messaging's `sot-comm`); a Codex row is not woken for channel mail.
+- `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]` shares a file of the row's folder (a figure, or
+  any regular file of at most 16 MiB) under the same rules: the row and handle refused as above, then the path, made
+  absolute by joining a relative one to `$PWD` without resolving links, refused (exit 2, before an endpoint) unless it
+  lies under `$SOT_WORKSPACE_ROOT/` as written with no `..` part; the rest is the node id `files:<rel>`. It sends one
+  `chat.post_file` of kind `row` with that id, the thread and the comment, waits 120 s, and prints `posted <ts>` or
+  `posted file <id>` (Slack named no message) with the same exit codes. The daemon reads the file itself and refuses
+  anything not a readable regular file of the folder, or inside the chat's configuration folder (chat contract, D13).
+  Limit: on a Windows hub the root is `C:\...` and Git Bash's path `/c/...`, so the tool refuses (nothing sent); the
+  suite runs on Linux and macOS bash 3.2, not Git Bash. `tests/test-sot-fe-chat.sh`'s file cases: outside a row, the
+  folder or with no handle refused before an endpoint, one resolve then one `chat.post_file` with the node id, thread and
+  comment, each outcome's words and code, and no answer as one request.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,

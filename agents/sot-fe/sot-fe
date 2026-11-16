@@ -31,6 +31,7 @@
 #   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
 #   sot-fe reauth <account>                        [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
+#   sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]
 #
 #   preview  — preview <path> and expand the file tree to it. If the FE is
 #              already on <workspace> it happens at once; otherwise it is
@@ -173,6 +174,12 @@
 #              posted: fix it, or wait and post once more); exit 3 with `unknown: ...` or `no answer: ...` (the post
 #              MAY exist: never post again; read the thread first). Test the exit code, not the words. A reply is
 #              public to every member of the channel.
+#              With --file <path> it shares that file instead (a figure, or any regular file of at most 16 MiB), under
+#              the same rules, with the text, if any, as its comment: ONE `chat.post_file`. The path, relative to the
+#              working folder or absolute, must lie under the row's folder ($SOT_WORKSPACE_ROOT) as written, with no
+#              `..`, or it is refused (exit 2) before an endpoint is found; links inside the folder are followed by the
+#              daemon, which reads the file itself and refuses the chat's own configuration folder. Waits 120 s for
+#              the share. Prints `posted <ts>`, or `posted file <id>` when Slack named no message.
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -262,6 +269,8 @@ CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 
 LEVEL=""
 NOTIFY_WS=""
 THREAD=""      # chat post: the thread's ts
+FILE=""        # chat post: the file to share
+FILE_SET=false
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
@@ -304,6 +313,10 @@ while [ $# -gt 0 ]; do
                     esac
                     TIMEOUT="$2"; shift 2 ;;
         --code)     CODE="$2"; shift 2 ;;
+        --file)     [ "$CMD" = chat ] || { echo "ERROR: --file is only for chat post" >&2; exit 1; }
+                    case "${2:-}" in -*) echo "ERROR: --file expects a path (a name that starts with '-' goes as ./-name), got '${2:-}'" >&2; exit 1 ;; esac
+                    [ $# -ge 2 ] || { echo "ERROR: --file expects a path" >&2; exit 1; }
+                    FILE="$2"; FILE_SET=true; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
         --enter)    ENTER=true; shift ;;
@@ -547,7 +560,19 @@ case "$CMD" in
         send_workspace_reauth "$ACCOUNT"
         ;;
     chat)
-        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]" >&2; exit 1; }
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]" >&2; exit 1; }
+        if [ "$FILE_SET" = true ]; then
+            [ -n "$FILE" ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — name the file" >&2; exit 1; }
+            if [ "$READ_STDIN" = true ]; then
+                [ "${#POS[@]}" -le 1 ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — the comment from the argument or from --stdin, not both" >&2; exit 1; }
+                COMMENT="$(cat)"
+            else
+                [ "${#POS[@]}" -le 2 ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — one comment argument" >&2; exit 1; }
+                COMMENT="${POS[1]:-}"
+            fi
+            send_chat_post_file "$FILE" "$COMMENT" "$THREAD"
+            exit
+        fi
         if [ "$READ_STDIN" = true ]; then
             [ "${#POS[@]}" -le 1 ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  — text from the argument or from --stdin, not both" >&2; exit 1; }
             TEXT="$(cat)"

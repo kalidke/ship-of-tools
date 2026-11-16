@@ -1,4 +1,5 @@
-# sot-fe's reply in the row's channel: `chat post`, one `chat.post` of kind `row` into the current thread.
+# sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
+# into the current thread.
 # Sourced by sot-fe; defines functions only.
 
 # The row's own handle, as comm-context.sh gives it ("" when the session has not joined). In its own subshell, never
@@ -35,23 +36,29 @@ _chat_ask() {
     sot_send "$2" "$1" || true
 }
 
-# $1=text, $2=thread ts or "". Posts for the row this session runs in ($SOT_WORKSPACE_ID) under its comm handle, into
-# the thread, and exits 0 with `posted <ts>`; 2 when nothing was posted (a refusal or a limit); 3 when the post may exist.
-send_chat_post() {
-    local text="$1" thread="$2" row="${SOT_WORKSPACE_ID:-}" handle res req resp err code state
-    if [ -z "$row" ]; then
+# The row this session runs in ($SOT_WORKSPACE_ID) and its comm handle, into CHAT_ROW and CHAT_HANDLE; refused (exit 2)
+# with nothing sent when either is missing. Runs before any endpoint is found.
+_chat_identity() {
+    CHAT_ROW="${SOT_WORKSPACE_ID:-}"
+    if [ -z "$CHAT_ROW" ]; then
         echo "refused: SOT_WORKSPACE_ID is unset, so this is not a row and has no channel. Nothing was sent." >&2
         exit 2
     fi
-    handle="$(_chat_handle)"
-    if [ -z "$handle" ]; then
+    CHAT_HANDLE="$(_chat_handle)"
+    if [ -z "$CHAT_HANDLE" ]; then
         echo "refused: this session has no comm handle (not joined, or its handle is another row's). Nothing was sent." >&2
         exit 2
     fi
+}
+
+# One `chat.resolve` for $CHAT_ROW, its mapped pair into CHAT_PAIR (the reply's payload); any other answer is refused
+# (exit 2), and nothing is posted.
+_chat_resolve() {
+    local req resp err state
     _need_endpoint
     export SEND_TIMEOUT="${TIMEOUT:-10}"
     # The row is id-shaped (a workspace id).
-    req="$(jq -nc --arg w "$row" '{v:1, id:2, kind:"req", op:"chat.resolve", payload:{row:$w}}')"
+    req="$(jq -nc --arg w "$CHAT_ROW" '{v:1, id:2, kind:"req", op:"chat.resolve", payload:{row:$w}}')"
     resp="$(_chat_ask chat.resolve "$req")"
     if [ -z "$resp" ]; then
         echo "refused: no answer to chat.resolve within ${SEND_TIMEOUT}s via $ENDPOINT. Nothing was posted." >&2
@@ -67,16 +74,13 @@ send_chat_post() {
         unmapped) _chat_refused unmapped "this row's folder maps to no channel" ;;
         *) _chat_refused invalid "the chat's configuration does not map this row" ;;
     esac
-    res="$(printf '%s' "$resp" | jq -c '.payload')"
-    # The text, the handle and the thread are free text and reach jq on stdin, as JSON strings after the resolved
-    # pair (comm-lib-base.sh, free text and jq); the row is the id above.
-    req="$({ printf '%s\n' "$res"; sot_json_escape "$row"; sot_json_escape "$handle"; sot_json_escape "$thread"; sot_json_escape "$text"; } \
-        | jq -cn 'input as $r | input as $row | input as $name | input as $thread | input as $text
-            | {v:1, id:3, kind:"req", op:"chat.post",
-               payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, kind:"row", name:$name, text:$text}
-                         + (if $thread == "" then {} else {thread:$thread} end))}')"
-    export SEND_TIMEOUT="${TIMEOUT:-40}"
-    resp="$(_chat_ask chat.post "$req")"
+    CHAT_PAIR="$(printf '%s' "$resp" | jq -c '.payload')"
+}
+
+# The one post's reply $1 (empty for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
+# named no message of), 2 when nothing was posted, 3 when the post may exist.
+_chat_posted() {
+    local resp="$1" err code
     if [ -z "$resp" ]; then
         _chat_may_exist "no answer"
     fi
@@ -89,7 +93,7 @@ send_chat_post() {
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
         posted)
-            printf '%s' "$resp" | jq -r '"posted \(.payload.ts)"'
+            printf '%s' "$resp" | jq -r 'if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end'
             ;;
         refused)
             _chat_refused "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
@@ -102,4 +106,58 @@ send_chat_post() {
             _chat_may_exist unknown
             ;;
     esac
+}
+
+# $1=text, $2=thread ts or "". Posts for the row this session runs in ($SOT_WORKSPACE_ID) under its comm handle, into
+# the thread, and exits 0 with `posted <ts>`; 2 when nothing was posted (a refusal or a limit); 3 when the post may exist.
+send_chat_post() {
+    local text="$1" thread="$2" req
+    _chat_identity
+    _chat_resolve
+    # The text, the handle and the thread are free text and reach jq on stdin, as JSON strings after the resolved
+    # pair (comm-lib-base.sh, free text and jq); the row is the id above.
+    req="$({ printf '%s\n' "$CHAT_PAIR"; sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$thread"; sot_json_escape "$text"; } \
+        | jq -cn 'input as $r | input as $row | input as $name | input as $thread | input as $text
+            | {v:1, id:3, kind:"req", op:"chat.post",
+               payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, kind:"row", name:$name, text:$text}
+                         + (if $thread == "" then {} else {thread:$thread} end))}')"
+    export SEND_TIMEOUT="${TIMEOUT:-40}"
+    _chat_posted "$(_chat_ask chat.post "$req")"
+}
+
+# The node id (`files:<rel>`) of the file at $1, a path in the row's folder as written: a relative one is joined to
+# $PWD, links are never resolved, and the result must lie under $SOT_WORKSPACE_ROOT/ with no `..` part; the daemon reads
+# the file itself. Prints nothing and returns 1 otherwise. (A Windows root, C:\..., never matches Git Bash's /c/...:
+# such a post is refused here.)
+_chat_node_id() {
+    local path="$1" root="${SOT_WORKSPACE_ROOT:-}" rel
+    [ -n "$root" ] || return 1
+    case "$path" in /*) : ;; *) path="$PWD/$path" ;; esac
+    root="${root%/}"
+    case "$path" in "$root"/?*) rel="${path#"$root"/}" ;; *) return 1 ;; esac
+    case "/$rel/" in */../*) return 1 ;; esac
+    printf 'files:%s' "$rel"
+}
+
+# $1=file path, $2=comment or "", $3=thread ts or "". Shares the file for the row this session runs in under its comm
+# handle, with the comment after the row's label, into the thread: exits 0 with `posted <ts>` or `posted file <id>`; 2
+# when nothing was shared; 3 when the share may exist.
+send_chat_post_file() {
+    local file="$1" comment="$2" thread="$3" node req
+    _chat_identity
+    if ! node="$(_chat_node_id "$file")"; then
+        echo "refused: '$file' is not a file under this row's folder (${SOT_WORKSPACE_ROOT:-SOT_WORKSPACE_ROOT is unset}). Nothing was sent." >&2
+        exit 2
+    fi
+    _chat_resolve
+    # The node id, the handle, the thread and the comment are free text and reach jq on stdin, as in send_chat_post.
+    req="$({ printf '%s\n' "$CHAT_PAIR"; sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$thread"; sot_json_escape "$node"; sot_json_escape "$comment"; } \
+        | jq -cn 'input as $r | input as $row | input as $name | input as $thread | input as $node | input as $comment
+            | {v:1, id:3, kind:"req", op:"chat.post_file",
+               payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, kind:"row", name:$name, node_id:$node}
+                         + (if $thread == "" then {} else {thread:$thread} end)
+                         + (if $comment == "" then {} else {comment:$comment} end))}')"
+    # The bytes go up and the share comes back within the daemon's own bounds (60 s for the upload, 30 s for the share).
+    export SEND_TIMEOUT="${TIMEOUT:-120}"
+    _chat_posted "$(_chat_ask chat.post_file "$req")"
 }

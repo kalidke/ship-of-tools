@@ -5,6 +5,9 @@
 # ONE `chat.post` of kind `row` into the thread, and never a second (a post
 # that may exist is not sent again, so no answer is one request, not two).
 # Outside a row, or with no handle, it is refused before an endpoint is found.
+# With --file it sends ONE `chat.post_file` instead, naming the file by its
+# node id in the row's folder; a path outside the folder is refused before an
+# endpoint is found.
 # Exit codes: 0 posted; 1 usage; 2 nothing was posted (refused, limited); 3 the post may exist (unknown, no answer).
 #
 # No real daemon: a STUB unix-socket daemon (the harness of
@@ -140,19 +143,21 @@ stop_stub_daemon() {
 
 # run_chat STDIN ENVSPEC... -- ARGS...: run `sot-fe chat post ARGS` against the stub with only the given variables
 # and STDIN as its standard input.
-CH_OUT=""; CH_RC=0
+# It runs in $CH_DIR when a case sets it.
+CH_OUT=""; CH_RC=0; CH_DIR=""
 run_chat() {
     local input="$1" envs=()
     shift
     while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
-    CH_OUT="$(printf '%s' "$input" | env -u SOT_WORKSPACE_ID -u STUB_NAME JQ_ARGV_LOG="$WORK/jq-argv.log" "${envs[@]}" "$SOT_FE" chat post "$@" --endpoint "unix:$SOCK" --timeout 3 2>&1)"
+    CH_OUT="$(cd "${CH_DIR:-.}" && printf '%s' "$input" | env -u SOT_WORKSPACE_ID -u SOT_WORKSPACE_ROOT -u STUB_NAME JQ_ARGV_LOG="$WORK/jq-argv.log" "${envs[@]}" "$SOT_FE" chat post "$@" --endpoint "unix:$SOCK" --timeout 3 2>&1)"
     CH_RC=$?
 }
 # How many requests of OP the stub has logged; and how many requests of any op (hellos included).
 sent() { grep -c "\"op\":\"$1\"" "$WORK/req-$STUBN.log"; }
 sent_any() { grep -c '"kind":"req"' "$WORK/req-$STUBN.log"; }
-# One field of the logged chat.post.
+# One field of the logged chat.post, and of the logged chat.post_file.
 posted_field() { jq -r "select(.op==\"chat.post\") | $1" "$WORK/req-$STUBN.log"; }
+filed_field() { jq -r "select(.op==\"chat.post_file\") | $1" "$WORK/req-$STUBN.log"; }
 
 ROW=ws-self-1a2b
 MAPPED='{"v":1,"id":2,"kind":"res","op":"chat.resolve","payload":{"state":"mapped","workspace":"T0AAAA","channel":"C0AAAA","delivers":true}}'
@@ -164,6 +169,19 @@ answered() {
     stage_reply chat.post "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.post\",\"payload\":$1}"
     start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- --thread 1700000050.000000 "done"
+}
+
+# The row's folder for the file cases, with a subfolder; a figure is named by path and never read by the tool.
+PROJ="$WORK/proj"
+mkdir -p "$PROJ/figs"
+SHARED='{"v":1,"id":3,"kind":"res","op":"chat.post_file","payload":{"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}}'
+
+# The row mapped and the file post answered with the JSON object $1; the verb run with a thread, a file and a comment.
+file_answered() {
+    stage_reply chat.resolve "$MAPPED"
+    stage_reply chat.post_file "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.post_file\",\"payload\":$1}"
+    start_stub_daemon
+    run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --thread 1700000050.000000 --file "$PROJ/figs/fit.png" "the fit"
 }
 
 # --- cases -----------------------------------------------------------------
@@ -292,6 +310,99 @@ case_usage_errors_send_nothing_and_exit_1() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
+case_a_file_post_is_refused_before_an_endpoint_outside_a_row_its_folder_or_a_handle() {
+    local bad="" envs path n
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.post_file "$SHARED"; start_stub_daemon
+    while IFS='|' read -r envs path; do
+        # shellcheck disable=SC2086
+        run_chat "" $envs -- --file "$path" "a comment"
+        [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was sent" || bad="$bad [$envs $path: rc=$CH_RC out=$CH_OUT]"
+    done <<EOF
+STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|$PROJ/figs/fit.png
+SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT=$PROJ|$PROJ/figs/fit.png
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h|$PROJ/figs/fit.png
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|$WORK/elsewhere.png
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|${PROJ}x/fit.png
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|$PROJ/figs/../../elsewhere.png
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|$PROJ/
+SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h SOT_WORKSPACE_ROOT=$PROJ|fit.png
+EOF
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
+}
+
+case_a_file_post_is_one_resolve_then_one_post_file_with_its_node_thread_and_comment() {
+    local bad="" dir path want r p t k n i c x h
+    while IFS='|' read -r dir path want; do
+        stage_reply chat.resolve "$MAPPED"; stage_reply chat.post_file "$SHARED"; start_stub_daemon
+        CH_DIR="$dir" run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ/" STUB_NAME=alpha-h -- --thread 1700000050.000000 --file "$path" "the fit"
+        r="$(sent chat.resolve)"; p="$(sent chat.post_file)"; x="$(sent chat.post)"
+        k="$(filed_field .payload.kind)"; n="$(filed_field .payload.name)"; t="$(filed_field .payload.thread)"
+        i="$(filed_field .payload.node_id)"; c="$(filed_field .payload.comment)"; h="$(filed_field .payload.target.channel)"
+        stop_stub_daemon
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "posted 1700000800.000100" ] && [ "$r" = 1 ] && [ "$p" = 1 ] && [ "$x" = 0 ] \
+            && [ "$k" = row ] && [ "$n" = alpha-h ] && [ "$t" = 1700000050.000000 ] && [ "$i" = "$want" ] && [ "$c" = "the fit" ] && [ "$h" = C0AAAA ]; } \
+            || bad="$bad [$dir $path: rc=$CH_RC out=$CH_OUT resolve=$r post_file=$p post=$x kind=$k name=$n thread=$t node=$i comment=$c channel=$h]"
+    done <<EOF
+$WORK|$PROJ/figs/fit.png|files:figs/fit.png
+$PROJ/figs|fit.png|files:figs/fit.png
+$PROJ|./figs/a b.png|files:./figs/a b.png
+EOF
+    CH_DIR=""
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_a_file_post_with_no_comment_or_thread_carries_neither() {
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.post_file "$SHARED"; start_stub_daemon
+    run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file "$PROJ/figs/fit.png"
+    local has; has="$(filed_field '.payload | [has("thread"), has("comment")] | join(",")')"; stop_stub_daemon
+    [ "$CH_RC" = 0 ] && [ "$has" = "false,false" ] || { echo "rc=$CH_RC has=$has out=$CH_OUT"; return 1; }
+}
+
+case_each_file_outcome_has_its_words_and_exit_code() {
+    local bad="" want_rc want_text payload
+    while IFS='|' read -r payload want_rc want_text; do
+        file_answered "$payload"
+        stop_stub_daemon
+        { [ "$CH_RC" = "$want_rc" ] && [ "$CH_OUT" = "$want_text" ]; } \
+            || bad="$bad [$payload: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF'
+{"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}|0|posted 1700000800.000100
+{"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
+{"outcome":"refused","code":"busy"}|2|refused busy the chat service is busy
+{"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
+{"error":"the file is not a readable file in the row's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the row's folder
+{"error":"the file is larger than the chat carries","code":"too_large"}|2|refused too_large the file is larger than the chat carries
+{"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
+EOF
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_no_answer_to_the_file_post_is_one_request_and_exit_3() {
+    stage_reply chat.resolve "$MAPPED"; start_stub_daemon
+    run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file "$PROJ/figs/fit.png" "the fit"
+    local p; p="$(sent chat.post_file)"; stop_stub_daemon
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; read the thread first" && [ "$p" = 1 ] \
+        || { echo "rc=$CH_RC post_file_requests=$p out=$CH_OUT"; return 1; }
+}
+
+case_a_file_usage_error_sends_nothing_and_exits_1() {
+    local bad="" n
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.post_file "$SHARED"; start_stub_daemon
+    for args in "--file" "--file $PROJ/figs/fit.png one two" "--file $PROJ/figs/fit.png --stdin extra"; do
+        # shellcheck disable=SC2086
+        run_chat "text" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file ""
+    [ "$CH_RC" = 1 ] || bad="$bad [empty --file: rc=$CH_RC out=$CH_OUT]"
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
+}
+
 check "outside a row the verb is refused before an endpoint is found"                       case_outside_a_row_is_refused_before_an_endpoint
 check "a session with no comm handle is refused before an endpoint is found"                case_no_handle_is_refused_before_an_endpoint
 check "one chat.resolve, then one chat.post of kind row with the handle and the thread"     case_one_resolve_then_one_row_post_with_handle_and_thread
@@ -303,6 +414,12 @@ check "no answer to the resolve posts nothing"                                  
 check "--stdin text with newlines, quotes and a leading slash reaches the payload whole"    case_stdin_text_reaches_the_payload_whole
 check "the free text is on no jq command line"                                              case_free_text_is_on_no_jq_command_line
 check "a usage error sends nothing and exits 1"                                             case_usage_errors_send_nothing_and_exit_1
+check "a file outside the row's folder, or with no row, root or handle, sends nothing"     case_a_file_post_is_refused_before_an_endpoint_outside_a_row_its_folder_or_a_handle
+check "a file post is one chat.resolve, then one chat.post_file with node, thread, comment" case_a_file_post_is_one_resolve_then_one_post_file_with_its_node_thread_and_comment
+check "a file post with no comment or thread carries neither"                              case_a_file_post_with_no_comment_or_thread_carries_neither
+check "each file outcome prints its words and exits with its code"                         case_each_file_outcome_has_its_words_and_exit_code
+check "no answer to the file post is one request, never two, and exit 3"                    case_no_answer_to_the_file_post_is_one_request_and_exit_3
+check "a file usage error sends nothing and exits 1"                                       case_a_file_usage_error_sends_nothing_and_exits_1
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
