@@ -1,4 +1,5 @@
-//! The Slack Web API calls the first chat stage needs: `auth.test`, channel history and thread replies (paged),
+//! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
+//! configured), channel history and thread replies (paged),
 //! `chat.postMessage` under a custom author, and author names through a bounded cache. Every call goes out through
 //! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
 //! No socket, no file call, no configuration: the caller hands in the `Secret`.
@@ -412,17 +413,44 @@ pub struct Api {
     closed: AtomicBool,
 }
 
+/// A bot token's workspace and bot, as one `auth.test` names them before any workspace is configured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Identified {
+    pub workspace: String,
+    pub own: Identity,
+}
+
+/// Who a bot token is, with no workspace expected: one `auth.test` under the read rules (guarantee 28). The setup asks
+/// it before anything is saved; the service's `Api::auth_test` keeps its workspace check.
+pub async fn identify(http: &Http, bot: Secret) -> Result<Identified, ApiError> {
+    identify_at(http, bot, BASE.into()).await
+}
+
+/// `identify` against a base: the product's from `identify`, the fixture's from a test.
+pub(crate) async fn identify_at(http: &Http, bot: Secret, base: String) -> Result<Identified, ApiError> {
+    let api = Api::build(http.clone(), bot, String::new(), base);
+    let v = api.read("auth.test", &[], MAX_BODY).await?;
+    Ok(Identified {
+        workspace: workspace_of(&v)?.into(),
+        own: identity_of(&v)?,
+    })
+}
+
 impl Api {
     /// `workspace` is the Slack team id the token must belong to.
     pub fn new(http: Http, token: Secret, workspace: &str) -> Result<Api, ApiError> {
         if !valid_id(workspace) {
             return Err(ApiError::BadRequest);
         }
-        Ok(Api {
+        Ok(Api::build(http, token, workspace.into(), BASE.into()))
+    }
+
+    fn build(http: Http, token: Secret, workspace: String, base: String) -> Api {
+        Api {
             http,
             token,
-            workspace: workspace.into(),
-            base: BASE.into(),
+            workspace,
+            base,
             deadlines: Deadlines {
                 read: READ_DEADLINE,
                 post: POST_DEADLINE,
@@ -432,7 +460,7 @@ impl Api {
             eligible: Mutex::new(None),
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
-        })
+        }
     }
 
     /// Refuse every later call, on every handle. A call already sent runs to its own deadline.
@@ -473,14 +501,10 @@ impl Api {
     /// The bot identity, which history needs. The token must belong to the configured workspace.
     pub async fn auth_test(&self) -> Result<Identity, ApiError> {
         let v = self.read("auth.test", &[], MAX_BODY).await?;
-        let id = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| valid_id(s));
-        if id("team_id").ok_or(ApiError::Malformed)? != self.workspace {
+        if workspace_of(&v)? != self.workspace {
             return Err(ApiError::WrongWorkspace);
         }
-        let identity = Identity {
-            user_id: id("user_id").ok_or(ApiError::Malformed)?.into(),
-            bot_id: id("bot_id").map(String::from),
-        };
+        let identity = identity_of(&v)?;
         *self.own.lock().unwrap() = Some(identity.clone());
         Ok(identity)
     }
@@ -852,6 +876,23 @@ impl Api {
             None => Err(ApiError::Malformed),
         }
     }
+}
+
+/// An `auth.test` answer's `team_id`: `Malformed` when missing or not an id.
+fn workspace_of(v: &Value) -> Result<&str, ApiError> {
+    answered_id(v, "team_id").ok_or(ApiError::Malformed)
+}
+
+/// An `auth.test` answer's bot: `user_id` is required (`Malformed` without it), `bot_id` is kept when valid.
+fn identity_of(v: &Value) -> Result<Identity, ApiError> {
+    Ok(Identity {
+        user_id: answered_id(v, "user_id").ok_or(ApiError::Malformed)?.into(),
+        bot_id: answered_id(v, "bot_id").map(String::from),
+    })
+}
+
+fn answered_id<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Value::as_str).filter(|s| valid_id(s))
 }
 
 /// Each unnamed member's author name, and each record's `names`, from `get`; what it lacks stays empty or has no entry.

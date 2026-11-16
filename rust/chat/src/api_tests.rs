@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    Api, ApiError, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome, ScanQuery,
+    identify_at, Api, ApiError, Identified, Bounds, Continuation, HistoryQuery, PostKind, PostOutcome, ScanQuery,
     ASSUMED_RETRY, MAX_CURSOR, MAX_NAMES, MAX_RETRY, MAX_SCAN,
 };
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, Seen};
@@ -1297,6 +1297,83 @@ async fn slack_text_and_identity_failures_reach_no_caller_raw() {
         let q = query("C0CHAN", Bounds::default(), 5);
         assert_eq!(fresh.history(&q, None).await.unwrap_err(), ApiError::NoIdentity);
         assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The setup's `auth.test`: any workspace is answered, the read rules hold, and nothing shown carries the token.
+#[tokio::test]
+async fn identify_answers_the_tokens_workspace_and_no_error_carries_a_token() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| match seen.path().as_str() {
+            "/api/ok/auth.test" => Reply::json(
+                &json!({"ok": true, "team_id": "T0OTHER", "user_id": OWN_USER, "bot_id": OWN_BOT}),
+            ),
+            "/api/nobot/auth.test" => {
+                Reply::json(&json!({"ok": true, "team_id": WS, "user_id": OWN_USER, "bot_id": "not an id"}))
+            }
+            "/api/noteam/auth.test" => Reply::json(&json!({"ok": true, "user_id": OWN_USER})),
+            "/api/badteam/auth.test" => {
+                Reply::json(&json!({"ok": true, "team_id": "T0 BAD", "user_id": OWN_USER}))
+            }
+            "/api/nouser/auth.test" => Reply::json(&json!({"ok": true, "team_id": WS})),
+            "/api/refused/auth.test" => Reply::json(&json!({"ok": false, "error": "invalid_auth"})),
+            "/api/echo/auth.test" => Reply::json(&json!({
+                "ok": false,
+                "error": format!("invalid auth https://files.slack.com/private/xoxb-sentinel {TOKEN}")
+            })),
+            "/api/html/auth.test" => Reply::ok(format!("<html>{TOKEN}</html>").as_bytes()),
+            "/api/server/auth.test" => status(500, &[], &json!({"error": TOKEN})),
+            "/api/limited/auth.test" => status(429, &[("Retry-After", "7")], &json!({"ok": false})),
+            _ => Reply::Drop,
+        })
+        .await;
+        let http = fake.http();
+        let identify = |mode: &str| {
+            identify_at(&http, Secret::new(TOKEN), fake.url("slack.com", &format!("/api/{mode}/")))
+        };
+        assert_eq!(
+            identify("ok").await.unwrap(),
+            Identified {
+                workspace: "T0OTHER".into(),
+                own: crate::api::Identity {
+                    user_id: OWN_USER.into(),
+                    bot_id: Some(OWN_BOT.into()),
+                },
+            }
+        );
+        let ok = fake.seen();
+        assert_eq!(ok.len(), 1, "one request");
+        assert_eq!(ok[0].authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        assert_eq!(ok[0].target, "/api/ok/auth.test", "no workspace is sent");
+        assert_eq!(identify("nobot").await.unwrap().own.bot_id, None);
+        let mut errors = Vec::new();
+        for (mode, want) in [
+            ("noteam", ApiError::Malformed),
+            ("badteam", ApiError::Malformed),
+            ("nouser", ApiError::Malformed),
+            ("html", ApiError::Malformed),
+            ("refused", ApiError::Slack("invalid_auth".into())),
+            ("echo", ApiError::Slack("unknown_error".into())),
+            ("server", ApiError::Status(500)),
+            ("limited", ApiError::Limited { retry_after: Duration::from_secs(7), assumed: false }),
+        ] {
+            let got = identify(mode).await.unwrap_err();
+            assert_eq!(got, want, "{mode}");
+            errors.push(got);
+        }
+        let dropped = identify("drop").await.unwrap_err();
+        assert!(matches!(dropped, ApiError::Http(_)), "drop");
+        errors.push(dropped);
+        for e in &errors {
+            let text = format!("{e} {e:?} {}", e.code());
+            for secret in [TOKEN, "xoxb", "private", "files.slack.com", "127.0.0.1"] {
+                assert!(!text.contains(secret), "an error of identify shows a secret or a URL ({})", e.code());
+            }
+        }
+        // Each call is its own: a rate limit answered to one does not refuse the next.
+        assert!(identify("ok").await.is_ok());
         fake.shutdown().await;
     })
     .await;

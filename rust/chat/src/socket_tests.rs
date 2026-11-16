@@ -15,7 +15,7 @@ use crate::fake_slack::{eventually, FakeSlack, Flood, Identity, Reply, Seen, WsP
 use crate::http::{HttpError, Secret};
 use crate::normalize::Normalized;
 use crate::socket::{
-    GapCause, Socket, SocketError, Timing, MAX_MESSAGE, MAX_PENDING, MAX_PENDING_BYTES,
+    check_app_token_at, GapCause, Socket, SocketError, Timing, MAX_MESSAGE, MAX_PENDING, MAX_PENDING_BYTES,
 };
 
 const APP: &str = "sentinel-app-token-not-a-credential";
@@ -601,6 +601,84 @@ async fn a_foreign_websocket_url_fails_visibly_and_leaks_nothing() {
             );
         }
         assert_eq!(fake.sockets().2, 0);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The setup's check of an app token: one `apps.connections.open`, its URL judged by the websocket policy and never
+/// dialed; the socket's codes; nothing shown carries the token, the ticket or the host.
+#[tokio::test]
+async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, port| {
+            let url = |u: String| Reply::json(&json!({"ok": true, "url": u}));
+            match seen.path().as_str() {
+                "/api/good/apps.connections.open" => {
+                    url(format!("wss://wss-primary.slack.com:{port}/link/?ticket={TICKET}"))
+                }
+                "/api/foreign/apps.connections.open" => {
+                    url(format!("wss://evilslack.com:{port}/link/?ticket={TICKET}"))
+                }
+                "/api/plain/apps.connections.open" => {
+                    url(format!("ws://wss-primary.slack.com:{port}/link/?ticket={TICKET}"))
+                }
+                "/api/long/apps.connections.open" => url(format!(
+                    "wss://wss-primary.slack.com:{port}/link/?ticket={}",
+                    "t".repeat(2048)
+                )),
+                "/api/nourl/apps.connections.open" => Reply::json(&json!({"ok": true})),
+                "/api/html/apps.connections.open" => Reply::ok(format!("<html>{APP}</html>").as_bytes()),
+                "/api/refused/apps.connections.open" => {
+                    Reply::json(&json!({"ok": false, "error": format!("invalid_auth {APP}")}))
+                }
+                "/api/status/apps.connections.open" => Reply::Status {
+                    code: 401,
+                    headers: Vec::new(),
+                    body: APP.as_bytes().to_vec(),
+                },
+                _ => Reply::Drop,
+            }
+        })
+        .await;
+        let http = fake.http();
+        let check = |mode: &str| {
+            let base = fake.url("slack.com", &format!("/api/{mode}/"));
+            let http = http.clone();
+            async move { check_app_token_at(&http, Secret::new(APP), &base).await }
+        };
+        assert_eq!(check("good").await, Ok(()));
+        let seen = fake.seen();
+        assert_eq!(seen.len(), 1, "one request");
+        assert_eq!(seen[0].method, "POST");
+        assert_eq!(seen[0].authorization.as_deref(), Some(&*format!("Bearer {APP}")));
+        let mut errors = Vec::new();
+        for (mode, want) in [
+            ("foreign", SocketError::Http(HttpError::Destination)),
+            ("plain", SocketError::Http(HttpError::Destination)),
+            ("long", SocketError::Malformed),
+            ("nourl", SocketError::Malformed),
+            ("html", SocketError::Malformed),
+            ("refused", SocketError::Rejected),
+            ("status", SocketError::Rejected),
+        ] {
+            let got = check(mode).await.unwrap_err();
+            assert_eq!(got, want, "{mode}");
+            errors.push(got);
+        }
+        let dropped = check("drop").await.unwrap_err();
+        assert!(matches!(dropped, SocketError::Http(_)), "drop");
+        errors.push(dropped);
+        for e in &errors {
+            let text = format!("{e} {e:?} {}", e.code());
+            for secret in [APP, TICKET, "evilslack", "wss-primary", "127.0.0.1"] {
+                assert!(!text.contains(secret), "a check's error shows a secret or a URL ({})", e.code());
+            }
+        }
+        // No URL was dialed, good or foreign: no upgrade was asked and no socket was ever open.
+        assert!(fake.seen().iter().all(|s| !s.upgrade), "a websocket was dialed");
+        assert_eq!(fake.sockets().2, 0);
+        assert_eq!(fake.seen().len(), 9, "one request a check");
         fake.shutdown().await;
     })
     .await;

@@ -408,6 +408,46 @@ struct Worker {
     _held: Box<dyn Send + Sync>,
 }
 
+/// Whether an app-level token opens Socket Mode connections (guarantee 28): one `apps.connections.open`, whose URL must
+/// pass the websocket destination policy and is then dropped, never dialed. Limits: an undialed URL is assumed to cost
+/// nothing at Slack; an app token of another app than the bot token's is not detected.
+pub async fn check_app_token(http: &Http, app: Secret) -> Result<(), SocketError> {
+    check_app_token_at(http, app, BASE).await
+}
+
+/// `check_app_token` against a base: the product's from `check_app_token`, the fixture's from a test.
+pub(crate) async fn check_app_token_at(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
+    let url = connection_url(http, &app, base).await?;
+    http.check_websocket(&url).map_err(SocketError::Http)
+}
+
+/// One `apps.connections.open` under the app token: the websocket URL Slack names, at most `MAX_URL` bytes, or why
+/// not. The listener's open and the setup's check make this one request.
+async fn connection_url(http: &Http, app: &Secret, base: &str) -> Result<String, SocketError> {
+    let request = Request::post(
+        format!("{base}apps.connections.open"),
+        READ_DEADLINE,
+        FORM,
+        Vec::new(),
+    )
+    .bearer(app.clone());
+    let response = http.send(request).await.map_err(SocketError::Http)?;
+    if response.status() != 200 {
+        return Err(SocketError::Rejected);
+    }
+    let v: Value = serde_json::from_slice(response.body()).map_err(|_| SocketError::Malformed)?;
+    match v.get("ok").and_then(Value::as_bool) {
+        Some(true) => {}
+        Some(false) => return Err(SocketError::Rejected),
+        None => return Err(SocketError::Malformed),
+    }
+    v.get("url")
+        .and_then(Value::as_str)
+        .filter(|u| u.len() <= MAX_URL)
+        .map(String::from)
+        .ok_or(SocketError::Malformed)
+}
+
 /// What one frame asks of the read loop.
 enum Next {
     Continue,
@@ -483,31 +523,9 @@ impl Worker {
 
     /// `apps.connections.open`, then the websocket at the URL it names, through the one destination policy.
     async fn open(&self) -> Result<Websocket, SocketError> {
-        let request = Request::post(
-            format!("{}apps.connections.open", self.base),
-            READ_DEADLINE,
-            FORM,
-            Vec::new(),
-        )
-        .bearer(self.app.clone());
-        let response = self.http.send(request).await.map_err(SocketError::Http)?;
-        if response.status() != 200 {
-            return Err(SocketError::Rejected);
-        }
-        let v: Value =
-            serde_json::from_slice(response.body()).map_err(|_| SocketError::Malformed)?;
-        match v.get("ok").and_then(Value::as_bool) {
-            Some(true) => {}
-            Some(false) => return Err(SocketError::Rejected),
-            None => return Err(SocketError::Malformed),
-        }
-        let url = v
-            .get("url")
-            .and_then(Value::as_str)
-            .filter(|u| u.len() <= MAX_URL)
-            .ok_or(SocketError::Malformed)?;
+        let url = connection_url(&self.http, &self.app, &self.base).await?;
         self.http
-            .websocket(url, self.timing.open)
+            .websocket(&url, self.timing.open)
             .await
             .map_err(SocketError::Http)
     }

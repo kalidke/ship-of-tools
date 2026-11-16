@@ -321,8 +321,7 @@ impl Http {
         url: &str,
         deadline: Duration,
     ) -> Result<Websocket, HttpError> {
-        let url = Url::parse(url).map_err(|_| HttpError::Destination)?;
-        self.inner.check_url(&url, "wss")?;
+        let url = self.websocket_url(url)?;
         let host = url.domain().ok_or(HttpError::Destination)?.to_string();
         let inner = self.inner.clone();
         let handshake = async {
@@ -344,6 +343,19 @@ impl Http {
         tokio::time::timeout(deadline, handshake)
             .await
             .unwrap_or(Err(HttpError::Timeout))
+    }
+}
+
+impl Http {
+    /// The websocket destination policy alone, with nothing dialed: what `websocket` checks first.
+    pub(crate) fn check_websocket(&self, url: &str) -> Result<(), HttpError> {
+        self.websocket_url(url).map(drop)
+    }
+
+    fn websocket_url(&self, url: &str) -> Result<Url, HttpError> {
+        let url = Url::parse(url).map_err(|_| HttpError::Destination)?;
+        self.inner.check_url(&url, "wss")?;
+        Ok(url)
     }
 }
 
