@@ -26,7 +26,12 @@ where each lives).
    `/tmp/sot-<uid>`.
 2. **A publication is durable and never clobbers.** `publish_noreplace` renames without replacing, flushes the
    renamed file (Windows) and then the parent; the caller flushes the source first (`write_durable` does); `write_durable` (opens the record's folder once, by path, following a link, and only a folder opens: a file, pipe or device there is refused at once (on Windows by the relative open itself); then, relative to that open folder, a stale `<name>.tmp` is removed (on Windows with POSIX semantics), a fresh one is created refusing an existing name and following no link, written and synced, renamed over the record by `write_beneath`'s steps, and the folder synced) and `remove_durable` are the one write and delete for a record a later start acts on; `write_durable_private` is the same write for a record no other account may read: its temporary file is created owner-only (Unix mode `0o600` passed to the creating `openat`, less the umask; Windows the protected descriptor with one full-access entry for the process's user, `owner_protected_pipe_descriptor`, passed to the creating `NtCreateFile`), so no other account can open it at any step, and the rename makes the record owner-only, one that was readable by others included (limit: a process that opened the old record before the rename keeps what it opened); on Windows a
-   removal has no parent sync (Win32 has no write-through delete). Rests on
+   removal has no parent sync (Win32 has no write-through delete); the Windows replace of a record is a rename with POSIX
+   semantics (`FileRenameInformationEx`), which unlinks the replaced file from the name at once, so a reader opening the name
+   sees the old file or the new one and never a delete-pending error (reported as access denied); limit: where Windows or the
+   file system has no such rename (before Windows 10 1709, or a file system that answers `STATUS_INVALID_PARAMETER`,
+   `STATUS_NOT_SUPPORTED`, `STATUS_INVALID_INFO_CLASS` or `STATUS_INVALID_DEVICE_REQUEST`) the classic replace is the
+   fallback, which leaves the replaced file delete-pending for a moment, and a reader opening the name then can be denied. Rests on
    renameat2/renamex_np/MoveFileEx for a publication, the rename relative to the record's folder (Unix `renameat`,
    Windows by handle) for a record, and the folder's flush (on Windows `FlushFileBuffers` on a folder handle); only
    linux, macos and windows build.
@@ -160,7 +165,7 @@ where each lives).
     missing folder made by `FILE_OPEN_IF`, and a name-surrogate reparse tag, which is a symlink, junction or mount
     point, refused). It creates its temporary file exclusively under a fresh `.sot-<16 hex>.tmp`
     name, renames and syncs relative to the same folder (Windows: the file is held with share-read alone, so no other
-    open renames or deletes it, and is renamed by its handle, retried while a scanner holds the name; a denied rename is tried again with POSIX semantics; the handle closes at the rename, before the folder's sync, since it then holds the final name without delete sharing, which no other writer's rename replaces); `Ok` means the entry at the temporary name was renamed into
+    open renames or deletes it, and is renamed by its handle, retried while a scanner holds the name; the rename has POSIX semantics where the file system has them (guarantee 2 says the fallback); the handle closes at the rename, before the folder's sync, since it then holds the final name without delete sharing, which no other writer's rename replaces); `Ok` means the entry at the temporary name was renamed into
     place. No path is used after the root, and every name is converted before the root is opened. A root that is not
     its own canonical path (one that does not exist, a link to nothing included, is `NotFound`), a `rel` that is not
     `/`-joined plain names (on Windows none holding `\` or `:`), and a link or file at a folder's name are

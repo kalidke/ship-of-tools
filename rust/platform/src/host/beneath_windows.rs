@@ -16,8 +16,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER, STATUS_NOT_A_DIRECTORY,
-    STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
+    RtlNtStatusToDosError, GENERIC_WRITE, HANDLE, NTSTATUS, STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_INFO_CLASS, STATUS_INVALID_PARAMETER,
+    STATUS_NOT_A_DIRECTORY, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE,
@@ -152,8 +152,10 @@ fn write_and_rename(dir: &File, mut file: &File, last: &str, bytes: &[u8], at: &
 }
 
 /// Renames the open `file` to `name` in `dir`, replacing an entry there; retried while a scanner holds the name. The
-/// classic rename goes first; when it is denied, the same rename with POSIX semantics replaces a name another program
-/// holds open with delete sharing, or a link to a folder, and its failure leaves the classic answer.
+/// rename with POSIX semantics goes first: it unlinks the replaced file from the name at once, so a reader opening the
+/// name meanwhile gets the old or the new file, and it replaces a name another program holds open with delete sharing,
+/// or a link to a folder. The classic replace leaves the old file delete-pending under the name, which fails a
+/// concurrent open as access denied, so it is the answer only where the file system or Windows has no POSIX rename.
 fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
     let wide: Vec<u16> = name.encode_utf16().collect();
     let head = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
@@ -173,9 +175,9 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
             unsafe { (*info).Anonymous.Flags = flags };
             unsafe { NtSetInformationFile(file.as_raw_handle() as HANDLE, &mut iosb, info as *const c_void, len as u32, class) }
         };
-        let mut s = set(FileRenameInformation, FILE_RENAME_REPLACE_IF_EXISTS);
-        if s == STATUS_ACCESS_DENIED && set(FileRenameInformationEx, FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS) >= 0 {
-            s = 0;
+        let mut s = set(FileRenameInformationEx, FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS);
+        if no_posix_rename(s) {
+            s = set(FileRenameInformation, FILE_RENAME_REPLACE_IF_EXISTS);
         }
         if s >= 0 {
             return Ok(());
@@ -186,6 +188,12 @@ fn rename_into(file: &File, dir: &File, name: &str) -> io::Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_millis(RETRY_STEP_MS));
     }
+}
+
+/// Whether `s` says the file system or Windows has no rename with POSIX semantics (Windows before 10 1709 has no such
+/// information class; a file system without it answers one of the others): the classic replace is tried then.
+fn no_posix_rename(s: NTSTATUS) -> bool {
+    matches!(s, STATUS_INVALID_PARAMETER | STATUS_NOT_SUPPORTED | STATUS_INVALID_INFO_CLASS | STATUS_INVALID_DEVICE_REQUEST)
 }
 
 /// Opens `name` below `prev`, creating it when missing and `make`; a link or a file at the name is refused.
