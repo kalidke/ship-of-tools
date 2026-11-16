@@ -415,6 +415,13 @@ pub async fn check_app_token(http: &Http, app: Secret) -> Result<(), SocketError
     check_app_token_at(http, app, BASE).await
 }
 
+/// `check_app_token` against the fixture's base, for another crate's tests. Exists under `cfg(test)` or the
+/// `test-support` feature alone, like `Service::start_at`.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn check_app_token_for_test(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
+    check_app_token_at(http, app, base).await
+}
+
 /// `check_app_token` against a base: the product's from `check_app_token`, the fixture's from a test.
 pub(crate) async fn check_app_token_at(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
     let url = connection_url(http, &app, base).await?;

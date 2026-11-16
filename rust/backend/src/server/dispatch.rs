@@ -348,7 +348,8 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_WATCH => crate::chat::ops::watch(req_id, payload, chat, workspaces, &shared.chat_conn).await,
         op::CHAT_UNWATCH => crate::chat::ops::unwatch(req_id, payload, chat, &shared.chat_conn).await,
-        // The setup ops that need a running chat: a window's, and jobs (Slack's calls, the file's write and the reload wait).
+        // The setup ops: a window's, and jobs (Slack's calls, the files' writes and the reload's wait).
+        op::CHAT_CONNECT => crate::chat::setup::connect(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_CHANNELS => crate::chat::setup::channels(req_id, payload, chat, shared.window).await,
         op::CHAT_PAIR => crate::chat::setup::pair(req_id, payload, chat, workspaces, shared.window).await,
         other => {

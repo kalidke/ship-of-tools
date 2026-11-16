@@ -88,7 +88,14 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
     };
     let (held, rows) = (chat.clone(), rows.clone());
     let resolved = tokio::task::spawn_blocking(move || held.resolve(&rows, &req.row)).await;
-    match resolved.unwrap_or(Err(ChatCode::Failed)) {
+    let resolved = resolved.unwrap_or(Err(ChatCode::Failed));
+    // After the hub fact and the row, before the mapping: a chat a connect would fix says so.
+    if let (Ok((r, _)), Some(reason)) = (&resolved, super::setup::unconfigured(chat.status())) {
+        if !matches!(r, Resolution::NotHub) {
+            return reply(req_id, NAME, &ChatResolveRes::Unconfigured { reason });
+        }
+    }
+    match resolved {
         Err(code) => Ok(refuse(req_id, NAME, code)),
         Ok((Resolution::NotHub, _)) => Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
         Ok((Resolution::Unmapped, _)) => reply(req_id, NAME, &ChatResolveRes::Unmapped),

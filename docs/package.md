@@ -220,7 +220,9 @@ it), and posting into a thread (a draft goes where it was begun, the thread read
 post), and selection and copy (a drag selects text inside one message, Primary+c copies it or the marked message's
 shown text, never shared with the agent), and the native witness (the real window's chat through its State under a
 virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
-hub's chat configuration. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
+hub's chat configuration. Setting the chat up from the window is in progress: the daemon's `chat.connect` (two tokens
+checked with Slack, the secrets written owner-only, the chat restarted from its files with no daemon restart),
+`chat.resolve`'s `unconfigured`, `chat.channels` and `chat.pair` have landed; no window sends them yet. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
 bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection,
 an author's messages grouped under one header with a tile in a gutter, and day dividers with the time alone in the
 header and Slack's thread summary, and Slack's inline styles (bold, italic, strike and code, by the drawer's reading of

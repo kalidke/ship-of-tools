@@ -1,23 +1,162 @@
-//! The window's setup ops that need a running chat: `chat.channels`, the picker's list, and `chat.pair`, which maps a
-//! row's folder to a channel or unmaps it, rewrites `chat.toml` and reloads. Both are jobs, taken from a window's
-//! connection only (a row's agent has no use for them), and neither makes a Slack call without a running service. The
-//! edit of the file and the reload that follows it hold the setup lock together, so two windows' pairings and a connect
-//! never lose one another's change.
+//! The window's setup ops: `chat.connect`, which checks two tokens with Slack, saves them and reloads the chat from its
+//! files with no daemon restart; `chat.channels`, the picker's list; and `chat.pair`, which maps a row's folder to a
+//! channel or unmaps it, rewrites `chat.toml` and reloads. All three are jobs, taken from a window's connection only (a
+//! row's agent has no use for them, and no token goes on a command line). The edit of a file and the reload that follows
+//! it hold the setup lock together, so two windows' pairings and a connect never lose one another's change. A token is a
+//! `Secret` from its decode on: no log line, reply or error here carries a byte of one, and no request payload is
+//! logged.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{Channel, JoinOutcome};
-use sot_chat::config::{self, PairError, Writers};
+use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome};
+use sot_chat::config::{self, ConfigError, PairError, Writers};
+use sot_chat::http::{Http, Secret};
 use sot_chat::service::Service;
+use sot_chat::socket::SocketError;
 use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
-use sot_protocol::ops::{op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatPairReq, ChatPairRes};
+use sot_protocol::ops::{
+    op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatPairReq,
+    ChatPairRes, ChatUnconfigured,
+};
 use sot_protocol::reply::HandlerOutput;
 
 use super::ops::{code_of, decode, refuse, reply};
-use super::{canon_of, is_hub, Chat};
+use super::{canon_of, is_hub, Chat, Status};
 use crate::rows::Workspaces;
+
+type Checked<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
+
+/// The connect's two Slack checks: the bot token's identity with no workspace expected, then the app token's one
+/// `apps.connections.open`. The product's reach Slack ([`Verifier::product`]); a test's reach the fake.
+pub(crate) struct Verifier {
+    pub(crate) identify: Box<dyn Fn(Secret) -> Checked<Identified, ApiError> + Send + Sync>,
+    pub(crate) app: Box<dyn Fn(Secret) -> Checked<(), SocketError> + Send + Sync>,
+}
+
+impl Verifier {
+    /// `api::identify` and `socket::check_app_token`, each through a client of its own.
+    pub(crate) fn product() -> Verifier {
+        Verifier {
+            identify: Box::new(|bot| Box::pin(async move { sot_chat::api::identify(&Http::new().map_err(ApiError::Http)?, bot).await })),
+            app: Box::new(|app| Box::pin(async move { sot_chat::socket::check_app_token(&Http::new().map_err(SocketError::Http)?, app).await })),
+        }
+    }
+
+    /// Both checks against the fake Slack's base.
+    #[cfg(test)]
+    pub(crate) fn at(fake: &sot_chat::fake_slack::FakeSlack) -> Verifier {
+        let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
+        let (h, b) = (http.clone(), base.clone());
+        Verifier {
+            identify: Box::new(move |bot| {
+                let (http, base) = (h.clone(), b.clone());
+                Box::pin(async move { sot_chat::api::identify_for_test(&http, bot, base).await })
+            }),
+            app: Box::new(move |app| {
+                let (http, base) = (http.clone(), base.clone());
+                Box::pin(async move { sot_chat::socket::check_app_token_for_test(&http, app, &base).await })
+            }),
+        }
+    }
+
+    /// Checks that never reach Slack, for a chat no test connects.
+    #[cfg(test)]
+    pub(crate) fn none() -> Verifier {
+        Verifier { identify: Box::new(|_| Box::pin(async { Err(ApiError::Closed) })), app: Box::new(|_| Box::pin(async { Err(SocketError::BadRequest) })) }
+    }
+}
+
+/// Why the hub's chat is off when a connect fixes it: no `chat.toml` or no secrets, secrets the load refused, a start
+/// that failed. A refused `chat.toml` is not one (a connect never rewrites it), nor is any other status.
+pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
+    match status {
+        Status::Refused(ConfigError::Missing) | Status::Secrets(ConfigError::Missing) => Some(ChatUnconfigured::NotConnected),
+        Status::Secrets(_) => Some(ChatUnconfigured::TokensRefused),
+        Status::Failed(_) => Some(ChatUnconfigured::StartFailed),
+        _ => None,
+    }
+}
+
+/// `chat.connect`, in order: a window's connection only (`bad_request`); this daemon booted as the hub and the
+/// topology still names it (`unavailable`); each token in the load's grammar; the bot token's identity
+/// (`bot_token_refused`, a transport failure `failed`); the app token's open (`app_token_refused`, likewise). Then, under
+/// the setup lock, `chat.toml` read as it is now: another workspace's is `other_workspace`, one the load refuses is
+/// `not_saved`, a missing one is written fresh after the secrets; the secrets through the private write; then the
+/// reload, and the reply `{workspace}` once the reload's wait ends. Nothing is written before both tokens pass.
+pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
+    let req = match (window, serde_json::from_value::<ChatConnectReq>(payload)) {
+        (true, Ok(r)) => r,
+        _ => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BadRequest)),
+    };
+    if chat.shared.closed_now() {
+        return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Unavailable));
+    }
+    let env = chat.env.clone();
+    if !tokio::task::spawn_blocking(move || is_hub(&env)).await.unwrap_or(false) {
+        return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Unavailable));
+    }
+    let Ok(bot) = config::bot_token(req.bot_token.expose()) else { return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BotTokenRefused)) };
+    let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::AppTokenRefused)) };
+    drop(req);
+    let workspace = match (chat.verify.identify)(bot.clone()).await {
+        Ok(id) => id.workspace,
+        Err(ApiError::Slack(_)) => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::BotTokenRefused)),
+        Err(e) => {
+            tracing::warn!(code = e.code(), "project chat: a connect could not check the bot token");
+            return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Failed));
+        }
+    };
+    match (chat.verify.app)(app.clone()).await {
+        Ok(()) => {}
+        Err(SocketError::Rejected) => return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::AppTokenRefused)),
+        Err(e) => {
+            tracing::warn!(code = e.code(), "project chat: a connect could not check the app-level token");
+            return Ok(refuse(req_id, op::CHAT_CONNECT, ChatCode::Failed));
+        }
+    }
+    let held = chat.setup().await;
+    let env = chat.env.clone();
+    let named = workspace.clone();
+    let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &app)).await.unwrap_or(Err(ChatCode::NotSaved));
+    if let Err(code) = saved {
+        return Ok(refuse(req_id, op::CHAT_CONNECT, code));
+    }
+    let status = chat.reload(&held, rows).await;
+    tracing::info!(workspace, %status, "project chat: connected from a window");
+    reply(req_id, op::CHAT_CONNECT, &ChatConnectRes { workspace })
+}
+
+/// The connect's writes, the caller holding the setup lock: `chat.toml` as the one load reads it now decides (a
+/// topology that no longer names this computer is `unavailable`), then the secrets, then a fresh `chat.toml` if there
+/// was none. Each refusal and failed write is logged by its code or error kind alone.
+fn save_tokens(env: &Env, workspace: &str, bot: &Secret, app: &Secret) -> Result<(), ChatCode> {
+    let Some(dir) = config::config_dir(env) else {
+        tracing::warn!("project chat: a connect found no config folder");
+        return Err(ChatCode::NotSaved);
+    };
+    let fresh = match <Chat>::load(env, &config::read_file).config {
+        None => return Err(ChatCode::Unavailable),
+        Some(Ok(c)) if c.workspace() != workspace => return Err(ChatCode::OtherWorkspace),
+        Some(Ok(_)) => None,
+        Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|_| ChatCode::NotSaved)?),
+        Some(Err(e)) => {
+            tracing::warn!(refusal = %e, "project chat: a connect leaves a refused chat.toml as it is");
+            return Err(ChatCode::NotSaved);
+        }
+    };
+    let written = config::secrets(workspace, bot, app)
+        .map_err(|_| None)
+        .and_then(|text| config::write_secrets(&dir, &text, Writers::platform()).map_err(|e| Some(e.kind())))
+        .and_then(|()| fresh.map_or(Ok(()), |text| config::write_config(&dir, &text, Writers::platform()).map_err(|e| Some(e.kind()))));
+    written.map_err(|kind| {
+        tracing::warn!(?kind, "project chat: a connect could not write the chat's files");
+        ChatCode::NotSaved
+    })
+}
 
 /// `chat.channels`: the channels the app can see, with whether it is in each; the daemon's own list, whole or an error.
 pub(crate) async fn channels(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, window: bool) -> Result<HandlerOutput> {

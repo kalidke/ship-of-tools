@@ -169,7 +169,7 @@ fn never(called: &Arc<AtomicBool>) -> Starter<Fake> {
 }
 
 fn begin(home: &Home, seen: &Observed, registry: &Registry, start: Starter<Fake>) -> Arc<Chat<Fake>> {
-    Chat::begin(&home.env, &|p| seen.read(p), registry, start, HUB_CHECK)
+    Chat::begin(&home.env, &|p| seen.read(p), registry, start, setup::Verifier::none(), HUB_CHECK)
 }
 
 /// Yield until the start task has finished (no timer: it ends once its starter does).
@@ -700,7 +700,7 @@ async fn two_daemons_on_one_comm_folder_run_one_listener() {
     let registries = [Registry::new(), Registry::new()];
     let start = |home: &Home, i: usize| {
         let read = |p: &Path| config::read_file(p);
-        Chat::<Service>::begin(&home.env, &read, &registries[i], counting(&fake, &tries[i]), FAST)
+        Chat::<Service>::begin(&home.env, &read, &registries[i], counting(&fake, &tries[i]), setup::Verifier::none(), FAST)
     };
     let first = start(&one, 0);
     assert_eq!(settled(&first).await, Status::Running);
@@ -727,7 +727,7 @@ async fn a_held_start_starts_once_the_holder_lets_go() {
     // Another holder of the workspace's lock, as a second computer's daemon would be.
     let lock = sot_platform::host::lock_supervisor(&crate::comm::home::chat_dir(&home.env).unwrap().join("chat-T0AAAA.lock")).unwrap();
     let (registry, tries) = (Registry::new(), Arc::new(AtomicUsize::new(0)));
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), FAST, sot_chat::delivery::Timing::PRODUCT);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), setup::Verifier::at(&fake), FAST, sot_chat::delivery::Timing::PRODUCT);
     until("a retry or the start's end", || tries.load(Ordering::SeqCst) >= 3 || chat.status() != Status::Starting).await;
     assert_eq!(chat.status(), Status::Starting, "a held start is not final, and stays starting");
     assert!(!chat.hub().running());
@@ -739,12 +739,12 @@ async fn a_held_start_starts_once_the_holder_lets_go() {
     // A held start ends with its retirement, and with the topology naming another computer the hub.
     let (registry, held) = (Registry::new(), Home::new(Some(SELF)));
     held.configured();
-    let retired = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &registry, refuses("held"), FAST);
+    let retired = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &registry, refuses("held"), setup::Verifier::none(), FAST);
     tokio::time::sleep(5 * FAST).await;
     assert_eq!(retired.status(), Status::Starting);
     assert!(retire(&registry, LONG).incomplete.is_empty());
     assert_eq!(retired.status(), Status::Stopped);
-    let moved = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &Registry::new(), refuses("held"), FAST);
+    let moved = Chat::<Fake>::begin(&held.env, &|p| config::read_file(p), &Registry::new(), refuses("held"), setup::Verifier::none(), FAST);
     held.list("elsewhere");
     until("the held start gives up", || moved.status() == Status::NotHub).await;
 }
@@ -762,7 +762,7 @@ async fn a_held_start_survives_a_topology_that_does_not_parse() {
         let (made, open) = (made.clone(), open.load(Ordering::SeqCst));
         Box::pin(async move { if open { Ok(made) } else { Err("held") } })
     });
-    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), start, FAST);
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), start, setup::Verifier::none(), FAST);
     for what in ["unparsable", "missing"] {
         match what {
             "unparsable" => home.write("hosts.toml", "hub = \n[[["),
@@ -791,7 +791,7 @@ async fn a_chat_whose_topology_names_another_hub_steps_down_and_a_broken_topolog
     let home = Home::new(Some(SELF));
     home.configured();
     let (registry, listener) = (Registry::new(), Arc::new(Fake::default()));
-    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &registry, gives(&listener), FAST);
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &registry, gives(&listener), setup::Verifier::none(), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
     // A topology that does not parse, one that is gone, and one naming this computer: the chat runs on through many asks.
     for what in ["unparsable", "missing", "this computer"] {
@@ -847,7 +847,7 @@ async fn a_reload_applies_new_tokens_and_a_new_mapping_with_no_daemon_restart() 
     let alpha = rows.insert(row("alpha", &a)).workspace_id.clone();
     let beta = rows.insert(row("beta", &b)).workspace_id.clone();
     let (registry, tries) = (Registry::new(), Arc::new(AtomicUsize::new(0)));
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), HUB_CHECK, Timing::PRODUCT);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &registry, counting(&fake, &tries), setup::Verifier::at(&fake), HUB_CHECK, Timing::PRODUCT);
     assert_eq!(settled(&chat).await, Status::Running);
     let first = chat.admit(&rows, &target(&alpha, "T0AAAA", "C0AAAA")).unwrap();
     assert_eq!(chat.admit(&rows, &target(&beta, "T0AAAA", "C0BBBB")).err(), Some(ChatCode::Unmapped));
@@ -1039,7 +1039,7 @@ async fn one_step_down_watch_runs_after_two_reloads() {
     let home = Home::new(Some(SELF));
     home.configured();
     let (listeners, tries) = (fakes(3), Arc::new(AtomicUsize::new(0)));
-    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), in_turn(&listeners, &tries), FAST);
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), in_turn(&listeners, &tries), setup::Verifier::none(), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
     for _ in 0..2 {
         assert_eq!(reload(&chat).await, Status::Running);

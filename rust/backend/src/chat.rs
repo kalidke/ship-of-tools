@@ -249,6 +249,8 @@ pub(crate) struct Chat<L: Listener = Service> {
     env: Env,
     /// How a start is made, the boot's and each reload's.
     start: Arc<Starter<L>>,
+    /// How a connect checks two tokens with Slack before anything is saved.
+    verify: setup::Verifier,
     /// `begin`'s pace of the retry of a held start and of the hub fact's asks.
     check: Duration,
     /// One reload at a time.
@@ -294,12 +296,12 @@ impl<L: Listener> Chat<L> {
     /// later retires with the daemon; a daemon that is not the hub registers nothing and never starts. The start runs on
     /// a task of its own, so boot never waits on Slack. `check` is the pace of the retry of a start refused `held` and
     /// of the hub fact's asks (`HUB_CHECK`; the tests shorten it). Must run inside the daemon's runtime.
-    fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, check: Duration) -> Arc<Chat<L>> {
+    fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, verify: setup::Verifier, check: Duration) -> Arc<Chat<L>> {
         let load = Self::load(env, read);
         let hub = load.config.is_some();
         let shared = Shared::new(load.off, !hub);
         let (config, handle, start) = (Mutex::new(Arc::new(load.config)), Some(Handle::current()), Arc::new(start));
-        let this = Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: env.clone(), start, check, setup: Default::default() });
+        let this = Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: env.clone(), start, verify, check, setup: Default::default() });
         if !hub {
             return this;
         }
@@ -396,7 +398,7 @@ impl<L: Listener> Chat<L> {
     /// builds its chat only through [`Chat::boot`].
     #[cfg(test)]
     pub(crate) fn begin_unowned(env: &Env, read: Reader, registry: &Registry, start: Starter<L>) -> Arc<Chat<L>> {
-        Chat::begin(env, read, registry, start, HUB_CHECK)
+        Chat::begin(env, read, registry, start, setup::Verifier::none(), HUB_CHECK)
     }
 
     /// A chat that is not the hub, for a test's services.
@@ -405,7 +407,7 @@ impl<L: Listener> Chat<L> {
         let shared = Shared::new(Status::NotHub, true);
         let (config, handle) = (Mutex::new(Arc::new(None)), Handle::try_current().ok());
         let start: Arc<Starter<L>> = Arc::new(Box::new(|_, _, _| Box::pin(std::future::pending())));
-        Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: Env::empty(), start, check: HUB_CHECK, setup: Default::default() })
+        Arc::new(Chat { config, shared, handle, hub: watch::Hub::new(), env: Env::empty(), start, verify: setup::Verifier::none(), check: HUB_CHECK, setup: Default::default() })
     }
 
     pub(crate) fn hub(&self) -> &Arc<watch::Hub> {
@@ -630,10 +632,12 @@ impl Chat<Service> {
     }
 
     /// The daemon's chat as the boot makes it, and as the tests' rig makes it: begin, the boot's log line, and the
-    /// owner's task, started while the chat is still `Starting`. `check` is [`Chat::begin`]'s; `timing` is the delivery's (`Timing::PRODUCT`; a test shortens it). Must run inside the daemon's
+    /// owner's task, started while the chat is still `Starting`. `verify` is the connect's checks (`Verifier::product`;
+    /// a test's reach the fake Slack). `check` is [`Chat::begin`]'s; `timing` is the delivery's (`Timing::PRODUCT`; a test shortens it). Must run inside the daemon's
     /// runtime.
-    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, check: Duration, timing: Timing) -> Arc<Chat> {
-        let chat = Chat::begin(env, read, registry, start, check);
+    #[allow(clippy::too_many_arguments, reason = "the boot's inputs, each a seam a test replaces")]
+    pub(crate) fn boot(env: &Env, rows: &Workspaces, read: Reader, registry: &Registry, start: Starter<Service>, verify: setup::Verifier, check: Duration, timing: Timing) -> Arc<Chat> {
+        let chat = Chat::begin(env, read, registry, start, verify, check);
         chat.hub.set_timing(timing);
         tracing::info!(status = %chat.status(), "project chat");
         drop(chat.start_owner(rows.clone()));

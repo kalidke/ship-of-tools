@@ -1023,6 +1023,11 @@ owned by `docs/CLAUDE.md`.
   guide does not say which steps are once per Slack workspace and which per project. The maintainer, reading the guide
   (2026-11-15): "we can't require users to make and edit files". Fix decided: connect a workspace and pick a project's
   channel from the Chat drawer, the daemon writing both files and applying them with no restart.
+- **CHAT-START-FAILURE-FINAL** [note] A chat start that fails for a passing cause (no network at the daemon's start,
+  Slack down) stays failed until a `chat.connect` or a daemon restart: only a start refused `held` is tried again
+  (`Chat::launch`, `rust/backend/src/chat.rs`). `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
+  window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
+  reading code; never seen.
 
 ## records
 

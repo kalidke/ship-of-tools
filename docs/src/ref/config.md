@@ -285,7 +285,11 @@ The project chat's configuration, two TOML files in the config folder (`~/.confi
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
-computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a pairing a window asks for (below). After editing either file by hand, restart the daemon (on
+computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
+from a window checks both tokens with Slack first and writes nothing if either is refused; then the daemon writes
+`chat-secrets.toml` whole, private to your account from the moment it is made, writes a `chat.toml` of the workspace and
+no channel when there is none, and restarts the chat from the files, with no daemon restart. A connect leaves an
+existing `chat.toml` as it is, and is refused when that file names another workspace or is itself refused. After editing either file by hand, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
 by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused
@@ -295,7 +299,7 @@ daemon's log, on the "project chat" line, as a fixed explanation that starts wit
 (`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a key that the other
 file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that
 Slack refuses or cannot reach (a rejected token, no network)
-is logged as "project chat did not start" and stays failed until the daemon restarts.
+is logged as "project chat did not start" and stays failed until the daemon restarts or a window connects Slack again.
 
 A window can pair a project's folder with a channel, or unpair it, and the daemon then rewrites `chat.toml` whole and
 starts the chat again from the two files, with no restart; no window sends this request yet. The daemon keeps every key
@@ -318,7 +322,8 @@ Each file is a regular file of at most 64 KiB, and only the keys below are accep
 
 `chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`) and `app_token` (it starts `xapp-`), each token
 letters, digits and hyphens up to 512 bytes. Keep the file private to your account; the
-daemon never prints a token and masks one in its log, but it does not check the file's permissions.
+daemon never prints a token and masks one in its log, but it does not check the permissions of a file written by hand
+(the one a window's connect writes is owner-only).
 
 `chat-secrets.toml` has one form: those three top-level keys, never a `[[workspace]]` table, and one workspace. A tool
 that needs several workspaces keeps its own file at its own path.

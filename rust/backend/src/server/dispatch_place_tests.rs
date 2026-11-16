@@ -14,7 +14,7 @@ fn the_lists_are_disjoint_and_reasoned() {
     assert_eq!(place(op::PREVIEW_GET), Place::Pooled);
     assert_eq!(place("no.such"), Place::Job);
     // A chat request waits on Slack (the setup ops also on a file's write and a reload): each is a job, never in the loop.
-    for name in [op::CHAT_POST, op::CHAT_HISTORY, op::CHAT_RESOLVE, op::CHAT_CHANNELS, op::CHAT_PAIR] {
+    for name in [op::CHAT_POST, op::CHAT_HISTORY, op::CHAT_RESOLVE, op::CHAT_CONNECT, op::CHAT_CHANNELS, op::CHAT_PAIR] {
         assert_eq!(place(name), Place::Job, "{name}");
     }
     // A watch runs in the loop: its reply is written before the loop reads another chat event, and its snapshot is the

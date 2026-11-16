@@ -16,12 +16,11 @@ use sot_chat::service::Service;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// What a chat op name gets from the server: a handler, or the unknown-op answer a request carrying its name gets
-/// (an event; a request the wire declares and the daemon does not yet serve).
+/// (an event).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     Handled,
     Event,
-    Unserved,
 }
 
 /// Every chat op name of the wire and its answer; the walk below fails for a name missing here.
@@ -33,7 +32,7 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_UNWATCH, Answer::Handled),
     (op::CHAT_CHANGED, Answer::Event),
     (op::CHAT_STATUS, Answer::Event),
-    (op::CHAT_CONNECT, Answer::Unserved),
+    (op::CHAT_CONNECT, Answer::Handled),
     (op::CHAT_CHANNELS, Answer::Handled),
     (op::CHAT_PAIR, Answer::Handled),
 ];
@@ -113,7 +112,7 @@ async fn rig_booting_with(fake: &FakeSlack, delivers: bool) -> Rig {
     let rows = Workspaces::new();
     let alpha = rows.insert(row("alpha", &folders[0])).workspace_id.clone();
     let beta = rows.insert(row("beta", &folders[1])).workspace_id.clone();
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), crate::chat::HUB_CHECK, sot_chat::delivery::Timing::PRODUCT);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), crate::chat::setup::Verifier::at(fake), crate::chat::HUB_CHECK, sot_chat::delivery::Timing::PRODUCT);
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
     services.chat = chat;
@@ -348,7 +347,7 @@ async fn every_chat_op_name_has_a_handler_or_a_stated_answer() {
         let reply = conn.ask(100 + n as u64, name, history(&rig.alpha, "C0AAAA")).await;
         match answer {
             // The events are the daemon's to send: a request carrying the name is an unknown op.
-            Answer::Event | Answer::Unserved => assert!(reply["error"].as_str().unwrap().starts_with("unknown op"), "{name}: {reply}"),
+            Answer::Event => assert!(reply["error"].as_str().unwrap().starts_with("unknown op"), "{name}: {reply}"),
             // A running service and a current row: a name with a handler is neither unknown nor `unavailable`.
             Answer::Handled => {
                 assert!(!reply["error"].as_str().unwrap_or("").starts_with("unknown op"), "{name}: {reply}");
@@ -382,12 +381,13 @@ async fn a_chat_request_is_unavailable_with_no_running_service() {
         for (n, (name, payload)) in [(op::CHAT_HISTORY, history(&rig.alpha, "C0AAAA")), (op::CHAT_POST, post(&rig.alpha, "C0AAAA"))].into_iter().enumerate() {
             assert_eq!(code(&conn.ask(20 + n as u64, name, payload).await), "unavailable", "{what} {name}");
         }
-        // A resolve shows the file's mapping without delivering (the file's, so a non-hub says unavailable and a hub
-        // with no chat.toml says invalid).
+        // A resolve shows the file's mapping without delivering, except where a connect would fix the chat: a non-hub
+        // says unavailable, and a hub with no chat.toml or a failed start says unconfigured.
         let resolved = conn.ask(30, op::CHAT_RESOLVE, json!({"row": rig.alpha})).await;
         match what {
             "not the hub" => assert_eq!(code(&resolved), "unavailable", "{what} resolve"),
-            "no chat.toml" => assert_eq!(resolved["state"], "invalid", "{what} resolve: {resolved}"),
+            "no chat.toml" => assert_eq!(resolved, json!({"state": "unconfigured", "reason": "not_connected"}), "{what} resolve"),
+            "failed start" => assert_eq!(resolved, json!({"state": "unconfigured", "reason": "start_failed"}), "{what} resolve"),
             _ => assert_eq!((resolved["state"].as_str(), resolved["delivers"].as_bool()), (Some("mapped"), Some(false)), "{what} resolve"),
         }
     }

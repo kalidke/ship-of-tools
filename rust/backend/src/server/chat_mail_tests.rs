@@ -82,7 +82,7 @@ impl World {
     /// [`World::start`] registered with `registry`, the hub fact asked every `check`.
     async fn start_in(&self, fake: &FakeSlack, registry: &Registry, check: Duration) -> Arc<Chat> {
         let read = |p: &std::path::Path| config::read_file(p);
-        let chat = Chat::boot(&self.home.env, &self.rows, &read, registry, starter(fake), check, TIMING);
+        let chat = Chat::boot(&self.home.env, &self.rows, &read, registry, starter(fake), crate::chat::setup::Verifier::at(fake), check, TIMING);
         running(&chat).await;
         let alpha = self.rows.list()[0].workspace_id.clone();
         let target = ChatTarget { row: alpha, workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };

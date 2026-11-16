@@ -461,6 +461,13 @@ pub async fn identify(http: &Http, bot: Secret) -> Result<Identified, ApiError> 
     identify_at(http, bot, BASE.into()).await
 }
 
+/// `identify` against the fixture's base (`FakeSlack::url("slack.com", "/api/")`), for another crate's tests. Exists
+/// under `cfg(test)` or the `test-support` feature alone, like `Service::start_at`.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn identify_for_test(http: &Http, bot: Secret, base: String) -> Result<Identified, ApiError> {
+    identify_at(http, bot, base).await
+}
+
 /// `identify` against a base: the product's from `identify`, the fixture's from a test.
 pub(crate) async fn identify_at(http: &Http, bot: Secret, base: String) -> Result<Identified, ApiError> {
     let api = Api::build(http.clone(), bot, String::new(), base);

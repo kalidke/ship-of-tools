@@ -1,17 +1,18 @@
-//! The setup ops that need a running chat (`chat.channels`, `chat.pair`) through real connections, against the exported
-//! fake Slack: its channels, its join and a live socket.
+//! The setup ops (`chat.connect`, `chat.channels`, `chat.pair`) through real connections, against the exported fake
+//! Slack: its tokens, its channels, its join and a live socket.
 
 use super::chat_ops_tests::{code, connect, connect_window, running, starter, Conn};
 use super::chat_watch_tests::{after_hello, message, stamp, until};
 use super::*;
+use crate::chat::setup::Verifier;
 use crate::chat::tests::{row, Home, SELF};
-use crate::chat::{Chat, Status, HUB_CHECK};
+use crate::chat::{Chat, Starter, Status, HUB_CHECK};
 use crate::lifecycle::retire::Registry;
 use serde_json::{json, Value};
-use sot_chat::config::{self, Writers, CONFIG_FILE, SECRETS_FILE};
+use sot_chat::config::{self, CONFIG_FILE, SECRETS_FILE};
 use sot_chat::delivery::Timing;
 use sot_chat::fake_slack::{FakeSlack, Identity, Reply};
-use sot_chat::http::Secret;
+use sot_chat::service::Service;
 use sot_protocol::ops::{ChatChannel, ChatTarget};
 use std::sync::Mutex;
 
@@ -125,7 +126,7 @@ async fn world(chat_toml: Option<String>, channels: &[Fact]) -> World {
     }
     let rows = Workspaces::new();
     let ids = [rows.insert(row("alpha", &folders[0])).workspace_id.clone(), rows.insert(row("beta", &folders[1])).workspace_id.clone()];
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(&fake), HUB_CHECK, Timing::PRODUCT);
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(&fake), Verifier::at(&fake), HUB_CHECK, Timing::PRODUCT);
     running(&chat).await;
     let root = tempfile::tempdir().unwrap();
     let mut services = Services::for_test("t", root.path());
@@ -303,25 +304,28 @@ async fn the_channel_list_needs_a_running_service_and_a_window() {
     );
 }
 
-/// The ops after the files a connect leaves (the secrets, owner-only, and a fresh `chat.toml`, written through the
-/// config's own writers and loaded by a reload): list, pair, watch, and a post reaches the window.
-#[tokio::test(flavor = "multi_thread")]
-async fn from_the_connects_files_a_window_pairs_and_reads_its_channel() {
+/// The plan's done test: from a hub with no chat file, a window connects with two tokens, lists the channels, pairs its
+/// row, watches the channel and gets a socket post as `chat.changed`; afterwards the secrets are the three keys and
+/// owner-only, `chat.toml` loads with the mapping, and no reply, event or log line held a byte of a token. The runtime
+/// is this thread's, so the log capture sees every job's lines.
+#[tokio::test(flavor = "current_thread")]
+async fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
+    let log = sot_platform::test_log::capture();
     let w = world(None, &[public("C0PUB", false)]).await;
-    let (bot, app) = (Secret::new("xoxb-1111-2222-aaaa"), Secret::new("xapp-1-A111-2222-bbbb"));
-    let dir = w.home.config();
-    config::write_secrets(&dir, &config::secrets("T0AAAA", &bot, &app).unwrap(), Writers::platform()).unwrap();
-    config::write_config(&dir, &fresh(), Writers::platform()).unwrap();
     let chat = w.services.chat.clone();
-    assert_eq!(chat.reload(&chat.setup().await, &w.rows).await, Status::Running);
-
+    assert_eq!(chat.status(), Status::Refused(config::ConfigError::Missing));
+    let (b, a) = (bot("6c6d6e6f"), app("7a7b7c7d"));
     let mut conn = connect_window(w.services.clone()).await;
-    let listed = conn.ask(2, op::CHAT_CHANNELS, json!({})).await;
+    let connected = conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await;
+    assert_eq!(connected, json!({"workspace": "T0AAAA"}));
+    assert_eq!(chat.status(), Status::Running);
+
+    let listed = conn.ask(3, op::CHAT_CHANNELS, json!({})).await;
     assert_eq!(listed["channels"][0]["id"], "C0PUB", "{listed}");
     let paired = conn.pair(&w.ids[0], Some("C0PUB")).await;
     assert_eq!(paired, json!({}));
     after_hello(&chat, &w.rows, &w.target(0, "C0PUB")).await;
-    let watched = conn.ask(3, op::CHAT_WATCH, json!({"target": w.target(0, "C0PUB")})).await;
+    let watched = conn.ask(4, op::CHAT_WATCH, json!({"target": w.target(0, "C0PUB")})).await;
     assert!(matches!(watched["state"].as_str(), Some("pending" | "complete")), "{watched}");
     let hub = chat.hub().clone();
     let probe = hub.connect();
@@ -335,9 +339,8 @@ async fn from_the_connects_files_a_window_pairs_and_reads_its_channel() {
     };
     assert_eq!(put["put"][0]["ts"], stamp(1).as_str(), "{put}");
 
-    // The files: the secrets keep their three keys and, where there are owners, are the owner's alone; `chat.toml` loads.
-    let secrets: toml::Table = std::fs::read_to_string(dir.join(SECRETS_FILE)).unwrap().parse().unwrap();
-    assert_eq!(secrets.keys().map(String::as_str).collect::<Vec<_>>(), ["app_token", "bot_token", "workspace"]);
+    let dir = w.home.config();
+    assert!(secrets_hold(&w.home, &b, &a), "the secrets file holds other keys or tokens");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -345,8 +348,283 @@ async fn from_the_connects_files_a_window_pairs_and_reads_its_channel() {
     }
     let loaded = config::Config::load(&dir, &|p| config::read_file(p), &|f| std::fs::canonicalize(f).ok().map(|c| c.to_string_lossy().into_owned())).unwrap();
     assert_eq!(loaded.mappings().collect::<Vec<_>>(), [(w.folders[0].to_str().unwrap(), "C0PUB")]);
-    for reply in [&listed, &paired, &watched, &put] {
-        let text = reply.to_string();
-        assert!(!text.contains("xoxb-") && !text.contains("xapp-"), "a reply or an event held a token");
+    let text = log.text();
+    assert!(text.contains("connected from a window"), "the capture saw no connect");
+    for body in ["6c6d6e6f", "7a7b7c7d"] {
+        assert!(!text.contains(body), "the daemon's log holds a token's bytes");
+        for (n, reply) in [&connected, &listed, &paired, &watched, &put].iter().enumerate() {
+            assert!(!reply.to_string().contains(body), "reply or event {n} holds a token's bytes");
+        }
     }
+}
+
+// ---- the connect ----
+
+/// A token the fake answers `invalid_auth` for ends with this.
+const REFUSED: &str = "refused";
+
+/// Fixture tokens are made at run time, so no token literal is in the tree.
+fn bot(body: &str) -> String {
+    format!("xoxb-{body}-{}", "4".repeat(12))
+}
+
+fn app(body: &str) -> String {
+    format!("xapp-{body}-{}", "5".repeat(12))
+}
+
+/// A fake Slack that takes every token but one ending `REFUSED`: `auth.test` names `T0AAAA`, `apps.connections.open`
+/// names a Slack websocket, and the socket says hello and waits.
+async fn tokens_slack() -> FakeSlack {
+    FakeSlack::start(Identity::Trusted, |seen, port| {
+        let path = seen.path();
+        if seen.authorization.as_deref().is_some_and(|a| a.ends_with(REFUSED)) {
+            return Reply::json(&json!({"ok": false, "error": "invalid_auth"}));
+        }
+        if path.ends_with("/auth.test") {
+            Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
+        } else if path.ends_with("/apps.connections.open") {
+            Reply::json(&json!({"ok": true, "url": format!("wss://wss-primary.slack.com:{port}/link/?ticket=t")}))
+        } else if seen.upgrade {
+            Reply::socket(|mut peer| async move {
+                peer.send(&json!({"type": "hello", "num_connections": 1})).await;
+                peer.drain().await;
+            })
+        } else {
+            Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+        }
+    })
+    .await
+}
+
+struct Bare {
+    home: Home,
+    services: Services,
+    rows: Workspaces,
+    alpha: String,
+    _root: tempfile::TempDir,
+}
+
+/// A hub as the daemon's boot makes it, with whatever chat files the home holds, one row in folder a, and the chat's
+/// start left running.
+fn hub(home: Home, fake: &FakeSlack, start: Starter<Service>) -> Bare {
+    let folder = home.folder("a");
+    let rows = Workspaces::new();
+    let alpha = rows.insert(row("alpha", &folder)).workspace_id.clone();
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), start, Verifier::at(fake), HUB_CHECK, Timing::PRODUCT);
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    services.chat = chat;
+    services.workspaces = rows.clone();
+    Bare { home, services, rows, alpha, _root: root }
+}
+
+/// Every file of the config folder and its bytes.
+fn files(home: &Home) -> Vec<(String, Vec<u8>)> {
+    let mut all: Vec<_> = std::fs::read_dir(home.config())
+        .unwrap()
+        .map(|e| e.unwrap())
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default()))
+        .collect();
+    all.sort();
+    all
+}
+
+fn connect_req(bot: &str, app: &str) -> Value {
+    json!({"bot_token": bot, "app_token": app})
+}
+
+/// The secrets file holds exactly the three keys, with these tokens; it says so without printing them.
+fn secrets_hold(home: &Home, bot: &str, app: &str) -> bool {
+    let text = std::fs::read_to_string(home.config().join(SECRETS_FILE)).unwrap();
+    let t: toml::Table = text.parse().unwrap();
+    t.len() == 3 && t["workspace"].as_str() == Some("T0AAAA") && t["bot_token"].as_str() == Some(bot) && t["app_token"].as_str() == Some(app)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_connects_with_two_tokens_and_the_chat_runs() {
+    let fake = tokens_slack().await;
+    let s = hub(Home::new(Some(SELF)), &fake, starter(&fake));
+    assert_eq!(s.services.chat.status(), Status::Refused(sot_chat::config::ConfigError::Missing));
+    let (b, a) = (bot("1"), app("1"));
+    let mut conn = connect_window(s.services.clone()).await;
+    let reply = conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await;
+    assert_eq!(reply, json!({"workspace": "T0AAAA"}));
+    assert!(secrets_hold(&s.home, &b, &a), "the secrets file holds other keys or tokens");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(s.home.config().join(SECRETS_FILE)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the secrets file is not owner-only");
+    }
+    let written = std::fs::read_to_string(s.home.config().join(CONFIG_FILE)).unwrap();
+    assert_eq!(written, config::fresh("T0AAAA").unwrap(), "chat.toml is not the fresh one");
+    running(&s.services.chat).await;
+    assert_eq!(s.services.chat.status(), Status::Running);
+    let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": s.alpha})).await;
+    assert_eq!(resolved["state"], "unmapped", "{resolved}");
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_token_writes_nothing() {
+    let fake = tokens_slack().await;
+    let s = hub(Home::new(Some(SELF)), &fake, starter(&fake));
+    let before = files(&s.home);
+    let mut conn = connect_window(s.services.clone()).await;
+    let cases = [
+        ("bot form", connect_req("nope", &app("1")), "bot_token_refused"),
+        ("bot charset", connect_req(&format!("{}!", bot("1")), &app("1")), "bot_token_refused"),
+        ("app form", connect_req(&bot("1"), &bot("2")), "app_token_refused"),
+        ("auth.test", connect_req(&format!("{}{REFUSED}", bot("1")), &app("1")), "bot_token_refused"),
+        ("apps.connections.open", connect_req(&bot("1"), &format!("{}{REFUSED}", app("1"))), "app_token_refused"),
+    ];
+    for (n, (what, req, want)) in cases.into_iter().enumerate() {
+        let reply = conn.ask(10 + n as u64, op::CHAT_CONNECT, req).await;
+        assert_eq!(code(&reply), want, "{what}");
+        assert_eq!(files(&s.home), before, "{what}: the config folder changed");
+    }
+    // A form refused calls nothing; each Slack refusal was one call.
+    let calls: Vec<String> = fake.seen().iter().map(|s| s.path()).collect();
+    assert_eq!(calls, ["/api/auth.test", "/api/auth.test", "/api/apps.connections.open"]);
+    assert_eq!(s.services.chat.status(), Status::Refused(sot_chat::config::ConfigError::Missing));
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_from_a_row_or_on_a_computer_that_is_not_the_hub_writes_nothing() {
+    let fake = tokens_slack().await;
+    // A row's connection (role `cli`) is refused before anything is read.
+    let s = hub(Home::new(Some(SELF)), &fake, starter(&fake));
+    let before = files(&s.home);
+    let mut conn = connect(s.services.clone()).await;
+    assert_eq!(code(&conn.ask(2, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "bad_request");
+    assert_eq!(files(&s.home), before);
+    // A hub deposed since its boot: the topology asked at the op names another computer.
+    s.home.list("elsewhere");
+    let deposed = files(&s.home);
+    let mut window = connect_window(s.services.clone()).await;
+    assert_eq!(code(&window.ask(3, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "unavailable");
+    assert_eq!(files(&s.home), deposed);
+    // Not the hub at its boot.
+    let other = hub(Home::new(Some("elsewhere")), &fake, starter(&fake));
+    let before = files(&other.home);
+    let mut window = connect_window(other.services.clone()).await;
+    assert_eq!(code(&window.ask(4, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "unavailable");
+    assert_eq!(files(&other.home), before);
+    assert!(fake.seen().is_empty(), "a refused connect reached Slack");
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_naming_another_workspace_is_refused() {
+    let fake = tokens_slack().await;
+    let home = Home::new(Some(SELF));
+    home.write(CONFIG_FILE, "workspace = \"T0OTHER\"\nchannels = []\n");
+    let s = hub(home, &fake, starter(&fake));
+    let before = files(&s.home);
+    let mut conn = connect_window(s.services.clone()).await;
+    assert_eq!(code(&conn.ask(2, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "other_workspace");
+    assert_eq!(files(&s.home), before);
+    // A chat.toml the load refuses is never rewritten from the window.
+    s.home.write(CONFIG_FILE, "workspace = [[[");
+    let before = files(&s.home);
+    assert_eq!(code(&conn.ask(3, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "not_saved");
+    assert_eq!(files(&s.home), before);
+    fake.shutdown().await;
+}
+
+/// Every reply and every line the daemon logs on this thread while connects run, a refused one included, holds no
+/// byte of a token's body. The runtime is this thread's, so the capture sees each job's lines.
+#[tokio::test(flavor = "current_thread")]
+async fn no_token_byte_reaches_the_daemons_log_or_a_reply() {
+    let log = sot_platform::test_log::capture();
+    let fake = tokens_slack().await;
+    let s = hub(Home::new(Some(SELF)), &fake, starter(&fake));
+    let (b, a) = (bot("8a8b8c8d"), app("9e9f9a9b"));
+    let mut conn = connect_window(s.services.clone()).await;
+    let mut replies = Vec::new();
+    for (n, req) in [
+        connect_req(&format!("{b}{REFUSED}"), &a),
+        connect_req(&b, &format!("{a}{REFUSED}")),
+        connect_req(&format!("{b}!"), &a),
+        json!({"bot_token": b, "app_token": 7}),
+        connect_req(&b, &a),
+        connect_req(&b, &a),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        replies.push(conn.ask(2 + n as u64, op::CHAT_CONNECT, req).await.to_string());
+    }
+    assert_eq!(replies[4], json!({"workspace": "T0AAAA"}).to_string());
+    running(&s.services.chat).await;
+    let text = log.text();
+    assert!(text.contains("connected from a window"), "the capture saw no connect");
+    for body in ["8a8b8c8d", "9e9f9a9b"] {
+        assert!(!text.contains(body), "the daemon's log holds a token's bytes");
+        for (n, reply) in replies.iter().enumerate() {
+            assert!(!reply.contains(body), "reply {n} holds a token's bytes");
+        }
+    }
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resolve_says_unconfigured_for_each_reason_a_connect_fixes() {
+    let fake = tokens_slack().await;
+    let failing = || -> Starter<Service> { Box::new(|_, _, _| Box::pin(async { Err("down") })) };
+    let resolve = |s: Bare| async move {
+        // The whole setup, so its temporary folders outlive the request (a block captures only the fields it names).
+        let s = s;
+        running(&s.services.chat).await;
+        let mut conn = connect_window(s.services.clone()).await;
+        conn.ask(2, op::CHAT_RESOLVE, json!({"row": s.alpha})).await
+    };
+    let unconfigured = |reason: &str| json!({"state": "unconfigured", "reason": reason});
+    // No chat.toml.
+    assert_eq!(resolve(hub(Home::new(Some(SELF)), &fake, starter(&fake))).await, unconfigured("not_connected"));
+    // chat.toml and no secrets.
+    let home = Home::new(Some(SELF));
+    home.write(CONFIG_FILE, &config::fresh("T0AAAA").unwrap());
+    assert_eq!(resolve(hub(home, &fake, starter(&fake))).await, unconfigured("not_connected"));
+    // Secrets the load refuses.
+    let home = Home::new(Some(SELF));
+    home.write(CONFIG_FILE, &config::fresh("T0AAAA").unwrap());
+    home.write(SECRETS_FILE, "workspace = \"T0AAAA\"\nbot_token = \"nope\"\napp_token = \"nope\"\n");
+    assert_eq!(resolve(hub(home, &fake, starter(&fake))).await, unconfigured("tokens_refused"));
+    // A start that failed.
+    let home = Home::new(Some(SELF));
+    home.configured();
+    assert_eq!(resolve(hub(home, &fake, failing())).await, unconfigured("start_failed"));
+    // A refused chat.toml stays `invalid`: a connect never rewrites it.
+    let home = Home::new(Some(SELF));
+    home.write(CONFIG_FILE, "workspace = [[[");
+    assert_eq!(resolve(hub(home, &fake, starter(&fake))).await, json!({"state": "invalid"}));
+    // The row before this: a row that is gone is `stale_row`, whatever the chat's state.
+    let s = hub(Home::new(Some(SELF)), &fake, starter(&fake));
+    s.rows.remove_by_id(&s.alpha);
+    assert_eq!(code(&resolve(s).await), "stale_row");
+    fake.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connect_while_running_replaces_the_tokens_and_restarts() {
+    let fake = tokens_slack().await;
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let s = hub(home, &fake, starter(&fake));
+    running(&s.services.chat).await;
+    assert_eq!(s.services.chat.status(), Status::Running);
+    let toml = std::fs::read(s.home.config().join(CONFIG_FILE)).unwrap();
+    let (b, a) = (bot("2"), app("2"));
+    let auth = |token: &str| fake.seen().iter().filter(|x| x.path().ends_with("/auth.test") && x.authorization.as_deref() == Some(&*format!("Bearer {token}"))).count();
+    let mut conn = connect_window(s.services.clone()).await;
+    assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_req(&b, &a)).await, json!({"workspace": "T0AAAA"}));
+    assert_eq!(s.services.chat.status(), Status::Running, "the reply came before the reload's start ended");
+    assert!(secrets_hold(&s.home, &b, &a), "the secrets file does not hold the new tokens");
+    assert_eq!(std::fs::read(s.home.config().join(CONFIG_FILE)).unwrap(), toml, "a connect rewrote an admitted chat.toml");
+    assert_eq!(auth(&b), 2, "the new bot token: the connect's identify and the restarted service's own auth.test");
+    let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": s.alpha})).await;
+    assert_eq!((resolved["state"].as_str(), resolved["channel"].as_str()), (Some("mapped"), Some("C0AAAA")), "{resolved}");
+    fake.shutdown().await;
 }

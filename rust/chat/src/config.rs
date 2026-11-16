@@ -402,6 +402,16 @@ fn token_form(s: &str, prefix: &str) -> Result<Secret, ConfigError> {
     }
 }
 
+/// A pasted bot token in the load's own grammar (`BadToken` otherwise): the connect's first check, before Slack's.
+pub fn bot_token(s: &str) -> Result<Secret, ConfigError> {
+    token_form(s, "xoxb-")
+}
+
+/// A pasted app-level token in the load's own grammar (`BadToken` otherwise).
+pub fn app_token(s: &str) -> Result<Secret, ConfigError> {
+    token_form(s, "xapp-")
+}
+
 impl Credentials {
     /// Read `chat-secrets.toml` from `dir`. The only call that opens it; the workspace must be `config`'s.
     pub fn read(dir: &Path, read: Reader, config: &Config) -> Result<Credentials, ConfigError> {
