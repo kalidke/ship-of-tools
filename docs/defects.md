@@ -942,8 +942,8 @@ owned by `docs/CLAUDE.md`.
   session can post a figure to its project's channel; neither does, and he approved the work (2026-11-16). The plan is
   `docs/history/chat-figures-plan.md`: a row's agent posts a file with `sot-fe chat post --file`, the Chat drawer shows
   a message's pictures and opens one in the preview, and a person posts the previewed file. Built: the chat's share of a
-  file (`Api::post_file`, `rust/chat/CLAUDE.md` guarantee 32). Unbuilt: the read-back of a file share's origin, wire's
-  two ops, the daemon's op and the row's tool, the fetch, the drawer's pictures and the person's post.
+  file (`Api::post_file`, `rust/chat/CLAUDE.md` guarantee 32) and its read-back as its poster's (guarantee 2).
+  Unbuilt: wire's two ops, the daemon's op and the row's tool, the fetch, the drawer's pictures and the person's post.
 - **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
   `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on
   every try (an inbox that is a directory), an `ambiguous_row` or `no_row` that refuses every filing, a chat held by

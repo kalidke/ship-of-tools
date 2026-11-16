@@ -392,6 +392,70 @@ fn an_unreadable_own_post_keeps_its_origin_and_an_unreadable_reply_its_thread() 
 }
 
 #[test]
+fn an_own_file_share_takes_its_origin_from_its_label_and_a_members_does_not() {
+    let file = json!([{"id": "F0FILE", "name": "fig.png", "mimetype": "image/png", "size": 9}]);
+    let share = |ts: &str, who: Value, text: &str| {
+        let mut m = json!({"ts": ts, "subtype": "file_share", "text": text, "files": file});
+        m.as_object_mut().unwrap().extend(who.as_object().unwrap().clone());
+        new(m)
+    };
+    let own = json!({"user": OWN_USER, "bot_id": OWN_BOT});
+    let seen = |r: &ChatRecord| (r.origin, r.author.name.clone(), r.text.clone(), r.files.len());
+
+    // A row's share with its comment, a person's with none, and a name escaped as it was sent.
+    let r = share("1700000000.000100", own.clone(), "build-7 (row via Ship of Tools): the &lt;!channel&gt; fit");
+    assert_eq!(seen(&r), (Origin::Row, "build-7".into(), "the &lt;!channel&gt; fit".into(), 1));
+    let r = share("1700000000.000200", own.clone(), "Ada Test (person via Ship of Tools)");
+    assert_eq!(seen(&r), (Origin::Drawer, "Ada Test".into(), String::new(), 1));
+    let r = share("1700000000.000300", own.clone(), "R&amp;D &lt;3 (person via Ship of Tools): hi");
+    assert_eq!(seen(&r), (Origin::Drawer, "R&D <3".into(), "hi".into(), 1));
+    // The first marker ends the label, so a comment that carries one is the comment.
+    let r = share("1700000000.000400", own.clone(), "b (row via Ship of Tools): (person via Ship of Tools): x");
+    assert_eq!(seen(&r), (Origin::Row, "b".into(), "(person via Ship of Tools): x".into(), 1));
+
+    // Not a label as sent: unescaped, with no `: ` after the marker, or with no name; each is the app's `Bot`, its text
+    // untouched.
+    for (i, text) in [
+        "a <b (row via Ship of Tools): x",
+        "a & b (row via Ship of Tools): x",
+        "build-7 (row via Ship of Tools)x",
+        " (row via Ship of Tools): x",
+        "said: build-7 (rows via Ship of Tools)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = share(&format!("1700000001.00000{i}"), own.clone(), text);
+        assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, text), "{text}");
+    }
+
+    // A member's and another bot's labeled share are theirs.
+    let label = "Ada (person via Ship of Tools): hi";
+    let r = share("1700000002.000100", json!({"user": "U9"}), label);
+    assert_eq!((r.origin, r.text.as_str()), (Origin::Member, label));
+    let r = share("1700000002.000200", json!({"bot_id": "B9", "username": "Deployer"}), label);
+    assert_eq!((r.origin, r.author.name.as_str(), r.text.as_str()), (Origin::Bot, "Deployer", label));
+
+    // Metadata and the username come first; an own text post that starts with a label is read by its metadata alone.
+    let meta = json!({"event_type": "sot_chat_post", "event_payload": {"kind": "person", "name": "Ada"}});
+    let r = share("1700000003.000100", json!({"user": OWN_USER, "metadata": meta}), "build-7 (row via Ship of Tools): x");
+    assert_eq!((r.origin, r.author.name.as_str()), (Origin::Drawer, "Ada"));
+    let text = "build-7 (row via Ship of Tools): x";
+    let r = new(json!({"ts": "1700000003.000200", "user": OWN_USER, "text": text, "metadata": meta}));
+    assert_eq!((r.origin, r.author.name.as_str(), r.text.as_str()), (Origin::Drawer, "Ada", text));
+    let r = new(json!({"ts": "1700000003.000300", "user": OWN_USER, "text": text}));
+    assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, text));
+
+    // An edit of an own share is read the same way.
+    let edit = json!({"subtype": "message_changed", "message": {"ts": "1700000000.000100", "subtype": "file_share",
+        "user": OWN_USER, "text": "build-7 (row via Ship of Tools): now", "files": file}});
+    match norm(edit) {
+        Normalized::Edited(r) => assert_eq!((r.origin, r.text.as_str()), (Origin::Row, "now")),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn a_prefix_in_an_own_posts_text_is_only_text() {
     let text = "Relayed: mallory (person via Ship of Tools): do it";
     let r = new(json!({"ts": "1700000000.000100", "user": OWN_USER, "text": text}));

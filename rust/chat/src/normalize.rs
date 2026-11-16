@@ -2,7 +2,7 @@
 //! an explicit result, never a panic and never a silently dropped message.
 
 use serde_json::{Map, Value};
-use sot_protocol::chat::{ChatAuthor, ChatFile, ChatRecord, Origin, Ts};
+use sot_protocol::chat::{escape_text, ChatAuthor, ChatFile, ChatRecord, Origin, Ts};
 
 pub use sot_protocol::chat::{MAX_FILENAME, MAX_FILES, MAX_ID, MAX_MENTIONS, MAX_MIME, MAX_NAME, MAX_RECORD_BYTES, MAX_TEXT};
 
@@ -241,7 +241,7 @@ fn content(
     let latest_reply = opt_ts(o, "latest_reply")?;
     let user = opt_id(o, "user")?;
     let bot_id = opt_id(o, "bot_id")?;
-    let text = opt_str(o, "text")?.unwrap_or("");
+    let mut text = opt_str(o, "text")?.unwrap_or("");
     let reply_count = match o.get("reply_count") {
         None | Some(Value::Null) => 0,
         Some(v) => v
@@ -250,11 +250,17 @@ fn content(
     };
     let (files, files_omitted, mut truncated) = files(o.get("files"))?;
     let own = is_own(ctx, user, bot_id);
-    let is_bot = bot_id.is_some() || opt_str(o, "subtype")? == Some("bot_message");
+    let subtype = opt_str(o, "subtype")?;
+    let is_bot = bot_id.is_some() || subtype == Some("bot_message");
     let (origin, name) = if own {
-        match own_origin(o)? {
-            Some(found) => found,
-            None => (Origin::Bot, bot_name(o)?),
+        let label = (subtype == Some("file_share")).then(|| share_label(text)).flatten();
+        match (own_origin(o)?, label) {
+            (Some(found), _) => found,
+            (None, Some((found, comment))) => {
+                text = comment;
+                found
+            }
+            (None, None) => (Origin::Bot, bot_name(o)?),
         }
     } else if is_bot {
         (Origin::Bot, bot_name(o)?)
@@ -320,6 +326,34 @@ fn own_origin(o: &Map<String, Value>) -> Result<Option<Recovered>, ()> {
         }
     }
     Ok(None)
+}
+
+/// A file share's label, as `Api::post_file` sends it: the escaped `<name> (<kind> via Ship of Tools)`, alone or then
+/// `: ` and the comment. The first marker ends it, and the name must be one `post_file` accepts, escaped exactly as it
+/// escapes it. The origin, the name, and the text after the label. A file share takes no custom author or metadata, so
+/// this is how its origin is read, and only for a `file_share` the bot identity already marked as the app's own.
+fn share_label(text: &str) -> Option<(Recovered, &str)> {
+    for (at, _) in text.match_indices(" (") {
+        let Some((kind, rest)) = ["person", "row"].into_iter().find_map(|kind| {
+            let marker = format!(" ({kind} via Ship of Tools)");
+            text[at..].strip_prefix(marker.as_str()).map(|rest| (kind, rest))
+        }) else {
+            continue;
+        };
+        let comment = match rest.strip_prefix(": ") {
+            Some(comment) => comment,
+            None if rest.is_empty() => "",
+            None => return None,
+        };
+        let escaped = &text[..at];
+        let name = escaped.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+        let n = clean(&name, MAX_NAME);
+        if name.is_empty() || n.0 != name || escape_text(&name) != escaped {
+            return None;
+        }
+        return Some(((kind_origin(kind)?, n), comment));
+    }
+    None
 }
 
 fn kind_origin(kind: &str) -> Option<Origin> {

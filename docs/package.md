@@ -249,7 +249,7 @@ cleared when it goes, sent again after a reconnect, each reply on the status lin
 or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures are in progress on the maintainer's word
 (2026-11-16), by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
 shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
-on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation). Mail (B3) has landed: the filing that names its expected row
+on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation), and so has the share's read-back (an own file share takes its origin and name from its label). Mail (B3) has landed: the filing that names its expected row
 (P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound

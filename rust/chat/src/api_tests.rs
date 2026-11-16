@@ -2345,6 +2345,67 @@ async fn a_share_with_no_ts_is_posted_with_its_file() {
     .await;
 }
 
+/// A file this client shared, read back through history in the fake as a `file_share` message from the app with the
+/// share's comment as its text, normalizes to the origin and name it was posted as, its text the comment alone.
+#[tokio::test]
+async fn a_file_share_read_back_through_history_keeps_its_origin() {
+    bounded(async {
+        let stored: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let store = stored.clone();
+        let upload = Upload::new();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            match seen.path().as_str() {
+                SHARE => {
+                    let body = seen.json().unwrap();
+                    let mut store = store.lock().unwrap();
+                    let ts = format!("1700000{:03}.000100", store.len() + 1);
+                    let (channel, file) = (body["channel_id"].clone(), &body["files"][0]);
+                    // As Slack stores a share: the app's bot id and user, the comment as text, the file.
+                    store.push(json!({
+                        "ts": ts, "subtype": "file_share", "bot_id": OWN_BOT, "user": OWN_USER,
+                        "text": body["initial_comment"], "upload": false,
+                        "files": [{"id": file["id"], "name": file["title"], "mimetype": "image/png", "size": PNG.len()}],
+                    }));
+                    let shares = json!({channel.as_str().unwrap(): [{"ts": ts}]});
+                    Reply::json(&json!({"ok": true, "files": [{"id": file["id"], "shares": {"public": shares}}]}))
+                }
+                "/api/conversations.history" => {
+                    let mut all = store.lock().unwrap().clone();
+                    all.reverse();
+                    Reply::json(&page(all, None))
+                }
+                _ => upload.reply(seen, port).unwrap_or(Reply::Drop),
+            }
+        })
+        .await;
+        let api = ready(&fake).await;
+        let a = api
+            .post_file("C0CHAN", None, PostKind::Row, "build-7", "fig.png", PNG.to_vec(), Some("the <fit> & more"))
+            .await;
+        let b = api.post_file("C0CHAN", None, PostKind::Person, "R&D <Ada>", "b.png", PNG.to_vec(), None).await;
+        let posted: Vec<String> = [a, b]
+            .into_iter()
+            .map(|o| match o {
+                Ok(FileOutcome::Posted { ts: Some(ts), .. }) => ts.as_str().to_string(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let page = api.history(&query("C0CHAN", Bounds::default(), 5), None).await.unwrap();
+        let by_ts = |ts: &str| page.records.iter().find(|r| r.ts.as_str() == ts).unwrap();
+        let row = by_ts(&posted[0]);
+        assert_eq!((row.origin, row.author.name.as_str()), (Origin::Row, "build-7"));
+        assert_eq!(row.text, "the &lt;fit&gt; &amp; more", "the comment, as Slack's text");
+        assert_eq!(row.files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["fig.png"]);
+        let person = by_ts(&posted[1]);
+        assert_eq!((person.origin, person.author.name.as_str(), person.text.as_str()), (Origin::Drawer, "R&D <Ada>", ""));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_foreign_upload_url_is_refused_before_any_byte_and_nothing_is_shared() {
     bounded(async {
