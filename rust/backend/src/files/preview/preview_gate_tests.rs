@@ -1,4 +1,4 @@
-use super::{build_preview_payload, is_bounded_output_plugin, read_bytes_preview};
+use super::{build_preview_payload, fit_plugin_output, is_bounded_output_plugin, read_bytes_preview, MAX_BOUNDED_PICTURE_BYTES, PREVIEW_BYTE_CAP};
 use std::path::Path;
 
 #[test]
@@ -49,6 +49,23 @@ fn bounded_output_plugins_exempt_from_size_gate() {
             "{p} should be gated"
         );
     }
+}
+
+/// A PDF page rasterized for a zoomed pane, or a video's poster, past the text cap ships whole: the bytes-level reader
+/// would answer with the file's own bytes (a PDF's as `text/plain`, which the window only summarizes). Text is still cut
+/// at the cap, and token JSON past it still goes to the bytes-level reader.
+#[test]
+fn a_bounded_plugins_picture_past_the_text_cap_ships_whole() {
+    let picture = vec![0x89; PREVIEW_BYTE_CAP + 1];
+    for path in ["paper.pdf", "Paper.PDF", "clip.mp4"] {
+        let shipped = fit_plugin_output(Path::new(path), "n", "image/png", picture.clone());
+        assert!(shipped.as_deref() == Some(&picture[..]), "{path}: shipped {:?} bytes", shipped.map(|b| b.len()));
+    }
+    assert!(fit_plugin_output(Path::new("mod.jl"), "n", "application/vnd.sot.tokens+json", picture.clone()).is_none());
+    let text = fit_plugin_output(Path::new("data.h5"), "n", "text/markdown", picture.clone()).expect("text is cut, not dropped");
+    assert_eq!(text.len(), PREVIEW_BYTE_CAP);
+    let huge = vec![0x89; MAX_BOUNDED_PICTURE_BYTES + 1];
+    assert!(fit_plugin_output(Path::new("paper.pdf"), "n", "image/png", huge).is_none());
 }
 
 #[tokio::test]

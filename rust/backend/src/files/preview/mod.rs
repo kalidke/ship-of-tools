@@ -70,8 +70,10 @@ const PREVIEW_DOWNSAMPLE_TRIGGER: usize = 20 * 1024 * 1024;
 const MAX_PREVIEW_DECODE_ALLOC: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Extensions whose preview plugin produces BOUNDED output regardless of input
-/// size, so the `PREVIEW_BYTE_CAP` input gate in `try_plugin_preview` must NOT
-/// skip them. The gate proxies "big input → big output", which is FALSE here:
+/// size, so neither `PREVIEW_BYTE_CAP` gate (the input gate in
+/// `try_plugin_preview`, the output gate in `fit_plugin_output`) may send them
+/// to the bytes-level reader. The gates proxy "big input → big output", which
+/// is FALSE here:
 ///
 /// - **video** (`is_servable_video`): ffmpeg poster + metadata, never reads the
 ///   container into the payload.
@@ -491,7 +493,7 @@ async fn try_plugin_preview(
     };
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
-    let mut bytes = match STANDARD.decode(b64) {
+    let bytes = match STANDARD.decode(b64) {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!(
@@ -502,35 +504,54 @@ async fn try_plugin_preview(
             return Ok(None);
         }
     };
-    if bytes.len() > PREVIEW_BYTE_CAP {
-        // Defense in depth: input-size gate above usually catches this, but
-        // a plugin could still emit output larger than its input (e.g. token
-        // JSON for a dense file). Truncating a structured mime mid-stream
-        // corrupts it; fall back instead. `text/*` is the only family that
-        // tolerates an arbitrary byte cut.
-        if mime.starts_with("text/") {
-            bytes.truncate(PREVIEW_BYTE_CAP);
-            tracing::warn!(
-                %node_id,
-                size = bytes.len(),
-                mime = %mime,
-                "plugin-rendered text preview truncated at PREVIEW_BYTE_CAP"
-            );
-        } else {
-            tracing::warn!(
-                %node_id,
-                size = bytes.len(),
-                mime = %mime,
-                cap = PREVIEW_BYTE_CAP,
-                "plugin output exceeds cap on non-text mime; falling back to bytes-level reader"
-            );
-            return Ok(None);
-        }
-    }
+    let Some(bytes) = fit_plugin_output(path, node_id, &mime, bytes) else {
+        return Ok(None);
+    };
     // Plugin-reported metadata (page/page_count, …) — forwarded verbatim,
     // opaque here (ADR 0021).
     let extras = v.get("extras").cloned();
     Ok(Some((mime, bytes, extras)))
+}
+
+/// The most a bounded-output plugin's non-text output ships: a 4096 x 4096 picture at four bytes a pixel, the PDF
+/// plugin's `MAX_RASTER_PX` on its bounded axis (its other axis follows the page's aspect, which nothing else bounds)
+/// and what a video poster of that size is. A PNG is at most about its raw size.
+const MAX_BOUNDED_PICTURE_BYTES: usize = 4096 * 4096 * 4;
+
+/// A plugin's output as `preview.get` ships it, or `None` for the bytes-level
+/// reader. Within `PREVIEW_BYTE_CAP` it ships as it is. Past it (defense in
+/// depth: the input gate usually catches this, but a plugin can emit more than
+/// its input, such as token JSON for a dense file): text is cut at the cap, the
+/// one family that tolerates an arbitrary byte cut; a bounded-output plugin's
+/// other output ships whole, because its size is the plugin's (a PDF page
+/// rasterized at the pane's size times the zoom, a video's poster at the
+/// frame's size), not its input's, and the bytes-level reader would answer with
+/// the file's own bytes (a PDF's as `text/plain`, which the window only
+/// summarizes); any other output goes to the bytes-level reader, since a cut
+/// corrupts a structured mime. A bounded plugin's output past `MAX_BOUNDED_PICTURE_BYTES` goes there too.
+fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut bytes: Vec<u8>) -> Option<Vec<u8>> {
+    let text = mime.starts_with("text/");
+    if bytes.len() <= PREVIEW_BYTE_CAP || (!text && is_bounded_output_plugin(path) && bytes.len() <= MAX_BOUNDED_PICTURE_BYTES) {
+        return Some(bytes);
+    }
+    if text {
+        bytes.truncate(PREVIEW_BYTE_CAP);
+        tracing::warn!(
+            %node_id,
+            size = bytes.len(),
+            mime = %mime,
+            "plugin-rendered text preview truncated at PREVIEW_BYTE_CAP"
+        );
+        return Some(bytes);
+    }
+    tracing::warn!(
+        %node_id,
+        size = bytes.len(),
+        mime = %mime,
+        cap = PREVIEW_BYTE_CAP,
+        "plugin output exceeds cap on non-text mime; falling back to bytes-level reader"
+    );
+    None
 }
 
 /// Bytes-level reader: read the file at `path`, infer mime from extension,

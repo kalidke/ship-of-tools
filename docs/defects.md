@@ -567,6 +567,10 @@ owned by `docs/CLAUDE.md`.
   name that resolves inside the root is replaced by the note, while `file.write` refuses every link at its name; the
   string rule (`target_to_path`) accepts `.` segments and, on Windows, `:`, which the write refuses. Decided: one rule for
   both, at the concept pass.
+- **FILES-BYTES-READER-PDF-AS-TEXT** [note] The bytes-level reader answers a `.pdf` with the file's own bytes as
+  `text/plain; charset=utf-8` (`mime_for_path` has no arm for it), which the window only summarizes as "binary file".
+  After PDF-ZOOM-PAGE-PAST-TEXT-CAP no path seen in use sends a PDF there, but a kernel reply that is unmatched or
+  malformed, or a live kernel's wire error, still does. A bounded-output type should answer a note there, as video does.
 
 ## sidecars
 
@@ -705,6 +709,10 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **PAGE-RERASTER-PAST-PLUGIN-CAP** [note] `maybe_reraster_page` (`view.rs`) records the zoom that was asked for, not the
+  size that was served, so each zoom step past the PDF plugin's 4096 px cap on its bounded axis asks for and ships the
+  same capped bitmap again (from the kernel's cache): transfer wasted, nothing broken. Its comment says the plugin caps
+  the long side; it caps the bounded axis.
 - **FRAME-BUDGET-FROM-END** [note] The frame pacer waits `FRAME_BUDGET` (8.333 ms) from the end of the last frame, not
   from its start (`app/frame.rs` records the time after present; `app/pacing.rs` waits from it), so a frame that takes
   10 ms is followed by the next about 18 ms after it began, and the window tops out near 77 frames a second. Read by two
@@ -1213,6 +1221,8 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-ONE-WORKSPACE** (chat, fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on 2026-11-17 (the maintainer, with five Slack workspaces, one per group of repositories): the chat connected one Slack workspace, refused a second's tokens (`other_workspace`) and gave no way to map projects to channels in more than one. One hub now serves up to 8 workspaces, each with its own secrets file, listener, owner and mail, a failure in one stopping no other (chat guarantees 21, 30 and 31); from the Chat drawer a person connects another workspace (`Connect a Slack workspace`), the channel list shows one workspace at a time with Left and Right between them and pairs a project in the one shown, a row whose workspace failed is told which and can move to another's channel (`Ctrl+Shift+K` in the Connect step), and the connected screen names the workspace (fe-ui, the picker and the Connect step). No person has used it yet.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **PDF-ZOOM-PAGE-PAST-TEXT-CAP** (files) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on v0.7.1-rc.12 (a window on Windows, the daemon on Linux; the maintainer: "zoom in on pdf on complex figure causes pdf viewer crash in preview pane"): zooming into a PDF page of complex figures replaced the page with `binary file — N bytes / Not previewed as text (mime: text/plain; charset=utf-8)` and retired its page keys, with nothing in the window's log (the daemon's WARN named the cause; the window's process did not crash); the page rasterized for the zoomed pane was a PNG past 2 MiB, and `try_plugin_preview` held every non-text plugin output to `PREVIEW_BYTE_CAP`, a cap for output that grows with its input, and sent it to the bytes-level reader, which served the PDF's own bytes as `text/plain`. A bounded-output plugin's non-text output (a PDF page, a video's poster) now ships whole (`fit_plugin_output`, `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole`).
 
 - **CHAT-DRAWER-WORDS** (fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on v0.7.1-rc.12: opening the Chat drawer, the maintainer wrote "open slack drawer and no info about how to setup another workspace!! And wtf is new tokens for the hub?" and, of the Connect step, "what is 'your app'? This is super geek jargon gibberish". The picker's last entry read `Connect Slack again   new tokens for the hub`, an unjoined channel's mark read `your app joins it when you pick it`, and the drawer's title, status line and Connect screens carried the project's own words (hub, token, daemon, row, app) with no pointer to where a file, log or guide was. Every string of the drawer now reads plainly to a reader who has never seen the code (the rules are in `rust/frontend/src/ui/CLAUDE.md`, "The drawer's words"): the hub is the computer's name, a token is a "Slack code" except Slack's own field names in quotes, "your Slack app" is defined at its first use on a screen, a pointer names its place (the manual page, the file `sotd.log` on the named computer, `settings.toml` under `[chat]`), the picker's head says the chat connects one Slack workspace for now and another cannot be added yet, and `Connect Slack again` says it gives the same Slack app fresh codes. Wire's `ChatCode::text` words changed where the drawer shows them (a row's agent reads them through `sot-fe chat` too). The picker's head names the workspace since CHAT-ONE-WORKSPACE closed.
 
