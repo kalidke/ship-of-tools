@@ -151,6 +151,7 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
         let body = drawn(&d);
         assert!(body.contains("First, connect Ship of Tools to your Slack workspace"), "{reason}: the start screen");
         assert!(body.contains("Each person makes their own Slack app"), "{reason}: one app per person");
+        assert!(body.contains("What you type in this panel is posted under your own Slack name; what your agents post goes out as your Slack app."), "{reason}: whose posts are whose");
         assert!(body.contains("Enter  start    Right  I already made my Slack app: go to step 2    Esc  close"), "{reason}");
     }
     // The refused tokens' screen names the person's own app at its first frame.
@@ -167,7 +168,7 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
     assert!(body.contains("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours."));
     assert!(body.contains("a holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had."), "both causes are said");
     assert!(body.contains("Press Enter: your list of Slack apps opens in your browser."));
-    assert!(body.contains("If it is not in the list, press Left to make your Slack app again (step 1)."));
+    assert!(body.contains(&format!("If {NAME} is not in the list, press Left to make your Slack app again (step 1).")));
     assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
 
     // Each step names itself and its keys.
@@ -183,10 +184,10 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
     assert!(two.head.contains("the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets your Slack app (the bot that reads the channel and posts for your agents) read your channels and post in them"));
     assert!(two.head.contains("User OAuth Token       not pasted yet\nBot User OAuth Token   not pasted yet"));
     assert!(two.head.contains("No \"User OAuth Token\" on the page? Your Slack app was made before Ship of Tools posted as you."));
-    assert!(two.head.contains("under User Token Scopes, click Add an OAuth Scope and choose chat:write, then again for files:write"));
+    assert!(two.head.contains("under User Token Scopes, click Add an OAuth Scope and choose chat:write (post as you), then again for files:write (post a file as you)"));
     c.key(RIGHT, None, false);
     assert_eq!(c.title(), " chat · set up Slack · step 3 of 3: the last Slack code ");
-    assert!(c.body().head.contains("  4. Click Add Scope and choose connections:write from the list."));
+    assert!(c.body().head.contains("  4. Click Add Scope and choose connections:write (receive new messages as they arrive) from the list."));
     assert!(c.body().head.contains("App-Level Token   not pasted yet"));
     // No login names the app plainly, and says nothing of a login.
     let mut c = Connect::new(host(), ChatUnconfigured::NotConnected, "", true);
@@ -202,7 +203,7 @@ fn the_wrong_app_screen_names_the_app_and_opens_the_apps() {
     let (mut d, _) = in_step("wrong_app");
     assert_eq!(d.title(), " chat · set up Slack ");
     let body = drawn(&d).replace('\n', " ");
-    let words = format!("The chat stopped: the \"App-Level Token\" it holds belongs to a different Slack app than yours (the bot that reads the channel and posts for your agents), so the chat would have received messages meant for that other app. To fix it, press Enter: your list of Slack apps opens in your browser. Click {NAME}, the app you made in this workspace, and copy its three Slack codes again (steps 2 and 3 follow here).");
+    let words = format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. Nothing is lost. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {NAME}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).");
     assert!(body.contains(&words), "the wrong app's words");
     assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
     let (_, asks) = key(&mut d, ENTER);
@@ -527,7 +528,7 @@ fn a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps() {
 #[test]
 fn a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft() {
     let (mut d, at) = after_a_refused_post();
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list and choose Connect Slack again"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+K, or Cmd+Shift+K on a Mac) and choose Connect Slack again"));
     assert!(d.in_setup());
     assert_eq!(d.title(), " chat · post as you ");
     assert_eq!(d.draft(), Some(("hello", "CH1")), "the draft is kept");
@@ -613,11 +614,11 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     d.on_evt(&host(), connected("T1"), t);
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1, "the reply resolves the row at once");
     assert_eq!(d.title(), " chat · connected ");
-    assert!(drawn(&d).contains("Ship of Tools is connected to your Slack workspace (its Slack ID is T1)."));
+    assert!(drawn(&d).contains("Ship of Tools is connected to your Slack workspace (its workspace ID is T1)."));
     // Before the row's new answer, Enter says to wait; after it, Enter opens the picker and asks for the channels.
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && d.in_setup());
-    assert_eq!(asks.notice.as_deref(), Some("setting up the chat: press Enter again in a moment to choose this project's channel"));
+    assert_eq!(asks.notice.as_deref(), Some("setting up the chat: press Enter again in a few seconds to choose this project's channel; if this stays after a minute, close the Chat panel and open it again"));
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t);
     d.tick(shown("ROW1"), t);
     assert!(d.in_setup(), "the connected screen waits for the person");
@@ -637,7 +638,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     paste(&mut d, &app());
     d.on_evt(&host(), ChatEvt::ConnectUnknown, t);
     assert!(!d.in_setup(), "an unknown outcome ends the step: the row's new answer decides what shows");
-    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again"));
+    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again"));
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1);
 }
 

@@ -61,21 +61,21 @@ pub(super) fn computer(host: &str) -> String {
 
 /// Where a person finds why the chat is not running: the daemon's log, named by its file and computer.
 fn log_words(c: &str) -> String {
-    format!("the log says why (the file sotd.log on {c}; the command sotd log-path there prints its place)")
+    format!("the log of Ship of Tools' service on {c}, sotd.log, says why")
 }
 
 impl Stand {
     pub(super) fn words(self, host: &str) -> String {
         let c = computer(host);
         match self {
-            Stand::Unlisted => "waiting for this project to be listed".into(),
+            Stand::Unlisted => format!("waiting for {c} to report this project"),
             Stand::Offline => format!("no connection to {c}"),
             Stand::Resolving => "reading…".into(),
             Stand::Mapped => String::new(),
             Stand::Unmapped => "no channel".into(),
             Stand::Unconfigured(_) => "Slack is not connected".into(),
             Stand::NoConfig => format!("the chat on {c} is not set up correctly: {}", log_words(&c)),
-            Stand::NotHub => format!("the chat does not run on {c}: it runs on one computer, and this is not it"),
+            Stand::NotHub => format!("the chat does not run on {c}; it runs only on the computer named hub in hosts.toml, and projects there show it"),
             Stand::RowGone => ChatCode::StaleRow.text().into(),
             Stand::Failed(code) => format!("the chat on {c} could not answer: {}", code.text()),
             Stand::NoChat => format!("Ship of Tools on {c} has no chat: update it"),

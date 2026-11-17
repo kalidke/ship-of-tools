@@ -211,7 +211,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     // No listing for the row: it is read again every frame.
     let mut d = ChatDrawer::default();
     d.tick(None, Instant::now());
-    assert_eq!(d.title(), " chat · waiting for this project to be listed ");
+    assert_eq!(d.title(), " chat · waiting for the computer that runs your agents to report this project ");
 
     // The host is not connected: asked at `Connected`.
     let t0 = Instant::now();
@@ -223,9 +223,9 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     // No usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame. (An unmapped
     // row opens the channel picker: `picker_tests`.)
     for (evt, words) in [
-        (answer("R", serde_json::json!({ "state": "something_new" })), "the chat on a is not set up correctly: the log says why (the file sotd.log on a; the command sotd log-path there prints its place)"),
+        (answer("R", serde_json::json!({ "state": "something_new" })), "the chat on a is not set up correctly: the log of Ship of Tools' service on a, sotd.log, says why"),
         (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "Ship of Tools on a has no chat: update it"),
-        (refused("R", ChatCode::Unavailable), "the chat does not run on a: it runs on one computer, and this is not it"),
+        (refused("R", ChatCode::Unavailable), "the chat does not run on a; it runs only on the computer named hub in hosts.toml, and projects there show it"),
     ] {
         let (mut d, at) = answered_with(|_| evt);
         assert_eq!(d.title(), format!(" chat · {words} "));
@@ -265,7 +265,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     assert_eq!(d.title(), " chat · C1 ");
 
     // A gap names its reason; a target refused for good shows its code's words, and is not asked again.
-    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the chat is not running on a: the log says why (the file sotd.log on a; the command sotd log-path there prints its place) ");
+    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the chat is not running on a: the log of Ship of Tools' service on a, sotd.log, says why ");
     assert_eq!(gap_title(ChatCode::Busy), " chat · C1 not up to date: the chat is busy; try again in a moment ");
     for code in [ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::Unmapped] {
         let (mut d, at) = gapped(code);
