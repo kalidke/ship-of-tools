@@ -194,6 +194,29 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
     assert!(c.body().head.contains("already named Ship of Tools (you can change it there)"));
 }
 
+/// An app-level token of another app than the bot's: the hub ended the chat rather than take that app's messages, and the
+/// first screen says so, names the person's app and takes the refused tokens' keys; step 3 says its token comes from the
+/// same app as step 2's.
+#[test]
+fn the_wrong_app_screen_names_the_app_and_opens_the_apps() {
+    let (mut d, _) = in_step("wrong_app");
+    assert_eq!(d.title(), " chat · set up Slack ");
+    let body = drawn(&d);
+    let words = format!("The hub stopped this workspace's chat: the App-Level Token it holds belongs to another Slack app, and it would have taken that app's messages. Press Enter: your list of Slack apps opens in your browser. Click {NAME}, the app made in this workspace, and copy its three tokens again (steps 2 and 3 follow here).");
+    assert!(body.contains(&words), "the wrong app's words");
+    assert!(body.contains("Enter  open your Slack apps    Left  make the app again    Esc  close"));
+    let (_, asks) = key(&mut d, ENTER);
+    assert_eq!(asks.open.as_deref(), Some("https://api.slack.com/apps"));
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ", "the apps' list, then step 2");
+    key(&mut d, RIGHT);
+    assert!(drawn(&d).contains("Copy it from the same app as the two tokens of step 2."), "step 3 says the app");
+
+    let mut c = step(ChatUnconfigured::WrongApp);
+    let (_, asks) = c.key(LEFT, None, false);
+    assert_eq!((asks.open, c.screen()), (Some(slack_app_url(NAME)), &Screen::Make), "Left makes the app again");
+    assert_eq!(step(ChatUnconfigured::WrongApp).key(RIGHT, None, false).1, Asks::default(), "the screen has no Right");
+}
+
 #[test]
 fn left_and_right_move_between_steps_and_the_refused_screen_opens_its_pages() {
     let mut c = step(ChatUnconfigured::NotConnected);

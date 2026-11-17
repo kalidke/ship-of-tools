@@ -43,7 +43,8 @@ is not enough).
    **Add an OAuth Scope** and choose `chat:write`, then again for `files:write`; then click **Reinstall to Workspace**
    and **Allow**, and the token shows at the top. (These names are Slack's own as its documentation gives them; if
    its page words them otherwise, follow its words, and the guide will be corrected.)
-3. **The last token.** In Slack's menu on the left, click **Basic Information**; under **App-Level Tokens** click
+3. **The last token.** Copy it from the same app as the two tokens of step 2: all three tokens come from one app. In
+   Slack's menu on the left, click **Basic Information**; under **App-Level Tokens** click
    **Generate Token and Scopes**, type a name (`messages`), click **Add Scope**, choose `connections:write`, click
    **Generate**, then **Copy**. Click in the drawer and press `Ctrl+V`.
 
@@ -55,8 +56,12 @@ answer. The drawer says **connected**, with the workspace's ID; the hub keeps th
 readable only by your account, and Enter goes on to choosing the project's channel. If Slack refuses a token, the
 drawer goes back to its step and says so; the other tokens are kept, so paste the refused one again.
 
-If Slack later stops accepting the saved tokens (the app was removed from the workspace, say), the drawer says so.
-Press Enter to open your list of Slack apps: if your app is in it, click it and copy its three tokens again (steps 2 and
+If Slack later stops accepting the saved tokens (the app was removed from the workspace, say), the drawer says so, even
+while it shows a channel: the hub stops the chat, and the drawer shows its set-up screen in place of the channel. If the
+App-Level Token the hub holds is another Slack app's (a colleague's, or your own older app's), the hub stops the chat
+rather than take that app's messages, and the drawer says that the token belongs to another app. The connect cannot
+tell whose App-Level Token it is: the hub finds out when it first listens, a moment after **connected**. On either screen,
+press Enter to open your list of Slack apps: if your app is in it, click it and copy its three tokens again (steps 2 and
 3 follow in the drawer); if it is not, press Left to make the app again (step 1). A hub connected before Ship of Tools
 posted your messages as you, or whose user token Slack stopped accepting, refuses your post with that reason and shows the
 same screen, titled `post as you`, in place of the channel: your draft is kept, and the tokens are copied again as above.
