@@ -1,8 +1,8 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
 //! configured), `bots.info` for the bot's app, channel history and thread replies (paged), `chat.postMessage` under a
-//! custom author, a file shared into a channel (Slack's three upload steps), the channel picker's calls (the channel list, one channel's facts, one
-//! join), and author names through a bounded cache. Every call goes out through
-//! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
+//! custom author, a file shared into a channel (Slack's three upload steps), the channel picker's calls (the channel
+//! list, one channel's facts, one join), and author names through a bounded cache. Every call goes out through `http`
+//! and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
 //! No socket, no file method, no configuration: the caller hands in the `Secret` and a file's bytes.
 
 use std::collections::{HashMap, VecDeque};
@@ -133,8 +133,8 @@ impl fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 /// The bot's identity from `auth.test`: normalization decides which messages are this app's own by it alone. `app_id`
-/// is the bot's app as `bots.info` names it (`Api::bot_app`), which the listener holds every frame to; `None` while
-/// unknown.
+/// is the bot's app as `bots.info` names it (`Api::bot_app`, set by the service's start), which the listener holds
+/// every frame to; `None` while unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub user_id: String,
@@ -637,9 +637,7 @@ impl Api {
     fn refused(&self, kind: PostKind, code: &str) {
         match kind {
             PostKind::Person if refuses_the_token(code) => *self.person.lock().unwrap() = None,
-            PostKind::Row if !self.closed.load(Ordering::SeqCst) && TOKEN_REFUSALS.contains(&code) => {
-                self.end.end(BOT_TOKEN_REFUSED)
-            }
+            PostKind::Row if TOKEN_REFUSALS.contains(&code) => self.end.end(BOT_TOKEN_REFUSED),
             _ => {}
         }
     }
@@ -685,15 +683,12 @@ impl Api {
         self
     }
 
-    /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`), kept in the identity. Its failure, any
-    /// code, only leaves the app unknown and ends nothing: the check it serves fails open.
+    /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`; `NoIdentity`, unsent, for a bot with
+    /// none). Its failure, any code, only leaves the app unknown and ends nothing: the check it serves fails open.
     pub async fn bot_app(&self) -> Result<String, ApiError> {
         let bot = self.identity()?.bot_id.ok_or(ApiError::NoIdentity)?;
         let v = self.read_as(self.token.clone(), "bots.info", &[("bot", bot)], MAX_BODY).await?;
         let app = v.pointer("/bot/app_id").and_then(Value::as_str).filter(|a| valid_id(a)).ok_or(ApiError::Malformed)?;
-        if let Some(own) = self.own.lock().unwrap().as_mut() {
-            own.app_id = Some(app.into());
-        }
         Ok(app.into())
     }
 

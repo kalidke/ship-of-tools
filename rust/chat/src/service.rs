@@ -77,12 +77,11 @@ pub const WRONG_APP: &str = "wrong_app";
 pub const APP_TOKEN_REFUSED: &str = "app_token_refused";
 /// Slack refused a bot-token call with a code of `api::TOKEN_REFUSALS`.
 pub const BOT_TOKEN_REFUSED: &str = "bot_token_refused";
-/// No end: `auth.test` named no bot, so `bots.info` could not be asked and the app is unchecked (`app_unchecked`).
-pub const NO_BOT_ID: &str = "no_bot_id";
 
 /// A service's end of its own: the first code, never undone, seen by its `Api`, its listener and every caller. It ends
 /// the claim, so every channel of the service's `Watches` owes a snapshot, and raises the listener's stop signal, so
-/// its task ends and releases the lock. A stop that began first (the claim already ended) is no end.
+/// its task ends and releases the lock. The claim is the one arbiter: whichever of a stop and an end marks it first
+/// wins, so a stop that began first is no end.
 pub(crate) struct End {
     code: OnceLock<&'static str>,
     claim: Arc<AtomicU8>,
@@ -101,8 +100,8 @@ impl End {
     }
 
     pub(crate) fn end(&self, code: &'static str) {
-        if self.claim.load(Ordering::SeqCst) != ENDED && self.code.set(code).is_ok() {
-            self.claim.store(ENDED, Ordering::SeqCst);
+        if self.claim.swap(ENDED, Ordering::SeqCst) != ENDED {
+            let _ = self.code.set(code);
             self.signal.send_replace(true);
         }
     }
@@ -217,15 +216,12 @@ impl Service {
         // From here an early return drops the lock; the socket, once started, owns it.
         let mut own = api.auth_test().await.map_err(ServiceError::Api)?;
         // The bot's app, which every frame's is checked against; unknown, nothing is checked (fails open).
-        let unchecked = match own.bot_id {
-            None => Some(NO_BOT_ID),
-            Some(_) => match api.bot_app().await {
-                Ok(app) => {
-                    own.app_id = Some(app);
-                    None
-                }
-                Err(e) => Some(e.code()),
-            },
+        let unchecked = match api.bot_app().await {
+            Ok(app) => {
+                own.app_id = Some(app);
+                None
+            }
+            Err(e) => Some(e.code()),
         };
         let socket =
             Socket::launch(http, app, own, workspace, base, timing, Box::new(lock), end.clone()).map_err(ServiceError::Socket)?;
@@ -238,8 +234,8 @@ impl Service {
         self.end.code()
     }
 
-    /// Why the bot's app is unknown (`NO_BOT_ID`, or `bots.info`'s failure as `ApiError::code`), so no frame's app is
-    /// checked; `None` when it is known.
+    /// Why the bot's app is unknown (`bots.info`'s failure as `ApiError::code`, `no_identity` when `auth.test` named no
+    /// bot), so no frame's app is checked; `None` when it is known.
     pub fn app_unchecked(&self) -> Option<&'static str> {
         self.unchecked
     }
@@ -327,6 +323,9 @@ impl Service {
     pub async fn stop(&self, within: Duration) {
         let socket = {
             let mut phase = self.phase.lock().unwrap();
+            // First, so an end that comes after the stop began is no end (`End::end`). Every channel of the service's
+            // `Watches` reads as owing a snapshot from here on.
+            self.claim.swap(ENDED, Ordering::SeqCst);
             match std::mem::replace(&mut *phase, Phase::Stopping) {
                 Phase::Running(s) => s,
                 other => {
@@ -335,8 +334,6 @@ impl Service {
                 }
             }
         };
-        // Every channel of the service's `Watches` reads as owing a snapshot from here on.
-        self.claim.store(ENDED, Ordering::SeqCst);
         self.api.close();
         socket.stop_within(within).await;
         *self.phase.lock().unwrap() = Phase::Stopped;

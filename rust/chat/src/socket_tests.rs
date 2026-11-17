@@ -1350,20 +1350,20 @@ fn opened(fake: &FakeSlack) -> usize {
     fake.seen().iter().filter(|s| s.path() == "/api/apps.connections.open").count()
 }
 
-fn status_reply(code: u16) -> Reply {
-    Reply::Status { code, headers: Vec::new(), body: b"{}".to_vec() }
+fn status_reply(code: u16, body: &Value) -> Reply {
+    Reply::Status { code, headers: Vec::new(), body: body.to_string().into_bytes() }
 }
 
-/// A socket that says hello as `hello_app` (none: no `connection_info`), then sends `envelopes` one after another,
-/// recording which were acknowledged by their id; then drains.
-async fn app_fake(hello_app: Option<&'static str>, envelopes: Vec<Value>, acked: Arc<Mutex<Vec<String>>>) -> FakeSlack {
+/// A socket that says hello naming `hello_app` as its `connection_info.app_id` (`Null`: no `connection_info`), then
+/// sends `envelopes` one after another, recording which were acknowledged by their id; then drains.
+async fn app_fake(hello_app: Value, envelopes: Vec<Value>, acked: Arc<Mutex<Vec<String>>>) -> FakeSlack {
     let envelopes = Arc::new(envelopes);
     fake(move |_, mut peer| {
-        let (envelopes, acked) = (envelopes.clone(), acked.clone());
+        let (envelopes, acked, hello_app) = (envelopes.clone(), acked.clone(), hello_app.clone());
         async move {
             let mut said = hello();
-            if let Some(app) = hello_app {
-                said["connection_info"] = json!({"app_id": app});
+            if !hello_app.is_null() {
+                said["connection_info"] = json!({"app_id": hello_app});
             }
             peer.send(&said).await;
             for e in envelopes.iter() {
@@ -1392,7 +1392,7 @@ async fn an_envelope_of_another_app_is_not_acknowledged_and_ends_the_listener() 
             envelope_for("E2", 2, OTHER_APP),
             envelope_for("E3", 3, OWN_APP),
         ];
-        let fake = app_fake(Some(OWN_APP), sent.clone(), acked.clone()).await;
+        let fake = app_fake(json!(OWN_APP), sent.clone(), acked.clone()).await;
         let socket = start_of(&fake, timing(), Some(OWN_APP));
         eventually("the listener's end", || socket.ended().is_some()).await;
         assert_eq!(socket.ended(), Some("wrong_app"));
@@ -1408,7 +1408,7 @@ async fn an_envelope_of_another_app_is_not_acknowledged_and_ends_the_listener() 
 
         // A bot whose app is unknown checks nothing: the other app's envelope is acknowledged and queued.
         let acked = Arc::new(Mutex::new(Vec::new()));
-        let fake = app_fake(Some(OTHER_APP), sent, acked.clone()).await;
+        let fake = app_fake(json!(OTHER_APP), sent, acked.clone()).await;
         let socket = start_of(&fake, timing(), None);
         eventually("every envelope acknowledged", || acked.lock().unwrap().len() == 4).await;
         assert_eq!((socket.ended(), socket.pending().0), (None, 4));
@@ -1418,13 +1418,13 @@ async fn an_envelope_of_another_app_is_not_acknowledged_and_ends_the_listener() 
     .await;
 }
 
-/// A `hello` naming another app ends the listener before it is live or reads an envelope; a `hello` naming none is
-/// live as before.
+/// A `hello` naming another app ends the listener before it is live or reads an envelope; a `hello` naming none, or
+/// naming one by a value that is no id (empty, a number), is live as before.
 #[tokio::test]
 async fn a_hello_naming_another_app_ends_the_listener_before_any_envelope() {
     bounded(async {
         let acked = Arc::new(Mutex::new(Vec::new()));
-        let fake = app_fake(Some(OTHER_APP), vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
+        let fake = app_fake(json!(OTHER_APP), vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
         let socket = start_of(&fake, timing(), Some(OWN_APP));
         eventually("the listener's end", || socket.ended().is_some()).await;
         assert_eq!(socket.ended(), Some("wrong_app"));
@@ -1436,30 +1436,30 @@ async fn a_hello_naming_another_app_ends_the_listener_before_any_envelope() {
         socket.stop().await;
         fake.shutdown().await;
 
-        let acked = Arc::new(Mutex::new(Vec::new()));
-        let fake = app_fake(None, vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
-        let socket = start_of(&fake, timing(), Some(OWN_APP));
-        eventually("the envelope acknowledged", || acked.lock().unwrap().len() == 1).await;
-        assert!(socket.status().connected);
-        assert_eq!(socket.ended(), None);
-        socket.stop().await;
-        fake.shutdown().await;
+        for unnamed in [Value::Null, json!(""), json!(7)] {
+            let acked = Arc::new(Mutex::new(Vec::new()));
+            let fake = app_fake(unnamed.clone(), vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
+            let socket = start_of(&fake, timing(), Some(OWN_APP));
+            eventually("the envelope acknowledged", || acked.lock().unwrap().len() == 1).await;
+            assert!(socket.status().connected, "{unnamed}");
+            assert_eq!(socket.ended(), None, "{unnamed}");
+            socket.stop().await;
+            fake.shutdown().await;
+        }
     })
     .await;
 }
 
-/// An `apps.connections.open` Slack refuses as a bad token (`Rejected`: a `TOKEN_REFUSALS` code, 401 or
-/// `missing_scope`) ends the listener for good with `app_token_refused`; Slack's own state (`Unavailable`) is retried
-/// on the pace, as before.
+/// An `apps.connections.open` Slack refuses by its own code naming the token (`TOKEN_REFUSALS` or `missing_scope` in the
+/// answer's body, at 200 or at 401 or 403: PS11) ends the listener for good with `app_token_refused`; a bare 401 or 403
+/// with no such code (a proxy's, an edge's) and Slack's own state (`Unavailable`) are retried on the pace.
 #[tokio::test]
 async fn a_rejected_open_ends_the_listener_and_an_unavailable_one_is_retried() {
     bounded(async {
-        for refusal in [json!({"ok": false, "error": "invalid_auth"}), Value::Null, json!({"ok": false, "error": "missing_scope"})] {
+        let coded = |code: &str| json!({"ok": false, "error": code});
+        for (status, body) in [(200, coded("invalid_auth")), (200, coded("missing_scope")), (403, coded("token_revoked")), (401, coded("not_authed"))] {
             let fake = fake_with(
-                move |seen| {
-                    (seen.path() == "/api/apps.connections.open")
-                        .then(|| if refusal.is_null() { status_reply(401) } else { Reply::json(&refusal) })
-                },
+                move |seen| (seen.path() == "/api/apps.connections.open").then(|| status_reply(status, &body)),
                 |_, _| async {},
             )
             .await;
@@ -1472,19 +1472,44 @@ async fn a_rejected_open_ends_the_listener_and_an_unavailable_one_is_retried() {
             socket.stop().await;
             fake.shutdown().await;
         }
-        let fake = fake_with(
-            |seen| {
-                (seen.path() == "/api/apps.connections.open")
-                    .then(|| Reply::json(&json!({"ok": false, "error": "internal_error"})))
-            },
-            |_, _| async {},
-        )
-        .await;
-        let socket = start(&fake, timing());
-        eventually("three tries", || opened(&fake) >= 3).await;
-        assert_eq!((socket.ended(), socket.status().error), (None, Some(SocketError::Unavailable)));
-        socket.stop().await;
-        fake.shutdown().await;
+        for (status, body, error) in [
+            (403, json!({}), SocketError::Rejected),
+            (401, json!("Unauthorized"), SocketError::Rejected),
+            (200, coded("internal_error"), SocketError::Unavailable),
+        ] {
+            let fake = fake_with(
+                move |seen| (seen.path() == "/api/apps.connections.open").then(|| status_reply(status, &body)),
+                |_, _| async {},
+            )
+            .await;
+            let socket = start(&fake, timing());
+            eventually("three tries", || opened(&fake) >= 3).await;
+            assert_eq!((socket.ended(), socket.status().error), (None, Some(error)), "{status}");
+            socket.stop().await;
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+/// Guarantee 17's rule reads the app whatever the envelope's type: a `slash_commands` or an `interactive` envelope of
+/// another app is not acknowledged and ends the listener, as an `events_api` one does.
+#[tokio::test]
+async fn an_envelope_of_any_type_naming_another_app_ends_the_listener() {
+    bounded(async {
+        for kind in ["slash_commands", "interactive"] {
+            let acked = Arc::new(Mutex::new(Vec::new()));
+            let mut theirs = envelope_for("E1", 1, OTHER_APP);
+            theirs["type"] = json!(kind);
+            let fake = app_fake(json!(OWN_APP), vec![envelope("E0", 0, "hi", 0), theirs], acked.clone()).await;
+            let socket = start_of(&fake, timing(), Some(OWN_APP));
+            eventually("the listener's end", || socket.ended().is_some()).await;
+            assert_eq!(socket.ended(), Some("wrong_app"), "{kind}");
+            eventually("the socket closed", || fake.sockets().0 == 0).await;
+            assert_eq!(*acked.lock().unwrap(), ["E0"], "{kind}: another app's envelope was acknowledged");
+            socket.stop().await;
+            fake.shutdown().await;
+        }
     })
     .await;
 }
