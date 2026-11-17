@@ -8,6 +8,12 @@ The chat runs on one computer: the one that runs your project sessions. If you u
 is the one, with no `hosts.toml` needed. If you have several, it is the one your `hosts.toml` names as `hub`. Every
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
+**One Slack workspace, for now.** The chat connects one Slack workspace, and every project's channel is a channel of
+that workspace. An app made in a second workspace is refused at the connect step with "the chat is set up for another
+Slack workspace". Channels in several workspaces at once, one workspace per project, are planned and not yet built.
+Until then, to move the chat to another workspace, remove `chat.toml` and `chat-secrets.toml` from the settings folder
+of the computer the chat runs on (see the end of this page), which clears every project's channel, then connect again.
+
 ## Once: connect Slack
 
 Each person makes their own Slack app, even when a colleague already has one: Slack hands each new message to one of an

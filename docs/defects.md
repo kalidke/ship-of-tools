@@ -1018,6 +1018,12 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-ONE-WORKSPACE** [person] The chat connects one Slack workspace: `chat.toml` names one and refuses a second at
+  load, the secrets hold one set of tokens, one listener runs, and `chat.connect` refuses another workspace's tokens
+  (`other_workspace`, `rust/backend/src/chat/setup.rs`). A person with several workspaces, one per group of
+  repositories, cannot map projects to channels in more than one; the maintainer met it on 2026-11-17 with five. Until
+  that day neither the guide nor the connect step said so; the setup guide now does. Wanted: several workspaces on one
+  hub, each project's channel in its own workspace, each connected from the window. A plan is being written.
 - **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
   `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on
   every try (an inbox that is a directory), an `ambiguous_row` or `no_row` that refuses every filing, a chat held by
