@@ -179,10 +179,10 @@ fn meta_lines_origins_and_names_read_exactly() {
     r.origin = serde_json::from_value(serde_json::json!("future")).unwrap();
     assert_eq!(lines(&r, NOW, east(0)), "Ada  10:13 PM\nx");
     r.origin = serde_json::from_value(serde_json::json!("row")).unwrap();
-    assert_eq!(lines(&r, NOW, east(0)), "Ada  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "Ada  \u{a0}\u{a0}AGENT\u{a0}\u{a0}  10:13 PM\nx");
 
     r.author.name = "Eve\u{2028}Ada\u{fff9}\u{2067}".to_string();
-    assert_eq!(lines(&r, NOW, east(0)), "EveAda  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nx");
+    assert_eq!(lines(&r, NOW, east(0)), "EveAda  \u{a0}\u{a0}AGENT\u{a0}\u{a0}  10:13 PM\nx");
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn file_names_tags_extreme_stamps_and_marks_are_exact() {
         { "id": "F1", "name": "a\u{202e}b\nc.png", "mime": "image/png", "bytes": 5, "thumbnail": false },
         { "id": "F2", "name": "\u{202e}\n", "mime": "x", "bytes": 5, "thumbnail": false }])).unwrap();
     assert_eq!(lines(&r, NOW, east(0)), "Ada  10:13 PM\nhi\n[file abc.png, 5 B]\n[a file]");
-    for (origin, tag) in [("drawer", "DRAWER"), ("bot", "APP")] {
+    for (origin, tag) in [("bot", "APP")] {
         let mut r = rec("x");
         r.origin = serde_json::from_value(serde_json::json!(origin)).unwrap();
         assert_eq!(lines(&r, NOW, east(0)), format!("Ada  \u{a0}\u{a0}{tag}\u{a0}\u{a0}  10:13 PM\nx"));
@@ -287,7 +287,7 @@ fn a_message_continues_its_authors_group_within_five_minutes_on_the_same_day() {
 fn a_body_that_imitates_a_header_draws_no_tile_and_no_time() {
     let first = at("1700000000.000000");
     let mut next = at("1700000060.000000");
-    next.text = "Ada  \u{a0}\u{a0}ROW\u{a0}\u{a0}  10:13 PM\nAda 12:00".to_string();
+    next.text = "Ada  \u{a0}\u{a0}AGENT\u{a0}\u{a0}  10:13 PM\nAda 12:00".to_string();
     let spans = project(&next, Some(&first), NOW, utc(), false);
     assert!(spans.iter().all(|s| s.kind == Kind::Body), "{spans:?}");
 }

@@ -49,21 +49,42 @@ pub(super) enum Stand {
     NoChat,
 }
 
+/// The computer a sentence names: this one for the window's own, the host's name for another, and for a line with no host the
+/// words a person knows it by.
+pub(super) fn computer(host: &str) -> String {
+    match host {
+        "" => "the computer that runs your agents".into(),
+        "local" => "this computer".into(),
+        name => name.to_string(),
+    }
+}
+
+/// Where a person finds why the chat is not running: the daemon's log, named by its file and computer.
+fn log_words(c: &str) -> String {
+    format!("the log says why (the file sotd.log on {c}; the command sotd log-path there prints its place)")
+}
+
 impl Stand {
     pub(super) fn words(self, host: &str) -> String {
+        let c = computer(host);
         match self {
-            Stand::Unlisted => "waiting for this row's listing".into(),
-            Stand::Offline => "not connected".into(),
+            Stand::Unlisted => "waiting for this project to be listed".into(),
+            Stand::Offline => format!("no connection to {c}"),
             Stand::Resolving => "reading…".into(),
             Stand::Mapped => String::new(),
             Stand::Unmapped => "no channel".into(),
             Stand::Unconfigured(_) => "Slack is not connected".into(),
-            Stand::NoConfig => "the hub has no usable chat configuration: its daemon log says why".into(),
-            Stand::NotHub => format!("the chat runs on the hub, not on {host}"),
+            Stand::NoConfig => format!("the chat on {c} is not set up correctly: {}", log_words(&c)),
+            Stand::NotHub => format!("the chat does not run on {c}: it runs on one computer, and this is not it"),
             Stand::RowGone => ChatCode::StaleRow.text().into(),
-            Stand::Failed(code) => format!("the hub could not answer: {}", code.text()),
-            Stand::NoChat => "this daemon has no chat: update it".into(),
+            Stand::Failed(code) => format!("the chat on {c} could not answer: {}", code.text()),
+            Stand::NoChat => format!("Ship of Tools on {c} has no chat: update it"),
         }
+    }
+    /// The words for a chat that is not running on `host`, as the title shows them.
+    pub(super) fn stopped_words(host: &str) -> String {
+        let c = computer(host);
+        format!("the chat is not running on {c}: {}", log_words(&c))
     }
 }
 

@@ -112,10 +112,9 @@ pub(super) fn project(r: &ChatRecord, prev: Option<&ChatRecord>, now: i64, offse
         }
         out.push(span(Kind::Name, format!("{}  ", header_text(&r.author.name))));
         let badge = match r.origin {
-            Origin::Drawer => Some("DRAWER"),
-            Origin::Row => Some("ROW"),
+            Origin::Row => Some("AGENT"),
             Origin::Bot => Some("APP"),
-            Origin::Member | Origin::Other => None,
+            Origin::Member | Origin::Drawer | Origin::Other => None,
         };
         out.extend(badge.map(|t| span(Kind::Badge, format!("{BADGE_PAD}{t}{BADGE_PAD}"))));
         let gap = if badge.is_some() { "  " } else { "" };

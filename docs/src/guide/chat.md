@@ -36,9 +36,8 @@ not reach the drawer for as long as the channel is one of the last two. The draw
 Chat drawer is hidden.
 
 The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each group of messages starts
-with a header line: the author's name in bold, a small gray badge for a post that came from a bot (`APP`), the drawer
-(`DRAWER`) or a row (`ROW`), and the time in small gray text, on a 12-hour clock (`2:14 PM`, whatever the day). `DRAWER` marks a post an older hub made as the app, before posts went out as you; a post you make now carries no badge. The badge comes from where Slack says the post came from, never from the
-text, so a name or message that reads `[drawer]` or `ROW` shows no badge. The text follows as typed. A thin gray line runs across the drawer between each two messages, as in Slack, one under the
+with a header line: the author's name in bold, a small gray badge for a post that came from a Slack app (`APP`) or from an agent in one of your rows (`AGENT`), and the time in small gray text, on a 12-hour clock (`2:14 PM`, whatever the day). A post you make carries no badge, and neither does one an older hub made as the app before posts went out as you. The badge comes from where Slack says the post came from, never from the
+text, so a name or message that reads `[drawer]` or `AGENT` shows no badge. The text follows as typed. A thin gray line runs across the drawer between each two messages, as in Slack, one under the
 other in a group too (a day divider takes its place); it is not text, and a press, a drag or a copy never takes it.
 
 The first message of each local day, and the oldest message held, has a day divider above its header: the day's name
@@ -70,19 +69,19 @@ row. Its title is `chat · #<channel name>` (the mapped channel's name as Slack 
 
 | the title says | meaning | asked again |
 |---|---|---|
-| `waiting for this row's listing` | the window has not listed the selected row yet | every frame |
-| `not connected` | the row's computer is not connected | when it connects |
+| `waiting for this project to be listed` | the window has not listed the selected row yet | every frame |
+| `no connection to <computer>` | the row's computer is not connected | when it connects |
 | `reading…` | the hub is being asked, or the channel is being read | |
 | (nothing after the channel) | the channel was read whole | |
 | `the row's folder maps to no channel` | the folder is not in `chat.toml` | at a link change or another row |
 | `set up Slack`, then each step's name; or `post as you` | Slack is not connected on the hub, its saved tokens are refused, its chat could not start (`set up Slack`), or a post of yours was refused because the hub holds no token that posts as you (`post as you`): the drawer leads you through connecting ([Setting up Slack](chat-setup.md)), then says `connecting…` and `connected` | at a link change, and after each connect |
-| `the hub has no usable chat configuration` | `chat.toml` is invalid; the hub's daemon log says why, starting with the file's name | at a link change |
-| `the chat runs on the hub, not on <host>` | the row's computer is not the hub | at a link change |
+| `the chat on <computer> is not set up correctly` | `chat.toml` is invalid; the log (the file `sotd.log` on that computer; `sotd log-path` there prints its place) says why, starting with the file's name | at a link change |
+| `the chat does not run on <computer>` | the row's computer is not the hub | at a link change |
 | `the row is gone or was replaced` | the row's id changed | when the listing gives the row a new id, or at a link change |
-| `the hub could not answer: <reason>` | the hub refused for another reason | after a minute |
-| `this daemon has no chat: update it` | the row's daemon is too old | at a link change |
-| `the hub's chat service is not running` | the hub's log says why | each minute |
-| `not up to date: <reason>` | the channel could not be read whole (`no snapshot` when the hub never answered) | each minute |
+| `the chat on <computer> could not answer: <reason>` | the hub refused for another reason | after a minute |
+| `Ship of Tools on <computer> has no chat: update it` | the row's daemon is too old | at a link change |
+| `the chat is not running on <computer>` | the log on that computer says why | each minute |
+| `not up to date: <reason>` | the channel could not be read whole (`no messages read yet` when the hub never answered) | each minute |
 | `the row is gone or was replaced`, `the row now maps to another channel` or `the row's folder maps to no channel`, after the channel | the hub refused the watch for good | at a row or link change |
 
 ## Slack's markup
@@ -148,8 +147,8 @@ closes.
 
 ## Posting
 
-`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. On a hub that holds your Slack user token the post appears in the channel as your own message, from your Slack account, with no mark of the app, so people and bots in the channel treat it as yours; you must be in the channel (otherwise the post is refused `you are not in that channel in Slack; join it there first`), and a hub that holds no such token, or whose token Slack refused, posts nothing for you, refuses the post and shows the `post as you` screen to connect again ([Setting up Slack](chat-setup.md)). The line under an empty draft says which a post will be: as your own message on a hub that can post as you, and as the app's message on an older hub, which posts it as the app, under the name in
-`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)), and that post shows the `DRAWER` badge; with no name set, nothing is sent: the foot of the drawer becomes the prompt `Name for your chat posts:` and the keys type the name
+`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. On a hub that holds your Slack user token the post appears in the channel as your own message, from your Slack account, with no mark of the app, so people and bots in the channel treat it as yours; you must be in the channel (otherwise the post is refused `you are not in that channel in Slack; join it there first`), and a hub that holds no such token, or whose token Slack refused, posts nothing for you, refuses the post and shows the `post as you` screen to connect again ([Setting up Slack](chat-setup.md)). The line under an empty draft says which a post will be: as your own message on a hub that can post as you, and as a message from your Slack app on an older hub, which posts it as the app, under the name in
+`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)), with no badge; with no name set, nothing is sent: the foot of the drawer becomes the prompt `Your name for chat posts (saved in settings.toml):` and the keys type the name
 instead of the draft. `Enter` saves it to `settings.toml` (the file the window loaded, or the per-user one, made if missing) and uses it at
 once, for every row and project in the window, and the draft stays: the next `Enter` posts it. `Escape` cancels and keeps the draft. A name
 is refused, with the reason on the status line and the prompt open, when it is empty, holds a quote or a backslash, or is longer than
@@ -157,11 +156,11 @@ is refused, with the reason on the status line and the prompt open, when it is e
 joined. The prompt ends, with the draft kept, when you change the row, hide the drawer, the link to the hub changes, or the row has no
 mapped channel; scrolling, the mark and a thread's opening still work while it is open. A settings file the window will not edit safely (one that is not valid TOML, or spells `[chat]` or `name` in some other way) is left as it is, and the status line says how to add the name by hand. The name is asked once per settings file; to change it later, edit `[chat] name` and restart the window. While the post waits the draft is frozen: a key or `Enter` is refused with `posting…` on the status line. The draft is cleared only by a
 reply that proves the post was made. Any other outcome keeps it, and the status line says why: `not posted` with the
-reason (a `bad request` names `[chat] name`; a hub with no token that posts as you says to connect Slack again), a wait when Slack is rate limiting (`Enter` is refused until it passes), or
+reason (a `bad request` says the chat name is not valid and names `[chat] name`; a hub with no token that posts as you says to connect Slack again), a wait when Slack is rate limiting (`Enter` is refused until it passes), or
 `may have been posted` when the answer was lost, in which case look at the channel before sending it again: a post is never
 sent a second time on its own. A typed `<` posts as itself, and a post cannot mention or ping anyone: `@here` and
 `<!channel>` arrive as plain text. A window posts only to a hub that is updated to escape text; to an older hub it says
-`the hub must be updated to post` and keeps the draft.
+`not posted: update Ship of Tools on the computer that runs your agents, then post again` and keeps the draft.
 
 `Primary+u` (`chat.post_file`) posts the file the preview pane shows, for the row the drawer shows, with the draft as
 its comment: once, as your own message from your Slack account (a hub that holds no user token posts nothing for you

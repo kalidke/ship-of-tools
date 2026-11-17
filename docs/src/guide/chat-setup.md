@@ -9,8 +9,9 @@ is the one, with no `hosts.toml` needed. If you have several, it is the one your
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
 **One Slack workspace, for now.** The chat connects one Slack workspace, and every project's channel is a channel of
-that workspace. An app made in a second workspace is refused at the connect step with "the hub connects one Slack
-workspace for now, and it is set up for another: the setup guide says how to move it". Channels in several workspaces
+that workspace. Codes from a second workspace's Slack app are refused at the connect step with "these Slack codes are for a different
+workspace than the one connected; the chat connects one Slack workspace for now (the manual page "Setting up Slack for
+Ship of Tools" says how to move it: press F1, then Enter)". The channel list says the same under its first line. Channels in several workspaces
 at once, one workspace per project, are planned and not yet built.
 Until then, to move the chat to another workspace, remove `chat.toml` and `chat-secrets.toml` from the settings folder
 of the computer the chat runs on (see the end of this page), which clears every project's channel, then connect again.
@@ -75,11 +76,11 @@ Select the project's row on the computer the chat runs on and open the Chat draw
 yet shows the list once the drawer has the keys; press Escape to close it, and Enter later to open it again.
 
 - Type to narrow the list (case does not matter, and a `#` is ignored), `Up` and `Down` to choose, `Enter` to pick, `Esc` to close.
-- A channel the app is not in is marked `your app joins it when you pick it`: picking a public channel makes the app join
+- A channel your Slack app is not in is marked `your Slack app joins it when you pick it`: picking a public channel makes the app join
   it, and Slack then shows that your app joined. An app made by hand without the `channels:join` permission cannot join,
   and picking such a channel says so: invite the app to the channel (in it, type `/invite @` and your app's name, such as
   `/invite @Ship of Tools (lab-user)`).
-- A private channel is in the list only once you have invited your app to it, and is marked `private, app invited`.
+- A private channel is in the list only once you have invited your app to it, and is marked `private; your Slack app is in it`.
 - If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
   (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
   `G` and is made of capital letters and digits.
@@ -87,7 +88,7 @@ yet shows the list once the drawer has the keys; press Escape to close it, and E
   another project already uses it.
 
 To change a project's channel, or to give it none, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac; `chat.setup`) in the Chat
-drawer: the list then begins with `No channel for this project`, and ends with `Connect Slack again`. The window writes
+drawer: the list then begins with `No channel for this project`, and ends with `Connect Slack again` (marked `fresh codes for the same Slack app, not another workspace`). The window writes
 the choice into `chat.toml` for you, whole: comments and the order of its keys are not kept. One channel per project.
 
 ## Setting it up by hand

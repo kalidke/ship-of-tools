@@ -150,42 +150,42 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
         assert_eq!(d.title(), " chat · set up Slack ", "{reason}");
         let body = drawn(&d);
         assert!(body.contains("First, connect Ship of Tools to your Slack workspace"), "{reason}: the start screen");
-        assert!(body.contains("Each person makes their own app"), "{reason}: one app per person");
-        assert!(body.contains("Enter  start    Right  I made the app in an earlier try: go to step 2    Esc  close"), "{reason}");
+        assert!(body.contains("Each person makes their own Slack app"), "{reason}: one app per person");
+        assert!(body.contains("Enter  start    Right  I already made my Slack app: go to step 2    Esc  close"), "{reason}");
     }
     // The refused tokens' screen names the person's own app at its first frame.
     let (d, _) = in_step("tokens_refused");
     let body = drawn(&d);
-    assert!(body.contains("Slack no longer accepts Ship of Tools' tokens. Press Enter: your list of Slack apps opens"));
-    assert!(body.contains(&format!("If {NAME} is in it")), "screen 8 names the app with the login at once");
-    assert!(body.contains("copy its three tokens again (steps 2 and 3 follow here)"));
-    assert!(body.contains("Enter  open your Slack apps    Left  make the app again    Esc  close"));
+    assert!(body.contains("Slack no longer accepts the Slack codes Ship of Tools holds. Press Enter: your list of Slack apps opens"));
+    assert!(body.contains(&format!("If {NAME}, your Slack app (the bot that reads the channel and posts for your agents), is in it")), "screen 8 names the app with the login at once");
+    assert!(body.contains("copy its three codes again (steps 2 and 3 follow here)"));
+    assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
     // A hub with no token that posts as the person: screen 9, with the same keys.
     let (d, _) = after_a_refused_post();
     assert_eq!(d.title(), " chat · post as you ");
-    let body = drawn(&d);
+    let body = drawn(&d).replace('\n', " ");
     assert!(body.contains("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours."));
-    assert!(body.contains("this hub holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had."), "both causes are said");
+    assert!(body.contains("a holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had."), "both causes are said");
     assert!(body.contains("Press Enter: your list of Slack apps opens in your browser."));
-    assert!(body.contains("If it is not in the list, press Left to make the app again (step 1)."));
-    assert!(body.contains("Enter  open your Slack apps    Left  make the app again    Esc  close"));
+    assert!(body.contains("If it is not in the list, press Left to make your Slack app again (step 1)."));
+    assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
 
     // Each step names itself and its keys.
     let mut c = step(ChatUnconfigured::NotConnected);
     c.key(ENTER, None, false);
-    assert_eq!(c.title(), " chat · set up Slack · step 1 of 3: make the app ");
+    assert_eq!(c.title(), " chat · set up Slack · step 1 of 3: make your Slack app ");
     let make = c.body();
     assert!(make.head.contains(&format!("already named {NAME}, after the name you sign in to this computer with")));
     assert_eq!(make.pin, "Enter  next step    Left/Right  move between steps    Esc  close");
     c.key(ENTER, None, false);
-    assert_eq!(c.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
+    assert_eq!(c.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
     let two = c.body();
-    assert!(two.head.contains("the User OAuth Token, which starts with xoxp- and lets Ship of Tools post your messages as you, and the Bot User OAuth Token, which starts with xoxb-"));
+    assert!(two.head.contains("the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets your Slack app (the bot that reads the channel and posts for your agents) read your channels and post in them"));
     assert!(two.head.contains("User OAuth Token       not pasted yet\nBot User OAuth Token   not pasted yet"));
-    assert!(two.head.contains("No User OAuth Token on the page? Your app was made before Ship of Tools posted as you."));
+    assert!(two.head.contains("No \"User OAuth Token\" on the page? Your Slack app was made before Ship of Tools posted as you."));
     assert!(two.head.contains("under User Token Scopes, click Add an OAuth Scope and choose chat:write, then again for files:write"));
     c.key(RIGHT, None, false);
-    assert_eq!(c.title(), " chat · set up Slack · step 3 of 3: the last token ");
+    assert_eq!(c.title(), " chat · set up Slack · step 3 of 3: the last Slack code ");
     assert!(c.body().head.contains("  4. Click Add Scope and choose connections:write from the list."));
     assert!(c.body().head.contains("App-Level Token   not pasted yet"));
     // No login names the app plainly, and says nothing of a login.
@@ -201,15 +201,15 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
 fn the_wrong_app_screen_names_the_app_and_opens_the_apps() {
     let (mut d, _) = in_step("wrong_app");
     assert_eq!(d.title(), " chat · set up Slack ");
-    let body = drawn(&d);
-    let words = format!("The hub stopped this workspace's chat: the App-Level Token it holds belongs to another Slack app, and it would have taken that app's messages. Press Enter: your list of Slack apps opens in your browser. Click {NAME}, the app made in this workspace, and copy its three tokens again (steps 2 and 3 follow here).");
+    let body = drawn(&d).replace('\n', " ");
+    let words = format!("The chat stopped: the \"App-Level Token\" it holds belongs to a different Slack app than yours (the bot that reads the channel and posts for your agents), so the chat would have received messages meant for that other app. To fix it, press Enter: your list of Slack apps opens in your browser. Click {NAME}, the app you made in this workspace, and copy its three Slack codes again (steps 2 and 3 follow here).");
     assert!(body.contains(&words), "the wrong app's words");
-    assert!(body.contains("Enter  open your Slack apps    Left  make the app again    Esc  close"));
+    assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
     let (_, asks) = key(&mut d, ENTER);
     assert_eq!(asks.open.as_deref(), Some("https://api.slack.com/apps"));
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ", "the apps' list, then step 2");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ", "the apps' list, then step 2");
     key(&mut d, RIGHT);
-    assert!(drawn(&d).contains("Copy it from the same app as the two tokens of step 2."), "step 3 says the app");
+    assert!(drawn(&d).contains("Copy it from the same Slack app as the two codes of step 2."), "step 3 says the app");
 
     let mut c = step(ChatUnconfigured::WrongApp);
     let (_, asks) = c.key(LEFT, None, false);
@@ -315,12 +315,12 @@ fn step_two_takes_the_user_and_bot_tokens_in_either_order_and_one_connect_carrie
     for order in [[user(), bot()], [bot(), user()]] {
         let (mut d, _) = in_step("not_connected");
         key(&mut d, RIGHT);
-        assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
+        assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
         let mut sent = Vec::new();
         for (n, token) in order.iter().enumerate() {
             sent.extend(connects(&paste(&mut d, token).0));
             assert!(!leaks(&drawn(&d)), "a cell holds a token byte after paste {n}");
-            let want = if n == 0 { " chat · set up Slack · step 2 of 3: the first two tokens " } else { " chat · set up Slack · step 3 of 3: the last token " };
+            let want = if n == 0 { " chat · set up Slack · step 2 of 3: the first two Slack codes " } else { " chat · set up Slack · step 3 of 3: the last Slack code " };
             assert_eq!(d.title(), want, "after paste {n}");
         }
         assert!(sent.is_empty(), "no connect before the app-level token");
@@ -332,7 +332,7 @@ fn step_two_takes_the_user_and_bot_tokens_in_either_order_and_one_connect_carrie
     let (mut d, _) = in_step("not_connected");
     key(&mut d, RIGHT);
     assert!(paste(&mut d, &app()).0.is_empty());
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
     assert!(paste(&mut d, &bot()).0.is_empty());
     assert_eq!(connects(&paste(&mut d, &user()).0), [(bot(), user(), app())]);
 }
@@ -345,7 +345,7 @@ fn a_paste_that_is_no_slack_token_is_dropped_unshown() {
     for bad in ["QJXQJX", "xoxb-", "xoxp-", "xoxa-QJXQJX", &format!("{} {}", bot(), app()), &format!("xoxb-{}", "Q".repeat(600)), &format!("xoxp-{}", "H".repeat(600))] {
         let (out, asks) = c.key(PASTE, Some(bad), false);
         assert!(out.is_none());
-        assert_eq!(asks.notice.as_deref(), Some("that is not a Slack token: the bot and user tokens start xoxb- and xoxp-, the app-level token xapp-"));
+        assert_eq!(asks.notice.as_deref(), Some("that is not a Slack code: the \"Bot User OAuth Token\" starts xoxb-, the \"User OAuth Token\" xoxp-, the \"App-Level Token\" xapp-"));
         assert_eq!(c.body().lines(100, 60), before, "a refused paste changes nothing drawn");
         assert_eq!(c.held(), (None, None, None), "a refused paste is held nowhere");
     }
@@ -363,10 +363,10 @@ fn enter_opens_the_page_until_the_tokens_are_held_then_connects_once() {
     assert_eq!(asks.copy, Some(slack_app_manifest(NAME)), "the copy is the same app's description");
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && asks.open.is_none(), "Enter on step 1 opens nothing more");
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
     // The tokens in any order: the app-level token first, then the bot token, then the user token, connects once.
     assert!(paste(&mut d, &app()).0.is_empty());
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ", "the missing token's step");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ", "the missing token's step");
     assert!(paste(&mut d, &bot()).0.is_empty());
     let (outs, _) = paste(&mut d, &user());
     assert_eq!(connects(&outs), [(bot(), user(), app())]);
@@ -384,19 +384,19 @@ fn a_refused_token_goes_back_to_its_step_and_the_others_are_kept() {
     }
     c.answered(ChatReply::Refused(ChatCode::AppTokenRefused));
     assert_eq!(c.screen(), &Screen::App);
-    assert!(c.body().head.starts_with("Slack did not accept the token you pasted. Make sure you copied the App-Level Token"));
+    assert!(c.body().head.starts_with("Slack did not accept the code you pasted. Make sure you copied the \"App-Level Token\""));
     assert_eq!(c.held(), (Some(bot().as_str()), Some(user().as_str()), None));
     assert!(c.key(PASTE, Some(&app()), false).0.is_some(), "the other two were kept: a new last token connects again");
 
     c.answered(ChatReply::Refused(ChatCode::BotTokenRefused));
     assert_eq!(c.screen(), &Screen::Tokens);
-    assert!(c.body().head.starts_with("Slack did not accept the token you pasted. Make sure you copied the Bot User OAuth Token"));
+    assert!(c.body().head.starts_with("Slack did not accept the code you pasted. Make sure you copied the \"Bot User OAuth Token\""));
     assert_eq!(c.held(), (None, Some(user().as_str()), Some(app().as_str())));
     assert!(c.key(PASTE, Some(&bot()), false).0.is_some(), "the other two were kept");
 
     c.answered(ChatReply::Refused(ChatCode::UserTokenRefused));
     assert_eq!(c.screen(), &Screen::Tokens);
-    assert!(c.body().head.starts_with("Slack did not accept the token you pasted. Make sure you copied the User OAuth Token (it starts with xoxp-); then copy it again, click in this panel and press"));
+    assert!(c.body().head.starts_with("Slack did not accept the code you pasted. Make sure you copied the \"User OAuth Token\" (it starts with xoxp-); then copy it again, click in this panel and press"));
     assert_eq!(c.held(), (Some(bot().as_str()), None, Some(app().as_str())));
     assert!(!leaks(&c.body().lines(100, 60).join("\n")));
     assert!(c.key(PASTE, Some(&user()), false).0.is_some(), "the other two were kept");
@@ -404,13 +404,13 @@ fn a_refused_token_goes_back_to_its_step_and_the_others_are_kept() {
     // Any other answer drops all three and says why on the first screen.
     c.answered(ChatReply::Refused(ChatCode::OtherWorkspace));
     assert_eq!(c.screen(), &Screen::First);
-    assert!(c.body().head.starts_with("Not connected: the hub connects one Slack workspace for now, and it is set up for another: the setup guide says how to move it."));
+    assert!(c.body().head.starts_with("Not connected: these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack for Ship of Tools\" says how to move it: press F1, then Enter)."));
     assert_eq!(c.held(), (None, None, None));
     for t in [bot(), user(), app()] {
         c.key(PASTE, Some(&t), false);
     }
     c.answered(ChatReply::Unsupported);
-    assert!(c.body().head.starts_with("Not connected: the hub's daemon must be updated to connect Slack."));
+    assert!(c.body().head.starts_with("Not connected: Ship of Tools on a is too old to connect Slack: update it."));
     // A step that sent nothing is not changed by a reply.
     let mut c = step(ChatUnconfigured::NotConnected);
     c.key(PASTE, Some(&bot()), false);
@@ -428,8 +428,8 @@ fn a_refused_user_token_returns_to_step_two_and_keeps_the_others() {
     for ms in [10, 20] {
         d.tick(shown("ROW1"), t + Duration::from_millis(ms));
     }
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
-    assert!(drawn(&d).contains("Make sure you copied the User OAuth Token (it starts with xoxp-)"));
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
+    assert!(drawn(&d).contains("Make sure you copied the \"User OAuth Token\" (it starts with xoxp-)"));
     assert_eq!(d.setup_held(), Some((Some(bot()), None, Some(app()))), "the bot and app tokens are kept through the frames");
     assert_eq!(connects(&paste(&mut d, &user()).0), [(bot(), user(), app())], "a new user token connects again");
 }
@@ -457,10 +457,10 @@ fn an_older_connects_reply_never_acts_on_a_newer_step() {
     paste(&mut d, &user());
     let (outs, asks) = paste(&mut d, &app());
     assert!(outs.is_empty(), "no second connect while the first is unanswered");
-    assert!(asks.notice.unwrap().starts_with("Slack is still checking the tokens sent before"));
+    assert!(asks.notice.unwrap().starts_with("Slack is still checking the codes sent before"));
     // The first connect's refusal of a bot token is not this step's.
     d.on_evt(&host(), refused(ChatCode::BotTokenRefused), t + Duration::from_millis(230));
-    assert_eq!(d.title(), " chat · set up Slack · step 3 of 3: the last token ");
+    assert_eq!(d.title(), " chat · set up Slack · step 3 of 3: the last Slack code ");
     assert!(!drawn(&d).contains("did not accept"));
     // Now Enter sends the held tokens, once.
     assert_eq!(connects(&key(&mut d, ENTER).0), [(bot(), user(), app())]);
@@ -513,7 +513,7 @@ fn a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps() {
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty());
     assert_eq!(asks.open.as_deref(), Some("https://api.slack.com/apps"), "the person's apps, never the page that makes an app");
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ");
     for token in [user(), bot()] {
         assert!(paste(&mut d, &token).0.is_empty());
     }
@@ -527,7 +527,7 @@ fn a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps() {
 #[test]
 fn a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft() {
     let (mut d, at) = after_a_refused_post();
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: the hub holds no Slack token that posts as you; connect Slack again"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list and choose Connect Slack again"));
     assert!(d.in_setup());
     assert_eq!(d.title(), " chat · post as you ");
     assert_eq!(d.draft(), Some(("hello", "CH1")), "the draft is kept");
@@ -569,7 +569,7 @@ fn a_late_refusal_never_opens_over_another_row_or_replaces_a_step_holding_a_toke
     paste(&mut d, &bot());
     d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at + Duration::from_millis(30));
     assert_eq!(d.setup_held(), Some((Some(bot()), None, None)), "the pasted token is kept");
-    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ", "and the step is the one the person was in");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two Slack codes ", "and the step is the one the person was in");
 }
 
 /// B1: the Connected screen, over a row whose channel the hub maps, parks the channel's records as the picker does.
@@ -586,7 +586,7 @@ fn the_connect_step_parks_the_channels_records() {
         { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Done(listed) }, at);
     let rows = d.body().unwrap().lines(100, 30);
-    assert!(rows.iter().any(|r| r.contains(&format!("/invite @{NAME}"))), "the picker's invite names the person's app");
+    assert!(rows.join(" ").contains(&format!("/invite @{NAME}")), "the picker's invite names the person's app");
     assert!(rows.iter().any(|r| r.trim_start_matches(['>', ' ']).starts_with("Connect Slack again")), "Connect Slack again is offered");
     (0..3).for_each(|_| d.picker_step(true));
     assert!(d.picker_enter().is_empty(), "Connect Slack again sends nothing");
@@ -601,7 +601,7 @@ fn the_connect_step_parks_the_channels_records() {
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.title(), " chat · connected ");
     assert!(d.placed_text().is_empty(), "the connected screen draws over no record");
-    assert!(drawn(&d).contains("on the computer that runs the chat"));
+    assert!(drawn(&d).contains("keeps the three codes on a, readable only by your account"));
 }
 
 #[test]
@@ -613,11 +613,11 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     d.on_evt(&host(), connected("T1"), t);
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1, "the reply resolves the row at once");
     assert_eq!(d.title(), " chat · connected ");
-    assert!(drawn(&d).contains("Ship of Tools is connected to the Slack workspace T1."));
+    assert!(drawn(&d).contains("Ship of Tools is connected to your Slack workspace (its Slack ID is T1)."));
     // Before the row's new answer, Enter says to wait; after it, Enter opens the picker and asks for the channels.
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && d.in_setup());
-    assert_eq!(asks.notice.as_deref(), Some("reading the hub again: press Enter in a moment"));
+    assert_eq!(asks.notice.as_deref(), Some("setting up the chat: press Enter again in a moment to choose this project's channel"));
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t);
     d.tick(shown("ROW1"), t);
     assert!(d.in_setup(), "the connected screen waits for the person");
@@ -637,7 +637,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     paste(&mut d, &app());
     d.on_evt(&host(), ChatEvt::ConnectUnknown, t);
     assert!(!d.in_setup(), "an unknown outcome ends the step: the row's new answer decides what shows");
-    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: the hub did not answer before the link ended; reading it again"));
+    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again"));
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1);
 }
 

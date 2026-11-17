@@ -211,21 +211,21 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     // No listing for the row: it is read again every frame.
     let mut d = ChatDrawer::default();
     d.tick(None, Instant::now());
-    assert_eq!(d.title(), " chat · waiting for this row's listing ");
+    assert_eq!(d.title(), " chat · waiting for this project to be listed ");
 
     // The host is not connected: asked at `Connected`.
     let t0 = Instant::now();
     d.tick(shown("R"), t0);
-    assert_eq!(d.title(), " chat · not connected ");
+    assert_eq!(d.title(), " chat · no connection to a ");
     d.on_connection(&"a".to_string(), true, false, t0);
     assert!(asks_at(&mut d, t0 + Duration::from_millis(200)));
 
     // No usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame. (An unmapped
     // row opens the channel picker: `picker_tests`.)
     for (evt, words) in [
-        (answer("R", serde_json::json!({ "state": "something_new" })), "the hub has no usable chat configuration: its daemon log says why"),
-        (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "this daemon has no chat: update it"),
-        (refused("R", ChatCode::Unavailable), "the chat runs on the hub, not on a"),
+        (answer("R", serde_json::json!({ "state": "something_new" })), "the chat on a is not set up correctly: the log says why (the file sotd.log on a; the command sotd log-path there prints its place)"),
+        (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "Ship of Tools on a has no chat: update it"),
+        (refused("R", ChatCode::Unavailable), "the chat does not run on a: it runs on one computer, and this is not it"),
     ] {
         let (mut d, at) = answered_with(|_| evt);
         assert_eq!(d.title(), format!(" chat · {words} "));
@@ -249,7 +249,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
 
     // Any other refusal: asked after the pace, not before; once, with its answer cleared meanwhile.
     let (mut d, at) = answered_with(|r| refused(r, ChatCode::TooManyWatches));
-    assert_eq!(d.title(), " chat · the hub could not answer: too many channels are watched ");
+    assert_eq!(d.title(), " chat · the chat on a could not answer: too many channels are being followed at once ");
     assert!(!asks_at(&mut d, at + pace - Duration::from_secs(1)), "too soon");
     assert!(asks_at(&mut d, at + pace), "after the pace");
     assert!(!asks_at(&mut d, at + pace + Duration::from_millis(16)), "one resolve, not one a frame");
@@ -265,8 +265,8 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     assert_eq!(d.title(), " chat · C1 ");
 
     // A gap names its reason; a target refused for good shows its code's words, and is not asked again.
-    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the hub's chat service is not running: its daemon log says why ");
-    assert_eq!(gap_title(ChatCode::Busy), " chat · C1 not up to date: the chat service is busy ");
+    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the chat is not running on a: the log says why (the file sotd.log on a; the command sotd log-path there prints its place) ");
+    assert_eq!(gap_title(ChatCode::Busy), " chat · C1 not up to date: the chat is busy; try again in a moment ");
     for code in [ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::Unmapped] {
         let (mut d, at) = gapped(code);
         assert_eq!(d.title(), format!(" chat · C1 {} ", code.text()));
@@ -278,7 +278,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     }
     let (mut d, at) = answered_with(mapped);
     (0..40).for_each(|s| drop(d.tick(shown("R"), at + Duration::from_secs(s))));
-    assert_eq!(d.title(), " chat · C1 not up to date: no snapshot ");
+    assert_eq!(d.title(), " chat · C1 not up to date: no messages read yet ");
 }
 
 fn history_req(outs: &[Out]) -> sot_protocol::ops::ChatHistoryReq {
@@ -1032,7 +1032,7 @@ fn the_header_is_the_bold_name_and_a_smaller_muted_time() {
     }
     // Every visual line of a header, wrapped or not, is a body line tall: one that holds only the badge (the time wrapped off
     // it) or only the time takes its height from those glyphs alone.
-    let drawer = [rec_by("1700000001.000100", "Ada Lovelace", "drawer", "x")];
+    let drawer = [rec_by("1700000001.000100", "Ada Lovelace", "row", "x")];
     let records: Vec<&ChatRecord> = drawer.iter().collect();
     for scale in [1.0_f32, 1.5] {
         for w in (90..=320).step_by(3) {
@@ -1057,7 +1057,7 @@ fn the_badge_comes_from_the_origin_and_no_text_draws_one() {
         ("member", "ROW", "APP", 0, 0),
         ("member", "APP", "x", 0, 0),
         ("other", "Ada", "x", 0, 0),
-        ("drawer", "Ada", "x", 1, 0),
+        ("drawer", "Ada", "x", 0, 0),
         ("row", "Ada", "x", 1, 0),
         ("bot", "Ada", "x", 1, 0),
         ("member", "Ada", "`ROW` `APP`", 0, 2),
@@ -1137,7 +1137,7 @@ fn the_marks_bar_follows_the_text_scale() {
 fn a_badge_keeps_its_rectangle_and_its_padding_where_a_wrap_cuts_the_header() {
     let mut fonts = FontSystem::new();
     let flag = attrs(Kind::Badge, 1.0).metadata;
-    let held = [rec_by("1700000001.000100", "Ada Lovelace", "drawer", "x")];
+    let held = [rec_by("1700000001.000100", "Ada Lovelace", "row", "x")];
     let records: Vec<&ChatRecord> = held.iter().collect();
     let (mut ends_a_line, mut starts_a_line) = (false, false);
     for scale in [1.0_f32, 1.5] {
@@ -1156,7 +1156,7 @@ fn a_badge_keeps_its_rectangle_and_its_padding_where_a_wrap_cuts_the_header() {
                 }
                 badges += 1;
                 // Two no-break spaces, the word, two more: the padding is glyphs, so it scales and no clip takes it.
-                assert!((8..=10).contains(&g.len()), "width {w}: {} glyphs", g.len());
+                assert!((7..=10).contains(&g.len()), "width {w}: {} glyphs", g.len());
                 assert!(g[0].w + g[1].w >= 4.0 * scale, "width {w}: the left padding is {:?}", [g[0].w, g[1].w]);
                 let last = g[g.len() - 1];
                 assert!(drawn.iter().any(|q| near(q.x, body.x + GUTTER_PX * scale + g[0].x) && near(q.w, last.x + last.w - g[0].x)), "width {w}: no rectangle for the run at {}", g[0].x);

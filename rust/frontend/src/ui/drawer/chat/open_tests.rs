@@ -116,7 +116,7 @@ fn an_open_on_a_link_that_is_down_or_an_old_hub_says_so_and_is_never_sent_later(
     let on = center(d.tiles()[0].rect);
     d.on_connection(&"a".to_string(), false, false, at);
     assert!(click(&mut d, on, at).is_empty());
-    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the link to the hub is down"));
+    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the connection to the computer that runs your agents is down"));
     // The link comes back: the press made while it was down is not sent.
     let mut outs = d.on_connection(&"a".to_string(), true, false, at);
     outs.extend(d.tick(shown("ROW1"), at).0);
@@ -125,7 +125,7 @@ fn an_open_on_a_link_that_is_down_or_an_old_hub_says_so_and_is_never_sent_later(
     let req = files(&click(&mut d, on, at), ChatFileVariant::Original).remove(0);
     d.take_notice();
     d.on_connection(&"a".to_string(), false, false, at);
-    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the link to the hub changed before it came"));
+    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the connection to the computer that runs your agents changed before it arrived"));
     let mut outs = d.on_connection(&"a".to_string(), true, false, at);
     outs.extend(d.tick(shown("ROW1"), at).0);
     assert!(settle(&mut d, outs, at).is_empty());
@@ -134,9 +134,9 @@ fn an_open_on_a_link_that_is_down_or_an_old_hub_says_so_and_is_never_sent_later(
     // A hub that does not know the op: said at once, and the next press says it again without asking.
     let req = files(&click(&mut d, on, at), ChatFileVariant::Original).remove(0);
     d.on_evt(&"a".to_string(), ChatEvt::File { req, reply: ChatReply::Unsupported }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the hub must be updated to open it"));
+    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: update Ship of Tools on the computer that runs your agents to open it"));
     assert!(click(&mut d, on, at).is_empty());
-    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: the hub must be updated to open it"));
+    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: update Ship of Tools on the computer that runs your agents to open it"));
 }
 
 #[test]

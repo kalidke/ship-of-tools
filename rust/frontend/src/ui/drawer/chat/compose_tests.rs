@@ -121,7 +121,7 @@ fn the_wired_draft_is_the_shown_rows_and_begins_in_its_own_watch() {
 
     // No shown row, no draft.
     let (mut d, at) = watching();
-    assert_eq!(d.edit(None, Edit::Text("a")), Err("no row to write for"));
+    assert_eq!(d.edit(None, Edit::Text("a")), Err("no project is selected to write to"));
 
     // The row is the one given at the key: `S` has no watch yet (the frame has not moved it), so nothing begins in `R`'s
     // channel for it, and `R`'s own draft is untouched.
@@ -238,7 +238,7 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     assert_eq!(d.send(Some(&r), Some("Ada"), at).unwrap_err(), "nothing to post", "blank is nothing");
     d.edit(Some(&r), Edit::Backspace).unwrap();
     d.edit(Some(&r), Edit::Text("a < b")).unwrap();
-    assert_eq!(d.send(None, Some("Ada"), at).unwrap_err(), "no row to write for");
+    assert_eq!(d.send(None, Some("Ada"), at).unwrap_err(), "no project is selected to write to");
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
     // The plain draft goes once, as typed, to the channel it was begun in; the draft is frozen while the post waits.
@@ -252,12 +252,12 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
 
     // Refused bad_request: kept, and the status names the setting; Enter works again.
     reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::BadRequest }), at);
-    assert!(d.take_notice().unwrap().contains("[chat] name"));
+    assert!(d.take_notice().unwrap().contains("the chat name is not valid"));
     assert_eq!(d.draft(), Some(("a < b", "C1")));
     // Any other refusal: kept, with its reason.
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
     reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: the chat service is busy"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: the chat is busy; try again in a moment"));
     d.tick(Some(r.clone()), at);
     assert_eq!(d.take_notice(), None, "a report is said once");
     assert_eq!(d.draft(), Some(("a < b", "C1")));
@@ -278,7 +278,7 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     // A hub that does not post plain text: the window never wrote it, the draft is kept.
     let req = posted(d.send(Some(&r), Some("Ada"), at + Duration::from_secs(40)).unwrap());
     d.on_evt(&"a".to_string(), ChatEvt::PostNotSent { req }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: the hub must be updated to post"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: update Ship of Tools on the computer that runs your agents, then post again"));
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
     // A reply for a post that is not waiting changes nothing; the reply that proves the post clears that draft alone.
@@ -343,7 +343,7 @@ fn asking() -> (ChatDrawer, Instant) {
 fn the_name_prompt_edits_the_name_not_the_draft_and_escape_keeps_it() {
     let (mut d, _) = asking();
     let foot = |d: &ChatDrawer, w| compose_rows(&d.compose_text(true).unwrap(), w, 10);
-    assert_eq!(foot(&d, 40), ["Name for your chat posts: █"]);
+    assert_eq!(foot(&d, 80), ["Your name for chat posts (saved in settings.toml): █"]);
 
     // The keys edit the name, not the draft.
     for e in [Edit::Text("Ad"), Edit::Text("x"), Edit::Backspace, Edit::Text("a"), Edit::Space, Edit::Newline] {
@@ -351,8 +351,8 @@ fn the_name_prompt_edits_the_name_not_the_draft_and_escape_keeps_it() {
     }
     assert_eq!(d.asking(), Some("Ada "));
     assert_eq!(d.draft(), Some(("hello", "C1")));
-    assert_eq!(foot(&d, 40), ["Name for your chat posts: Ada █"]);
-    assert_eq!(foot(&d, 29), ["Name for your chat posts: a █"], "a narrow foot keeps the end of the name");
+    assert_eq!(foot(&d, 80), ["Your name for chat posts (saved in settings.toml): Ada █"]);
+    assert_eq!(foot(&d, 54), ["Your name for chat posts (saved in settings.toml): a █"], "a narrow foot keeps the end of the name");
     d.ask_name();
     assert_eq!(d.asking(), Some("Ada "), "asking again keeps a name half typed");
 
@@ -391,7 +391,7 @@ fn enter_with_no_name_on_a_row_that_is_not_mapped_says_why_and_opens_no_prompt()
     d.edit(Some(&row("R")), Edit::Text("hello")).unwrap();
     d.on_connection(&"a".to_string(), false, false, at);
     let words = d.send(Some(&row("R")), None, at).unwrap_err();
-    assert!(words.starts_with("not posted: ") && words.contains("not connected"), "{words}");
+    assert!(words.starts_with("not posted: ") && words.contains("no connection to a"), "{words}");
     assert_eq!(d.asking(), None);
 }
 
@@ -457,17 +457,17 @@ fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_he
     let said = |d: &ChatDrawer| compose_rows(&d.compose_text(false).expect("the foot's text"), 160, 10).join(" ");
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
     // `watching` brought the link up with the word false: an older daemon.
-    assert!(said(&d).contains("as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you)"), "{}", said(&d));
+    assert!(said(&d).contains("is too old to post as you, so what you post appears in the channel as a message from your Slack app, with your chat name. Update it to post as yourself."), "{}", said(&d));
     // A hello that says true.
     d.on_connection(&host, true, true, at);
     assert!(said(&d).contains("as your own message, from your Slack account"), "{}", said(&d));
-    assert!(!said(&d).contains("the app's message"));
+    assert!(!said(&d).contains("a message from your Slack app"));
     // The link goes: nothing is said of the daemon, only of the channel's chord.
     d.on_connection(&host, false, false, at);
     d.tick(Some(row("R")), at + Duration::from_millis(1));
     if let Some(text) = d.compose_text(false) {
         let said = compose_rows(&text, 160, 10).join(" ");
-        assert!(!said.contains("older") && !said.contains("the app's message") && !said.contains("your own message"), "{said}");
+        assert!(!said.contains("older") && !said.contains("a message from your Slack app") && !said.contains("your own message"), "{said}");
         assert!(said.contains(&format!("{chord} changes this project's channel.")), "{said}");
     }
 }
@@ -494,8 +494,8 @@ fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
 fn the_name_prompt_row_shows_the_cursor_only_while_focused_and_fits_the_height() {
     let (mut d, _) = asking();
     d.edit_name(Edit::Text("Ada")).unwrap();
-    assert_eq!(compose_rows(&d.compose_text(false).unwrap(), 40, 10), ["Name for your chat posts: Ada"], "no block unfocused");
-    assert_eq!(compose_rows(&d.compose_text(true).unwrap(), 40, 10), ["Name for your chat posts: Ada█"]);
+    assert_eq!(compose_rows(&d.compose_text(false).unwrap(), 80, 10), ["Your name for chat posts (saved in settings.toml): Ada"], "no block unfocused");
+    assert_eq!(compose_rows(&d.compose_text(true).unwrap(), 80, 10), ["Your name for chat posts (saved in settings.toml): Ada█"]);
     assert!(compose_rows(&d.compose_text(true).unwrap(), 40, 0).is_empty(), "never more rows than the height");
 }
 
@@ -635,11 +635,11 @@ fn a_preview_with_no_node_posts_nothing() {
     let (mut d, at) = watching_as_person();
     d.edit(Some(&r), Edit::Text("the fit")).unwrap();
     assert_eq!(d.send_file(Some(&r), None, at).unwrap_err(), "not posted: the preview shows no file");
-    assert_eq!(d.send_file(None, Some("files:a.png"), at).unwrap_err(), "no row to post for");
+    assert_eq!(d.send_file(None, Some("files:a.png"), at).unwrap_err(), "no project is selected to post for");
     assert_eq!(d.send_file(Some(&row("S")), Some("files:a.png"), at).unwrap_err(), "not posted: no channel to write to");
     assert_eq!(d.draft(), Some(("the fit", "C1")));
     let (mut old, at) = watching();
-    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: the hub must be updated to post");
+    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: update Ship of Tools on the computer that runs your agents, then post again");
     // Nothing waits: a text post still goes.
     old.edit(Some(&r), Edit::Text("hi")).unwrap();
     assert!(matches!(old.send(Some(&r), Some("tester"), at).unwrap().as_slice(), [(_, OutgoingReq::ChatPost { .. })]));

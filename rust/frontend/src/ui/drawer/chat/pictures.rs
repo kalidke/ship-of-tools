@@ -178,10 +178,10 @@ impl ChatPictures {
     /// is down, or whose daemon does not know the op, nothing is kept and the words say why, so it is never sent later unasked.
     pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) -> Result<(), &'static str> {
         if !self.connected.contains(host) {
-            return Err("picture not opened: the link to the hub is down");
+            return Err("picture not opened: the connection to the computer that runs your agents is down");
         }
         if self.unsupported.contains(host) {
-            return Err("picture not opened: the hub must be updated to open it");
+            return Err("picture not opened: update Ship of Tools on the computer that runs your agents to open it");
         }
         self.wanted = Some((host.clone(), ChatFileReq { target: target.clone(), file: file.to_string(), variant: ChatFileVariant::Original }));
         Ok(())
@@ -210,7 +210,7 @@ impl ChatPictures {
                 ChatReply::Refused(code) => Some(format!("picture not opened: {}", code.text())),
                 ChatReply::Unsupported => {
                     self.unsupported.insert(host.clone());
-                    Some("picture not opened: the hub must be updated to open it".into())
+                    Some("picture not opened: update Ship of Tools on the computer that runs your agents to open it".into())
                 }
             }
         } else {

@@ -110,14 +110,14 @@ fn hint(as_person: Option<bool>) -> String {
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
     let how = match as_person {
         Some(true) => "What you post appears in the channel as your own message, from your Slack account. ",
-        Some(false) => "What you post appears in the channel as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you). ",
+        Some(false) => "Ship of Tools on the computer that runs your agents is too old to post as you, so what you post appears in the channel as a message from your Slack app, with your chat name. Update it to post as yourself. ",
         None => "",
     };
     format!("{how}{chord} changes this project's channel.")
 }
 
 /// The one row the foot shows while it asks for the name.
-const ASK: &str = "Name for your chat posts: ";
+const ASK: &str = "Your name for chat posts (saved in settings.toml): ";
 
 impl ComposeText {
     pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool, as_person: Option<bool>) -> Self {
