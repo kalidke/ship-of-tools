@@ -49,16 +49,17 @@ struct Entry {
     target: ChatTarget,
     /// The placement it was last placed in (`ChatPictures::placement`).
     placed: u64,
-    /// The file's summary as last placed.
-    file: ChatFile,
+    /// Whether its record said Slack had a thumbnail, as last placed.
+    thumbnail: bool,
 }
 
 pub(super) struct ChatPictures {
     entries: HashMap<Key, Entry>,
-    /// The files refused for the window session, never asked again while known. A file whose `failed` asks ran out keeps
-    /// the summary it was placed with: placed again with another (its record's edit, such as Slack's thumbnail arriving),
+    /// The files refused for the window session, never asked again while known; `true` for a file whose `failed` asks ran
+    /// out while its record said Slack had no thumbnail: placed again with the thumbnail (its record's edit), it is wanted
+    /// again.
     /// it is wanted again. `order` is oldest first, for `MAX_FINAL`.
-    finals: HashMap<Key, Option<ChatFile>>,
+    finals: HashMap<Key, bool>,
     order: VecDeque<Key>,
     /// The count of placements so far: the last one's entries are the ones asked for.
     placement: u64,
@@ -76,8 +77,10 @@ impl Default for ChatPictures {
 }
 
 /// Decodes a thumbnail's bytes once: one of wire's `PICTURE_MIMES` by its own bytes, under `Limits` (`MAX_SIDE`, checked
-/// before any pixel buffer, and `MAX_ALLOC` for every chunk it parses), then held downscaled to `HELD_SIDE` on its long side.
-/// `None` refuses it.
+/// before any pixel buffer, and `MAX_ALLOC` for what the decoder allocates through them), then held downscaled to
+/// `HELD_SIDE` on its long side. `None` refuses it. Not bounded by `Limits`: a lossless WebP's prefix-code tables, which
+/// the WebP decoder builds outside them; their cost is set by the reply's `MAX_THUMB` (about 100 MB and 70 ms for a
+/// hostile 256 KiB file, measured in a release build), one decode at a time.
 pub(super) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
     let mut r = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
     if !r.format().is_some_and(|f| PICTURE_MIMES.contains(&f.to_mime_type())) {
@@ -97,7 +100,8 @@ pub(super) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
 
 impl ChatPictures {
     /// The frame placed these records' files under `target` on `host` (no host: nothing is placed). Only their pictures are
-    /// asked for, the first `MAX_HELD` of them; a refused one is skipped, unless its retries ran out and its summary changed.
+    /// asked for, the first `MAX_HELD` of them; a refused one is skipped, unless its retries ran out with no thumbnail and its
+    /// record now has one.
     pub(super) fn place<'a>(&mut self, at: Option<(&HostKey, &ChatTarget)>, files: impl IntoIterator<Item = (&'a str, &'a str, &'a ChatFile)>, now: Instant) {
         self.placement += 1;
         let Some((host, target)) = at else { return };
@@ -105,15 +109,18 @@ impl ChatPictures {
         for (ws, ch, f) in mine.take(MAX_HELD) {
             let key = (host.clone(), ws.to_string(), ch.to_string(), f.id.clone());
             match self.finals.get(&key) {
-                Some(Some(seen)) if seen != f => {
+                Some(true) if f.thumbnail => {
                     self.finals.remove(&key);
                     self.order.retain(|k| k != &key);
                 }
                 Some(_) => continue,
                 None => {}
             }
-            let e = self.entries.entry(key).or_insert_with(|| Entry { stand: Stand::Wanted { due: now, failed: 0 }, target: target.clone(), placed: 0, file: f.clone() });
-            (e.target, e.placed, e.file) = (target.clone(), self.placement, f.clone());
+            let e = self.entries.entry(key).or_insert_with(|| Entry { stand: Stand::Wanted { due: now, failed: 0 }, target: target.clone(), placed: 0, thumbnail: f.thumbnail });
+            (e.placed, e.thumbnail) = (self.placement, f.thumbnail);
+            if e.target != *target {
+                e.target = target.clone();
+            }
         }
         self.bound();
     }
@@ -175,15 +182,15 @@ impl ChatPictures {
         let decode = self.decode;
         let Some(e) = self.entries.get_mut(&key) else { return self.asks(now) };
         let Stand::Flight { failed } = e.stand else { return self.asks(now) };
-        // `Err`: final, with the summary a changed one asks again against, for a file whose retries ran out.
+        // `Err`: final, `true` when a thumbnail arriving in its record asks again (its retries ran out with none).
         let next = match reply {
-            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(Stand::Held).ok_or(None),
-            ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Err(None),
+            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(Stand::Held).ok_or(false),
+            ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Err(false),
             ChatReply::Refused(ChatCode::Busy | ChatCode::Unavailable) => Ok(Stand::Wanted { due: now + PACE, failed }),
             ChatReply::Refused(ChatCode::Limited) => Ok(Stand::Wanted { due: now + LIMITED_PACE, failed }),
             // `failed` (Slack may have no thumbnail yet), and any other code: asked again, a bounded number of times.
             ChatReply::Refused(_) if failed < RETRIES => Ok(Stand::Wanted { due: now + PACE, failed: failed + 1 }),
-            ChatReply::Refused(_) => Err(Some(e.file.clone())),
+            ChatReply::Refused(_) => Err(!e.thumbnail),
             ChatReply::Unsupported => {
                 self.unsupported.insert(host.clone());
                 Ok(Stand::Wanted { due: now, failed })
@@ -191,16 +198,16 @@ impl ChatPictures {
         };
         match next {
             Ok(stand) => e.stand = stand,
-            Err(file) => self.refuse(key, file),
+            Err(waits) => self.refuse(key, waits),
         }
         self.bound();
         self.asks(now)
     }
 
     /// `key` is refused for the window session; past `MAX_FINAL` the oldest refusal is forgotten.
-    fn refuse(&mut self, key: Key, file: Option<ChatFile>) {
+    fn refuse(&mut self, key: Key, waits: bool) {
         self.entries.remove(&key);
-        if self.finals.insert(key.clone(), file).is_none() {
+        if self.finals.insert(key.clone(), waits).is_none() {
             self.order.push_back(key);
         }
         while self.order.len() > MAX_FINAL {

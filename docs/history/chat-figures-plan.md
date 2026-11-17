@@ -219,7 +219,7 @@ What the smaller design gives up, by decision:
 | an original's bytes | `MAX_CHAT_FILE` 16 MiB | the reply frame, then the installed preview source and the row's parked view, as any preview | the next install, or the row's view dropped |
 | images a record shows | the record's eight files (`MAX_FILES`) | — | — |
 | a thumbnail decoded | header at most 2048 x 2048 before decoding, `max_alloc` 32 MiB, held downscaled to at most 360 px on its long side (about 0.5 MiB RGBA) | window memory, with its texture | past 64 held, the least recently placed leaves first; the window's end |
-| thumbnail requests | 2 in flight per host | the window | the reply or the link's end |
+| thumbnail requests | 1 in flight per host (as built in L7: so a window loading pictures leaves the daemon's other transfer permit, D7, for a row's file post) | the window | the reply or the link's end |
 | an opened original | header at most 40 megapixels | the preview | as any preview |
 | on disk | nothing, anywhere | — | — |
 
@@ -327,7 +327,7 @@ blob, so the chat decoder must be handed the frame's blob for this op alone.
 
 ### L7 fe-ui: the pictures owner, 120 / 180
 Rule: `drawer/chat/pictures.rs`, `ChatPictures`, fields private: keyed by host, workspace, channel and file id; asks
-for the thumbnails of placed records' image files, at most 2 in flight per host; decodes a reply on the UI thread
+for the thumbnails of placed records' image files, at most 1 in flight per host (2 as first planned; one leaves D7's other permit for a row's file post); decodes a reply on the UI thread
 within section 6's bounds (header first, then `Limits`), downscaled to 360 px; holds at most 64, the least recently
 placed leaving first; D12's refusals; a link change clears that host's in-flight set. Files: `pictures.rs`,
 `pictures_tests.rs`, `drawer/chat/drawer.rs` (it holds the owner and returns its requests), `rust/frontend/src/ui/CLAUDE.md`
@@ -369,7 +369,7 @@ answer that does not parse is `unknown`, never refused. Files: `net/transport/op
   the thread and the row's label; the reply is `posted`; the share read back through history is `Row` under the row's
   name and is not mail. With it, `agents/tests/test-sot-fe-chat.sh`'s file cases.
 - Goal 2: `drawer::chat::native_fixture_tests::a_chats_pictures_show_and_one_opens_in_the_preview` (under a display):
-  records with image files; the window asks thumbnails at most two at a time; each answered with a PNG; every frame
+  records with image files; the window asks thumbnails one at a time; each answered with a PNG; every frame
   presents and the anchored record does not move; `Primary+o` sends one `chat.file original`; answered, the preview's
   installed source is the picture with no node.
 - Goal 3: `compose_tests::the_previewed_file_posts_once_with_the_draft_as_its_comment`.

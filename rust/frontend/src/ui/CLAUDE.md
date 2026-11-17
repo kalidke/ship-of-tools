@@ -1367,20 +1367,26 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   One in flight per host keeps one of the daemon's two transfer permits (chat guarantee 32) free for a row's
   `sot-fe chat post --file` while one window loads pictures; two windows loading from one hub can still hold both.
   A reply is taken only for a request in flight (`a_reply_for_a_picture_not_in_flight_changes_nothing`) and decoded on the
-  UI thread once, under `image::Limits` (sides at most 2048, checked before any pixel buffer, and 32 MiB for every chunk
-  it parses, an ICC profile's included), as one of the formats of `PICTURE_MIMES` by its own bytes
+  UI thread once, under `image::Limits` (sides at most 2048, checked before any pixel buffer, and 32 MiB for what the
+  decoder allocates through them, an ICC profile's chunk included), as one of the formats of `PICTURE_MIMES` by its own bytes
   (`every_picture_type_is_a_format_the_decoder_reads`), held downscaled to 360 px on its long side; one that fails any of
   it is refused (`a_thumbnail_past_its_bounds_is_never_decoded_whole`, with an 8 x 8 PNG whose profile inflates to 400 MiB,
-  which costs no more than one past the bound by a little). The decode runs under `catch_unwind`: a decoder's panic is a
+  which costs no more than one past the bound by a little). A header read under the image crate's default limits is a
+  lint error (`rust/clippy.toml`'s image group: `ImageReader::into_dimensions`, `image::image_dimensions`), the
+  deterministic pin of the one pass. Limit: a lossless WebP's prefix-code tables are built by the WebP decoder outside
+  `Limits`, so its cost is set by the thumbnail's `MAX_THUMB` alone: about 100 MB and 70 ms on the UI thread for a hostile
+  256 KiB file (measured in a release build, held as a 16 x 16 picture), one decode at a time per host, never kept. Lossless
+  WebP stays among the four: refusing it would turn an ordinary format into an empty tile to remove a bounded spike. The decode runs under `catch_unwind`: a decoder's panic is a
   refusal of that file, never the window's end (`a_decoder_panic_is_a_final_refusal_and_never_the_windows_end`, through a
   seam). At most 64 are held or wanted apart from those in flight; past it the least recently placed leaves first, and
   placed again it is asked again (`the_least_recently_placed_leaves_past_64`). Refusals (the plan's D12):
   `not_an_image`, `too_large`, `bad_request` and a failed decode are final for the window session, a link change and
-  any pressure on the 64 included: a refused file is kept as its key alone, in its own set of at most `MAX_FINAL` (1024),
+  any pressure on the 64 included: a refused file is kept as its key and one flag, in its own set of at most `MAX_FINAL` (1024),
   the oldest forgotten past it (`a_final_refusal_stays_final_past_64_and_the_refusals_have_their_own_bound`).
   `failed` (Slack may have made no thumbnail yet), and any code not named here, is asked again 5 s later at most three
-  times; then it is refused with the file's summary as placed, and asked again when its record's edit reaches the view
-  with another summary (such as `thumbnail` set: `a_file_whose_retries_ran_out_is_asked_again_when_its_record_changes`).
+  times; then it is refused, and when its record said Slack had no thumbnail, asked again once its record's edit reaches
+  the view with one; no other change of the record asks again
+  (`a_file_whose_retries_ran_out_is_asked_again_when_its_record_gets_a_thumbnail`).
   Limit: whether Slack sends an edit when a thumbnail appears is unmeasured (the plan's LP6), so a figure whose thumbnail
   takes longer than 15 s may stay an empty tile for the window session. `busy` and `unavailable` on the owner's `PACE`;
   `limited` after `LIMITED_PACE` (30 s: the refusal carries no wait); an unsupported answer stops that host until its link

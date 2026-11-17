@@ -43,6 +43,12 @@ disallowed-methods = [
   { path = "sot_platform::transport::socket_unix::client::connect_unix_socket_unchallenged", reason = "reach a local endpoint through sot_platform::transport::connect_own (ADR 0049, User isolation)" },
   { path = "sot_platform::transport::pipe_win::client::connect_pipe_path_unchallenged", reason = "reach a local endpoint through sot_platform::transport::connect_own (ADR 0049, User isolation)" },
   { path = "sot_platform::transport::pipe_win::client::connect_named_pipe_unchallenged", reason = "reach a local endpoint through sot_platform::transport::connect_own (ADR 0049, User isolation)" },
+  # Image headers (fe-ui's chat pictures, the plan's B1): a decode of untrusted bytes is one pass under the limits set on
+  # its reader, so nothing reads a header first under the image crate's default limits (512 MiB, every chunk before the
+  # first pixel parsed, an ICC profile's inflated). `ImageReader::into_decoder` is not listed: it is how a decode proceeds
+  # once its limits are set. A sanctioned header peek says what bounds its input.
+  { path = "image::ImageReader::into_dimensions", reason = "decode once under the reader's own image::Limits; a header pass reads under the default 512 MiB (fe-ui contract, the chat's pictures)" },
+  { path = "image::image_dimensions", reason = "decode once under the reader's own image::Limits; a header pass reads under the default 512 MiB (fe-ui contract, the chat's pictures)" },
   # Accepts (ADR 0049, User isolation): every listener a Rust process serves is listed. Each accept primitive and each
   # named-pipe or local-socket listener constructor this group names is disallowed; each production call carries one
   # allow whose reason begins "listener: <name>:", and rust/capsule/tests/isolation_guards.rs (every_rust_listener_is_listed)

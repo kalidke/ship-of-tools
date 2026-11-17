@@ -123,6 +123,7 @@ fn downsample_oversize_raster(mime: &str, bytes: &[u8]) -> Option<(Vec<u8>, f32)
     }
     // Peek dimensions (header only) before committing to a full decode: a big
     // file with modest dimensions ships raw without paying the decode.
+    #[allow(clippy::disallowed_methods, reason = "a project file the daemon already read whole (within the preview's binary cap) on the blocking pool, not a channel's bytes on the window's thread; the decode that follows sets its own limits")]
     let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?

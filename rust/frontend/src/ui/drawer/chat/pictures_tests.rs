@@ -389,33 +389,47 @@ fn a_decoder_panic_is_a_final_refusal_and_never_the_windows_end() {
     assert!(p.asks(t0 + Duration::from_secs(3600)).is_empty());
 }
 
-#[test]
-fn a_file_whose_retries_ran_out_is_asked_again_when_its_record_changes() {
-    let t0 = Instant::now();
-    let mut p = connected(&["a"], t0);
-    // Slack had no thumbnail yet: `failed` four times, then refused.
-    let early = ChatFile { thumbnail: false, ..pngs(1).remove(0) };
-    place(&mut p, "a", std::slice::from_ref(&early), t0);
+/// Places `f` and answers `failed` until its retries run out; the instant after.
+fn run_out(p: &mut ChatPictures, f: &ChatFile, t0: Instant) -> Instant {
+    place(p, "a", std::slice::from_ref(f), t0);
     let mut at = t0;
     for _ in 0..=3 {
         let (h, req) = asked(&p.asks(at)).remove(0);
         p.on_reply(&h, &req, ChatReply::Refused(ChatCode::Failed), at);
         at += Duration::from_secs(5);
-        place(&mut p, "a", std::slice::from_ref(&early), at);
+        place(p, "a", std::slice::from_ref(f), at);
     }
-    assert!(p.asks(at + Duration::from_secs(3600)).is_empty(), "the same summary is not asked again");
+    at
+}
+
+#[test]
+fn a_file_whose_retries_ran_out_is_asked_again_when_its_record_gets_a_thumbnail() {
+    let t0 = Instant::now();
+    let mut p = connected(&["a"], t0);
+    // Slack had no thumbnail yet: `failed` four times, then refused.
+    let early = ChatFile { thumbnail: false, ..pngs(1).remove(0) };
+    let at = run_out(&mut p, &early, t0);
+    assert!(p.asks(at + Duration::from_secs(3600)).is_empty(), "placed as it was, it is not asked again");
+    // An edit that changes anything but the thumbnail asks nothing.
+    place(&mut p, "a", &[ChatFile { name: "renamed".into(), bytes: Some(7), ..early.clone() }], at);
+    assert!(p.asks(at).is_empty(), "a rename is no thumbnail");
     // Its record's edit reaches the view with the thumbnail: asked again.
     let late = ChatFile { thumbnail: true, ..early.clone() };
     place(&mut p, "a", std::slice::from_ref(&late), at);
     let (h, req) = asked(&p.asks(at)).remove(0);
     p.on_reply(&h, &req, picture(4, 4), at);
     assert!(p.held("a", "WS1", "CH1", &late.id).is_some());
-    // A refusal for good is not undone by a change.
-    let (mut p, bad) = (connected(&["a"], t0), file("B1", "image/png"));
+    // Retries that ran out with a thumbnail already named stay refused.
+    let mut p = connected(&["a"], t0);
+    let named = file("N1", "image/png");
+    let at = run_out(&mut p, &named, t0);
+    assert!(p.asks(at + Duration::from_secs(3600)).is_empty());
+    // A refusal for good is not undone by a thumbnail.
+    let (mut p, bad) = (connected(&["a"], t0), ChatFile { thumbnail: false, ..file("B1", "image/png") });
     place(&mut p, "a", std::slice::from_ref(&bad), t0);
     let (h, req) = asked(&p.asks(t0)).remove(0);
     p.on_reply(&h, &req, ChatReply::Refused(ChatCode::TooLarge), t0);
-    place(&mut p, "a", &[ChatFile { bytes: Some(1), ..bad }], t0);
+    place(&mut p, "a", &[ChatFile { thumbnail: true, ..bad }], t0);
     assert!(p.asks(t0).is_empty());
 }
 
