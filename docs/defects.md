@@ -279,6 +279,12 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **BOOT-STARTS-EVERY-ROW-AT-ONCE** [session] After a computer's boot the daemon started all of its 29 rows at once
+  (2026-11-17, three boots of one hub). On a computer with 32 threads the load average stood near 340 for about five
+  minutes; `workspace.list` replies took up to 49 s; the agents' tool servers timed out at their 30 s start bound; and
+  a session start failed on the registry lock (SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK, under messaging). Wanted:
+  a boot with 30 rows brings them up spaced or a bounded number at a time, so the daemon keeps answering and each
+  row's agent starts within its own bounds. Where the rows are started after a boot has not been read.
 - **ROWS-ROLLBACK-TEST-RACE** [note] `rows::ops::create::tests::rollback_tests::a_destroy_during_a_failing_create_stays_destroyed`
   panicked `no row with task new task` (`create_tests.rs`, its registry lookup) once in a whole local gate run on
   2026-11-10 whose change touched only the window, and passed in the day's other whole runs: a state the test does not
@@ -401,6 +407,14 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK** [session] A row's session start (`comm-session-start.sh`) failed
+  twice with `registry lock ... is held by ... (21s old ...): it is running` and `identity=FAIL`, the second time with
+  a holder 28 s old, before a third try joined (2026-11-17, in the minutes after a boot, while every row started at
+  once: BOOT-STARTS-EVERY-ROW-AT-ONCE, under rows). The holders were alive and slow, so nothing was there to reclaim,
+  and a join waits `SOT_LOCK_WAIT_SECS`, 10 s (`comm/PROTOCOL.md`, Bounds). A session whose start fails has no handle
+  and reads no mail until someone runs the start again. Wanted: a session start waits for a live holder instead of
+  failing, within a bound a person would accept at a boot, or tries again on its own. Whether one holder kept the lock
+  for 20 s or more, or several holders followed one another, has not been measured.
 - **REGISTRY-LOCK-TESTS-UNDER-LOAD** [session] Two registry lock tests failed together in one local gate run on a shared
   Linux server (2026-11-16), at a commit that touched no messaging code, and passed when the gate ran again on the same
   commit: `a_marker_this_process_abandoned_is_adopted_by_its_next_writer` (`comm/registry/lock_tests.rs:181`, the
