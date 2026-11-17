@@ -69,13 +69,13 @@ row. Its title is `chat · #<channel name>` (the mapped channel's name as Slack 
 
 | the title says | meaning | asked again |
 |---|---|---|
-| `waiting for this project to be listed` | the window has not listed the selected row yet | every frame |
+| `waiting for <computer> to report this project` | the window has not listed the selected row yet | every frame |
 | `no connection to <computer>` | the row's computer is not connected | when it connects |
 | `reading…` | the hub is being asked, or the channel is being read | |
 | (nothing after the channel) | the channel was read whole | |
 | `the row's folder maps to no channel` | the folder is not in `chat.toml` | at a link change or another row |
 | `set up Slack`, then each step's name; or `post as you` | Slack is not connected on the hub, its saved tokens are refused, its chat could not start (`set up Slack`), or a post of yours was refused because the hub holds no token that posts as you (`post as you`): the drawer leads you through connecting ([Setting up Slack](chat-setup.md)), then says `connecting…` and `connected` | at a link change, and after each connect |
-| `the chat on <computer> is not set up correctly` | `chat.toml` is invalid; the log (the file `sotd.log` on that computer; `sotd log-path` there prints its place) says why, starting with the file's name | at a link change |
+| `the chat on <computer> is not set up correctly` | `chat.toml` is invalid; the log of Ship of Tools' service on that computer, `sotd.log` (`sotd log-path` there prints its place), says why, starting with the file's name | at a link change |
 | `the chat does not run on <computer>` | the row's computer is not the hub | at a link change |
 | `the row is gone or was replaced` | the row's id changed | when the listing gives the row a new id, or at a link change |
 | `the chat on <computer> could not answer: <reason>` | the hub refused for another reason | after a minute |

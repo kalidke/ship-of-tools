@@ -309,7 +309,7 @@ impl ChatDrawer {
                 let row = self.rows.row().cloned();
                 outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
             } else {
-                asks.notice = Some("setting up the chat: press Enter again in a moment to choose this project's channel".into());
+                asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel; if this stays after a minute, close the Chat panel and open it again".into());
             }
         }
         (outs, asks)
@@ -414,7 +414,7 @@ impl ChatDrawer {
                 if self.connect().is_some_and(|c| c.host() == host && c.connecting()) {
                     self.close_modal();
                 }
-                self.notice = Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again".into());
+                self.notice = Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again".into());
                 self.rows.ask_again(host);
                 Vec::new()
             }
@@ -655,7 +655,7 @@ impl ChatDrawer {
         let private = ours && channel.is_some_and(|c| self.picker().is_some_and(|p| p.is_private(c)));
         let words = match reply {
             Some(reply) => pair_words(reply, private, &slack_app_name(self.login), host),
-            None => Some("the channel may have been set: the title line of this panel shows which one".into()),
+            None => Some("the channel may have been set: the panel's top line shows which one".into()),
         };
         if ours {
             self.picker_mut().into_iter().for_each(Picker::paired);

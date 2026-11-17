@@ -121,7 +121,7 @@ impl ChatCode {
             ChatCode::BotTokenRefused => "Slack refused the \"Bot User OAuth Token\"",
             ChatCode::AppTokenRefused => "Slack refused the \"App-Level Token\"",
             ChatCode::UserTokenRefused => "Slack refused the \"User OAuth Token\"",
-            ChatCode::NoUserToken => "no Slack code that posts as you is saved; open the channel list and choose Connect Slack again",
+            ChatCode::NoUserToken => "no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+K, or Cmd+Shift+K on a Mac) and choose Connect Slack again",
             ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
             ChatCode::OtherWorkspace => "these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack for Ship of Tools\" says how to move it: press F1, then Enter)",
             ChatCode::NotInChannel => "your Slack app is not in that channel",
