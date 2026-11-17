@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -445,7 +445,17 @@ impl ChatDrawer {
                 self.notice = words.or(self.notice.take());
                 outs
             }
-            evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
+            // A service that is not running, and a watch it refused `unavailable`, may have ended for good (an app token of
+            // another app, a token Slack refused): the row is resolved again on the next frame, so an `unconfigured` answer
+            // brings the Connect step. The owner reads the event as before.
+            evt => {
+                if matches!(&evt, ChatEvt::Status(s) if s.service != ChatService::Running)
+                    || matches!(&evt, ChatEvt::Watched { reply: ChatReply::Refused(ChatCode::Unavailable), .. })
+                {
+                    self.rows.check_again(host);
+                }
+                self.owner_outs(|o| o.on_evt(host, evt, now))
+            }
         }
     }
 

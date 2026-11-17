@@ -126,6 +126,12 @@ impl RowChannel {
         self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(ask_again);
     }
 
+    /// The wanted row on `host` is resolved again on the next frame, its answer standing until the new one comes: the hub's
+    /// service stopped, and may have ended for good, so the title and the watch hold while the hub is asked why.
+    pub(super) fn check_again(&mut self, host: &HostKey) {
+        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| w.asked = false);
+    }
+
     /// A pairing was answered, whatever it said (the hub may have saved it): the row is resolved again on the next frame.
     pub(super) fn resolve_again(&mut self, host: &HostKey, row: &str) {
         self.wanted.iter_mut().filter(|w| &w.id.host == host && w.id.workspace_id == row).for_each(ask_again);

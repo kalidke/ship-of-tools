@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use sot_protocol::ops::{ChatHistoryReq, ChatResolveRes, ChatWatchRes, ChatWatchState};
+use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatResolveRes, ChatService, ChatStatusEvt, ChatWatchRes, ChatWatchState};
 
 use super::drawer::ChatDrawer;
 use super::owner::{Fill, Out};
@@ -539,4 +539,49 @@ fn the_title_shows_the_name_once_a_later_answer_carries_it() {
     assert!(d.on_evt(&host(), named_to("R", "C1", "general"), at(1170)).is_empty(), "the same target is nothing to the owner");
     assert_eq!(d.title(), " chat · #general reading… ");
     assert!(d.tick(wanted("R"), at(60_000)).0.is_empty(), "the name ended the asking");
+}
+
+fn status(service: ChatService) -> ChatEvt {
+    ChatEvt::Status(ChatStatusEvt { service, gap: false, resync: Vec::new() })
+}
+
+fn unavailable(row: &str) -> ChatEvt {
+    let target = serde_json::from_value(serde_json::json!({ "row": row, "workspace": "T1", "channel": "C1" })).unwrap();
+    ChatEvt::Watched { target, reply: ChatReply::Refused(ChatCode::Unavailable) }
+}
+
+/// A service that stops while the drawer watches may have ended for good (an app token of another app, a token Slack
+/// refused): a status whose service is not running, and a watch refused `unavailable`, each resolve the shown row again,
+/// once and not on every frame, so its `unconfigured` answer brings the Connect step. A running status, and another
+/// host's, ask nothing.
+#[test]
+fn a_service_that_stops_while_watched_resolves_the_row_again() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.on_connection(&host_b(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
+    assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(160))), 1);
+    history(&d.on_evt(&host(), complete("R"), at(165)));
+
+    d.on_evt(&host(), status(ChatService::Running), at(170));
+    d.on_evt(&host_b(), status(ChatService::Stopped), at(175));
+    assert_eq!(resolves(&d.tick(wanted("R"), at(180)).0), 0, "a running status and another host's ask nothing");
+
+    d.on_evt(&host(), status(ChatService::Stopped), at(200));
+    assert_eq!(resolves(&d.tick(wanted("R"), at(210)).0), 1, "a stopped service: one resolve");
+    assert_eq!(resolves(&d.tick(wanted("R"), at(220)).0), 0, "once per status, not each frame");
+    assert!(d.on_evt(&host(), mapped("R"), at(230)).is_empty(), "the same target is nothing to the owner");
+
+    for (n, ms) in [(1, 300), (2, 400)] {
+        d.on_evt(&host(), unavailable("R"), at(ms));
+        assert_eq!(resolves(&d.tick(wanted("R"), at(ms + 10)).0), 1, "refusal {n}: one resolve");
+        assert_eq!(resolves(&d.tick(wanted("R"), at(ms + 20)).0), 0, "refusal {n}: not each frame");
+    }
+
+    d.on_evt(&host(), answer("R", serde_json::json!({ "state": "unconfigured", "reason": "wrong_app" })), at(500));
+    d.tick(wanted("R"), at(510));
+    assert!(d.in_setup(), "the ended service's answer brings the Connect step");
 }
