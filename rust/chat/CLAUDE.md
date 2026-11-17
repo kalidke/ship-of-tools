@@ -688,6 +688,9 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    the caller takes first with `Api::transfer` (`try_acquire_owned`, so a third at once is `Err(Http(Busy))` at once and
    a closed client's is `Err(Closed)`) before it reads the file, so no file is read into memory without a permit; the
    call holds it across all three steps, and it is freed on every path, a caller that drops the call included.
+   A window asks at most one thumbnail at a time per host (fe-ui's pictures owner), so one window loading pictures leaves
+   the other permit for a row's file post; two windows loading pictures from one hub at once can hold both, and a row's
+   post is then `busy` (exit 2).
    Input it cannot carry is `Err` unsent: a closed client, a channel that is no id, a thread that is no `Ts`, a post's
    author name (`clean`ed, within `MAX_NAME`), a file name that is empty, over `MAX_FILENAME` (256 bytes) or holds a
    control character, `/` or `\`, bytes empty or over `MAX_CHAT_FILE` (16 MiB, wire's, re-exported), an empty comment, or a label and comment
@@ -724,7 +727,7 @@ bot identity, read-pacing instant, name cache, closed flag and transfer permits 
    client, a channel or file that is no id, and (after one `files.info`, a read under guarantees 13 to 15) a file that is
    not shared in `channel` (the channel is one of its `channels` or `groups`, or a key of `shares.public` or
    `shares.private`) are `Err` with nothing downloaded; an `info` that is not the file asked for is `Malformed`. A file
-   whose `mimetype` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp` is `Ok(NotAnImage)`, unfetched. A
+   whose `mimetype` is not one of wire's `PICTURE_MIMES` (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) is `Ok(NotAnImage)`, unfetched. A
    thumbnail is the first of `thumb_360`, `thumb_480` and `thumb_160` that Slack names, whatever the size of the
    original; with none, the original stands in only when `files.info`'s `size` is at most `MAX_THUMB` (256 KiB), else
    `Ok(NoThumbnail)` unfetched, which is not final (Slack can make a thumbnail after an upload), where `TooLarge` is. An original (`url_private_download`, else `url_private`) is fetched only when its `size`
