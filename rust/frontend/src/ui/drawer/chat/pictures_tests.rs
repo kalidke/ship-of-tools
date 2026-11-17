@@ -312,14 +312,14 @@ fn a_link_change_asks_again_what_was_in_flight() {
     assert_eq!(first, ["F000"]);
     assert!(thumbs(&d.tick(shown("ROW1"), at).0).is_empty());
     // Another host's link change leaves it in flight.
-    d.on_connection(&host("b"), true, at);
-    d.on_connection(&host("b"), false, at);
+    d.on_connection(&host("b"), true, false, at);
+    d.on_connection(&host("b"), false, false, at);
     assert!(thumbs(&d.tick(shown("ROW1"), at).0).is_empty());
     // The link goes: nothing is asked while it is down, and when it comes back the same one is asked again.
-    d.on_connection(&host("a"), false, at);
+    d.on_connection(&host("a"), false, false, at);
     d.layout(&mut fonts, body(), 1.0, body());
     assert!(thumbs(&d.tick(shown("ROW1"), at).0).is_empty());
-    let outs = d.on_connection(&host("a"), true, at);
+    let outs = d.on_connection(&host("a"), true, false, at);
     let mut again = thumbs(&outs);
     d.layout(&mut fonts, body(), 1.0, body());
     again.extend(thumbs(&d.tick(shown("ROW1"), at).0));
