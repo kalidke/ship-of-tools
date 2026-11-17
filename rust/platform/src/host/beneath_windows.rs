@@ -127,6 +127,10 @@ fn create_and_publish(dir: &File, temp: &str, last: &str, bytes: &[u8], private:
     };
     crate::hold_point!("platform.beneath.renamed", last);
     drop(file);
+    #[cfg(test)]
+    if let Some(p) = super::probe::mine() {
+        p.closed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     drop(turn);
     at(Step::Renamed)?;
     dir.sync_all()
@@ -221,9 +225,28 @@ fn rename_into<'a>(file: &File, dir: &File, name: &'a str) -> io::Result<Turn<'a
             unsafe { (*info).Anonymous.Flags = flags };
             unsafe { NtSetInformationFile(file.as_raw_handle() as HANDLE, &mut iosb, info as *const c_void, len as u32, class) }
         };
-        let mut s = set(FileRenameInformationEx, FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS);
+        #[cfg(test)]
+        let probe = super::probe::mine();
+        #[cfg(test)]
+        let classic_only = probe.is_some_and(|p| p.classic_only.load(std::sync::atomic::Ordering::SeqCst));
+        #[cfg(not(test))]
+        let classic_only = false;
+        #[cfg(test)]
+        if let Some(p) = probe {
+            p.entered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let mut s = if classic_only { STATUS_NOT_SUPPORTED } else { set(FileRenameInformationEx, FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_POSIX_SEMANTICS) };
         if no_posix_rename(s) {
+            #[cfg(test)]
+            if let (Some(p), false) = (probe, classic_only) {
+                p.fallbacks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             s = set(FileRenameInformation, FILE_RENAME_REPLACE_IF_EXISTS);
+        }
+        #[cfg(test)]
+        if let Some(p) = probe {
+            (if s >= 0 { &p.renamed } else { &p.refused }).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            p.left.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         if s >= 0 {
             return Ok(turn);
