@@ -9,8 +9,9 @@ is the one, with no `hosts.toml` needed. If you have several, it is the one your
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
 **One Slack workspace, for now.** The chat connects one Slack workspace, and every project's channel is a channel of
-that workspace. An app made in a second workspace is refused at the connect step with "the chat is set up for another
-Slack workspace". Channels in several workspaces at once, one workspace per project, are planned and not yet built.
+that workspace. An app made in a second workspace is refused at the connect step with "the hub connects one Slack
+workspace for now, and it is set up for another: the setup guide says how to move it". Channels in several workspaces
+at once, one workspace per project, are planned and not yet built.
 Until then, to move the chat to another workspace, remove `chat.toml` and `chat-secrets.toml` from the settings folder
 of the computer the chat runs on (see the end of this page), which clears every project's channel, then connect again.
 
