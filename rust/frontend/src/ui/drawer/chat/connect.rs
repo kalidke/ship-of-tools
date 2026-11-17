@@ -1,6 +1,6 @@
 //! The Connect step: what the Chat drawer's modal slot shows for a row whose hub answers `unconfigured`, or after `Connect
 //! Slack again` in the picker, or a person's post the hub refused for want of their token, one screen at a time (the start,
-//! the refused tokens' screen, or the post-as-you screen; then
+//! the refused tokens' screen, the wrong app's screen, or the post-as-you screen; then
 //! steps 1 to 3, with Left and Right between them; then connecting and connected). A pasted token is held here as a
 //! `ChatToken`, whose `Debug` prints no byte of it, and is drawn as its five-character prefix and its length alone; the
 //! three tokens leave in one `chat.connect`. A refused token sends the person back to its step and the others are kept; any
@@ -32,7 +32,7 @@ const PRIMARY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Screen {
-    /// Screen 1, or for tokens Slack no longer accepts, screen 8.
+    /// Screen 1, or for tokens Slack no longer accepts, screen 8, or for an app-level token of another app, the wrong app's.
     First,
     Make,
     /// Step 2: the user token and the bot token, from one page, in either order.
@@ -140,6 +140,11 @@ impl Connect {
         (self.reason, self.post_as_you) = (reason, false);
     }
 
+    /// Whether the first screen is one whose app exists but whose tokens are copied again: its keys open the person's apps.
+    fn refused_screen(&self) -> bool {
+        matches!(self.reason, ChatUnconfigured::TokensRefused | ChatUnconfigured::WrongApp) || self.post_as_you
+    }
+
     fn name(&self) -> String {
         slack_app_name(&self.login)
     }
@@ -148,9 +153,9 @@ impl Connect {
     /// is sent now. The request it sends, if any, and what it asks of the window.
     pub(super) fn key(&mut self, action: Option<Action>, paste: Option<&str>, busy: bool) -> (Option<Out>, Asks) {
         let mut asks = Asks::default();
-        // Tokens Slack no longer accepts, and a hub with no token that posts as the person, take the same keys: the person's
-        // list of apps for steps 2 and 3, or the app made again.
-        let refused = self.reason == ChatUnconfigured::TokensRefused || self.post_as_you;
+        // Tokens Slack no longer accepts, an app-level token of another app, and a hub with no token that posts as the person,
+        // take the same keys: the person's list of apps for steps 2 and 3, or the app made again.
+        let refused = self.refused_screen();
         match (action, &self.screen) {
             (Some(Action::ReturnNav), _) => asks.close = true,
             (Some(Action::ChatSend), Screen::Connected(_)) => asks.done = true,
@@ -269,11 +274,13 @@ impl Connect {
         let name = self.name();
         let p = PRIMARY;
         let steps = "Left/Right  move between steps    Esc  close";
-        let refused = self.reason == ChatUnconfigured::TokensRefused || self.post_as_you;
+        let refused = self.refused_screen();
         let mut out: Vec<String> = self.failed.iter().filter(|_| self.screen == Screen::First).cloned().collect();
         let keys = match &self.screen {
             Screen::First if refused => {
-                out.push(if self.post_as_you {
+                out.push(if self.reason == ChatUnconfigured::WrongApp {
+                    format!("The hub stopped this workspace's chat: the App-Level Token it holds belongs to another Slack app, and it would have taken that app's messages. Press Enter: your list of Slack apps opens in your browser. Click {name}, the app made in this workspace, and copy its three tokens again (steps 2 and 3 follow here).")
+                } else if self.post_as_you {
                     format!("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours. For that it needs a token from your Slack app, and this hub holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had. Press Enter: your list of Slack apps opens in your browser. Click your app ({name}) and copy its tokens again (steps 2 and 3 follow here). If it is not in the list, press Left to make the app again (step 1).")
                 } else {
                     format!("Slack no longer accepts Ship of Tools' tokens. Press Enter: your list of Slack apps opens in your browser. If {name} is in it, click it and copy its three tokens again (steps 2 and 3 follow here). If it is not, press Left here to make the app again (step 1).")
@@ -308,9 +315,9 @@ impl Connect {
             }
             Screen::App => {
                 if self.refused == Some(Refused::App) {
-                    out.push(format!("Slack did not accept the token you pasted. Make sure you copied the App-Level Token (it starts with xapp-) and that you chose connections:write; then copy it again, click in this panel and press {p}+V."));
+                    out.push(format!("Slack did not accept the token you pasted. Make sure you copied the App-Level Token (it starts with xapp-) and that you chose connections:write; then copy it again, click in this panel and press {p}+V. Copy it from the same app as the two tokens of step 2."));
                 } else {
-                    out.push("One more token, the App-Level Token: it lets Ship of Tools see new messages as they arrive. On Slack's page:".into());
+                    out.push("One more token, the App-Level Token: it lets Ship of Tools see new messages as they arrive. Copy it from the same app as the two tokens of step 2. On Slack's page:".into());
                     out.push("  1. In the menu on the left, click Basic Information.\n  2. Scroll down to App-Level Tokens and click Generate Token and Scopes.\n  3. In the name box, type: messages\n  4. Click Add Scope and choose connections:write from the list.\n  5. Click Generate, then Copy.".into());
                     out.push(format!("Then click in this panel and press {p}+V."));
                 }

@@ -1310,15 +1310,18 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
 - The Connect step (`drawer/chat/connect.rs`): a shown row whose hub answers `unconfigured` gets the step in the modal slot
   (in place of a picker), and so does `Connect Slack again`, last in the picker over an empty filter (alone under a list
   that failed); one screen at a time, as the setup guide shows them: the start (`not_connected`, `start_failed`, a later
-  reason), the refused tokens' screen (`tokens_refused`) or the post-as-you screen (brought by a person's post the hub refused `no_user_token`, never by `chat.resolve`: the hub
+  reason), the refused tokens' screen (`tokens_refused`), the wrong app's screen (`wrong_app`: the hub stopped the
+  workspace's chat because its App-Level Token is another Slack app's, and would have taken that app's messages; it names
+  the person's app and says to copy its three tokens again) or the post-as-you screen (brought by a person's post the hub refused `no_user_token`, never by `chat.resolve`: the hub
   holds no token that posts as the person, or Slack stopped accepting it; titled `post as you`, a step a person leaves, never
   one another answer ends), steps 1 to 3 with Left and Right between them (step 2
-  takes the user token and the bot token from one page, step 3 the app-level token), connecting, connected. The labels of
+  takes the user token and the bot token from one page, step 3 the app-level token, whose words say to copy it from the
+  same app as step 2's two), connecting, connected. The labels of
   Slack's OAuth page that step 2 and its hint name (a User OAuth Token beside the Bot User OAuth Token, User Token Scopes,
   Add an OAuth Scope, Reinstall to Workspace) are from Slack's documentation and unseen: check them at the first real connect. The app is named `slack_app_name(login)`, the login read once per process by exact name (`USER`, or
   `USERNAME` on Windows; `connect::login`, which `tick_chat` hands the drawer), and the picker's invite line names the same
   app. Enter on the start opens `slack_app_url` of that name through `browser_open::open_page`, and Primary+C on step 1
-  copies its manifest; on the refused tokens' screen and the post-as-you screen Enter opens Slack's list of apps (and goes to step 2) and Left the manifest page (step 1). While
+  copies its manifest; on the refused tokens' screen, the wrong app's screen and the post-as-you screen Enter opens Slack's list of apps (and goes to step 2) and Left the manifest page (step 1). While
   the step shows, `connect_key` (through `connect_action`, which the native witness runs) takes every key in the drawer
   before the picker and the name prompt: PageUp and PageDown scroll, Left, Right and the copy chord are the step's, and
   Enter, Escape and paste are read by the prompts' one machine (`prompt_step`), so a paste is a token and nothing else:
@@ -1332,9 +1335,14 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `ConnectUnknown` ends a connecting step with a status line; a connect fe-net could not queue reads as `unavailable`
   (`never_written`). Any reply resolves the row again at once. Another answer for the row ends a step begun from
   `unconfigured` while the person is still pasting, never one connecting or connected, nor one a person asked for. Enter on
-  the connected screen opens the picker once the row has resolved again (`open_picker`), and until then says to wait. Tests
+  the connected screen opens the picker once the row has resolved again (`open_picker`), and until then says to wait. A
+  service that ends while the drawer watches (a token Slack refused, an app-level token of another app) brings the step:
+  a `chat.status` whose service is not running, and a watch refused `unavailable`, make the shown row resolve again on the
+  next frame, once per event, its answer standing meanwhile so the title and the watch hold (`RowChannel::check_again`,
+  in `ChatDrawer::on_evt`; `row_channel_tests::a_service_that_stops_while_watched_resolves_the_row_again`), and its
+  `unconfigured` answer begins the step. Tests
   in `drawer/chat/connect_tests.rs`: `the_connect_step_says_each_reason_and_its_next_action` (screen 8's first frame names
-  the app with the login), `left_and_right_move_between_steps_and_the_refused_screen_opens_its_pages`,
+  the app with the login), `the_wrong_app_screen_names_the_app_and_opens_the_apps`, `left_and_right_move_between_steps_and_the_refused_screen_opens_its_pages`,
   `a_pasted_token_is_never_drawn` (the title, body and compose rows after each paste),
   `a_paste_in_the_connect_step_never_reaches_the_draft` (with a draft begun while the row was mapped),
   `all_three_tokens_go_in_one_request_and_none_is_kept_once_connected`,
