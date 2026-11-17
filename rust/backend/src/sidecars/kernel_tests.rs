@@ -3,7 +3,7 @@ use super::*;
 use sot_containment::leftover::Leftover;
 
 /// Program-path override per kernel project, so no test touches the process env.
-pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
 
 #[test]
 fn the_kernel_load_path_is_the_active_project_and_stdlib_on_this_platform() {

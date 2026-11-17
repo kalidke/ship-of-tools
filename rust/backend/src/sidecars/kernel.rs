@@ -717,7 +717,7 @@ fn log_hello(payload: &Value) {
 
 #[cfg(test)]
 #[path = "kernel_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// The kernel's deadlines: a running kernel's silence is named as such, a kernel that answers nothing is ended and
 /// replaced, and a request's send counts against its caller's bound.

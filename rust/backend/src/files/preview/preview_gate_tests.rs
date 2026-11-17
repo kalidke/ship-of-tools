@@ -1,4 +1,7 @@
-use super::{build_preview_payload, fit_plugin_output, is_bounded_output_plugin, read_bytes_preview, MAX_BOUNDED_PICTURE_BYTES, PREVIEW_BYTE_CAP};
+use super::{
+    build_preview_payload, fit_plugin_output, is_bounded_output_plugin, read_bytes_preview, try_plugin_preview, Unfit,
+    MAX_BOUNDED_PICTURE_BYTES, PREVIEW_BYTE_CAP,
+};
 use std::path::Path;
 
 #[test]
@@ -53,19 +56,68 @@ fn bounded_output_plugins_exempt_from_size_gate() {
 
 /// A PDF page rasterized for a zoomed pane, or a video's poster, past the text cap ships whole: the bytes-level reader
 /// would answer with the file's own bytes (a PDF's as `text/plain`, which the window only summarizes). Text is still cut
-/// at the cap, and token JSON past it still goes to the bytes-level reader.
+/// at the cap, token JSON past it still goes to the bytes-level reader, a bounded plugin's output that is no picture
+/// goes there too, and a picture past the bound is refused, not sent there.
 #[test]
 fn a_bounded_plugins_picture_past_the_text_cap_ships_whole() {
     let picture = vec![0x89; PREVIEW_BYTE_CAP + 1];
     for path in ["paper.pdf", "Paper.PDF", "clip.mp4"] {
         let shipped = fit_plugin_output(Path::new(path), "n", "image/png", picture.clone());
-        assert!(shipped.as_deref() == Some(&picture[..]), "{path}: shipped {:?} bytes", shipped.map(|b| b.len()));
+        assert!(shipped.as_deref() == Ok(&picture[..]), "{path}: shipped {:?} bytes", shipped.map(|b| b.len()));
     }
-    assert!(fit_plugin_output(Path::new("mod.jl"), "n", "application/vnd.sot.tokens+json", picture.clone()).is_none());
+    assert_eq!(fit_plugin_output(Path::new("mod.jl"), "n", "application/vnd.sot.tokens+json", picture.clone()), Err(Unfit::Reader));
+    let tokens = fit_plugin_output(Path::new("paper.pdf"), "n", "application/vnd.sot.tokens+json", picture.clone());
+    assert_eq!(tokens, Err(Unfit::Reader), "a bounded plugin's output that is no picture goes to the reader");
     let text = fit_plugin_output(Path::new("data.h5"), "n", "text/markdown", picture.clone()).expect("text is cut, not dropped");
     assert_eq!(text.len(), PREVIEW_BYTE_CAP);
+    let bound = vec![0x89; MAX_BOUNDED_PICTURE_BYTES];
+    assert!(fit_plugin_output(Path::new("paper.pdf"), "n", "image/png", bound).is_ok(), "exactly the bound ships");
     let huge = vec![0x89; MAX_BOUNDED_PICTURE_BYTES + 1];
-    assert!(fit_plugin_output(Path::new("paper.pdf"), "n", "image/png", huge).is_none());
+    assert_eq!(
+        fit_plugin_output(Path::new("paper.pdf"), "n", "image/png", huge),
+        Err(Unfit::TooLarge(MAX_BOUNDED_PICTURE_BYTES + 1)),
+        "past the bound is refused, not sent to the reader"
+    );
+}
+
+/// `try_plugin_preview`'s answer for a stand-in kernel that replies to `file.preview` with a picture of `len` bytes.
+#[cfg(unix)]
+async fn plugin_answer(path: &str, len: usize) -> Result<Option<(String, Vec<u8>, Option<serde_json::Value>)>, (String, String)> {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    let reply = dir.path().join("reply");
+    let blob = base64::engine::general_purpose::STANDARD.encode(vec![0x89; len]);
+    let line = serde_json::json!({"id": 2, "payload": {"matched": true, "mime": "image/png", "blob_base64": blob}});
+    std::fs::write(&reply, format!("{line}\n")).unwrap();
+    let stub = dir.path().join("stub-julia");
+    let script = format!(
+        "#!/bin/sh\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":1}}}}'\nread l\ncat {}\nexec sleep 30\n",
+        reply.display()
+    );
+    sot_platform::test_exec::write_executable(&stub, script);
+    let project = dir.path().join("kp");
+    std::fs::create_dir(&project).unwrap();
+    crate::sidecars::kernel::tests::STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+    let kernel = crate::sidecars::kernel::Kernel::new(project, dir.path().to_path_buf());
+    try_plugin_preview(&kernel, Path::new(path), "n", None, None, None).await
+}
+
+/// The call site hands `fit_plugin_output` the path it was asked about: a PDF page past the text cap, through a
+/// stand-in kernel, ships whole.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pdf_page_past_the_text_cap_ships_whole_through_the_kernel_call() {
+    let (mime, bytes, _) = plugin_answer("paper.pdf", PREVIEW_BYTE_CAP + 1).await.expect("shipped").expect("matched");
+    assert_eq!((mime.as_str(), bytes.len()), ("image/png", PREVIEW_BYTE_CAP + 1));
+}
+
+/// A bounded plugin's picture past 64 MiB is an error the window shows on its status line, not the file's own bytes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_bounded_picture_past_the_bound_is_refused_through_the_kernel_call() {
+    let (code, message) = plugin_answer("paper.pdf", MAX_BOUNDED_PICTURE_BYTES + 1).await.expect_err("refused");
+    assert_eq!(code, "preview_too_large");
+    assert_eq!(message, "this picture is 64.0 MiB; the preview shows at most 64 MiB");
 }
 
 #[tokio::test]

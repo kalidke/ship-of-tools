@@ -1,14 +1,15 @@
 Part of files: see ../CLAUDE.md.
 
-A plugin's output past `PREVIEW_BYTE_CAP` (2 MiB) is cut at it when it is text and goes to the bytes-level reader when
-it is any other mime (token JSON grows with its file), except a bounded-output plugin's (`is_bounded_output_plugin`:
-PDF, video, HDF5), which ships whole: a PDF page rasterized for a zoomed pane or a video's poster is sized by the
-plugin, and the bytes-level reader would answer with the file's own bytes. That ship is bounded at `MAX_BOUNDED_PICTURE_BYTES` (4096 x 4096 x 4 bytes, 64 MiB, the PDF
-plugin's 4096 px cap on its bounded axis; its other axis follows the page's aspect and nothing else bounds the
-kernel's reply), past which the bytes-level reader answers as before. A fallback is never silent on the daemon's side:
-`plugin output exceeds cap on non-text mime; falling back to bytes-level reader` (WARN, with the size and mime) names it,
-while the window logs nothing when it then shows "Not previewed as text". Behavior test:
-`preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole` (`fit_plugin_output`).
+A plugin's output past `PREVIEW_BYTE_CAP` (2 MiB) is cut at it when its mime is text, and goes to the bytes-level reader
+when it is any other mime (token JSON grows with its file). The exception is a picture (an `image/` mime) from a
+bounded-output plugin (`is_bounded_output_plugin`: PDF, video, HDF5): its size is the plugin's (a PDF page rasterized for
+a zoomed pane, a video's poster), not its input's, and the reader would answer with the file's own bytes, so it ships
+whole up to `MAX_BOUNDED_PICTURE_BYTES` (4096 x 4096 x 4 bytes, 64 MiB, a chosen bound on what one kernel line may make
+the daemon hold). A bounded plugin's picture past it is refused, never sent to the reader: `try_plugin_preview` answers
+`Err("preview_too_large", ...)` and the window keeps its pane and says so on the status line. A bounded plugin's other
+non-text output goes to the reader as any other does, and a fallback is named by a WARN with the size and mime.
+Behavior tests: `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole`
+(`fit_plugin_output`) and the two through `try_plugin_preview` over a stand-in kernel beside it.
 
 PNG pHYs supplies a physical scale only for metre-unit densities of at least 100,000 pixels per metre on both axes;
 lower values are print density regardless of other chunks. A valid sidecar still takes priority, generated plugin

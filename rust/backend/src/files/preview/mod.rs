@@ -71,8 +71,8 @@ const MAX_PREVIEW_DECODE_ALLOC: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Extensions whose preview plugin produces BOUNDED output regardless of input
 /// size, so neither `PREVIEW_BYTE_CAP` gate (the input gate in
-/// `try_plugin_preview`, the output gate in `fit_plugin_output`) may send them
-/// to the bytes-level reader. The gates proxy "big input → big output", which
+/// `try_plugin_preview`, the output gate in `fit_plugin_output`) may send their
+/// pictures to the bytes-level reader. The gates proxy "big input → big output", which
 /// is FALSE here:
 ///
 /// - **video** (`is_servable_video`): ffmpeg poster + metadata, never reads the
@@ -504,8 +504,19 @@ async fn try_plugin_preview(
             return Ok(None);
         }
     };
-    let Some(bytes) = fit_plugin_output(path, node_id, &mime, bytes) else {
-        return Ok(None);
+    let bytes = match fit_plugin_output(path, node_id, &mime, bytes) {
+        Ok(b) => b,
+        Err(Unfit::Reader) => return Ok(None),
+        Err(Unfit::TooLarge(len)) => {
+            return Err((
+                "preview_too_large".to_string(),
+                format!(
+                    "this picture is {:.1} MiB; the preview shows at most {} MiB",
+                    len as f64 / (1024.0 * 1024.0),
+                    MAX_BOUNDED_PICTURE_BYTES / (1024 * 1024)
+                ),
+            ))
+        }
     };
     // Plugin-reported metadata (page/page_count, …) — forwarded verbatim,
     // opaque here (ADR 0021).
@@ -513,28 +524,27 @@ async fn try_plugin_preview(
     Ok(Some((mime, bytes, extras)))
 }
 
-/// The most a bounded-output plugin's non-text output ships: a 4096 x 4096 picture at four bytes a pixel, the PDF
-/// plugin's `MAX_RASTER_PX` on its bounded axis (its other axis follows the page's aspect, which nothing else bounds)
-/// and what a video poster of that size is. A PNG is at most about its raw size.
+/// The most a bounded-output plugin's picture ships: a 4096 x 4096 picture at four bytes a pixel, a bound chosen for
+/// what one kernel line may make the daemon hold and ship (the PDF plugin caps one axis at 4096 px when asked to fit a
+/// pane, and nothing caps the other, a figure's page, or a video's poster). A PNG is at most about its raw size.
 const MAX_BOUNDED_PICTURE_BYTES: usize = 4096 * 4096 * 4;
 
-/// A plugin's output as `preview.get` ships it, or `None` for the bytes-level
-/// reader. Within `PREVIEW_BYTE_CAP` it ships as it is. Past it (defense in
-/// depth: the input gate usually catches this, but a plugin can emit more than
-/// its input, such as token JSON for a dense file): text is cut at the cap, the
-/// one family that tolerates an arbitrary byte cut; a bounded-output plugin's
-/// other output ships whole, because its size is the plugin's (a PDF page
-/// rasterized at the pane's size times the zoom, a video's poster at the
-/// frame's size), not its input's, and the bytes-level reader would answer with
-/// the file's own bytes (a PDF's as `text/plain`, which the window only
-/// summarizes); any other output goes to the bytes-level reader, since a cut
-/// corrupts a structured mime. A bounded plugin's output past `MAX_BOUNDED_PICTURE_BYTES` goes there too.
-fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut bytes: Vec<u8>) -> Option<Vec<u8>> {
-    let text = mime.starts_with("text/");
-    if bytes.len() <= PREVIEW_BYTE_CAP || (!text && is_bounded_output_plugin(path) && bytes.len() <= MAX_BOUNDED_PICTURE_BYTES) {
-        return Some(bytes);
+/// Why a plugin's output is not shipped.
+#[derive(Debug, PartialEq)]
+enum Unfit {
+    /// The bytes-level reader answers for it.
+    Reader,
+    /// A bounded-output plugin's picture past `MAX_BOUNDED_PICTURE_BYTES`, of this many bytes: refused, since the
+    /// reader would answer with the file's own bytes.
+    TooLarge(usize),
+}
+
+/// A plugin's output as `preview.get` ships it, or why it does not. The rule is in `CLAUDE.md` (this folder).
+fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut bytes: Vec<u8>) -> Result<Vec<u8>, Unfit> {
+    if bytes.len() <= PREVIEW_BYTE_CAP {
+        return Ok(bytes);
     }
-    if text {
+    if mime.starts_with("text/") {
         bytes.truncate(PREVIEW_BYTE_CAP);
         tracing::warn!(
             %node_id,
@@ -542,7 +552,20 @@ fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut byte
             mime = %mime,
             "plugin-rendered text preview truncated at PREVIEW_BYTE_CAP"
         );
-        return Some(bytes);
+        return Ok(bytes);
+    }
+    if mime.starts_with("image/") && is_bounded_output_plugin(path) {
+        if bytes.len() <= MAX_BOUNDED_PICTURE_BYTES {
+            return Ok(bytes);
+        }
+        tracing::warn!(
+            %node_id,
+            size = bytes.len(),
+            mime = %mime,
+            cap = MAX_BOUNDED_PICTURE_BYTES,
+            "bounded plugin's picture exceeds the shipped bound; refused"
+        );
+        return Err(Unfit::TooLarge(bytes.len()));
     }
     tracing::warn!(
         %node_id,
@@ -551,7 +574,7 @@ fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut byte
         cap = PREVIEW_BYTE_CAP,
         "plugin output exceeds cap on non-text mime; falling back to bytes-level reader"
     );
-    None
+    Err(Unfit::Reader)
 }
 
 /// Bytes-level reader: read the file at `path`, infer mime from extension,
