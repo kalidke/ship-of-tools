@@ -404,7 +404,7 @@ fn a_refused_token_goes_back_to_its_step_and_the_others_are_kept() {
     // Any other answer drops all three and says why on the first screen.
     c.answered(ChatReply::Refused(ChatCode::OtherWorkspace));
     assert_eq!(c.screen(), &Screen::First);
-    assert!(c.body().head.starts_with("Not connected: the chat is set up for another Slack workspace."));
+    assert!(c.body().head.starts_with("Not connected: the hub connects one Slack workspace for now, and it is set up for another: the setup guide says how to move it."));
     assert_eq!(c.held(), (None, None, None));
     for t in [bot(), user(), app()] {
         c.key(PASTE, Some(&t), false);

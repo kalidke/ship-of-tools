@@ -123,7 +123,7 @@ impl ChatCode {
             ChatCode::UserTokenRefused => "Slack refused the user token",
             ChatCode::NoUserToken => "the hub holds no Slack token that posts as you; connect Slack again",
             ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
-            ChatCode::OtherWorkspace => "the chat is set up for another Slack workspace",
+            ChatCode::OtherWorkspace => "the hub connects one Slack workspace for now, and it is set up for another: the setup guide says how to move it",
             ChatCode::NotInChannel => "the app is not in that channel",
             ChatCode::ChannelTaken => "another project already uses that channel",
             ChatCode::NotSaved => "the chat settings could not be saved",
