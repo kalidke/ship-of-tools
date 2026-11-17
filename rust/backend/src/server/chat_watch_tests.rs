@@ -11,7 +11,7 @@ use sot_chat::config::{self, CONFIG_FILE};
 use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Reply, Upload};
 use sot_chat::service::Status as ServiceStatus;
 use sot_platform::test_hold::Holds;
-use sot_protocol::ops::{ChatChannel, ChatTarget, ChatWatchState};
+use sot_protocol::ops::{ChatChannel, ChatService, ChatTarget, ChatWatchState};
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -58,8 +58,8 @@ pub(super) struct Levers {
     hello: Arc<tokio::sync::Semaphore>,
     /// The app `bots.info` names as the bot's (unset: the call is unknown, so the bot's app is unchecked) and the app the
     /// socket's hello names in its `connection_info` (unset: it names none).
-    bot_app: Arc<Mutex<Option<String>>>,
-    hello_app: Arc<Mutex<Option<String>>>,
+    pub(super) bot_app: Arc<Mutex<Option<String>>>,
+    pub(super) hello_app: Arc<Mutex<Option<String>>>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
@@ -938,6 +938,55 @@ async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() 
     assert_eq!(bounded("the reload", async { chat.reload(&chat.setup().await, &rig.rows).await }).await, Status::Running);
     after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
     assert!(ok_watch(&conn.ask(4, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+}
+
+/// A window told the service stopped resolves the row again, and the chat must already read off with the code then: it
+/// would otherwise read `Stopping`, which resolves as the mapping and never leads to the Connect step.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chat_is_off_with_its_code_before_a_watcher_is_told_the_service_ended() {
+    for round in 0..60 {
+        let (fake, lv) = live().await;
+        *lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+        *lv.hello_app.lock().unwrap() = Some("A0OTHER".into());
+        lv.hello.forget_permits(1000);
+        let rig = rig(&fake).await;
+        let hub = rig.services.chat.hub().clone();
+        let mut events = hub.subscribe();
+        let mut conn = connect(rig.services.clone()).await;
+        assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+        lv.hello.add_permits(1);
+        loop {
+            match bounded("a status event", events.recv()).await {
+                Ok(Evt::Status(told)) if told.iter().any(|(_, e)| !matches!(e.service, ChatService::Running)) => break,
+                Ok(_) => {}
+                Err(e) => panic!("round {round}: {e}"),
+            }
+        }
+        assert_eq!(rig.services.chat.status(), Status::Failed("wrong_app"), "round {round}");
+    }
+}
+
+/// A service that ended before any owner took its `Watches` gives none, so no owner would see its end: the first start
+/// of an owner turns the chat off with the code.
+#[tokio::test(flavor = "current_thread")]
+async fn an_ended_service_no_owner_saw_is_turned_off_when_an_owner_is_started() {
+    let (fake, lv) = live().await;
+    *lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+    *lv.hello_app.lock().unwrap() = Some("A0OTHER".into());
+    let home = Home::new(Some(SELF));
+    let folder = home.configured();
+    let rows = Workspaces::new();
+    let alpha = rows.insert(row("alpha", &folder)).workspace_id.clone();
+    // `begin_unowned` has no boot task, so no owner runs until the test starts one.
+    let chat = Chat::begin_unowned(&home.env, &|p| config::read_file(p), &Registry::new(), starter(&fake));
+    running(&chat).await;
+    let target = ChatTarget { row: alpha, workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
+    let service = chat.admit(&rows, &target).expect("the service runs");
+    until("the service's end", || service.ended() == Some("wrong_app")).await;
+    assert_eq!(chat.status(), Status::Running, "nothing has turned the chat off yet");
+    drop(chat.start_owner(rows.clone()));
+    until("the chat off with the service's code", || chat.status() == Status::Failed("wrong_app")).await;
+    assert!(!chat.hub().running());
 }
 
 /// The boot's wait ends with the chat when the chat is retired while starting.

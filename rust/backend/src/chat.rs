@@ -13,7 +13,7 @@ use std::time::Duration;
 use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution};
 use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
-use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
+use sot_chat::service::Service;
 use sot_platform::host::env::Env;
 use sot_protocol::ops::{ChatCode, ChatTarget};
 use tokio::runtime::Handle;
@@ -90,7 +90,6 @@ impl std::fmt::Display for Status {
             Status::Refused(e) => write!(f, "{}: {e}", config::CONFIG_FILE),
             Status::Secrets(ConfigError::Missing) => write!(f, "{} is missing from the config folder", config::SECRETS_FILE),
             Status::Secrets(e) => write!(f, "{}: {e}", config::SECRETS_FILE),
-            Status::Failed(code @ (WRONG_APP | APP_TOKEN_REFUSED | BOT_TOKEN_REFUSED)) => write!(f, "the chat service ended: {code}"),
             Status::Failed(code) => write!(f, "the chat service did not start: {code}"),
             Status::Starting => f.write_str("the chat service is starting"),
             Status::Running => f.write_str("the chat service is running"),
@@ -640,18 +639,19 @@ impl Chat<Service> {
             }
             if let Err(code) = chat.hub.ensure_owner(&service, &chat, &rows) {
                 tracing::warn!(?code, "project chat owner did not start");
-                // An ended service gives no `Watches`, so no owner would ever see its end.
-                chat.service_ended(&service);
             }
         })
     }
 
-    /// A service that ended on its own (`Service::ended`) turns the chat off with its code, logged once; a service that
-    /// runs, or was stopped, changes nothing. Called by the owner as it ends and by the boot's task when no owner could
-    /// start; the stop that follows asks no owner for its delivery (the owner is gone or ending), and the lock is freed
-    /// with the service's task.
-    pub(crate) fn service_ended(&self, service: &Service) {
+    /// The running `service`, if it ended on its own (`Service::ended`), turns the chat off with its code, logged once
+    /// when this call began the end; a service that runs, was stopped or is not the one the chat runs changes nothing.
+    /// Called by the owner as it ends and by `Hub::ensure_owner` when an ended service gives no `Watches`, so no owner
+    /// would ever see its end. The listener's task, which owns the lock, is already gone.
+    fn service_ended(&self, service: &Service) {
         let Some(code) = service.ended() else { return };
+        if !matches!(&*self.shared.lock(), Phase::Running(l) if std::ptr::eq(Arc::as_ptr(l), service)) {
+            return;
+        }
         if self.stop_as(Status::Failed(code)) {
             tracing::warn!(code, "project chat: the chat service ended");
         }

@@ -383,6 +383,36 @@ async fn a_step_down_returns_the_filing_in_flight_before_the_service_stops() {
     assert!(matches!(service.status(), ServiceStatus::Stopped));
 }
 
+/// A service that ended on its own returns the filing in flight before the chat is off, so a reload, which waits for it,
+/// starts a service whose start read sees the filing: the post is in the inbox once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filing_in_flight_at_an_end_returns_before_a_reload_starts_the_next_service() {
+    let w = world(true).await;
+    *w.lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+    let chat = w.start(&w.fake).await;
+    let (arm, service) = hold_a_filing(&w, &chat).await;
+    serve(&w.lv, posts(&[1]));
+    // An envelope of another app ends the service while the filing is held.
+    let mut other = message("C0AAAA", 2);
+    other["payload"]["api_app_id"] = json!("A0OTHER");
+    other["envelope_id"] = json!("e2");
+    w.lv.feed.send(other).unwrap();
+    assert!(soon(|| service.ended() == Some("wrong_app")).await, "the service did not end");
+    let reloading = tokio::spawn({
+        let (chat, rows) = (chat.clone(), w.rows.clone());
+        async move { chat.reload(&chat.setup().await, &rows).await }
+    });
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!reloading.is_finished(), "the reload went on while the filing was in flight");
+    assert!(w.filed().is_empty());
+    arm.release(0);
+    assert_eq!(tokio::time::timeout(LONG, reloading).await.unwrap().unwrap(), Status::Running);
+    assert!(soon(|| w.filed() == vec![stamp(1)]).await, "the filing in flight was not appended");
+    // The new service's passes have had time to run over a history that holds the post.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(w.filed(), vec![stamp(1)], "the post was filed twice");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pass_in_flight_at_a_step_down_ends_with_the_delivery() {
     let w = world(true).await;
