@@ -174,7 +174,12 @@ impl Hub {
         match *owner {
             Owner::Running => Ok(()),
             Owner::Idle => {
-                let watches = service.watches().ok_or(ChatCode::Unavailable)?;
+                let Some(watches) = service.watches() else {
+                    // An ended service gives none, and no owner would ever see its end: turn the chat off here.
+                    drop(owner);
+                    chat.service_ended(service);
+                    return Err(ChatCode::Unavailable);
+                };
                 *owner = Owner::Running;
                 let own = Own { hub: self.clone(), service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new(), mail: None };
                 let (ask, ending) = mpsc::unbounded_channel();
@@ -473,14 +478,18 @@ impl Own {
             self.publish(&mut watches);
             self.drive();
         }
-        // A stop took the delivery already; a service that ended on its own did not, so its filing in flight returns here.
-        self.end_delivery().await;
         // A test's hold point, keyed by the hub's address, between the service's stop and the owner's end.
         sot_platform::hold_point_async!("chat.owner.end", Arc::as_ptr(&self.hub) as usize);
-        // A service that ended on its own turns the chat off before the owner is idle, so a reload (which waits for the
-        // owner's end) never meets the new service's start with this call. No stop will ask this owner for its delivery.
-        drop(ending);
+        // A service that ended on its own turns the chat off before the owner is idle (a reload waits for the owner's
+        // end, so it never meets the new service with this call), and the chat is off before the watchers are told.
+        // A stop took the delivery already; an end did not, so its filing in flight returns here, after the phase left
+        // `Running` and before the chat is off. The stop's request for the delivery is answered by the receiver's drop.
         self.chat.service_ended(&self.service);
+        self.end_delivery().await;
+        drop(ending);
+        if self.service.ended().is_some() {
+            let _ = tokio::time::timeout(2 * super::STOP_WITHIN, self.chat.stopped()).await;
+        }
         self.end();
     }
 

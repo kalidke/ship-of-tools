@@ -1050,6 +1050,17 @@ owned by `docs/CLAUDE.md`.
   turns the chat off with the code, logs it once and `chat.resolve` says `tokens_refused`. Still to do: the window, as for
   CHAT-APP-TOKEN-OF-ANOTHER-APP.
   From a plan's review, reading code; never seen.
+- **CHAT-CONNECT-ANSWERS-CONNECTED-WHATEVER-THE-RELOAD-DID** [note] `chat.connect` replies `{workspace}` once the tokens are
+  saved and the reload's wait ended, and logs and discards the reload's status (`rust/backend/src/chat/setup.rs`), so a
+  person who pastes another Slack app's token (or one Slack then refuses) sees the Connected screen, and the chat ends
+  `wrong_app` or `tokens_refused` within moments after it. The reply is blind by design (`a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`);
+  the window resolves again after a reply and L3's re-resolve on a stopped status brings the Connect step, but the
+  Connected screen has been shown first. From a review, reading code; never seen.
+- **CHAT-START-REFUSAL-IS-START-FAILED** [note] A bot token Slack refuses at the daemon's start is `ServiceError::Api(Slack(_))`,
+  whose code is `slack`, so the chat is `Failed("slack")` and `chat.resolve` says `start_failed` (the generic first
+  screen), while the same refusal while running ends the service `bot_token_refused` and says `tokens_refused` (the
+  refused screen); the wire's comment on `tokens_refused` ("by the load or by Slack") is true only of the second. From a
+  review, reading code; never seen.
 - **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
   `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on
   every try (an inbox that is a directory), an `ambiguous_row` or `no_row` that refuses every filing, a chat held by
