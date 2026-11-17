@@ -691,7 +691,7 @@ async fn slack() -> sot_chat::fake_slack::FakeSlack {
         if seen.path().ends_with("/auth.test") {
             Reply::json(&serde_json::json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}))
         } else {
-            Reply::json(&serde_json::json!({"ok": false, "error": "invalid_auth"}))
+            Reply::json(&serde_json::json!({"ok": false, "error": "unknown_method"}))
         }
     })
     .await

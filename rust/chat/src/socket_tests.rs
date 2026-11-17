@@ -86,12 +86,18 @@ fn timing() -> Timing {
 }
 
 fn start(fake: &FakeSlack, timing: Timing) -> Socket {
+    start_of(fake, timing, None)
+}
+
+/// `start` for a bot whose app is `app` (`None`: unknown, so no frame's app is checked).
+fn start_of(fake: &FakeSlack, timing: Timing, app: Option<&str>) -> Socket {
     Socket::start_for_test(
         fake.http(),
         Secret::new(APP),
         Bot {
             user_id: "U0BOT".into(),
             bot_id: Some("B0BOT".into()),
+            app_id: app.map(String::from),
         },
         WS,
         fake.url("slack.com", "/api/"),
@@ -722,7 +728,8 @@ async fn an_events_message_keeps_its_origin_through_the_socket() {
     .await;
 }
 
-/// Record the instant of every `apps.connections.open` request; `refuse` answers it `ok: false` for the first `n`.
+/// Record the instant of every `apps.connections.open` request; `refuse` answers it `ok: false` for the first `n`, with
+/// a code of Slack's own state (a token's refusal would end the listener).
 fn opens(
     times: &Arc<Mutex<Vec<Instant>>>,
     refuse: usize,
@@ -734,7 +741,7 @@ fn opens(
         }
         let mut t = times.lock().unwrap();
         t.push(Instant::now());
-        (t.len() <= refuse).then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+        (t.len() <= refuse).then(|| Reply::json(&json!({"ok": false, "error": "internal_error"})))
     }
 }
 
@@ -751,7 +758,7 @@ async fn a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it() {
                 recorder(seen);
                 (seen.path() == "/api/apps.connections.open"
                     && c.fetch_add(1, Ordering::SeqCst) == 1)
-                    .then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+                    .then(|| Reply::json(&json!({"ok": false, "error": "internal_error"})))
             },
             |i, mut peer| async move {
                 peer.send(&hello()).await;
@@ -769,7 +776,7 @@ async fn a_gap_opened_by_an_outage_survives_a_reconciliation_made_during_it() {
         };
         let socket = start(&fake, slow);
         eventually("the refused reopen", || {
-            socket.status().error == Some(SocketError::Rejected)
+            socket.status().error == Some(SocketError::Unavailable)
         })
         .await;
         let gap = socket.gap().expect("the lost socket left a gap");
@@ -1029,7 +1036,7 @@ async fn a_reconciliation_begun_before_a_hello_is_refused_by_it() {
             move |seen| {
                 (seen.path() == "/api/apps.connections.open"
                     && c.fetch_add(1, Ordering::SeqCst) == 1)
-                    .then(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+                    .then(|| Reply::json(&json!({"ok": false, "error": "internal_error"})))
             },
             |i, mut peer| async move {
                 peer.send(&hello()).await;
@@ -1047,7 +1054,7 @@ async fn a_reconciliation_begun_before_a_hello_is_refused_by_it() {
         };
         let socket = start(&fake, slow);
         eventually("the refused reopen", || {
-            socket.status().error == Some(SocketError::Rejected)
+            socket.status().error == Some(SocketError::Unavailable)
         })
         .await;
         // A reconciliation begins here, during the outage, and is still running when the hello arrives.
@@ -1322,6 +1329,160 @@ async fn wait_wakes_on_a_gap_and_on_an_event_and_takes_nothing() {
         assert!(woke, "no wake for an event");
         assert_eq!(socket.pending().0, 1, "wait took the event");
         assert_eq!(socket.take().events.len(), 1);
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The bot's own app, and another app's, as Slack names them in a `hello` and an envelope.
+const OWN_APP: &str = "A0OWN";
+const OTHER_APP: &str = "A0OTHER";
+
+/// `envelope` naming the app it was delivered for.
+fn envelope_for(id: &str, n: usize, app: &str) -> Value {
+    let mut e = envelope(id, n, "hi", 0);
+    e["payload"]["api_app_id"] = json!(app);
+    e
+}
+
+fn opened(fake: &FakeSlack) -> usize {
+    fake.seen().iter().filter(|s| s.path() == "/api/apps.connections.open").count()
+}
+
+fn status_reply(code: u16) -> Reply {
+    Reply::Status { code, headers: Vec::new(), body: b"{}".to_vec() }
+}
+
+/// A socket that says hello as `hello_app` (none: no `connection_info`), then sends `envelopes` one after another,
+/// recording which were acknowledged by their id; then drains.
+async fn app_fake(hello_app: Option<&'static str>, envelopes: Vec<Value>, acked: Arc<Mutex<Vec<String>>>) -> FakeSlack {
+    let envelopes = Arc::new(envelopes);
+    fake(move |_, mut peer| {
+        let (envelopes, acked) = (envelopes.clone(), acked.clone());
+        async move {
+            let mut said = hello();
+            if let Some(app) = hello_app {
+                said["connection_info"] = json!({"app_id": app});
+            }
+            peer.send(&said).await;
+            for e in envelopes.iter() {
+                peer.send(e).await;
+                let id = e["envelope_id"].as_str().unwrap().to_string();
+                if peer.recv(SEC).await == Some(json!({ "envelope_id": id })) {
+                    acked.lock().unwrap().push(id);
+                }
+            }
+            peer.drain().await;
+        }
+    })
+    .await
+}
+
+/// Guarantee 17's one exception (PS8, PS10): an envelope naming another app is not acknowledged, so Slack can give it to
+/// that app's own consumer, and the listener ends for good, `wrong_app`, with no next socket. An envelope naming the
+/// bot's own app, or none, is acknowledged first as before, and a bot whose app is unknown checks nothing.
+#[tokio::test]
+async fn an_envelope_of_another_app_is_not_acknowledged_and_ends_the_listener() {
+    bounded(async {
+        let acked = Arc::new(Mutex::new(Vec::new()));
+        let sent = vec![
+            envelope("E0", 0, "hi", 0),
+            envelope_for("E1", 1, OWN_APP),
+            envelope_for("E2", 2, OTHER_APP),
+            envelope_for("E3", 3, OWN_APP),
+        ];
+        let fake = app_fake(Some(OWN_APP), sent.clone(), acked.clone()).await;
+        let socket = start_of(&fake, timing(), Some(OWN_APP));
+        eventually("the listener's end", || socket.ended().is_some()).await;
+        assert_eq!(socket.ended(), Some("wrong_app"));
+        eventually("the socket closed", || fake.sockets().0 == 0).await;
+        // Well past the reconnect pause (50 ms): no next socket was asked for.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(*acked.lock().unwrap(), ["E0", "E1"], "the other app's envelope was acknowledged, or one before it was not");
+        assert_eq!((fake.sockets().2, opened(&fake)), (1, 1), "a next socket was opened after the end");
+        assert_eq!(socket.pending().0, 2, "only the bot's own app's events are queued");
+        assert!(socket.finished(), "the listener's task outlived its end");
+        socket.stop().await;
+        fake.shutdown().await;
+
+        // A bot whose app is unknown checks nothing: the other app's envelope is acknowledged and queued.
+        let acked = Arc::new(Mutex::new(Vec::new()));
+        let fake = app_fake(Some(OTHER_APP), sent, acked.clone()).await;
+        let socket = start_of(&fake, timing(), None);
+        eventually("every envelope acknowledged", || acked.lock().unwrap().len() == 4).await;
+        assert_eq!((socket.ended(), socket.pending().0), (None, 4));
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A `hello` naming another app ends the listener before it is live or reads an envelope; a `hello` naming none is
+/// live as before.
+#[tokio::test]
+async fn a_hello_naming_another_app_ends_the_listener_before_any_envelope() {
+    bounded(async {
+        let acked = Arc::new(Mutex::new(Vec::new()));
+        let fake = app_fake(Some(OTHER_APP), vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
+        let socket = start_of(&fake, timing(), Some(OWN_APP));
+        eventually("the listener's end", || socket.ended().is_some()).await;
+        assert_eq!(socket.ended(), Some("wrong_app"));
+        eventually("the socket closed", || fake.sockets().0 == 0).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!socket.status().connected, "a hello of another app made the socket live");
+        assert!(acked.lock().unwrap().is_empty(), "an envelope after another app's hello was acknowledged");
+        assert_eq!((socket.pending().0, fake.sockets().2, opened(&fake)), (0, 1, 1));
+        socket.stop().await;
+        fake.shutdown().await;
+
+        let acked = Arc::new(Mutex::new(Vec::new()));
+        let fake = app_fake(None, vec![envelope("E0", 0, "hi", 0)], acked.clone()).await;
+        let socket = start_of(&fake, timing(), Some(OWN_APP));
+        eventually("the envelope acknowledged", || acked.lock().unwrap().len() == 1).await;
+        assert!(socket.status().connected);
+        assert_eq!(socket.ended(), None);
+        socket.stop().await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// An `apps.connections.open` Slack refuses as a bad token (`Rejected`: a `TOKEN_REFUSALS` code, 401 or
+/// `missing_scope`) ends the listener for good with `app_token_refused`; Slack's own state (`Unavailable`) is retried
+/// on the pace, as before.
+#[tokio::test]
+async fn a_rejected_open_ends_the_listener_and_an_unavailable_one_is_retried() {
+    bounded(async {
+        for refusal in [json!({"ok": false, "error": "invalid_auth"}), Value::Null, json!({"ok": false, "error": "missing_scope"})] {
+            let fake = fake_with(
+                move |seen| {
+                    (seen.path() == "/api/apps.connections.open")
+                        .then(|| if refusal.is_null() { status_reply(401) } else { Reply::json(&refusal) })
+                },
+                |_, _| async {},
+            )
+            .await;
+            let socket = start(&fake, timing());
+            eventually("the listener's end", || socket.ended().is_some()).await;
+            assert_eq!((socket.ended(), socket.status().error), (Some("app_token_refused"), Some(SocketError::Rejected)));
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            assert_eq!(opened(&fake), 1, "a refused token was asked again");
+            assert!(socket.finished());
+            socket.stop().await;
+            fake.shutdown().await;
+        }
+        let fake = fake_with(
+            |seen| {
+                (seen.path() == "/api/apps.connections.open")
+                    .then(|| Reply::json(&json!({"ok": false, "error": "internal_error"})))
+            },
+            |_, _| async {},
+        )
+        .await;
+        let socket = start(&fake, timing());
+        eventually("three tries", || opened(&fake) >= 3).await;
+        assert_eq!((socket.ended(), socket.status().error), (None, Some(SocketError::Unavailable)));
         socket.stop().await;
         fake.shutdown().await;
     })

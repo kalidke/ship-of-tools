@@ -1,6 +1,6 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
-//! configured), channel history and thread replies (paged), `chat.postMessage` under a custom author, a file shared
-//! into a channel (Slack's three upload steps), the channel picker's calls (the channel list, one channel's facts, one
+//! configured), `bots.info` for the bot's app, channel history and thread replies (paged), `chat.postMessage` under a
+//! custom author, a file shared into a channel (Slack's three upload steps), the channel picker's calls (the channel list, one channel's facts, one
 //! join), and author names through a bounded cache. Every call goes out through
 //! `http` and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
 //! No socket, no file method, no configuration: the caller hands in the `Secret` and a file's bytes.
@@ -19,6 +19,7 @@ use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
+use crate::service::{End, BOT_TOKEN_REFUSED};
 use crate::watch::MAX_CHANNELS;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
@@ -131,11 +132,14 @@ impl fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
-/// The bot's identity from `auth.test`: normalization decides which messages are this app's own by it alone.
+/// The bot's identity from `auth.test`: normalization decides which messages are this app's own by it alone. `app_id`
+/// is the bot's app as `bots.info` names it (`Api::bot_app`), which the listener holds every frame to; `None` while
+/// unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
     pub user_id: String,
     pub bot_id: Option<String>,
+    pub app_id: Option<String>,
 }
 
 /// A channel as `conversations.list` and `conversations.info` give it. `private` is true unless Slack says the channel is
@@ -519,6 +523,8 @@ pub struct Api {
     closed: AtomicBool,
     /// `MAX_TRANSFERS` permits, each held across every step of one transfer.
     transfers: Arc<Semaphore>,
+    /// The service's end: a refusal of the bot's token ends it, and an ended service's client is closed.
+    end: Arc<End>,
 }
 
 /// A bot token's workspace and bot, as one `auth.test` names them before any workspace is configured.
@@ -589,7 +595,19 @@ impl Api {
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
             transfers: Arc::new(Semaphore::new(MAX_TRANSFERS)),
+            end: End::detached(),
         }
+    }
+
+    /// This client under its service's end.
+    pub(crate) fn with_end(mut self, end: Arc<End>) -> Api {
+        self.end = end;
+        self
+    }
+
+    /// Closed by a stop, or its service ended.
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst) || self.end.code().is_some()
     }
 
     /// This client with the person's user token (`None`: a person's post is refused unsent).
@@ -612,11 +630,17 @@ impl Api {
         }
     }
 
-    /// Forget the person's token when Slack's refusal `code` names the token or its scope as bad. The refusal itself
-    /// is still the caller's answer; a restart reads the file again.
-    fn forget_if_refused(&self, kind: PostKind, code: &str) {
-        if kind == PostKind::Person && refuses_the_token(code) {
-            *self.person.lock().unwrap() = None;
+    /// Slack refused a call made under `kind`'s token with `code`. A person's token is forgotten when the code names
+    /// the token or its scope as bad (the refusal itself is still the caller's answer; a restart reads the file again);
+    /// the bot's, a row's, ends the service when the code names the token (`TOKEN_REFUSALS`; `missing_scope` names a
+    /// scope and ends nothing).
+    fn refused(&self, kind: PostKind, code: &str) {
+        match kind {
+            PostKind::Person if refuses_the_token(code) => *self.person.lock().unwrap() = None,
+            PostKind::Row if !self.closed.load(Ordering::SeqCst) && TOKEN_REFUSALS.contains(&code) => {
+                self.end.end(BOT_TOKEN_REFUSED)
+            }
+            _ => {}
         }
     }
 
@@ -659,6 +683,18 @@ impl Api {
     pub(crate) fn with_identity(self, own: Identity) -> Api {
         *self.own.lock().unwrap() = Some(own);
         self
+    }
+
+    /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`), kept in the identity. Its failure, any
+    /// code, only leaves the app unknown and ends nothing: the check it serves fails open.
+    pub async fn bot_app(&self) -> Result<String, ApiError> {
+        let bot = self.identity()?.bot_id.ok_or(ApiError::NoIdentity)?;
+        let v = self.read_as(self.token.clone(), "bots.info", &[("bot", bot)], MAX_BODY).await?;
+        let app = v.pointer("/bot/app_id").and_then(Value::as_str).filter(|a| valid_id(a)).ok_or(ApiError::Malformed)?;
+        if let Some(own) = self.own.lock().unwrap().as_mut() {
+            own.app_id = Some(app.into());
+        }
+        Ok(app.into())
     }
 
     /// The bot identity, which history needs. The token must belong to the configured workspace.
@@ -796,7 +832,7 @@ impl Api {
         name: &str,
         text: &str,
     ) -> Result<PostOutcome, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         let thread = thread
@@ -827,7 +863,7 @@ impl Api {
         .bearer(token);
         let outcome = post_outcome(self.http.send(request).await);
         if let PostOutcome::Refused(code) = &outcome {
-            self.forget_if_refused(kind, code);
+            self.refused(kind, code);
         }
         Ok(outcome)
     }
@@ -835,7 +871,7 @@ impl Api {
     /// One transfer permit, taken at once: `Err(Http(Busy))` while `MAX_TRANSFERS` are held, `Err(Closed)` for a closed
     /// client. Owned, so a caller that drops it (or a future holding it) frees it.
     pub fn transfer(&self) -> Result<Transfer, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         self.transfers.clone().try_acquire_owned().map(Transfer).map_err(|_| ApiError::Http(HttpError::Busy))
@@ -862,7 +898,7 @@ impl Api {
         bytes: Vec<u8>,
         comment: Option<&str>,
     ) -> Result<FileOutcome, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         let thread = thread
@@ -893,7 +929,7 @@ impl Api {
             Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
             Err(e) => {
                 let code = refusal(&e);
-                self.forget_if_refused(kind, &code);
+                self.refused(kind, &code);
                 return Ok(FileOutcome::Refused(code));
             }
         };
@@ -908,7 +944,7 @@ impl Api {
             Ok(r) => return Ok(FileOutcome::Refused(format!("http_{}", r.status()))),
             Err(e) => return Ok(FileOutcome::Refused(e.code().into())),
         }
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Ok(FileOutcome::Refused(ApiError::Closed.code().into()));
         }
         let mut body = json!({
@@ -924,7 +960,7 @@ impl Api {
         let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
         let outcome = share_outcome(self.http.send(share).await, channel);
         if let FileOutcome::Refused(code) = &outcome {
-            self.forget_if_refused(kind, code);
+            self.refused(kind, code);
         }
         Ok(outcome)
     }
@@ -935,7 +971,7 @@ impl Api {
     /// `thumb_160`, else a small original (`NoThumbnail` when it is not small). Input it cannot carry is `Err` unsent, and a
     /// file that is not the channel's is `Err` with nothing downloaded.
     pub async fn fetch_file(&self, channel: &str, file: &str, variant: FileVariant) -> Result<FileFetch, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         if !valid_id(channel) || !valid_id(file) {
@@ -971,7 +1007,7 @@ impl Api {
             }
         };
         // A service retired while `files.info` was answered sends nothing more, as a share's last step does not.
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         let request = Request::get(url, deadline).max_body(bound).bearer(self.token.clone());
@@ -1042,7 +1078,7 @@ impl Api {
     /// Join a public channel once. Input that is no channel's id is `Err` unsent; from there the result is a
     /// `JoinOutcome`, and no path resends.
     pub async fn join(&self, channel: &str) -> Result<JoinOutcome, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         if !valid_id(channel) || !is_channel_id(channel) {
@@ -1058,7 +1094,10 @@ impl Api {
         Ok(match acknowledgement(self.http.send(request).await) {
             Ack::Done(_) => JoinOutcome::Joined,
             Ack::Refused(code) if code == "already_in_channel" => JoinOutcome::Joined,
-            Ack::Refused(code) => JoinOutcome::Refused(code),
+            Ack::Refused(code) => {
+                self.refused(PostKind::Row, &code);
+                JoinOutcome::Refused(code)
+            }
             Ack::Limited { .. } | Ack::Unknown => JoinOutcome::Unknown,
         })
     }
@@ -1239,7 +1278,11 @@ impl Api {
         params: &[(&str, String)],
         max_body: usize,
     ) -> Result<Value, ApiError> {
-        self.read_as(self.token.clone(), method, params, max_body).await
+        let read = self.read_as(self.token.clone(), method, params, max_body).await;
+        if let Err(ApiError::Slack(code)) = &read {
+            self.refused(PostKind::Row, code);
+        }
+        read
     }
 
     /// `read` under `token`: a person's share reads its upload URL under the token that shares it.
@@ -1250,7 +1293,7 @@ impl Api {
         params: &[(&str, String)],
         max_body: usize,
     ) -> Result<Value, ApiError> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.is_closed() {
             return Err(ApiError::Closed);
         }
         let wait = (*self.eligible.lock().unwrap())
@@ -1312,6 +1355,7 @@ fn identity_of(v: &Value) -> Result<Identity, ApiError> {
     Ok(Identity {
         user_id: answered_id(v, "user_id").ok_or(ApiError::Malformed)?.into(),
         bot_id: answered_id(v, "bot_id").map(String::from),
+        app_id: None,
     })
 }
 

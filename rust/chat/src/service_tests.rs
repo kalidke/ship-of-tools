@@ -318,6 +318,7 @@ async fn the_lock_is_dropped_with_the_task_before_stop_returns() {
         let own = api.auth_test().await.unwrap();
         let socket = crate::socket::Socket::launch(
             fake.http(), creds.app, own, WS, fake.url("slack.com", "/api/"), timing(), Box::new(Flag(dropped.clone())),
+            crate::service::End::detached(),
         )
         .unwrap();
         eventually("connected", || socket.status().connected).await;
@@ -648,6 +649,165 @@ async fn the_service_api_holds_the_credentials_user_token() {
         assert_eq!(unsent, Err(crate::api::ApiError::NoPersonToken));
         assert_eq!(fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).count(), 1, "nothing sent without a token");
         without.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A fake for a service's own ends: `auth.test` as `WS`, `bots.info` naming the app `A0OWN`, a socket whose hello names
+/// `hello_app` once `go` is raised, and `conversations.list` and `chat.postMessage` answering Slack's code `refusal`
+/// while one is set.
+async fn ends_fake(
+    hello_app: &'static str,
+    go: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    refusal: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
+) -> FakeSlack {
+    use std::sync::atomic::Ordering;
+    FakeSlack::start(Identity::Trusted, move |seen, port| {
+        let refused = *refusal.lock().unwrap();
+        match (seen.path().as_str(), refused) {
+            ("/api/auth.test", _) => {
+                return Reply::json(&json!({"ok": true, "team_id": WS, "user_id": "U0BOT", "bot_id": "B0BOT"}))
+            }
+            ("/api/bots.info", _) => return Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": "A0OWN"}})),
+            ("/api/apps.connections.open", _) => {
+                let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
+                return Reply::json(&json!({"ok": true, "url": url}));
+            }
+            ("/api/conversations.list" | "/api/chat.postMessage", Some(code)) => {
+                return Reply::json(&json!({"ok": false, "error": code}))
+            }
+            ("/api/conversations.list", None) => {
+                return Reply::json(&json!({"ok": true, "channels": [], "response_metadata": {"next_cursor": ""}}))
+            }
+            ("/api/chat.postMessage", None) => return Reply::json(&json!({"ok": true, "ts": "1700000000.000100"})),
+            _ => {}
+        }
+        if seen.upgrade {
+            let go = go.clone();
+            return Reply::socket(move |mut peer| {
+                let go = go.clone();
+                async move {
+                    while !go.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    peer.send(&json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": hello_app}})).await;
+                    peer.drain().await;
+                }
+            });
+        }
+        Reply::json(&json!({"ok": false, "error": "unexpected"}))
+    })
+    .await
+}
+
+/// C15, rule 4: a bot-token call Slack refuses with a code of `TOKEN_REFUSALS` (a read, a row's post) ends the service
+/// `bot_token_refused`, for good; `missing_scope`, a person's token refused, and a client closed by a stop end nothing.
+/// The bot's app is read at the start (`app_unchecked` is `None`), and unknown when `bots.info` fails.
+#[tokio::test]
+async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
+    use crate::api::{ApiError, PostKind, PostOutcome};
+    use crate::service::BOT_TOKEN_REFUSED;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    bounded(async {
+        let dir = Scratch::new("refused");
+        // The socket says hello at once, as the bot's own app, so a stop's close is answered.
+        let (go, refusal) = (Arc::new(AtomicBool::new(true)), Arc::new(Mutex::new(None)));
+        let fake = ends_fake("A0OWN", go.clone(), refusal.clone()).await;
+        let config = config();
+        let url = fake.url("slack.com", "/api/");
+        let start_with_user = || {
+            Service::start_for_test(&config, credentials_with_user(&config), fake.http(), &dir.0, url.clone(), timing())
+        };
+
+        let service = start_with_user().await.expect("service");
+        assert_eq!(service.app_unchecked(), None, "the bot's app was not read at the start");
+        let api = service.api().unwrap();
+        *refusal.lock().unwrap() = Some("missing_scope");
+        assert_eq!(api.channels().await, Err(ApiError::Slack("missing_scope".into())));
+        *refusal.lock().unwrap() = Some("invalid_auth");
+        let person = api.post("C0AAAA", None, PostKind::Person, "tester", "hi").await;
+        assert_eq!(person, Ok(PostOutcome::Refused("invalid_auth".into())));
+        assert_eq!((service.ended(), service.api().is_ok()), (None, true), "a scope or a person's token ended the service");
+        *refusal.lock().unwrap() = Some("account_inactive");
+        let row = api.post("C0AAAA", None, PostKind::Row, "row-a", "hi").await;
+        assert_eq!(row, Ok(PostOutcome::Refused("account_inactive".into())));
+        assert_eq!(service.ended(), Some(BOT_TOKEN_REFUSED));
+        assert_eq!(service.api().err(), Some(ServiceError::Stopped));
+        assert_eq!(api.channels().await, Err(ApiError::Closed), "a handle of an ended service still reached Slack");
+        eventually("stopped", || service.status() == Status::Stopped).await;
+        drop(service);
+
+        // A read refused the same way ends the next service.
+        *refusal.lock().unwrap() = None;
+        let service = start_with_user().await.expect("the lock was freed by the end");
+        *refusal.lock().unwrap() = Some("token_revoked");
+        assert_eq!(service.api().unwrap().channels().await, Err(ApiError::Slack("token_revoked".into())));
+        assert_eq!(service.ended(), Some(BOT_TOKEN_REFUSED));
+        service.stop(Duration::from_secs(3)).await;
+
+        // A client closed by a stop answers `closed`, and the stop is no end.
+        *refusal.lock().unwrap() = None;
+        let service = start_with_user().await.expect("third");
+        let api = service.api().unwrap();
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(api.channels().await, Err(ApiError::Closed));
+        assert_eq!(service.ended(), None, "a stop was read as an end");
+        fake.shutdown().await;
+
+        // `bots.info` refused: the app is unknown, said by a fixed code, and the service runs.
+        let other = holding_fake(WS).await;
+        let service = start(&other, &dir.0).await.expect("service");
+        assert_eq!((service.app_unchecked(), service.ended()), (Some("slack"), None));
+        service.stop(Duration::from_secs(3)).await;
+        other.shutdown().await;
+    })
+    .await;
+}
+
+/// C15, rule 5: a service ended on its own (here a hello of another app) answers as a stopped one: a wait in flight
+/// answers `Stopped`, its channels owe a snapshot, nothing is taken, no new `Watches` is given, and its lock is freed
+/// with the listener's task, so a second service of the workspace starts.
+#[tokio::test]
+async fn an_ended_service_ends_its_watches_wait_and_frees_its_lock() {
+    use crate::service::WRONG_APP;
+    use crate::watch::{State, Wake};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    bounded(async {
+        let dir = Scratch::new("ended");
+        let go = Arc::new(AtomicBool::new(false));
+        let fake = ends_fake("A0OTHER", go.clone(), Arc::new(Mutex::new(None))).await;
+        let service = Arc::new(start(&fake, &dir.0).await.expect("service"));
+        let mut watches = service.watches().unwrap();
+        watches.watch("C0AAAA").unwrap();
+        let s = service.clone();
+        let waiting = tokio::spawn(async move {
+            let wake = watches.wait(&s, Duration::from_secs(20)).await;
+            (watches, wake)
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!waiting.is_finished(), "the wait was meant to be in flight");
+        go.store(true, Ordering::SeqCst);
+        let (mut watches, wake) = waiting.await.unwrap();
+        assert_eq!(wake, Wake::Stopped);
+        assert_eq!(service.ended(), Some(WRONG_APP));
+        assert_eq!(service.api().err(), Some(ServiceError::Stopped));
+        assert_eq!(watches.state("C0AAAA"), Some(State::Needed));
+        let (ticket, arrived) = watches.begin("C0AAAA", &service);
+        assert_eq!((ticket, arrived.records.len()), (None, 0));
+        assert_eq!(watches.wait(&service, Duration::from_secs(20)).await, Wake::Stopped);
+        drop(watches);
+        assert!(service.watches().is_none(), "an ended service gave a Watches");
+        eventually("stopped", || service.status() == Status::Stopped).await;
+        // The lock went with the listener's task.
+        let next = holding_fake(WS).await;
+        let second = start(&next, &dir.0).await.expect("the lock was freed by the end");
+        second.stop(Duration::from_secs(3)).await;
+        service.stop(Duration::from_secs(3)).await;
+        assert_eq!(service.status(), Status::Stopped);
+        next.shutdown().await;
         fake.shutdown().await;
     })
     .await;
