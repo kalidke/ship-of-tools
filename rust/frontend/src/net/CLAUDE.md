@@ -101,7 +101,7 @@ through the channel types below.
   daemon's unknown-op answer `Unsupported`; `ChatPicture`'s `Debug` prints the byte count. It is not replayable and gets
   no event when its connection ends, waiting or in flight: its owner asks again at `Connected` (tests
   `a_file_reply_carries_its_request_and_its_bytes`, `a_file_read_without_its_answer_ends_with_no_event_and_is_never_written_again`).
-  No window sends it yet.
+  The window's pictures owner sends it for thumbnails (fe-ui contract); nothing draws or opens one yet.
   `ChatChannels` is a read: replayable while waiting, like a resolve, and given no event when its connection ends with it in flight. A token
   the window sends is a wire `ChatToken` (`Debug` is `<redacted>`); the connect's pending entry and its events name nothing
   of it and fe-net logs the op name alone, so a token reaches the daemon and nothing else (test

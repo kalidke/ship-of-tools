@@ -262,3 +262,13 @@ fn the_apps_name_carries_the_login_cut_to_slacks_limit() {
     let m: serde_json::Value = serde_json::from_str(&slack_app_manifest(&odd)).unwrap();
     assert_eq!(m["display_information"]["name"], "Ship of Tools (a\"bc)");
 }
+
+#[test]
+fn a_picture_is_one_of_the_four_types_exactly() {
+    for mime in PICTURE_MIMES {
+        assert!(ChatFile { mime: mime.into(), ..a_file() }.is_picture(), "{mime}");
+    }
+    for mime in ["image/bmp", "image/svg+xml", "application/pdf", "IMAGE/PNG", "image/png; x", ""] {
+        assert!(!ChatFile { mime: mime.into(), ..a_file() }.is_picture(), "{mime}");
+    }
+}

@@ -201,6 +201,17 @@ pub struct ChatFile {
     pub thumbnail: bool,
 }
 
+/// The file types the chat shows as pictures: the only ones `chat.file` reads (else `not_an_image`) and the window places
+/// as tiles.
+pub const PICTURE_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+impl ChatFile {
+    /// Whether the chat shows this file as a picture (its MIME is one of `PICTURE_MIMES`).
+    pub fn is_picture(&self) -> bool {
+        PICTURE_MIMES.contains(&self.mime.as_str())
+    }
+}
+
 /// One message. `workspace` and `channel` are part of its identity with `ts`. A field the sender cut to its bound
 /// sets `truncated`; `omitted` marks a message whose identity is known but whose content could not be represented.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

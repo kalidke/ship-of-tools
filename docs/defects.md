@@ -748,6 +748,12 @@ owned by `docs/CLAUDE.md`.
   a shown picture; a narrower route of about 10 lines exists (a `Context` flag and a scope for `PreviewDraw` alone),
   left because the state is transient or the refusal's own status line already says why. Drawing on a PDF page is
   `DRAW-ON-PDF-PAGES`.
+- **CHAT-LINKS-THRICE** [note] The Chat drawer's three owners each keep their own set of connected hosts
+  (`ChatOwner`, `RowChannel` and `ChatPictures` in `drawer/chat/`), all fed by `ChatDrawer::on_connection`: one link fact
+  held three times, and a later owner (opening an original, a person's file post) would add a fourth. The fix decided by
+  the pictures owner's review: the drawer holds one set of up hosts and hands it to each owner's asks; each owner keeps
+  its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
+  tests, past the 30 lines it was allowed.
 
 ## distribution
 
