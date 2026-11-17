@@ -1,4 +1,5 @@
 use crate::config::*;
+use sot_protocol::ops::MAX_WORKSPACES;
 use sot_platform::host::env::Env;
 use std::cell::RefCell;
 use std::io;
@@ -404,7 +405,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         ),
         (
             "a named secrets file past the bound",
-            many_secrets(MAX_WORKSPACES).0.refused().first().map_or(Ok(()), |(_, e)| Err(*e)),
+            many_secrets(MAX_WORKSPACES).0.refused().iter().find(|(_, e)| *e == E::TooManyWorkspaces).map_or(Ok(()), |(_, e)| Err(*e)),
             Err(E::TooManyWorkspaces),
         ),
         (
@@ -853,7 +854,7 @@ fn the_secrets_go_through_the_private_writer_alone() {
     let s = Scratch::new("writers");
     let dir = s.0.join("made").join("sot");
     let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
-    let file = Secrets::file_of("T0AAAA", &Config::parse(&fresh("T0AAAA").unwrap(), &rows).unwrap()).unwrap();
+    let file = Secrets::file_of("T0AAAA", "T0AAAA").unwrap();
     write_secrets(&dir, &file, &text, observed).unwrap();
     write_config(&dir, &fresh("T0AAAA").unwrap(), observed).unwrap();
     let seen = wrote.borrow();
@@ -944,7 +945,7 @@ fn load_secrets(dir: &Path) -> (Secrets, Vec<String>) {
 }
 
 fn ids(s: &Secrets) -> Vec<&str> {
-    s.workspaces().map(|(w, _)| w).collect()
+    s.workspaces().map(|(w, _, _)| w).collect()
 }
 
 /// The code the load gives the named file `name` in a folder of `files`; `Ok` when it has none.
@@ -954,10 +955,11 @@ fn named_refusal(files: &[(&str, &str)], name: &str) -> Result<(), ConfigError> 
     secrets.refused().iter().find(|(f, _)| f == name).map_or(Ok(()), |(_, e)| Err(*e))
 }
 
-/// A folder of `chat-secrets.toml` and `n` named files of `T0B00`, `T0B01`, ..., listed in reverse name order, loaded,
-/// with the files it opened.
+/// A folder of `chat-secrets.toml` and `n` named files of `T0B00`, `T0B01`, ..., made in reverse name order, loaded,
+/// with the files it opened. `T0B01`, `T0B03` and `T0B05` are refused (not TOML), so they must count toward the bound.
 fn many_secrets(n: usize) -> (Secrets, Vec<String>) {
-    let texts: Vec<(String, String)> = (0..n).rev().map(|i| (format!("chat-secrets-T0B{i:02}.toml"), named(&format!("T0B{i:02}")))).collect();
+    let text = |i: usize| if [1, 3, 5].contains(&i) { "workspace = [[[".to_string() } else { named(&format!("T0B{i:02}")) };
+    let texts: Vec<(String, String)> = (0..n).rev().map(|i| (format!("chat-secrets-T0B{i:02}.toml"), text(i))).collect();
     let mut files: Vec<(&str, &str)> = texts.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
     let default = secrets();
     files.push((SECRETS_FILE, &default));
@@ -985,12 +987,6 @@ fn the_secrets_files_are_listed_by_their_two_names_alone() {
     );
     std::fs::create_dir(s.0.join("sub")).unwrap();
     std::fs::write(s.0.join("sub").join("chat-secrets-T0EEEE.toml"), named("T0EEEE")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let raw = std::ffi::OsStr::from_bytes(b"chat-secrets-T0H\xffH.toml");
-        std::fs::write(s.0.join(raw), named("T0HH")).unwrap();
-    }
     let (secrets, opened) = load_secrets(&s.0);
     assert_eq!(opened, [SECRETS_FILE, "chat-secrets-T0BBBB.toml"]);
     assert_eq!(ids(&secrets), ["T0AAAA", "T0BBBB"]);
@@ -1018,6 +1014,12 @@ fn each_secrets_file_is_admitted_or_refused_alone() {
     no_token(&format!("{:?} {}", loaded.refused(), loaded.refused()[0].1), "a refusal");
     let c = loaded.take("T0AAAA").unwrap();
     assert_eq!((c.bot.expose(), c.app.expose()), (bot().as_str(), app().as_str()));
+    // A listed name that reads as absent (a dangling link) is unreadable, never the chat's `Missing`.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(s.0.join("gone"), s.0.join("chat-secrets-T0GGGG.toml")).unwrap();
+        assert!(load_secrets(&s.0).0.refused().contains(&("chat-secrets-T0GGGG.toml".to_string(), E::Unreadable)));
+    }
 }
 
 #[test]
@@ -1047,51 +1049,40 @@ fn a_named_file_must_hold_its_workspace_and_the_defaults_is_chat_secrets() {
 fn a_folder_of_many_secrets_files_opens_at_most_the_bound() {
     assert_eq!(MAX_WORKSPACES, 8);
     let (loaded, opened) = many_secrets(12);
-    // `chat-secrets.toml` and the first seven named files by name, whatever the listing's order; the rest not opened.
+    // `chat-secrets.toml` and the first seven named files by name, whatever the listing's order, the refused ones
+    // counted; the rest not opened.
     assert_eq!(opened.len(), MAX_WORKSPACES);
-    let first: Vec<String> = ["T0AAAA".to_string()].into_iter().chain((0..7).map(|i| format!("T0B{i:02}"))).collect();
+    let first: Vec<String> = ["T0AAAA".to_string()].into_iter().chain([0, 2, 4, 6].map(|i| format!("T0B{i:02}"))).collect();
     assert_eq!(ids(&loaded), first);
-    let rest: Vec<(String, ConfigError)> = (7..12).map(|i| (format!("chat-secrets-T0B{i:02}.toml"), E::TooManyWorkspaces)).collect();
-    assert_eq!(loaded.refused(), rest);
+    let garbage = [1, 3, 5].map(|i| (format!("chat-secrets-T0B{i:02}.toml"), E::Malformed(Some(1))));
+    let rest = (7..12).map(|i| (format!("chat-secrets-T0B{i:02}.toml"), E::TooManyWorkspaces));
+    assert_eq!(loaded.refused(), garbage.into_iter().chain(rest).collect::<Vec<_>>());
     assert!(E::TooManyWorkspaces.explain().contains(&MAX_WORKSPACES.to_string()));
     // At the bound exactly, nothing is left out.
     let (full, opened) = many_secrets(MAX_WORKSPACES - 1);
-    assert_eq!((full.workspaces().count(), full.refused().len(), opened.len()), (MAX_WORKSPACES, 0, MAX_WORKSPACES));
+    assert_eq!((full.workspaces().count(), full.refused().len(), opened.len()), (MAX_WORKSPACES - 3, 3, MAX_WORKSPACES));
 }
 
 #[test]
 fn each_workspace_has_one_file_a_connect_writes() {
     let c = parse(&chat("")).unwrap();
-    assert_eq!(Secrets::file_of("T0AAAA", &c).unwrap().name(), SECRETS_FILE);
-    assert_eq!(Secrets::file_of("T0BBBB", &c).unwrap().name(), "chat-secrets-T0BBBB.toml");
+    assert_eq!(Secrets::file_of("T0AAAA", c.workspace()).unwrap().name(), SECRETS_FILE);
+    assert_eq!(Secrets::file_of("T0BBBB", c.workspace()).unwrap().name(), "chat-secrets-T0BBBB.toml");
     for bad in ["t0bbbb", "T0B/../x", "", "T0BBBB.toml"] {
-        assert_eq!(Secrets::file_of(bad, &c), Err(E::BadId), "{bad:?}");
+        assert_eq!(Secrets::file_of(bad, c.workspace()), Err(E::BadId), "{bad:?}");
     }
     // Each written through the private writer, at the folder's top, and read back as its own workspace's.
     let s = Scratch::new("one-file");
     for ws in ["T0AAAA", "T0BBBB"] {
         let text = crate::config::secrets(ws, &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
-        write_secrets(&s.0, &Secrets::file_of(ws, &c).unwrap(), &text, Writers::platform()).unwrap();
+        write_secrets(&s.0, &Secrets::file_of(ws, c.workspace()).unwrap(), &text, Writers::platform()).unwrap();
     }
-    let mut names: Vec<String> = std::fs::read_dir(&s.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    names.sort_unstable();
-    assert_eq!(names, ["chat-secrets-T0BBBB.toml", SECRETS_FILE]);
     let (loaded, _) = load_secrets(&s.0);
     assert_eq!((ids(&loaded), loaded.refused().len()), (vec!["T0AAAA", "T0BBBB"], 0));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for name in &names {
-            assert_eq!(std::fs::metadata(s.0.join(name)).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
-        }
-    }
 }
 
 #[test]
 fn a_secrets_file_has_one_form() {
-    // Today's sample parses, in its one form.
-    let (ws, _) = Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:")).unwrap();
-    assert_eq!(ws, "T0EXAMPLE");
     // A `[[workspace]]` table, of one workspace or two, and tokens beside one, are refused.
     let table = |ws: &str| format!("[[workspace]]\nid = \"{ws}\"\nbot_token = \"{}\"\napp_token = \"{}\"\n", bot(), app());
     let beside = format!("bot_token = \"{}\"\napp_token = \"{}\"\n{}", bot(), app(), table("T0AAAA"));

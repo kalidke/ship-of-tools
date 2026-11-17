@@ -280,19 +280,19 @@ The project chat's configuration, `chat.toml` and one secrets file per workspace
 `%LOCALAPPDATA%\sot\config` on Windows). How to make the Slack app, its tokens and the IDs these files hold is in
 [Setting up Slack](../guide/chat-setup.md).
 
-*Status: the daemon reads both files and connects to Slack with the tokens. The Chat drawer shows the channel's held messages (see
+*Status: the daemon reads the files and connects to Slack with the tokens. The Chat drawer shows the channel's held messages (see
 [The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token; mail is not built.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
-computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens neither file. Both files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
+computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens none of them. The files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
 from a window checks all three tokens with Slack first and writes nothing if any is refused; then the daemon writes
 `chat-secrets.toml` whole, private to your account from the moment it is made, writes a `chat.toml` of the workspace and
 no channel when there is none, and restarts the chat from the files, with no daemon restart. The Chat drawer's Connect
 step sends this request ([Setting up Slack](../guide/chat-setup.md)). A connect leaves an
 existing `chat.toml` as it is, and is refused when that file names another workspace or is itself refused. Only Slack's
 answer that a token is bad refuses it; a Slack outage or rate limit, or no network, fails the connect with nothing
-written, and it can be tried again. After editing either file by hand, restart the daemon (on
+written, and it can be tried again. After editing any of them by hand, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
 by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused

@@ -288,8 +288,8 @@ impl<L: Listener> Chat<L> {
                 for (file, why) in secrets.refused() {
                     tracing::warn!(file = %file, %why, "project chat: a secrets file is not served");
                 }
-                for (workspace, credentials) in secrets.workspaces() {
-                    let file = Secrets::file_of(workspace, admitted).map(|f| f.name()).unwrap_or_default();
+                for (workspace, file, credentials) in secrets.workspaces() {
+                    let file = file.name();
                     if credentials.user.is_none() {
                         tracing::warn!("{file} holds no user token: a person's post waits for Connect Slack in the Chat drawer");
                     }

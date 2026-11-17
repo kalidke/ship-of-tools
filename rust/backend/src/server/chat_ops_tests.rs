@@ -634,6 +634,8 @@ async fn a_file_outside_the_folder_or_of_the_config_folder_is_refused_before_sla
         use std::os::unix::fs::symlink;
         let config = rig._home.config();
         symlink(&config, folder.join("conf")).unwrap();
+        // Another workspace's secrets file, at the folder's top, is refused as `chat-secrets.toml` is.
+        std::fs::write(config.join("chat-secrets-T0BBBB.toml"), b"another workspace").unwrap();
         symlink(config.join(config::SECRETS_FILE), folder.join("secrets.png")).unwrap();
         symlink(outside.path(), folder.join("results")).unwrap();
         symlink(folder.join("figs/fit.png"), folder.join("alias.png")).unwrap();
@@ -669,6 +671,7 @@ async fn a_file_outside_the_folder_or_of_the_config_folder_is_refused_before_sla
         refused.extend([
             ("files:pipe.png", "not_a_file"),
             ("files:conf/chat-secrets.toml", "not_a_file"),
+            ("files:conf/chat-secrets-T0BBBB.toml", "not_a_file"),
             ("files:conf/chat.toml", "not_a_file"),
             ("files:secrets.png", "not_a_file"),
             ("files:hard.png", "not_a_file"),

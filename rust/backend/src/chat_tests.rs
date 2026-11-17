@@ -375,13 +375,6 @@ async fn a_load_whose_secrets_hold_no_user_token_warns_once_in_fixed_words() {
     let again = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
     assert_eq!(settled(&again).await, Status::Running);
     assert_eq!(log.text().matches(warning).count(), 1, "a user token was held, and the load warned");
-
-    // Once per file: a second workspace's file without one is named in its own line.
-    home.write(OTHER_FILE, &other_secrets(false));
-    let third = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
-    assert_eq!(settled(&third).await, Status::Running);
-    let named = "chat-secrets-T0BBBB.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer";
-    assert_eq!((log.text().matches(warning).count(), log.text().matches(named).count()), (1, 1));
 }
 
 /// A second workspace's secrets file, beside `chat-secrets.toml`.
@@ -420,6 +413,9 @@ async fn a_hub_with_secrets_for_two_workspaces_serves_the_files_default_and_logs
     let text = log.text();
     let line = "project chat: a secrets file of another workspace is not served";
     assert_eq!(text.lines().filter(|l| l.contains(line) && l.contains(OTHER_FILE)).count(), 1, "the other file's line");
+    // The no-user-token warning is per file: the other file holds none, the default's does.
+    let named = "chat-secrets-T0BBBB.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer";
+    assert_eq!((text.matches(named).count(), text.matches("chat-secrets.toml holds no user token").count()), (1, 0));
     assert!(!text.contains("xox") && !text.contains("xapp") && !text.contains("5555"), "a token form in the log");
 }
 

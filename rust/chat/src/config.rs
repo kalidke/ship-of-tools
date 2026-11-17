@@ -61,7 +61,7 @@ const NAMED_PREFIX: &str = "chat-secrets-";
 const NAMED_SUFFIX: &str = ".toml";
 
 /// The most workspaces a hub serves (wire's one copy), so the most secrets files a load opens.
-pub use sot_protocol::ops::MAX_WORKSPACES;
+use sot_protocol::ops::MAX_WORKSPACES;
 
 /// Why a file was refused. A code, and where it is when that is a number: no key and no value from the file. A mapping's
 /// ordinal counts from 1 in file order; a parse failure's line counts from 1.
@@ -470,14 +470,11 @@ impl SecretsFile {
     }
 }
 
-/// The listing's own failure, named in a refusal as the files it would have found.
-const NAMED_FILES: &str = "chat-secrets-<id>.toml";
-
 /// One load of the secrets files: each admitted or refused on its own, so one file never turns another workspace off.
 #[derive(Debug)]
 pub struct Secrets {
-    /// The admitted workspaces, in workspace order.
-    admitted: BTreeMap<String, Credentials>,
+    /// The admitted workspaces, in workspace order, each with its file.
+    admitted: BTreeMap<String, (SecretsFile, Credentials)>,
     /// Why `chat-secrets.toml` was not admitted (`Missing` when it is absent).
     default: Option<ConfigError>,
     /// Each named file refused or not read, by its name, in name order.
@@ -489,44 +486,44 @@ impl Secrets {
     /// workspace (`SecondWorkspace`); the folder is listed once, and each name `chat-secrets-<id>.toml` whose `<id>` is a
     /// Slack id is opened in name order and must hold `<id>` (`NameNotWorkspace`, as is one whose `<id>` is `config`'s,
     /// which is not opened). The load opens at most `MAX_WORKSPACES` files; a named file past them is
-    /// `TooManyWorkspaces`, not opened. A listed name that is not UTF-8 is skipped. Every open goes through `read`.
+    /// `TooManyWorkspaces`, not opened. A listed name that is not UTF-8 cannot match, and a listing that fails lists no
+    /// named file. Every open goes through `read`.
     pub fn read(dir: &Path, read: Reader, config: &Config) -> Secrets {
         let open = |name: &str| text(read, &dir.join(name)).and_then(|t| Credentials::parse(&t));
         let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new() };
         match open(SECRETS_FILE) {
-            Ok((w, c)) if w == config.workspace => { s.admitted.insert(w, c); }
+            Ok((w, c)) if w == config.workspace => { s.admitted.insert(w, (SecretsFile(None), c)); }
             Ok(_) => s.default = Some(ConfigError::SecondWorkspace),
             Err(e) => s.default = Some(e),
         }
-        let mut named = Vec::new();
-        if named_ids(dir, &mut named).is_err() {
-            s.refused.push((NAMED_FILES.to_string(), ConfigError::Unreadable));
-        }
+        let mut named = named_ids(dir);
         named.sort_unstable();
         let mut opened = 1;
         for id in named {
-            let file = SecretsFile(Some(id.clone())).name();
+            let file = SecretsFile(Some(id.clone()));
             let held = if id == config.workspace {
                 Err(ConfigError::NameNotWorkspace)
             } else if opened == MAX_WORKSPACES {
                 Err(ConfigError::TooManyWorkspaces)
             } else {
                 opened += 1;
-                open(&file)
+                open(&file.name())
             };
             match held {
-                Ok((w, c)) if w == id => { s.admitted.insert(w, c); }
-                Ok(_) => s.refused.push((file, ConfigError::NameNotWorkspace)),
-                Err(e) => s.refused.push((file, e)),
+                Ok((w, c)) if w == id => { s.admitted.insert(w, (file, c)); }
+                Ok(_) => s.refused.push((file.name(), ConfigError::NameNotWorkspace)),
+                // A listed name that reads as absent (a dangling link) exists, so it is not the chat's `Missing`.
+                Err(ConfigError::Missing) => s.refused.push((file.name(), ConfigError::Unreadable)),
+                Err(e) => s.refused.push((file.name(), e)),
             }
         }
         s
     }
 
-    /// The file `workspace`'s secrets are written to: `chat-secrets.toml` for `config`'s workspace, else
+    /// The file `workspace`'s secrets are written to: `chat-secrets.toml` for `default` (`chat.toml`'s workspace), else
     /// `chat-secrets-<workspace>.toml` (`BadId` for a workspace that is not a Slack id).
-    pub fn file_of(workspace: &str, config: &Config) -> Result<SecretsFile, ConfigError> {
-        if workspace == config.workspace {
+    pub fn file_of(workspace: &str, default: &str) -> Result<SecretsFile, ConfigError> {
+        if workspace == default {
             Ok(SecretsFile(None))
         } else if is_slack_id(workspace) {
             Ok(SecretsFile(Some(workspace.to_string())))
@@ -535,14 +532,14 @@ impl Secrets {
         }
     }
 
-    /// The admitted workspaces and their credentials, in workspace order.
-    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &Credentials)> {
-        self.admitted.iter().map(|(w, c)| (w.as_str(), c))
+    /// The admitted workspaces, each with its file and its credentials, in workspace order.
+    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &SecretsFile, &Credentials)> {
+        self.admitted.iter().map(|(w, (f, c))| (w.as_str(), f, c))
     }
 
     /// Takes `workspace`'s credentials out of the load.
     pub fn take(&mut self, workspace: &str) -> Option<Credentials> {
-        self.admitted.remove(workspace)
+        self.admitted.remove(workspace).map(|(_, c)| c)
     }
 
     /// Why `chat-secrets.toml` was not admitted: `Missing` when it is absent. A named file's refusal is never this.
@@ -556,19 +553,11 @@ impl Secrets {
     }
 }
 
-/// The `<id>`s of the `chat-secrets-<id>.toml` entries at the top of `dir`, in the listing's order; a folder that does
-/// not exist lists none, and any other failure of the listing is the `Err` (the ids found before it are kept).
-fn named_ids(dir: &Path, ids: &mut Vec<String>) -> io::Result<()> {
-    let entries = match std::fs::read_dir(dir) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        listed => listed?,
-    };
-    for entry in entries {
-        if let Some(id) = entry?.file_name().to_str().and_then(SecretsFile::named) {
-            ids.push(id.to_string());
-        }
-    }
-    Ok(())
+/// The `<id>`s of the `chat-secrets-<id>.toml` entries at the top of `dir`, in the listing's order; a listing that
+/// fails, at its start or at any entry, gives none.
+fn named_ids(dir: &Path) -> Vec<String> {
+    let listed = std::fs::read_dir(dir).and_then(|entries| entries.map(|e| e.map(|e| e.file_name())).collect::<io::Result<Vec<_>>>());
+    listed.unwrap_or_default().iter().filter_map(|n| n.to_str().and_then(SecretsFile::named)).map(str::to_string).collect()
 }
 
 /// A text the load admits whole: within `MAX_FILE` (else `Malformed`, as the read refuses it) and through `Config::parse`.
